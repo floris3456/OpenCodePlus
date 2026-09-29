@@ -25,7 +25,7 @@ test("all agent, member, preset and Defaults owners expose discovered Settings a
   for (const owner of [
     "project:build", "global:build", "defaults:build",
     "project:crew/:build", "defaults:*worker*", "defaults:crew*/:*member*",
-    "preset:build", "preset:orchestrator", "preset:starter/:planner",
+    "preset:build", "preset:basic/:planner",
     "defaults:", "defaults:/teams",
   ]) {
     expect(row(nodes, `group:${owner}:settings`).label).toBe("Settings")
@@ -178,11 +178,11 @@ test("member-preset controls reset their team-scoped override without changing t
   const preset = controlRecord("setting:description", { level: "preset", agent: "planner", text: "Agent preset description" })
   const input = memoInputOf(controlSnapshot([
     preset,
-    controlRecord("setting:description", { level: "preset", agent: "planner", team: { level: "preset", team: "starter" }, text: "Member description" }),
+    controlRecord("setting:description", { level: "preset", agent: "planner", team: { level: "preset", team: "basic" }, text: "Member description" }),
   ]))
   const nodes = expandedTree(input)
-  const member = row(nodes, "team:preset:starter:planner")
-  const control = row(nodes, "item:preset:starter/:planner:setting:description")
+  const member = row(nodes, "team:preset:basic:planner")
+  const control = row(nodes, "item:preset:basic/:planner:setting:description")
   expect(member.actions?.reset).toBe(true)
   expect(control.actions?.reset).toBe(true)
   const result = reset(input, control.id)

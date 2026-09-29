@@ -39,7 +39,7 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
   const now = new Date().toISOString()
   return {
     id,
-    role: "muse-implementer",
+    role: "implementer",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",

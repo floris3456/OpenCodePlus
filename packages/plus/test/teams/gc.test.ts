@@ -74,7 +74,7 @@ async function makeChildWorktree(
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
-    role: "muse-implementer",
+    role: "implementer",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -137,7 +137,7 @@ function recordingSessions() {
 function delegateBrief(requestID: string): Brief {
   return Schema.decodeUnknownSync(Brief)({
     requestID,
-    role: "muse-implementer",
+    role: "implementer",
     objective: "Add the provisioning note that the sweep must never race a new worktree.",
     deliverable: { kind: "commit" },
     scope: { paths: ["packages/plus/src/*"] },
@@ -284,7 +284,7 @@ test("landed child worktree is removed on landing; branch ref and records remain
       const parentHead = repo.head
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -305,7 +305,7 @@ test("landed child worktree is removed on landing; branch ref and records remain
       const now = new Date().toISOString()
       const child = baseRun({
         id: "w-aaaaaaaaaaaaaaaa",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: parentHead,
@@ -356,7 +356,7 @@ test("stale stopped run older than gc.reapAfter is reaped and worktree removed",
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -368,7 +368,7 @@ test("stale stopped run older than gc.reapAfter is reaped and worktree removed",
       const staleDate = "2020-01-01T00:00:00.000Z"
       const child = baseRun({
         id: "w-bbbbbbbbbbbbbbbb",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -406,7 +406,7 @@ test("dirty stopped worktree is skipped by GC and visible as worktree: dirty", a
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -428,7 +428,7 @@ test("dirty stopped worktree is skipped by GC and visible as worktree: dirty", a
       const staleDate = "2020-01-01T00:00:00.000Z"
       const child = baseRun({
         id: "w-cccccccccccccccc",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -476,7 +476,7 @@ test("stale superseded run with dirty worktree is reaped with --force", async ()
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -498,7 +498,7 @@ test("stale superseded run with dirty worktree is reaped with --force", async ()
       const staleDate = "2020-01-01T00:00:00.000Z"
       const child = baseRun({
         id: "w-dddddddddddddddd",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -541,7 +541,7 @@ test("gc never removes a worktree whose run record is being written", async () =
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -579,7 +579,7 @@ test("gc never removes a worktree whose run record is being written", async () =
         root,
         baseRun({
           id: childID,
-          role: "muse-implementer",
+          role: "implementer",
           directory: created.dir,
           branch: created.branch,
           base: repo.head,
@@ -638,7 +638,7 @@ test("provision's repo lock blocks gc's orphan sweep while a worktree registers 
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -681,7 +681,7 @@ test("provision's repo lock blocks gc's orphan sweep while a worktree registers 
             root,
             baseRun({
               id: childID,
-              role: "muse-implementer",
+              role: "implementer",
               directory: created.dir,
               branch: created.branch,
               base: repo.head,
@@ -762,7 +762,7 @@ test("gc's in-lock re-list finds a run registered after its opening snapshot", a
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -804,7 +804,7 @@ test("gc's in-lock re-list finds a run registered after its opening snapshot", a
             root,
             baseRun({
               id: childID,
-              role: "muse-implementer",
+              role: "implementer",
               directory: created.dir,
               branch: created.branch,
               base: repo.head,
@@ -864,7 +864,7 @@ test("orphan worktree unclaimed by any run is removed by GC", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -908,7 +908,7 @@ test("an orphan younger than timeouts.startMs is kept, and swept once older", as
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -945,7 +945,7 @@ test("two concurrent delegates provision and start under a running sweep", async
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -994,7 +994,7 @@ test("twenty back-to-back delegates provision and start under a running sweep", 
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1035,7 +1035,7 @@ test("merge worktree in merge area survives GC while real orphan is removed", as
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1079,7 +1079,7 @@ test("a worktree GC cannot remove is not reported reaped, and is reaped once rem
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1096,7 +1096,7 @@ test("a worktree GC cannot remove is not reported reaped, and is reaped once rem
       )
       const child = baseRun({
         id: "w-7777777777777777",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -1142,7 +1142,7 @@ test("stale run referenced by open merge entry is kept (not reaped)", async () =
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1154,7 +1154,7 @@ test("stale run referenced by open merge entry is kept (not reaped)", async () =
       const staleDate = "2020-01-01T00:00:00.000Z"
       const child = baseRun({
         id: "w-eeeeeeeeeeeeeeee",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -1197,7 +1197,7 @@ test("stale run promoted from is kept when keepPromotedFrom is true", async () =
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1209,7 +1209,7 @@ test("stale run promoted from is kept when keepPromotedFrom is true", async () =
       const childWork = await makeChildWorktree(repo.scratch, repo.dir, "promoted-from", repo.head)
       const child1 = baseRun({
         id: "w-1111111111111111",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -1220,7 +1220,7 @@ test("stale run promoted from is kept when keepPromotedFrom is true", async () =
       })
       const child2 = baseRun({
         id: "w-2222222222222222",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         branch: "main",
         base: repo.head,
@@ -1257,7 +1257,7 @@ test("fresh stopped run (age < reapAfter) is not reaped", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1268,7 +1268,7 @@ test("fresh stopped run (age < reapAfter) is not reaped", async () => {
       const childWork = await makeChildWorktree(repo.scratch, repo.dir, "fresh-stopped", repo.head)
       const child = baseRun({
         id: "w-ffffffffffffffff",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,
@@ -1313,7 +1313,7 @@ test("sweep tick runs both reconcile and gc", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -1325,7 +1325,7 @@ test("sweep tick runs both reconcile and gc", async () => {
       const staleDate = "2020-01-01T00:00:00.000Z"
       const child = baseRun({
         id: "w-9999999999999999",
-        role: "muse-implementer",
+        role: "implementer",
         directory: childWork.dir,
         branch: childWork.branch,
         base: repo.head,

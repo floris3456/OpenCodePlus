@@ -148,8 +148,9 @@ test("kind filters by row kind", () => {
   // Project, Global, Defaults and Presets (DESIGN §2).
   expect(ids("kind:root")).toEqual(["root:project", "root:global", "root:defaults", "root:preset"])
   expect(ids("kind:team !level:preset", { teams: [] })).toHaveLength(0)
-  // The Plus team presets and their member presets are team rows.
-  expect(ids("kind:team level:preset", { teams: [] })).toContain("team:preset:review")
+  // The Plus team preset and its member presets are team rows.
+  expect(ids("kind:team level:preset", { teams: [] })).toContain("team:preset:basic")
+  expect(ids("kind:team level:preset", { teams: [] })).toContain("team:preset:basic:planner")
 })
 
 test("item filters by upstream item kind", () => {

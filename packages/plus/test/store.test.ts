@@ -50,6 +50,7 @@ test("load returns empty when both stores are absent", async () => {
     records: [],
     migrated: false,
     cataloguesMigrated: false,
+    presetsMigrated: false,
   })
 })
 
@@ -71,6 +72,7 @@ test("save then load round-trips project and global records", async () => {
   expect(loaded.globalRevision).toBe(1)
   expect(loaded.migrated).toBe(false)
   expect(loaded.cataloguesMigrated).toBe(false)
+  expect(loaded.presetsMigrated).toBe(false)
   expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
 })
 
@@ -529,6 +531,7 @@ test("model and rule records round-trip through save then load", async () => {
   const loaded = await load(project)
   expect(loaded.migrated).toBe(false)
   expect(loaded.cataloguesMigrated).toBe(false)
+  expect(loaded.presetsMigrated).toBe(false)
   expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
 })
 

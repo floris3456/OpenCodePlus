@@ -21,13 +21,13 @@ async function palette(dialogs: { prompts: string[]; selects: string[] }) {
 }
 
 test("palette Create agent asks name, then Project/Global, then a preset, and creates", async () => {
-  const fixture = await palette({ prompts: ["helper"], selects: ["global", "agent:orchestrator"] })
+  const fixture = await palette({ prompts: ["helper"], selects: ["global", "member:basic/planner"] })
   try {
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Create agent"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Agent scope", "Preset"])
     expect(fixture.fake.selectInputs[0]?.options.map((option) => option.value)).toEqual(["project", "global"])
     expect(fixture.fake.selectInputs[1]?.options.at(-1)).toEqual({ title: "None — everything off", value: "__none__" })
-    expect(fixture.fake.agentCreates).toEqual([{ scope: "global", id: "helper", preset: { kind: "agent", id: "orchestrator" } }])
+    expect(fixture.fake.agentCreates).toEqual([{ scope: "global", id: "helper", preset: { kind: "member", team: "basic", id: "planner" } }])
     expect(fixture.fake.toasts).toContainEqual({ variant: "success", message: "Created agent helper at /agents/helper.md" })
   } finally {
     fixture.destroy()

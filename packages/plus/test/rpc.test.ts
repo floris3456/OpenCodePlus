@@ -955,7 +955,7 @@ test("agent create/rename/delete work at both scopes and create accepts a preset
   )
   expect(createdGlobal).toEqual({ id: "beta", path: path.join(config, "agent", "beta.md") })
   const seeded = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "gamma", preset: { kind: "agent", id: "orchestrator" } }, throwingContext({})),
+    handlers["agent.create"]({ scope: "project", id: "gamma", preset: { kind: "member", team: "basic", id: "orchestrator" } }, throwingContext({})),
   )
   expect(await Bun.file(seeded.path).text()).toBe('---\ndescription: "Owns work, delegates by task, verifies and integrates"\nmode: primary\n---\n')
   const renamed = await Effect.runPromise(handlers["agent.rename"]({ scope: "project", from: "alpha", to: "alpha2" }, throwingContext({})))

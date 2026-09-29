@@ -422,11 +422,11 @@ test("whole-item detail strikes the excluded section range", () => {
 // DESIGN §2: an inheriting row shows where its value comes from as a dim
 // suffix; a row that sets its value itself shows none.
 test("tree rows carry the from-label suffix only when inherited, and the review label names state", () => {
-  const linked = { type: "link" as const, level: "project" as const, agent: "Implementer", preset: { kind: "agent" as const, id: "orchestrator" }, updated: UPDATED }
+  const linked = { type: "link" as const, level: "project" as const, agent: "Implementer", preset: { kind: "member" as const, team: "basic", id: "orchestrator" }, updated: UPDATED }
   const input = { items: items(), records: [] as CustomizationRecord[], agents: agents(), links: [linked] }
   const nodes = tree({ ...input, expanded: new Set(allIds(input)) })
   const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")!
-  expect(provenanceSuffix(bash)).toBe("from preset Orchestrator")
+  expect(provenanceSuffix(bash)).toBe("from preset Basic › orchestrator")
   const own = record({ item: "tool:bash", state: "on" })
   const set = tree({ ...input, records: [own], expanded: new Set(allIds({ ...input, records: [own] })) })
   expect(provenanceSuffix(set.find((node) => node.id === "item:project:Implementer:tool:bash")!)).toBeUndefined()
@@ -444,14 +444,14 @@ test("tree rows carry the from-label suffix only when inherited, and the review 
 })
 
 test("detail pane names an owner's link and what a Defaults entry matches", () => {
-  const linked = { type: "link" as const, level: "project" as const, agent: "Implementer", preset: { kind: "agent" as const, id: "orchestrator" }, updated: UPDATED }
+  const linked = { type: "link" as const, level: "project" as const, agent: "Implementer", preset: { kind: "member" as const, team: "basic", id: "orchestrator" }, updated: UPDATED }
   const entry = { type: "entry" as const, level: "defaults" as const, catalogue: "agents" as const, name: "*IMPL*", updated: UPDATED }
   const teamEntry = { type: "entry" as const, level: "defaults" as const, catalogue: "teams" as const, team: "cr*", name: "*mate", updated: UPDATED }
   const teams = [{ level: "project" as const, team: "crew", enabled: false, agents: ["CrewMate", "Lead"] }]
   const input = { items: items(), records: [] as CustomizationRecord[], agents: agents(), links: [linked], entries: [entry, teamEntry], teams }
   const nodes = tree({ ...input, expanded: new Set(allIds(input)) })
   const snap: Snapshot = { ...snapshot([]), links: [linked], entries: [entry, teamEntry], teams }
-  expect(linkLine(nodes.find((node) => node.id === "agent:project:Implementer")!, snap)).toBe("Created from preset: Orchestrator (Plus)")
+  expect(linkLine(nodes.find((node) => node.id === "agent:project:Implementer")!, snap)).toBe("Created from preset: Basic › orchestrator (Plus)")
   expect(linkLine(nodes.find((node) => node.id === "agent:global:Helper")!, snap)).toBe("No preset")
   // Shipped presets are what others link to; a Native preset shows no line.
   expect(linkLine(nodes.find((node) => node.id === "agent:preset:build")!, snap)).toBeUndefined()

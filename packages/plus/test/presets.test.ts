@@ -20,11 +20,9 @@ import { globalTeamsPath, projectTeamsPath } from "../src/instructions/paths.js"
 import {
   chainContext,
   nativePresetIds,
-  plusAgentPresets,
   plusTeamPresets,
   presetCatalog,
   presetListing,
-  shippedLinks,
 } from "../src/instructions/presets.js"
 import { contextOfSnapshot, memoInputOf } from "../src/instructions/snapshot.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
@@ -142,83 +140,65 @@ test("a Native preset ships its native agent's upstream values and prompt", () =
   )
 })
 
-test("a Plus agent preset's role text is shared plus its role block, and it ships every item's value", () => {
+test("a Basic member preset's role text is shared plus its role block, and it ships every item's value", () => {
   const catalog = presetCatalog({ items: inventory })
-  const orchestrator = plusAgentPresets.find((preset) => preset.id === "orchestrator")
+  const basic = plusTeamPresets.find((team) => team.id === "basic")
+  const orchestrator = basic?.members.find((member) => member.id === "orchestrator")
   expect(orchestrator?.role).toBe(`${teamRoles.shared}\n\n${teamRoles.orchestrator}`)
-  expect(catalog.shipped({ kind: "agent", id: "orchestrator" }, "system:role", null, roleOf("alpha", ""))).toEqual({
+  expect(catalog.shipped({ kind: "member", team: "basic", id: "orchestrator" }, "system:role", null, roleOf("alpha", ""))).toEqual({
     text: `${teamRoles.shared}\n\n${teamRoles.orchestrator}`,
     state: "on",
   })
-  expect(catalog.shipped({ kind: "agent", id: "planner" }, "tool:grep", null, inventory[1])).toEqual({
+  // Self-contained: a member preset ships every item's own value, overlaid by
+  // its overrides, exactly as the retired Plus agent preset did.
+  expect(catalog.shipped({ kind: "member", team: "basic", id: "planner" }, "tool:grep", null, inventory[1])).toEqual({
     text: "tool:grep text",
     state: "off",
   })
-  expect(plusAgentPresets.map((preset) => [preset.id, preset.label, preset.mode])).toEqual([
-    ["planner", "Planner", "primary"],
-    ["orchestrator", "Orchestrator", "primary"],
-    ["implementer", "Implementer", "primary"],
-    ["reviewer", "Reviewer", "primary"],
-    ["scout", "Scout", "primary"],
-    ["build-seat", "Build seat", "primary"],
+  expect(basic?.label).toBe("Basic")
+  expect(basic?.members.map((member) => [member.id, member.mode])).toEqual([
+    ["planner", "primary"],
+    ["orchestrator", "primary"],
+    ["implementer", "primary"],
+    ["reviewer", "primary"],
+    ["scout", "primary"],
+    ["build-seat", "primary"],
   ])
-  const seat = plusAgentPresets.find((preset) => preset.id === "build-seat")
+  const seat = basic?.members.find((member) => member.id === "build-seat")
   expect(seat?.role.startsWith(teamRoles.shared)).toBe(true)
   expect(seat?.role).toContain("delegate to every member")
+  // The Plus agent group ships empty: its six presets are Basic members now.
+  expect(presetListing().filter((entry) => entry.origin === "plus" && entry.kind === "agent")).toEqual([])
 })
 
-test("team presets list their members, each linked to its Plus agent preset and shipping its own role body", () => {
+test("the Basic team preset lists its self-contained members with their own role bodies", () => {
+  expect(plusTeamPresets.map((team) => [team.id, team.label])).toEqual([["basic", "Basic"]])
   expect(plusTeamPresets.map((team) => team.id)).toEqual(builtinTeams.map((team) => team.name))
-  const expected: Record<string, Record<string, string>> = {
-    "opencodeplus-team": {
-      "fable-planner": "planner",
-      "astra-planner": "planner",
-      "sol-orchestrator": "orchestrator",
-      "opus-orchestrator": "orchestrator",
-      "muse-implementer": "implementer",
-      "gemini-implementer": "implementer",
-      "spark-implementer": "implementer",
-      "opus-implementer": "implementer",
-      "astra-reviewer": "reviewer",
-      scout: "scout",
-    },
-    starter: { planner: "planner", helper: "implementer" },
-    review: { reviewer: "reviewer", editor: "implementer" },
-  }
   const catalog = presetCatalog({ items: inventory })
-  for (const team of plusTeamPresets) {
-    const listed = presetListing().find((entry) => entry.ref.kind === "team" && entry.ref.id === team.id)
-    expect(listed?.members).toEqual(team.members.map((member) => member.id))
-    for (const member of team.members) {
-      expect(member.preset as string | undefined).toBe(expected[team.id]?.[member.id])
-      expect(shippedLinks).toContainEqual({
-        type: "link",
-        level: "preset",
-        agent: member.id,
-        team: { level: "preset", team: team.id },
-        preset: { kind: "agent", id: expected[team.id]?.[member.id] ?? "" },
-        updated: "",
-      })
-      const body = builtinTeams.find((entry) => entry.name === team.id)?.members.find((entry) => entry.id === member.id)?.body
-      expect(catalog.shipped({ kind: "member", team: team.id, id: member.id }, "system:role", null)).toEqual({ text: body, state: "on" })
-      expect(member.description.length).toBeGreaterThan(0)
-      expect(member.mode).toBe("primary")
-    }
+  const basic = plusTeamPresets[0]
+  const listed = presetListing().find((entry) => entry.ref.kind === "team" && entry.ref.id === "basic")
+  expect(listed?.members).toEqual(basic?.members.map((member) => member.id))
+  for (const member of basic?.members ?? []) {
+    const body = builtinTeams.find((entry) => entry.name === "basic")?.members.find((entry) => entry.id === member.id)?.body
+    expect(catalog.shipped({ kind: "member", team: "basic", id: member.id }, "system:role", null)).toEqual({ text: body, state: "on" })
+    expect(catalog.shipped({ kind: "member", team: "basic", id: member.id }, "setting:mode", null)).toEqual({ text: "primary" })
+    expect(member.description.length).toBeGreaterThan(0)
+    expect(member.mode).toBe("primary")
+    // A member preset is self-contained: nothing links it to another preset.
+    expect(member.overrides["perm:team_delegate:to.other-teams"]).toBeUndefined()
   }
-  // A member preset expands through its shipped link to its agent preset.
+  // A member preset expands through its shipped node alone; there is no link
+  // to a hidden agent preset left.
   const context = chainContext({ agents, items: inventory })
   const chain = resolutionChain(
-    { level: "preset", agent: "scout", item: "tool:bash", section: null, team: { level: "preset", team: "opencodeplus-team" } },
+    { level: "preset", agent: "scout", item: "tool:bash", section: null, team: { level: "preset", team: "basic" } },
     context,
   )
-  expect(chain.map((node) => `${node.shipped === undefined ? "" : "shipped:"}${node.level}/${node.agent}`)).toEqual([
-    "preset/scout",
-    "shipped:preset/scout",
-    "preset/scout",
-    "shipped:preset/scout",
+  expect(chain.map((node) => `${node.shipped === undefined ? "" : "shipped:"}${node.level}/${node.agent}${node.team === undefined ? "" : `@${node.team.team}`}`)).toEqual([
+    "preset/scout@basic",
+    "shipped:preset/scout@basic",
     "defaults/null",
   ])
-  expect(chain[2]?.team).toBeUndefined()
 })
 
 test("a user agent linked to Native build resolves every row exactly like build", () => {
@@ -243,27 +223,27 @@ test("an unlinked user agent resolves shared rows off and its own prompt upstrea
   expect([role.enabled, role.text]).toEqual([true, "beta body"])
 })
 
-test("a user preset linked to a Plus preset expands through it", () => {
+test("a user preset linked to a Basic member preset expands through it", () => {
   const context = chainContext({
     agents,
     items: inventory,
     presets: [{ type: "preset", level: "preset", kind: "agent", id: "mine", fields: { mode: "primary" }, updated: UPDATED }],
     links: [
-      link({ level: "preset", agent: "mine" }, { kind: "agent", id: "reviewer" }),
+      link({ level: "preset", agent: "mine" }, { kind: "member", team: "basic", id: "reviewer" }),
       link({ level: "project", agent: "beta" }, { kind: "agent", id: "mine" }),
     ],
   })
   const chain = resolutionChain({ level: "project", agent: "beta", item: "system:role", section: null }, context)
-  expect(chain.map((node) => `${node.shipped === undefined ? "" : "shipped:"}${node.level}/${node.agent}`)).toEqual([
+  expect(chain.map((node) => `${node.shipped === undefined ? "" : "shipped:"}${node.level}/${node.agent}${node.team === undefined ? "" : `@${node.team.team}`}`)).toEqual([
     "project/beta",
     "preset/mine",
-    "preset/reviewer",
-    "shipped:preset/reviewer",
+    "preset/reviewer@basic",
+    "shipped:preset/reviewer@basic",
     "defaults/null",
   ])
   const role = resolveFor("system:role", "beta", "project", context)
   expect(role.text).toBe(`${teamRoles.shared}\n\n${teamRoles.reviewer}`)
-  expect(role.textFrom).toEqual({ kind: "preset", id: "reviewer", shipped: true })
+  expect(role.textFrom).toEqual({ kind: "preset", id: "reviewer", team: "basic", shipped: true })
   // The user preset's own edits win over what it was created from.
   const edited = resolve({
     upstream: inventory[0] as Item,
@@ -361,17 +341,17 @@ test("team.create from a user team preset writes its members and links them to i
   expect(parseTeamFields(handText).mode).toBe("subagent")
 })
 
-test("a project team created from the Plus preset installs each member with its shipped role text", async () => {
+test("a project team created from the Basic preset installs each member with its shipped role text", async () => {
   const project = await tempProject()
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
-  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "review" }, throwingContext()))
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "basic" }, throwingContext()))
   const file = await fs.readFile(path.join(projectTeamsPath(project), "crew", "reviewer.md"), "utf8")
   expect(agentBody(file)).toBe("")
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext()))
   const listed = await Effect.runPromise(ctx.agent.list())
   const reviewer = listed.data.find((entry) => String(entry.id) === "reviewer")
-  const body = builtinTeams.find((team) => team.name === "review")?.members.find((member) => member.id === "reviewer")?.body
+  const body = builtinTeams.find((team) => team.name === "basic")?.members.find((member) => member.id === "reviewer")?.body
   expect(reviewer?.system).toBe(body)
 })
 
@@ -380,7 +360,7 @@ test("the snapshot round-trips link, entry and preset records and the basedOn fi
   const loaded = await load(project)
   const stored: StoredRecord[] = [
     link({ level: "project", agent: "alpha" }, { kind: "agent", id: "build" }),
-    link({ level: "project", agent: "helper", team: { level: "project", team: "crew" } }, { kind: "member", team: "starter", id: "helper" }),
+    link({ level: "project", agent: "helper", team: { level: "project", team: "crew" } }, { kind: "member", team: "basic", id: "implementer" }),
     { type: "entry", level: "defaults", catalogue: "agents", name: "*orchestrator*", updated: UPDATED },
     { type: "entry", level: "defaults", catalogue: "teams", team: "crew", name: "helper", updated: UPDATED },
     { type: "preset", level: "preset", kind: "agent", id: "mine", fields: { description: "Mine" }, updated: UPDATED },
@@ -412,7 +392,7 @@ test("the snapshot round-trips link, entry and preset records and the basedOn fi
     level: "project",
     agent: "helper",
     team: { level: "project", team: "crew" },
-    preset: { kind: "member", team: "starter", id: "helper" },
+    preset: { kind: "member", team: "basic", id: "implementer" },
     updated: UPDATED,
   })
   expect(decoded.entries).toContainEqual({ type: "entry", level: "defaults", catalogue: "teams", team: "crew", name: "helper", updated: UPDATED })
@@ -467,79 +447,73 @@ test("the publish fingerprint moves when an agent is relinked", async () => {
   await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext()))
   const unlinked = state.fingerprint
   const build = await relink({ kind: "agent", id: "build" })
-  const planner = await relink({ kind: "agent", id: "planner" })
+  const planner = await relink({ kind: "member", team: "basic", id: "planner" })
   expect(unlinked).toBeDefined()
   expect(build).not.toBe(unlinked)
   expect(planner).not.toBe(build)
-  // The republished tree reads the new link: alpha's role now follows Planner.
+  // The republished tree reads the new link: alpha's role now follows Basic › planner.
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
   const role = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:defaults:alpha:system:role")
   expect(role?.badges.source).toBe("preset")
 })
 
-// Phase 2b (DESIGN §6): the Plus presets carry the old role answers as row
-// overrides. Every override must name a row that exists, or it silently sets
-// nothing.
-test("every Plus agent and member preset override names a row that exists", async () => {
-  const { plusAgentOverrides, plusMemberOverrides } = await import("../src/instructions/presets.js")
+// Phase 2b (DESIGN §6): the Basic member presets carry the old role answers
+// as row overrides. Every override must name a row that exists, or it silently
+// sets nothing.
+test("every Basic member preset override names a row that exists", async () => {
+  const { plusMemberOverrides } = await import("../src/instructions/presets.js")
   const { presetInput } = await import("./teams/preset-table.js")
-  const ids = new Set(presetInput().items.map((item) => item.id))
-  const missing = [
-    ...Object.entries(plusAgentOverrides).flatMap(([preset, rows]) => Object.keys(rows).filter((id) => !ids.has(id)).map((id) => `${preset}: ${id}`)),
-    ...Object.entries(plusMemberOverrides).flatMap(([team, members]) =>
-      Object.entries(members).flatMap(([member, rows]) => Object.keys(rows).filter((id) => !ids.has(id)).map((id) => `${team} › ${member}: ${id}`)),
-    ),
-  ]
+  const basic = plusTeamPresets.find((team) => team.id === "basic")
+  const input = presetInput({
+    members: (basic?.members ?? []).map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
+  })
+  const ids = new Set(input.items.map((item) => item.id))
+  const missing = Object.entries(plusMemberOverrides).flatMap(([team, members]) =>
+    Object.entries(members).flatMap(([member, rows]) => Object.keys(rows).filter((id) => !ids.has(id)).map((id) => `${team} › ${member}: ${id}`)),
+  )
   expect(missing).toEqual([])
   // Every override differs from the row's own shipped value: an override that
   // repeats it would hide a later change of the catalogue.
-  const items = presetInput().items
-  const same = Object.entries(plusAgentOverrides).flatMap(([preset, rows]) =>
-    Object.entries(rows).flatMap(([id, override]) => {
-      const item = items.find((entry) => entry.id === id && entry.agents === undefined)
-      if (item === undefined || override.state === undefined) return []
-      return (item.enabled ? "on" : "off") === override.state ? [`${preset}: ${id}`] : []
-    }),
+  const items = input.items
+  const same = Object.entries(plusMemberOverrides).flatMap(([team, members]) =>
+    Object.entries(members).flatMap(([member, rows]) =>
+      Object.entries(rows).flatMap(([id, override]) => {
+        const item = items.find((entry) => entry.id === id && entry.agents === undefined)
+        if (item === undefined || override.state === undefined) return []
+        return (item.enabled ? "on" : "off") === override.state ? [`${team} › ${member}: ${id}`] : []
+      }),
+    ),
   )
   expect(same.toSorted()).toEqual(
     [
-      // Stated on purpose: the preset's own team rules, whatever the catalogue ships.
-      "planner: tool:question",
-      "planner: perm:edit:allowed.plans",
-      "planner: perm:team_get_context:bootstrap.chat",
-      "orchestrator: tool:shell",
-      "orchestrator: perm:team_get_context:bootstrap.chat",
-      "orchestrator: perm:team_delegate:access.delegated",
-      "build-seat: tool:shell",
-      "build-seat: tool:question",
-      "build-seat: tool:subagent",
-      "build-seat: perm:team_get_context:bootstrap.chat",
-      "build-seat: perm:team_delegate:access.delegated",
+      // Stated on purpose: the member's own team rules, whatever the catalogue ships.
+      "basic › planner: tool:question",
+      "basic › planner: perm:edit:allowed.plans",
+      "basic › planner: perm:team_get_context:bootstrap.chat",
+      "basic › orchestrator: tool:shell",
+      "basic › orchestrator: perm:team_get_context:bootstrap.chat",
+      "basic › orchestrator: perm:team_delegate:access.delegated",
+      "basic › build-seat: tool:shell",
+      "basic › build-seat: tool:question",
+      "basic › build-seat: tool:subagent",
+      "basic › build-seat: perm:team_get_context:bootstrap.chat",
+      "basic › build-seat: perm:team_delegate:access.delegated",
     ].toSorted(),
   )
 })
 
-test("the shipped team's member presets open Delegate to rows by their teammates' presets, and spark carries its brief rows", async () => {
+test("the Basic member presets open Delegate to rows for their teammates' roles", async () => {
   const { plusMemberOverrides } = await import("../src/instructions/presets.js")
-  const team = plusMemberOverrides["opencodeplus-team"] ?? {}
+  const team = plusMemberOverrides["basic"] ?? {}
   const opened = (member: string) =>
     Object.entries(team[member] ?? {})
       .filter(([id, row]) => id.startsWith("perm:team_delegate:to.") && row.state === "on")
       .map(([id]) => id.slice("perm:team_delegate:to.".length))
       .toSorted()
-  expect(opened("fable-planner")).toEqual(["opus-orchestrator", "sol-orchestrator"])
-  expect(opened("sol-orchestrator")).toEqual(
-    ["astra-reviewer", "gemini-implementer", "muse-implementer", "opus-implementer", "opus-orchestrator", "scout", "spark-implementer"].toSorted(),
-  )
-  for (const member of ["muse-implementer", "astra-reviewer", "scout", "spark-implementer"]) expect([member, opened(member)]).toEqual([member, []])
-  expect(Object.fromEntries(Object.entries(team["spark-implementer"] ?? {}).filter(([id]) => id.startsWith("perm:team_get_context:")))).toEqual({
-    "perm:team_get_context:accepts.reason": { state: "on" },
-    "perm:team_get_context:accepts.check": { state: "on" },
-    "perm:team_get_context:limits.paths": { state: "on" },
-    "perm:team_get_context:limits.checks": { state: "on" },
-  })
-  // starter and review: nobody delegates (no orchestrator there).
-  for (const name of ["starter", "review"])
-    for (const [member, rows] of Object.entries(plusMemberOverrides[name] ?? {}))
-      expect([name, member, Object.keys(rows)]).toEqual([name, member, []])
+  expect(opened("planner")).toEqual(["orchestrator"])
+  expect(opened("orchestrator")).toEqual(["implementer", "reviewer", "scout"])
+  expect(opened("build-seat")).toEqual(["implementer", "orchestrator", "planner", "reviewer", "scout"].toSorted())
+  for (const member of ["implementer", "reviewer", "scout"]) expect([member, opened(member)]).toEqual([member, []])
+  // Members of other teams are not named: only the teammate's own row is on.
+  expect(opened("planner")).not.toContain("other-teams")
 })

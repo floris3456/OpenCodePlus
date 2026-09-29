@@ -1,0 +1,2199 @@
+{
+  "note": "Generated once by running the pre-Basic catalogue (source before this change, commit eeb9d5dbd) over the same fixture members; test/basic-migration.test.ts compares the post-migration resolution against it.",
+  "agents": {
+    "deepseek-worker": {
+      "role": "You work in the OpenCodePlus team. Your first action in any new attempt is\nteam_get_context; if it returns a Brief or inbox item, execute it immediately —\ndo not announce readiness or ask whether to start.\n\nRelation rule: a worker's context is exactly its Brief, team_get_context and\nwhat it reads itself. A parent's knowledge of a worker is exactly its Report,\nteam_status and team_diff. Nothing else crosses. Never paste history into a\nBrief or followup; write a file and reference it.\n\nWork fast: when the result is correct, checked and safe enough for the next\nstep, move on. Put deliberately deferred in-scope items in the Report's\ndeferred list; never call unfinished required work done.\n\nReport with team_finish. Use done_with_concerns when unsure of correctness,\nblocked when you cannot proceed (say exactly what you need), needs_context when\ninformation is missing, rejected when the task is outside your role or scope.\nNever produce work you are unsure about silently.\n\nNever print or query your runtime's configuration, environment, credentials or\nlogs. Cairn and Beads are paused. Hard lines: no push, no history rewrite, no\nwork outside your worktree, no tool or permission you were not given.\n\nUse search_exa_code_search for external APIs; inspect the source for facts about\nthis repository.\n\nYou are the build seat: the team's seat in the user's chat. Take the request,\ndecide who does it and coordinate: planning to a planner, owned execution to an\norchestrator, a small bounded piece straight to an implementer, a lookup to a\nscout, a review to a reviewer. You may delegate to every member. Follow your\nruns with team_status, team_wait and team_diff, answer their needs with\nteam_followup, and report back to the user what was done and what is left.\nDo the work yourself only when delegating would cost more than it saves.",
+      "items": {
+        "tool:team_delegate": {
+          "state": "on",
+          "text": "team_delegate"
+        },
+        "tool:team_finish": {
+          "state": "on",
+          "text": "team_finish"
+        },
+        "tool:team_followup": {
+          "state": "on",
+          "text": "team_followup"
+        },
+        "tool:team_integrate": {
+          "state": "on",
+          "text": "team_integrate"
+        },
+        "tool:team_checkpoint": {
+          "state": "on",
+          "text": "team_checkpoint"
+        },
+        "tool:team_set_checks": {
+          "state": "on",
+          "text": "team_set_checks"
+        },
+        "tool:team_supersede": {
+          "state": "on",
+          "text": "team_supersede"
+        },
+        "tool:team_stop": {
+          "state": "on",
+          "text": "team_stop"
+        },
+        "tool:team_status": {
+          "state": "on",
+          "text": "team_status"
+        },
+        "tool:team_wait": {
+          "state": "on",
+          "text": "team_wait"
+        },
+        "tool:team_get_context": {
+          "state": "on",
+          "text": "team_get_context"
+        },
+        "tool:team_diff": {
+          "state": "on",
+          "text": "team_diff"
+        },
+        "tool:team_list": {
+          "state": "on",
+          "text": "team_list"
+        },
+        "tool:team_check": {
+          "state": "on",
+          "text": "team_check"
+        },
+        "tool:read": {
+          "state": "on",
+          "text": "read"
+        },
+        "tool:glob": {
+          "state": "on",
+          "text": "glob"
+        },
+        "tool:grep": {
+          "state": "on",
+          "text": "grep"
+        },
+        "tool:edit": {
+          "state": "on",
+          "text": "edit"
+        },
+        "tool:write": {
+          "state": "on",
+          "text": "write"
+        },
+        "tool:patch": {
+          "state": "on",
+          "text": "patch"
+        },
+        "tool:shell": {
+          "state": "on",
+          "text": "shell"
+        },
+        "tool:question": {
+          "state": "on",
+          "text": "question"
+        },
+        "tool:subagent": {
+          "state": "on",
+          "text": "subagent"
+        },
+        "tool:search_tavily_search": {
+          "state": "on",
+          "text": "search_tavily_search"
+        },
+        "tool:search_tavily_extract": {
+          "state": "on",
+          "text": "search_tavily_extract"
+        },
+        "tool:search_exa_code_search": {
+          "state": "on",
+          "text": "search_exa_code_search"
+        },
+        "perm:team_delegate:access.delegated": {
+          "state": "on",
+          "text": "Delegate from a delegated run"
+        },
+        "perm:team_delegate:deliverables.commit": {
+          "state": "on",
+          "text": "Commits (commit)"
+        },
+        "perm:team_delegate:deliverables.report": {
+          "state": "on",
+          "text": "Reports (report)"
+        },
+        "perm:team_delegate:deliverables.plan": {
+          "state": "on",
+          "text": "Plans (plan)"
+        },
+        "perm:team_delegate:deliverables.findings": {
+          "state": "on",
+          "text": "Review findings (findings)"
+        },
+        "perm:team_delegate:effort.small": {
+          "state": "on",
+          "text": "Small"
+        },
+        "perm:team_delegate:effort.medium": {
+          "state": "on",
+          "text": "Medium"
+        },
+        "perm:team_delegate:effort.large": {
+          "state": "on",
+          "text": "Large"
+        },
+        "perm:team_delegate:scope.keys": {
+          "state": "on",
+          "text": "Private keys (*.key, *.pem)\n*.key\n*.pem\n*.p12\n*.pfx\n*/id_rsa*\n*/id_ed25519*"
+        },
+        "perm:team_delegate:scope.credentials": {
+          "state": "on",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n*/.git-credentials"
+        },
+        "perm:team_delegate:scope.team-state": {
+          "state": "on",
+          "text": "Team and Plus state (.opencodeplus/)\n.opencodeplus/*\n*/.opencodeplus/*"
+        },
+        "perm:team_delegate:scope.ci": {
+          "state": "on",
+          "text": "CI workflows (.github/)\n.github/*\n*/.github/*"
+        },
+        "perm:team_delegate:scope.agent-definitions": {
+          "state": "on",
+          "text": "Agent and team definitions\nagents/*\n.opencode/agent/*\n.opencode/agents/*\n*/.opencode/agent/*\n*/.opencode/agents/*\n*/teams/*.md\n*/.config/opencodeplus/*"
+        },
+        "perm:team_delegate:scope.instruction-files": {
+          "state": "on",
+          "text": "Instruction files (AGENTS.md)\nAGENTS.md\n*/AGENTS.md\nCLAUDE.md\n*/CLAUDE.md"
+        },
+        "perm:team_delegate:scope.release": {
+          "state": "on",
+          "text": "Release configuration (release/)\nrelease/*\n*/release/*"
+        },
+        "perm:team_delegate:scope.tests": {
+          "state": "on",
+          "text": "Test files (*.test.*, test/)\n*.test.*\n*.spec.*\ntest/*\n*/test/*\ntests/*\n*/tests/*"
+        },
+        "perm:team_delegate:checks.tests": {
+          "state": "on",
+          "text": "Test files (bun test FILE)\nbun test *"
+        },
+        "perm:team_delegate:checks.scripts": {
+          "state": "on",
+          "text": "Package scripts (bun run SCRIPT)\nbun run *"
+        },
+        "perm:team_delegate:parameters.repo": {
+          "state": "on",
+          "text": "Another repository (repo)"
+        },
+        "perm:team_delegate:parameters.base": {
+          "state": "on",
+          "text": "Another starting commit (base)"
+        },
+        "perm:team_delegate:parameters.brief-file": {
+          "state": "on",
+          "text": "Attaching a brief file (briefFile)"
+        },
+        "perm:team_delegate:parameters.prompt": {
+          "state": "on",
+          "text": "Free-text prompt (prompt)"
+        },
+        "perm:team_delegate:parameters.task": {
+          "state": "on",
+          "text": "Claiming a plan task (task)"
+        },
+        "perm:team_delegate:limits.inflight": {
+          "state": "on",
+          "text": "4"
+        },
+        "perm:team_delegate:limits.depth": {
+          "state": "on",
+          "text": "3"
+        },
+        "perm:team_delegate:limits.brief": {
+          "state": "on",
+          "text": "6000"
+        },
+        "perm:team_delegate:limits.members": {
+          "state": "on",
+          "text": "12"
+        },
+        "perm:team_delegate:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_finish:outcomes.done": {
+          "state": "on",
+          "text": "done"
+        },
+        "perm:team_finish:outcomes.done_with_concerns": {
+          "state": "on",
+          "text": "done_with_concerns"
+        },
+        "perm:team_finish:outcomes.blocked": {
+          "state": "on",
+          "text": "blocked"
+        },
+        "perm:team_finish:outcomes.needs_context": {
+          "state": "on",
+          "text": "needs_context"
+        },
+        "perm:team_finish:outcomes.rejected": {
+          "state": "on",
+          "text": "rejected"
+        },
+        "perm:team_finish:needs.path": {
+          "state": "on",
+          "text": "A path outside scope (path)"
+        },
+        "perm:team_finish:needs.check": {
+          "state": "on",
+          "text": "A failing or missing check (check)"
+        },
+        "perm:team_finish:needs.info": {
+          "state": "on",
+          "text": "Information (info)"
+        },
+        "perm:team_finish:needs.decision": {
+          "state": "on",
+          "text": "A decision (decision)"
+        },
+        "perm:team_finish:requirements.checks": {
+          "state": "on",
+          "text": "Assigned checks pass at HEAD"
+        },
+        "perm:team_finish:requirements.commit": {
+          "state": "off",
+          "text": "A commit deliverable has a commit"
+        },
+        "perm:team_finish:requirements.clean": {
+          "state": "off",
+          "text": "Worktree committed before done"
+        },
+        "perm:team_followup:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_followup:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_followup:delivery.queue": {
+          "state": "on",
+          "text": "Queued for the next turn (queue)"
+        },
+        "perm:team_followup:delivery.now": {
+          "state": "on",
+          "text": "Delivered now to an idle child (now)"
+        },
+        "perm:team_followup:parameters.budget": {
+          "state": "on",
+          "text": "Changing a child's budget (budget)"
+        },
+        "perm:team_followup:limits.rounds": {
+          "state": "off",
+          "text": "5"
+        },
+        "perm:team_followup:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_integrate:outcomes.done": {
+          "state": "on",
+          "text": "done"
+        },
+        "perm:team_integrate:outcomes.concerns": {
+          "state": "on",
+          "text": "done_with_concerns"
+        },
+        "perm:team_integrate:branches.protected": {
+          "state": "on",
+          "text": "Protected branches\nmain\nmaster\nv2\nocp-main\nrelease\nrelease*\nrelease/*"
+        },
+        "perm:team_integrate:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_checkpoint:commit-types.feat": {
+          "state": "on",
+          "text": "feat\nfeat:*\nfeat(*"
+        },
+        "perm:team_checkpoint:commit-types.fix": {
+          "state": "on",
+          "text": "fix\nfix:*\nfix(*"
+        },
+        "perm:team_checkpoint:commit-types.docs": {
+          "state": "on",
+          "text": "docs\ndocs:*\ndocs(*"
+        },
+        "perm:team_checkpoint:commit-types.chore": {
+          "state": "on",
+          "text": "chore\nchore:*\nchore(*"
+        },
+        "perm:team_checkpoint:commit-types.refactor": {
+          "state": "on",
+          "text": "refactor\nrefactor:*\nrefactor(*"
+        },
+        "perm:team_checkpoint:commit-types.test": {
+          "state": "on",
+          "text": "test\ntest:*\ntest(*"
+        },
+        "perm:team_checkpoint:limits.files": {
+          "state": "off",
+          "text": "50"
+        },
+        "perm:team_checkpoint:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_set_checks:checks.tests": {
+          "state": "on",
+          "text": "Test files (bun test FILE)\nbun test *"
+        },
+        "perm:team_set_checks:checks.scripts": {
+          "state": "on",
+          "text": "Package scripts (bun run SCRIPT)\nbun run *"
+        },
+        "perm:team_set_checks:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_supersede:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_supersede:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_supersede:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_stop:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_stop:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_stop:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_status:runs.descendants": {
+          "state": "on",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_status:runs.others": {
+          "state": "on",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_wait:runs.descendants": {
+          "state": "on",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_wait:runs.others": {
+          "state": "on",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_wait:until.settled": {
+          "state": "on",
+          "text": "Settled (settled)"
+        },
+        "perm:team_wait:until.idle": {
+          "state": "on",
+          "text": "Idle (idle)"
+        },
+        "perm:team_wait:parameters.no-ack": {
+          "state": "on",
+          "text": "Unacknowledged waits (ack: false)"
+        },
+        "perm:team_wait:limits.timeout": {
+          "state": "off",
+          "text": "600000"
+        },
+        "perm:team_get_context:bootstrap.chat": {
+          "state": "on",
+          "text": "Start a team run from a chat"
+        },
+        "perm:team_get_context:contents.siblings": {
+          "state": "on",
+          "text": "Sibling runs of the same task"
+        },
+        "perm:team_get_context:accepts.scope-paths": {
+          "state": "off",
+          "text": "Scope paths for a commit"
+        },
+        "perm:team_get_context:accepts.plan-files": {
+          "state": "off",
+          "text": "Plan files only\ndocs/plans/*\ndocs/handoffs/*"
+        },
+        "perm:team_get_context:accepts.reason": {
+          "state": "off",
+          "text": "A reason"
+        },
+        "perm:team_get_context:accepts.check": {
+          "state": "off",
+          "text": "A check"
+        },
+        "perm:team_get_context:accepts.followup": {
+          "state": "on",
+          "text": "Corrections by followup"
+        },
+        "perm:team_get_context:limits.paths": {
+          "state": "off",
+          "text": "5"
+        },
+        "perm:team_get_context:limits.checks": {
+          "state": "off",
+          "text": "1"
+        },
+        "perm:team_diff:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_diff:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_diff:from.base": {
+          "state": "on",
+          "text": "The run's base (base)"
+        },
+        "perm:team_diff:from.parent": {
+          "state": "on",
+          "text": "The parent's HEAD (parent)"
+        },
+        "perm:team_diff:limits.bytes": {
+          "state": "off",
+          "text": "200000"
+        },
+        "perm:team_list:runs.descendants": {
+          "state": "on",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_list:runs.others": {
+          "state": "on",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_list:parameters.all": {
+          "state": "on",
+          "text": "Superseded and reaped (all: true)"
+        },
+        "perm:team_check:checks.tests": {
+          "state": "on",
+          "text": "Test files (bun test FILE)\nbun test *"
+        },
+        "perm:team_check:checks.scripts": {
+          "state": "on",
+          "text": "Package scripts (bun run SCRIPT)\nbun run *"
+        },
+        "perm:read:files.*": {
+          "state": "on",
+          "text": "Every other file\n*"
+        },
+        "perm:read:files.keys": {
+          "state": "on",
+          "text": "Private keys\n*.key\n*.pem\n*.p12\n*.pfx\nid_rsa\nid_rsa.*\n*/id_rsa\n*/id_rsa.*\nid_ed25519\n*/id_ed25519\n*/id_ed25519.*\n*/id_ecdsa\n*/id_ecdsa.*"
+        },
+        "perm:read:files.credentials": {
+          "state": "on",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n.pypirc\n*/.pypirc\n*/.git-credentials\n*/.docker/config.json\n*/.aws/credentials\n*/.aws/config\n*/.kube/config\n*/.config/gh/hosts.yml\n*/.config/gcloud/*"
+        },
+        "perm:read:files.opencode-config": {
+          "state": "on",
+          "text": "Provider config and service passwords\n*/.config/opencodeplus/opencode.json\n*/.config/opencodeplus/opencode.jsonc\n*/.config/opencodeplus/service.json\n*/.config/opencode/opencode.json\n*/.config/opencode/opencode.jsonc\n*/.config/opencode/service*.json\n*/.local/state/opencode*/service.json\n*/.local/share/opencode*/auth.json"
+        },
+        "perm:read:files.run-configs": {
+          "state": "on",
+          "text": "Frozen team run configs\n*/run/team/*/runs/*/config/*\n*/run/controller/*"
+        },
+        "perm:read:files.databases": {
+          "state": "on",
+          "text": "Session databases (*.db, *.sqlite)\n*.db\n*.db-wal\n*.db-shm\n*.sqlite\n*.sqlite3"
+        },
+        "perm:read:where.outside": {
+          "state": "on",
+          "text": "Outside this checkout\n/*"
+        },
+        "perm:read:where.tmp": {
+          "state": "on",
+          "text": "Temporary directories\n/tmp/*\n*/run/plus/tmp/*"
+        },
+        "perm:read:where.external": {
+          "state": "on",
+          "text": "Outside this checkout, for every tool (external_directory)\n*"
+        },
+        "perm:read:content.images": {
+          "state": "on",
+          "text": "Images (png, jpg, gif, webp)\n*.png\n*.jpg\n*.jpeg\n*.gif\n*.webp\n*.PNG\n*.JPG\n*.JPEG"
+        },
+        "perm:read:content.pdf": {
+          "state": "on",
+          "text": "PDF documents\n*.pdf\n*.PDF"
+        },
+        "perm:read:limits.lines": {
+          "state": "off",
+          "text": "2000"
+        },
+        "perm:read:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:glob:roots.outside": {
+          "state": "on",
+          "text": "Outside this checkout\n/*\n~\n~/*\n..\n../*"
+        },
+        "perm:glob:parameters.hidden": {
+          "state": "on",
+          "text": "Hidden files (hidden: true)"
+        },
+        "perm:glob:limits.results": {
+          "state": "off",
+          "text": "100"
+        },
+        "perm:glob:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:grep:files.*": {
+          "state": "on",
+          "text": "Every other file\n*"
+        },
+        "perm:grep:files.env": {
+          "state": "on",
+          "text": ".env files\n.env\n.env.*\n*/.env\n*/.env.*\n*.env"
+        },
+        "perm:grep:files.keys": {
+          "state": "on",
+          "text": "Private keys\n*.key\n*.pem\n*.p12\n*.pfx\nid_rsa\nid_rsa.*\n*/id_rsa\n*/id_rsa.*\nid_ed25519\n*/id_ed25519\n*/id_ed25519.*\n*/id_ecdsa\n*/id_ecdsa.*"
+        },
+        "perm:grep:files.credentials": {
+          "state": "on",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n.pypirc\n*/.pypirc\n*/.git-credentials\n*/.docker/config.json\n*/.aws/credentials\n*/.aws/config\n*/.kube/config\n*/.config/gh/hosts.yml\n*/.config/gcloud/*"
+        },
+        "perm:grep:files.opencode-config": {
+          "state": "on",
+          "text": "Provider config and service passwords\n*/.config/opencodeplus/opencode.json\n*/.config/opencodeplus/opencode.jsonc\n*/.config/opencodeplus/service.json\n*/.config/opencode/opencode.json\n*/.config/opencode/opencode.jsonc\n*/.config/opencode/service*.json\n*/.local/state/opencode*/service.json\n*/.local/share/opencode*/auth.json"
+        },
+        "perm:grep:files.run-configs": {
+          "state": "on",
+          "text": "Frozen team run configs\n*/run/team/*/runs/*/config/*\n*/run/controller/*"
+        },
+        "perm:grep:files.databases": {
+          "state": "on",
+          "text": "Session databases (*.db, *.sqlite)\n*.db\n*.db-wal\n*.db-shm\n*.sqlite\n*.sqlite3"
+        },
+        "perm:grep:include.env": {
+          "state": "on",
+          "text": ".env files\n*.env*\n.env*\n*/.env*"
+        },
+        "perm:grep:include.keys": {
+          "state": "on",
+          "text": "Private keys\n*.key*\n*.pem*\n*id_rsa*\n*id_ed25519*"
+        },
+        "perm:grep:roots.outside": {
+          "state": "on",
+          "text": "Outside this checkout\n/*\n~\n~/*\n..\n../*"
+        },
+        "perm:grep:limits.results": {
+          "state": "off",
+          "text": "100"
+        },
+        "perm:grep:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:edit:protected.keys": {
+          "state": "on",
+          "text": "Private keys (*.key, *.pem)\n*.key\n*.pem\n*.p12\n*.pfx\n*/id_rsa*\n*/id_ed25519*"
+        },
+        "perm:edit:protected.credentials": {
+          "state": "on",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n*/.git-credentials"
+        },
+        "perm:edit:protected.team-state": {
+          "state": "on",
+          "text": "Team and Plus state (.opencodeplus/)\n.opencodeplus/*\n*/.opencodeplus/*"
+        },
+        "perm:edit:protected.ci": {
+          "state": "on",
+          "text": "CI workflows (.github/)\n.github/*\n*/.github/*"
+        },
+        "perm:edit:protected.agent-definitions": {
+          "state": "on",
+          "text": "Agent and team definitions\nagents/*\n.opencode/agent/*\n.opencode/agents/*\n*/.opencode/agent/*\n*/.opencode/agents/*\n*/teams/*.md\n*/.config/opencodeplus/*"
+        },
+        "perm:edit:protected.instruction-files": {
+          "state": "on",
+          "text": "Instruction files (AGENTS.md)\nAGENTS.md\n*/AGENTS.md\nCLAUDE.md\n*/CLAUDE.md"
+        },
+        "perm:edit:protected.release": {
+          "state": "on",
+          "text": "Release configuration (release/)\nrelease/*\n*/release/*"
+        },
+        "perm:edit:protected.tests": {
+          "state": "on",
+          "text": "Test files (*.test.*, test/)\n*.test.*\n*.spec.*\ntest/*\n*/test/*\ntests/*\n*/tests/*"
+        },
+        "perm:edit:where.outside": {
+          "state": "on",
+          "text": "Outside this checkout\n/*"
+        },
+        "perm:edit:where.tmp": {
+          "state": "on",
+          "text": "Temporary directories\n/tmp/*\n*/run/plus/tmp/*"
+        },
+        "perm:edit:allowed.*": {
+          "state": "on",
+          "text": "Every other file\n*"
+        },
+        "perm:edit:allowed.plans": {
+          "state": "on",
+          "text": "Plan files (docs/plans/, docs/handoffs/)\n*docs/plans/*\ndocs/handoffs/*\n*/docs/handoffs/*"
+        },
+        "perm:edit:parameters.replace-all": {
+          "state": "on",
+          "text": "Replace all (replaceAll: true)"
+        },
+        "perm:edit:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:write:operations.create": {
+          "state": "on",
+          "text": "Create new files"
+        },
+        "perm:write:operations.overwrite": {
+          "state": "on",
+          "text": "Overwrite an existing file"
+        },
+        "perm:write:limits.size": {
+          "state": "off",
+          "text": "200000"
+        },
+        "perm:write:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:patch:operations.add": {
+          "state": "on",
+          "text": "Add files (*** Add File)"
+        },
+        "perm:patch:operations.delete": {
+          "state": "on",
+          "text": "Delete files (*** Delete File)"
+        },
+        "perm:patch:operations.move": {
+          "state": "on",
+          "text": "Move or rename files (*** Move to)"
+        },
+        "perm:patch:limits.files": {
+          "state": "off",
+          "text": "20"
+        },
+        "perm:patch:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:shell:commands.*": {
+          "state": "on",
+          "text": "Every other command\n*"
+        },
+        "perm:shell:commands.git-changes": {
+          "state": "on",
+          "text": "Git working-tree changes\ngit add *\ngit stash\ngit stash *\ngit clean *\ngit restore *\ngit switch *\ngit merge *\ngit cherry-pick *\ngit revert *\ngit rm *\ngit mv *\ngit apply *\ngit am *\ngit pull\ngit pull *"
+        },
+        "perm:shell:commands.git-refs": {
+          "state": "on",
+          "text": "Git branches, tags and worktrees\ngit branch -d *\ngit branch -D *\ngit branch -m *\ngit branch -M *\ngit branch -f *\ngit tag *\ngit update-ref *\ngit worktree add *\ngit worktree remove *\ngit worktree prune *\ngit worktree move *"
+        },
+        "perm:shell:commands.file-writes": {
+          "state": "on",
+          "text": "Writing files from the shell\n* > *\n* >> *\n* 1> *\n* &> *\n* >| *\ntee\ntee *\nsed -i*\nsed * -i*\nperl -pi*\ncp *\nmv *\ntouch *\nmkdir *\nln *\ninstall *\ntruncate *"
+        },
+        "perm:shell:commands.kill-by-name": {
+          "state": "on",
+          "text": "Stopping processes by name\npkill\npkill *\nkillall\nkillall *"
+        },
+        "perm:shell:commands.interpreters": {
+          "state": "on",
+          "text": "Inline interpreter code\npython -c *\npython3 -c *\nnode -e *\nnode --eval *\nnode -p *\nbun -e *\nbun --eval *\nbun -p *\ndeno eval *\nbash -c *\nsh -c *\nzsh -c *\neval *\nperl -e *\nruby -e *\nphp -r *"
+        },
+        "perm:shell:commands.registry-run": {
+          "state": "on",
+          "text": "Running packages from a registry\nnpx *\nbunx *\npnpx *\npnpm dlx *\nyarn dlx *"
+        },
+        "perm:shell:commands.network-tools": {
+          "state": "on",
+          "text": "Other network tools\nnc *\nncat *\nnetcat *\ntelnet *\nftp *\nsftp *\nrsync *\nsocat *"
+        },
+        "perm:shell:commands.service-control": {
+          "state": "on",
+          "text": "Service control\nsystemctl *\nservice *\nlaunchctl *\nopencode service *\nopencode2 service *\nopencodeplus service *\n*/opencodeplus service *"
+        },
+        "perm:shell:commands.databases": {
+          "state": "on",
+          "text": "Database shells\nsqlite3\nsqlite3 *\npsql *\nmysql *\nredis-cli *\nmongosh *"
+        },
+        "perm:shell:commands.github-cli": {
+          "state": "on",
+          "text": "GitHub CLI (gh)\ngh\ngh *"
+        },
+        "perm:shell:commands.secret-reads": {
+          "state": "on",
+          "text": "Printing secret files\ncat *.env*\ncat *.key*\ncat *.pem*\ncat *id_rsa*\ncat *id_ed25519*\ncat *auth.json*\ncat */.ssh/*\nhead *.env*\ntail *.env*\nless *.env*\nmore *.env*\nbat *.env*"
+        },
+        "perm:shell:commands.workspace-scripts": {
+          "state": "on",
+          "text": "Workspace team and service scripts\n./bin/team *\nbin/team *\n*/bin/team *\n./bin/opencodeplus*\nbin/opencodeplus*\n*/bin/opencodeplus*"
+        },
+        "perm:shell:directories.outside": {
+          "state": "on",
+          "text": "Outside this checkout\n/*\n~\n~/*\n..\n../*"
+        },
+        "perm:shell:parameters.background": {
+          "state": "on",
+          "text": "Background (background: true)"
+        },
+        "perm:shell:parameters.no-timeout": {
+          "state": "on",
+          "text": "Commands with no timeout (timeout: 0)"
+        },
+        "perm:shell:parameters.workdir": {
+          "state": "on",
+          "text": "Working directory (workdir)"
+        },
+        "perm:shell:environment.secrets": {
+          "state": "on",
+          "text": "Keys, tokens and passwords\n*_KEY\n*_API_KEY\n*_TOKEN\n*_SECRET\n*SECRET*\n*PASSWORD*\n*_CREDENTIALS\nAWS_*\nGITHUB_TOKEN\nGH_TOKEN\nNPM_TOKEN\nOPENCODE_SERVER_PASSWORD"
+        },
+        "perm:shell:limits.timeout": {
+          "state": "off",
+          "text": "600000"
+        },
+        "perm:shell:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:question:parameters.multiple": {
+          "state": "on",
+          "text": "Multiple choice (multiple: true)"
+        },
+        "perm:question:limits.questions": {
+          "state": "off",
+          "text": "4"
+        },
+        "perm:question:when.delegated": {
+          "state": "off",
+          "text": "In delegated team runs"
+        },
+        "perm:subagent:team-members.team-members": {
+          "state": "off",
+          "text": "Team members (without a team run)"
+        },
+        "perm:subagent:parameters.background": {
+          "state": "on",
+          "text": "Background (background: true)"
+        },
+        "perm:subagent:parameters.resume": {
+          "state": "on",
+          "text": "Resume a subagent (sessionID)"
+        },
+        "perm:subagent:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:search_tavily_search:queries.secrets": {
+          "state": "on",
+          "text": "Queries with keys or tokens\n*sk-*\n*sk_live_*\n*ghp_*\n*github_pat_*\n*xoxb-*\n*xoxp-*\n*AKIA*\n*-----BEGIN*\n*api_key=*\n*apikey=*\n*password=*\n*token=*"
+        },
+        "perm:search_tavily_search:queries.paths": {
+          "state": "on",
+          "text": "Queries with local paths\n*/home/*\n*/Users/*\n*/root/*"
+        },
+        "perm:search_tavily_search:depth.ultra-fast": {
+          "state": "on",
+          "text": "ultra-fast"
+        },
+        "perm:search_tavily_search:depth.fast": {
+          "state": "on",
+          "text": "fast"
+        },
+        "perm:search_tavily_search:depth.basic": {
+          "state": "on",
+          "text": "basic"
+        },
+        "perm:search_tavily_search:depth.advanced": {
+          "state": "on",
+          "text": "advanced (two credits)"
+        },
+        "perm:search_tavily_search:topics.general": {
+          "state": "on",
+          "text": "general"
+        },
+        "perm:search_tavily_search:topics.news": {
+          "state": "on",
+          "text": "news"
+        },
+        "perm:search_tavily_search:topics.finance": {
+          "state": "on",
+          "text": "finance"
+        },
+        "perm:search_tavily_search:limits.results": {
+          "state": "off",
+          "text": "10"
+        },
+        "perm:search_tavily_search:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:search_tavily_extract:sites.*": {
+          "state": "on",
+          "text": "Every other site\n*"
+        },
+        "perm:search_tavily_extract:sites.localhost": {
+          "state": "on",
+          "text": "Localhost (this machine)\nhttp://localhost*\nhttps://localhost*\nhttp://127.*\nhttps://127.*\nhttp://[::1]*\nhttps://[::1]*\nhttp://0.0.0.0*\nhttps://0.0.0.0*"
+        },
+        "perm:search_tavily_extract:sites.private": {
+          "state": "on",
+          "text": "Private networks\nhttp://10.*\nhttps://10.*\nhttp://192.168.*\nhttps://192.168.*\nhttp://172.16.*\nhttps://172.16.*\nhttp://172.17.*\nhttps://172.17.*\nhttp://172.18.*\nhttps://172.18.*\nhttp://172.19.*\nhttps://172.19.*\nhttp://172.20.*\nhttps://172.20.*\nhttp://172.21.*\nhttps://172.21.*\nhttp://172.22.*\nhttps://172.22.*\nhttp://172.23.*\nhttps://172.23.*\nhttp://172.24.*\nhttps://172.24.*\nhttp://172.25.*\nhttps://172.25.*\nhttp://172.26.*\nhttps://172.26.*\nhttp://172.27.*\nhttps://172.27.*\nhttp://172.28.*\nhttps://172.28.*\nhttp://172.29.*\nhttps://172.29.*\nhttp://172.30.*\nhttps://172.30.*\nhttp://172.31.*\nhttps://172.31.*"
+        },
+        "perm:search_tavily_extract:sites.metadata": {
+          "state": "on",
+          "text": "Cloud metadata endpoints\nhttp://169.254.*\nhttps://169.254.*\nhttp://metadata.google.internal*\nhttp://metadata*"
+        },
+        "perm:search_tavily_extract:sites.http": {
+          "state": "on",
+          "text": "Plain HTTP (unencrypted)\nhttp://*"
+        },
+        "perm:search_tavily_extract:sites.paste": {
+          "state": "on",
+          "text": "Paste and file-drop sites\n*://pastebin.com*\n*://*.pastebin.com*\n*://paste.ee*\n*://hastebin.com*\n*://transfer.sh*\n*://0x0.st*\n*://file.io*\n*://webhook.site*\n*://*.ngrok.io*\n*://*.ngrok-free.app*\n*://requestbin.*\n*://*.pipedream.net*"
+        },
+        "perm:search_tavily_extract:depth.basic": {
+          "state": "on",
+          "text": "basic"
+        },
+        "perm:search_tavily_extract:depth.advanced": {
+          "state": "on",
+          "text": "advanced"
+        },
+        "perm:search_tavily_extract:limits.urls": {
+          "state": "off",
+          "text": "5"
+        },
+        "perm:search_tavily_extract:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:search_exa_code_search:queries.secrets": {
+          "state": "on",
+          "text": "Queries with keys or tokens\n*sk-*\n*sk_live_*\n*ghp_*\n*github_pat_*\n*xoxb-*\n*xoxp-*\n*AKIA*\n*-----BEGIN*\n*api_key=*\n*apikey=*\n*password=*\n*token=*"
+        },
+        "perm:search_exa_code_search:queries.paths": {
+          "state": "on",
+          "text": "Queries with local paths\n*/home/*\n*/Users/*\n*/root/*"
+        },
+        "perm:search_exa_code_search:types.fast": {
+          "state": "on",
+          "text": "fast"
+        },
+        "perm:search_exa_code_search:types.auto": {
+          "state": "on",
+          "text": "auto"
+        },
+        "perm:search_exa_code_search:types.neural": {
+          "state": "on",
+          "text": "neural"
+        },
+        "perm:search_exa_code_search:types.keyword": {
+          "state": "on",
+          "text": "keyword"
+        },
+        "perm:search_exa_code_search:parameters.text": {
+          "state": "on",
+          "text": "Full page text (contents.text)"
+        },
+        "perm:search_exa_code_search:parameters.summary": {
+          "state": "on",
+          "text": "Summaries (contents.summary)"
+        },
+        "perm:search_exa_code_search:limits.results": {
+          "state": "off",
+          "text": "10"
+        },
+        "perm:search_exa_code_search:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:shell:git": {
+          "state": "on",
+          "text": "Git\ngit\ngit *"
+        },
+        "perm:shell:git-push": {
+          "state": "on",
+          "text": "Git push\ngit push *"
+        },
+        "perm:shell:git-commit": {
+          "state": "on",
+          "text": "Git commit\ngit commit *"
+        },
+        "perm:shell:git-rewrite": {
+          "state": "on",
+          "text": "Git history rewrites\ngit reset *\ngit checkout *\ngit rebase *"
+        },
+        "perm:shell:rm": {
+          "state": "on",
+          "text": "Remove files\nrm\nrm *"
+        },
+        "perm:shell:rm-rf": {
+          "state": "on",
+          "text": "Recursive force remove\nrm -rf *"
+        },
+        "perm:shell:sudo": {
+          "state": "on",
+          "text": "Sudo\nsudo\nsudo *"
+        },
+        "perm:shell:chmod-chown": {
+          "state": "on",
+          "text": "Change permissions or ownership\nchmod *\nchown *"
+        },
+        "perm:shell:curl-wget": {
+          "state": "on",
+          "text": "Download with curl or wget\ncurl *\nwget *"
+        },
+        "perm:shell:ssh-scp": {
+          "state": "on",
+          "text": "SSH or SCP\nssh *\nscp *"
+        },
+        "perm:shell:docker": {
+          "state": "on",
+          "text": "Docker\ndocker\ndocker *"
+        },
+        "perm:shell:kubectl": {
+          "state": "on",
+          "text": "Kubectl\nkubectl\nkubectl *"
+        },
+        "perm:shell:js-install": {
+          "state": "on",
+          "text": "JavaScript package install\nnpm install *\npnpm install *\nyarn install *\nbun install *"
+        },
+        "perm:shell:npm-publish": {
+          "state": "on",
+          "text": "npm publish\nnpm publish *"
+        },
+        "perm:shell:pip-install": {
+          "state": "on",
+          "text": "pip install\npip install *"
+        },
+        "perm:shell:kill": {
+          "state": "on",
+          "text": "Kill processes\nkill *\npkill *"
+        },
+        "perm:shell:disk-destructive": {
+          "state": "on",
+          "text": "Disk destructive\ndd *\nmkfs *"
+        },
+        "perm:shell:env": {
+          "state": "on",
+          "text": "Environment inspection\nenv\nenv *\nprintenv\nprintenv *\nexport\nexport *"
+        },
+        "perm:shell:package-scripts": {
+          "state": "on",
+          "text": "Package scripts\nnpm run *\nnpm test *\npnpm run *\nyarn run *\nbun run *\nbun test *"
+        },
+        "perm:edit:env": {
+          "state": "on",
+          "text": ".env files\n*.env*"
+        },
+        "perm:edit:lock": {
+          "state": "on",
+          "text": "Lockfiles\n*.lock\n**/*.lock"
+        },
+        "perm:edit:package-json": {
+          "state": "on",
+          "text": "package.json\npackage.json\n*/package.json"
+        },
+        "perm:edit:git": {
+          "state": "on",
+          "text": "Git internals\n.git/*\n**/.git/**"
+        },
+        "perm:edit:ssh": {
+          "state": "on",
+          "text": "SSH keys\n*/.ssh/*\n*/.ssh\n.ssh/*\n.ssh"
+        },
+        "perm:write:env": {
+          "state": "on",
+          "text": ".env files\n*.env*"
+        },
+        "perm:write:lock": {
+          "state": "on",
+          "text": "Lockfiles\n*.lock\n**/*.lock"
+        },
+        "perm:write:package-json": {
+          "state": "on",
+          "text": "package.json\npackage.json\n*/package.json"
+        },
+        "perm:write:git": {
+          "state": "on",
+          "text": "Git internals\n.git/*\n**/.git/**"
+        },
+        "perm:write:ssh": {
+          "state": "on",
+          "text": "SSH keys\n*/.ssh/*\n*/.ssh\n.ssh/*\n.ssh"
+        },
+        "perm:read:env": {
+          "state": "on",
+          "text": ".env files\n*.env*"
+        },
+        "perm:read:lock": {
+          "state": "on",
+          "text": "Lockfiles\n*.lock\n**/*.lock"
+        },
+        "perm:read:package-json": {
+          "state": "on",
+          "text": "package.json\npackage.json\n*/package.json"
+        },
+        "perm:read:git": {
+          "state": "on",
+          "text": "Git internals\n.git/*\n**/.git/**"
+        },
+        "perm:read:ssh": {
+          "state": "on",
+          "text": "SSH keys\n*/.ssh/*\n*/.ssh\n.ssh/*\n.ssh"
+        },
+        "perm:glob:node-modules": {
+          "state": "on",
+          "text": "Search pattern matching node_modules\n*node_modules*"
+        },
+        "perm:glob:git": {
+          "state": "on",
+          "text": "Search pattern matching .git\n*.git*"
+        },
+        "perm:grep:node-modules": {
+          "state": "on",
+          "text": "Search pattern matching node_modules\n*node_modules*"
+        },
+        "perm:grep:git": {
+          "state": "on",
+          "text": "Search pattern matching .git\n*.git*"
+        },
+        "perm:team_delegate:to.astra-reviewer": {
+          "state": "on",
+          "text": "astra-reviewer"
+        },
+        "perm:team_delegate:to.peer-planner": {
+          "state": "on",
+          "text": "peer-planner"
+        },
+        "perm:team_delegate:to.peer-unlinked": {
+          "state": "on",
+          "text": "peer-unlinked"
+        },
+        "perm:team_delegate:to.other-teams": {
+          "state": "off",
+          "text": "Members of other teams"
+        }
+      }
+    },
+    "astra-reviewer": {
+      "role": "You work in the OpenCodePlus team. Your first action in any new attempt is\nteam_get_context; if it returns a Brief or inbox item, execute it immediately —\ndo not announce readiness or ask whether to start.\n\nRelation rule: a worker's context is exactly its Brief, team_get_context and\nwhat it reads itself. A parent's knowledge of a worker is exactly its Report,\nteam_status and team_diff. Nothing else crosses. Never paste history into a\nBrief or followup; write a file and reference it.\n\nWork fast: when the result is correct, checked and safe enough for the next\nstep, move on. Put deliberately deferred in-scope items in the Report's\ndeferred list; never call unfinished required work done.\n\nReport with team_finish. Use done_with_concerns when unsure of correctness,\nblocked when you cannot proceed (say exactly what you need), needs_context when\ninformation is missing, rejected when the task is outside your role or scope.\nNever produce work you are unsure about silently.\n\nNever print or query your runtime's configuration, environment, credentials or\nlogs. Cairn and Beads are paused. Hard lines: no push, no history rewrite, no\nwork outside your worktree, no tool or permission you were not given.\n\nUse search_exa_code_search for external APIs; inspect the source for facts about\nthis repository.\n\nReview the diff (team_diff from base) against the Brief and the plan section\nit names. First spec: is every requirement met and nothing extra? Then quality:\nconcrete bugs, unsafe changes, missing tests. Each finding: severity, path,\nevidence, practical effect. Separate a demonstrated defect from \"needs a test\".\nDo not block on style. Do not re-run checks the receipts already show green.\nFinish with status done and findings (empty findings = explicit approval).",
+      "items": {
+        "tool:team_delegate": {
+          "state": "off",
+          "text": "team_delegate"
+        },
+        "tool:team_finish": {
+          "state": "on",
+          "text": "team_finish"
+        },
+        "tool:team_followup": {
+          "state": "off",
+          "text": "team_followup"
+        },
+        "tool:team_integrate": {
+          "state": "off",
+          "text": "team_integrate"
+        },
+        "tool:team_checkpoint": {
+          "state": "off",
+          "text": "team_checkpoint"
+        },
+        "tool:team_set_checks": {
+          "state": "off",
+          "text": "team_set_checks"
+        },
+        "tool:team_supersede": {
+          "state": "off",
+          "text": "team_supersede"
+        },
+        "tool:team_stop": {
+          "state": "off",
+          "text": "team_stop"
+        },
+        "tool:team_status": {
+          "state": "on",
+          "text": "team_status"
+        },
+        "tool:team_wait": {
+          "state": "off",
+          "text": "team_wait"
+        },
+        "tool:team_get_context": {
+          "state": "on",
+          "text": "team_get_context"
+        },
+        "tool:team_diff": {
+          "state": "on",
+          "text": "team_diff"
+        },
+        "tool:team_list": {
+          "state": "off",
+          "text": "team_list"
+        },
+        "tool:team_check": {
+          "state": "off",
+          "text": "team_check"
+        },
+        "tool:read": {
+          "state": "on",
+          "text": "read"
+        },
+        "tool:glob": {
+          "state": "on",
+          "text": "glob"
+        },
+        "tool:grep": {
+          "state": "on",
+          "text": "grep"
+        },
+        "tool:edit": {
+          "state": "on",
+          "text": "edit"
+        },
+        "tool:write": {
+          "state": "on",
+          "text": "write"
+        },
+        "tool:patch": {
+          "state": "on",
+          "text": "patch"
+        },
+        "tool:shell": {
+          "state": "off",
+          "text": "shell"
+        },
+        "tool:question": {
+          "state": "off",
+          "text": "question"
+        },
+        "tool:subagent": {
+          "state": "off",
+          "text": "subagent"
+        },
+        "tool:search_tavily_search": {
+          "state": "off",
+          "text": "search_tavily_search"
+        },
+        "tool:search_tavily_extract": {
+          "state": "off",
+          "text": "search_tavily_extract"
+        },
+        "tool:search_exa_code_search": {
+          "state": "on",
+          "text": "search_exa_code_search"
+        },
+        "perm:team_delegate:access.delegated": {
+          "state": "off",
+          "text": "Delegate from a delegated run"
+        },
+        "perm:team_delegate:deliverables.commit": {
+          "state": "on",
+          "text": "Commits (commit)"
+        },
+        "perm:team_delegate:deliverables.report": {
+          "state": "on",
+          "text": "Reports (report)"
+        },
+        "perm:team_delegate:deliverables.plan": {
+          "state": "on",
+          "text": "Plans (plan)"
+        },
+        "perm:team_delegate:deliverables.findings": {
+          "state": "on",
+          "text": "Review findings (findings)"
+        },
+        "perm:team_delegate:effort.small": {
+          "state": "on",
+          "text": "Small"
+        },
+        "perm:team_delegate:effort.medium": {
+          "state": "on",
+          "text": "Medium"
+        },
+        "perm:team_delegate:effort.large": {
+          "state": "on",
+          "text": "Large"
+        },
+        "perm:team_delegate:scope.keys": {
+          "state": "on",
+          "text": "Private keys (*.key, *.pem)\n*.key\n*.pem\n*.p12\n*.pfx\n*/id_rsa*\n*/id_ed25519*"
+        },
+        "perm:team_delegate:scope.credentials": {
+          "state": "on",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n*/.git-credentials"
+        },
+        "perm:team_delegate:scope.team-state": {
+          "state": "on",
+          "text": "Team and Plus state (.opencodeplus/)\n.opencodeplus/*\n*/.opencodeplus/*"
+        },
+        "perm:team_delegate:scope.ci": {
+          "state": "on",
+          "text": "CI workflows (.github/)\n.github/*\n*/.github/*"
+        },
+        "perm:team_delegate:scope.agent-definitions": {
+          "state": "on",
+          "text": "Agent and team definitions\nagents/*\n.opencode/agent/*\n.opencode/agents/*\n*/.opencode/agent/*\n*/.opencode/agents/*\n*/teams/*.md\n*/.config/opencodeplus/*"
+        },
+        "perm:team_delegate:scope.instruction-files": {
+          "state": "on",
+          "text": "Instruction files (AGENTS.md)\nAGENTS.md\n*/AGENTS.md\nCLAUDE.md\n*/CLAUDE.md"
+        },
+        "perm:team_delegate:scope.release": {
+          "state": "on",
+          "text": "Release configuration (release/)\nrelease/*\n*/release/*"
+        },
+        "perm:team_delegate:scope.tests": {
+          "state": "on",
+          "text": "Test files (*.test.*, test/)\n*.test.*\n*.spec.*\ntest/*\n*/test/*\ntests/*\n*/tests/*"
+        },
+        "perm:team_delegate:checks.tests": {
+          "state": "on",
+          "text": "Test files (bun test FILE)\nbun test *"
+        },
+        "perm:team_delegate:checks.scripts": {
+          "state": "on",
+          "text": "Package scripts (bun run SCRIPT)\nbun run *"
+        },
+        "perm:team_delegate:parameters.repo": {
+          "state": "on",
+          "text": "Another repository (repo)"
+        },
+        "perm:team_delegate:parameters.base": {
+          "state": "on",
+          "text": "Another starting commit (base)"
+        },
+        "perm:team_delegate:parameters.brief-file": {
+          "state": "on",
+          "text": "Attaching a brief file (briefFile)"
+        },
+        "perm:team_delegate:parameters.prompt": {
+          "state": "on",
+          "text": "Free-text prompt (prompt)"
+        },
+        "perm:team_delegate:parameters.task": {
+          "state": "on",
+          "text": "Claiming a plan task (task)"
+        },
+        "perm:team_delegate:limits.inflight": {
+          "state": "on",
+          "text": "4"
+        },
+        "perm:team_delegate:limits.depth": {
+          "state": "on",
+          "text": "3"
+        },
+        "perm:team_delegate:limits.brief": {
+          "state": "on",
+          "text": "6000"
+        },
+        "perm:team_delegate:limits.members": {
+          "state": "on",
+          "text": "12"
+        },
+        "perm:team_delegate:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_finish:outcomes.done": {
+          "state": "on",
+          "text": "done"
+        },
+        "perm:team_finish:outcomes.done_with_concerns": {
+          "state": "on",
+          "text": "done_with_concerns"
+        },
+        "perm:team_finish:outcomes.blocked": {
+          "state": "on",
+          "text": "blocked"
+        },
+        "perm:team_finish:outcomes.needs_context": {
+          "state": "on",
+          "text": "needs_context"
+        },
+        "perm:team_finish:outcomes.rejected": {
+          "state": "on",
+          "text": "rejected"
+        },
+        "perm:team_finish:needs.path": {
+          "state": "on",
+          "text": "A path outside scope (path)"
+        },
+        "perm:team_finish:needs.check": {
+          "state": "on",
+          "text": "A failing or missing check (check)"
+        },
+        "perm:team_finish:needs.info": {
+          "state": "on",
+          "text": "Information (info)"
+        },
+        "perm:team_finish:needs.decision": {
+          "state": "on",
+          "text": "A decision (decision)"
+        },
+        "perm:team_finish:requirements.checks": {
+          "state": "on",
+          "text": "Assigned checks pass at HEAD"
+        },
+        "perm:team_finish:requirements.commit": {
+          "state": "off",
+          "text": "A commit deliverable has a commit"
+        },
+        "perm:team_finish:requirements.clean": {
+          "state": "off",
+          "text": "Worktree committed before done"
+        },
+        "perm:team_followup:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_followup:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_followup:delivery.queue": {
+          "state": "on",
+          "text": "Queued for the next turn (queue)"
+        },
+        "perm:team_followup:delivery.now": {
+          "state": "on",
+          "text": "Delivered now to an idle child (now)"
+        },
+        "perm:team_followup:parameters.budget": {
+          "state": "on",
+          "text": "Changing a child's budget (budget)"
+        },
+        "perm:team_followup:limits.rounds": {
+          "state": "off",
+          "text": "5"
+        },
+        "perm:team_followup:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_integrate:outcomes.done": {
+          "state": "on",
+          "text": "done"
+        },
+        "perm:team_integrate:outcomes.concerns": {
+          "state": "on",
+          "text": "done_with_concerns"
+        },
+        "perm:team_integrate:branches.protected": {
+          "state": "on",
+          "text": "Protected branches\nmain\nmaster\nv2\nocp-main\nrelease\nrelease*\nrelease/*"
+        },
+        "perm:team_integrate:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_checkpoint:commit-types.feat": {
+          "state": "on",
+          "text": "feat\nfeat:*\nfeat(*"
+        },
+        "perm:team_checkpoint:commit-types.fix": {
+          "state": "on",
+          "text": "fix\nfix:*\nfix(*"
+        },
+        "perm:team_checkpoint:commit-types.docs": {
+          "state": "on",
+          "text": "docs\ndocs:*\ndocs(*"
+        },
+        "perm:team_checkpoint:commit-types.chore": {
+          "state": "on",
+          "text": "chore\nchore:*\nchore(*"
+        },
+        "perm:team_checkpoint:commit-types.refactor": {
+          "state": "on",
+          "text": "refactor\nrefactor:*\nrefactor(*"
+        },
+        "perm:team_checkpoint:commit-types.test": {
+          "state": "on",
+          "text": "test\ntest:*\ntest(*"
+        },
+        "perm:team_checkpoint:limits.files": {
+          "state": "off",
+          "text": "50"
+        },
+        "perm:team_checkpoint:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_set_checks:checks.tests": {
+          "state": "on",
+          "text": "Test files (bun test FILE)\nbun test *"
+        },
+        "perm:team_set_checks:checks.scripts": {
+          "state": "on",
+          "text": "Package scripts (bun run SCRIPT)\nbun run *"
+        },
+        "perm:team_set_checks:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_supersede:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_supersede:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_supersede:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_stop:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_stop:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_stop:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:team_status:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_status:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_wait:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_wait:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_wait:until.settled": {
+          "state": "on",
+          "text": "Settled (settled)"
+        },
+        "perm:team_wait:until.idle": {
+          "state": "on",
+          "text": "Idle (idle)"
+        },
+        "perm:team_wait:parameters.no-ack": {
+          "state": "on",
+          "text": "Unacknowledged waits (ack: false)"
+        },
+        "perm:team_wait:limits.timeout": {
+          "state": "off",
+          "text": "600000"
+        },
+        "perm:team_get_context:bootstrap.chat": {
+          "state": "off",
+          "text": "Start a team run from a chat"
+        },
+        "perm:team_get_context:contents.siblings": {
+          "state": "on",
+          "text": "Sibling runs of the same task"
+        },
+        "perm:team_get_context:accepts.scope-paths": {
+          "state": "off",
+          "text": "Scope paths for a commit"
+        },
+        "perm:team_get_context:accepts.plan-files": {
+          "state": "off",
+          "text": "Plan files only\ndocs/plans/*\ndocs/handoffs/*"
+        },
+        "perm:team_get_context:accepts.reason": {
+          "state": "off",
+          "text": "A reason"
+        },
+        "perm:team_get_context:accepts.check": {
+          "state": "off",
+          "text": "A check"
+        },
+        "perm:team_get_context:accepts.followup": {
+          "state": "off",
+          "text": "Corrections by followup"
+        },
+        "perm:team_get_context:limits.paths": {
+          "state": "off",
+          "text": "5"
+        },
+        "perm:team_get_context:limits.checks": {
+          "state": "off",
+          "text": "1"
+        },
+        "perm:team_diff:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_diff:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_diff:from.base": {
+          "state": "on",
+          "text": "The run's base (base)"
+        },
+        "perm:team_diff:from.parent": {
+          "state": "on",
+          "text": "The parent's HEAD (parent)"
+        },
+        "perm:team_diff:limits.bytes": {
+          "state": "off",
+          "text": "200000"
+        },
+        "perm:team_list:runs.descendants": {
+          "state": "off",
+          "text": "Deeper descendants (grandchildren and below)"
+        },
+        "perm:team_list:runs.others": {
+          "state": "off",
+          "text": "Any other run (other members, teams and projects)"
+        },
+        "perm:team_list:parameters.all": {
+          "state": "on",
+          "text": "Superseded and reaped (all: true)"
+        },
+        "perm:team_check:checks.tests": {
+          "state": "on",
+          "text": "Test files (bun test FILE)\nbun test *"
+        },
+        "perm:team_check:checks.scripts": {
+          "state": "on",
+          "text": "Package scripts (bun run SCRIPT)\nbun run *"
+        },
+        "perm:read:files.*": {
+          "state": "on",
+          "text": "Every other file\n*"
+        },
+        "perm:read:files.keys": {
+          "state": "off",
+          "text": "Private keys\n*.key\n*.pem\n*.p12\n*.pfx\nid_rsa\nid_rsa.*\n*/id_rsa\n*/id_rsa.*\nid_ed25519\n*/id_ed25519\n*/id_ed25519.*\n*/id_ecdsa\n*/id_ecdsa.*"
+        },
+        "perm:read:files.credentials": {
+          "state": "off",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n.pypirc\n*/.pypirc\n*/.git-credentials\n*/.docker/config.json\n*/.aws/credentials\n*/.aws/config\n*/.kube/config\n*/.config/gh/hosts.yml\n*/.config/gcloud/*"
+        },
+        "perm:read:files.opencode-config": {
+          "state": "off",
+          "text": "Provider config and service passwords\n*/.config/opencodeplus/opencode.json\n*/.config/opencodeplus/opencode.jsonc\n*/.config/opencodeplus/service.json\n*/.config/opencode/opencode.json\n*/.config/opencode/opencode.jsonc\n*/.config/opencode/service*.json\n*/.local/state/opencode*/service.json\n*/.local/share/opencode*/auth.json"
+        },
+        "perm:read:files.run-configs": {
+          "state": "off",
+          "text": "Frozen team run configs\n*/run/team/*/runs/*/config/*\n*/run/controller/*"
+        },
+        "perm:read:files.databases": {
+          "state": "off",
+          "text": "Session databases (*.db, *.sqlite)\n*.db\n*.db-wal\n*.db-shm\n*.sqlite\n*.sqlite3"
+        },
+        "perm:read:where.outside": {
+          "state": "off",
+          "text": "Outside this checkout\n/*"
+        },
+        "perm:read:where.tmp": {
+          "state": "on",
+          "text": "Temporary directories\n/tmp/*\n*/run/plus/tmp/*"
+        },
+        "perm:read:where.external": {
+          "state": "off",
+          "text": "Outside this checkout, for every tool (external_directory)\n*"
+        },
+        "perm:read:content.images": {
+          "state": "on",
+          "text": "Images (png, jpg, gif, webp)\n*.png\n*.jpg\n*.jpeg\n*.gif\n*.webp\n*.PNG\n*.JPG\n*.JPEG"
+        },
+        "perm:read:content.pdf": {
+          "state": "on",
+          "text": "PDF documents\n*.pdf\n*.PDF"
+        },
+        "perm:read:limits.lines": {
+          "state": "off",
+          "text": "2000"
+        },
+        "perm:read:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:glob:roots.outside": {
+          "state": "off",
+          "text": "Outside this checkout\n/*\n~\n~/*\n..\n../*"
+        },
+        "perm:glob:parameters.hidden": {
+          "state": "on",
+          "text": "Hidden files (hidden: true)"
+        },
+        "perm:glob:limits.results": {
+          "state": "off",
+          "text": "100"
+        },
+        "perm:glob:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:grep:files.*": {
+          "state": "on",
+          "text": "Every other file\n*"
+        },
+        "perm:grep:files.env": {
+          "state": "off",
+          "text": ".env files\n.env\n.env.*\n*/.env\n*/.env.*\n*.env"
+        },
+        "perm:grep:files.keys": {
+          "state": "off",
+          "text": "Private keys\n*.key\n*.pem\n*.p12\n*.pfx\nid_rsa\nid_rsa.*\n*/id_rsa\n*/id_rsa.*\nid_ed25519\n*/id_ed25519\n*/id_ed25519.*\n*/id_ecdsa\n*/id_ecdsa.*"
+        },
+        "perm:grep:files.credentials": {
+          "state": "off",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n.pypirc\n*/.pypirc\n*/.git-credentials\n*/.docker/config.json\n*/.aws/credentials\n*/.aws/config\n*/.kube/config\n*/.config/gh/hosts.yml\n*/.config/gcloud/*"
+        },
+        "perm:grep:files.opencode-config": {
+          "state": "off",
+          "text": "Provider config and service passwords\n*/.config/opencodeplus/opencode.json\n*/.config/opencodeplus/opencode.jsonc\n*/.config/opencodeplus/service.json\n*/.config/opencode/opencode.json\n*/.config/opencode/opencode.jsonc\n*/.config/opencode/service*.json\n*/.local/state/opencode*/service.json\n*/.local/share/opencode*/auth.json"
+        },
+        "perm:grep:files.run-configs": {
+          "state": "off",
+          "text": "Frozen team run configs\n*/run/team/*/runs/*/config/*\n*/run/controller/*"
+        },
+        "perm:grep:files.databases": {
+          "state": "off",
+          "text": "Session databases (*.db, *.sqlite)\n*.db\n*.db-wal\n*.db-shm\n*.sqlite\n*.sqlite3"
+        },
+        "perm:grep:include.env": {
+          "state": "off",
+          "text": ".env files\n*.env*\n.env*\n*/.env*"
+        },
+        "perm:grep:include.keys": {
+          "state": "off",
+          "text": "Private keys\n*.key*\n*.pem*\n*id_rsa*\n*id_ed25519*"
+        },
+        "perm:grep:roots.outside": {
+          "state": "off",
+          "text": "Outside this checkout\n/*\n~\n~/*\n..\n../*"
+        },
+        "perm:grep:limits.results": {
+          "state": "off",
+          "text": "100"
+        },
+        "perm:grep:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:edit:protected.keys": {
+          "state": "on",
+          "text": "Private keys (*.key, *.pem)\n*.key\n*.pem\n*.p12\n*.pfx\n*/id_rsa*\n*/id_ed25519*"
+        },
+        "perm:edit:protected.credentials": {
+          "state": "on",
+          "text": "Credential stores\nauth.json\n*/auth.json\n.netrc\n*/.netrc\n.npmrc\n*/.npmrc\n*/.git-credentials"
+        },
+        "perm:edit:protected.team-state": {
+          "state": "on",
+          "text": "Team and Plus state (.opencodeplus/)\n.opencodeplus/*\n*/.opencodeplus/*"
+        },
+        "perm:edit:protected.ci": {
+          "state": "on",
+          "text": "CI workflows (.github/)\n.github/*\n*/.github/*"
+        },
+        "perm:edit:protected.agent-definitions": {
+          "state": "on",
+          "text": "Agent and team definitions\nagents/*\n.opencode/agent/*\n.opencode/agents/*\n*/.opencode/agent/*\n*/.opencode/agents/*\n*/teams/*.md\n*/.config/opencodeplus/*"
+        },
+        "perm:edit:protected.instruction-files": {
+          "state": "on",
+          "text": "Instruction files (AGENTS.md)\nAGENTS.md\n*/AGENTS.md\nCLAUDE.md\n*/CLAUDE.md"
+        },
+        "perm:edit:protected.release": {
+          "state": "on",
+          "text": "Release configuration (release/)\nrelease/*\n*/release/*"
+        },
+        "perm:edit:protected.tests": {
+          "state": "on",
+          "text": "Test files (*.test.*, test/)\n*.test.*\n*.spec.*\ntest/*\n*/test/*\ntests/*\n*/tests/*"
+        },
+        "perm:edit:where.outside": {
+          "state": "off",
+          "text": "Outside this checkout\n/*"
+        },
+        "perm:edit:where.tmp": {
+          "state": "on",
+          "text": "Temporary directories\n/tmp/*\n*/run/plus/tmp/*"
+        },
+        "perm:edit:allowed.*": {
+          "state": "on",
+          "text": "Every other file\n*"
+        },
+        "perm:edit:allowed.plans": {
+          "state": "on",
+          "text": "Plan files (docs/plans/, docs/handoffs/)\n*docs/plans/*\ndocs/handoffs/*\n*/docs/handoffs/*"
+        },
+        "perm:edit:parameters.replace-all": {
+          "state": "on",
+          "text": "Replace all (replaceAll: true)"
+        },
+        "perm:edit:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:write:operations.create": {
+          "state": "on",
+          "text": "Create new files"
+        },
+        "perm:write:operations.overwrite": {
+          "state": "on",
+          "text": "Overwrite an existing file"
+        },
+        "perm:write:limits.size": {
+          "state": "off",
+          "text": "200000"
+        },
+        "perm:write:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:patch:operations.add": {
+          "state": "on",
+          "text": "Add files (*** Add File)"
+        },
+        "perm:patch:operations.delete": {
+          "state": "on",
+          "text": "Delete files (*** Delete File)"
+        },
+        "perm:patch:operations.move": {
+          "state": "on",
+          "text": "Move or rename files (*** Move to)"
+        },
+        "perm:patch:limits.files": {
+          "state": "off",
+          "text": "20"
+        },
+        "perm:patch:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:shell:commands.*": {
+          "state": "on",
+          "text": "Every other command\n*"
+        },
+        "perm:shell:commands.git-changes": {
+          "state": "on",
+          "text": "Git working-tree changes\ngit add *\ngit stash\ngit stash *\ngit clean *\ngit restore *\ngit switch *\ngit merge *\ngit cherry-pick *\ngit revert *\ngit rm *\ngit mv *\ngit apply *\ngit am *\ngit pull\ngit pull *"
+        },
+        "perm:shell:commands.git-refs": {
+          "state": "on",
+          "text": "Git branches, tags and worktrees\ngit branch -d *\ngit branch -D *\ngit branch -m *\ngit branch -M *\ngit branch -f *\ngit tag *\ngit update-ref *\ngit worktree add *\ngit worktree remove *\ngit worktree prune *\ngit worktree move *"
+        },
+        "perm:shell:commands.file-writes": {
+          "state": "on",
+          "text": "Writing files from the shell\n* > *\n* >> *\n* 1> *\n* &> *\n* >| *\ntee\ntee *\nsed -i*\nsed * -i*\nperl -pi*\ncp *\nmv *\ntouch *\nmkdir *\nln *\ninstall *\ntruncate *"
+        },
+        "perm:shell:commands.kill-by-name": {
+          "state": "on",
+          "text": "Stopping processes by name\npkill\npkill *\nkillall\nkillall *"
+        },
+        "perm:shell:commands.interpreters": {
+          "state": "on",
+          "text": "Inline interpreter code\npython -c *\npython3 -c *\nnode -e *\nnode --eval *\nnode -p *\nbun -e *\nbun --eval *\nbun -p *\ndeno eval *\nbash -c *\nsh -c *\nzsh -c *\neval *\nperl -e *\nruby -e *\nphp -r *"
+        },
+        "perm:shell:commands.registry-run": {
+          "state": "on",
+          "text": "Running packages from a registry\nnpx *\nbunx *\npnpx *\npnpm dlx *\nyarn dlx *"
+        },
+        "perm:shell:commands.network-tools": {
+          "state": "on",
+          "text": "Other network tools\nnc *\nncat *\nnetcat *\ntelnet *\nftp *\nsftp *\nrsync *\nsocat *"
+        },
+        "perm:shell:commands.service-control": {
+          "state": "on",
+          "text": "Service control\nsystemctl *\nservice *\nlaunchctl *\nopencode service *\nopencode2 service *\nopencodeplus service *\n*/opencodeplus service *"
+        },
+        "perm:shell:commands.databases": {
+          "state": "on",
+          "text": "Database shells\nsqlite3\nsqlite3 *\npsql *\nmysql *\nredis-cli *\nmongosh *"
+        },
+        "perm:shell:commands.github-cli": {
+          "state": "on",
+          "text": "GitHub CLI (gh)\ngh\ngh *"
+        },
+        "perm:shell:commands.secret-reads": {
+          "state": "on",
+          "text": "Printing secret files\ncat *.env*\ncat *.key*\ncat *.pem*\ncat *id_rsa*\ncat *id_ed25519*\ncat *auth.json*\ncat */.ssh/*\nhead *.env*\ntail *.env*\nless *.env*\nmore *.env*\nbat *.env*"
+        },
+        "perm:shell:commands.workspace-scripts": {
+          "state": "on",
+          "text": "Workspace team and service scripts\n./bin/team *\nbin/team *\n*/bin/team *\n./bin/opencodeplus*\nbin/opencodeplus*\n*/bin/opencodeplus*"
+        },
+        "perm:shell:directories.outside": {
+          "state": "on",
+          "text": "Outside this checkout\n/*\n~\n~/*\n..\n../*"
+        },
+        "perm:shell:parameters.background": {
+          "state": "on",
+          "text": "Background (background: true)"
+        },
+        "perm:shell:parameters.no-timeout": {
+          "state": "on",
+          "text": "Commands with no timeout (timeout: 0)"
+        },
+        "perm:shell:parameters.workdir": {
+          "state": "on",
+          "text": "Working directory (workdir)"
+        },
+        "perm:shell:environment.secrets": {
+          "state": "on",
+          "text": "Keys, tokens and passwords\n*_KEY\n*_API_KEY\n*_TOKEN\n*_SECRET\n*SECRET*\n*PASSWORD*\n*_CREDENTIALS\nAWS_*\nGITHUB_TOKEN\nGH_TOKEN\nNPM_TOKEN\nOPENCODE_SERVER_PASSWORD"
+        },
+        "perm:shell:limits.timeout": {
+          "state": "off",
+          "text": "600000"
+        },
+        "perm:shell:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:question:parameters.multiple": {
+          "state": "on",
+          "text": "Multiple choice (multiple: true)"
+        },
+        "perm:question:limits.questions": {
+          "state": "off",
+          "text": "4"
+        },
+        "perm:question:when.delegated": {
+          "state": "off",
+          "text": "In delegated team runs"
+        },
+        "perm:subagent:team-members.team-members": {
+          "state": "off",
+          "text": "Team members (without a team run)"
+        },
+        "perm:subagent:parameters.background": {
+          "state": "on",
+          "text": "Background (background: true)"
+        },
+        "perm:subagent:parameters.resume": {
+          "state": "on",
+          "text": "Resume a subagent (sessionID)"
+        },
+        "perm:subagent:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:search_tavily_search:queries.secrets": {
+          "state": "on",
+          "text": "Queries with keys or tokens\n*sk-*\n*sk_live_*\n*ghp_*\n*github_pat_*\n*xoxb-*\n*xoxp-*\n*AKIA*\n*-----BEGIN*\n*api_key=*\n*apikey=*\n*password=*\n*token=*"
+        },
+        "perm:search_tavily_search:queries.paths": {
+          "state": "on",
+          "text": "Queries with local paths\n*/home/*\n*/Users/*\n*/root/*"
+        },
+        "perm:search_tavily_search:depth.ultra-fast": {
+          "state": "on",
+          "text": "ultra-fast"
+        },
+        "perm:search_tavily_search:depth.fast": {
+          "state": "on",
+          "text": "fast"
+        },
+        "perm:search_tavily_search:depth.basic": {
+          "state": "on",
+          "text": "basic"
+        },
+        "perm:search_tavily_search:depth.advanced": {
+          "state": "on",
+          "text": "advanced (two credits)"
+        },
+        "perm:search_tavily_search:topics.general": {
+          "state": "on",
+          "text": "general"
+        },
+        "perm:search_tavily_search:topics.news": {
+          "state": "on",
+          "text": "news"
+        },
+        "perm:search_tavily_search:topics.finance": {
+          "state": "on",
+          "text": "finance"
+        },
+        "perm:search_tavily_search:limits.results": {
+          "state": "off",
+          "text": "10"
+        },
+        "perm:search_tavily_search:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:search_tavily_extract:sites.*": {
+          "state": "on",
+          "text": "Every other site\n*"
+        },
+        "perm:search_tavily_extract:sites.localhost": {
+          "state": "on",
+          "text": "Localhost (this machine)\nhttp://localhost*\nhttps://localhost*\nhttp://127.*\nhttps://127.*\nhttp://[::1]*\nhttps://[::1]*\nhttp://0.0.0.0*\nhttps://0.0.0.0*"
+        },
+        "perm:search_tavily_extract:sites.private": {
+          "state": "on",
+          "text": "Private networks\nhttp://10.*\nhttps://10.*\nhttp://192.168.*\nhttps://192.168.*\nhttp://172.16.*\nhttps://172.16.*\nhttp://172.17.*\nhttps://172.17.*\nhttp://172.18.*\nhttps://172.18.*\nhttp://172.19.*\nhttps://172.19.*\nhttp://172.20.*\nhttps://172.20.*\nhttp://172.21.*\nhttps://172.21.*\nhttp://172.22.*\nhttps://172.22.*\nhttp://172.23.*\nhttps://172.23.*\nhttp://172.24.*\nhttps://172.24.*\nhttp://172.25.*\nhttps://172.25.*\nhttp://172.26.*\nhttps://172.26.*\nhttp://172.27.*\nhttps://172.27.*\nhttp://172.28.*\nhttps://172.28.*\nhttp://172.29.*\nhttps://172.29.*\nhttp://172.30.*\nhttps://172.30.*\nhttp://172.31.*\nhttps://172.31.*"
+        },
+        "perm:search_tavily_extract:sites.metadata": {
+          "state": "on",
+          "text": "Cloud metadata endpoints\nhttp://169.254.*\nhttps://169.254.*\nhttp://metadata.google.internal*\nhttp://metadata*"
+        },
+        "perm:search_tavily_extract:sites.http": {
+          "state": "on",
+          "text": "Plain HTTP (unencrypted)\nhttp://*"
+        },
+        "perm:search_tavily_extract:sites.paste": {
+          "state": "on",
+          "text": "Paste and file-drop sites\n*://pastebin.com*\n*://*.pastebin.com*\n*://paste.ee*\n*://hastebin.com*\n*://transfer.sh*\n*://0x0.st*\n*://file.io*\n*://webhook.site*\n*://*.ngrok.io*\n*://*.ngrok-free.app*\n*://requestbin.*\n*://*.pipedream.net*"
+        },
+        "perm:search_tavily_extract:depth.basic": {
+          "state": "on",
+          "text": "basic"
+        },
+        "perm:search_tavily_extract:depth.advanced": {
+          "state": "on",
+          "text": "advanced"
+        },
+        "perm:search_tavily_extract:limits.urls": {
+          "state": "off",
+          "text": "5"
+        },
+        "perm:search_tavily_extract:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:search_exa_code_search:queries.secrets": {
+          "state": "on",
+          "text": "Queries with keys or tokens\n*sk-*\n*sk_live_*\n*ghp_*\n*github_pat_*\n*xoxb-*\n*xoxp-*\n*AKIA*\n*-----BEGIN*\n*api_key=*\n*apikey=*\n*password=*\n*token=*"
+        },
+        "perm:search_exa_code_search:queries.paths": {
+          "state": "on",
+          "text": "Queries with local paths\n*/home/*\n*/Users/*\n*/root/*"
+        },
+        "perm:search_exa_code_search:types.fast": {
+          "state": "on",
+          "text": "fast"
+        },
+        "perm:search_exa_code_search:types.auto": {
+          "state": "on",
+          "text": "auto"
+        },
+        "perm:search_exa_code_search:types.neural": {
+          "state": "on",
+          "text": "neural"
+        },
+        "perm:search_exa_code_search:types.keyword": {
+          "state": "on",
+          "text": "keyword"
+        },
+        "perm:search_exa_code_search:parameters.text": {
+          "state": "on",
+          "text": "Full page text (contents.text)"
+        },
+        "perm:search_exa_code_search:parameters.summary": {
+          "state": "on",
+          "text": "Summaries (contents.summary)"
+        },
+        "perm:search_exa_code_search:limits.results": {
+          "state": "off",
+          "text": "10"
+        },
+        "perm:search_exa_code_search:approval.every": {
+          "state": "off",
+          "text": "Ask me before each call"
+        },
+        "perm:shell:git": {
+          "state": "on",
+          "text": "Git\ngit\ngit *"
+        },
+        "perm:shell:git-push": {
+          "state": "on",
+          "text": "Git push\ngit push *"
+        },
+        "perm:shell:git-commit": {
+          "state": "on",
+          "text": "Git commit\ngit commit *"
+        },
+        "perm:shell:git-rewrite": {
+          "state": "on",
+          "text": "Git history rewrites\ngit reset *\ngit checkout *\ngit rebase *"
+        },
+        "perm:shell:rm": {
+          "state": "on",
+          "text": "Remove files\nrm\nrm *"
+        },
+        "perm:shell:rm-rf": {
+          "state": "on",
+          "text": "Recursive force remove\nrm -rf *"
+        },
+        "perm:shell:sudo": {
+          "state": "on",
+          "text": "Sudo\nsudo\nsudo *"
+        },
+        "perm:shell:chmod-chown": {
+          "state": "on",
+          "text": "Change permissions or ownership\nchmod *\nchown *"
+        },
+        "perm:shell:curl-wget": {
+          "state": "on",
+          "text": "Download with curl or wget\ncurl *\nwget *"
+        },
+        "perm:shell:ssh-scp": {
+          "state": "on",
+          "text": "SSH or SCP\nssh *\nscp *"
+        },
+        "perm:shell:docker": {
+          "state": "on",
+          "text": "Docker\ndocker\ndocker *"
+        },
+        "perm:shell:kubectl": {
+          "state": "on",
+          "text": "Kubectl\nkubectl\nkubectl *"
+        },
+        "perm:shell:js-install": {
+          "state": "on",
+          "text": "JavaScript package install\nnpm install *\npnpm install *\nyarn install *\nbun install *"
+        },
+        "perm:shell:npm-publish": {
+          "state": "on",
+          "text": "npm publish\nnpm publish *"
+        },
+        "perm:shell:pip-install": {
+          "state": "on",
+          "text": "pip install\npip install *"
+        },
+        "perm:shell:kill": {
+          "state": "on",
+          "text": "Kill processes\nkill *\npkill *"
+        },
+        "perm:shell:disk-destructive": {
+          "state": "on",
+          "text": "Disk destructive\ndd *\nmkfs *"
+        },
+        "perm:shell:env": {
+          "state": "on",
+          "text": "Environment inspection\nenv\nenv *\nprintenv\nprintenv *\nexport\nexport *"
+        },
+        "perm:shell:package-scripts": {
+          "state": "on",
+          "text": "Package scripts\nnpm run *\nnpm test *\npnpm run *\nyarn run *\nbun run *\nbun test *"
+        },
+        "perm:edit:env": {
+          "state": "on",
+          "text": ".env files\n*.env*"
+        },
+        "perm:edit:lock": {
+          "state": "on",
+          "text": "Lockfiles\n*.lock\n**/*.lock"
+        },
+        "perm:edit:package-json": {
+          "state": "on",
+          "text": "package.json\npackage.json\n*/package.json"
+        },
+        "perm:edit:git": {
+          "state": "on",
+          "text": "Git internals\n.git/*\n**/.git/**"
+        },
+        "perm:edit:ssh": {
+          "state": "on",
+          "text": "SSH keys\n*/.ssh/*\n*/.ssh\n.ssh/*\n.ssh"
+        },
+        "perm:write:env": {
+          "state": "on",
+          "text": ".env files\n*.env*"
+        },
+        "perm:write:lock": {
+          "state": "on",
+          "text": "Lockfiles\n*.lock\n**/*.lock"
+        },
+        "perm:write:package-json": {
+          "state": "on",
+          "text": "package.json\npackage.json\n*/package.json"
+        },
+        "perm:write:git": {
+          "state": "on",
+          "text": "Git internals\n.git/*\n**/.git/**"
+        },
+        "perm:write:ssh": {
+          "state": "on",
+          "text": "SSH keys\n*/.ssh/*\n*/.ssh\n.ssh/*\n.ssh"
+        },
+        "perm:read:env": {
+          "state": "off",
+          "text": ".env files\n*.env*"
+        },
+        "perm:read:lock": {
+          "state": "on",
+          "text": "Lockfiles\n*.lock\n**/*.lock"
+        },
+        "perm:read:package-json": {
+          "state": "on",
+          "text": "package.json\npackage.json\n*/package.json"
+        },
+        "perm:read:git": {
+          "state": "on",
+          "text": "Git internals\n.git/*\n**/.git/**"
+        },
+        "perm:read:ssh": {
+          "state": "on",
+          "text": "SSH keys\n*/.ssh/*\n*/.ssh\n.ssh/*\n.ssh"
+        },
+        "perm:glob:node-modules": {
+          "state": "on",
+          "text": "Search pattern matching node_modules\n*node_modules*"
+        },
+        "perm:glob:git": {
+          "state": "on",
+          "text": "Search pattern matching .git\n*.git*"
+        },
+        "perm:grep:node-modules": {
+          "state": "on",
+          "text": "Search pattern matching node_modules\n*node_modules*"
+        },
+        "perm:grep:git": {
+          "state": "on",
+          "text": "Search pattern matching .git\n*.git*"
+        },
+        "perm:team_delegate:to.deepseek-worker": {
+          "state": "off",
+          "text": "deepseek-worker"
+        },
+        "perm:team_delegate:to.peer-planner": {
+          "state": "off",
+          "text": "peer-planner"
+        },
+        "perm:team_delegate:to.peer-unlinked": {
+          "state": "off",
+          "text": "peer-unlinked"
+        },
+        "perm:team_delegate:to.other-teams": {
+          "state": "off",
+          "text": "Members of other teams"
+        }
+      }
+    }
+  }
+}

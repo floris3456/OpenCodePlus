@@ -66,10 +66,10 @@ function sharedStates(input: ReturnType<typeof presetInput>, member: string): Re
 }
 
 test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, row for row", () => {
-  const input = presetInput({ members: [linked("ocp-alice", "orchestrator"), linked("sol-orchestrator", "orchestrator")] })
+  const input = presetInput({ members: [linked("ocp-alice", "orchestrator"), linked("orchestrator", "orchestrator")] })
   const alice = sharedStates(input, "ocp-alice")
   expect(Object.keys(alice).length).toBeGreaterThan(200)
-  expect(alice).toEqual(sharedStates(input, "sol-orchestrator"))
+  expect(alice).toEqual(sharedStates(input, "orchestrator"))
   // And that is the old orchestrator role.
   const old: Record<string, "on" | "off"> = {
     "tool:shell": "on",
@@ -102,7 +102,7 @@ test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, ro
 })
 
 test("(c) ocp-alice with no preset has every team rule, tool and secret row off", () => {
-  const input = presetInput({ members: [{ id: "ocp-alice", team: shippedTeam }, linked("sol-orchestrator", "orchestrator")] })
+  const input = presetInput({ members: [{ id: "ocp-alice", team: shippedTeam }, linked("orchestrator", "orchestrator")] })
   const states = resolvedStates(input, "ocp-alice")
   const rules = Object.entries(states).filter(
     ([id]) => id.startsWith("tool:") || /^perm:(team_\w+|shell|read|grep|edit):/.test(id),
@@ -186,8 +186,8 @@ test("(c) ocp-alice with no preset: the team tools refuse her, and name the rule
   const members = [...shippedMembers(), alice]
   const api = apiFor(members)
   const own = run({ id: "main-0123456789abcdef", role: alice.id, sessionID: "ses_alice" })
-  const stranger = run({ id: "w-bbbbbbbbbbbbbbbb", kind: "w", role: "muse-implementer", parent: "main-ffffffffffffffff" })
-  const orchestrator = run({ id: "main-1111111111111111", role: "sol-orchestrator", children: ["w-cccccccccccccccc"], sessionID: "ses_sol" })
+  const stranger = run({ id: "w-bbbbbbbbbbbbbbbb", kind: "w", role: "implementer", parent: "main-ffffffffffffffff" })
+  const orchestrator = run({ id: "main-1111111111111111", role: "orchestrator", children: ["w-cccccccccccccccc"], sessionID: "ses_sol" })
   const child = run({
     id: "w-cccccccccccccccc",
     kind: "w",
@@ -199,7 +199,7 @@ test("(c) ocp-alice with no preset: the team tools refuse her, and name the rule
   for (const record of [own, stranger, orchestrator, child]) await saveRun(root, record)
 
   // Delegate to: every row off.
-  const delegate = rejected(await api.delegate(brief("muse-implementer"), callerFor(own)))
+  const delegate = rejected(await api.delegate(brief("implementer"), callerFor(own)))
   expect([delegate.code, delegate.message]).toEqual(["E_ROLE", "ocp-alice may not delegate. No member is open to you for delegation."])
   // Runs: another run is out of reach.
   expect(rejected(await api.status({ runs: [stranger.id] }, callerFor(own))).code).toBe("E_NOT_VISIBLE")
@@ -208,20 +208,20 @@ test("(c) ocp-alice with no preset: the team tools refuse her, and name the rule
   expect(followup.code).toBe("E_NO_FOLLOWUP")
   expect(followup.message).toStartWith("ocp-alice takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report")
   // The shipped orchestrator may not delegate to her either: her id is in no preset.
-  expect(rejected(await api.delegate(brief(alice.id), callerFor(orchestrator))).message).toContain(`sol-orchestrator may not delegate to "ocp-alice"`)
+  expect(rejected(await api.delegate(brief(alice.id), callerFor(orchestrator))).message).toContain(`orchestrator may not delegate to "ocp-alice"`)
 })
 
 test("(d) renaming a member changes nothing but its id", async () => {
-  const renamed = shippedMembers().map((member) => (member.id === "sol-orchestrator" ? { ...member, id: "anything-at-all" } : member))
-  const before = resolvedStates(presetInput(), "sol-orchestrator")
+  const renamed = shippedMembers().map((member) => (member.id === "orchestrator" ? { ...member, id: "anything-at-all" } : member))
+  const before = resolvedStates(presetInput(), "orchestrator")
   const after = resolvedStates(presetInput({ members: renamed }), "anything-at-all")
   expect(after).toEqual(before)
   // The handlers answer it the same way: past the role gates to the repository check.
   const caller = run({ id: "main-0123456789abcdef", role: "anything-at-all", sessionID: "ses_renamed" })
   await saveRun(root, caller)
-  const refusal = rejected(await apiFor(renamed).delegate(brief("muse-implementer"), callerFor(caller)))
+  const refusal = rejected(await apiFor(renamed).delegate(brief("implementer"), callerFor(caller)))
   expect(refusal.code).toBe("E_REPO")
-  const original = run({ id: "main-1111111111111111", role: "sol-orchestrator", sessionID: "ses_sol" })
+  const original = run({ id: "main-1111111111111111", role: "orchestrator", sessionID: "ses_sol" })
   await saveRun(root, original)
-  expect(rejected(await apiFor(shippedMembers()).delegate(brief("muse-implementer"), callerFor(original))).code).toBe("E_REPO")
+  expect(rejected(await apiFor(shippedMembers()).delegate(brief("implementer"), callerFor(original))).code).toBe("E_REPO")
 })

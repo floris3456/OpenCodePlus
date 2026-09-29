@@ -27,7 +27,7 @@ function records(): StoredRecord[] {
       type: "link",
       level: "project",
       agent: "opus-orchestrator",
-      preset: { kind: "agent", id: "orchestrator" },
+      preset: { kind: "member", team: "basic", id: "orchestrator" },
       updated: UPDATED,
     },
     {
@@ -35,10 +35,10 @@ function records(): StoredRecord[] {
       level: "global",
       agent: "scout",
       team: { level: "global", team: "crew" },
-      preset: { kind: "member", team: "opencodeplus-team", id: "scout" },
+      preset: { kind: "member", team: "basic", id: "scout" },
       updated: UPDATED,
     },
-    { type: "link", level: "global", agent: null, team: { level: "global", team: "crew" }, preset: { kind: "team", id: "starter" }, updated: UPDATED },
+    { type: "link", level: "global", agent: null, team: { level: "global", team: "crew" }, preset: { kind: "team", id: "duo" }, updated: UPDATED },
     { type: "link", level: "preset", agent: "mine", preset: { kind: "agent", id: "build" }, updated: UPDATED },
     { type: "link", level: "defaults", agent: "*orchestrator*", catalogue: "agents", preset: { kind: "agent", id: "mine" }, updated: UPDATED },
     { type: "entry", level: "defaults", catalogue: "agents", name: "*orchestrator*", updated: UPDATED },
@@ -96,6 +96,7 @@ test("links, Defaults entries, presets and the review fields round-trip", async 
   const loaded = await load(project)
   expect(loaded.migrated).toBe(false)
   expect(loaded.cataloguesMigrated).toBe(false)
+  expect(loaded.presetsMigrated).toBe(false)
   expect(canonical(loaded.records).map(stable)).toEqual(canonical(records()).map(stable))
 })
 
@@ -115,7 +116,7 @@ test("preset, entry and non-project link records live in the global file", async
 test("records serialize in canonical key order whatever order they were built in", async () => {
   const { project } = await isolated()
   const shuffled: StoredRecord[] = [
-    { updated: UPDATED, preset: { id: "orchestrator", kind: "agent" }, agent: "a", level: "project", type: "link" },
+    { updated: UPDATED, preset: { id: "planner", team: "basic", kind: "member" }, agent: "a", level: "project", type: "link" },
     { name: "x*", updated: UPDATED, catalogue: "teams", team: "t", level: "defaults", type: "entry" },
     { updated: UPDATED, fields: { description: "d", mode: "subagent" }, id: "p", kind: "agent", level: "preset", type: "preset" },
   ]
@@ -123,7 +124,7 @@ test("records serialize in canonical key order whatever order they were built in
   const projectText = await Bun.file(projectRecordsPath(project)).text()
   const globalText = await Bun.file(globalRecordsPath()).text()
   expect(projectText.split("\n")[1]).toBe(
-    `{"type":"link","level":"project","agent":"a","preset":{"kind":"agent","id":"orchestrator"},"updated":"${UPDATED}"}`,
+    `{"type":"link","level":"project","agent":"a","preset":{"kind":"member","team":"basic","id":"planner"},"updated":"${UPDATED}"}`,
   )
   expect(globalText.split("\n").slice(1, 3)).toEqual([
     `{"type":"entry","level":"defaults","catalogue":"teams","team":"t","name":"x*","updated":"${UPDATED}"}`,

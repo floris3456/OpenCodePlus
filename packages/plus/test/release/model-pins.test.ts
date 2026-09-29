@@ -45,7 +45,7 @@ async function removeRepo(dir: string): Promise<void> {
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
-    role: "opus-orchestrator",
+    role: "orchestrator",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -78,7 +78,7 @@ function callerFor(record: RunRecord): TeamCaller {
 function delegateInput(overrides?: Record<string, unknown>): Brief {
   return Schema.decodeUnknownSync(Brief)({
     requestID: "req-default-1",
-    role: "muse-implementer",
+    role: "implementer",
     objective: "Implement required model pin verification and configuration hashing.",
     deliverable: { kind: "commit" },
     scope: { paths: ["packages/plus/src/*"] },
@@ -128,7 +128,7 @@ function makeSessionDouble(opts?: {
 }
 
 // Each api runs on the shipped team's permission table (every member linked to
-// its member preset), so opus-orchestrator may delegate to muse-implementer
+// its member preset), so orchestrator may delegate to implementer
 // and the call reaches model pinning; without a table every team row is off.
 describe("model and attempt pinning", () => {
   test("persists requested and loaded identities as distinct fields", async () => {
@@ -149,7 +149,7 @@ describe("model and attempt pinning", () => {
 
         const sessions = makeSessionDouble({ resolvedModel: resolved })
         const state = teamState()
-        state.activeModels.set("muse-implementer", requested)
+        state.activeModels.set("implementer", requested)
 
         const api = createTeamApi(context({ session: sessions.domain }), state)
         const result = await api.delegate(delegateInput({ requestID: "req-pins-distinct" }), callerFor(parent))
@@ -197,7 +197,7 @@ describe("model and attempt pinning", () => {
 
         const sessions = makeSessionDouble({ switchFail: true, switchError: "Provider quota exceeded" })
         const state = teamState()
-        state.activeModels.set("muse-implementer", {
+        state.activeModels.set("implementer", {
           providerID: "anthropic",
           modelID: "claude-3-5-sonnet",
           variant: "default",
@@ -235,7 +235,7 @@ describe("model and attempt pinning", () => {
 
         const sessions = makeSessionDouble({ resolvedModel: degraded })
         const state = teamState()
-        state.activeModels.set("muse-implementer", requested)
+        state.activeModels.set("implementer", requested)
 
         const api = createTeamApi(context({ session: sessions.domain }), state)
         const result = await api.delegate(delegateInput({ requestID: "req-silent-degrade" }), callerFor(parent))
@@ -269,7 +269,7 @@ describe("model and attempt pinning", () => {
 
         const sessions = makeSessionDouble({ resolvedModel: resolved })
         const state = teamState()
-        state.activeModels.set("muse-implementer", requested)
+        state.activeModels.set("implementer", requested)
 
         const api = createTeamApi(context({ session: sessions.domain }), state)
         const result = await api.delegate(delegateInput({ requestID: "req-success-hashes" }), callerFor(parent))

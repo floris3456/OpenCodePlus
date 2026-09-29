@@ -84,7 +84,6 @@ const agentPreset = (id: string): PresetRef => ({ kind: "agent", id })
 function catalog(
   shipped: Record<string, Record<string, ShippedValue>> = {},
   models: Record<string, ModelRefLike> = {},
-  links: readonly LinkRecord[] = [],
 ): PresetCatalog {
   return {
     presets: [
@@ -94,7 +93,6 @@ function catalog(
       { ref: { kind: "member", team: "crew", id: "scout" }, origin: "plus" },
       { ref: agentPreset("mine"), origin: "user" },
     ],
-    links,
     shipped: (preset, id, section) => (section === null ? shipped[presetKey(preset)]?.[id] : undefined),
     model: (preset) => models[presetKey(preset)],
   }
@@ -382,10 +380,8 @@ test("a member preset never falls through to the stand-alone agent preset of the
   expect(resolved.text).toBe("run commands")
   expect(resolved.enabled).toBe(false)
   expect(resolved.from).toEqual({ kind: "off" })
-  // Only an explicit link (here: shipped with the Plus team) reaches it.
-  const linked = context({
-    presets: catalog({}, {}, [link({ level: "preset", agent: "scout", team: crew }, agentPreset("scout"))]),
-  })
+  // Only an explicit stored link (a preset created from another one) reaches it.
+  const linked = context({ links: [link({ level: "preset", agent: "scout", team: crew }, agentPreset("scout"))] })
   expect(names(resolutionChain(member, linked))).toEqual([
     "preset/scout@crew",
     "shipped:preset/scout@crew",

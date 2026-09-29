@@ -54,7 +54,6 @@ function context(models: Record<string, ModelRefLike> = {}): ChainContext {
     entries: [{ type: "entry", level: "defaults", catalogue: "agents", name: "ali*", updated: UPDATED }],
     presets: {
       presets: [{ ref: { kind: "agent", id: "mine" }, origin: "plus" }],
-      links: [],
       shipped: () => undefined,
       model: (preset) => models[presetKey(preset)],
     },

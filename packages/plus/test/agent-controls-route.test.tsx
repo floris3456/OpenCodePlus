@@ -179,7 +179,7 @@ for (const level of ["project", "global", "defaults"]) {
 
 for (const [id, agent, label] of [
   ["agent:preset:build", "build", "Build"],
-  ["team:preset:starter:planner", "planner", "planner"],
+  ["team:preset:basic:planner", "planner", "planner"],
   ["agent:defaults:worker", "worker", "worker"],
 ]) {
   test(`a matching host agent does not make preset or entry ${id} selectable`, async () => {
@@ -312,7 +312,7 @@ test("r on an agent resets its scoped Settings and Compaction together, retainin
 })
 
 test("r on a member-preset entity resets all nine scoped controls while retaining other preset records", async () => {
-  const id = "team:preset:starter:planner"
+  const id = "team:preset:basic:planner"
   const retained = [
     controlRecord("setting:description", { level: "preset", agent: "planner", text: "Agent preset" }),
     controlRecord("setting:description", { level: "preset", agent: "planner", team: { level: "preset", team: "other" }, text: "Other member preset" }),
@@ -322,7 +322,7 @@ test("r on a member-preset entity resets all nine scoped controls while retainin
       controlSnapshot([
         ...retained,
         ...controlItems().map((item) => controlRecord(item.id, {
-          level: "preset", agent: "planner", team: { level: "preset", team: "starter" },
+          level: "preset", agent: "planner", team: { level: "preset", team: "basic" },
           ...(item.id === "setting:enabled" || item.id === "setting:hidden" ? { state: "off" } : { text: item.text }),
         })),
       ]),

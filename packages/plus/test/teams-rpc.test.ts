@@ -529,12 +529,13 @@ test("team.create from a team preset writes linked member files", async () => {
   const { project } = await tempRoot()
   const handlers = createHandlers(fullContext({ directory: project }), createState(), { builtins: [] })
   const created = await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "mine", preset: "review" }, throwingContext({})),
+    handlers["team.create"]({ level: "project", team: "mine", preset: "basic" }, throwingContext({})),
   )
   expect(created).toEqual({ level: "project", team: "mine", enabled: false })
   expectRpcBody(created)
   const teamDir = path.join(projectTeamsPath(project), "mine")
-  for (const id of ["editor", "reviewer"]) {
+  const memberIds = ["build-seat", "implementer", "orchestrator", "planner", "reviewer", "scout"]
+  for (const id of memberIds) {
     const text = await fs.readFile(path.join(teamDir, `${id}.md`), "utf8")
     expect(agentBody(text)).toBe("")
     expect(parseTeamFields(text).mode).toBe("primary")
@@ -542,22 +543,22 @@ test("team.create from a team preset writes linked member files", async () => {
   }
   const links = (await load(project)).records.filter((record) => record.type === "link")
   const owner = { level: "project", team: "mine" }
-  expect(links).toHaveLength(3)
-  expect(links).toContainEqual(expect.objectContaining({ level: "project", agent: null, team: owner, preset: { kind: "team", id: "review" } }))
+  expect(links).toHaveLength(7)
+  expect(links).toContainEqual(expect.objectContaining({ level: "project", agent: null, team: owner, preset: { kind: "team", id: "basic" } }))
   expect(links).toContainEqual(
-    expect.objectContaining({ level: "project", agent: "editor", team: owner, preset: { kind: "member", team: "review", id: "editor" } }),
+    expect.objectContaining({ level: "project", agent: "implementer", team: owner, preset: { kind: "member", team: "basic", id: "implementer" } }),
   )
   expect(links).toContainEqual(
-    expect.objectContaining({ level: "project", agent: "reviewer", team: owner, preset: { kind: "member", team: "review", id: "reviewer" } }),
+    expect.objectContaining({ level: "project", agent: "reviewer", team: owner, preset: { kind: "member", team: "basic", id: "reviewer" } }),
   )
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   expect(snapshot.teams?.find((team) => team.team === "mine")).toEqual({
     level: "project",
     team: "mine",
     enabled: false,
-    agents: ["editor", "reviewer"],
+    agents: memberIds,
   })
-  expect(snapshot.links).toHaveLength(3)
+  expect(snapshot.links).toHaveLength(7)
   const unknown: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["team.create"]({ level: "project", team: "other", preset: "ghost" }, throwingContext(unknown)),
@@ -579,7 +580,7 @@ test("team.addAgent on a project team writes the member file and the next snapsh
   // with an empty body; its role text follows the member preset live.
   const added = await Effect.runPromise(
     handlers["team.addAgent"](
-      { level: "project", team: "crew", id: "newbie", preset: { kind: "member", team: "review", id: "editor" } },
+      { level: "project", team: "crew", id: "newbie", preset: { kind: "member", team: "basic", id: "implementer" } },
       throwingContext({}),
     ),
   )
@@ -598,8 +599,8 @@ test("team.addAgent on a project team writes the member file and the next snapsh
     agents: ["newbie"],
   })
   const listed = await Effect.runPromise(ctx.agent.list())
-  const editor = plusTeamPresets.find((team) => team.id === "review")?.members.find((member) => member.id === "editor")
-  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe(editor?.role)
+  const implementer = plusTeamPresets.find((team) => team.id === "basic")?.members.find((member) => member.id === "implementer")
+  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe(implementer?.role)
 })
 
 // DESIGN §2/§4: the Defaults teams overlay directory is no longer read, so a
@@ -1578,9 +1579,8 @@ test("team.delete refuses a tool actor when the team contains a protected member
   expect(await Bun.file(path.join(teamDir, "alpha.md")).exists()).toBe(false)
 })
 
-// The template is a team preset now (DESIGN §5): the Plus `review` preset's
-// members are reviewer and editor, and a tool actor may not create a
-// protected one.
+// The template is a team preset now (DESIGN §5): the Plus `basic` preset's
+// members are the six roles, and a tool actor may not create a protected one.
 test("team.create with a template refuses a tool actor cloning a protected member and seeds for the TUI", async () => {
   const { project } = await tempRoot()
   await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
@@ -1593,18 +1593,18 @@ test("team.create with a template refuses a tool actor cloning a protected membe
 
   const refused: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["team.create"]({ level: "project", team: "mine", preset: "review", actor: { type: "tool" } }, throwingContext(refused)),
+    handlers["team.create"]({ level: "project", team: "mine", preset: "basic", actor: { type: "tool" } }, throwingContext(refused)),
     refused,
     "agent.protected",
   )
   expect(refused.current?.message).toContain('protected agent "reviewer"')
   expect(await Bun.file(path.join(teamDir, "reviewer.md")).exists()).toBe(false)
-  expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(false)
+  expect(await Bun.file(path.join(teamDir, "planner.md")).exists()).toBe(false)
 
   const created = await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "mine", preset: "review" }, throwingContext({})),
+    handlers["team.create"]({ level: "project", team: "mine", preset: "basic" }, throwingContext({})),
   )
   expect(created).toEqual({ level: "project", team: "mine", enabled: false })
   expect(await Bun.file(path.join(teamDir, "reviewer.md")).exists()).toBe(true)
-  expect(await Bun.file(path.join(teamDir, "editor.md")).exists()).toBe(true)
+  expect(await Bun.file(path.join(teamDir, "planner.md")).exists()).toBe(true)
 })

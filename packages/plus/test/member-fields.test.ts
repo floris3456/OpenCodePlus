@@ -71,7 +71,7 @@ test("schema: TeamAddAgentInput takes an optional preset and nothing of the old 
   expect(decodedWithout).toEqual(withoutPreset)
   expect("preset" in decodedWithout).toBe(false)
 
-  const withPreset = { level: "global", team: "ops", id: "bob", preset: { kind: "member", team: "review", id: "editor" } } as const
+  const withPreset = { level: "global", team: "ops", id: "bob", preset: { kind: "member", team: "basic", id: "implementer" } } as const
   expect(Schema.decodeUnknownSync(Plus.TeamAddAgentInput)(withPreset)).toEqual(withPreset)
 
   const base = { level: "project", team: "crew", id: "alice" }
@@ -92,7 +92,7 @@ test("team.addAgent at project tier writes the preset's mode and description, an
 
   const added = await Effect.runPromise(
     handlers["team.addAgent"](
-      { level: "project", team: "devs", id: "coder", preset: { kind: "member", team: "review", id: "editor" } },
+      { level: "project", team: "devs", id: "coder", preset: { kind: "member", team: "basic", id: "implementer" } },
       throwingContext(),
     ),
   )
@@ -111,7 +111,7 @@ test("team.addAgent at project tier writes the preset's mode and description, an
       level: "project",
       agent: "coder",
       team: { level: "project", team: "devs" },
-      preset: { kind: "member", team: "review", id: "editor" },
+      preset: { kind: "member", team: "basic", id: "implementer" },
     }),
   ])
 
@@ -174,7 +174,7 @@ test("team.addAgent at defaults creates a Teams member entry and writes no overl
 
   const added = await Effect.runPromise(
     handlers["team.addAgent"](
-      { level: "defaults", team: "ship", id: "nav*", preset: { kind: "agent", id: "scout" } },
+      { level: "defaults", team: "ship", id: "nav*", preset: { kind: "member", team: "basic", id: "scout" } },
       throwingContext(),
     ),
   )
@@ -190,7 +190,7 @@ test("team.addAgent at defaults creates a Teams member entry and writes no overl
       level: "defaults",
       agent: "nav*",
       team: { level: "defaults", team: "ship" },
-      preset: { kind: "agent", id: "scout" },
+      preset: { kind: "member", team: "basic", id: "scout" },
     }),
   ])
   const duplicate: { current?: CapturedError } = {}

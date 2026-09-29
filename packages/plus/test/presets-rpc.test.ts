@@ -9,7 +9,7 @@ import path from "node:path"
 import { apply } from "../src/instructions/apply.js"
 import { fingerprint, presetKey, type Item, type LinkRecord } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
-import { chainContext, plusAgentPresets } from "../src/instructions/presets.js"
+import { chainContext, plusTeamPresets } from "../src/instructions/presets.js"
 import { badgeLabels } from "../src/instructions/from-label.js"
 import { toggle } from "../src/instructions/ops.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
@@ -85,29 +85,29 @@ function linksOf(records: Awaited<ReturnType<typeof stored>>): LinkRecord[] {
   return records.filter((record): record is LinkRecord => record.type === "link")
 }
 
-const orchestrator = plusAgentPresets.find((preset) => preset.id === "orchestrator")
+const orchestrator = plusTeamPresets.find((team) => team.id === "basic")?.members.find((member) => member.id === "orchestrator")
 
 test("agent.create from a preset copies mode and description, keeps the body empty and links; a team preset is refused", async () => {
   const { project, handlers } = await setup()
   const created = await Effect.runPromise(
-    handlers["agent.create"]({ scope: "project", id: "alice", preset: { kind: "agent", id: "orchestrator" } }, throwingContext()),
+    handlers["agent.create"]({ scope: "project", id: "alice", preset: { kind: "member", team: "basic", id: "orchestrator" } }, throwingContext()),
   )
   const text = await Bun.file(created.path).text()
   expect(text).toContain(`description: "${orchestrator?.description}"`)
   expect(text).toContain("mode: primary")
   expect(text.endsWith("---\n")).toBe(true)
   expect(linksOf(await stored(project))).toEqual([
-    expect.objectContaining({ level: "project", agent: "alice", preset: { kind: "agent", id: "orchestrator" } }),
+    expect.objectContaining({ level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "orchestrator" } }),
   ])
-  // A member preset works the same way.
+  // A second member preset works the same way.
   await Effect.runPromise(
-    handlers["agent.create"]({ scope: "global", id: "carol", preset: { kind: "member", team: "review", id: "editor" } }, throwingContext()),
+    handlers["agent.create"]({ scope: "global", id: "carol", preset: { kind: "member", team: "basic", id: "implementer" } }, throwingContext()),
   )
   expect(linksOf(await stored(project))).toContainEqual(
-    expect.objectContaining({ level: "global", agent: "carol", preset: { kind: "member", team: "review", id: "editor" } }),
+    expect.objectContaining({ level: "global", agent: "carol", preset: { kind: "member", team: "basic", id: "implementer" } }),
   )
   const team = await declared((context) =>
-    handlers["agent.create"]({ scope: "project", id: "dave", preset: { kind: "team", id: "starter" } }, context),
+    handlers["agent.create"]({ scope: "project", id: "dave", preset: { kind: "team", id: "basic" } }, context),
   )
   expect(team.type).toBe("preset.invalid")
   expect(await Bun.file(path.join(project, ".opencode", "agent", "dave.md")).exists()).toBe(false)
@@ -134,17 +134,19 @@ test("agent.create with no preset writes a file the host registers, mixed-case i
 
 test("team.create from a team preset creates its members linked to the member presets and links the team", async () => {
   const { project, handlers } = await setup()
-  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "starter" }, throwingContext()))
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "basic" }, throwingContext()))
   const dir = path.join(projectTeamsPath(project), "crew")
-  expect((await fs.readdir(dir)).toSorted()).toEqual(["helper.md", "planner.md"])
+  expect((await fs.readdir(dir)).toSorted()).toEqual(
+    ["build-seat.md", "implementer.md", "orchestrator.md", "planner.md", "reviewer.md", "scout.md"],
+  )
   expect(await Bun.file(path.join(dir, "planner.md")).text()).toContain("mode: primary")
   const links = linksOf(await stored(project))
-  expect(links).toContainEqual(expect.objectContaining({ agent: null, team: { level: "project", team: "crew" }, preset: { kind: "team", id: "starter" } }))
+  expect(links).toContainEqual(expect.objectContaining({ agent: null, team: { level: "project", team: "crew" }, preset: { kind: "team", id: "basic" } }))
   expect(links).toContainEqual(
-    expect.objectContaining({ agent: "planner", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "starter", id: "planner" } }),
+    expect.objectContaining({ agent: "planner", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "planner" } }),
   )
   expect(links).toContainEqual(
-    expect.objectContaining({ agent: "helper", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "starter", id: "helper" } }),
+    expect.objectContaining({ agent: "build-seat", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "build-seat" } }),
   )
 })
 
@@ -152,13 +154,13 @@ test("team.addAgent links a member to its preset; at defaults it creates a membe
   const { project, handlers } = await setup()
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext()))
   await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "project", team: "crew", id: "ocp-alice", preset: { kind: "agent", id: "implementer" } }, throwingContext()),
+    handlers["team.addAgent"]({ level: "project", team: "crew", id: "ocp-alice", preset: { kind: "member", team: "basic", id: "implementer" } }, throwingContext()),
   )
   expect(linksOf(await stored(project))).toContainEqual(
-    expect.objectContaining({ level: "project", agent: "ocp-alice", team: { level: "project", team: "crew" }, preset: { kind: "agent", id: "implementer" } }),
+    expect.objectContaining({ level: "project", agent: "ocp-alice", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "implementer" } }),
   )
   const entry = await Effect.runPromise(
-    handlers["team.addAgent"]({ level: "defaults", team: "crew*", id: "*impl*", preset: { kind: "agent", id: "implementer" } }, throwingContext()),
+    handlers["team.addAgent"]({ level: "defaults", team: "crew*", id: "*impl*", preset: { kind: "member", team: "basic", id: "implementer" } }, throwingContext()),
   )
   expect(entry).toEqual({ id: "*impl*", path: "team:defaults:crew*:*impl*" })
   const records = await stored(project)
@@ -170,11 +172,11 @@ test("team.addAgent links a member to its preset; at defaults it creates a membe
 test("entry.create, entry.delete and entry.rename: duplicates, bad names, a native agent's own row, records follow", async () => {
   const { project, handlers } = await setup()
   const created = await Effect.runPromise(
-    handlers["entry.create"]({ catalogue: "agents", name: "*orchestrator*", preset: { kind: "agent", id: "orchestrator" } }, throwingContext()),
+    handlers["entry.create"]({ catalogue: "agents", name: "*orchestrator*", preset: { kind: "member", team: "basic", id: "orchestrator" } }, throwingContext()),
   )
   expect(created).toEqual({ id: "agent:defaults:*orchestrator*", catalogue: "agents", name: "*orchestrator*" })
   expect(linksOf(await stored(project))).toEqual([
-    expect.objectContaining({ level: "defaults", agent: "*orchestrator*", preset: { kind: "agent", id: "orchestrator" } }),
+    expect.objectContaining({ level: "defaults", agent: "*orchestrator*", preset: { kind: "member", team: "basic", id: "orchestrator" } }),
   ])
   expect((await declared((context) => handlers["entry.create"]({ catalogue: "agents", name: " *orchestrator* " }, context))).type).toBe("entry.exists")
   expect((await declared((context) => handlers["entry.create"]({ catalogue: "agents", name: "build" }, context))).type).toBe("entry.exists")
@@ -215,34 +217,36 @@ test("entry.create, entry.delete and entry.rename: duplicates, bad names, a nati
 test("preset.create, preset.addMember and preset.delete: copies, collisions, read-only shipped presets, in-use refusal", async () => {
   const { project, handlers } = await setup()
   const mine = await Effect.runPromise(
-    handlers["preset.create"]({ kind: "agent", id: "mine", from: { kind: "agent", id: "orchestrator" } }, throwingContext()),
+    handlers["preset.create"]({ kind: "agent", id: "mine", from: { kind: "member", team: "basic", id: "orchestrator" } }, throwingContext()),
   )
   expect(mine).toEqual({ id: "agent:preset:mine", ref: { kind: "agent", id: "mine" } })
   const records = await stored(project)
   expect(records.filter((record) => record.type === "preset")).toEqual([
     expect.objectContaining({ kind: "agent", id: "mine", fields: { mode: "primary", description: orchestrator?.description } }),
   ])
-  expect(linksOf(records)).toEqual([expect.objectContaining({ level: "preset", agent: "mine", preset: { kind: "agent", id: "orchestrator" } })])
-  expect((await declared((context) => handlers["preset.create"]({ kind: "agent", id: "orchestrator" }, context))).type).toBe("preset.exists")
+  expect(linksOf(records)).toEqual([
+    expect.objectContaining({ level: "preset", agent: "mine", preset: { kind: "member", team: "basic", id: "orchestrator" } }),
+  ])
   expect((await declared((context) => handlers["preset.create"]({ kind: "agent", id: "build" }, context))).type).toBe("preset.exists")
-  expect((await declared((context) => handlers["preset.create"]({ kind: "agent", id: "x", from: { kind: "team", id: "starter" } }, context))).type).toBe(
+  expect((await declared((context) => handlers["preset.create"]({ kind: "team", id: "basic" }, context))).type).toBe("preset.exists")
+  expect((await declared((context) => handlers["preset.create"]({ kind: "agent", id: "x", from: { kind: "team", id: "basic" } }, context))).type).toBe(
     "preset.invalid",
   )
 
   // A team preset from a team preset copies the member list, each linked to its source.
-  const crew = await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "crew", from: "starter" }, throwingContext()))
+  const crew = await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "crew", from: "basic" }, throwingContext()))
   expect(crew).toEqual({ id: "team:preset:crew", ref: { kind: "team", id: "crew" } })
   const teamLinks = linksOf(await stored(project))
-  expect(teamLinks).toContainEqual(expect.objectContaining({ agent: null, team: { level: "preset", team: "crew" }, preset: { kind: "team", id: "starter" } }))
+  expect(teamLinks).toContainEqual(expect.objectContaining({ agent: null, team: { level: "preset", team: "crew" }, preset: { kind: "team", id: "basic" } }))
   expect(teamLinks).toContainEqual(
-    expect.objectContaining({ agent: "planner", team: { level: "preset", team: "crew" }, preset: { kind: "member", team: "starter", id: "planner" } }),
+    expect.objectContaining({ agent: "planner", team: { level: "preset", team: "crew" }, preset: { kind: "member", team: "basic", id: "planner" } }),
   )
   const lead = await Effect.runPromise(
     handlers["preset.addMember"]({ team: "crew", id: "lead", from: { kind: "agent", id: "mine" } }, throwingContext()),
   )
   expect(lead).toEqual({ id: "team:preset:crew:lead", ref: { kind: "member", team: "crew", id: "lead" } })
   expect((await declared((context) => handlers["preset.addMember"]({ team: "crew", id: "lead" }, context))).type).toBe("preset.exists")
-  expect((await declared((context) => handlers["preset.addMember"]({ team: "starter", id: "x" }, context))).type).toBe("preset.readonly")
+  expect((await declared((context) => handlers["preset.addMember"]({ team: "basic", id: "x" }, context))).type).toBe("preset.readonly")
   expect((await declared((context) => handlers["preset.addMember"]({ team: "ghost", id: "x" }, context))).type).toBe("preset.invalid")
 
   // In use: an agent and a member preset link to `mine`; the refusal names both.
@@ -250,8 +254,8 @@ test("preset.create, preset.addMember and preset.delete: copies, collisions, rea
   const inUse = await declared((context) => handlers["preset.delete"]({ ref: { kind: "agent", id: "mine" } }, context))
   expect(inUse.type).toBe("preset.inUse")
   expect((inUse.data as { users: string[] }).users.toSorted()).toEqual(["agent:project:alice", "team:preset:crew:lead"])
-  expect((await declared((context) => handlers["preset.delete"]({ ref: { kind: "agent", id: "orchestrator" } }, context))).type).toBe("preset.readonly")
-  expect((await declared((context) => handlers["preset.delete"]({ ref: { kind: "team", id: "starter" } }, context))).type).toBe("preset.readonly")
+  expect((await declared((context) => handlers["preset.delete"]({ ref: { kind: "agent", id: "build" } }, context))).type).toBe("preset.readonly")
+  expect((await declared((context) => handlers["preset.delete"]({ ref: { kind: "team", id: "basic" } }, context))).type).toBe("preset.readonly")
 
   // Deleting the team preset takes its members and their links; then `mine` is free.
   await Effect.runPromise(handlers["preset.delete"]({ ref: { kind: "team", id: "crew" } }, throwingContext()))
@@ -347,31 +351,33 @@ test("link.set relinks, unlinks, refuses cycles, wrong kinds, read-only presets 
   expect(linksOf(await stored(project))).toEqual([])
 
   const linked = await Effect.runPromise(
-    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "member", team: "review", id: "editor" } }, throwingContext()),
+    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "implementer" } }, throwingContext()),
   )
-  expect(linked).toEqual({ level: "project", agent: "alice", preset: { kind: "member", team: "review", id: "editor" } })
+  expect(linked).toEqual({ level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "implementer" } })
   await Effect.runPromise(
-    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "agent", id: "planner" } }, throwingContext()),
+    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "planner" } }, throwingContext()),
   )
-  expect(linksOf(await stored(project))).toEqual([expect.objectContaining({ agent: "alice", preset: { kind: "agent", id: "planner" } })])
+  expect(linksOf(await stored(project))).toEqual([
+    expect.objectContaining({ agent: "alice", preset: { kind: "member", team: "basic", id: "planner" } }),
+  ])
   // A member's link is team-scoped; a team links to a team preset.
   await Effect.runPromise(
-    handlers["link.set"]({ level: "project", agent: "bob", team: { level: "project", team: "crew" }, preset: { kind: "agent", id: "scout" } }, throwingContext()),
+    handlers["link.set"]({ level: "project", agent: "bob", team: { level: "project", team: "crew" }, preset: { kind: "member", team: "basic", id: "scout" } }, throwingContext()),
   )
   await Effect.runPromise(
-    handlers["link.set"]({ level: "project", agent: null, team: { level: "project", team: "crew" }, preset: { kind: "team", id: "review" } }, throwingContext()),
+    handlers["link.set"]({ level: "project", agent: null, team: { level: "project", team: "crew" }, preset: { kind: "team", id: "basic" } }, throwingContext()),
   )
   expect(
     (await declared((context) =>
-      handlers["link.set"]({ level: "project", agent: null, team: { level: "project", team: "crew" }, preset: { kind: "agent", id: "scout" } }, context),
+      handlers["link.set"]({ level: "project", agent: null, team: { level: "project", team: "crew" }, preset: { kind: "agent", id: "build" } }, context),
     )).type,
   ).toBe("preset.invalid")
   expect(
-    (await declared((context) => handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "team", id: "review" } }, context))).type,
+    (await declared((context) => handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "team", id: "basic" } }, context))).type,
   ).toBe("preset.invalid")
   expect((await declared((context) => handlers["link.set"]({ level: "project", agent: "ghost", preset: null }, context))).type).toBe("link.invalid")
   expect(
-    (await declared((context) => handlers["link.set"]({ level: "preset", agent: "orchestrator", preset: { kind: "agent", id: "planner" } }, context))).type,
+    (await declared((context) => handlers["link.set"]({ level: "preset", agent: "build", preset: { kind: "member", team: "basic", id: "planner" } }, context))).type,
   ).toBe("preset.readonly")
 
   // User presets: a → b is fine, b → a comes back to b: a cycle; a → a too.
@@ -396,9 +402,9 @@ test("link.set relinks, unlinks, refuses cycles, wrong kinds, read-only presets 
 test("relinking a team relinks the members TP has; unlinking a team leaves its members linked", async () => {
   const { project, handlers } = await setup()
   const crew = { level: "project" as const, team: "crew" }
-  await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "mine", from: "starter" }, throwingContext()))
-  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "starter" }, throwingContext()))
-  await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "crew", id: "bob", preset: { kind: "agent", id: "scout" } }, throwingContext()))
+  await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "mine", from: "basic" }, throwingContext()))
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "basic" }, throwingContext()))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "crew", id: "bob", preset: { kind: "member", team: "basic", id: "scout" } }, throwingContext()))
   await Effect.runPromise(handlers["team.addAgent"]({ level: "project", team: "crew", id: "extra" }, throwingContext()))
   const memberLinks = async () =>
     Object.fromEntries(
@@ -416,21 +422,37 @@ test("relinking a team relinks the members TP has; unlinking a team leaves its m
     team: crew,
     preset: { kind: "team", id: "mine" },
     members: [
-      { agent: "helper", preset: { kind: "member", team: "mine", id: "helper" } },
+      { agent: "build-seat", preset: { kind: "member", team: "mine", id: "build-seat" } },
+      { agent: "implementer", preset: { kind: "member", team: "mine", id: "implementer" } },
+      { agent: "orchestrator", preset: { kind: "member", team: "mine", id: "orchestrator" } },
       { agent: "planner", preset: { kind: "member", team: "mine", id: "planner" } },
+      { agent: "reviewer", preset: { kind: "member", team: "mine", id: "reviewer" } },
+      { agent: "scout", preset: { kind: "member", team: "mine", id: "scout" } },
     ],
   })
   expect(await memberLinks()).toEqual({
     "(team)": "team:mine",
     planner: "member:mine/planner",
-    helper: "member:mine/helper",
-    bob: "agent:scout",
+    orchestrator: "member:mine/orchestrator",
+    implementer: "member:mine/implementer",
+    reviewer: "member:mine/reviewer",
+    scout: "member:mine/scout",
+    "build-seat": "member:mine/build-seat",
+    bob: "member:basic/scout",
   })
 
   // Unlinking the team keeps every member's link.
   const unlinked = await Effect.runPromise(handlers["link.set"]({ level: "project", agent: null, team: crew, preset: null }, throwingContext()))
   expect(unlinked).toEqual({ level: "project", agent: null, team: crew, preset: null, members: [] })
-  expect(await memberLinks()).toEqual({ planner: "member:mine/planner", helper: "member:mine/helper", bob: "agent:scout" })
+  expect(await memberLinks()).toEqual({
+    planner: "member:mine/planner",
+    orchestrator: "member:mine/orchestrator",
+    implementer: "member:mine/implementer",
+    reviewer: "member:mine/reviewer",
+    scout: "member:mine/scout",
+    "build-seat": "member:mine/build-seat",
+    bob: "member:basic/scout",
+  })
 
   // A user team preset relinks its member presets the same way, and a member
   // link that would come back to itself refuses the whole relink.
@@ -444,7 +466,7 @@ test("relinking a team relinks the members TP has; unlinking a team leaves its m
   expect(cycle.type).toBe("link.cycle")
   expect(linksOf(await stored(project)).find((link) => link.level === "preset" && link.agent === null && link.team?.team === "mine")?.preset).toEqual({
     kind: "team",
-    id: "starter",
+    id: "basic",
   })
 })
 
@@ -472,7 +494,9 @@ test("relinking a team preset refuses a cycle its member relinks close between t
 // a team, or at another level, are not the agent's and stay.
 test("agent.rename moves the agent's link and its own records to the new id", async () => {
   const { project, handlers } = await setup()
-  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alice", preset: { kind: "agent", id: "orchestrator" } }, throwingContext()))
+  await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alice", preset: { kind: "member", team: "basic", id: "orchestrator" } }, throwingContext()),
+  )
   const loaded = await load(project)
   const own = { level: "project" as const, agent: "alice" }
   const crew = { level: "project" as const, team: "crew" }
@@ -485,7 +509,7 @@ test("agent.rename moves the agent's link and its own records to the new id", as
     { type: "customization", ...own, team: crew, item: "tool:shell", section: null, state: "on", basedOn: "", updated: UPDATED },
     { type: "customization", level: "global", agent: "alice", item: "tool:shell", section: null, state: "on", basedOn: "", updated: UPDATED },
     // A link a deleted agent of the new id left behind gives way.
-    { type: "link", level: "project", agent: "Alice-2", preset: { kind: "agent", id: "scout" }, updated: UPDATED },
+    { type: "link", level: "project", agent: "Alice-2", preset: { kind: "member", team: "basic", id: "scout" }, updated: UPDATED },
   ]
   const saved = await save(project, {
     expectedProjectRevision: loaded.projectRevision,
@@ -511,7 +535,9 @@ test("agent.rename moves the agent's link and its own records to the new id", as
       "split project/Alice-2",
     ].toSorted(),
   )
-  expect(linksOf(records)).toEqual([expect.objectContaining({ agent: "Alice-2", preset: { kind: "agent", id: "orchestrator" } })])
+  expect(linksOf(records)).toEqual([
+    expect.objectContaining({ agent: "Alice-2", preset: { kind: "member", team: "basic", id: "orchestrator" } }),
+  ])
 })
 
 // DESIGN §3.3: an item the agent owns — its own user rule — falls back to its
@@ -561,16 +587,18 @@ test("a tool actor may not relink a protected agent; presets and entries are not
   await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alice" }, throwingContext()))
   const tool = { type: "tool" as const }
   const refusal = await declared((context) =>
-    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "agent", id: "planner" }, actor: tool }, context),
+    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "planner" }, actor: tool }, context),
   )
   expect(refusal.type).toBe("agent.protected")
   expect(linksOf(await stored(project))).toEqual([])
   // The TUI may.
-  await Effect.runPromise(handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "agent", id: "planner" } }, throwingContext()))
+  await Effect.runPromise(
+    handlers["link.set"]({ level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "planner" } }, throwingContext()),
+  )
   // A preset named like a protected agent is still a preset.
   await Effect.runPromise(handlers["preset.create"]({ kind: "agent", id: "mine", actor: tool }, throwingContext()))
   await Effect.runPromise(
-    handlers["link.set"]({ level: "preset", agent: "mine", preset: { kind: "agent", id: "scout" }, actor: tool }, throwingContext()),
+    handlers["link.set"]({ level: "preset", agent: "mine", preset: { kind: "member", team: "basic", id: "scout" }, actor: tool }, throwingContext()),
   )
   await Effect.runPromise(handlers["entry.create"]({ catalogue: "agents", name: "*ali*", actor: tool }, throwingContext()))
   expect(linksOf(await stored(project)).map((link) => link.agent).toSorted()).toEqual(["alice", "mine"])
@@ -609,8 +637,8 @@ test("a tool actor may not relink a team whose relinked members include a protec
   const { project, handlers } = await setup({ protectedAgents: ["planner"] })
   const crew = { level: "project" as const, team: "crew" }
   const tool = { type: "tool" as const }
-  await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "mine", from: "starter" }, throwingContext()))
-  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "starter" }, throwingContext()))
+  await Effect.runPromise(handlers["preset.create"]({ kind: "team", id: "mine", from: "basic" }, throwingContext()))
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew", preset: "basic" }, throwingContext()))
   const before = linksOf(await stored(project))
   const refusal = await declared((context) =>
     handlers["link.set"]({ level: "project", agent: null, team: crew, preset: { kind: "team", id: "mine" }, actor: tool }, context),
@@ -621,7 +649,14 @@ test("a tool actor may not relink a team whose relinked members include a protec
   const relinked = await Effect.runPromise(
     handlers["link.set"]({ level: "project", agent: null, team: crew, preset: { kind: "team", id: "mine" } }, throwingContext()),
   )
-  expect(relinked.members?.map((member) => member.agent)).toEqual(["helper", "planner"])
+  expect(relinked.members?.map((member) => member.agent)).toEqual([
+    "build-seat",
+    "implementer",
+    "orchestrator",
+    "planner",
+    "reviewer",
+    "scout",
+  ])
 })
 
 // DESIGN §6: a `tool:team_<tool>` row that is off refuses the call itself —
@@ -644,7 +679,7 @@ test("a team tool row that is off installs a core team.<tool> deny for direct an
     const agents = agentHarness([agentInfo("ocp-alice", "")])
     const team = { level: "project" as const, team: "crew" }
     const links: LinkRecord[] =
-      preset === undefined ? [] : [{ type: "link", level: "project", agent: "ocp-alice", team, preset: { kind: "agent", id: preset }, updated: UPDATED }]
+      preset === undefined ? [] : [{ type: "link", level: "project", agent: "ocp-alice", team, preset: { kind: "member", team: "basic", id: preset }, updated: UPDATED }]
     await apply(context({ agent: agents.domain, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } }), {
       items,
       agents: [{ id: "ocp-alice", level: "project", ...(member ? { team } : {}) }],

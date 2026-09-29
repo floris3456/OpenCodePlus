@@ -64,7 +64,7 @@ test("state toggles team members and member presets through their Enabled item r
   await fixture.waitForFrame(() => state?.snapshot() !== undefined)
   if (state === undefined) throw new Error("State did not mount")
   const current = state
-  for (const id of ["team:project:crew:build", "team:preset:starter:planner"]) {
+  for (const id of ["team:project:crew:build", "team:preset:basic:planner"]) {
     current.setFilter(`id:${id}`)
     const node = current.nodes().find((node) => node.id === id)
     if (node === undefined) throw new Error(`Missing ${id}`)
@@ -76,6 +76,6 @@ test("state toggles team members and member presets through their Enabled item r
   }))
   expect(fixture.fake.mutateInputs[0].records[0]).not.toHaveProperty("team")
   expect(fixture.fake.mutateInputs[1].records).toContainEqual(expect.objectContaining({
-    level: "preset", agent: "planner", item: "setting:enabled", team: { level: "preset", team: "starter" },
+    level: "preset", agent: "planner", item: "setting:enabled", team: { level: "preset", team: "basic" },
   }))
 })

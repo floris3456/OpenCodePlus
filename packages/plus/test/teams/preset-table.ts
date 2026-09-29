@@ -2,15 +2,15 @@
 // way: the real catalogue rows of every tool a team rule lives on, the real
 // per-member rows, and each member linked to a preset and resolved through the
 // real chain (presets, fallback off) by apply's own table builder. Tests that
-// need "a member that behaves like the old orchestrator" link it to the Plus
-// orchestrator preset here; nothing reads a member's id.
+// need "a member that behaves like the old orchestrator" link it to the Basic
+// `orchestrator` member preset here; nothing reads a member's id.
 import { createState } from "../../src/index.js"
 import { permissionTableOf, type ApplyInput } from "../../src/instructions/apply.js"
 import { fingerprint, permItemId, resolve, type CustomizationRecord, type Item, type LinkRecord, type PresetRef } from "../../src/instructions/model.js"
 import type { PermissionTable } from "../../src/instructions/permission-enforce.js"
 import { catalogItems, categoryOfRow } from "../../src/instructions/permission-catalog.js"
 import { curatedRules } from "../../src/instructions/tool-permissions.js"
-import { chainContext, plusTeamPresets } from "../../src/instructions/presets.js"
+import { chainContext } from "../../src/instructions/presets.js"
 import { policyMembersOf, teamPolicyItems, type PolicyRun } from "../../src/instructions/team-policy-rows.js"
 import { teamTools } from "../../src/teams/policy.js"
 
@@ -23,15 +23,18 @@ export interface TeamMember {
 
 export const shippedTeam = "opencodeplus-team"
 
-/** The shipped team's members, each linked to its member preset (as team.create links them). */
+/** The shipped Basic roster, each member linked to its member preset (what team.create writes). */
 export function shippedMembers(team = shippedTeam): TeamMember[] {
-  const members = plusTeamPresets.find((entry) => entry.id === shippedTeam)?.members ?? []
-  return members.map((member) => ({ id: member.id, team, preset: { kind: "member", team: shippedTeam, id: member.id } }))
+  return ["planner", "orchestrator", "implementer", "reviewer", "scout", "build-seat"].map((id) => ({
+    id,
+    team,
+    preset: { kind: "member", team: "basic", id },
+  }))
 }
 
-/** A member linked straight to a Plus agent preset. */
+/** A member that behaves like the Basic member preset named. */
 export function linked(id: string, preset: string, team = shippedTeam): TeamMember {
-  return { id, team, preset: { kind: "agent", id: preset } }
+  return { id, team, preset: { kind: "member", team: "basic", id: preset } }
 }
 
 const nativeTools = ["read", "glob", "grep", "edit", "write", "patch", "shell", "question", "subagent"]

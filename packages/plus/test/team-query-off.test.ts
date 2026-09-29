@@ -6,7 +6,7 @@ import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Effect, Layer, Schema } from "effect"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
-import { fingerprint, type AgentSource, type CustomizationRecord, type Item, type Level, type Scopes } from "../src/instructions/model.js"
+import { fingerprint, type AgentSource, type CustomizationRecord, type Item, type Level, type PresetRef, type Scopes } from "../src/instructions/model.js"
 import { chainContext } from "../src/instructions/presets.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { codeTools, teamTools } from "../src/teams/policy.js"
@@ -113,7 +113,7 @@ function pluginTool(
 function fromBuild(
   sources: readonly AgentSource[],
   items: readonly Item[],
-  addressed: readonly { id: string; level: Level; preset?: string }[],
+  addressed: readonly { id: string; level: Level; preset?: PresetRef }[],
 ): Scopes {
   return chainContext({
     agents: sources,
@@ -122,7 +122,7 @@ function fromBuild(
       type: "link",
       level: agent.level,
       agent: agent.id,
-      preset: { kind: "agent", id: agent.preset ?? "build" },
+      preset: agent.preset ?? { kind: "agent", id: "build" },
       updated: UPDATED,
     })),
   })
@@ -329,7 +329,7 @@ test("a non-member agent sees no team tool while an implementer-preset member se
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
-  const member = "gemini-implementer"
+  const member = "implementer"
   const teamAgents = [{ id: member, scope: "defaults" as const }, { id: "build", scope: "project" as const }]
   await apply(
     ctx,
@@ -337,7 +337,7 @@ test("a non-member agent sees no team tool while an implementer-preset member se
       items: [...discovered.items, ...teamPolicyItems(policyMembersOf([member]))],
       agents: [{ id: member, level: "defaults" as Level }, { id: "build", level: "project" as Level }],
       scopes: fromBuild(teamAgents, discovered.items, [
-        { id: member, level: "defaults", preset: "implementer" },
+        { id: member, level: "defaults", preset: { kind: "member", team: "basic", id: "implementer" } },
         { id: "build", level: "project" },
       ]),
       records: [],

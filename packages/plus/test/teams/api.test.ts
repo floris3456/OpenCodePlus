@@ -91,7 +91,7 @@ function recordSession() {
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
-    role: "muse-implementer",
+    role: "implementer",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -124,7 +124,7 @@ function callerFor(record: RunRecord): TeamCaller {
 function delegateInput(overrides?: Record<string, unknown>): Brief {
   return Schema.decodeUnknownSync(Brief)({
     requestID: "req-1",
-    role: "muse-implementer",
+    role: "implementer",
     objective: "Fix the agent filter in the query module so scoped listing works as documented.",
     deliverable: { kind: "commit" },
     scope: { paths: ["packages/plus/src/*"] },
@@ -157,7 +157,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -181,7 +181,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect((await fs.stat(value.directory)).isDirectory()).toBe(true)
       expect(sessions.created).toHaveLength(1)
       const create = sessions.created[0] as { agent: string; location: { directory: string } }
-      expect(create.agent).toBe("muse-implementer")
+      expect(create.agent).toBe("implementer")
       expect(create.location.directory).toBe(value.directory)
       const persisted = await loadRun(root, value.run)
       expect(persisted?.sessionID).toBe(value.session)
@@ -219,11 +219,11 @@ test("delegate activates the child through the parent project, with no copy", as
       await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
       await fs.writeFile(
         path.join(repo.dir, ".opencodeplus", "project.json"),
-        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, protectedAgents: ["implementer"] }, null, 2)}\n`,
       )
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -246,7 +246,7 @@ test("delegate activates the child through the parent project, with no copy", as
       expect(child?.projectDirectory).toBe(repo.dir)
       const activation = await activationDirectory(value.directory)
       expect(activation).toBe(repo.dir)
-      expect(await read(activation)).toEqual({ version: 1, protectedAgents: ["muse-implementer"] })
+      expect(await read(activation)).toEqual({ version: 1, protectedAgents: ["implementer"] })
       // Item 13 evidence: no copy in the child, activation through the record.
       console.log(
         `[T5 item 13] child ${value.directory}\n  child/.opencodeplus/project.json exists: false\n` +
@@ -273,7 +273,7 @@ test("the first delegate registers the child run before the host opens its sessi
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -344,7 +344,7 @@ test("activation in a child worktree installs the parent project's agents and to
       await fs.mkdir(path.join(repo.dir, ".opencodeplus", "teams", "crew"), { recursive: true })
       await fs.writeFile(
         path.join(repo.dir, ".opencodeplus", "project.json"),
-        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, protectedAgents: ["implementer"] }, null, 2)}\n`,
       )
       await fs.writeFile(
         path.join(repo.dir, ".opencodeplus", "teams", "crew", "alpha.md"),
@@ -374,7 +374,7 @@ test("activation in a child worktree installs the parent project's agents and to
 
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -439,11 +439,11 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
       await fs.writeFile(
         path.join(repo.dir, ".opencodeplus", "project.json"),
-        `${JSON.stringify({ version: 1, protectedAgents: ["muse-implementer"] }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, protectedAgents: ["implementer"] }, null, 2)}\n`,
       )
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -464,7 +464,7 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
       // The child resolves the parent's config through the run record: its
       // protectedAgents are the parent's, not empty defaults.
-      expect(snapshot.protectedAgents).toEqual(["muse-implementer"])
+      expect(snapshot.protectedAgents).toEqual(["implementer"])
       const childApi = createPlusApi(ctx, state, { builtins: [] })
       const mutated = await childApi.mutate({
         expectedRevision: snapshot.revision,
@@ -493,7 +493,7 @@ test("a failed session create retires the pre-registered child run", async () =>
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -561,7 +561,7 @@ test("delegate rejects E_ROLE when an implementer delegates", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "muse-implementer",
+        role: "implementer",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -573,7 +573,7 @@ test("delegate rejects E_ROLE when an implementer delegates", async () => {
       expect(error.code).toBe("E_ROLE")
       // An implementer's preset opens no delegation (its "Delegate to" rows
       // ship off); the refusal says so instead of suggesting another role.
-      expect(error.message).toBe(`muse-implementer may not delegate. No member is open to you for delegation.`)
+      expect(error.message).toBe(`implementer may not delegate. No member is open to you for delegation.`)
     } finally {
       await removeRepo(repo.dir)
     }
@@ -586,7 +586,7 @@ test("delegate rejects E_BASE for an unknown ref", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -613,7 +613,7 @@ test("delegate rejects E_PATHS when a commit for an implementer-preset member ha
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -624,7 +624,7 @@ test("delegate rejects E_PATHS when a commit for an implementer-preset member ha
       const error = rejected(await api.delegate(delegateInput({ scope: { paths: [] } }), callerFor(parent)))
       expect(error.code).toBe("E_PATHS")
       expect(error.message).toBe(
-        "muse-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).",
+        "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).",
       )
       expect(error.accepted).toEqual(["packages/plus/src/*", "packages/plus/test/*"])
     } finally {
@@ -639,7 +639,7 @@ test("delegate rejects E_REQUEST_ID when the id is reused with new arguments", a
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -672,7 +672,7 @@ function childInRepo(id: string, repo: { dir: string; head: string }): RunRecord
   const now = new Date().toISOString()
   return baseRun({
     id,
-    role: "muse-implementer",
+    role: "implementer",
     directory: repo.dir,
     paths: ["docs/*"],
     base: repo.head,
@@ -939,7 +939,7 @@ test("get_context returns the stored brief, checks and scope", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -979,7 +979,7 @@ test("get_context on a root run returns brief: null without conventions", async 
       const parent = baseRun({
         id: "main-0123456789abcdef",
         kind: "main",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1007,7 +1007,7 @@ test("status shows the child head and the check receipt", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1053,7 +1053,7 @@ test("wait returns the settled report for an already-terminal attempt", async ()
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1091,7 +1091,7 @@ test("wait names what it acknowledged and status reports the same acked entry", 
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1129,7 +1129,7 @@ test("wait with ack:false reads the outcome without acknowledging it", async () 
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1161,7 +1161,7 @@ test("wait rejects an unknown run with E_NOT_VISIBLE", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1256,7 +1256,7 @@ function finishedChild(id: string, repo: { dir: string; head: string }): RunReco
   const now = new Date().toISOString()
   return baseRun({
     id,
-    role: "muse-implementer",
+    role: "implementer",
     directory: repo.dir,
     paths: ["docs/*"],
     base: repo.head,
@@ -1272,7 +1272,7 @@ function workingChild(id: string, repo: { dir: string; head: string }): RunRecor
   const now = new Date().toISOString()
   return baseRun({
     id,
-    role: "muse-implementer",
+    role: "implementer",
     directory: repo.dir,
     paths: ["docs/*"],
     base: repo.head,
@@ -1290,7 +1290,7 @@ test("delegate succeeds after four finished children free their slots", async ()
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1317,7 +1317,7 @@ test("delegate refuses a fifth working child with E_BOUNDS", async () => {
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1346,7 +1346,7 @@ test("B — four live children plus one superseded-on-create → a fifth delegat
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1365,7 +1365,7 @@ test("B — four live children plus one superseded-on-create → a fifth delegat
       // 1 child whose session creation failed (superseded-on-create, sessionID is null)
       const failedChild = baseRun({
         id: "w-eeeeeeeeeeeeeeee",
-        role: "muse-implementer",
+        role: "implementer",
         directory: repo.dir,
         paths: ["docs/*"],
         base: repo.head,
@@ -1394,7 +1394,7 @@ test("delegate switches the child to the role pin before prompting", async () =>
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,
@@ -1403,7 +1403,7 @@ test("delegate switches the child to the role pin before prompting", async () =>
       await saveRun(root, parent)
       const sessions = recordSession()
       const state = teamState()
-      state.activeModels.set("muse-implementer", { providerID: "cliproxyapi", modelID: "muse-spark-1.3-contributor", variant: "high" })
+      state.activeModels.set("implementer", { providerID: "cliproxyapi", modelID: "muse-spark-1.3-contributor", variant: "high" })
       const api = createTeamApi(context({ session: sessions.domain }), state)
       const value = required(await api.delegate(delegateInput({ requestID: "pin-switch-1" }), callerFor(parent))) as {
         run: string
@@ -1430,7 +1430,7 @@ test("delegate without a role pin never switches but still prompts", async () =>
     try {
       const parent = baseRun({
         id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
+        role: "orchestrator",
         directory: repo.dir,
         base: repo.head,
         head: repo.head,

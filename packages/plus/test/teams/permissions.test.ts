@@ -56,7 +56,7 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
   const now = new Date().toISOString()
   return {
     id: "w-0000000000000001",
-    role: "muse-implementer",
+    role: "implementer",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -111,12 +111,12 @@ function has(
 }
 
 test("the producer emits only per-member rows: Delegate to rows, and live-run edit scopes", () => {
-  const items = teamPolicyItems(policyMembersOf([{ id: "muse-implementer", team: "crew" }, { id: "sol-orchestrator", team: "crew" }]))
+  const items = teamPolicyItems(policyMembersOf([{ id: "implementer", team: "crew" }, { id: "orchestrator", team: "crew" }]))
   expect(items.map((item) => [item.id, item.agents, item.enabled])).toEqual([
-    ["perm:team_delegate:to.sol-orchestrator", ["muse-implementer"], false],
-    ["perm:team_delegate:to.other-teams", ["muse-implementer"], false],
-    ["perm:team_delegate:to.muse-implementer", ["sol-orchestrator"], false],
-    ["perm:team_delegate:to.other-teams", ["sol-orchestrator"], false],
+    ["perm:team_delegate:to.orchestrator", ["implementer"], false],
+    ["perm:team_delegate:to.other-teams", ["implementer"], false],
+    ["perm:team_delegate:to.implementer", ["orchestrator"], false],
+    ["perm:team_delegate:to.other-teams", ["orchestrator"], false],
   ])
   for (const item of items) expect([item.id, item.kind, item.permKind, item.category, item.policy]).toEqual([item.id, "perm", "team", "to", undefined])
 })
@@ -143,7 +143,7 @@ async function applyFor(input: ReturnType<typeof presetInput>, member: string) {
 }
 
 test("an implementer-preset member's rows resolve to the old implementer answers through apply", async () => {
-  const member = linked("muse-implementer", "implementer")
+  const member = linked("implementer", "implementer")
   const { permissions, tools } = await applyFor(presetInput({ members: [member] }), member.id)
   // Tool rows off drop the tools: no shell, no question, no subagent, no delegation.
   const off = tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()
@@ -162,7 +162,7 @@ test("an implementer-preset member's rows resolve to the old implementer answers
 })
 
 test("an orchestrator-preset member keeps shell and reads outside its checkout", async () => {
-  const member = linked("sol-orchestrator", "orchestrator")
+  const member = linked("orchestrator", "orchestrator")
   const { permissions, tools } = await applyFor(presetInput({ members: [member] }), member.id)
   expect(tools.find((plan) => plan.tool === "shell")).toBeUndefined()
   expect(tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()).toEqual(["question", "subagent", "team_checkpoint"])
@@ -171,7 +171,7 @@ test("an orchestrator-preset member keeps shell and reads outside its checkout",
 })
 
 test("a project-level record on a preset row overrides the shipped answer", async () => {
-  const member = linked("muse-implementer", "implementer")
+  const member = linked("implementer", "implementer")
   const { tools } = await applyFor(presetInput({ members: [member], records: [change(member, "tool:shell", { state: "on" })] }), member.id)
   expect(tools.find((plan) => plan.tool === "shell")).toBeUndefined()
   expect(tools.find((plan) => plan.tool === "question")?.enabled).toBe(false)
@@ -181,19 +181,19 @@ test("invalid legacy scopes do not break the global guidance inventory", async (
   await saveRun(dir, makeRun({ id: "w-legacy", role: "other-team", paths: ["packages/plus/**"] }))
   await saveRun(dir, makeRun())
   expect((await liveRunScopes(dir)).map((run) => run.id)).toEqual(["w-0000000000000001"])
-  expect(teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir)).some((item) => item.runID === "w-0000000000000001")).toBe(true)
+  expect(teamPolicyItems(policyMembersOf(["implementer"]), await liveRunScopes(dir)).some((item) => item.runID === "w-0000000000000001")).toBe(true)
 })
 
 test("a live run describes its scope without adding agent-wide allows", async () => {
   await saveRun(dir, makeRun())
   const runs = await liveRunScopes(dir)
-  expect(runs).toEqual([{ id: "w-0000000000000001", role: "muse-implementer", paths: ["packages/plus/src/*"], forbidden: [] }])
-  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), runs)
+  expect(runs).toEqual([{ id: "w-0000000000000001", role: "implementer", paths: ["packages/plus/src/*"], forbidden: [] }])
+  const items = teamPolicyItems(policyMembersOf(["implementer"]), runs)
   const row = items.find((item) => item.id === "perm:edit:run:w-0000000000000001")
   expect(row).toBeDefined()
   expect(row?.runID).toBe("w-0000000000000001")
   expect(row?.text).toContain("packages/plus/src/*")
-  const permissions = await permissionsAfterApply("muse-implementer", items)
+  const permissions = await permissionsAfterApply("implementer", items)
   const editRules = permissions.filter((rule) => rule.action === "edit")
   expect(editRules).toEqual([])
   expect(row?.text).toContain("Session-aware enforcement")
@@ -201,8 +201,8 @@ test("a live run describes its scope without adding agent-wide allows", async ()
 
 test("scope display does not override preset denial messages", async () => {
   await saveRun(dir, makeRun())
-  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir))
-  const permissions = await permissionsAfterApply("muse-implementer", items)
+  const items = teamPolicyItems(policyMembersOf(["implementer"]), await liveRunScopes(dir))
+  const permissions = await permissionsAfterApply("implementer", items)
   const { evaluate } = await import("../../../core/src/permission.js")
 
   // Scope is checked per Session, not compiled into agent-wide rules.
@@ -210,7 +210,7 @@ test("scope display does not override preset denial messages", async () => {
   expect(evaluate("edit", "packages/plus/src/index.ts", permissions).message).toBeUndefined()
 
   // A preset's secret rows deny with their own words.
-  const member = linked("muse-implementer", "implementer")
+  const member = linked("implementer", "implementer")
   const preset = await applyFor(presetInput({ members: [member] }), member.id)
   expect(evaluate("read", "secret.key", preset.permissions).message).toBe("Private keys cannot be read here")
   expect(evaluate("external_directory", "/etc/hosts", preset.permissions).message).toBe("paths outside this checkout are not available here")
@@ -222,14 +222,14 @@ test("two live runs of one role describe individual scopes, not an agent-wide un
   await saveRun(dir, makeRun({ id: "w-0000000000000004", paths: ["b.ts"] }))
   const runs = await liveRunScopes(dir)
   expect(runs.map((run) => run.id)).toEqual(["w-0000000000000003", "w-0000000000000004"])
-  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), runs)
+  const items = teamPolicyItems(policyMembersOf(["implementer"]), runs)
   for (const id of ["w-0000000000000003", "w-0000000000000004"]) {
     const row = items.find((item) => item.id === `perm:edit:run:${id}`)
     expect(row?.runID).toBe(id)
     expect(row?.text).toContain("Same-role runs do not share scope")
     expect(row?.text).not.toContain("[a.ts, b.ts]")
   }
-  const permissions = await permissionsAfterApply("muse-implementer", items)
+  const permissions = await permissionsAfterApply("implementer", items)
   // Enforcement belongs to the Session hook, covered in permission-hooks.
   expect(permissions.filter((rule) => rule.action === "edit")).toEqual([])
 })
@@ -241,7 +241,7 @@ test("a superseded run contributes no edit-scope row", async () => {
 
 test("a run whose role is not a member of an enabled team contributes no row", async () => {
   await saveRun(dir, makeRun({ role: "stranger" }))
-  const items = teamPolicyItems(policyMembersOf(["muse-implementer"]), await liveRunScopes(dir))
+  const items = teamPolicyItems(policyMembersOf(["implementer"]), await liveRunScopes(dir))
   expect(items.some((item) => item.runID !== undefined)).toBe(false)
 })
 
@@ -266,7 +266,7 @@ test("a published member carries its preset's denies while a non-member carries 
   // The shipped team is a Plus team preset now, not a Defaults team (DESIGN
   // §2, §5): a project team created from it has the same members.
   await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext()),
+    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "basic" }, throwingContext()),
   )
   await Effect.runPromise(
     handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext()),
@@ -275,7 +275,7 @@ test("a published member carries its preset's denies while a non-member carries 
 
   const listed = await Effect.runPromise(ctx.agent.list())
   const permissionsOf = (id: string) => listed.data.find((entry) => String(entry.id) === id)?.permissions ?? []
-  const member = permissionsOf("gemini-implementer")
+  const member = permissionsOf("implementer")
   expect(member.length).toBeGreaterThan(0)
   // Its implementer preset: the team tools outside its old ceiling are off
   // (this host registers only team tools, as Code Mode tools: off denies by name).
@@ -283,7 +283,7 @@ test("a published member carries its preset's denies while a non-member carries 
   expect(has(member, "team_list", "*", "deny")).toBe(true)
   expect(has(member, "team_checkpoint", "*", "deny")).toBe(false)
   // An orchestrator keeps what its preset gives it.
-  const orchestrator = permissionsOf("sol-orchestrator")
+  const orchestrator = permissionsOf("orchestrator")
   expect(has(orchestrator, "team_delegate", "*", "deny")).toBe(false)
   expect(has(orchestrator, "team_checkpoint", "*", "deny")).toBe(true)
   // A member is never hidden from the namespace it belongs to.
@@ -302,7 +302,7 @@ function acrossSnapshotBoundary(source: readonly Item[]): Item[] {
 }
 
 test("scope guidance and delegation refusals survive the snapshot boundary", () => {
-  const member = "gemini-implementer"
+  const member = "implementer"
   const run = { id: "w-0000000000000005", role: member, paths: ["packages/plus/src/*"] }
   const crossed = acrossSnapshotBoundary(teamPolicyItems(policyMembersOf([member]), [run]))
   const policyOf = (id: string): PolicyEffects | undefined => crossed.find((item) => item.id === id)?.policy
@@ -324,7 +324,7 @@ test("scope guidance and delegation refusals survive the snapshot boundary", () 
 
 const showContext: Tool.Context = {
   sessionID: Session.ID.make("ses_teampolicyshow"),
-  agent: Agent.ID.make("sol-orchestrator"),
+  agent: Agent.ID.make("orchestrator"),
   messageID: SessionMessage.ID.make("msg_teampolicyshow"),
   id: Tool.CallID.make("call_teampolicyshow"),
   progress: () => Effect.void,
@@ -347,7 +347,7 @@ test("instructions_show on a run edit-scope row reports the rules and the messag
   process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
   process.env.XDG_DATA_HOME = join(dir, "data")
   const project = join(dir, "project")
-  const member = "gemini-implementer"
+  const member = "implementer"
   const run = makeRun({ id: "w-0000000000000006", role: member })
   await saveRun(teamsDataDir(), run)
   // fullContext keeps its own tool registry private, so the test installs the
@@ -364,7 +364,7 @@ test("instructions_show on a run edit-scope row reports the rules and the messag
   await registerInstructionTools(ctx, api)
   // The shipped team is a Plus team preset now, not a Defaults team (DESIGN
   // §2, §5): a project team created from it has the same members.
-  const created = await api.createTeam({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" })
+  const created = await api.createTeam({ level: "project", team: "opencodeplus-team", preset: "basic" })
   expect(created.ok).toBe(true)
   const enabled = await api.setTeamEnabled({ level: "project", team: "opencodeplus-team", enabled: true })
   expect(enabled.ok).toBe(true)
@@ -381,14 +381,14 @@ test("instructions_show on a run edit-scope row reports the rules and the messag
 // delegated run delegates further is its member's "Delegate from a delegated
 // run" row, which the planner preset turns off (delegation-rows.test.ts runs it).
 test("a delegated run's edit-scope row carries edit rules only, whoever the member is", async () => {
-  await saveRun(dir, makeRun({ id: "w-0000000000000002", role: "fable-planner", paths: [] }))
+  await saveRun(dir, makeRun({ id: "w-0000000000000002", role: "planner", paths: [] }))
   const runs = await liveRunScopes(dir)
-  const items = teamPolicyItems(policyMembersOf(["fable-planner"]), runs)
+  const items = teamPolicyItems(policyMembersOf(["planner"]), runs)
   const childRow = items.find((item) => item.id === "perm:edit:run:w-0000000000000002")
   expect(childRow?.policy?.on.every((rule) => rule.action === "edit")).toBe(true)
   // With no scope.paths the delegated run may edit nothing.
   expect(childRow?.policy?.on).toEqual([])
   expect(childRow?.text).toContain("scope.paths []")
-  const planner = presetInput({ members: [linked("fable-planner", "planner")] })
-  expect(resolvedStates(planner, "fable-planner")["perm:team_delegate:access.delegated"]).toBe("off")
+  const planner = presetInput({ members: [linked("planner", "planner")] })
+  expect(resolvedStates(planner, "planner")["perm:team_delegate:access.delegated"]).toBe("off")
 })

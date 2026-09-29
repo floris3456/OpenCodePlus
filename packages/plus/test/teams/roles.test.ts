@@ -40,46 +40,33 @@ function throwingContext(captured: { current?: unknown }): {
   }
 }
 
-// The shipped team is a Plus team preset now, not a Defaults team (DESIGN §2,
-// §5): a project team created from it has the same ten members, each linked
-// to its member preset, and enabling it installs them.
+// The shipped team is the Plus team preset `basic` (DESIGN §2, §5): a project
+// team created from it has its six members, each linked to its member preset,
+// and enabling it installs them.
 async function installFromPreset(handlers: ReturnType<typeof createHandlers>): Promise<void> {
-  await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext({})),
-  )
-  await Effect.runPromise(
-    handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext({})),
-  )
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "basic", preset: "basic" }, throwingContext({})))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "basic", enabled: true }, throwingContext({})))
 }
 
-const TEN = [
-  "fable-planner",
-  "astra-planner",
-  "sol-orchestrator",
-  "opus-orchestrator",
-  "muse-implementer",
-  "gemini-implementer",
-  "spark-implementer",
-  "opus-implementer",
-  "astra-reviewer",
-  "scout",
-] as const
+const SIX = ["planner", "orchestrator", "implementer", "reviewer", "scout", "build-seat"] as const
 
-const DESCRIPTIONS: Record<(typeof TEN)[number], string> = {
-  "fable-planner": "Fable planner: turns goals into exact task plans with paths and checks",
-  "astra-planner": "Astra planner: turns goals into exact task plans with paths and checks",
-  "sol-orchestrator": "Sol orchestrator: owns work, delegates by task, verifies and integrates",
-  "opus-orchestrator": "Opus orchestrator: owns work, delegates by task, verifies and integrates",
-  "muse-implementer": "Muse implementer: executes the brief inside scope and finishes",
-  "gemini-implementer": "Gemini implementer: executes bounded work inside scope and finishes",
-  "spark-implementer": "Spark implementer: rapid edit and check loops for a small piece",
-  "opus-implementer": "Genuinely hard or mistake-costly tasks",
-  "astra-reviewer": "Astra reviewer: reviews diffs against the brief with findings",
-  scout: "Scout: finds things and reports exact file locations compactly",
+const DESCRIPTIONS: Record<(typeof SIX)[number], string> = {
+  planner: "Turns goals into exact task plans with paths and checks",
+  orchestrator: "Owns work, delegates by task, verifies and integrates",
+  implementer: "Executes the brief inside scope and finishes",
+  reviewer: "Reviews diffs against the brief with findings",
+  scout: "Finds things and reports exact file locations compactly",
+  "build-seat": "Coordinates the team from the chat and may delegate to every member",
 }
 
-const orchestrators = new Set(["sol-orchestrator", "opus-orchestrator"])
-const planners = new Set(["fable-planner", "astra-planner"])
+const orchestrators = new Set(["orchestrator"])
+const planners = new Set(["planner"])
+// The roles that keep paths outside the checkout and secret files: the two
+// coordinators and the chat's build seat (only the build seat also keeps the
+// subagent tool; only the orchestrator and the build seat run shell commands).
+const coordinators = new Set(["orchestrator", "planner", "build-seat"])
+const shellOpen = new Set(["orchestrator", "build-seat"])
+const secretsClosed = ["planner", "orchestrator", "implementer", "reviewer", "scout"]
 
 // The host's own tools plus the team namespace as Plus registers it: direct
 // tools stay on the provider's list, code tools go through Code Mode.
@@ -96,14 +83,14 @@ const hostTools = [
 // The rules no longer travel on the member definition: they are rows each
 // member's preset sets, and this test reads the end of that path — what
 // /api/agent reports after a publish.
-test("enabling opencodeplus-team installs all ten members with mode, description, and their presets' core denies", async () => {
+test("enabling basic installs all six members with mode, description, and their presets' core denies", async () => {
   const { project } = await tempRoot()
   const ctx = fullContext({ directory: project, tools: hostTools, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
   const handlers = createHandlers(ctx, createState())
   await installFromPreset(handlers)
   const listed = await Effect.runPromise(ctx.agent.list())
   const byId = new Map(listed.data.map((entry) => [String(entry.id), entry]))
-  for (const id of TEN) {
+  for (const id of SIX) {
     const agent = byId.get(id)
     expect(agent).toBeDefined()
     if (agent === undefined) continue
@@ -112,10 +99,13 @@ test("enabling opencodeplus-team installs all ten members with mode, description
     const permissions = agent.permissions ?? []
     const has = (action: string, resource: string, effect: string) =>
       permissions.some((rule) => rule.action === action && rule.resource === resource && rule.effect === effect)
-    // Secrets are closed for every member (read's Files rows off).
-    expect([id, has("read", "*.key", "deny"), has("read", "*.env*", "deny"), has("read", "*/auth.json", "deny")]).toEqual([id, true, true, true])
+    // Secrets are closed for every worker and coordinator (read's Files rows off);
+// the build seat keeps them open like the human's own chat.
+    expect([id, has("read", "*.key", "deny"), has("read", "*.env*", "deny"), has("read", "*/auth.json", "deny")]).toEqual(
+      [id, secretsClosed.includes(id), secretsClosed.includes(id), secretsClosed.includes(id)],
+    )
     // Paths outside the checkout: open for coordinators, closed for workers.
-    expect([id, has("external_directory", "*", "deny")]).toEqual([id, !orchestrators.has(id) && !planners.has(id)])
+    expect([id, has("external_directory", "*", "deny")]).toEqual([id, !coordinators.has(id)])
     // Orchestrators change no files, commits or refs from the shell.
     expect([id, has("shell", "git push *", "deny"), has("shell", "git stash", "deny")]).toEqual([id, orchestrators.has(id), orchestrators.has(id)])
     // A member is never hidden from the namespace it belongs to.
@@ -123,29 +113,25 @@ test("enabling opencodeplus-team installs all ten members with mode, description
   }
 })
 
-// What each member's rows resolve to, through its member preset and the Plus
-// agent preset behind it: the old roles, row for row.
+// What each member's rows resolve to, through its self-contained member
+// preset: the old roles, row for row.
 const input = presetInput()
-const states = Object.fromEntries(TEN.map((id) => [id, resolvedStates(input, id)]))
+const states = Object.fromEntries(SIX.map((id) => [id, resolvedStates(input, id)]))
 
-test("the shell tool is on only for orchestrator-preset members", () => {
-  for (const id of TEN) expect([id, states[id]?.["tool:shell"]]).toEqual([id, orchestrators.has(id) ? "on" : "off"])
-  for (const id of TEN) expect([id, states[id]?.["tool:question"]]).toEqual([id, planners.has(id) ? "on" : "off"])
-  for (const id of TEN) expect([id, states[id]?.["tool:subagent"]]).toEqual([id, "off"])
+test("the shell tool is on only for shell-capable members", () => {
+  for (const id of SIX) expect([id, states[id]?.["tool:shell"]]).toEqual([id, shellOpen.has(id) ? "on" : "off"])
+  for (const id of SIX) expect([id, states[id]?.["tool:question"]]).toEqual([id, planners.has(id) || id === "build-seat" ? "on" : "off"])
+  for (const id of SIX) expect([id, states[id]?.["tool:subagent"]]).toEqual([id, id === "build-seat" ? "on" : "off"])
 })
 
-test("final ceilings are the team tool rows, exactly the old ceiling of every built-in role", () => {
+test("final ceilings are the team tool rows, exactly the old ceiling of every role", () => {
   const ceilings: Record<string, string[]> = {
-    "fable-planner": ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
-    "astra-planner": ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
-    "sol-orchestrator": ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
-    "opus-orchestrator": ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
-    "muse-implementer": ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    "gemini-implementer": ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    "spark-implementer": ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    "opus-implementer": ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    "astra-reviewer": ["finish", "status", "get_context", "diff"],
+    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
+    implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
+    reviewer: ["finish", "status", "get_context", "diff"],
     scout: ["finish", "status", "get_context", "diff"],
+    "build-seat": [...teamTools],
   }
   for (const [id, allowed] of Object.entries(ceilings)) {
     const open: string[] = teamTools.filter((tool) => states[id]?.[`tool:team_${tool}`] === "on")
@@ -167,7 +153,7 @@ test("effective permission at /api/agent for a child session is never ask", asyn
   const now = new Date().toISOString()
   await saveRun(teamsDataDir(), {
     id: "w-0000000000000001",
-    role: "fable-planner",
+    role: "planner",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -193,7 +179,7 @@ test("effective permission at /api/agent for a child session is never ask", asyn
 
   await installFromPreset(handlers)
   const listed = await Effect.runPromise(ctx.agent.list())
-  const planner = listed.data.find((entry) => String(entry.id) === "fable-planner")
+  const planner = listed.data.find((entry) => String(entry.id) === "planner")
   expect(planner).toBeDefined()
   const permissions = planner?.permissions ?? []
 
@@ -204,5 +190,5 @@ test("effective permission at /api/agent for a child session is never ask", asyn
     const eff = evaluate(`team.${tool}`, "*", permissions)
     expect(eff.effect).not.toBe("ask")
   }
-  expect(states["fable-planner"]?.["perm:team_delegate:access.delegated"]).toBe("off")
+  expect(states["planner"]?.["perm:team_delegate:access.delegated"]).toBe("off")
 })

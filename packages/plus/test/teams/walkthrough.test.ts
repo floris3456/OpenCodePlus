@@ -45,7 +45,7 @@ const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
 
 const PASSING_CHECK = `import { expect, test } from "bun:test"\n\ntest("note", () => {\n  expect(1).toBe(1)\n})\n`
 
-const TEAM = "opencodeplus-team"
+const TEAM = "basic"
 
 function banner(section: string, title: string): void {
   console.log(`\n=== [${section}] ${title} ===`)
@@ -194,7 +194,7 @@ async function runMessage(tool: Tool.Info & { readonly id: string }, input: unkn
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
-    role: "gemini-implementer",
+    role: "implementer",
     kind: "w",
     repo: "repo",
     repoKey: "repo",
@@ -270,8 +270,8 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       const fixture = pluginContext(repo.dir)
       await enableShippedTeam(await registerAll(fixture.ctx))
 
-      const ctx = toolContext("ses_walkthrough_20b", "sol-orchestrator")
-      const where = "agent:gemini-implementer item:perm"
+      const ctx = toolContext("ses_walkthrough_20b", "orchestrator")
+      const where = "agent:implementer item:perm"
       const fields = ["id", "label", "badges", "source"]
       const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500 }, ctx)
       call("instructions_list", { where, fields, limit: 500 }, listed)
@@ -284,7 +284,7 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
         "perm:team_get_context:accepts.scope-paths",
         "perm:team_delegate:access.delegated",
         "perm:team_status:runs.others",
-        "perm:team_delegate:to.sol-orchestrator",
+        "perm:team_delegate:to.orchestrator",
         "perm:team_delegate:to.other-teams",
       ])
         expect([item, ids.some((id) => id.endsWith(item))]).toEqual([item, true])
@@ -295,7 +295,7 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       const shown = await runOk<{ tool: string; enabled: boolean }>(need(fixture.tools, "instructions_show"), { id: cleanRow }, ctx)
       call("instructions_show", { id: cleanRow }, shown)
       expect(shown.tool).toBe("team_finish")
-      // On for gemini-implementer: its implementer preset sets it.
+      // On for implementer: its implementer preset sets it.
       expect(shown.enabled).toBe(true)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
@@ -305,7 +305,7 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
 
 test("[20c] a non-member catalog has zero team tools; an implementer-preset member's is exactly the old implementer ceiling", async () => {
   banner("20c", "a non-member catalog has zero team tools; a member's is exactly its ceiling")
-  const member = "gemini-implementer"
+  const member = "implementer"
   const codeSet = new Set<string>(codeTools)
   const registered = teamTools.map((name) => ({
     id: `team_${name}`,
@@ -359,7 +359,7 @@ test("[20c] a non-member catalog has zero team tools; an implementer-preset memb
       ],
       items: discovered.items,
       links: [
-        { type: "link", level: "defaults", agent: member, preset: { kind: "agent", id: "implementer" }, updated: "2026-01-01T00:00:00.000Z" },
+        { type: "link", level: "defaults", agent: member, preset: { kind: "member", team: "basic", id: "implementer" }, updated: "2026-01-01T00:00:00.000Z" },
         { type: "link", level: "project", agent: "build", preset: { kind: "agent", id: "build" }, updated: "2026-01-01T00:00:00.000Z" },
       ],
     }),
@@ -426,7 +426,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
 
-      const parent = toolContext("ses_walkthrough_root", "sol-orchestrator")
+      const parent = toolContext("ses_walkthrough_root", "orchestrator")
       const bootstrap = await runOk<StatusEntry[]>(need(fixture.tools, "team_status"), {}, parent)
       call("team_status", {}, bootstrap)
       const rootRun = bootstrap[0].run
@@ -437,7 +437,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
 
       const brief = {
         requestID: "ev-1",
-        role: "gemini-implementer",
+        role: "implementer",
         objective: "Add docs/note.md naming this run, commit it, and leave the note check green.",
         deliverable: { kind: "commit" },
         scope: { paths: ["docs/note.md"] },
@@ -460,8 +460,8 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       // project team it belongs to and again as the Defaults agent the host
       // reports once it is installed.
       expect(scopeRows.rows.map((row) => row.id)).toEqual([
-        `item:project:${TEAM}/:gemini-implementer:perm:edit:run:${childRun}`,
-        `item:defaults:gemini-implementer:perm:edit:run:${childRun}`,
+        `item:project:${TEAM}/:implementer:perm:edit:run:${childRun}`,
+        `item:defaults:implementer:perm:edit:run:${childRun}`,
       ])
       const scopeRow = scopeRows.rows.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
       expect(scopeRow).toBeDefined()
@@ -480,7 +480,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(scopeShown.patterns).toEqual(["docs/note.md"])
       expect(scopeShown.enabled).toBe(true)
 
-      const child = toolContext(delegated.session, "gemini-implementer")
+      const child = toolContext(delegated.session, "implementer")
       const childContext = await runOk<{ run: string; brief: { objective: string }; scope: { paths: string[] } }>(
         need(fixture.tools, "team_get_context"),
         {},
@@ -579,7 +579,7 @@ test("continued root admits after notification and saves its first report withou
       const sessions = recordSession()
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
-      const caller = toolContext("ses_continued_root", "sol-orchestrator")
+      const caller = toolContext("ses_continued_root", "orchestrator")
       const boot = await runOk<{ run: string }>(need(fixture.tools, "team_get_context"), {}, caller)
       await onSessionEvent(fixture.ctx, root, { type: "session.execution.succeeded", data: { sessionID: caller.sessionID } })
       const child = baseRun({ id: "w-notification", parent: boot.run, state: "working", sessionID: "ses_notification_child", attempts: [{ n: 1, state: "streaming", trigger: "delegate", startedAt: new Date().toISOString() }] })
@@ -623,7 +623,7 @@ test("[20e] a turn that ends without finish is idle / no_report", async () => {
       await enableShippedTeam(await registerAll(fixture.ctx))
 
       await onSessionEvent(fixture.ctx, root, { type: "session.idle", properties: { sessionID: "ses_walkthrough_noreport" } })
-      const ctx = toolContext("ses_walkthrough_noreport", "gemini-implementer")
+      const ctx = toolContext("ses_walkthrough_noreport", "implementer")
       const status = await runOk<StatusEntry[]>(need(fixture.tools, "team_status"), { runs: [child.id] }, ctx)
       call("team_status", { runs: [child.id] }, status)
       expect(status[0].state).toBe("idle")
@@ -643,7 +643,7 @@ test("[20f] a followup queued while the child is working is delivered on idle", 
       const now = new Date().toISOString()
       const parentRun = baseRun({
         id: "main-0123456789abcdef",
-        role: "sol-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -674,7 +674,7 @@ test("[20f] a followup queued while the child is working is delivered on idle", 
       const queued = await runOk<{ attempt: number; state: string }>(
         need(fixture.tools, "team_followup"),
         followup,
-        toolContext(parentRun.sessionID ?? "", "sol-orchestrator"),
+        toolContext(parentRun.sessionID ?? "", "orchestrator"),
       )
       call("team_followup", followup, queued)
       expect(queued).toEqual({ attempt: 1, state: "queued" })
@@ -691,7 +691,7 @@ test("[20f] a followup queued while the child is working is delivered on idle", 
       const status = await runOk<StatusEntry[]>(
         need(fixture.tools, "team_status"),
         { runs: [child.id] },
-        toolContext(parentRun.sessionID ?? "", "sol-orchestrator"),
+        toolContext(parentRun.sessionID ?? "", "orchestrator"),
       )
       call("team_status", { runs: [child.id] }, status)
       expect(status[0].state).toBe("working")
@@ -722,7 +722,7 @@ test("[20g] one GC pass reaps a stale run and one orphan", async () => {
 
       const parentRun = baseRun({
         id: "main-0123456789abcdef",
-        role: "sol-orchestrator",
+        role: "orchestrator",
         kind: "main",
         directory: repo.dir,
         branch: "main",
@@ -810,7 +810,7 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
         root,
         baseRun({
           id: "main-0123456789abcdef",
-          role: "sol-orchestrator",
+          role: "orchestrator",
           kind: "main",
           directory: repo.dir,
           branch: "main",
@@ -822,7 +822,7 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
       )
       const fixture = pluginContext(repo.dir, recordSession().domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
-      const ctx = toolContext("ses_walkthrough_refusal", "sol-orchestrator")
+      const ctx = toolContext("ses_walkthrough_refusal", "orchestrator")
 
       const checksInput = { checks: [{ id: "unit", argv: ["bun", "test"] }] }
       const checksMessage = await runMessage(need(fixture.tools, "team_set_checks"), checksInput, ctx)
@@ -833,7 +833,7 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
 
       const pathsInput = {
         requestID: "ev-h1",
-        role: "gemini-implementer",
+        role: "implementer",
         objective: "Implement with empty paths so the refusal names the accepted scope shape.",
         deliverable: { kind: "commit" },
         scope: { paths: [] },
@@ -842,7 +842,7 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
       const pathsMessage = await runMessage(need(fixture.tools, "team_delegate"), pathsInput, ctx)
       call("team_delegate", pathsInput, pathsMessage)
       expect(pathsMessage).toBe(
-        `E_PATHS: gemini-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+        `E_PATHS: implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
       )
 
       for (const message of [checksMessage, pathsMessage]) {
@@ -863,7 +863,7 @@ test("[21] finish on the root run", async () => {
       banner("21", "finish on the root run")
       const fixture = pluginContext(repo.dir, recordSession().domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
-      const ctx = toolContext("ses_walkthrough_root_finish", "sol-orchestrator")
+      const ctx = toolContext("ses_walkthrough_root_finish", "orchestrator")
       const bootstrap = await runOk<StatusEntry[]>(need(fixture.tools, "team_status"), {}, ctx)
       const rootRun = bootstrap[0].run
 

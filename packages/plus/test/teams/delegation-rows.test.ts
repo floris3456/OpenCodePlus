@@ -23,14 +23,14 @@ import { Brief } from "../../src/teams/schema.js"
 import { context } from "../harness.js"
 import { change, linked, presetInput, presetTable, resolvedStates, shippedMembers, shippedTeam, teamState, type TeamMember } from "./preset-table.js"
 
-// The shipped team (each member linked to its member preset) plus a build
-// seat linked straight to the Plus build-seat agent preset.
+// The shipped team (each member linked to its member preset) plus a second
+// build seat, so the seat tests do not depend on the shipped roster's own.
 const members: TeamMember[] = [...shippedMembers(), linked("ocp-build", "build-seat")]
 const ids = members.map((member) => member.id)
-const planners = ["fable-planner", "astra-planner"]
-const orchestrators = ["sol-orchestrator", "opus-orchestrator"]
-const implementers = ["muse-implementer", "gemini-implementer", "spark-implementer", "opus-implementer"]
-const workers = [...implementers, "astra-reviewer", "scout"]
+const planners = ["planner"]
+const orchestrators = ["orchestrator"]
+const implementers = ["implementer"]
+const workers = ["implementer", "reviewer", "scout"]
 const input = presetInput({ members })
 const states = Object.fromEntries(ids.map((id) => [id, resolvedStates(input, id)]))
 
@@ -80,14 +80,12 @@ test("Delegate to rows list every co-member, name only the member and ship off",
 
 // ── what the presets set ───────────────────────────────────────────────────
 
-test("member presets open Delegate to rows along the old graph, and a build seat opens every teammate", () => {
+test("member presets open Delegate to rows for their teammate roles, and a build seat opens every teammate", () => {
   for (const planner of planners) expect([planner, delegateStates(planner)]).toEqual([planner, expectedDelegates(planner, orchestrators)])
   for (const orchestrator of orchestrators)
-    expect([orchestrator, delegateStates(orchestrator)]).toEqual([
-      orchestrator,
-      expectedDelegates(orchestrator, [...orchestrators.filter((id) => id !== orchestrator), ...workers]),
-    ])
-  expect(delegateStates("ocp-build")).toEqual(expectedDelegates("ocp-build", ids.filter((id) => id !== "ocp-build")))
+    expect([orchestrator, delegateStates(orchestrator)]).toEqual([orchestrator, expectedDelegates(orchestrator, workers)])
+  for (const seat of ["build-seat", "ocp-build"])
+    expect([seat, delegateStates(seat)]).toEqual([seat, expectedDelegates(seat, ids.filter((id) => id !== seat))])
   for (const worker of workers) expect([worker, delegateStates(worker)]).toEqual([worker, expectedDelegates(worker, [])])
 })
 
@@ -121,7 +119,7 @@ test("a planner asks before each delegation, changes plan files only and does no
   // The planner's table refuses an edit outside plan files, for edit, write and patch alike.
   const table = presetTable({ members })
   const call = (tool: string, toolInput: unknown) =>
-    decide(table.toolRows("fable-planner", tool), { tool, input: toolInput, sessionID: "ses_x", directory: "/repo", teamMembers: table.teamMembers })
+    decide(table.toolRows("planner", tool), { tool, input: toolInput, sessionID: "ses_x", directory: "/repo", teamMembers: table.teamMembers })
   expect(call("edit", { path: "docs/plans/2026-09-25-delegation.md" }).refuse).toBeUndefined()
   expect(call("edit", { path: "/repo/repos/opencode/docs/plans/p.md" }).refuse).toBeUndefined()
   expect(call("write", { path: "docs/handoffs/h.md", content: "x" }).refuse).toBeUndefined()
@@ -130,7 +128,7 @@ test("a planner asks before each delegation, changes plan files only and does no
   )
   expect(call("patch", { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch" }).refuse).toContain("Files it may change")
   // An orchestrator's table does not.
-  expect(decide(table.toolRows("sol-orchestrator", "edit"), { tool: "edit", input: { path: "packages/plus/src/index.ts" }, sessionID: "s", directory: "/repo", teamMembers: table.teamMembers }).refuse).toBeUndefined()
+  expect(decide(table.toolRows("orchestrator", "edit"), { tool: "edit", input: { path: "packages/plus/src/index.ts" }, sessionID: "s", directory: "/repo", teamMembers: table.teamMembers }).refuse).toBeUndefined()
 })
 
 // The command families the old orchestrator role denied, verbatim.
@@ -193,11 +191,11 @@ test("an orchestrator's preset turns off the shell rows that change files, commi
 })
 
 test("every member but a build seat reads and searches no secret files; a build seat has every team tool", () => {
-  const secretRows = Object.keys(states["fable-planner"] ?? {}).filter(
+  const secretRows = Object.keys(states["planner"] ?? {}).filter(
     (id) => /^perm:read:(env|files\.(keys|credentials|opencode-config|run-configs|databases))$/.test(id) || /^perm:grep:(files\.(env|keys|credentials|opencode-config|run-configs|databases)|include\.(env|keys))$/.test(id),
   )
   expect(secretRows).toHaveLength(14)
-  for (const member of ids.filter((id) => id !== "ocp-build"))
+  for (const member of ids.filter((id) => id !== "ocp-build" && id !== "build-seat"))
     for (const id of secretRows) expect([member, id, states[member]?.[id]]).toEqual([member, id, "off"])
   for (const id of secretRows) expect(["ocp-build", id, states["ocp-build"]?.[id]]).toEqual(["ocp-build", id, "on"])
   expect(Object.entries(states["ocp-build"] ?? {}).filter(([id, state]) => id.startsWith("tool:team_") && state === "off")).toEqual([])
@@ -304,7 +302,7 @@ function callerFor(record: RunRecord): TeamCaller {
 function brief(overrides: Record<string, unknown>): Brief {
   return Schema.decodeUnknownSync(Brief)({
     requestID: "req-1",
-    role: "gemini-implementer",
+    role: "implementer",
     objective: "Fix the agent filter in the query module so scoped listing works as documented.",
     deliverable: { kind: "commit" },
     scope: { paths: ["packages/plus/src/*"] },
@@ -336,28 +334,28 @@ async function makeRepo(): Promise<{ dir: string; head: string }> {
 }
 
 test("a planner may not delegate to a reviewer until its Delegate to row for that reviewer is on", async () => {
-  const planner = baseRun({ id: "main-0123456789abcdef", role: "fable-planner", kind: "main", sessionID: "ses_planner" })
+  const planner = baseRun({ id: "main-0123456789abcdef", role: "planner", kind: "main", sessionID: "ses_planner" })
   await saveRun(root, planner)
-  const review = brief({ role: "astra-reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, repo: "not-a-configured-repo" })
+  const review = brief({ role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, repo: "not-a-configured-repo" })
   const error = rejected(await apiWith(tableWith()).delegate(review, callerFor(planner)))
   expect(error.code).toBe("E_ROLE")
-  expect(error.message).toContain(`"astra-reviewer"`)
-  expect(error.message).toContain("You may delegate to: opus-orchestrator, sol-orchestrator.")
-  expect(error.accepted).toEqual({ role: "opus-orchestrator" })
+  expect(error.message).toContain(`"reviewer"`)
+  expect(error.message).toContain("You may delegate to: orchestrator.")
+  expect(error.accepted).toEqual({ role: "orchestrator" })
 
   // With the row on, the role gate passes and the next gate answers.
-  const opened = tableWith({ agent: "fable-planner", id: "perm:team_delegate:to.astra-reviewer", enabled: true })
+  const opened = tableWith({ agent: "planner", id: "perm:team_delegate:to.reviewer", enabled: true })
   expect(rejected(await apiWith(opened).delegate(review, callerFor(planner))).code).toBe("E_REPO")
 })
 
 test("an implementer's preset opens nobody, and a member outside the enabled teams is refused as such", async () => {
-  const implementer = baseRun({ id: "main-0123456789abcdef", role: "muse-implementer", kind: "main", sessionID: "ses_implementer" })
-  const orchestrator = baseRun({ id: "main-1111111111111111", role: "opus-orchestrator", kind: "main", sessionID: "ses_orchestrator" })
+  const implementer = baseRun({ id: "main-0123456789abcdef", role: "implementer", kind: "main", sessionID: "ses_implementer" })
+  const orchestrator = baseRun({ id: "main-1111111111111111", role: "orchestrator", kind: "main", sessionID: "ses_orchestrator" })
   await saveRun(root, implementer)
   await saveRun(root, orchestrator)
-  const nobody = rejected(await apiWith(tableWith()).delegate(brief({ role: "gemini-implementer" }), callerFor(implementer)))
+  const nobody = rejected(await apiWith(tableWith()).delegate(brief({ role: "implementer" }), callerFor(implementer)))
   expect(nobody.code).toBe("E_ROLE")
-  expect(nobody.message).toBe("muse-implementer may not delegate. No member is open to you for delegation.")
+  expect(nobody.message).toBe("implementer may not delegate. No member is open to you for delegation.")
   const stranger = rejected(await apiWith(tableWith()).delegate(brief({ role: "acme-implementer" }), callerFor(orchestrator)))
   expect(stranger.code).toBe("E_ROLE")
   expect(stranger.message).toContain(`"acme-implementer" is not a member of an enabled team`)
@@ -366,23 +364,23 @@ test("an implementer's preset opens nobody, and a member outside the enabled tea
 test("a delegated run delegates further only while its Delegate from a delegated run row is on", async () => {
   const repo = await makeRepo()
   const root_ = baseRun({ id: "main-0123456789abcdef", role: "ocp-build", kind: "main", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_build" })
-  const planner = working({ id: "w-aaaaaaaaaaaaaaaa", role: "fable-planner", parent: root_.id, directory: repo.dir, base: repo.head, head: repo.head })
+  const planner = working({ id: "w-aaaaaaaaaaaaaaaa", role: "planner", parent: root_.id, directory: repo.dir, base: repo.head, head: repo.head })
   await saveRun(root, root_)
   await saveRun(root, planner)
-  const plan = brief({ role: "sol-orchestrator", deliverable: { kind: "report" }, scope: { paths: [] }, checks: [], reason: "two packages" })
+  const plan = brief({ role: "orchestrator", deliverable: { kind: "report" }, scope: { paths: [] }, checks: [], reason: "two packages" })
   const refused = rejected(await apiWith(tableWith()).delegate(plan, callerFor(planner)))
   expect(refused.code).toBe("E_ROLE")
-  expect(refused.message).toBe(`fable-planner: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead`)
-  const opened = tableWith({ agent: "fable-planner", id: "perm:team_delegate:access.delegated", enabled: true })
+  expect(refused.message).toBe(`planner: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead`)
+  const opened = tableWith({ agent: "planner", id: "perm:team_delegate:access.delegated", enabled: true })
   const started = required(await apiWith(opened).delegate({ ...plan, requestID: "req-2" }, callerFor(planner))) as { run: string }
   expect((await loadRun(root, started.run))?.parent).toBe(planner.id)
 }, 30000)
 
 test("a Children working at once row edited to 1 refuses a second working child", async () => {
   const repo = await makeRepo()
-  const parent = baseRun({ id: "main-0123456789abcdef", role: "opus-orchestrator", kind: "main", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_orchestrator" })
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_orchestrator" })
   await saveRun(root, parent)
-  await saveRun(root, working({ id: "w-aaaaaaaaaaaaaaaa", role: "gemini-implementer", parent: parent.id, directory: repo.dir }))
+  await saveRun(root, working({ id: "w-aaaaaaaaaaaaaaaa", role: "implementer", parent: parent.id, directory: repo.dir }))
   const one = tableWith({ agent: parent.role, id: "perm:team_delegate:limits.inflight", text: "1" })
   const error = rejected(await apiWith(one).delegate(brief({ requestID: "second-1" }), callerFor(parent)))
   expect(error.code).toBe("E_BOUNDS")
@@ -393,9 +391,9 @@ test("a Children working at once row edited to 1 refuses a second working child"
 }, 30000)
 
 test("status reads another run only while the caller's Any other run row for team_status is on", async () => {
-  const orchestrator = baseRun({ id: "main-0123456789abcdef", role: "opus-orchestrator", kind: "main", sessionID: "ses_orchestrator" })
-  const implementer = baseRun({ id: "main-1111111111111111", role: "muse-implementer", kind: "main", sessionID: "ses_implementer" })
-  const stranger = baseRun({ id: "w-bbbbbbbbbbbbbbbb", role: "gemini-implementer", parent: "main-ffffffffffffffff", sessionID: "ses_stranger" })
+  const orchestrator = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", sessionID: "ses_orchestrator" })
+  const implementer = baseRun({ id: "main-1111111111111111", role: "implementer", kind: "main", sessionID: "ses_implementer" })
+  const stranger = baseRun({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: "main-ffffffffffffffff", sessionID: "ses_stranger" })
   for (const run of [orchestrator, implementer, stranger]) await saveRun(root, run)
   const status = async (table: PermissionTable, caller: RunRecord) => apiWith(table).status({ runs: [stranger.id] }, callerFor(caller))
 
@@ -411,11 +409,11 @@ test("status reads another run only while the caller's Any other run row for tea
 })
 
 test("list shows deeper descendants and other runs by the caller's team_list Runs rows", async () => {
-  const parent = baseRun({ id: "main-0123456789abcdef", role: "opus-orchestrator", kind: "main", children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_orchestrator" })
-  const child = baseRun({ id: "w-aaaaaaaaaaaaaaaa", role: "opus-orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"] })
-  const grandchild = baseRun({ id: "w-bbbbbbbbbbbbbbbb", role: "gemini-implementer", parent: child.id })
-  const stranger = baseRun({ id: "w-cccccccccccccccc", role: "opus-implementer", parent: "main-ffffffffffffffff" })
-  const planner = baseRun({ id: "main-2222222222222222", role: "fable-planner", kind: "main", sessionID: "ses_planner" })
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_orchestrator" })
+  const child = baseRun({ id: "w-aaaaaaaaaaaaaaaa", role: "orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"] })
+  const grandchild = baseRun({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: child.id })
+  const stranger = baseRun({ id: "w-cccccccccccccccc", role: "implementer", parent: "main-ffffffffffffffff" })
+  const planner = baseRun({ id: "main-2222222222222222", role: "planner", kind: "main", sessionID: "ses_planner" })
   for (const run of [parent, child, grandchild, stranger, planner]) await saveRun(root, run)
   const listed = async (caller: RunRecord, ...changes: Change[]) =>
     (required(await apiWith(tableWith(...changes)).list({}, callerFor(caller))) as { run: string }[]).map((entry) => entry.run).toSorted()
@@ -431,9 +429,9 @@ test("list shows deeper descendants and other runs by the caller's team_list Run
 })
 
 test("followup reaches a grandchild only while the caller's Deeper descendants row for team_followup is on", async () => {
-  const parent = baseRun({ id: "main-0123456789abcdef", role: "opus-orchestrator", kind: "main", children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_orchestrator" })
-  const child = working({ id: "w-aaaaaaaaaaaaaaaa", role: "opus-orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"] })
-  const grandchild = working({ id: "w-bbbbbbbbbbbbbbbb", role: "gemini-implementer", parent: child.id })
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_orchestrator" })
+  const child = working({ id: "w-aaaaaaaaaaaaaaaa", role: "orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"] })
+  const grandchild = working({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: child.id })
   for (const run of [parent, child, grandchild]) await saveRun(root, run)
   const prompt = "Scope now includes docs/*, continue in place."
 
@@ -451,19 +449,19 @@ test("a planner-preset target accepts plan files only, by its own Plan files onl
   const build = baseRun({ id: "main-0123456789abcdef", role: "ocp-build", kind: "main", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_build" })
   await saveRun(root, build)
   const api = apiWith(tableWith())
-  const plan = (requestID: string, paths: readonly string[]) => brief({ requestID, role: "fable-planner", deliverable: { kind: "plan" }, scope: { paths }, checks: [] })
+  const plan = (requestID: string, paths: readonly string[]) => brief({ requestID, role: "planner", deliverable: { kind: "plan" }, scope: { paths }, checks: [] })
   const outside = rejected(await api.delegate(plan("plan-1", ["packages/plus/src/*"]), callerFor(build)))
   expect(outside.code).toBe("E_PATHS")
   expect(outside.message).toBe(
-    "fable-planner accepts plan files only: every scope path must match one of its patterns [docs/plans/*, docs/handoffs/*]; outside them: [packages/plus/src/*].",
+    "planner accepts plan files only: every scope path must match one of its patterns [docs/plans/*, docs/handoffs/*]; outside them: [packages/plus/src/*].",
   )
   expect(outside.accepted).toEqual(["docs/plans/*", "docs/handoffs/*"])
   expect(rejected(await api.delegate(plan("plan-2", ["docs/plans/p.md", "src/a.ts"]), callerFor(build))).code).toBe("E_PATHS")
   const planned = required(await api.delegate(plan("plan-3", ["docs/plans/*"]), callerFor(build))) as { run: string }
   const record = await loadRun(root, planned.run)
-  expect(record?.role).toBe("fable-planner")
+  expect(record?.role).toBe("planner")
   expect(record?.paths).toEqual(["docs/plans/*"])
   // Off, the same planner takes any scope.
-  const open = apiWith(tableWith({ agent: "fable-planner", id: "perm:team_get_context:accepts.plan-files", enabled: false }))
+  const open = apiWith(tableWith({ agent: "planner", id: "perm:team_get_context:accepts.plan-files", enabled: false }))
   expect(required(await open.delegate(plan("plan-4", ["packages/plus/src/*"]), callerFor(build)))).toMatchObject({ state: "starting" })
 }, 30000)

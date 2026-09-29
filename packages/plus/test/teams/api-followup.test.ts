@@ -68,7 +68,7 @@ function recordRejectingSession(message = "prompt blew up") {
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
-    role: "muse-implementer",
+    role: "implementer",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -131,7 +131,7 @@ function parentChild(parentID: string, childID: string, childOverrides?: Partial
   const now = new Date().toISOString()
   const parent = baseRun({
     id: parentID,
-    role: "opus-orchestrator",
+    role: "orchestrator",
     kind: "main",
     state: "working",
     attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
@@ -140,7 +140,7 @@ function parentChild(parentID: string, childID: string, childOverrides?: Partial
   })
   const child = baseRun({
     id: childID,
-    role: "muse-implementer",
+    role: "implementer",
     state: "idle",
     attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
     parent: parentID,
@@ -153,7 +153,7 @@ function parentChild(parentID: string, childID: string, childOverrides?: Partial
 async function writeBrief(root: string, child: RunRecord): Promise<void> {
   await atomicJson(path.join(root, "runs", child.id, "brief.json"), {
     requestID: "brief-1",
-    role: "muse-implementer",
+    role: "implementer",
     objective: "Fix the agent filter in the query module so scoped listing works as documented.",
     deliverable: { kind: "commit" },
     scope: { paths: ["docs/*"], forbidden: [] },
@@ -232,14 +232,14 @@ test("delivery now on a working child fails E_BUSY with the exact message", asyn
 // a review is re-run fresh, not corrected.
 test("a reviewer-preset child refuses a followup with its row's message", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "astra-reviewer" })
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "reviewer" })
     await saveRun(root, parent)
     await saveRun(root, child)
     const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "rev-1" }), callerFor(parent)))
     expect(error.code).toBe("E_NO_FOLLOWUP")
     expect(error.message).toBe(
-      "astra-reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).",
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).",
     )
     expect(error.accepted).toBe("delegate a fresh run")
   })
@@ -247,11 +247,11 @@ test("a reviewer-preset child refuses a followup with its row's message", async 
 
 test("the same reviewer takes a followup once its Corrections by followup row is on", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "astra-reviewer" })
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", { role: "reviewer" })
     await saveRun(root, parent)
     await saveRun(root, child)
-    const reviewer = shippedMembers().find((member) => member.id === "astra-reviewer")
-    if (reviewer === undefined) throw new Error("no astra-reviewer in the shipped team")
+    const reviewer = shippedMembers().find((member) => member.id === "reviewer")
+    if (reviewer === undefined) throw new Error("no reviewer in the shipped team")
     const table = presetTable({ records: [change(reviewer, "perm:team_get_context:accepts.followup", { state: "on" })] })
     const api = createTeamApi(context({ session: recordSession().domain }), teamState(table))
     expect(required(await api.followup(followupInput({ run: child.id, requestID: "rev-2" }), callerFor(parent)))).toMatchObject({ attempt: 2, state: "admitted" })
@@ -275,7 +275,7 @@ test("non-child run is refused with E_NOT_CHILD", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({
       id: "main-0123456789abcdef",
-      role: "opus-orchestrator",
+      role: "orchestrator",
       kind: "main",
       state: "working",
       sessionID: "ses_parent_002",
@@ -283,7 +283,7 @@ test("non-child run is refused with E_NOT_CHILD", async () => {
     })
     const stranger = baseRun({
       id: "w-dddddddddddddddd",
-      role: "muse-implementer",
+      role: "implementer",
       state: "idle",
       parent: "main-ffffffffffffffff",
       sessionID: "ses_other_001",
@@ -305,7 +305,7 @@ test("unknown run id is refused with E_NOT_CHILD and empty children list", async
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({
       id: "main-0123456789abcdef",
-      role: "opus-orchestrator",
+      role: "orchestrator",
       kind: "main",
       state: "working",
       sessionID: "ses_parent_002",

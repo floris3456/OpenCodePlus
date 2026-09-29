@@ -365,7 +365,7 @@ test("Tool entity controls address member presets and Defaults entries by owner,
     { type: "entry", level: "defaults", catalogue: "teams", team: "crew*", name: "helper*", updated: "" },
   ] })
   for (const [entity, owner, team] of [
-    ["team:preset:starter:planner", "planner", "starter"],
+    ["team:preset:basic:planner", "planner", "basic"],
     ["agent:defaults:b*", "b*", undefined],
     ["team:defaults:crew*:helper*", "helper*", "crew*"],
   ]) {
@@ -378,5 +378,5 @@ test("Tool entity controls address member presets and Defaults entries by owner,
     await f.call("reset", { id: entity })
     expect((await f.snapshot()).records.filter((record) => record.type === "customization" && record.agent === owner)).toHaveLength(0)
   }
-  await expect(f.call("set", { id: "team:preset:starter", mode: "all" })).rejects.toThrow("not an agent or member")
+  await expect(f.call("set", { id: "team:preset:basic", mode: "all" })).rejects.toThrow("not an agent or member")
 })

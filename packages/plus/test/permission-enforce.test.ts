@@ -530,8 +530,8 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
   // The shipped team, each member resolved through its member preset, with
   // the orchestrator's hidden-files parameter turned off.
   const members = shippedMembers()
-  const orchestratorMember = members.find((member) => member.id === "sol-orchestrator")
-  if (orchestratorMember === undefined) throw new Error("no sol-orchestrator")
+  const orchestratorMember = members.find((member) => member.id === "orchestrator")
+  if (orchestratorMember === undefined) throw new Error("no orchestrator")
   const table = presetTable({ members, records: [change(orchestratorMember, "perm:glob:parameters.hidden", { state: "off" })] })
   // Core hands every request the same schema objects.
   const delegate = { type: "object", properties: { role: { type: "string" }, objective: { type: "string" } }, required: ["role", "objective"] }
@@ -547,9 +547,9 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
     },
   })
 
-  const orchestrator = request("sol-orchestrator")
+  const orchestrator = request("orchestrator")
   narrowTools(orchestrator, table)
-  const open = ["astra-reviewer", "gemini-implementer", "muse-implementer", "opus-implementer", "opus-orchestrator", "scout", "spark-implementer"]
+  const open = ["implementer", "reviewer", "scout"]
   expect(orchestrator.tools.team_delegate?.input).toEqual({
     type: "object",
     properties: { role: { type: "string", enum: open }, objective: { type: "string" } },
@@ -558,7 +558,7 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
   expect(orchestrator.tools.team_delegate?.description).toBe(`Delegate a task.\nMembers you may delegate to: ${open.join(", ")}.`)
   expect(orchestrator.tools.glob?.input).toEqual({ type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] })
 
-  const implementer = request("muse-implementer")
+  const implementer = request("implementer")
   narrowTools(implementer, table)
   expect(implementer.tools.team_delegate?.input).toEqual(pristine.delegate)
   expect(implementer.tools.team_delegate?.description).toBe("Delegate a task.\nNo member of your team is open to you for delegation.")
@@ -580,8 +580,8 @@ test("delegateTargets lists the on members, sorted, never the other-teams row", 
   if (seat === undefined) throw new Error("no build seat")
   const table = presetTable({ members, records: [change(seat, "perm:team_delegate:to.other-teams", { state: "on" })] })
   expect(delegateTargets(table.toolRows("ocp-build", "team_delegate"))).toEqual(members.map((member) => member.id).filter((id) => id !== "ocp-build").toSorted())
-  expect(delegateTargets(table.toolRows("astra-planner", "team_delegate"))).toEqual(["opus-orchestrator", "sol-orchestrator"])
-  expect(delegateTargets(table.toolRows("astra-reviewer", "team_delegate"))).toEqual([])
+  expect(delegateTargets(table.toolRows("planner", "team_delegate"))).toEqual(["orchestrator"])
+  expect(delegateTargets(table.toolRows("reviewer", "team_delegate"))).toEqual([])
 })
 
 // ── result masking ─────────────────────────────────────────────────────────

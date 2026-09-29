@@ -49,7 +49,7 @@ async function removeRepo(dir: string): Promise<void> {
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   const now = new Date().toISOString()
   return {
-    role: "muse-implementer",
+    role: "implementer",
     kind: "w",
     repo: "opencode",
     repoKey: "opencode",
@@ -102,7 +102,7 @@ type ListEntry = {
 async function seedFamily(root: string, repoDir: string): Promise<Record<string, RunRecord>> {
   const parent = baseRun({
     id: "main-0123456789abcdef",
-    role: "opus-orchestrator",
+    role: "orchestrator",
     directory: repoDir,
     sessionID: "ses_parent_001",
     state: "working",
@@ -120,7 +120,7 @@ async function seedFamily(root: string, repoDir: string): Promise<Record<string,
   })
   const childB = baseRun({
     id: "w-bbbbbbbbbbbbbbbb",
-    role: "gemini-implementer",
+    role: "reviewer",
     directory: repoDir,
     parent: parent.id,
     sessionID: "ses_child_b",
@@ -192,7 +192,7 @@ test("removed worktree diff uses retained commits, not the surviving parent's di
     const repo = await makeRepo()
     try {
       await git(repo.dir, ["branch", "retained-child"])
-      const parent = baseRun({ id: "main-history", role: "opus-orchestrator", directory: repo.dir, kind: "main" })
+      const parent = baseRun({ id: "main-history", role: "orchestrator", directory: repo.dir, kind: "main" })
       await fs.writeFile(path.join(repo.dir, "README.md"), "committed child change\n")
       await git(repo.dir, ["add", "README.md"])
       await git(repo.dir, ["commit", "-m", "fix: child change"])
@@ -218,7 +218,7 @@ test("a planner sees every run in the namespace", async () => {
       const family = await seedFamily(root, repo.dir)
       const planner = baseRun({
         id: "main-ffffffffffffffff",
-        role: "fable-planner",
+        role: "planner",
         kind: "main",
         directory: repo.dir,
         sessionID: "ses_planner_001",
@@ -243,7 +243,7 @@ test("all:false hides superseded and reaped, all:true shows them", async () => {
     try {
       const planner = baseRun({
         id: "main-ffffffffffffffff",
-        role: "fable-planner",
+        role: "planner",
         kind: "main",
         directory: repo.dir,
         sessionID: "ses_planner_002",
@@ -273,14 +273,14 @@ test("role, state and parent filters each narrow the list", async () => {
       const family = await seedFamily(root, repo.dir)
       const planner = baseRun({
         id: "main-ffffffffffffffff",
-        role: "fable-planner",
+        role: "planner",
         kind: "main",
         directory: repo.dir,
         sessionID: "ses_planner_003",
         state: "working",
       })
       await saveRun(root, planner)
-      const byRole = required(await listHandler({ role: "gemini-implementer" }, callerFor(planner), shippedTable())) as ListEntry[]
+      const byRole = required(await listHandler({ role: "reviewer" }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(byRole.map((entry) => entry.run)).toEqual([family.childB.id])
       const byState = required(await listHandler({ state: "working" }, callerFor(planner), shippedTable())) as ListEntry[]
       expect(byState.map((entry) => entry.run).toSorted()).toEqual([family.parent.id, family.childA.id, planner.id].toSorted())
@@ -298,7 +298,7 @@ test("every emitted field is present and correct for a populated run", async () 
     try {
       const stored = baseRun({
         id: "w-aaaaaaaaaaaaaaaa",
-        role: "muse-implementer",
+        role: "implementer",
         directory: repo.dir,
         branch: "team/w/populated",
         head: repo.head,
@@ -321,7 +321,7 @@ test("every emitted field is present and correct for a populated run", async () 
       expect(value).toEqual([
         {
           run: stored.id,
-          role: "muse-implementer",
+          role: "implementer",
           state: "working",
           task: "T12",
           parent: "main-0123456789abcdef",
@@ -345,7 +345,7 @@ test("every emitted field is present and correct for a populated run", async () 
       await saveRun(root, pending)
       const planner = baseRun({
         id: "main-ffffffffffffffff",
-        role: "fable-planner",
+        role: "planner",
         kind: "main",
         directory: repo.dir,
         sessionID: "ses_planner_pop",
@@ -368,7 +368,7 @@ test("the result is sorted by lastUsed descending then run id", async () => {
     try {
       const planner = baseRun({
         id: "main-ffffffffffffffff",
-        role: "fable-planner",
+        role: "planner",
         kind: "main",
         directory: repo.dir,
         sessionID: "ses_planner_004",
@@ -416,7 +416,7 @@ test("list and statusOf reflect worktree states (present, removed, dirty)", asyn
     try {
       const planner = baseRun({
         id: "main-ffffffffffffffff",
-        role: "fable-planner",
+        role: "planner",
         kind: "main",
         directory: repo.dir,
         sessionID: "ses_planner_wt",

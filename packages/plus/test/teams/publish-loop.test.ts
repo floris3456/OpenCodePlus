@@ -134,16 +134,16 @@ test("second publish with the built-in team enabled is a no-op", async () => {
   // §2, §5): a project team created from it has the same members, linked to
   // their member presets.
   await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext({})),
+    handlers["team.create"]({ level: "project", team: "basic", preset: "basic" }, throwingContext({})),
   )
   await Effect.runPromise(
-    handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext({})),
+    handlers["team.setEnabled"]({ level: "project", team: "basic", enabled: true }, throwingContext({})),
   )
   // The implementer preset closes private keys: read's Private keys row is a core deny.
   const deniesKeys = (permissions: readonly { action: string; resource: string; effect: string }[]) =>
     permissions.some((rule) => rule.action === "read" && rule.resource === "*.key" && rule.effect === "deny")
   const installed = await Effect.runPromise(ctx.agent.list())
-  expect(deniesKeys(installed.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
+  expect(deniesKeys(installed.data.find((entry) => String(entry.id) === "implementer")?.permissions ?? [])).toBe(true)
   const afterEnable = state.fingerprint
   const installs = agents.transforms
   const disposes = agents.disposes
@@ -154,5 +154,5 @@ test("second publish with the built-in team enabled is a no-op", async () => {
   expect(agents.disposes).toBe(disposes)
   expect(agents.reloads).toBe(reloads)
   const republished = await Effect.runPromise(ctx.agent.list())
-  expect(deniesKeys(republished.data.find((entry) => String(entry.id) === "gemini-implementer")?.permissions ?? [])).toBe(true)
+  expect(deniesKeys(republished.data.find((entry) => String(entry.id) === "implementer")?.permissions ?? [])).toBe(true)
 })

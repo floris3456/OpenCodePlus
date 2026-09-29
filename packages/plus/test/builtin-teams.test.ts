@@ -59,41 +59,22 @@ test("shipped registry is well formed", () => {
   }
 })
 
-test("opencodeplus-team ships the ten team roles", () => {
-  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
+test("basic ships the six former Plus agent presets as its members", () => {
+  const team = builtinTeams.find((entry) => entry.name === "basic")
   expect(team).toBeDefined()
+  expect(team?.label).toBe("Basic")
   expect(team?.members.map((member) => member.id).toSorted()).toEqual(
-    [
-      "astra-planner",
-      "astra-reviewer",
-      "fable-planner",
-      "gemini-implementer",
-      "muse-implementer",
-      "opus-implementer",
-      "opus-orchestrator",
-      "scout",
-      "sol-orchestrator",
-      "spark-implementer",
-    ].toSorted(),
+    ["build-seat", "implementer", "orchestrator", "planner", "reviewer", "scout"].toSorted(),
   )
 })
 
-test("starter and review members carry no fields", () => {
-  for (const name of ["starter", "review"]) {
-    const team = builtinTeams.find((entry) => entry.name === name)
-    expect(team).toBeDefined()
-    for (const member of team?.members ?? []) expect(member.fields).toBeUndefined()
-  }
-})
-
 // The member definition does not carry what the member may do: that is its
-// rows, which its member preset and the Plus agent preset behind it set, and
-// apply installs whatever they resolve to. The
-// end-to-end proof that they reach /api/agent unchanged lives in
-// test/teams/roles.test.ts.
-test("opencodeplus-team members carry description and mode and no permissions", () => {
-  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
-  if (team === undefined) throw new Error("missing opencodeplus-team")
+// rows, which its self-contained member preset sets, and apply installs
+// whatever they resolve to. The end-to-end proof that they reach /api/agent
+// unchanged lives in test/teams/roles.test.ts.
+test("basic members carry description and mode and no permissions", () => {
+  const team = builtinTeams.find((entry) => entry.name === "basic")
+  if (team === undefined) throw new Error("missing basic")
   for (const member of team.members) {
     const fields = member.fields
     expect(fields).toBeDefined()
@@ -106,27 +87,26 @@ test("opencodeplus-team members carry description and mode and no permissions", 
   }
 })
 
-test("every member preset links to a Plus agent preset whose team tool rows are the old ceiling", () => {
-  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
-  if (team === undefined) throw new Error("missing opencodeplus-team")
-  const input = presetInput()
+test("every Basic member preset's team tool rows are the old role ceiling", () => {
+  const presets = plusTeamPresets.find((entry) => entry.id === "basic")?.members ?? []
+  const input = presetInput({
+    members: presets.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
+  })
   const ceilings: Record<string, readonly string[]> = {
     planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
     orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
     reviewer: ["finish", "status", "get_context", "diff"],
     scout: ["finish", "status", "get_context", "diff"],
+    "build-seat": teamTools,
   }
-  const presets = plusTeamPresets.find((entry) => entry.id === "opencodeplus-team")?.members ?? []
-  for (const member of team.members) {
-    const preset = presets.find((entry) => entry.id === member.id)?.preset
-    if (preset === undefined) throw new Error(`no preset for ${member.id}`)
+  for (const member of presets) {
     const states = resolvedStates(input, member.id)
     const open: string[] = teamTools.filter((tool) => states[`tool:team_${tool}`] === "on")
-    expect([member.id, open.toSorted()]).toEqual([member.id, [...(ceilings[preset] ?? [])].toSorted()])
+    expect([member.id, open.toSorted()]).toEqual([member.id, [...(ceilings[member.id] ?? [])].toSorted()])
   }
   // Per-run edit scope is never a member property: it only exists while a run does.
-  expect(teamPolicyItems(policyMembersOf(team.members.map((member) => member.id))).some((item) => item.runID !== undefined)).toBe(false)
+  expect(teamPolicyItems(policyMembersOf(presets.map((member) => member.id))).some((item) => item.runID !== undefined)).toBe(false)
 })
 
 // The producer tests above prove the rows exist for a list of member ids; they
@@ -136,24 +116,20 @@ test("every member preset links to a Plus agent preset whose team tool rows are 
 // snapshot is the first place that shows: it is what the Instructions tree, the
 // Policy group and instructions.list all read.
 // The shipped team is no Defaults team any more (DESIGN §2): it is the Plus
-// team preset a project team is created from, with the same member ids.
+// team preset `basic` a project team is created from.
 test("the live snapshot carries each member's Delegate to rows after the team is installed", async () => {
   const project = await tempProject()
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
-  await Effect.runPromise(
-    handlers["team.create"]({ level: "project", team: "opencodeplus-team", preset: "opencodeplus-team" }, throwingContext()),
-  )
-  await Effect.runPromise(
-    handlers["team.setEnabled"]({ level: "project", team: "opencodeplus-team", enabled: true }, throwingContext()),
-  )
+  await Effect.runPromise(handlers["team.create"]({ level: "project", team: "basic", preset: "basic" }, throwingContext()))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "basic", enabled: true }, throwingContext()))
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
   const rowIds = (member: string) =>
     snapshot.items.filter((item) => item.kind === "perm" && item.agents?.includes(member) === true).map((item) => item.id)
 
   // Each member owns one "Delegate to" row per teammate plus the other-teams row.
-  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
-  if (team === undefined) throw new Error("missing opencodeplus-team")
+  const team = builtinTeams.find((entry) => entry.name === "basic")
+  if (team === undefined) throw new Error("missing basic")
   // No member may be silently absent: every shipped member owns its rows.
   for (const member of team.members)
     expect([member.id, rowIds(member.id).toSorted()]).toEqual([
@@ -186,9 +162,9 @@ test("no built-in prompt names a tool that left the namespace", () => {
 })
 
 test("built-in prompts name search tools by their MCP-served ids", () => {
-  const team = builtinTeams.find((entry) => entry.name === "opencodeplus-team")
-  if (team === undefined) throw new Error("missing opencodeplus-team")
-  const planner = team.members.find((member) => member.id === "fable-planner")
+  const team = builtinTeams.find((entry) => entry.name === "basic")
+  if (team === undefined) throw new Error("missing basic")
+  const planner = team.members.find((member) => member.id === "planner")
   expect(planner?.body).toContain("search_tavily_search")
   expect(planner?.body).toContain("search_tavily_extract")
 

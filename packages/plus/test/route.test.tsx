@@ -337,7 +337,7 @@ test("add agent asks the name, then the preset, on the Project Agents group", as
     snapshots: [snapshot],
     width: 120,
     height: 40,
-    dialogs: { selects: ["agent:orchestrator", "__none__"], prompts: ["my-agent", "bare"] },
+    dialogs: { selects: ["member:basic/planner", "__none__"], prompts: ["my-agent", "bare"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Project"))
@@ -347,7 +347,7 @@ test("add agent asks the name, then the preset, on the Project Agents group", as
     expect(dispatch(fixture, "a")).toBe(true)
     await sleep(200)
     expect(fixture.fake.agentCreates.length).toBe(1)
-    expect(fixture.fake.agentCreates[0]).toEqual({ scope: "project", id: "my-agent", preset: { kind: "agent", id: "orchestrator" } })
+    expect(fixture.fake.agentCreates[0]).toEqual({ scope: "project", id: "my-agent", preset: { kind: "member", team: "basic", id: "planner" } })
     expect(fixture.fake.dialogPrompts.map(([title]) => title)).toEqual(["Create agent"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Preset"])
     expect(dispatch(fixture, "a")).toBe(true)
@@ -2843,7 +2843,7 @@ test("team create on group:project:teams asks the name, then a grouped team pres
     snapshots: [],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["crew"], selects: ["opencodeplus-team"] },
+    dialogs: { prompts: ["crew"], selects: ["basic"] },
     render: (context) => {
       const rpc = context.client.rpc(Definition)
       const wired = {
@@ -2864,13 +2864,13 @@ test("team create on group:project:teams asks the name, then a grouped team pres
     await goto(fixture, "group:project:teams", "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
     await until(fixture, () => teamCreates.length === 1)
-    expect(teamCreates).toEqual([{ level: "project", team: "crew", preset: "opencodeplus-team" }])
+    expect(teamCreates).toEqual([{ level: "project", team: "crew", preset: "basic" }])
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Team name"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Team preset"])
     // Grouped by origin, Plus team presets first here (OpenCode ships none);
     // the empty team is the last option, without a group.
     const picker = fixture.fake.selectInputs[0]
-    expect(picker.options.filter((option) => option.category === "Plus").map((option) => option.value)).toContain("opencodeplus-team")
+    expect(picker.options.filter((option) => option.category === "Plus").map((option) => option.value)).toContain("basic")
     expect(picker.options.some((option) => option.category === "OpenCode" || option.category === "Native")).toBe(false)
     expect(picker.options.at(-1)).toEqual({ title: "Empty team", value: "" })
     expect(fixture.captureCharFrame()).not.toContain("Team scope")
@@ -2906,7 +2906,7 @@ test("a on Defaults Teams asks team pattern, member pattern, preset; a on its en
     snapshots: [],
     width: 120,
     height: 40,
-    dialogs: { prompts: ["*review*", "*orchestrator*", "*reviewer*", "*editor*"], selects: ["agent:orchestrator", "__none__", "agent:reviewer"] },
+    dialogs: { prompts: ["*review*", "*orchestrator*", "*reviewer*", "*editor*"], selects: ["member:basic/orchestrator", "__none__", "member:basic/reviewer"] },
     render: (context) => {
       const rpc = context.client.rpc(Definition)
       const wired = {
@@ -2927,7 +2927,7 @@ test("a on Defaults Teams asks team pattern, member pattern, preset; a on its en
     await goto(fixture, "group:defaults:teams", "Teams")
     expect(dispatch(fixture, "a")).toBe(true)
     await until(fixture, () => teamAdds.length === 1)
-    expect(teamAdds[0]).toEqual({ level: "defaults", team: "*review*", id: "*orchestrator*", preset: { kind: "agent", id: "orchestrator" } })
+    expect(teamAdds[0]).toEqual({ level: "defaults", team: "*review*", id: "*orchestrator*", preset: { kind: "member", team: "basic", id: "orchestrator" } })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Team name or pattern", "Member name or pattern"])
     expect(fixture.fake.promptInputs[0]?.description).toContain("* and % match any text, case-insensitive")
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Preset"])
@@ -2944,7 +2944,7 @@ test("a on Defaults Teams asks team pattern, member pattern, preset; a on its en
     await fixture.waitForFrame((frame) => sidebarRow(frame).includes("*review*") && !sidebarRow(frame).includes("*reviewer*") && !sidebarRow(frame).includes("*orch"))
     expect(dispatch(fixture, "a")).toBe(true)
     await until(fixture, () => teamAdds.length === 3)
-    expect(teamAdds[2]).toEqual({ level: "defaults", team: "*review*", id: "*editor*", preset: { kind: "agent", id: "reviewer" } })
+    expect(teamAdds[2]).toEqual({ level: "defaults", team: "*review*", id: "*editor*", preset: { kind: "member", team: "basic", id: "reviewer" } })
     expect(fixture.fake.promptInputs.slice(2).map((input) => input.title)).toEqual(["Member name or pattern", "Member name or pattern"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).not.toContain("Team scope")
     await until(fixture, () => (liveSnapshots.at(-1)?.entries ?? []).length === 3)
@@ -3454,9 +3454,12 @@ test("ctrl+space selects an Agents-group agent through the core picker, never sp
 
 const PRESET_UPDATED = "2026-09-25T00:00:00.000Z"
 
-function linkTo(agent: string, id: string, level: "project" | "global" = "project") {
-  return { type: "link" as const, level, agent, preset: { kind: "agent" as const, id }, updated: PRESET_UPDATED }
+function linkTo(agent: string, preset: PresetRef, level: "project" | "global" = "project") {
+  return { type: "link" as const, level, agent, preset, updated: PRESET_UPDATED }
 }
+
+const basicOrchestrator: PresetRef = { kind: "member", team: "basic", id: "orchestrator" }
+const basicPlanner: PresetRef = { kind: "member", team: "basic", id: "planner" }
 
 function bashItem() {
   return toolItem({ id: "tool:bash", title: "bash" })
@@ -3467,7 +3470,7 @@ test("a on Global Agents → User asks the name, then a grouped preset, and crea
   const after = createSnapshot({ agents: [projectAgent("alpha"), { id: "helper", scope: "global" as const, fileBacked: true, origin: "user" as const }] })
   const fixture = await renderInstructionsRoute({
     snapshots: [before, after],
-    dialogs: { prompts: ["helper"], selects: ["member:starter/planner"] },
+    dialogs: { prompts: ["helper"], selects: ["member:basic/planner"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
@@ -3477,18 +3480,18 @@ test("a on Global Agents → User asks the name, then a grouped preset, and crea
     expect(fixture.fake.agentCreates[0]).toEqual({
       scope: "global",
       id: "helper",
-      preset: { kind: "member", team: "starter", id: "planner" },
+      preset: { kind: "member", team: "basic", id: "planner" },
     })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Create agent"])
     // No scope question: the cursor's root decides.
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Preset"])
     const picker = fixture.fake.selectInputs[0]
     const categories = [...new Set(picker.options.map((option) => option.category))]
-    expect(categories).toEqual(["Agent presets · OpenCode", "Agent presets · Plus", "Team preset members", undefined])
+    expect(categories).toEqual(["Agent presets · OpenCode", "Team preset members", undefined])
     expect(picker.options.find((option) => option.value === "agent:build")?.category).toBe("Agent presets · OpenCode")
-    expect(picker.options.find((option) => option.value === "agent:orchestrator")?.title).toBe("Orchestrator")
-    expect(picker.options.find((option) => option.value === "member:starter/planner")?.title).toBe("starter › planner")
-    expect(picker.options.some((option) => option.value === "team:opencodeplus-team")).toBe(false)
+    expect(picker.options.find((option) => option.value === "member:basic/orchestrator")?.title).toBe("Basic › orchestrator")
+    expect(picker.options.find((option) => option.value === "member:basic/planner")?.title).toBe("Basic › planner")
+    expect(picker.options.some((option) => option.value === "team:basic")).toBe(false)
     expect(picker.options.at(-1)).toEqual({ title: "None — everything off", value: "__none__" })
     // The new agent row is revealed and selected.
     await until(fixture, (frame) => sidebarRow(frame).includes("helper"))
@@ -3517,14 +3520,14 @@ test("the preset picker lists User agent presets in their own group", async () =
 test("a on Defaults Agents asks a name or pattern, then a preset, and creates an entry", async () => {
   const fixture = await renderInstructionsRoute({
     snapshots: [createSnapshot()],
-    dialogs: { prompts: ["*orchestrator*"], selects: ["agent:orchestrator"] },
+    dialogs: { prompts: ["*orchestrator*"], selects: ["member:basic/orchestrator"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await goto(fixture, "group:defaults:agents", "Agents")
     expect(dispatch(fixture, "a")).toBe(true)
     await until(fixture, () => fixture.fake.entryCreates.length === 1)
-    expect(fixture.fake.entryCreates[0]).toEqual({ catalogue: "agents", name: "*orchestrator*", preset: { kind: "agent", id: "orchestrator" } })
+    expect(fixture.fake.entryCreates[0]).toEqual({ catalogue: "agents", name: "*orchestrator*", preset: { kind: "member", team: "basic", id: "orchestrator" } })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Agent name or pattern"])
     expect(fixture.fake.promptInputs[0]?.description).toContain("* and % match any text, case-insensitive (e.g. *orchestrator*)")
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Preset"])
@@ -3541,14 +3544,14 @@ test("Presets → Agents → User and Teams → User create User presets from a 
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
     height: 60,
-    dialogs: { prompts: ["mine", "crew", "lead"], selects: ["agent:planner", "", "agent:orchestrator"] },
+    dialogs: { prompts: ["mine", "crew", "lead"], selects: ["member:basic/planner", "", "member:basic/orchestrator"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await goto(fixture, "group:preset:agents:user", "User")
     expect(dispatch(fixture, "a")).toBe(true)
     await until(fixture, () => fixture.fake.presetCreates.length === 1)
-    expect(fixture.fake.presetCreates[0]).toEqual({ kind: "agent", id: "mine", from: { kind: "agent", id: "planner" } })
+    expect(fixture.fake.presetCreates[0]).toEqual({ kind: "agent", id: "mine", from: { kind: "member", team: "basic", id: "planner" } })
     expect(fixture.fake.promptInputs.map((input) => input.title)).toEqual(["Preset name"])
     expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Base preset"])
     expect(fixture.fake.selectInputs[0].options.at(-1)).toEqual({ title: "None — everything off", value: "__none__" })
@@ -3567,7 +3570,7 @@ test("Presets → Agents → User and Teams → User create User presets from a 
     await navTo(fixture, "squad")
     expect(dispatch(fixture, "a")).toBe(true)
     await until(fixture, () => fixture.fake.presetAddMembers.length === 1)
-    expect(fixture.fake.presetAddMembers[0]).toEqual({ team: "squad", id: "lead", from: { kind: "agent", id: "orchestrator" } })
+    expect(fixture.fake.presetAddMembers[0]).toEqual({ team: "squad", id: "lead", from: { kind: "member", team: "basic", id: "orchestrator" } })
     expect(fixture.fake.promptInputs.at(-1)?.title).toBe("Member name")
     expect(fixture.fake.dialogSelects.at(-1)).toEqual(["Preset"])
   } finally {
@@ -3613,10 +3616,10 @@ test("a on a member preset's Models group adds a team-scoped model at level pres
 })
 
 test("l relinks an agent to another preset with the current link preselected, and unlinks", async () => {
-  const snapshot = createSnapshot({ agents: [projectAgent("alice")], links: [linkTo("alice", "orchestrator")] })
+  const snapshot = createSnapshot({ agents: [projectAgent("alice")], links: [linkTo("alice", basicOrchestrator)] })
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
-    dialogs: { selects: ["agent:planner", "__none__"] },
+    dialogs: { selects: ["member:basic/planner", "__none__"] },
   })
   try {
     await goto(fixture, "agent:project:alice", "alice")
@@ -3624,12 +3627,12 @@ test("l relinks an agent to another preset with the current link preselected, an
     expect(footer(fixture.captureCharFrame())).toContain("l link")
     expect(dispatch(fixture, "l")).toBe(true)
     await until(fixture, () => fixture.fake.linkSets.length === 1)
-    expect(fixture.fake.linkSets[0]).toEqual({ level: "project", agent: "alice", preset: { kind: "agent", id: "planner" } })
+    expect(fixture.fake.linkSets[0]).toEqual({ level: "project", agent: "alice", preset: basicPlanner })
     const picker = fixture.fake.selectInputs[0]
     expect(picker.title).toBe("Link to preset")
-    expect(picker.current).toBe("agent:orchestrator")
+    expect(picker.current).toBe("member:basic/orchestrator")
     expect(picker.options.at(-1)).toEqual({ title: "None — unlink", value: "__none__" })
-    expect(fixture.fake.toasts).toContainEqual({ variant: "success", message: "Linked alice to Planner (Plus)" })
+    expect(fixture.fake.toasts).toContainEqual({ variant: "success", message: "Linked alice to Basic › planner (Plus)" })
     expect(dispatch(fixture, "l")).toBe(true)
     await until(fixture, () => fixture.fake.linkSets.length === 2)
     expect(fixture.fake.linkSets[1]).toEqual({ level: "project", agent: "alice", preset: null })
@@ -3641,7 +3644,7 @@ test("l relinks an agent to another preset with the current link preselected, an
 
 test("l on a team relinks to a team preset; l is not offered on rows that take no link", async () => {
   const snapshot = createSnapshot({ agents: [projectAgent("alice")], teams: [{ level: "project", team: "crew", enabled: false, agents: [] }] })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], height: 60, dialogs: { selects: ["opencodeplus-team"] } })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], height: 60, dialogs: { selects: ["basic"] } })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // A group row has no owner.
@@ -3654,7 +3657,7 @@ test("l on a team relinks to a team preset; l is not offered on rows that take n
       level: "project",
       agent: null,
       team: { level: "project", team: "crew" },
-      preset: { kind: "team", id: "opencodeplus-team" },
+      preset: { kind: "team", id: "basic" },
     })
     expect(fixture.fake.selectInputs[0]?.title).toBe("Link to team preset")
     expect(fixture.fake.selectInputs[0]?.options.at(-1)).toEqual({ title: "None — unlink", value: "" })
@@ -3673,15 +3676,15 @@ test("l toasts the server's refusal of a cycle", async () => {
   const message = "Linking agent:mine to agent:other would make it reach itself (agent:other → agent:mine)"
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
-    dialogs: { selects: ["agent:planner"] },
-    rpcErrors: { "link.set": { type: "link.cycle", message, data: { preset: { kind: "agent", id: "planner" }, through: [] } } },
+    dialogs: { selects: ["member:basic/planner"] },
+    rpcErrors: { "link.set": { type: "link.cycle", message, data: { preset: basicPlanner, through: [] } } },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await goto(fixture, "agent:preset:mine", "mine")
     expect(dispatch(fixture, "l")).toBe(true)
     await until(fixture, () => fixture.fake.toasts.length === 1)
-    expect(fixture.fake.linkSets[0]).toEqual({ level: "preset", agent: "mine", preset: { kind: "agent", id: "planner" } })
+    expect(fixture.fake.linkSets[0]).toEqual({ level: "preset", agent: "mine", preset: basicPlanner })
     expect(fixture.fake.toasts).toEqual([{ variant: "error", message }])
   } finally {
     fixture.destroy()
@@ -3692,7 +3695,7 @@ test("d on a User preset in use toasts who uses it", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("alice")],
     presets: [{ type: "preset", level: "preset", kind: "agent", id: "mine", updated: PRESET_UPDATED }],
-    links: [linkTo("alice", "mine")],
+    links: [linkTo("alice", { kind: "agent", id: "mine" })],
   })
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
@@ -3722,14 +3725,14 @@ test("d on a User preset in use toasts who uses it", async () => {
 })
 
 test("rows show the from-label suffix and the inspector its provenance and link", async () => {
-  const snapshot = createSnapshot({ agents: [projectAgent("alice")], items: [bashItem()], links: [linkTo("alice", "orchestrator")] })
+  const snapshot = createSnapshot({ agents: [projectAgent("alice")], items: [bashItem()], links: [linkTo("alice", basicOrchestrator)] })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160 })
   try {
     await goto(fixture, "agent:project:alice", "alice")
-    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("preset Orchestrator (Plus)")))
+    await fixture.waitForFrame((frame) => inspector(frame).includes(flat("preset Basic › orchestrator (Plus)")))
     await goto(fixture, "item:project:alice:tool:bash", "bash")
-    const frame = await fixture.waitForFrame((next) => inspector(next).includes(flat("source from preset Orchestrator")))
-    expect(selectedRow(frame)).toMatch(/● bash\s+from preset Orchestrator/)
+    const frame = await fixture.waitForFrame((next) => inspector(next).includes(flat("source from preset Basic › orchestrator")))
+    expect(selectedRow(frame)).toMatch(/● bash\s+from preset Basic › orchestrator/)
   } finally {
     fixture.destroy()
   }
@@ -3758,7 +3761,7 @@ test("enter on a state review offers keep yours / take from the preset; keep re-
   const snapshot = createSnapshot({
     agents: [projectAgent("alice")],
     items: [bashItem()],
-    links: [linkTo("alice", "orchestrator")],
+    links: [linkTo("alice", basicOrchestrator)],
     records: [reviewedBash()],
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { selects: ["keep"] } })
@@ -3773,7 +3776,7 @@ test("enter on a state review offers keep yours / take from the preset; keep re-
     expect(choice.title).toBe('Review "bash"')
     expect(choice.options.map((option) => [option.title, option.value])).toEqual([
       ["Keep yours (off)", "keep"],
-      ["Take from preset Orchestrator (on)", "take"],
+      ["Take from preset Basic › orchestrator (on)", "take"],
     ])
     const record = fixture.fake.mutateInputs[0].records.find((entry) => entry.type === "customization" && entry.item === "tool:bash")
     expect(record).toMatchObject({ state: "off", basedOnState: "on" })
@@ -3788,7 +3791,7 @@ test("take on a state review drops yours; with text under review too the diff fo
   const taken = createSnapshot({
     agents: [projectAgent("alice")],
     items: [bashItem()],
-    links: [linkTo("alice", "orchestrator")],
+    links: [linkTo("alice", basicOrchestrator)],
     records: [reviewedBash()],
   })
   const fixture = await renderInstructionsRoute({ snapshots: [taken], width: 160, dialogs: { selects: ["take"] } })
@@ -3803,7 +3806,7 @@ test("take on a state review drops yours; with text under review too the diff fo
   const both = createSnapshot({
     agents: [projectAgent("alice")],
     items: [bashItem()],
-    links: [linkTo("alice", "orchestrator")],
+    links: [linkTo("alice", basicOrchestrator)],
     records: [reviewedBash({ text: "mine", basedOnText: "old", basedOn: "fp-old" })],
   })
   const second = await renderInstructionsRoute({ snapshots: [both], width: 160, dialogs: { selects: ["take"] } })

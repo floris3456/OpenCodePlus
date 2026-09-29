@@ -433,7 +433,7 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   const mcpConfig = { type: "remote", url: "https://example.test" }
   process.env.OPENCODE_CONFIG_DIR = toolConfig
   // "<id>" names an agent preset in the string form tools accept.
-  await runOk(toolCreate, { kind: "agent", id: "helper", preset: "orchestrator" })
+  await runOk(toolCreate, { kind: "agent", id: "helper", preset: "basic/orchestrator" })
   await runOk(toolCreate, { kind: "skill", name: "notes2", body: skillBody })
   await runOk(toolCreate, { kind: "base", id: "custom", title: baseTitle, text: baseText })
   // OpenCodePlus: create kind:"instruction" is disabled pending the Context
@@ -442,7 +442,7 @@ test("create agent/skill/base/instruction/mcp write the same files as the api pa
   // await runOk(toolCreate, { kind: "instruction", name: "AGENTS.md", text: instructionText })
   await runOk(toolCreate, { kind: "mcp", name: "search", config: mcpConfig })
   process.env.OPENCODE_CONFIG_DIR = apiConfig
-  const apiAgent = await apiApi.createAgent({ scope: "project", id: "helper", preset: { kind: "agent", id: "orchestrator" } })
+  const apiAgent = await apiApi.createAgent({ scope: "project", id: "helper", preset: { kind: "member", team: "basic", id: "orchestrator" } })
   if (!apiAgent.ok) throw new Error(`api createAgent failed: ${apiAgent.error.message}`)
   const apiSkill = await apiApi.createSkill({ name: "notes2", body: skillBody })
   if (!apiSkill.ok) throw new Error(`api createSkill failed: ${apiSkill.error.message}`)
@@ -1335,9 +1335,9 @@ test("create model preserves the selected member owner and returns its addressab
   const create = need(tools, "instructions_create")
   const show = need(tools, "instructions_show")
   const set = need(tools, "instructions_set")
-  await runOk(create, { kind: "preset", id: "reader", from: "scout" })
+  await runOk(create, { kind: "preset", id: "reader", from: "basic/scout" })
   await runOk(create, { kind: "teamPreset", id: "crew" })
-  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "scout" })
+  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "basic/scout" })
   const model = { kind: "model", providerID: "acme", modelID: "nova-2", level: "preset", agent: "reader" }
   const standalone = await runOk(create, model) as { id: string }
   await runOk(set, { id: standalone.id, active: true })
@@ -1376,15 +1376,15 @@ test("show separates inherited state and text provenance across role override an
   const show = need(tools, "instructions_show")
   const set = need(tools, "instructions_set")
   await runOk(create, { kind: "teamPreset", id: "crew" })
-  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "scout" })
+  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "basic/scout" })
   await runOk(set, { id: "item:preset:crew/:reader:system:role", text: "Inherited member verification text" })
   await runOk(create, { kind: "team", team: "live", level: "global", preset: "crew" })
   const id = "item:global:live/:reader:system:role"
   const inherited = {
     text: "Inherited member verification text",
-    stateFrom: { kind: "preset", id: "scout", shipped: true },
+    stateFrom: { kind: "preset", id: "scout", team: "basic", shipped: true },
     textFrom: { kind: "preset", id: "reader", team: "crew", shipped: false },
-    from: "from preset Scout",
+    from: "from preset Basic › scout",
   }
   expect(await runOk(show, { id })).toMatchObject(inherited)
   await runOk(set, { id, text: "Local role override" })
@@ -2577,7 +2577,7 @@ test("create kind member adds members at project level, refuses a Defaults team,
     team: " crew:one ",
     level: "project",
     id: "nested/beta",
-    preset: "review/editor",
+    preset: "basic/implementer",
   })) as { id: string; item: string }
   expect(member.id).toBe("team:project:crew:one:nested/beta")
   expect(member.item).toBe("nested/beta")
@@ -2587,7 +2587,7 @@ test("create kind member adds members at project level, refuses a Defaults team,
   round3Capture(
     "member flow: create project member (padded colon team, nested member id)",
     {
-      request: { kind: "member", team: " crew:one ", level: "project", id: "nested/beta", preset: "review/editor" },
+      request: { kind: "member", team: " crew:one ", level: "project", id: "nested/beta", preset: "basic/implementer" },
       output: member,
       file: { path: memberPath, text: await Bun.file(memberPath).text() },
     },
@@ -2706,7 +2706,7 @@ test("create kind member forwards the preset to team.addAgent", async () => {
     team: "crew",
     level: "project",
     id: "fielded",
-    preset: "planner",
+    preset: "basic/planner",
   })) as { id: string; item: string }
   expect(created.id).toBe("team:project:crew:fielded")
   expect(created.item).toBe("fielded")
@@ -2715,7 +2715,7 @@ test("create kind member forwards the preset to team.addAgent", async () => {
     level: "project",
     team: "crew",
     id: "fielded",
-    preset: { kind: "agent", id: "planner" },
+    preset: { kind: "member", team: "basic", id: "planner" },
     actor: { type: "tool" },
   })
   expect(await Bun.file(path.join(projectTeamsPath(project), "crew", "fielded.md")).text()).toBe(
@@ -2726,7 +2726,7 @@ test("create kind member forwards the preset to team.addAgent", async () => {
   round3Capture("member flow: preset forwarded to team.addAgent", { output: created, forwarded: forwarded[0] }, project)
 })
 
-// DESIGN §5: `template` names a team preset (here the Plus `review` preset),
+// DESIGN §5: `template` names a team preset (here the Plus `basic` preset),
 // no longer a Defaults template: member files carry the preset's mode and
 // description with an empty body, and links make everything else follow it.
 test("create kind team passes the team preset to team.create and produces the preset's members", async () => {
@@ -2741,7 +2741,8 @@ test("create kind team passes the team preset to team.create and produces the pr
   const create = need(tools, "instructions_create")
   const show = need(tools, "instructions_show")
 
-  const created = (await runOk(create, { kind: "team", team: "mine", level: "project", preset: "review" })) as {
+  const memberIds = ["build-seat", "implementer", "orchestrator", "planner", "reviewer", "scout"]
+  const created = (await runOk(create, { kind: "team", team: "mine", level: "project", preset: "basic" })) as {
     id: string
     item: string
     enabled: boolean
@@ -2753,22 +2754,22 @@ test("create kind team passes the team preset to team.create and produces the pr
     level: "project",
     team: "mine",
     enabled: false,
-    members: ["editor", "reviewer"],
+    members: memberIds,
   })
   const snapshot = await snapshotOf(api)
   expect(snapshot.teams?.find((team) => team.team === "mine")).toEqual({
     level: "project",
     team: "mine",
     enabled: false,
-    agents: ["editor", "reviewer"],
+    agents: memberIds,
   })
   const rows = expandedTree(memoFromSnapshot(snapshot))
-  expect(rows.some((node) => node.id === "team:project:mine:editor")).toBe(true)
+  expect(rows.some((node) => node.id === "team:project:mine:planner")).toBe(true)
   expect(rows.some((node) => node.id === "team:project:mine:reviewer")).toBe(true)
   round3Capture(
     "team template: create kind team with template",
     {
-      request: { kind: "team", team: "mine", level: "project", preset: "review" },
+      request: { kind: "team", team: "mine", level: "project", preset: "basic" },
       output: created,
       show: shownTeam,
       snapshotTeam: snapshot.teams?.find((team) => team.team === "mine"),
@@ -2778,26 +2779,26 @@ test("create kind team passes the team preset to team.create and produces the pr
   )
   // The same handler the TUI's team.create calls wrote the member files.
   const teamDir = path.join(projectTeamsPath(project), "mine")
-  const preset = plusTeamPresets.find((team) => team.id === "review")
-  const editorMember = preset?.members.find((member) => member.id === "editor")
+  const preset = plusTeamPresets.find((team) => team.id === "basic")
+  const plannerMember = preset?.members.find((member) => member.id === "planner")
   const reviewerMember = preset?.members.find((member) => member.id === "reviewer")
-  if (editorMember === undefined || reviewerMember === undefined) throw new Error("missing preset members")
-  const editorText = await Bun.file(path.join(teamDir, "editor.md")).text()
-  expect(editorText).toBe(formatMarkdown({ mode: "primary", description: editorMember.description }, ""))
+  if (plannerMember === undefined || reviewerMember === undefined) throw new Error("missing preset members")
+  const plannerText = await Bun.file(path.join(teamDir, "planner.md")).text()
+  expect(plannerText).toBe(formatMarkdown({ mode: "primary", description: plannerMember.description }, ""))
   expect(await Bun.file(path.join(teamDir, "reviewer.md")).text()).toBe(
     formatMarkdown({ mode: "primary", description: reviewerMember.description }, ""),
   )
   expect(snapshot.links?.map((link) => [link.agent, link.preset])).toEqual(
     expect.arrayContaining([
-      [null, { kind: "team", id: "review" }],
-      ["editor", { kind: "member", team: "review", id: "editor" }],
-      ["reviewer", { kind: "member", team: "review", id: "reviewer" }],
+      [null, { kind: "team", id: "basic" }],
+      ["planner", { kind: "member", team: "basic", id: "planner" }],
+      ["reviewer", { kind: "member", team: "basic", id: "reviewer" }],
     ]),
   )
   round3Capture(
     "team template: member files written",
     {
-      editorFile: { path: path.join(teamDir, "editor.md"), text: editorText },
+      plannerFile: { path: path.join(teamDir, "planner.md"), text: plannerText },
       reviewerFile: { path: path.join(teamDir, "reviewer.md"), text: await Bun.file(path.join(teamDir, "reviewer.md")).text() },
     },
     project,
@@ -2833,14 +2834,14 @@ test("instructions_create entry, preset, teamPreset and presetMember return thei
   const create = need(tools, "instructions_create")
   const show = need(tools, "instructions_show")
 
-  const agent = (await runOk(create, { kind: "agent", id: "helper", preset: "review/editor" })) as { id: string; item: string }
+  const agent = (await runOk(create, { kind: "agent", id: "helper", preset: "basic/implementer" })) as { id: string; item: string }
   expect(agent).toMatchObject({ id: "agent:project:helper", item: "helper" })
   expect((await snapshotOf(api)).links).toEqual([
-    expect.objectContaining({ level: "project", agent: "helper", preset: { kind: "member", team: "review", id: "editor" } }),
+    expect.objectContaining({ level: "project", agent: "helper", preset: { kind: "member", team: "basic", id: "implementer" } }),
   ])
   expect((await runFail(create, { kind: "agent", id: "ghostly", preset: "no-such-preset" })).message).toContain("preset.invalid")
 
-  const entry = (await runOk(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*", preset: "orchestrator" })) as {
+  const entry = (await runOk(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*", preset: "basic/orchestrator" })) as {
     id: string
     item: string
   }
@@ -2849,27 +2850,31 @@ test("instructions_create entry, preset, teamPreset and presetMember return thei
   expect(teamEntry.id).toBe("team:defaults:crew*:*impl*")
   expect((await runFail(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*" })).message).toContain("entry.exists")
 
-  const preset = (await runOk(create, { kind: "preset", id: "mine", from: "planner" })) as { id: string; item: string }
+  const preset = (await runOk(create, { kind: "preset", id: "mine", from: "basic/planner" })) as { id: string; item: string }
   expect(preset).toMatchObject({ id: "agent:preset:mine", item: "mine" })
   expect(await runOk(show, { id: preset.id })).toMatchObject({
     kind: "preset",
     preset: { kind: "agent", id: "mine" },
     origin: "user",
-    link: { kind: "agent", id: "planner" },
+    link: { kind: "member", team: "basic", id: "planner" },
   })
-  const team = (await runOk(create, { kind: "teamPreset", id: "crew", from: "starter" })) as { id: string }
+  const team = (await runOk(create, { kind: "teamPreset", id: "crew", from: "basic" })) as { id: string }
   expect(team.id).toBe("team:preset:crew")
   const member = (await runOk(create, { kind: "presetMember", team: "crew", id: "lead", from: "mine" })) as { id: string }
   expect(member.id).toBe("team:preset:crew:lead")
-  expect((await runFail(create, { kind: "presetMember", team: "starter", id: "x" })).message).toContain("preset.readonly")
-  expect((await runFail(create, { kind: "teamPreset", id: "other", from: "planner" })).message).toContain("preset.invalid")
+  expect((await runFail(create, { kind: "presetMember", team: "basic", id: "x" })).message).toContain("preset.readonly")
+  expect((await runFail(create, { kind: "teamPreset", id: "other", from: "basic/planner" })).message).toContain("preset.invalid")
   const presets = (await snapshotOf(api)).presets?.map((record) => [record.kind, record.team ?? "", record.id]) ?? []
   expect(presets.toSorted()).toEqual(
     [
       ["agent", "", "mine"],
-      ["agent", "crew", "helper"],
+      ["agent", "crew", "build-seat"],
+      ["agent", "crew", "implementer"],
       ["agent", "crew", "lead"],
+      ["agent", "crew", "orchestrator"],
       ["agent", "crew", "planner"],
+      ["agent", "crew", "reviewer"],
+      ["agent", "crew", "scout"],
       ["team", "", "crew"],
     ].toSorted(),
   )
@@ -2886,39 +2891,50 @@ test("instructions_set {preset} relinks and unlinks the row's owner; protected a
   const set = need(tools, "instructions_set")
 
   await runOk(create, { kind: "agent", id: "helper" })
-  const linked = (await runOk(set, { id: "agent:project:helper", preset: "orchestrator" })) as { preset: unknown; status: string }
-  expect(linked).toMatchObject({ preset: { kind: "agent", id: "orchestrator" }, status: 'Linked "helper" to agent:orchestrator' })
+  const linked = (await runOk(set, { id: "agent:project:helper", preset: "basic/orchestrator" })) as { preset: unknown; status: string }
+  expect(linked).toMatchObject({
+    preset: { kind: "member", team: "basic", id: "orchestrator" },
+    status: 'Linked "helper" to member:basic/orchestrator',
+  })
   // The row now inherits from the preset.
   const rows = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
     rows: { id: string; from?: string }[]
   }
-  expect(rows.rows).toEqual([{ id: "item:project:helper:tool:reader", from: "from preset Orchestrator" }])
-  await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "starter", id: "helper" } })
-  expect((await snapshotOf(api)).links).toEqual([expect.objectContaining({ agent: "helper", preset: { kind: "member", team: "starter", id: "helper" } })])
+  expect(rows.rows).toEqual([{ id: "item:project:helper:tool:reader", from: "from preset Basic › orchestrator" }])
+  await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "basic", id: "implementer" } })
+  expect((await snapshotOf(api)).links).toEqual([
+    expect.objectContaining({ agent: "helper", preset: { kind: "member", team: "basic", id: "implementer" } }),
+  ])
   const unlinked = (await runOk(set, { id: "agent:project:helper", preset: null })) as { preset: unknown }
   expect(unlinked.preset).toBeNull()
   expect((await snapshotOf(api)).links).toEqual([])
   expect((await runFail(set, { id: "agent:project:helper", preset: "no-such-preset" })).message).toContain("preset.invalid")
-  expect((await runFail(set, { id: "group:project:agents", preset: "planner" })).message).toContain("link.invalid")
-  expect((await runFail(set, { id: "agent:preset:orchestrator", preset: "planner" })).message).toContain("preset.readonly")
+  expect((await runFail(set, { id: "group:project:agents", preset: "basic/planner" })).message).toContain("link.invalid")
+  expect((await runFail(set, { id: "agent:preset:build", preset: "basic/planner" })).message).toContain("preset.readonly")
 
   // A protected agent's link stays out of a tool's reach; a preset of that name does not.
   await api.createAgent({ scope: "project", id: "guarded" })
-  expect((await runFail(set, { id: "agent:project:guarded", preset: "planner" })).message).toContain("agent.protected")
+  expect((await runFail(set, { id: "agent:project:guarded", preset: "basic/planner" })).message).toContain("agent.protected")
   await runOk(create, { kind: "preset", id: "mine" })
-  await runOk(set, { id: "agent:preset:mine", preset: "scout" })
-  expect((await snapshotOf(api)).links).toEqual([expect.objectContaining({ level: "preset", agent: "mine", preset: { kind: "agent", id: "scout" } })])
+  await runOk(set, { id: "agent:preset:mine", preset: "basic/scout" })
+  expect((await snapshotOf(api)).links).toEqual([
+    expect.objectContaining({ level: "preset", agent: "mine", preset: { kind: "member", team: "basic", id: "scout" } }),
+  ])
 
   // A team relink relinks the members the team preset has, and says which.
-  await runOk(create, { kind: "teamPreset", id: "crewset", from: "starter" })
-  await runOk(create, { kind: "team", team: "crew", level: "project", preset: "starter" })
+  await runOk(create, { kind: "teamPreset", id: "crewset", from: "basic" })
+  await runOk(create, { kind: "team", team: "crew", level: "project", preset: "basic" })
   const team = (await runOk(set, { id: "team:project:crew", preset: "crewset" })) as { members: unknown; status: string }
   expect(team).toMatchObject({
     members: [
-      { agent: "helper", preset: { kind: "member", team: "crewset", id: "helper" } },
+      { agent: "build-seat", preset: { kind: "member", team: "crewset", id: "build-seat" } },
+      { agent: "implementer", preset: { kind: "member", team: "crewset", id: "implementer" } },
+      { agent: "orchestrator", preset: { kind: "member", team: "crewset", id: "orchestrator" } },
       { agent: "planner", preset: { kind: "member", team: "crewset", id: "planner" } },
+      { agent: "reviewer", preset: { kind: "member", team: "crewset", id: "reviewer" } },
+      { agent: "scout", preset: { kind: "member", team: "crewset", id: "scout" } },
     ],
-    status: 'Linked "crew" to team:crewset; relinked helper, planner',
+    status: 'Linked "crew" to team:crewset; relinked build-seat, implementer, orchestrator, planner, reviewer, scout',
   })
 })
 
@@ -2938,7 +2954,7 @@ test("instructions_delete removes Defaults entries and User presets and surfaces
   const inUse = await runFail(del, { id: "agent:preset:mine", confirm: true })
   expect(inUse.message).toContain("preset.inUse")
   expect(inUse.message).toContain("agent:project:user1")
-  expect((await runFail(del, { id: "agent:preset:orchestrator", confirm: true })).message).toContain("read-only")
+  expect((await runFail(del, { id: "agent:preset:build", confirm: true })).message).toContain("read-only")
   await runOk(need(tools, "instructions_set"), { id: "agent:project:user1", preset: null })
   expect(await runOk(del, { id: "agent:preset:mine", confirm: true })).toMatchObject({ ref: { kind: "agent", id: "mine" } })
   expect((await snapshotOf(api)).presets).toEqual([])

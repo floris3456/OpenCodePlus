@@ -46,12 +46,12 @@ test("blank-body agent create from a preset writes the file, emits one instructi
   // Subscribe to the Plus event stream before the create call.
   const emitted = captureEmits(state)
   // DESIGN §5: the preset's mode and description, and an empty body.
-  const created = await api.createAgent({ scope: "project", id: "blank", preset: { kind: "agent", id: "orchestrator" } })
+  const created = await api.createAgent({ scope: "project", id: "blank", preset: { kind: "member", team: "basic", id: "planner" } })
   if (!created.ok) throw new Error(`createAgent failed: ${created.error.message}`)
   // (a) the agent file exists with the exact formatMarkdown bytes for a blank body.
   expect(await Bun.file(created.value.path).exists()).toBe(true)
   expect(await Bun.file(created.value.path).text()).toBe(
-    '---\ndescription: "Owns work, delegates by task, verifies and integrates"\nmode: primary\n---\n',
+    '---\ndescription: "Turns goals into exact task plans with paths and checks"\nmode: primary\n---\n',
   )
   // (b) exactly one instructions.changed is emitted synchronously by the create call.
   const changed = emitted.filter((entry) => entry.name === "instructions.changed")

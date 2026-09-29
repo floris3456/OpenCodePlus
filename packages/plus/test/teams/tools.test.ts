@@ -296,9 +296,9 @@ test("get_context maps real tool surfaces and the caller's permitted custom rost
 
 test("no registered team tool returns E_NOT_IMPLEMENTED for any role in its ceiling", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    await saveRun(root, makeRun("w-1111111111111111", "sol-orchestrator", "ses_team_impl_orch"))
+    await saveRun(root, makeRun("w-1111111111111111", "orchestrator", "ses_team_impl_orch"))
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_impl_orch", "sol-orchestrator")
+    const ctx = toolContext("ses_team_impl_orch", "orchestrator")
     for (const name of teamNames) {
       const outcome = await Effect.runPromise(
         need(tools, `team_${name}`).execute({}, ctx).pipe(
@@ -314,7 +314,7 @@ test("no registered team tool returns E_NOT_IMPLEMENTED for any role in its ceil
 test("a session with no run fails E_NOT_ACTOR with the exact message", async () => {
   await withIsolatedTeamsRoot(async () => {
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_none", "muse-implementer")
+    const ctx = toolContext("ses_team_none", "implementer")
     for (const name of teamNames) {
       const message = await runMessage(need(tools, `team_${name}`), {}, ctx)
       expect(message).toBe(noChatRun("unknown"))
@@ -327,7 +327,7 @@ test("a session with no run fails E_NOT_ACTOR with the exact message", async () 
 test("a session with no run names the input run id in E_NOT_ACTOR", async () => {
   await withIsolatedTeamsRoot(async () => {
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_none_named", "muse-implementer")
+    const ctx = toolContext("ses_team_none_named", "implementer")
     const message = await runMessage(need(tools, "team_followup"), { run: "w-aaaaaaaaaaaaaaaa", requestID: "r1", prompt: "again" }, ctx)
     expect(message).toBe(noChatRun("w-aaaaaaaaaaaaaaaa"))
   })
@@ -335,9 +335,9 @@ test("a session with no run names the input run id in E_NOT_ACTOR", async () => 
 
 test("a reviewer cannot delegate but reaches the finish handler", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    await saveRun(root, makeRun("w-bbbbbbbbbbbbbbbb", "astra-reviewer", "ses_team_reviewer"))
+    await saveRun(root, makeRun("w-bbbbbbbbbbbbbbbb", "reviewer", "ses_team_reviewer"))
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_reviewer", "astra-reviewer")
+    const ctx = toolContext("ses_team_reviewer", "reviewer")
     const delegateMessage = await runMessage(need(tools, "team_delegate"), {}, ctx)
     expect(delegateMessage.startsWith("E_ROLE:")).toBe(true)
     const finishMessage = await runMessage(
@@ -351,9 +351,9 @@ test("a reviewer cannot delegate but reaches the finish handler", async () => {
 
 test("a run whose role does not match the calling agent fails E_NOT_ACTOR", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    await saveRun(root, makeRun("w-cccccccccccccccc", "muse-implementer", "ses_team_mismatch"))
+    await saveRun(root, makeRun("w-cccccccccccccccc", "implementer", "ses_team_mismatch"))
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_mismatch", "sol-orchestrator")
+    const ctx = toolContext("ses_team_mismatch", "orchestrator")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
     expect(message).toBe(notActor("w-cccccccccccccccc"))
   })
@@ -381,7 +381,7 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
       await registerTeamTools(pluginCtx, api, shippedTable)
       const listTool = need(harness.tools, "team_list")
       const statusTool = need(harness.tools, "team_status")
-      const toolCtx = toolContext("ses_team_root_001", "sol-orchestrator")
+      const toolCtx = toolContext("ses_team_root_001", "orchestrator")
 
       // Any tool (e.g. team_list) from a no-run orchestrator session bootstraps a root run
       const listOutput = (await Effect.runPromise(listTool.execute({}, toolCtx).pipe(Effect.map((result) => result.output)))) as Record<
@@ -400,7 +400,7 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
       expect(statusOutput[0]?.run).toBe(created)
       const stored = await loadRun(root, created)
       expect(stored?.kind).toBe("main")
-      expect(stored?.role).toBe("sol-orchestrator")
+      expect(stored?.role).toBe("orchestrator")
       expect(stored?.directory).toBe(repoDir)
       expect(stored?.sessionID).toBe("ses_team_root_001")
       expect(stored?.projectDirectory).toBe(repoDir)
@@ -422,7 +422,7 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
 test("team_status from a no-run implementer session still fails E_NOT_ACTOR", async () => {
   await withIsolatedTeamsRoot(async () => {
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_prep_impl", "muse-implementer")
+    const ctx = toolContext("ses_team_prep_impl", "implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
     expect(message).toBe(noChatRun("unknown"))
   })
@@ -448,7 +448,7 @@ test("team_status naming runs from a no-run orchestrator session bootstraps a ro
       const api = createTeamApi(pluginCtx, teamState())
       await registerTeamTools(pluginCtx, api, shippedTable)
       const tool = need(harness.tools, "team_status")
-      const toolCtx = toolContext("ses_team_prep_orch_cwd", "sol-orchestrator")
+      const toolCtx = toolContext("ses_team_prep_orch_cwd", "orchestrator")
       const message = await runMessage(tool, { runs: ["w-0000000000000000"] }, toolCtx)
       expect(message.startsWith("E_UNKNOWN_RUN:")).toBe(true)
       const bound = await bySession(root, "ses_team_prep_orch_cwd")
@@ -467,13 +467,13 @@ test("team_status naming runs from a no-run orchestrator session bootstraps a ro
 test("team_status reports each run's worktree state through the registered tool", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const session = "ses_team_status_worktree"
-    const caller = makeRun("w-5555555555555555", "sol-orchestrator", session)
+    const caller = makeRun("w-5555555555555555", "orchestrator", session)
     const removed: RunRecord = {
-      ...makeRun("w-6666666666666666", "muse-implementer", "ses_team_status_removed"),
+      ...makeRun("w-6666666666666666", "implementer", "ses_team_status_removed"),
       parent: caller.id,
       worktree: "removed",
     }
-    const live = { ...makeRun("w-7777777777777777", "muse-implementer", "ses_team_status_present"), parent: caller.id }
+    const live = { ...makeRun("w-7777777777777777", "implementer", "ses_team_status_present"), parent: caller.id }
     await saveRun(root, caller)
     await saveRun(root, removed)
     await saveRun(root, live)
@@ -481,7 +481,7 @@ test("team_status reports each run's worktree state through the registered tool"
     const output = (await runSuccess(
       need(tools, "team_status"),
       { runs: [removed.id, live.id] },
-      toolContext(session, "sol-orchestrator"),
+      toolContext(session, "orchestrator"),
     )) as Array<Record<string, unknown>>
     expect(output.map((entry) => [entry.run, entry.worktree])).toEqual([
       [removed.id, "removed"],
@@ -537,7 +537,7 @@ async function settledToolCalls(
 test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_audit_refuse", "muse-implementer")
+    const ctx = toolContext("ses_team_audit_refuse", "implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
     expect(message).toBe(noChatRun("unknown"))
     const lines = await auditLines(root)
@@ -547,7 +547,7 @@ test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async 
     expect(line.ok).toBe(false)
     expect(line.code).toBe("E_NOT_ACTOR")
     expect(line.run).toBeNull()
-    expect(line.actor).toBe("muse-implementer")
+    expect(line.actor).toBe("implementer")
     expect(line.sessionID).toBe("ses_team_audit_refuse")
     expect(line.tool).toBe("team_status")
     expect(typeof line.durationMs).toBe("number")
@@ -561,12 +561,12 @@ test("successful gated call writes tool.call with run id and chain verifies acro
     try {
       const runID = "w-aaaaaaaaaaaaaaaa"
       const session = "ses_team_audit_ok"
-      await saveRun(root, { ...makeRun(runID, "muse-implementer", session), directory: workDir })
+      await saveRun(root, { ...makeRun(runID, "implementer", session), directory: workDir })
       const tools = await registeredTools()
-      const refuseCtx = toolContext("ses_team_audit_none", "muse-implementer")
+      const refuseCtx = toolContext("ses_team_audit_none", "implementer")
       const refused = await runMessage(need(tools, "team_status"), {}, refuseCtx)
       expect(refused).toBe(noChatRun("unknown"))
-      const okCtx = toolContext(session, "muse-implementer")
+      const okCtx = toolContext(session, "implementer")
       const output = await runSuccess(need(tools, "team_status"), {}, okCtx)
       expect(output).toBeDefined()
       const lines = await auditLines(root)
@@ -582,7 +582,7 @@ test("successful gated call writes tool.call with run id and chain verifies acro
       expect(second.code).toBeNull()
       expect(second.run).toBe(runID)
       expect(second.tool).toBe("team_status")
-      expect(second.actor).toBe("muse-implementer")
+      expect(second.actor).toBe("implementer")
       expect(second.sessionID).toBe(session)
       expect(typeof second.durationMs).toBe("number")
       expect("input" in second).toBe(false)
@@ -596,9 +596,9 @@ test("successful gated call writes tool.call with run id and chain verifies acro
 
 test("integrate, set_checks, supersede, stop and list reach real handlers", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    await saveRun(root, makeRun("w-dddddddddddddddd", "sol-orchestrator", "ses_team_orch"))
+    await saveRun(root, makeRun("w-dddddddddddddddd", "orchestrator", "ses_team_orch"))
     const tools = await registeredTools()
-    const ctx = toolContext("ses_team_orch", "sol-orchestrator")
+    const ctx = toolContext("ses_team_orch", "orchestrator")
 
     const integrateMessage = await runMessage(
       need(tools, "team_integrate"),
@@ -635,7 +635,7 @@ test("integrate, set_checks, supersede, stop and list reach real handlers", asyn
 
 test("registered set_checks returns E_CHECKS for an invalid check through the tool seam", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    await saveRun(root, makeRun("w-eeeeeeeeeeeeeeee", "sol-orchestrator", "ses_team_checks_invalid"))
+    await saveRun(root, makeRun("w-eeeeeeeeeeeeeeee", "orchestrator", "ses_team_checks_invalid"))
     const tools = await registeredTools()
     const tool = need(tools, "team_set_checks")
     const invalid = { checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] }
@@ -645,7 +645,7 @@ test("registered set_checks returns E_CHECKS for an invalid check through the to
       const decoded = Schema.decodeUnknownOption(inputSchema)(invalid)
       expect(Option.isSome(decoded)).toBe(true)
     }
-    const ctx = toolContext("ses_team_checks_invalid", "sol-orchestrator")
+    const ctx = toolContext("ses_team_checks_invalid", "orchestrator")
     const message = await runMessage(tool, invalid, ctx)
     expect(message.startsWith("E_CHECKS:")).toBe(true)
     expect(message).toContain("Checks need distinct short IDs.")
@@ -667,19 +667,19 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
 
       // 1. E_PATHS: Orchestrator delegating with empty paths for implementer
       const orchRun = {
-        ...makeRun("w-orch000000000001", "sol-orchestrator", "ses_orch_paths"),
+        ...makeRun("w-orch000000000001", "orchestrator", "ses_orch_paths"),
         directory: repoDir,
         base: head,
         head,
       }
       await saveRun(root, orchRun)
       const tools = await registeredTools()
-      const orchCtx = toolContext("ses_orch_paths", "sol-orchestrator")
+      const orchCtx = toolContext("ses_orch_paths", "orchestrator")
       const pathsMsg = await runMessage(
         need(tools, "team_delegate"),
         {
           requestID: "r-paths",
-          role: "muse-implementer",
+          role: "implementer",
           objective: "Implement with empty paths to trigger E_PATHS refusal.",
           deliverable: { kind: "commit" },
           scope: { paths: [], forbidden: [] },
@@ -688,18 +688,18 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         orchCtx,
       )
       expect(pathsMsg).toBe(
-        `E_PATHS: muse-implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+        `E_PATHS: implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
       )
 
       // 2. E_ROLE: Planner delegating to a non-orchestrator (e.g. scout)
       const plannerRun = {
-        ...makeRun("w-plan000000000001", "fable-planner", "ses_planner_role"),
+        ...makeRun("w-plan000000000001", "planner", "ses_planner_role"),
         directory: repoDir,
         base: head,
         head,
       }
       await saveRun(root, plannerRun)
-      const plannerCtx = toolContext("ses_planner_role", "fable-planner")
+      const plannerCtx = toolContext("ses_planner_role", "planner")
       const roleMsg = await runMessage(
         need(tools, "team_delegate"),
         {
@@ -715,7 +715,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
       // Who a planner may delegate to is its "Delegate to" rows, which its
       // member preset opens for the team's orchestrators.
       expect(roleMsg).toBe(
-        `E_ROLE: fable-planner may not delegate to "scout". You may delegate to: opus-orchestrator, sol-orchestrator.\naccepted: {"role":"opus-orchestrator"}`,
+        `E_ROLE: planner may not delegate to "scout". You may delegate to: orchestrator.\naccepted: {"role":"orchestrator"}`,
       )
 
       // 3. E_CHECKS: Invalid check ID in set_checks
@@ -732,14 +732,14 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
 
       // 4. E_SUMMARY: Summary with 16 lines in finish
       const implRun = {
-        ...makeRun("w-impl000000000001", "muse-implementer", "ses_impl_summary"),
+        ...makeRun("w-impl000000000001", "implementer", "ses_impl_summary"),
         directory: repoDir,
         base: head,
         head,
         attempts: [{ n: 1, state: "streaming" as const, trigger: "delegate", startedAt: new Date().toISOString() }],
       }
       await saveRun(root, implRun)
-      const implCtx = toolContext("ses_impl_summary", "muse-implementer")
+      const implCtx = toolContext("ses_impl_summary", "implementer")
       const summaryMsg = await runMessage(
         need(tools, "team_finish"),
         {
@@ -940,7 +940,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
 
       const sessionID = "ses_planner_gate_001"
       const plannerRun: RunRecord = {
-        ...makeRun("main-planner000001", "fable-planner", sessionID),
+        ...makeRun("main-planner000001", "planner", sessionID),
         directory: repoDir,
         base: head,
         head,
@@ -969,7 +969,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       // 1. First call: ALLOW
       const allowCtx: Tool.Context = {
         sessionID: Session.ID.make(sessionID),
-        agent: Agent.ID.make("fable-planner"),
+        agent: Agent.ID.make("planner"),
         messageID: SessionMessage.ID.make("msg_plan_allow"),
         id: Tool.CallID.make("call_plan_allow"),
         progress: () => Effect.void,
@@ -977,7 +977,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
 
       const delegateInput = Schema.decodeUnknownSync(Brief)({
         requestID: "r-allow-01",
-        role: "sol-orchestrator",
+        role: "orchestrator",
         reason: "3 independent packages, each needs its own workers",
         objective: "Build the feature in an isolated worktree for test.",
         deliverable: { kind: "commit" as const },
@@ -1008,12 +1008,12 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
 
       const childRecord = await loadRun(root, childRunID)
       expect(childRecord).toBeDefined()
-      expect(childRecord?.role).toBe("sol-orchestrator")
+      expect(childRecord?.role).toBe("orchestrator")
 
       // 2. Second call: DENY
       const denyCtx: Tool.Context = {
         sessionID: Session.ID.make(sessionID),
-        agent: Agent.ID.make("fable-planner"),
+        agent: Agent.ID.make("planner"),
         messageID: SessionMessage.ID.make("msg_plan_deny"),
         id: Tool.CallID.make("call_plan_deny"),
         progress: () => Effect.void,
@@ -1021,7 +1021,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
 
       const denyInput = Schema.decodeUnknownSync(Brief)({
         requestID: "r-deny-01",
-        role: "sol-orchestrator",
+        role: "orchestrator",
         reason: "3 independent packages, each needs its own workers",
         objective: "Build another feature in an isolated worktree for test.",
         deliverable: { kind: "commit" as const },
@@ -1066,7 +1066,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       const denyLine = denials[0] as Record<string, unknown>
       expect(denyLine.code).toBe("E_PERMISSION")
       expect(denyLine.outcome).toBe("asked:deny")
-      expect(denyLine.actor).toBe("fable-planner")
+      expect(denyLine.actor).toBe("planner")
       expect(denyLine.sessionID).toBe(sessionID)
 
       const allowed = (await auditLines(root)).filter(
@@ -1074,7 +1074,7 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       )
       expect(allowed).toHaveLength(1)
       expect(allowed[0]?.outcome).toBe("asked:allow")
-      expect(allowed[0]?.actor).toBe("fable-planner")
+      expect(allowed[0]?.actor).toBe("planner")
       expect(allowed[0]?.sessionID).toBe(sessionID)
 
       const v = await verify(root)
@@ -1102,7 +1102,7 @@ test("a human rejection without feedback writes exactly one asked:deny line and 
 
       const sessionID = "ses_planner_decline_001"
       const plannerRun: RunRecord = {
-        ...makeRun("main-planner000002", "fable-planner", sessionID),
+        ...makeRun("main-planner000002", "planner", sessionID),
         directory: repoDir,
         base: head,
         head,
@@ -1127,7 +1127,7 @@ test("a human rejection without feedback writes exactly one asked:deny line and 
 
       const declineCtx: Tool.Context = {
         sessionID: Session.ID.make(sessionID),
-        agent: Agent.ID.make("fable-planner"),
+        agent: Agent.ID.make("planner"),
         messageID: SessionMessage.ID.make("msg_plan_decline"),
         id: Tool.CallID.make("call_plan_decline"),
         progress: () => Effect.void,
@@ -1135,7 +1135,7 @@ test("a human rejection without feedback writes exactly one asked:deny line and 
 
       const declineInput = Schema.decodeUnknownSync(Brief)({
         requestID: "r-decline-01",
-        role: "sol-orchestrator",
+        role: "orchestrator",
         reason: "3 independent packages, each needs its own workers",
         objective: "Delegate work the operator refuses outright, with no feedback.",
         deliverable: { kind: "commit" as const },
@@ -1170,7 +1170,7 @@ test("a human rejection without feedback writes exactly one asked:deny line and 
       expect(line.ok).toBe(false)
       expect(line.code).toBe("E_PERMISSION")
       expect(line.outcome).toBe("asked:deny")
-      expect(line.actor).toBe("fable-planner")
+      expect(line.actor).toBe("planner")
       expect(line.sessionID).toBe(sessionID)
       expect(line.run).toBe(plannerRun.id)
       expect(typeof line.durationMs).toBe("number")
@@ -1189,7 +1189,7 @@ test("child session calling team_status executes without creating a permission r
     const sessionID = "ses_child_status_test"
     const childRunID = "w-child0000000001"
     const childRun: RunRecord = {
-      ...makeRun(childRunID, "muse-implementer", sessionID),
+      ...makeRun(childRunID, "implementer", sessionID),
       parent: "main-000000000000",
     }
     await saveRun(root, childRun)
@@ -1208,7 +1208,7 @@ test("child session calling team_status executes without creating a permission r
 
     const statusCtx: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
-      agent: Agent.ID.make("muse-implementer"),
+      agent: Agent.ID.make("implementer"),
       messageID: SessionMessage.ID.make("msg_child_status"),
       id: Tool.CallID.make("call_child_status"),
       progress: () => Effect.void,
@@ -1228,7 +1228,7 @@ test("child session calling team_status executes without creating a permission r
     expect(statusLine?.code).toBeNull()
     expect(statusLine?.outcome).toBe("allowed")
     expect(statusLine?.run).toBe(childRunID)
-    expect(statusLine?.actor).toBe("muse-implementer")
+    expect(statusLine?.actor).toBe("implementer")
 
     const v = await verify(root)
     expect(v.ok).toBe(true)
@@ -1240,7 +1240,7 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     const sessionID = "ses_partial_deny_test"
     const implRunID = "w-impl0000000001"
     const implRun: RunRecord = {
-      ...makeRun(implRunID, "muse-implementer", sessionID),
+      ...makeRun(implRunID, "implementer", sessionID),
       parent: "main-000000000000",
     }
     await saveRun(root, implRun)
@@ -1264,7 +1264,7 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
 
     const ctx: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
-      agent: Agent.ID.make("muse-implementer"),
+      agent: Agent.ID.make("implementer"),
       messageID: SessionMessage.ID.make("msg_partial_deny"),
       id: Tool.CallID.make("call_partial_deny"),
       progress: () => Effect.void,
@@ -1288,7 +1288,7 @@ test("partial deny: ceiling-denied team tool refuses at call time with E_PERMISS
     expect(denyLine?.code).toBe("E_PERMISSION")
     expect(denyLine?.outcome).toBe("denied")
     expect(denyLine?.run).toBe(implRunID)
-    expect(denyLine?.actor).toBe("muse-implementer")
+    expect(denyLine?.actor).toBe("implementer")
 
     const v = await verify(root)
     expect(v.ok).toBe(true)
@@ -1303,7 +1303,7 @@ test("two Code Mode calls that share one CallID write two distinct audit lines",
   await withIsolatedTeamsRoot(async (root) => {
     const sessionID = "ses_shared_call_id"
     const plannerRun: RunRecord = {
-      ...makeRun("main-sharedcall0001", "fable-planner", sessionID),
+      ...makeRun("main-sharedcall0001", "planner", sessionID),
       kind: "main",
     }
     await saveRun(root, plannerRun)
@@ -1320,7 +1320,7 @@ test("two Code Mode calls that share one CallID write two distinct audit lines",
     // One Code Mode `execute` context: same CallID, same messageID, same agent.
     const shared: Tool.Context = {
       sessionID: Session.ID.make(sessionID),
-      agent: Agent.ID.make("fable-planner"),
+      agent: Agent.ID.make("planner"),
       messageID: SessionMessage.ID.make("msg_codemode_shared"),
       id: Tool.CallID.make("call_codemode_shared"),
       progress: () => Effect.void,
@@ -1328,7 +1328,7 @@ test("two Code Mode calls that share one CallID write two distinct audit lines",
 
     const brief = Schema.decodeUnknownSync(Brief)({
       requestID: "r-shared-1",
-      role: "sol-orchestrator",
+      role: "orchestrator",
       reason: "3 independent packages, each needs its own workers",
       objective: "Delegate while a sibling team call shares the same CallID.",
       deliverable: { kind: "commit" as const },
@@ -1579,7 +1579,7 @@ test("C — every field path of every registered team tool treats null as omissi
   const baseInputs: Record<string, Record<string, unknown>> = {
     team_delegate: {
       requestID: "req-1",
-      role: "gemini-implementer",
+      role: "implementer",
       objective: "Implement null-tolerant tool inputs cleanly",
       deliverable: { kind: "commit" },
       scope: { paths: ["a.ts"] },
@@ -1691,7 +1691,7 @@ test("C2 — null inside a default-wrapped array element decodes as omission (br
   const schema = registeredSchema(await registeredTools(), "team_delegate")
   const brief = {
     requestID: "T1-a",
-    role: "muse-implementer",
+    role: "implementer",
     objective: "Make the agent filter apply in the list tool output.",
     deliverable: { kind: "commit" },
     scope: { paths: ["packages/plus/src/x.ts"] },
@@ -1719,7 +1719,7 @@ test("C4 — null on required fields still fails with a schema error at every de
   const tools = await registeredTools()
   const brief = {
     requestID: "T1-a",
-    role: "muse-implementer",
+    role: "implementer",
     objective: "Make the agent filter apply in the list tool output.",
     deliverable: { kind: "commit" },
     scope: { paths: ["packages/plus/src/x.ts"] },
@@ -1752,7 +1752,7 @@ test("D — a home session with a non-repo location gets E_NOT_ACTOR and creates
       const api = createTeamApi(pluginCtx, teamState())
       await registerTeamTools(pluginCtx, api, shippedTable)
       const tool = need(harness.tools, "team_get_context")
-      const toolCtx = toolContext("ses_home_session_no_repo", "sol-orchestrator")
+      const toolCtx = toolContext("ses_home_session_no_repo", "orchestrator")
 
       const error = await Effect.runPromise(
         tool.execute({}, toolCtx).pipe(

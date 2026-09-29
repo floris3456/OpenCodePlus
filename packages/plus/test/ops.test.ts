@@ -855,8 +855,9 @@ test("reset refusal distinguishes stored override on non-resettable row from abs
 // An agent whose preset supplies its text saves its own text against that
 // text, not against the raw upstream: its first edit is not "to review".
 test("saveText records the text above the row (the preset's) as its baseline, so a first own edit is not to review", async () => {
-  const { plusAgentPresets } = await import("../src/instructions/presets.js")
-  const orchestratorRole = plusAgentPresets.find((preset) => preset.id === "orchestrator")?.role ?? ""
+  const { plusTeamPresets } = await import("../src/instructions/presets.js")
+  const orchestratorRole =
+    plusTeamPresets.find((team) => team.id === "basic")?.members.find((member) => member.id === "orchestrator")?.role ?? ""
   const base = baseInput()
   const input: MemoInput = {
     ...base,
@@ -865,7 +866,10 @@ test("saveText records the text above the row (the preset's) as its baseline, so
       { id: "system:role", kind: "system", group: "none", title: "Role", text: "", enabled: true, fingerprint: fingerprint(""), agents: ["beta"] },
     ],
     agents: [...base.agents, { id: "beta", scope: "project" }],
-    links: [...(base.links ?? []), { type: "link", level: "project", agent: "beta", preset: { kind: "agent", id: "orchestrator" }, updated: "2026-01-01T00:00:00.000Z" }],
+    links: [
+      ...(base.links ?? []),
+      { type: "link", level: "project", agent: "beta", preset: { kind: "member", team: "basic", id: "orchestrator" }, updated: "2026-01-01T00:00:00.000Z" },
+    ],
   }
   const rowId = exactId(input, "item:project:beta:system:role")
   const saved = saveText(input, rowId, "my own role")

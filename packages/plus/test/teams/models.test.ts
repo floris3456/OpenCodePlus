@@ -49,7 +49,7 @@ function throwingContext(captured: { current?: unknown }): {
 
 const ORCHESTRATOR = { providerID: "cliproxyapi", modelID: "claude-opus-5", variant: "high" } as const
 const IMPLEMENTER = { providerID: "acme", modelID: "nova-2" } as const
-const IMPLEMENTER_DESCRIPTION = "Muse implementer: executes the brief inside scope and finishes"
+const IMPLEMENTER_DESCRIPTION = "Executes the brief inside scope and finishes"
 
 // No team ships at Defaults any more (DESIGN §2: the shipped teams are Plus
 // team presets); these tests are about a Defaults-tier team's first publish,
@@ -57,7 +57,7 @@ const IMPLEMENTER_DESCRIPTION = "Muse implementer: executes the brief inside sco
 const defaultsRegistry = { builtins: builtinTeams }
 
 function teamRecord(): StoredRecord {
-  return { type: "team", level: "defaults", team: "opencodeplus-team", enabled: true, updated: UPDATED }
+  return { type: "team", level: "defaults", team: "basic", enabled: true, updated: UPDATED }
 }
 
 function modelRecord(agent: string, ref: { providerID: string; modelID: string; variant?: string }): StoredRecord {
@@ -120,18 +120,18 @@ async function publishOnce(project: string, records: readonly StoredRecord[]): P
 
 test("a defaults model pin for a built-in team member lands in activeModels on the first publish", async () => {
   const { project } = await tempRoot()
-  const { state } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
-  expect(state.activeModels.get("muse-implementer")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
-  expect("variant" in (state.activeModels.get("muse-implementer") ?? {})).toBe(false)
-  expect(state.cachedAgents.some((agent) => agent.id === "muse-implementer")).toBe(true)
-  expect(state.cachedScopes.defaults.has("muse-implementer")).toBe(true)
+  const { state } = await publishOnce(project, [teamRecord(), modelRecord("implementer", IMPLEMENTER)])
+  expect(state.activeModels.get("implementer")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+  expect("variant" in (state.activeModels.get("implementer") ?? {})).toBe(false)
+  expect(state.cachedAgents.some((agent) => agent.id === "implementer")).toBe(true)
+  expect(state.cachedScopes.defaults.has("implementer")).toBe(true)
 })
 
 test("session.created switches a team session to its pinned model", async () => {
   const { project } = await tempRoot()
-  const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
+  const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("implementer", IMPLEMENTER)])
   await Effect.runPromise(
-    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1", agent: "muse-implementer" } }),
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1", agent: "implementer" } }),
   )
   expect(switches).toHaveLength(1)
   expect(String(switches[0]?.model.providerID)).toBe("acme")
@@ -141,9 +141,9 @@ test("session.created switches a team session to its pinned model", async () => 
 
 test("session.agent.selected switches through the switchAgent path with the variant", async () => {
   const { project } = await tempRoot()
-  const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("opus-orchestrator", ORCHESTRATOR)])
+  const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("orchestrator", ORCHESTRATOR)])
   await Effect.runPromise(
-    applySessionModel(ctx, state, { type: "session.agent.selected", properties: { sessionID: "ses_1", agent: "opus-orchestrator" } }),
+    applySessionModel(ctx, state, { type: "session.agent.selected", properties: { sessionID: "ses_1", agent: "orchestrator" } }),
   )
   expect(switches).toHaveLength(1)
   expect(String(switches[0]?.model.providerID)).toBe("cliproxyapi")
@@ -155,20 +155,20 @@ test("two roles pinned to two models each keep their own ref", async () => {
   const { project } = await tempRoot()
   const { state } = await publishOnce(project, [
     teamRecord(),
-    modelRecord("opus-orchestrator", ORCHESTRATOR),
-    modelRecord("muse-implementer", IMPLEMENTER),
+    modelRecord("orchestrator", ORCHESTRATOR),
+    modelRecord("implementer", IMPLEMENTER),
   ])
-  expect(state.activeModels.get("opus-orchestrator")).toMatchObject({
+  expect(state.activeModels.get("orchestrator")).toMatchObject({
     providerID: "cliproxyapi",
     modelID: "claude-opus-5",
     variant: "high",
   })
-  expect(state.activeModels.get("muse-implementer")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
+  expect(state.activeModels.get("implementer")).toMatchObject({ providerID: "acme", modelID: "nova-2" })
 })
 
 test("a role with no model record never switches", async () => {
   const { project } = await tempRoot()
-  const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
+  const { ctx, state, switches } = await publishOnce(project, [teamRecord(), modelRecord("implementer", IMPLEMENTER)])
   await Effect.runPromise(
     applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_1", agent: "scout" } }),
   )
@@ -177,9 +177,9 @@ test("a role with no model record never switches", async () => {
 
 test("the built-in role description survives the model pin", async () => {
   const { project } = await tempRoot()
-  const { ctx } = await publishOnce(project, [teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)])
+  const { ctx } = await publishOnce(project, [teamRecord(), modelRecord("implementer", IMPLEMENTER)])
   const listed = await Effect.runPromise(ctx.agent.list())
-  const agent = listed.data.find((entry) => String(entry.id) === "muse-implementer")
+  const agent = listed.data.find((entry) => String(entry.id) === "implementer")
   expect(agent).toBeDefined()
   if (agent === undefined) return
   expect(agent.description).toBe(IMPLEMENTER_DESCRIPTION)
@@ -193,16 +193,16 @@ test("pinned team roles carry their models on the agent surface itself", async (
   const { project } = await tempRoot()
   const { ctx } = await publishOnce(project, [
     teamRecord(),
-    modelRecord("opus-orchestrator", ORCHESTRATOR),
-    modelRecord("muse-implementer", IMPLEMENTER),
+    modelRecord("orchestrator", ORCHESTRATOR),
+    modelRecord("implementer", IMPLEMENTER),
   ])
   const listed = await Effect.runPromise(ctx.agent.list())
-  const implementer = listed.data.find((entry) => String(entry.id) === "muse-implementer")
+  const implementer = listed.data.find((entry) => String(entry.id) === "implementer")
   expect(implementer).toBeDefined()
   if (implementer === undefined) return
   expect(implementer.model).toMatchObject({ providerID: "acme", id: "nova-2" })
   expect("variant" in (implementer.model ?? {})).toBe(false)
-  const orchestrator = listed.data.find((entry) => String(entry.id) === "opus-orchestrator")
+  const orchestrator = listed.data.find((entry) => String(entry.id) === "orchestrator")
   expect(orchestrator).toBeDefined()
   if (orchestrator === undefined) return
   expect(orchestrator.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-opus-5" })
@@ -214,7 +214,7 @@ test("pinned team roles carry their models on the agent surface itself", async (
 })
 
 test("disabling a pinned team removes its roles even with the model record retained", async () => {
-  // Enable opencodeplus-team, pin muse-implementer, then disable the team
+  // Enable basic, pin implementer, then disable the team
   // while leaving the model record in place. The second publish discovers the
   // still-installed old role before disposing previous registrations; the
   // retained pin must not recreate it from Agent.Info.default (allow '*').
@@ -248,15 +248,15 @@ test("disabling a pinned team removes its roles even with the model record retai
   await save(project, {
     expectedProjectRevision: stored0.projectRevision,
     expectedGlobalRevision: stored0.globalRevision,
-    records: [...stored0.records, teamRecord(), modelRecord("muse-implementer", IMPLEMENTER)],
+    records: [...stored0.records, teamRecord(), modelRecord("implementer", IMPLEMENTER)],
   })
   await Effect.runPromise(handlers["instructions.refresh"](undefined, throwing))
   const before = await Effect.runPromise(ctx.agent.list())
-  expect(before.data.some((entry) => String(entry.id) === "muse-implementer")).toBe(true)
+  expect(before.data.some((entry) => String(entry.id) === "implementer")).toBe(true)
   const stored1 = await load(project)
-  const disabled: StoredRecord = { type: "team", level: "defaults", team: "opencodeplus-team", enabled: false, updated: UPDATED }
+  const disabled: StoredRecord = { type: "team", level: "defaults", team: "basic", enabled: false, updated: UPDATED }
   const nextRecords = [
-    ...stored1.records.filter((record) => !(record.type === "team" && record.team === "opencodeplus-team")),
+    ...stored1.records.filter((record) => !(record.type === "team" && record.team === "basic")),
     disabled,
   ]
   await save(project, {
@@ -266,6 +266,6 @@ test("disabling a pinned team removes its roles even with the model record retai
   })
   await Effect.runPromise(handlers["instructions.refresh"](undefined, throwing))
   const listed = await Effect.runPromise(ctx.agent.list())
-  expect(listed.data.find((entry) => String(entry.id) === "muse-implementer")).toBeUndefined()
-  expect(listed.data.some((entry) => String(entry.id) === "muse-implementer")).toBe(false)
+  expect(listed.data.find((entry) => String(entry.id) === "implementer")).toBeUndefined()
+  expect(listed.data.some((entry) => String(entry.id) === "implementer")).toBe(false)
 })

@@ -152,7 +152,7 @@ test("hostBridge speaks the documented session routes with basic auth", async ()
     const bridge = hostBridge({ baseUrl: `http://127.0.0.1:${host.port}`, password: FIXTURE_PASSWORD })
     const created = await Effect.runPromise(
       bridge.domain.create({
-        agent: Agent.ID.make("muse-implementer"),
+        agent: Agent.ID.make("implementer"),
         location: Location.Ref.make({ directory: AbsolutePath.make("/fixture/child") }),
       }),
     )
@@ -181,7 +181,7 @@ test("hostBridge speaks the documented session routes with basic auth", async ()
     const expectedAuth = `Basic ${Buffer.from(`opencode:${FIXTURE_PASSWORD}`, "utf8").toString("base64")}`
     expect(host.requests.every((entry) => entry.auth === expectedAuth)).toBe(true)
     const create = host.requests[0]?.body as { agent?: string; location?: { directory?: string } }
-    expect(create.agent).toBe("muse-implementer")
+    expect(create.agent).toBe("implementer")
     expect(create.location?.directory).toBe("/fixture/child")
   } finally {
     host.stop()
@@ -205,7 +205,7 @@ test("delegateThroughHost creates the child through the real handler over the ho
     const seeded = await seedParentRun({
       root,
       id: parentRunID,
-      role: "opus-orchestrator",
+      role: "orchestrator",
       sessionID: "ses_parent_fixture",
       directory: repoDir,
     })
@@ -214,11 +214,11 @@ test("delegateThroughHost creates the child through the real handler over the ho
 
     lab = await labToolContext({ directory: repoDir, session: bridge.domain })
     expect(lab.tools.has("team_delegate")).toBe(true)
-    lab.state.activeModels.set("muse-implementer", { providerID: "lab", modelID: "fixture" })
+    lab.state.activeModels.set("implementer", { providerID: "lab", modelID: "fixture" })
 
     const brief = Schema.decodeUnknownSync(Brief)({
       requestID: "round3-delegate-selfcheck",
-      role: "muse-implementer",
+      role: "implementer",
       objective: "Create the lab child through the real delegate handler and host bridge.",
       deliverable: { kind: "commit" },
       scope: { paths: ["packages/plus/docs/*"] },
@@ -227,7 +227,7 @@ test("delegateThroughHost creates the child through the real handler over the ho
     const outcome = await delegateThroughHost({
       lab,
       brief,
-      parent: { sessionID: "ses_parent_fixture", role: "opus-orchestrator", callID: "call_round3_selfcheck" },
+      parent: { sessionID: "ses_parent_fixture", role: "orchestrator", callID: "call_round3_selfcheck" },
     })
     expect(outcome.via).toBe("team.delegate")
 
@@ -235,7 +235,7 @@ test("delegateThroughHost creates the child through the real handler over the ho
     const child = await loadRun(root, output.run)
     expect(child?.parent).toBe(parentRunID)
     expect(child?.sessionID).toBe(output.session)
-    expect(child?.role).toBe("muse-implementer")
+    expect(child?.role).toBe("implementer")
     expect(child?.directory).toBe(output.directory)
     expect(child?.directory.startsWith(path.join(root, "worktrees"))).toBe(true)
     expect((await fs.stat(output.directory)).isDirectory()).toBe(true)
@@ -247,7 +247,7 @@ test("delegateThroughHost creates the child through the real handler over the ho
     // The host bridge carried the Location the real handler made for the child,
     // and delivered the rendered brief to the child session.
     const createCall = host.requests.find((entry) => entry.method === "POST" && entry.path === "/api/session")
-    expect((createCall?.body as { agent?: string }).agent).toBe("muse-implementer")
+    expect((createCall?.body as { agent?: string }).agent).toBe("implementer")
     expect((createCall?.body as { location?: { directory?: string } }).location?.directory).toBe(output.directory)
     const promptCall = host.requests.find((entry) => entry.path === `/api/session/${output.session}/prompt`)
     expect((promptCall?.body as { text?: string }).text).toContain("Create the lab child through the real delegate handler")

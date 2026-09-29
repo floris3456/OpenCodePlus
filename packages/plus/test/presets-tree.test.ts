@@ -13,7 +13,7 @@ import {
 } from "../src/instructions/model.js"
 import { fromLabel, reviewLabel } from "../src/instructions/from-label.js"
 import { findRow } from "../src/instructions/ops.js"
-import { nativePresetIds, plusAgentPresets, plusTeamPresets, presetLabels, presetListing } from "../src/instructions/presets.js"
+import { nativePresetIds, plusTeamPresets, presetLabels, presetListing } from "../src/instructions/presets.js"
 import { query } from "../src/instructions/query.js"
 import { expandedTree, tree, type MemoInput, type TreeNode } from "../src/instructions/tree.js"
 
@@ -53,9 +53,9 @@ const presets: PresetRecord[] = [
 ]
 
 const links: LinkRecord[] = [
-  { type: "link", level: "project", agent: "alice", preset: { kind: "agent", id: "orchestrator" }, updated: UPDATED },
-  { type: "link", level: "preset", agent: "mine", preset: { kind: "agent", id: "planner" }, updated: UPDATED },
-  { type: "link", level: "defaults", agent: "reviewer", preset: { kind: "agent", id: "reviewer" }, updated: UPDATED },
+  { type: "link", level: "project", agent: "alice", preset: { kind: "member", team: "basic", id: "orchestrator" }, updated: UPDATED },
+  { type: "link", level: "preset", agent: "mine", preset: { kind: "member", team: "basic", id: "planner" }, updated: UPDATED },
+  { type: "link", level: "defaults", agent: "reviewer", preset: { kind: "member", team: "basic", id: "reviewer" }, updated: UPDATED },
 ]
 
 function input(overrides: Partial<MemoInput> = {}): MemoInput {
@@ -123,7 +123,9 @@ test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode t
   expect(childIds(nodes, "group:preset:teams")).toEqual(["group:preset:teams:plus", "group:preset:teams:user"])
   expect(row(nodes, "group:preset:agents:native").label).toBe("OpenCode")
   expect(childIds(nodes, "group:preset:agents:native")).toEqual(nativePresetIds.map((id) => `agent:preset:${id}`))
-  expect(childIds(nodes, "group:preset:agents:plus")).toEqual(plusAgentPresets.map((preset) => `agent:preset:${preset.id}`))
+  // The Plus agent group stays emitted but ships empty: its six presets are
+  // the Basic team's member presets.
+  expect(childIds(nodes, "group:preset:agents:plus")).toEqual([])
   expect(childIds(nodes, "group:preset:agents:user")).toEqual(["agent:preset:mine"])
   // OpenCode ships no teams, including when every category is expanded.
   expect(nodes.some((node) => node.id === "group:preset:teams:native")).toBe(false)
@@ -131,63 +133,60 @@ test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode t
   expect(childIds(nodes, "group:preset:teams:plus")).toEqual(plusTeamPresets.map((team) => `team:preset:${team.id}`))
   expect(childIds(nodes, "group:preset:teams:user")).toEqual(["team:preset:crew"])
   // Agent presets show their label; every preset row has the agent groups.
-  expect(row(nodes, "agent:preset:orchestrator").label).toBe("Orchestrator")
   expect(row(nodes, "agent:preset:build").label).toBe("Build")
-  expect(childIds(nodes, "agent:preset:orchestrator")).toEqual([
-    "group:preset:orchestrator:settings",
-    "group:preset:orchestrator:models",
-    "group:preset:orchestrator:compaction",
-    "group:preset:orchestrator:tools",
-    "group:preset:orchestrator:base",
-    "group:preset:orchestrator:skills",
-    "group:preset:orchestrator:system",
+  expect(childIds(nodes, "agent:preset:build")).toEqual([
+    "group:preset:build:settings",
+    "group:preset:build:models",
+    "group:preset:build:compaction",
+    "group:preset:build:tools",
+    "group:preset:build:base",
+    "group:preset:build:skills",
+    "group:preset:build:system",
   ])
 })
 
-test("Plus team presets list their member presets with the agent groups and team-scoped rows", () => {
+test("the Basic team preset lists its member presets with the agent groups and team-scoped rows", () => {
   const nodes = all()
-  const starter = plusTeamPresets.find((team) => team.id === "starter")
-  expect(childIds(nodes, "team:preset:starter")).toEqual((starter?.members ?? []).map((member) => `team:preset:starter:${member.id}`))
-  expect(childIds(nodes, "team:preset:starter:planner")).toEqual([
-    "group:preset:starter/:planner:settings",
-    "group:preset:starter/:planner:models",
-    "group:preset:starter/:planner:compaction",
-    "group:preset:starter/:planner:tools",
-    "group:preset:starter/:planner:base",
-    "group:preset:starter/:planner:skills",
-    "group:preset:starter/:planner:system",
+  const basic = plusTeamPresets.find((team) => team.id === "basic")
+  expect(childIds(nodes, "team:preset:basic")).toEqual((basic?.members ?? []).map((member) => `team:preset:basic:${member.id}`))
+  expect(childIds(nodes, "team:preset:basic:planner")).toEqual([
+    "group:preset:basic/:planner:settings",
+    "group:preset:basic/:planner:models",
+    "group:preset:basic/:planner:compaction",
+    "group:preset:basic/:planner:tools",
+    "group:preset:basic/:planner:base",
+    "group:preset:basic/:planner:skills",
+    "group:preset:basic/:planner:system",
   ])
-  const shell = row(nodes, "item:preset:starter/:planner:tool:shell")
+  const shell = row(nodes, "item:preset:basic/:planner:tool:shell")
   expect(shell.address).toEqual({
     level: "preset",
     agent: "planner",
     item: "tool:shell",
     section: null,
-    team: { level: "preset", team: "starter" },
+    team: { level: "preset", team: "basic" },
     catalogue: "teams",
   })
-  const member = row(nodes, "team:preset:starter:planner")
+  const member = row(nodes, "team:preset:basic:planner")
   expect(member.owner).toEqual({
     level: "preset",
     agent: "planner",
-    team: { level: "preset", team: "starter" },
-    preset: { ref: { kind: "member", team: "starter", id: "planner" }, origin: "plus" },
-    link: { kind: "agent", id: "planner" },
+    team: { level: "preset", team: "basic" },
+    preset: { ref: { kind: "member", team: "basic", id: "planner" }, origin: "plus" },
   })
   expect(member.actions?.remove).toBe(false)
   expect(member.add).toBeUndefined()
-  expect(row(nodes, "team:preset:starter").actions?.remove).toBe(false)
-  expect(row(nodes, "team:preset:starter").add).toBeUndefined()
-  // The member preset and the agent preset of the same id are different nodes:
-  // the member's own role body wins over the Plus planner's role text.
+  expect(row(nodes, "team:preset:basic").actions?.remove).toBe(false)
+  expect(row(nodes, "team:preset:basic").add).toBeUndefined()
+  // The member preset is self-contained: its own role body is every item's
+  // shipped answer, with no hidden agent preset behind it.
   const texts = query(input(), {
-    where: "id:item:preset:starter/:planner:system:role,item:preset:planner:system:role",
+    where: "id:item:preset:basic/:planner:system:role",
     fields: ["id", "text"],
   }).rows
-  const memberRole = texts.find((entry) => entry.id === "item:preset:starter/:planner:system:role")?.text
-  const agentRole = texts.find((entry) => entry.id === "item:preset:planner:system:role")?.text
-  expect(memberRole).toBe(starter?.members.find((entry) => entry.id === "planner")?.role)
-  expect(agentRole).toBe(plusAgentPresets.find((preset) => preset.id === "planner")?.role)
+  expect(texts.find((entry) => entry.id === "item:preset:basic/:planner:system:role")?.text).toBe(
+    basic?.members.find((entry) => entry.id === "planner")?.role,
+  )
 })
 
 test("User presets are removable, take new presets and members, and say what they are linked to", () => {
@@ -202,9 +201,9 @@ test("User presets are removable, take new presets and members, and say what the
     level: "preset",
     agent: "mine",
     preset: { ref: { kind: "agent", id: "mine" }, origin: "user" },
-    link: { kind: "agent", id: "planner" },
+    link: { kind: "member", team: "basic", id: "planner" },
   })
-  expect(row(nodes, "agent:preset:orchestrator").actions?.remove).toBe(false)
+  expect(row(nodes, "team:preset:basic:planner").actions?.remove).toBe(false)
   const crew = row(nodes, "team:preset:crew")
   expect(crew.add).toBe("agent")
   expect(crew.actions?.remove).toBe(true)
@@ -213,11 +212,13 @@ test("User presets are removable, take new presets and members, and say what the
   // Presets get the Role/persona row every agent has.
   expect(row(nodes, "item:preset:mine:system:role").label).toBe("Role/persona")
   // A preset's row is found by descending straight to it.
-  expect(findRow(input(), "item:preset:orchestrator:tool:shell")?.address).toEqual({
+  expect(findRow(input(), "item:preset:basic/:planner:tool:shell")?.address).toEqual({
     level: "preset",
-    agent: "orchestrator",
+    agent: "planner",
     item: "tool:shell",
     section: null,
+    team: { level: "preset", team: "basic" },
+    catalogue: "teams",
   })
   expect(findRow(input(), "item:preset:crew/:lead:tool:shell")?.address?.team).toEqual({ level: "preset", team: "crew" })
 })
@@ -234,7 +235,7 @@ test("Defaults lists Agents entries under Agents → User and Teams entries per 
   expect(pattern.label).toBe("*orchestrator*")
   expect(pattern.actions?.remove).toBe(true)
   expect(pattern.owner).toEqual({ level: "defaults", agent: "*orchestrator*", entry: { catalogue: "agents", name: "*orchestrator*" } })
-  expect(row(nodes, "agent:defaults:reviewer").owner?.link).toEqual({ kind: "agent", id: "reviewer" })
+  expect(row(nodes, "agent:defaults:reviewer").owner?.link).toEqual({ kind: "member", team: "basic", id: "reviewer" })
   expect(row(nodes, "item:defaults:*orchestrator*:tool:question").address).toEqual({
     level: "defaults",
     agent: "*orchestrator*",
@@ -280,10 +281,16 @@ test("add affordances: Defaults Agents and its User group add entries, Defaults 
 test("rows say where their state comes from: preset, default entry, Defaults, OpenCode, off", () => {
   const nodes = all()
   const badge = (id: string) => row(nodes, id).badges.fromLabel
-  // alice is linked to Plus orchestrator, which switches `question` off and ships `shell` on.
-  expect(badge("item:project:alice:tool:question")).toBe("from preset Orchestrator")
+  // alice is linked to the Basic orchestrator member preset, which switches
+  // `question` off and ships `shell` on.
+  expect(badge("item:project:alice:tool:question")).toBe("from preset Basic › orchestrator")
   expect(row(nodes, "item:project:alice:tool:question").badges.state).toBe("off")
-  expect(row(nodes, "item:project:alice:tool:question").badges.from).toEqual({ kind: "preset", id: "orchestrator", shipped: true })
+  expect(row(nodes, "item:project:alice:tool:question").badges.from).toEqual({
+    kind: "preset",
+    id: "orchestrator",
+    team: "basic",
+    shipped: true,
+  })
   // opus-orchestrator is unlinked; the `*orchestrator*` entry turns `question` on.
   expect(badge("item:project:opus-orchestrator:tool:question")).toBe("from default *orchestrator*")
   expect(row(nodes, "item:project:opus-orchestrator:tool:question").badges.state).toBe("on")
@@ -294,8 +301,8 @@ test("rows say where their state comes from: preset, default entry, Defaults, Op
   // The displayed origin changes, but its API discriminator stays compatible.
   expect(badge("item:defaults:build:tool:shell")).toBe("OpenCode")
   expect(row(nodes, "item:defaults:build:tool:shell").badges.from).toEqual({ kind: "native" })
-  // A member preset reads through its shipped link to its agent preset.
-  expect(badge("item:preset:starter/:planner:tool:shell")).toBe("from preset Planner")
+  // A member preset ships its own rows: the badge names the member preset.
+  expect(badge("item:preset:basic/:planner:tool:shell")).toBe("from preset Basic › planner")
   // A value set on the row itself.
   const own = expandedTree(input({ records: [record("project", "bob", "tool:shell", "on")] }))
   expect(own.find((node) => node.id === "item:project:bob:tool:shell")?.badges.fromLabel).toBe("set here")
@@ -307,8 +314,10 @@ test("rows say where their state comes from: preset, default entry, Defaults, Op
 
 test("fromLabel and reviewLabel wording", () => {
   const labels = presetLabels(presetListing())
-  expect(fromLabel({ kind: "preset", id: "orchestrator", shipped: false }, { labels })).toBe("from preset Orchestrator")
-  expect(fromLabel({ kind: "preset", id: "editor", team: "review", shipped: true }, { labels })).toBe("from preset review › editor")
+  expect(fromLabel({ kind: "preset", id: "build", shipped: false }, { labels })).toBe("from preset Build")
+  expect(fromLabel({ kind: "preset", id: "implementer", team: "basic", shipped: true }, { labels })).toBe(
+    "from preset Basic › implementer",
+  )
   expect(fromLabel({ kind: "preset", id: "mine", shipped: false })).toBe("from preset mine")
   expect(fromLabel({ kind: "default", name: "*orch*" })).toBe("from default *orch*")
   expect(fromLabel({ kind: "default", name: "*impl*", team: "crew*" })).toBe("from default crew* › *impl*")
@@ -337,11 +346,12 @@ test("a state set against a value above that later changed reads to review (stat
 
 test("query finds preset rows by level and keeps them out of other roots' walks", () => {
   const rows = query(input(), { where: "level:preset kind:agent", fields: ["id"] }).rows.map((entry) => entry.id)
-  expect(rows).toContain("agent:preset:orchestrator")
+  expect(rows).toContain("agent:preset:build")
   expect(rows).toContain("agent:preset:mine")
+  expect(rows).not.toContain("agent:preset:orchestrator")
   expect(rows.every((id) => id.startsWith("agent:preset:"))).toBe(true)
-  const teams = query(input(), { where: "level:preset kind:team team:starter", fields: ["id"] }).rows.map((entry) => entry.id)
-  expect(teams).toContain("team:preset:starter")
-  expect(teams).toContain("team:preset:starter:planner")
-  expect(query(input(), { where: "catalogue:teams id:group:preset:starter/", fields: ["id"] }).total).toBeGreaterThan(0)
+  const teams = query(input(), { where: "level:preset kind:team team:basic", fields: ["id"] }).rows.map((entry) => entry.id)
+  expect(teams).toContain("team:preset:basic")
+  expect(teams).toContain("team:preset:basic:planner")
+  expect(query(input(), { where: "catalogue:teams id:group:preset:basic/", fields: ["id"] }).total).toBeGreaterThan(0)
 })
