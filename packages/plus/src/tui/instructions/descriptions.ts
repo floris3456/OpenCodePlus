@@ -66,7 +66,7 @@ function originDetail(level: Level, origin: string): string {
     return "OpenCode's own agents (build, plan, general, explore), projected under every level so their rows can be edited there. They cannot be deleted; the maintenance agents sit in the nested Special group."
   if (origin === "native:special")
     return "OpenCode's maintenance agents: compaction, title and summary. They run internal work, not your chats."
-  if (origin === "plus") return "Agents shipped with OpenCodePlus and agents produced by its teams. The preset they follow decides how they behave."
+  if (origin === "plus") return "Agents produced by OpenCodePlus teams, including the shipped teams' members. A linked preset decides how a member behaves."
   if (level === "defaults")
     return "Agents you created, plus the Defaults entries — name patterns such as `*orchestrator*` — that set rows for every agent they match."
   return "Agents you created. `a` adds one here, optionally linked to a preset."
@@ -190,7 +190,7 @@ function toolsDetail(part: OwnerGroup): string | undefined {
 
 function codemodeDetail(namespace: readonly string[]): string {
   if (namespace.length === 0)
-    return "Code Mode tools, called inside `execute`. OpenCode and OpenCodePlus group them by tool namespace; an MCP server's hang here directly."
+    return "Code Mode tools, called inside `execute`. OpenCode and OpenCodePlus group them by tool namespace; an MCP server lists its own directly."
   return `Code Mode tools of the ${namespace.join(":")} namespace, called inside \`execute\`.`
 }
 

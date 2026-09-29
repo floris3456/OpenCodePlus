@@ -140,7 +140,7 @@ test("origin subgroups describe each population at every level and in Presets", 
     "OpenCode's maintenance agents: compaction, title and summary. They run internal work, not your chats.",
   )
   expect(detail("group:global:agents:plus")).toBe(
-    "Agents shipped with OpenCodePlus and agents produced by its teams. The preset they follow decides how they behave.",
+    "Agents produced by OpenCodePlus teams, including the shipped teams' members. A linked preset decides how a member behaves.",
   )
   expect(detail("group:defaults:agents:user")).toBe(
     "Agents you created, plus the Defaults entries — name patterns such as `*orchestrator*` — that set rows for every agent they match.",
@@ -197,7 +197,7 @@ test("tool subgroups describe origins, MCP servers, Code Mode and Other permissi
     'Tools exposed by the sample MCP server. A rule cannot be added to an MCP tool: its resource is always "*".',
   )
   expect(detail("group:project:alice:tools:native:codemode")).toBe(
-    "Code Mode tools, called inside `execute`. OpenCode and OpenCodePlus group them by tool namespace; an MCP server's hang here directly.",
+    "Code Mode tools, called inside `execute`. OpenCode and OpenCodePlus group them by tool namespace; an MCP server lists its own directly.",
   )
   expect(detail("group:project:alice:tools:native:codemode:fs")).toBe("Code Mode tools of the fs namespace, called inside `execute`.")
   expect(detail("group:project:crew/:special:compaction:tools:native")).toBe("Tools that ship with OpenCode.")

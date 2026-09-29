@@ -235,7 +235,7 @@ test("structural rows show their description in the inspector", async () => {
     )
     await goto(fixture, "group:project:agents:plus", "Plus")
     await fixture.waitForFrame((frame) =>
-      inspector(frame).includes(flat("Agents shipped with OpenCodePlus and agents produced by its teams. The preset they follow decides how they behave.")),
+      inspector(frame).includes(flat("Agents produced by OpenCodePlus teams, including the shipped teams' members. A linked preset decides how a member behaves.")),
     )
   } finally {
     fixture.destroy()
