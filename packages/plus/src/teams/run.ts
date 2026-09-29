@@ -68,8 +68,8 @@ export interface RunRecord {
   lastUsed: string
   sessionID: string | null
   configDigest: string | null
-  /** Where project mode resolves for this run's session. A child worktree is
-   * outside the parent's tree, so it records the parent's directory and
+  /** Where the project config resolves for this run's session. A child worktree
+   * is outside the parent's tree, so it records the parent's directory and
    * activation reads the parent's project.json instead of walking up from the
    * worktree. Absent on records written before this field existed. */
   projectDirectory?: string

@@ -11,7 +11,6 @@ import path from "node:path"
 import { createHandlers, createState } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { load, save } from "../src/instructions/store.js"
-import { enable } from "../src/project.js"
 import { agentInfo, fullContext, modelInfo, modelRef } from "./harness.js"
 
 const roots: string[] = []
@@ -69,7 +68,6 @@ async function expectDeclaredError(effect: Effect.Effect<unknown, unknown>, capt
 
 test("user base template survives a host that reports its own templates", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const hostTemplates = [
     { id: "gpt", title: "GPT.txt", text: "host gpt base" },
     { id: "general", title: "General.txt", text: "host general base" },
@@ -98,7 +96,6 @@ test("user base template survives a host that reports its own templates", async 
 
 test("a user template that is not the host's active answer is never applied", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   // Project scope for alpha: a project-level base record only resolves for a
   // project-scoped agent (a file-less defaults agent never consults the
   // project level, so no base plan would exist and no hook would register).
@@ -194,7 +191,6 @@ test("a request model switch through publication applies the request model's cus
   // gpt model (discover pins base "gpt"), both families are customized, but
   // the request arrives on a kimi model. The hook must serve the kimi text.
   const { project } = await tempRoot()
-  await enable(project)
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(agentPath), { recursive: true })
   await Bun.write(agentPath, "upstream role\n")

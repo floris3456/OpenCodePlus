@@ -7,10 +7,9 @@ import { Deferred, Effect, Exit } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createPlusApi, createState, createHandlers } from "../src/index.js"
+import { activate, createPlusApi, createState, createHandlers, deactivate } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
-import { enable } from "../src/project.js"
 import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
 import { saveRun } from "../src/teams/run.js"
 import { load, save } from "../src/instructions/store.js"
@@ -54,7 +53,6 @@ async function tempProject(): Promise<{ project: string }> {
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   return { project }
 }
 
@@ -222,7 +220,6 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
 
 async function snapshotOf(api: PlusApi) {
   const result = await api.snapshot()
-  if (!result.ok) throw new Error(`snapshot failed: ${result.error.message}`)
   return result.value
 }
 
@@ -837,7 +834,7 @@ test("every tool first description line is within 120 characters", async () => {
 // namespace, and the search MCP server only when the host configures none of
 // that name. Each is asserted by what it installs, never by how many there
 // are, so the optional search registration cannot decide the expectation.
-test("no instructions tool is registered while disabled, and disabling disposes them", async () => {
+test("activation installs the instruction tooling and deactivate disposes it", async () => {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-tools-enable-"))
   roots.push(root)
@@ -845,7 +842,6 @@ test("no instructions tool is registered while disabled, and disabling disposes 
   const project = path.join(root, "project")
   const ctx = fixtureContext(project)
   const state = createState()
-  const handlers = createHandlers(ctx, state)
   const toolIds = async () => [...(await readTools(ctx)).keys()].filter((id) => id.startsWith("instructions_"))
   const skillIds = async (): Promise<string[]> => (await Effect.runPromise(ctx.skill.list())).data.map((skill) => skill.id)
   const serverNames = async () => {
@@ -863,13 +859,7 @@ test("no instructions tool is registered while disabled, and disabling disposes 
   const beforeServers = await serverNames()
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
-  await Effect.runPromise(
-    handlers["project.enable"](undefined, {
-      error: () => {
-        throw new Error("unexpected enable error")
-      },
-    }),
-  )
+  await Effect.runPromise(activate(ctx, state))
   expect(await toolIds()).toHaveLength(8)
   expect(await skillIds()).toContain(teachingSkillId)
   // Only the install side: the harness instruction domain disposes to a no-op,
@@ -888,22 +878,10 @@ test("no instructions tool is registered while disabled, and disabling disposes 
   // already has one keeps it.
   expect(await serverNames()).toContain("search")
   const installed = [...state.tooling]
-  await Effect.runPromise(
-    handlers["project.enable"](undefined, {
-      error: () => {
-        throw new Error("unexpected enable error")
-      },
-    }),
-  )
+  await Effect.runPromise(activate(ctx, state))
   expect(state.tooling).toEqual(installed)
   expect(await toolIds()).toHaveLength(8)
-  await Effect.runPromise(
-    handlers["project.disable"](undefined, {
-      error: () => {
-        throw new Error("unexpected disable error")
-      },
-    }),
-  )
+  await Effect.runPromise(deactivate(state))
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
   expect(await serverNames()).toEqual(beforeServers)

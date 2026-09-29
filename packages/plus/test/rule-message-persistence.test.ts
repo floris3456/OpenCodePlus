@@ -7,7 +7,6 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { enable } from "../src/project.js"
 import { createHandlers, createPlusApi, createState, type PlusApi } from "../src/index.js"
 import { registerInstructionTools } from "../src/tools.js"
 import {
@@ -49,7 +48,6 @@ async function tempProject(): Promise<{ project: string; root: string }> {
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
   const project = path.join(root, "project")
-  await enable(project)
   return { project, root }
 }
 
@@ -97,7 +95,6 @@ async function runOk(tool: Tool.Info & { readonly id: string }, input: unknown):
 
 async function snapshotOf(api: PlusApi): Promise<Plus.Snapshot> {
   const result = await api.snapshot()
-  if (!result.ok) throw new Error(`snapshot failed: ${result.error.message}`)
   return result.value
 }
 

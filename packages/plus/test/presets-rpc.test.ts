@@ -16,7 +16,6 @@ import { memoInputOf } from "../src/instructions/snapshot.js"
 import { linkedProjects, load, save, updateGated, type StoredRecord } from "../src/instructions/store.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { createHandlers, createState } from "../src/index.js"
-import { disable, enable } from "../src/project.js"
 import { agentHarness, agentInfo, context, fullContext } from "./harness.js"
 
 const roots: string[] = []
@@ -55,13 +54,13 @@ async function setup(options: { protectedAgents?: string[] } = {}) {
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "share")
   const project = path.join(root, "project")
-  await disable(project)
-  await enable(project)
-  if (options.protectedAgents !== undefined)
+  if (options.protectedAgents !== undefined) {
+    await fs.mkdir(path.join(project, ".opencodeplus"), { recursive: true })
     await Bun.write(
       path.join(project, ".opencodeplus", "project.json"),
       JSON.stringify({ version: 1, protectedAgents: options.protectedAgents }),
     )
+  }
   const build = { ...agentInfo("build", "Build the thing."), description: "The default agent.", mode: "primary" as const }
   const ctx = fullContext({ directory: project, agents: [build] })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
@@ -271,8 +270,6 @@ test("preset.delete sees links other projects hold; confirm deletes over them an
   const { project, handlers } = await setup()
   const other = path.join(path.dirname(project), "other")
   const gone = path.join(path.dirname(project), "gone")
-  await enable(other)
-  await enable(gone)
   const handlersIn = (directory: string) =>
     createHandlers(fullContext({ directory, agents: [agentInfo("build", "Build the thing.")] }), createState(), { builtins: [] })
   const fromOther = handlersIn(other)
@@ -317,7 +314,6 @@ test("preset.delete sees links other projects hold; confirm deletes over them an
 test("preset.delete re-checks references under the write gate: a link committed meanwhile refuses it", async () => {
   const { project, handlers } = await setup()
   const other = path.join(path.dirname(project), "other")
-  await enable(other)
   const fromOther = createHandlers(fullContext({ directory: other, agents: [agentInfo("build", "Build the thing.")] }), createState(), {
     builtins: [],
   })

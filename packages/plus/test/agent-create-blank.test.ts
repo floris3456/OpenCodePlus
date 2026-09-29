@@ -6,7 +6,6 @@ import os from "node:os"
 import path from "node:path"
 import { createPlusApi, createState, type PlusState } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
-import { enable } from "../src/project.js"
 import { fullContext } from "./harness.js"
 
 const roots: string[] = []
@@ -38,14 +37,12 @@ test("blank-body agent create from a preset writes the file, emits one instructi
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const state = createState()
   const api = createPlusApi(ctx, state)
   // Prime the publish fingerprint so the create path exercises the
   // fingerprint-unchanged early return instead of the first-publish path.
   const primed = await api.refresh()
-  if (!primed.ok) throw new Error(`priming refresh failed: ${primed.error.message}`)
   // Subscribe to the Plus event stream before the create call.
   const emitted = captureEmits(state)
   // DESIGN §5: the preset's mode and description, and an empty body.
@@ -61,6 +58,5 @@ test("blank-body agent create from a preset writes the file, emits one instructi
   expect(changed).toHaveLength(1)
   // (c) the next snapshot lists the new agent.
   const snapshot = await api.snapshot()
-  if (!snapshot.ok) throw new Error(`snapshot failed: ${snapshot.error.message}`)
   expect(snapshot.value.agents.map((agent) => agent.id)).toContain("blank")
 })

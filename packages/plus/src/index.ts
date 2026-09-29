@@ -4021,7 +4021,9 @@ async function deleteInstruction(input: { projectDirectory: string; name: string
   return { ok: true, id: `system:${resolved.relative}`, path: resolved.path }
 }
 
-function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
+// The plugin's activation step, exported for tests that drive install/dispose
+// directly: with project mode gone there is no RPC method that activates.
+export function activate(ctx: Context, state: PlusState): Effect.Effect<void, never, never> {
   return Effect.gen(function* () {
     // A run session's worktree is outside its parent's tree. The run record
     // names the project directory its delegate ran from; every other Location

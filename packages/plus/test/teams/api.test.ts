@@ -215,7 +215,7 @@ test("delegate activates the child through the parent project, with no copy", as
     const repo = await makeRepo()
     try {
       // Parent runs in a Plus project; the child worktree is outside its tree.
-      // (enable() itself resolves upward, so write the parent's own file.)
+      // The fixture writes the parent's own config; the child gets none.
       await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
       await fs.writeFile(
         path.join(repo.dir, ".opencodeplus", "project.json"),
@@ -460,9 +460,10 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       const ctx = fullContext({ directory: value.directory })
       const state = createState()
       const handlers = createHandlers(ctx, state, { builtins: [] })
-      const status = await Effect.runPromise(handlers["project.status"](undefined, throwingContext({})))
-      expect(status).toEqual({ enabled: true, directory: repo.dir })
       const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+      // The child resolves the parent's config through the run record: its
+      // protectedAgents are the parent's, not empty defaults.
+      expect(snapshot.protectedAgents).toEqual(["muse-implementer"])
       const childApi = createPlusApi(ctx, state, { builtins: [] })
       const mutated = await childApi.mutate({
         expectedRevision: snapshot.revision,
@@ -473,7 +474,7 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       console.log(
         `[T5 item 13] child API resolves the inherited project\n` +
           `  location: ${value.directory}\n` +
-          `  project.status: ${JSON.stringify(status)}\n` +
+          `  protectedAgents: ${JSON.stringify(snapshot.protectedAgents)}\n` +
           `  snapshot revisions: project=${snapshot.revision} global=${snapshot.globalRevision}\n` +
           `  mutate ok: ${mutated.ok}`,
       )

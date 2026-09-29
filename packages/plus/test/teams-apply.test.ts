@@ -9,7 +9,6 @@ import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState, deactivate } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
-import { enable } from "../src/project.js"
 import { load, save } from "../src/instructions/store.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness, toolHarness } from "./harness.js"
@@ -87,7 +86,6 @@ async function hostSystem(ctx: ReturnType<typeof fullContext>, id: string): Prom
 
 test("enabling a team installs its agents in the host registry with their real markdown bodies", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
@@ -97,7 +95,6 @@ test("enabling a team installs its agents in the host registry with their real m
 
 test("disabling a team removes its agents from the host registry", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState())
@@ -110,7 +107,6 @@ test("disabling a team removes its agents from the host registry", async () => {
 
 test("a team member colliding with an authored agent keeps the authored text", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const authored = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(authored), { recursive: true })
   await Bun.write(authored, "authored body\n")
@@ -148,7 +144,6 @@ function fixtureWithFields() {
 
 test("a built-in member loses to a project team with the same id", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "shared", "crew body")
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
@@ -159,7 +154,6 @@ test("a built-in member loses to a project team with the same id", async () => {
 
 test("a built-in member loses to an authored agent with the same id", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const authored = path.join(project, ".opencode", "agent", "shared.md")
   await fs.mkdir(path.dirname(authored), { recursive: true })
   await Bun.write(authored, "authored body\n")
@@ -171,7 +165,6 @@ test("a built-in member loses to an authored agent with the same id", async () =
 
 test("a failure mid-install unwinds the agents installed earlier in the pass", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const teamDir = path.join(projectTeamsPath(project), "crew")
   await writeTeamAgent(teamDir, "one", "one body")
   await writeTeamAgent(teamDir, "two", "two body")
@@ -218,7 +211,6 @@ test("a failure mid-install unwinds the agents installed earlier in the pass", a
 
 test("one agent id at two scopes applies once with the project text", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const projectFile = path.join(project, ".opencode", "agent", "alpha.md")
   await fs.mkdir(path.dirname(projectFile), { recursive: true })
   await Bun.write(projectFile, "project body\n")
@@ -299,7 +291,6 @@ test("one agent id at two scopes applies once with the project text", async () =
 
 test("a built-in member with fields installs through the shared applyTeamAgent surface", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: fixtureWithFields() })
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "defaults", team: "ship", enabled: true }, throwingContext({})))
@@ -315,7 +306,6 @@ test("a built-in member with fields installs through the shared applyTeamAgent s
 
 test("a customized team member role survives publication while an uncustomized sibling keeps its shipped body", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const teamDir = path.join(projectTeamsPath(project), "crew")
   await writeTeamAgent(teamDir, "alpha", "crew alpha body")
   await writeTeamAgent(teamDir, "beta", "crew beta body")
@@ -388,7 +378,6 @@ test("a customized team member role survives publication while an uncustomized s
 
 test("a state-only section exclusion on a Defaults team member does not reinstall on unchanged refresh", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const shipped = "# Alpha\n\nfirst part\n\n# Beta\n\nsecond part\n"
   const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
   const agents = agentHarness([], project)
@@ -448,7 +437,6 @@ test("a state-only section exclusion on a Defaults team member does not reinstal
 
 test("a non-file-backed authored agent keeps its identity against a same-id Defaults team with an inapplicable project record", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const authored = "authored body"
   const shipped = "ship body"
   const builtins = [{ name: "ship", members: [{ id: "shared", body: shipped }] }]
@@ -488,7 +476,6 @@ test("a non-file-backed authored agent keeps its identity against a same-id Defa
 
 test("a Defaults team-only member survives S to A to B with a stable refresh", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const shipped = "ship body S"
   const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
   const agents = agentHarness([], project)
@@ -562,7 +549,6 @@ test("a Defaults team-only member survives S to A to B with a stable refresh", a
 
 test("removing a state-only section exclusion restores the full shipped body", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const shipped = "# Alpha\n\nfirst part\n\n# Beta\n\nsecond part\n"
   const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
   const agents = agentHarness([], project)
@@ -619,7 +605,6 @@ test("removing a state-only section exclusion restores the full shipped body", a
 
 test("a project-level role edit wins over the shipped body for a project team sharing a built-in id", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "shared", "crew body")
   const ctx = fullContext({ directory: project })
   const handlers = createHandlers(ctx, createState(), { builtins: fixtureBuiltins() })
@@ -653,7 +638,6 @@ test("a project-level role edit wins over the shipped body for a project team sh
 
 test("a non-file-backed authored agent keeps its identity against a same-id Defaults team with an applicable defaults record", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const authored = "authored body"
   const shipped = "ship body"
   const builtins = [{ name: "ship", members: [{ id: "shared", body: shipped }] }]
@@ -699,7 +683,6 @@ test("a non-file-backed authored agent keeps its identity against a same-id Defa
 
 test("disable then enable retains a Defaults team role edit", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const shipped = "ship body S"
   const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
   const agents = agentHarness([], project)
@@ -757,7 +740,6 @@ test("disable then enable retains a Defaults team role edit", async () => {
 
 test("fresh activation installs a Defaults team role edit", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const shipped = "ship body S"
   const builtins = [{ name: "ship", members: [{ id: "mate", body: shipped }] }]
   const agents = agentHarness([], project)
@@ -807,7 +789,6 @@ test("fresh activation installs a Defaults team role edit", async () => {
 
 test("ownership does not transfer between teams sharing an id", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const regular = "regular body U"
   const projectBody = "project body P"
   const shipped = "ship body S"

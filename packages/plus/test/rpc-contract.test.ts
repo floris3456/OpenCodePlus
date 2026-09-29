@@ -14,9 +14,6 @@ test("definition satisfies portable client contract and id", () => {
 
 test("every method and event is declared", () => {
   const expectedMethods = [
-    "project.status",
-    "project.enable",
-    "project.disable",
     "instructions.snapshot",
     "instructions.refresh",
     "instructions.mutate",
@@ -62,7 +59,7 @@ test("every method and event is declared", () => {
   }
   expect(Object.keys(Plus.Definition.methods).sort()).toEqual(expectedMethods.sort())
 
-  const expectedEvents = ["project.changed", "instructions.changed", "teams.changed"]
+  const expectedEvents = ["instructions.changed", "teams.changed"]
   for (const name of expectedEvents) {
     expect(name in Plus.Definition.events, `missing event ${name}`).toBe(true)
   }
@@ -86,7 +83,6 @@ test("every method input, output, error, and event schema is portable", () => {
 
 test("every declared error is reachable through the definition", () => {
   const expectedDeclaredErrors = [
-    "project.disabled",
     "agent.exists",
     "agent.missing",
     "agent.invalid",
@@ -181,7 +177,8 @@ test("error schemas are correctly bound to their corresponding methods", () => {
   for (const method of instructionsAndMutatingMethods) {
     const entry = Plus.Definition.methods[method]
     expect("errors" in entry ? entry.errors : undefined).toBeDefined()
-    expect("project.disabled" in ("errors" in entry && entry.errors !== undefined ? entry.errors : {})).toBe(true)
+    // Refusal control: project.disabled is gone from every declared error list.
+    expect("project.disabled" in ("errors" in entry && entry.errors !== undefined ? entry.errors : {})).toBe(false)
   }
 
   expect("agent.unknown" in errorsOf("instructions.assembled")).toBe(true)

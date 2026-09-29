@@ -5,7 +5,6 @@ import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../src/index.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
-import { enable } from "../src/project.js"
 import { fullContext } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -43,7 +42,6 @@ const TEAM: StoredRecord = { type: "team", level: "project", team: "crew", enabl
 
 test("snapshot excludes team records and a mutate round-trip preserves them without moving revisions", async () => {
   const { project } = await tempRoot()
-  await enable(project)
   const seeded = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [TEAM] })
   expect(seeded.ok).toBe(true)
 

@@ -17,7 +17,6 @@ import { chainContext } from "../src/instructions/presets.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { load, save } from "../src/instructions/store.js"
-import { disable, enable } from "../src/project.js"
 import { registerInstructionTools } from "../src/tools.js"
 import { agentHarness, agentInfo, fullContext, toolHarness } from "./harness.js"
 
@@ -39,8 +38,6 @@ async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "G
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")
   const directory = path.join(root, "project")
-  await disable(directory)
-  await enable(directory)
   const agents = agentHarness(initial, directory)
   const tools = toolHarness()
   type Before = (event: ToolHooks["execute.before"]) => Effect.Effect<void, Tool.Error>
@@ -57,7 +54,6 @@ async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "G
   const api = createPlusApi(ctx, state)
   async function snapshot() {
     const result = await api.snapshot()
-    if (!result.ok) throw new Error(result.error.message)
     return result.value
   }
   async function edit(op: ReturnType<typeof saveText>) {
@@ -275,8 +271,8 @@ test("Tool set accepts agent state/mode and control text, reset uses the same re
   await call("reset", { id: "agent:project:build" })
   expect(f.agents.state.get("build")?.mode).toBe("primary")
   const config = path.join(f.directory, ".opencodeplus", "project.json")
-  const value = await Bun.file(config).json()
-  await Bun.write(config, JSON.stringify({ ...value, protectedAgents: ["build"] }))
+  await fs.mkdir(path.dirname(config), { recursive: true })
+  await Bun.write(config, JSON.stringify({ version: 1, protectedAgents: ["build"] }))
   await expect(call("set", { id: "agent:project:build", state: "off" })).rejects.toThrow("protected")
   await Effect.runPromise(registration.dispose)
 })

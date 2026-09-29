@@ -9,11 +9,9 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { createHandlers, createPlusApi, createState } from "../../src/index.js"
+import { activate, createHandlers, createState } from "../../src/index.js"
 import { readKey } from "../../src/search/keys.js"
 import { isOldGeneratedSearchCommand, registerSearchMcp, resolveSearchBinPath, searchMcpCommand } from "../../src/search/register.js"
-import { enable } from "../../src/project.js"
-import { registerInstructionTools } from "../../src/tools.js"
 import { agentInfo, context, fullContext, mcpHarness, toolInfo } from "../harness.js"
 
 const roots: string[] = []
@@ -145,7 +143,7 @@ test("full activation registers search MCP when absent and reflects it in instru
   const state = createState()
   const handlers = createHandlers(ctx, state)
 
-  await Effect.runPromise(handlers["project.enable"](undefined, throwingContext()))
+  await Effect.runPromise(activate(ctx, state))
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
   const searchMcpItem = snapshot.items.find((item) => item.id === "mcp:search")
@@ -174,7 +172,7 @@ test("full activation leaves existing search MCP server when present", async () 
   const state = createState()
   const handlers = createHandlers(ctx, state)
 
-  await Effect.runPromise(handlers["project.enable"](undefined, throwingContext()))
+  await Effect.runPromise(activate(ctx, state))
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
   const searchMcpItem = snapshot.items.find((item) => item.id === "mcp:search")
@@ -224,11 +222,7 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
   )
 
   const state = createState()
-  const api = createPlusApi(ctx, state)
-  await registerInstructionTools(ctx, api)
-  const handlers = createHandlers(ctx, state)
-
-  await Effect.runPromise(handlers["project.enable"](undefined, throwingContext()))
+  await Effect.runPromise(activate(ctx, state))
 
   const tools = await readTools(ctx)
   const listTool = tools.get("instructions_list")
