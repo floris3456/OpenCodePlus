@@ -66,12 +66,15 @@ export interface BuildOptions {
   skipInstall?: boolean
   skipWebUi?: boolean
   define?: Record<string, string>
+  /** The OpenCode release a derived build's source contains; its user agent reports it. */
+  upstream?: string
 }
 
 export interface ResolvedBuildConfig {
   binary: string
   channel: string
   version: string
+  upstream?: string
   entrypoints: string[]
   identity: {
     product: string | null
@@ -110,6 +113,7 @@ export function resolveBuildConfig(options: BuildOptions = {}): ResolvedBuildCon
     OPENCODE_RECIPE_DIGEST: JSON.stringify(identity.recipeDigest),
     OPENCODE_TOOLCHAIN_DIGEST: JSON.stringify(identity.toolchainDigest),
     OPENCODE_TARGET: JSON.stringify(identity.target),
+    OPENCODE_UPSTREAM: JSON.stringify(options.upstream ?? null),
     ...options.define,
   }
 
@@ -117,6 +121,7 @@ export function resolveBuildConfig(options: BuildOptions = {}): ResolvedBuildCon
     binary,
     channel,
     version,
+    ...(options.upstream === undefined ? {} : { upstream: options.upstream }),
     entrypoints,
     identity,
     define,
@@ -237,7 +242,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
         outfile: path.join(outdir, name, "bin", config.binary),
         execArgv: [
           "--smol",
-          `--user-agent=opencode/${config.channel}/${config.version}/cli`,
+          `--user-agent=opencode/${config.channel}/${config.upstream === undefined ? config.version : `${config.upstream}+${config.version}`}/cli`,
           "--use-system-ca",
           "--no-warnings",
           "--",

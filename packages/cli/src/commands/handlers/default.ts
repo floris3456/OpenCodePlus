@@ -9,7 +9,7 @@ import { ServerConnection } from "../../services/server-connection"
 import { Updater } from "../../services/updater"
 import { UpdatePreflight } from "../../services/update-preflight"
 import { Npm } from "@opencode/util/npm"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_VERSION } from "../../version"
+import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../../version"
 import { Env } from "../../env"
 
 export default Runtime.handler(Commands, (input) =>
@@ -69,6 +69,7 @@ export default Runtime.handler(Commands, (input) =>
         name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
         version: OPENCODE_VERSION,
         channel: process.env.OPENCODE_TUI_CHANNEL ?? OPENCODE_CHANNEL,
+        ...(OPENCODE_UPSTREAM === undefined ? {} : { upstream: OPENCODE_UPSTREAM }),
       },
       server: {
         endpoint: server.endpoint,

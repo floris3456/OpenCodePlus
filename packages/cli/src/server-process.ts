@@ -4,7 +4,7 @@ import { NodeServices } from "@effect/platform-node"
 import { Service, type DiscoverOptions } from "@opencode/client/effect/service"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_VERSION } from "./version"
+import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_UPSTREAM, OPENCODE_VERSION } from "./version"
 import { AppProcess } from "@opencode/util/process"
 import { randomBytes, randomUUID } from "node:crypto"
 import { Effect, Option, Redacted, Schedule, Schema } from "effect"
@@ -88,6 +88,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
             version: OPENCODE_VERSION,
             channel: OPENCODE_CHANNEL,
+            ...(OPENCODE_UPSTREAM === undefined ? {} : { upstream: OPENCODE_UPSTREAM }),
           },
           hostname,
           port,

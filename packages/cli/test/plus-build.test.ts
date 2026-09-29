@@ -66,6 +66,19 @@ describe("plus build configuration", () => {
     expect(config.define.OPENCODE_TARGET).toBe(JSON.stringify(target))
   })
 
+  test("the plus build names the OpenCode release its source contains; an upstream build names none", async () => {
+    const opencode = (await Bun.file(path.resolve(import.meta.dirname, "../package.json")).json()).version
+    const config = resolvePlusBuildConfig({ version: "0.0.0-plus-r5.0" })
+    expect(config.upstream).toBe(opencode)
+    expect(config.define.OPENCODE_UPSTREAM).toBe(JSON.stringify(opencode))
+    // The build's own version and identity are unchanged.
+    expect(config.define.OPENCODE_VERSION).toBe(JSON.stringify("0.0.0-plus-r5.0"))
+    // Control: upstream OpenCode builds leave it unset and keep their user agent.
+    const upstream = resolveBuildConfig({ version: "2.0.18", channel: "latest" })
+    expect(upstream.upstream).toBeUndefined()
+    expect(upstream.define.OPENCODE_UPSTREAM).toBe("null")
+  })
+
   test("a build-target spelling records the platform alone as the identity target", () => {
     // build.ts names the cross-build target opencodeplus-linux-x64; the native CI
     // build of the same target embeds linux-x64, so the identity must too.

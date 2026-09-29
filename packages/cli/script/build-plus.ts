@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { build, resolveBuildConfig, type ResolvedBuildConfig } from "./build"
+import pkg from "../package.json"
 
 const BINARY = "opencodeplus"
 
@@ -57,6 +58,9 @@ export function resolvePlusBuildConfig(options: PlusBuildOptions = {}): Resolved
     binary: BINARY,
     channel: "plus",
     version,
+    // Plus versions count its own releases; the user agent also names the OpenCode
+    // release this source contains, which services gating on OpenCode's version read.
+    upstream: pkg.version,
     entrypoints: ["./src/plus.ts"],
     identity: {
       product: "opencodeplus",
@@ -81,6 +85,7 @@ export async function buildPlus(options: PlusBuildOptions = {}) {
     binary: config.binary,
     channel: config.channel,
     version: config.version,
+    upstream: config.upstream,
     entrypoints: config.entrypoints,
     identity: config.identity,
     outdir: options.outdir,
