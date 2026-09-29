@@ -156,6 +156,13 @@ window continues to count down.
 00:08  next warming attempt
 ```
 
+## Plugins
+
+A plugin can decide warming per Session with the session `warming` hook, for example to keep one agent's Sessions
+warm longer or to switch warming off for a single Session. The hook sees the Session's agent and model, runs when
+activity starts a window and again before each warming request, and may change or remove the settings. See the
+[plugin hook reference](/build/plugins/effect).
+
 ## Costs
 
 Warming requests are real provider requests. They can consume tokens, incur

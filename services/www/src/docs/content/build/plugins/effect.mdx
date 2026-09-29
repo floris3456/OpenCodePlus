@@ -1327,6 +1327,26 @@ attempt count remains a hard limit. `attempt` is the physical attempt being prop
 so the first retry is attempt `2`. Invalid delays (`NaN`, infinity, or negative values) fall back to the computed delay.
 Context-overflow recovery remains separate because it compacts the conversation instead of retrying the same request.
 
+Decide [session warming](/warming) per Session. The hook runs when a non-warming request starts the warming window
+(`phase: "activity"`) and again right before each warming request (`phase: "warm"`). `settings` starts as the
+configured value, or for `warm` the settings in force; set it to `undefined` to stop warming, or change the prompt,
+interval or duration in milliseconds. At `warm`, a changed duration re-times the window from `since`.
+
+```ts
+effect: (ctx) =>
+  Effect.gen(function* () {
+    yield* ctx.session.hook("warming", (event) =>
+      Effect.sync(() => {
+        if (event.agent === "review") event.settings = undefined
+        if (event.settings && event.model.providerID === "anthropic") event.settings.duration = 60 * 60_000
+      }),
+    )
+  }),
+```
+
+Hooks may enable warming that the configuration leaves off. Settings whose interval or duration is not a finite
+positive number disable warming for that decision and log a warning.
+
 #### Reference
 
 ```ts
@@ -1342,6 +1362,7 @@ interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly warming: SessionWarming
 }
 
 type RetryDecision = { retry: false } | { retry: true; delay: number }
@@ -1353,6 +1374,17 @@ interface SessionRetry {
   readonly error: { type: string; message: string; status?: number }
   readonly attempt: number
   decision: RetryDecision
+}
+
+interface SessionWarming {
+  readonly sessionID: string
+  readonly agent: string
+  readonly model: { providerID: string; id: string; variant?: string }
+  readonly phase: "activity" | "warm"
+  /** Epoch ms of the latest non-warming request: the start of the warming window. */
+  readonly since: number
+  readonly now: number
+  settings: { prompt: string; interval: number; duration: number } | undefined
 }
 
 interface SessionHookDomain {
