@@ -5142,11 +5142,9 @@ async function refreshActiveModelsIfStale(directory: string, state: PlusState): 
   // context keeps its agents and preset catalogue and takes the fresh ones.
   const fresh = presetStateOf(stored.records)
   state.cachedModels = modelsOf(stored.records)
-  state.activeModels = buildActiveModels(state.cachedAgents, state.cachedModels, {
-    ...state.cachedScopes,
-    links: fresh.links,
-    entries: fresh.entries,
-  })
+  // Cache warming resolves model rows with the same fresh context.
+  state.cachedScopes = { ...state.cachedScopes, links: fresh.links, entries: fresh.entries }
+  state.activeModels = buildActiveModels(state.cachedAgents, state.cachedModels, state.cachedScopes)
   state.projectRevision = stored.projectRevision
   state.globalRevision = stored.globalRevision
 }
