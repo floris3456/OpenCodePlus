@@ -1,5 +1,5 @@
-import { createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js"
-import type { ComposerHint } from "./index"
+import { createSignal, For, onCleanup, onMount, type JSX } from "solid-js"
+import { COMPOSER_TAB_BODY_HEIGHT, type ComposerHint } from "./context"
 import { useComposerTab } from "./index"
 
 export interface PluginComposerTabRegistration {
@@ -40,14 +40,25 @@ function SinglePluginTab(props: { tab: PluginComposerTabRegistration; sessionID:
 
   const active = () => composer.active(props.tab.id)
 
+  // Render the body once, for the tab's lifetime: a body that remounts on
+  // every visit starts empty, draws a placeholder and jumps the composer when
+  // its data arrives. The container keeps every plugin body at the native
+  // body height and hides it, rather than unmounting it, while another tab is
+  // active. `sessionID` stays live because the plugin reads it lazily.
+  const body = props.tab.render({
+    get sessionID() {
+      return props.sessionID
+    },
+    active,
+    close: composer.close,
+  })
+
   return (
-    <Show when={active()}>
-      {props.tab.render({
-        sessionID: props.sessionID,
-        active,
-        close: composer.close,
-      })}
-    </Show>
+    <box visible={active()} height={COMPOSER_TAB_BODY_HEIGHT} overflow="hidden">
+      <box flexShrink={0} flexDirection="column" minWidth={0}>
+        {body}
+      </box>
+    </box>
   )
 }
 

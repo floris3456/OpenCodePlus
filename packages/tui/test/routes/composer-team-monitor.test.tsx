@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { testRender } from "@opentui/solid"
 import { afterEach, expect, test } from "bun:test"
-import { createSignal, onCleanup, onMount } from "solid-js"
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { ConfigProvider } from "../../src/config"
 import { ClientProvider } from "../../src/context/client"
 import { DataProvider, useData } from "../../src/context/data"
@@ -12,6 +12,7 @@ import { StorageProvider } from "../../src/context/storage"
 import { SessionTerminalsProvider } from "../../src/context/session-terminals"
 import { ThemeProvider } from "../../src/context/theme"
 import { Composer, composerPluginTabs } from "../../src/routes/session/composer"
+import { COMPOSER_TAB_BODY_HEIGHT } from "../../src/routes/session/composer/context"
 import { DialogProvider } from "../../src/ui/dialog"
 import { ToastProvider } from "../../src/ui/toast"
 import { createApi, createEventStream, createFetch, directory, json } from "../fixture/tui-client"
@@ -64,11 +65,16 @@ async function createTestComposer(input: {
         .then(() => ready.resolve(), ready.reject)
     })
     return (
-      <Composer
-        sessionID="parent"
-        open={input.open ?? true}
-        onClose={input.onClose}
-      />
+      // The composer is anchored at the bottom of the chat, as in the session
+      // route: its height changes move the header row it is measured by.
+      <box flexDirection="column" height="100%">
+        <box flexGrow={1} />
+        <Composer
+          sessionID="parent"
+          open={input.open ?? true}
+          onClose={input.onClose}
+        />
+      </box>
     )
   }
 
@@ -126,6 +132,44 @@ async function createTestComposer(input: {
   }
 }
 
+/** The composer's tab header row: the only line that names every tab. */
+function headerRow(frame: string): number {
+  return frame
+    .split("\n")
+    .findIndex((line) => line.includes("Subagents") && line.includes("Terminals"))
+}
+
+/** The composer's footer row with the tab hint. */
+function footerRow(frame: string): number {
+  return frame.split("\n").findIndex((line) => line.includes("tabs") && line.includes("←/→"))
+}
+
+/**
+ * A plugin body that starts as a one-line placeholder and grows to more rows
+ * than the composer body holds, the way a real tab fetches over RPC. The gate
+ * lets the test capture the intermediate frame deterministically.
+ */
+function GrowTab(props: { gate: Promise<void> }) {
+  const [rows, setRows] = createSignal(1)
+  void props.gate.then(() => setRows(10))
+  return (
+    <box flexDirection="column">
+      <Show when={rows() > 1} fallback={<text>grow loading</text>}>
+        <For each={Array.from({ length: 10 }, (_, index) => index)}>
+          {(index) => <text>{`grow row ${index}`}</text>}
+        </For>
+      </Show>
+    </box>
+  )
+}
+
+/** A plugin body whose state only survives if the component is never remounted. */
+function StatefulTab(props: { mount: () => number; onCleanup: () => void }) {
+  const [label] = createSignal(`state ${props.mount()}`)
+  onCleanup(props.onCleanup)
+  return <text>{label()}</text>
+}
+
 test("plugin tab appears fourth after Subagents, Shell, and Terminals, and activates with right", async () => {
   let activeState = false
   let receivedSessionID = ""
@@ -137,14 +181,15 @@ test("plugin tab appears fourth after Subagents, Shell, and Terminals, and activ
     hints: () => [{ label: "custom_hint", shortcut: "ctrl+k" }],
     render(input) {
       receivedSessionID = input.sessionID
-      const active = input.active()
-      activeState = active
+      createEffect(() => {
+        activeState = input.active()
+      })
       onCleanup(() => {
         activeState = false
       })
       return (
         <box>
-          <text>Custom Tab Content: active={String(active)}</text>
+          <text>Custom Tab Content: active={String(input.active())}</text>
         </box>
       )
     },
@@ -249,6 +294,108 @@ test("unregistering a plugin tab removes it cleanly", async () => {
     expect(app.captureCharFrame()).toContain("Shell")
     expect(app.captureCharFrame()).toContain("Terminals")
   } finally {
+    app.renderer.destroy()
+    await cleanup()
+  }
+})
+
+test("the composer header row never moves while walking the plugin tabs", async () => {
+  const gate = Promise.withResolvers<void>()
+  const unregisterGrow = composerPluginTabs.register({
+    id: "grow-tab",
+    label: "Grow",
+    render: () => <GrowTab gate={gate.promise} />,
+  })
+  const unregisterEmpty = composerPluginTabs.register({
+    id: "empty-tab",
+    label: "Empty",
+    render: () => <></>,
+  })
+
+  const { app, cleanup } = await createTestComposer({})
+  try {
+    const baselineFrame = app.captureCharFrame()
+    const baseline = headerRow(baselineFrame)
+    expect(baseline).toBeGreaterThan(-1)
+    // The number is not assumed: the native body is measured here (header,
+    // gap, body, gap, footer) and must be the height the plugin container
+    // derives from it.
+    expect(footerRow(baselineFrame) - baseline - 3).toBe(COMPOSER_TAB_BODY_HEIGHT)
+
+    const captures: { step: string; frame: string }[] = []
+    for (const lap of [1, 2]) {
+      for (let press = 1; press <= 5; press++) {
+        app.mockInput.pressArrow("right")
+        await app.renderOnce()
+        captures.push({ step: `lap ${lap} press ${press} pending`, frame: app.captureCharFrame() })
+        // Grow is the fourth tab: the placeholder frame is captured above,
+        // then its data arrives the way a real RPC would.
+        if (lap === 1 && press === 3) gate.resolve()
+        await app.renderOnce()
+        captures.push({ step: `lap ${lap} press ${press} settled`, frame: app.captureCharFrame() })
+      }
+    }
+
+    for (const capture of captures) expect(headerRow(capture.frame)).toBe(baseline)
+
+    // Both the placeholder frame and the tall settled frame were captured:
+    // the tall body is clipped and the placeholder shares the same height.
+    expect(captures.some((capture) => capture.frame.includes("grow loading"))).toBe(true)
+    expect(captures.some((capture) => capture.frame.includes("grow row 4"))).toBe(true)
+    expect(captures.some((capture) => capture.frame.includes("grow row 5"))).toBe(false)
+  } finally {
+    unregisterGrow()
+    unregisterEmpty()
+    app.renderer.destroy()
+    await cleanup()
+  }
+})
+
+test("plugin tab components mount once and stay mounted until unregistered", async () => {
+  let renders = 0
+  let mounts = 0
+  let cleanups = 0
+  const unregister = composerPluginTabs.register({
+    id: "stateful-tab",
+    label: "Stateful",
+    render: () => {
+      renders++
+      return <StatefulTab mount={() => ++mounts} onCleanup={() => cleanups++} />
+    },
+  })
+
+  const { app, cleanup } = await createTestComposer({})
+  try {
+    for (let press = 0; press < 3; press++) {
+      app.mockInput.pressArrow("right")
+      await app.renderOnce()
+    }
+    expect(renders).toBe(1)
+    expect(mounts).toBe(1)
+    expect(app.captureCharFrame()).toContain("state 1")
+
+    // Leaving the tab hides it but does not dispose it.
+    app.mockInput.pressArrow("right")
+    await app.renderOnce()
+    expect(app.captureCharFrame()).not.toContain("state 1")
+    expect(renders).toBe(1)
+    expect(cleanups).toBe(0)
+
+    // Coming back shows the state the first visit kept.
+    app.mockInput.pressArrow("left")
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("state 1")
+    expect(renders).toBe(1)
+    expect(mounts).toBe(1)
+    expect(cleanups).toBe(0)
+
+    // Only unregistering the tab disposes the component.
+    unregister()
+    await app.renderOnce()
+    expect(cleanups).toBe(1)
+    expect(app.captureCharFrame()).not.toContain("state 1")
+  } finally {
+    unregister()
     app.renderer.destroy()
     await cleanup()
   }
