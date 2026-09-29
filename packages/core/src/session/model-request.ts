@@ -22,6 +22,7 @@ import type {
 } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import type { Content } from "@opencode/schema/tool"
 import { Cause, Context, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
@@ -53,6 +54,11 @@ const SUMMARY_OUTPUT_MAX = 32_000
 const ESTIMATE_ERROR = 0.15
 // Never ask for less; only reachable with automatic compaction off, since it keeps the window from filling this far.
 const OUTPUT_TOKEN_MIN = 1_024
+// Zen's free tier serves only requests that declare OpenCode's shell and read tools and refuses the rest as not
+// coming from OpenCode ("FreeTierError"). A request without them (a title, an agent denied the shell) declares
+// placeholders under those names; they execute nothing, so a call to one fails as for any unavailable tool.
+const FREE_TIER_TOOLS = ["shell", "read"]
+const FREE_TIER_PLACEHOLDER = "Not available to you. Never call this tool."
 
 /** Tool errors, plus the user declining a permission or dismissing a question. */
 export type ExecuteError = Tool.Error | Permission.DeclinedError | QuestionTool.CancelledError
@@ -216,6 +222,17 @@ export const boundImages = (messages: LLMRequest["messages"]) => {
   )
 }
 
+/** Placeholder shell and read definitions a Zen free-tier request lacks; none for any other model. */
+const freeTierPlaceholders = (model: SessionRunnerModel.Resolved, declared: ReadonlyMap<string, unknown>) => {
+  if (model.ref.providerID !== Provider.ID.opencode) return []
+  if (model.cost.some((cost) => cost.input > 0 || cost.output > 0)) return []
+  return FREE_TIER_TOOLS.filter((name) => !declared.has(name)).map((name) => ({
+    name,
+    description: FREE_TIER_PLACEHOLDER,
+    inputSchema: { type: "object", properties: {} },
+  }))
+}
+
 type Definitions = PluginHooks.Domains["session"]["context"]["tools"]
 
 /** Builds the model request for each session flow. Each entry runs its own plugin hook. */
@@ -277,6 +294,7 @@ export const layer = Layer.effect(
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
       const affinity = session.parentID ?? session.fork?.sessionID ?? session.id
+      const placeholders = freeTierPlaceholders(model, hooked)
       const base = LLM.request({
         model: model.model,
         http: {
@@ -294,7 +312,7 @@ export const layer = Layer.effect(
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         system: shaped.system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities)),
-        tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
+        tools: [...Array.from(hooked, ([name, t]) => ({ ...t, name })), ...placeholders],
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,
         providerOptions: Object.keys(providerOptions).length === 0 ? undefined : providerOptions,
@@ -400,7 +418,14 @@ export const layer = Layer.effect(
         // Permission.assert and the question tool throw declines as defects so tools cannot
         // catch them and turn a "no" into model-visible output. Recover them here as failures.
         executeTool: (call: Parameters<Prepared["executeTool"]>[0]) =>
-          tools.execute({ ...call, definitions: hooked }).pipe(
+          (placeholders.some((tool) => tool.name === call.call.name)
+            ? Effect.fail(
+                new Tool.Error({
+                  message: `No tool named "${call.call.name}" is available to you. Use a tool from your tool list.`,
+                }),
+              )
+            : tools.execute({ ...call, definitions: hooked })
+          ).pipe(
             Effect.catchCauseFilter(
               (cause) => {
                 const decline = cause.reasons.flatMap((r) =>
