@@ -91,6 +91,7 @@ export interface TextEntry {
 }
 
 export function memoOf(ctx: BuildContext): Memo {
+  memoBuildCounter.count++
   return {
     ctx,
     whole: new Map(),
@@ -103,14 +104,15 @@ export function memoOf(ctx: BuildContext): Memo {
 }
 
 // Counts memo builds so tests can prove a screen builds one memo per snapshot,
-// not one per tree() call. Not read in production.
+// not one per tree() call. memoOf is the single constructor every path funnels
+// through, so a path that reverts to building its own memo still counts. Not
+// read in production.
 export const memoBuildCounter = { count: 0 }
 export function resetMemoBuildCounter(): void {
   memoBuildCounter.count = 0
 }
 
 export function buildMemo(input: MemoInput): Memo {
-  memoBuildCounter.count++
   return memoOf(contextOf(input))
 }
 
