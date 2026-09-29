@@ -166,7 +166,7 @@ test("a plugin origin does not survive Skill.Info decoding, so the skill matches
   const candidate = {
     id: Skill.ID.make("probe"),
     name: Skill.Name.make("probe"),
-    location: AbsolutePath.make("/skills/probe.md"),
+    path: AbsolutePath.make("/skills/probe.md"),
     content: "probe body",
     origin: { type: "plugin", name: "opencode.plus" },
   }
@@ -192,13 +192,13 @@ test("the release workflow is listed under Plus skills without relabeling unrela
   await configDir()
   const ctx = context()
   const registration = await Effect.runPromise(Effect.scoped(ctx.skill.transform((editor) => {
-    for (const [id, location] of [
+    for (const [id, path] of [
       ["opencodeplus-release", "/config/opencodeplus/skills/opencodeplus-release/SKILL.md"],
       ["opencode", "/builtin/opencode/SKILL.md"],
       ["opencodeplus-unrelated", "/config/opencodeplus/skills/opencodeplus-unrelated/SKILL.md"],
       ["project-workflow", "/workspace/.opencode/skills/project-workflow/SKILL.md"],
     ]) {
-      editor.add(Schema.decodeUnknownSync(Skill.Info)({ id, name: id, location, content: "workflow" }))
+      editor.add(Schema.decodeUnknownSync(Skill.Info)({ id, name: id, path, content: "workflow" }))
     }
   })))
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
