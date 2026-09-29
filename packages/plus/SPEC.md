@@ -1015,7 +1015,10 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 
 | Method | Input | Output | Errors |
 | --- | --- | --- | --- |
-| `instructions.snapshot` | `void` | `Snapshot` | `instructions.refresh` | `void` | `Snapshot` | `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `agent.protected` |
+| `instructions.snapshot` | `void` | `Snapshot` | — |
+| `instructions.refresh` | `void` | `Snapshot` | — |
+| `instructions.mutate` | `{ expectedRevision, expectedGlobalRevision, records, actor? }` | `MutateResult` | `agent.protected`, `agent.invalid` |
+| `instructions.log` | `LogInput` | `LogOutput` | — |
 | `instructions.assembled` | `{ agent }` | `Assembled` | `agent.unknown` |
 | `agent.create` | `{ scope, id, preset?: PresetRef, actor? }` | `AgentRef` | `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid` |
 | `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
@@ -1034,11 +1037,13 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `team.addAgent` | `{ level, team, id, preset?: PresetRef, actor? }` | `AgentRef` (at defaults `path` is the entry's row id) | `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid`, `entry.invalid`, `entry.exists` |
 | `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
 | `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `team.unknown`, `team.invalid`, `agent.protected` |
-| `team.list` | `void` | `TeamListOutput` | `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
+| `team.list` | `void` | `TeamListOutput` | — |
+| `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
 | `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `E_BUSY`, `run.unknown` |
 | `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.exists`, `model.invalid`, `agent.protected` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.missing`, `model.invalid`, `agent.protected` |
-| `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
+| `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | — |
+| `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
 | `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `rule.missing`, `rule.invalid`, `agent.protected` |
 | `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.invalid`, `agent.protected` |
 | `entry.create` | `{ catalogue, name, team?, preset?: PresetRef, actor? }` | `EntryRef` | `entry.invalid`, `entry.exists`, `preset.invalid` |

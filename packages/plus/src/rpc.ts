@@ -1409,14 +1409,12 @@ export const Definition = Rpc.define({
     "instructions.snapshot": {
       input: Empty,
       output: PortableSnapshot,
-      errors: {
-      },
+      errors: {},
     },
     "instructions.refresh": {
       input: Empty,
       output: PortableSnapshot,
-      errors: {
-      },
+      errors: {},
     },
     "instructions.mutate": {
       input: PortableMutateInput,
@@ -1429,8 +1427,7 @@ export const Definition = Rpc.define({
     "instructions.log": {
       input: PortableLogInput,
       output: PortableLogOutput,
-      errors: {
-      },
+      errors: {},
     },
     "instructions.assembled": {
       input: PortableAssembledInput,
@@ -1594,8 +1591,7 @@ export const Definition = Rpc.define({
     "team.list": {
       input: Empty,
       output: PortableTeamListOutput,
-      errors: {
-      },
+      errors: {},
     },
     "team.runs.list": {
       input: PortableTeamRunsListInput,
@@ -1631,8 +1627,7 @@ export const Definition = Rpc.define({
     "catalog.models": {
       input: Empty,
       output: PortableCatalogModelsOutput,
-      errors: {
-      },
+      errors: {},
     },
     "rule.add": {
       input: PortableRuleAddInput,
