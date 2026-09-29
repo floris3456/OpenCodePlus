@@ -3,6 +3,8 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createPlusApi, createState } from "../src/index.js"
+import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
+import { load, type CustomizationRecord } from "../src/instructions/store.js"
 import type { Plus } from "../src/rpc.js"
 import { fullContext } from "./harness.js"
 
@@ -70,6 +72,7 @@ function customization(agent: string, overrides?: Partial<Plus.SnapshotCustomiza
     text: "mine",
     basedOn: "fp-upstream",
     updated: UPDATED,
+    ...overrides,
   }
 }
 
@@ -120,6 +123,63 @@ test("a project-level write creates the project file, records, log and team dire
     records: [{ ...customization("alpha"), level: "global" }],
   })
   expect(globalWrite.ok).toBe(true)
+  expect(await Bun.file(path.join(sibling.project, ".opencodeplus")).exists()).toBe(false)
+})
+
+test("a project-level team create is the write that creates the config", async () => {
+  const { project } = await bareProject()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  const created = await api.createTeam({ level: "project", team: "crew" })
+  expect(created.ok).toBe(true)
+  expect(await Bun.file(path.join(project, ".opencodeplus", "project.json")).exists()).toBe(true)
+})
+
+test("a project-level team addAgent is the write that creates the config", async () => {
+  const { project } = await bareProject()
+  // The team directory exists (discovery needs it) but no config does.
+  await fs.mkdir(path.join(project, ".opencodeplus", "teams", "crew"), { recursive: true })
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  const added = await api.addTeamAgent({ level: "project", team: "crew", id: "alpha" })
+  expect(added.ok).toBe(true)
+  expect(await Bun.file(path.join(project, ".opencodeplus", "project.json")).exists()).toBe(true)
+})
+
+test("a refused project team create creates nothing", async () => {
+  const { project } = await bareProject()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  // A name the filesystem cannot create: mkdir fails after validation, and
+  // the parent chain it made is removed again.
+  const refused = await api.createTeam({ level: "project", team: "a".repeat(300) })
+  expect(refused.ok).toBe(false)
+  if (refused.ok) throw new Error("expected the create to be refused")
+  expect(refused.error.code).toBe("team.create")
+  expect(await Bun.file(path.join(project, ".opencodeplus")).exists()).toBe(false)
+  // Control: a valid create in the same directory does create it.
+  const created = await api.createTeam({ level: "project", team: "crew" })
+  expect(created.ok).toBe(true)
+  expect((await Bun.file(path.join(project, ".opencodeplus", "teams", "crew")).stat()).isDirectory()).toBe(true)
+  // A duplicate create is refused before writing anything either.
+  const duplicate = await api.createTeam({ level: "project", team: "crew" })
+  expect(duplicate.ok).toBe(false)
+  if (duplicate.ok) throw new Error("expected the duplicate to be refused")
+  expect(duplicate.error.code).toBe("team.exists")
+})
+
+test("a project-scoped log write creates the config without a store save", async () => {
+  const { project } = await bareProject()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  // skill.create writes `.opencode/skill` and a project log line, and never
+  // touches the project store, so only appendForLevel's ensure can create the
+  // config here.
+  const created = await api.createSkill({ name: "notes", body: "Take notes." })
+  expect(created.ok).toBe(true)
+  expect(await Bun.file(path.join(project, ".opencodeplus", "project.json")).exists()).toBe(true)
+  expect(await Bun.file(path.join(project, ".opencodeplus", "instructions", "log.jsonl")).exists()).toBe(true)
+  // Control: a global-scope skill leaves a sibling project directory alone.
+  const sibling = await bareProject()
+  const siblingApi = createPlusApi(fullContext({ directory: sibling.project }), createState())
+  const global = await siblingApi.createSkill({ name: "notes", body: "Take notes.", scope: "global" })
+  expect(global.ok).toBe(true)
   expect(await Bun.file(path.join(sibling.project, ".opencodeplus")).exists()).toBe(false)
 })
 
@@ -198,4 +258,81 @@ test("under an ancestor config a child write makes no child project file and kee
   // ...while a non-protected agent is allowed (the control).
   const allowed = await api.createAgent({ scope: "project", id: "y", actor: toolActor })
   expect(allowed.ok).toBe(true)
+})
+
+// A v1 global store with one shared Defaults row and one project-level row:
+// the shared row triggers the catalogue migration on the next load, and the
+// project row has no project store of its own yet.
+async function writeV1GlobalStore(): Promise<void> {
+  const file = globalRecordsPath()
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(
+    file,
+    [
+      JSON.stringify({ revision: 7 }),
+      JSON.stringify({ item: "tool:reader", agent: "*", state: "enabled", basedOn: "fp-shared", updated: UPDATED }),
+      JSON.stringify({ item: "tool:reader", agent: "alpha", text: "mine", state: "enabled", basedOn: "fp-alpha", updated: UPDATED }),
+    ].join("\n") + "\n",
+  )
+}
+
+// The v2 equivalent: a mixed store whose shared Defaults row predates the
+// catalogue split (no catalogue key) and whose project row has no project
+// store, so the catalogue migration still triggers on the next load.
+async function writeV2MixedGlobalStore(): Promise<void> {
+  const file = globalRecordsPath()
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(
+    file,
+    [
+      JSON.stringify({ version: 2, revision: 3 }),
+      JSON.stringify({ type: "customization", level: "defaults", agent: null, item: "tool:reader", section: null, state: "on", basedOn: "fp-shared", updated: UPDATED }),
+      JSON.stringify({ type: "customization", level: "project", agent: "alpha", item: "tool:reader", section: null, text: "mine", state: "on", basedOn: "fp-alpha", updated: UPDATED }),
+    ].join("\n") + "\n",
+  )
+}
+
+test("a read-triggered migration creates no project store and keeps the migrated row", async () => {
+  for (const seed of [writeV1GlobalStore, writeV2MixedGlobalStore]) {
+    const { project } = await bareProject()
+    await seed()
+    const api = createPlusApi(fullContext({ directory: project }), createState())
+    const snapshot = await api.snapshot()
+    // The migrated view is returned in memory...
+    const row = snapshot.value.records.find(
+      (record): record is Plus.SnapshotCustomizationRecord =>
+        record.type === "customization" && record.level === "project" && record.agent === "alpha",
+    )
+    expect(row?.text).toBe("mine")
+    // ...without creating anything in the project directory...
+    expect(await Bun.file(path.join(project, ".opencodeplus")).exists()).toBe(false)
+    // ...and the global store still holds the project row: nothing moved into a
+    // project store that does not exist.
+    const global = await Bun.file(globalRecordsPath()).text()
+    expect(global).toContain('"agent":"alpha"')
+    expect(global).toContain('"version":2')
+  }
+})
+
+test("a real project write after the migration creates the project store and loses nothing", async () => {
+  const { project } = await bareProject()
+  await writeV1GlobalStore()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  const before = await api.snapshot()
+  const written = await api.mutate({
+    expectedRevision: before.value.revision,
+    expectedGlobalRevision: before.value.globalRevision,
+    records: [...before.value.records, customization("beta", { text: "beta text" })],
+  })
+  expect(written.ok).toBe(true)
+  const stored = await load(project)
+  const textOf = (agent: string) =>
+    stored.records.find(
+      (record): record is CustomizationRecord => record.type === "customization" && record.agent === agent,
+    )?.text
+  expect(textOf("alpha")).toBe("mine")
+  expect(textOf("beta")).toBe("beta text")
+  expect(await Bun.file(projectRecordsPath(project)).exists()).toBe(true)
+  // The moved row no longer rides the global file.
+  expect(await Bun.file(globalRecordsPath()).text()).not.toContain('"agent":"alpha"')
 })
