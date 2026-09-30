@@ -13,7 +13,7 @@ import type {
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
 import { materialize, skeletonOf, teamsOwnerSegment, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
-import { parseModelDefaultItemId } from "./model-settings.js"
+import { parseModelDefaultItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -253,6 +253,13 @@ function atNode(
 
 function ownOf(state: QueryState, address: Address): CustomizationRecord | undefined {
   return atNode(recsAt(state, address.item, address.section), address.level, address.agent, catalogueForAddress(address), address.team)
+}
+
+// Defaults › Models rows keep their record in their own snapshot field, not in
+// the inventory records.
+function modelDefaultRecordOf(state: QueryState, address: Address): ModelSettingsRecord | undefined {
+  const key = parseModelDefaultItemId(address.item)
+  return key === undefined ? undefined : settingsFor(state.memo.ctx.modelSettings, key)
 }
 
 function splitOfAddress(state: QueryState, address: Address): SplitRecord | undefined {
@@ -1371,7 +1378,7 @@ function project(state: QueryState, candidate: Candidate, fields: readonly Field
     }
     if (field === "record") {
       if (candidate.address !== undefined) {
-        const own = ownOf(state, candidate.address)
+        const own = modelDefaultRecordOf(state, candidate.address) ?? ownOf(state, candidate.address)
         if (own !== undefined) row.record = own
       }
       continue

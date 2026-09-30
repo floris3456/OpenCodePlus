@@ -391,6 +391,12 @@ test("the query engine finds Defaults › Models rows with item:modeldefault and
   expect(query(input, { where: "modified:true", fields: ["id"] }, memo).rows.map((row) => row.id)).toEqual([
     "item:defaults:/models:modeldefault:*",
   ])
+  // The Every model row carries its own values, so the badge projection says
+  // modified and the record projection returns the stored row.
+  const badges = query(input, { where: "item:modeldefault label:Every", fields: ["id", "badges"] }, memo)
+  expect(badges.rows.map((row) => row.badges)).toEqual(["modified"])
+  const record = query(input, { where: "id:item:defaults:/models:modeldefault:*", fields: ["id", "record"] }, memo)
+  expect(record.rows[0]?.record).toMatchObject({ type: "modelSettings", warming: "on" })
 })
 
 test("instructions.set, reset, delete and show cover a Defaults › Models row", async () => {
