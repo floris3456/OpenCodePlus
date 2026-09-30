@@ -397,6 +397,21 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
 
+      # Installs update themselves (/update, opencodeplus upgrade). On this runner's own
+      # operating system, an install of the release marked Latest must switch to this
+      # build, and a release that stages but cannot start must leave this build running
+      # with its data (packages/plus/script/release/update-gate.ts). Tag builds only:
+      # a branch build's 0.0.0-<sha> version is outside the release scheme.
+      - name: Update gate
+        if: github.ref_type == 'tag'
+        timeout-minutes: 15
+        run: >-
+          bun packages/plus/script/release/update-gate.ts --target "$TARGET" --version "$OPENCODE_VERSION"
+          --archive "dist/release/opencodeplus-${TARGET}.tar.gz"
+          --meta "dist/release/opencodeplus-${TARGET}.tar.gz.meta.json"
+        env:
+          TARGET: ${{ matrix.target }}
+
       - name: Upload target build artifact and hashes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

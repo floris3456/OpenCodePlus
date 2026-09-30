@@ -629,6 +629,26 @@ describe("native build workflow (ocp-build.yml)", () => {
     expect(gateRun).toContain('$i == ("v" want)')
   })
 
+  test("a tag build proves on each native runner that installs can update to it and that a failed update returns", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
+    const steps = doc.jobs?.build?.steps ?? []
+    const index = (name: string) => steps.findIndex((step) => step.name?.startsWith(name))
+    const gate = steps[index("Update gate")]
+
+    expect(gate).toBeDefined()
+    expect(gate.if).toBe("github.ref_type == 'tag'")
+    expect(gate.env?.TARGET).toBe("${{ matrix.target }}")
+    expect(gate.run).toContain("bun packages/plus/script/release/update-gate.ts")
+    expect(gate.run).toContain('--version "$OPENCODE_VERSION"')
+    expect(gate.run).toContain('--archive "dist/release/opencodeplus-${TARGET}.tar.gz"')
+    expect(gate.run).toContain('--meta "dist/release/opencodeplus-${TARGET}.tar.gz.meta.json"')
+    // It tests the packaged archive, on the runner that built it, before the archive is uploaded.
+    expect(index("Update gate")).toBeGreaterThan(index("Package target artifact"))
+    expect(index("Update gate")).toBeGreaterThan(index("Qualify target binary"))
+    expect(index("Update gate")).toBeLessThan(index("Upload target build artifact"))
+    expect(await Bun.file(join(repoRoot, "packages/plus/script/release/update-gate.ts")).exists()).toBe(true)
+  })
+
   test("a tag build refuses a malformed version, or one naming another opencode, before building", async () => {
     const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
     const steps = doc.jobs?.build?.steps ?? []

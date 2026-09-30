@@ -251,8 +251,12 @@ export const make = Effect.gen(function* () {
       return yield* Effect.fail(new UpdateError(`${executable} does not match the binary ${describe(version)} records`))
     // A binary that cannot start on this machine is refused before anything stops.
     const started = yield* run(executable, ["--version"])
-    if (started.exitCode !== 0 || !started.stdout.includes(version))
+    if (started.exitCode !== 0)
       return yield* Effect.fail(new UpdateError(`${describe(version)} does not start on this machine: ${started.stderr}`))
+    if (!started.stdout.includes(version))
+      return yield* Effect.fail(
+        new UpdateError(`The binary of ${describe(version)} reports "${started.stdout.trim()}"; nothing was switched`),
+      )
     return executable
   })
 
