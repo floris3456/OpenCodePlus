@@ -7,6 +7,7 @@ import { type Level, type ResolvedModelFields } from "./instructions/model.js"
 import {
   effectiveWarming,
   BUILT_IN_BASE,
+  BUILT_IN_WARMING,
   type ModelSettingsRecord,
   type SettingFrom,
   type WarmingBase,
@@ -24,9 +25,9 @@ import {
 
 /** Core's defaults (core/src/config/warming.ts), used when the host configuration leaves warming off. */
 export const WARMING_DEFAULTS: SessionWarmingSettings = {
-  prompt: "This is a keep-alive request. Do not perform any work or use tools. Reply with exactly: OK",
-  interval: 4 * 60 * 1000,
-  duration: 30 * 60 * 1000,
+  prompt: BUILT_IN_WARMING.prompt,
+  interval: BUILT_IN_WARMING.interval,
+  duration: BUILT_IN_WARMING.duration,
 }
 
 export type ChatSwitch = "on" | "off"
