@@ -8,13 +8,18 @@ on:
         required: true
         type: string
       tag:
-        description: "Release tag name (e.g. v0.0.1-plus.1)"
+        description: "Release tag name (e.g. v2.0.18-plus-1.0.0)"
         required: true
         type: string
       run_id:
         description: "Numeric id of the ocp-build run that produced the release bundle for this tag (from .../actions/runs/<run_id>)"
         required: true
         type: string
+      allow_older_opencode:
+        description: "Allow this release to contain an older opencode than the newest published release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -158,6 +163,92 @@ jobs:
 
           echo "Verified build run ${BUILD_RUN_ID} (${run_url}) succeeded on tag ${RELEASE_TAG} at commit ${tag_sha}"
 
+      # Every install's /update offers only versions newer than its own, so a
+      # release must be newer than every published one. The order is
+      # PlusVersion.compare (packages/util/src/plus-version.ts): the Plus part
+      # first, then the opencode part, number by number. workflows.test.ts runs
+      # this step against that module. Releases from before the
+      # 2.0.18-plus-1.0.0 scheme (v0.0.0-plus-rN.M) are not compared.
+      - name: Verify release is newer than every published release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ALLOW_OLDER_OPENCODE: ${{ inputs.allow_older_opencode }}
+        run: |
+          set -euo pipefail
+
+          # The six numbers in comparison order: the Plus part, then the opencode
+          # part. No leading zeros and at most nine digits, so bash compares them
+          # as decimal integers.
+          version_key() {
+            local n='(0|[1-9][0-9]{0,8})' d='[.]'
+            local re="^$n$d$n$d$n-plus-$n$d$n$d$n\$"
+            [[ "$1" =~ $re ]] || return 1
+            echo "${BASH_REMATCH[4]} ${BASH_REMATCH[5]} ${BASH_REMATCH[6]} ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+          }
+
+          # newer A B: A is a newer release than B.
+          newer() {
+            local a b i
+            read -ra a <<< "$(version_key "$1")"
+            read -ra b <<< "$(version_key "$2")"
+            for i in 0 1 2 3 4 5; do
+              if (( a[i] > b[i] )); then return 0; fi
+              if (( a[i] < b[i] )); then return 1; fi
+            done
+            return 1
+          }
+
+          # older_opencode A B: A contains an older opencode than B.
+          older_opencode() {
+            local a b i
+            read -ra a <<< "$(version_key "$1")"
+            read -ra b <<< "$(version_key "$2")"
+            for i in 3 4 5; do
+              if (( a[i] < b[i] )); then return 0; fi
+              if (( a[i] > b[i] )); then return 1; fi
+            done
+            return 1
+          }
+
+          version="${RELEASE_TAG#v}"
+          if [ "${RELEASE_TAG}" = "${version}" ] || ! version_key "${version}" > /dev/null; then
+            echo "::error::Tag '${RELEASE_TAG}' is not a release tag like v2.0.18-plus-1.0.0: the opencode version, then the OpenCodePlus version, both three numbers."
+            exit 1
+          fi
+
+          published=$(gh api "repos/${REPOSITORY}/releases?per_page=100" --paginate --jq '.[] | select(.draft | not) | .tag_name') || {
+            echo "::error::Cannot list the published releases of ${REPOSITORY}."
+            exit 1
+          }
+
+          newest=""
+          while IFS= read -r tag; do
+            other="${tag#v}"
+            if [ "${tag}" = "${other}" ] || ! version_key "${other}" > /dev/null; then continue; fi
+            if [ "${other}" = "${version}" ]; then
+              echo "::error::${RELEASE_TAG} is already published."
+              exit 1
+            fi
+            if [ -z "${newest}" ] || newer "${other}" "${newest}"; then newest="${other}"; fi
+          done <<< "${published}"
+
+          if [ -z "${newest}" ]; then
+            echo "${RELEASE_TAG} is the first release in the v2.0.18-plus-1.0.0 scheme."
+            exit 0
+          fi
+          if ! newer "${version}" "${newest}"; then
+            echo "::error::${version} is not newer than the published release ${newest}. /update offers only newer versions, so no install would ever be offered this one."
+            exit 1
+          fi
+          if older_opencode "${version}" "${newest}" && [ "${ALLOW_OLDER_OPENCODE}" != "true" ]; then
+            echo "::error::${version} contains an older opencode than the published release ${newest}. Dispatch again with allow_older_opencode if that is intended."
+            exit 1
+          fi
+          echo "${version} is newer than the newest published release ${newest}."
+
       # download-artifact defaults run-id to this run when it is unset, and this
       # workflow builds nothing. The bundle therefore has to come from the named
       # ocp-build run that the guard above accepted.
@@ -202,6 +293,9 @@ jobs:
           fi
           echo "release.json records version ${manifest_version} built from ${manifest_source_sha} for tag ${RELEASE_TAG}"
 
+      # A new release starts as a test release: a GitHub prerelease, which only
+      # installs with "include test releases" turned on are offered. ocp-latest.yml
+      # later marks it Latest, and then every install's /update offers it.
       - name: Publish immutable prerelease to GitHub Releases
         working-directory: assets
         shell: bash
@@ -218,7 +312,7 @@ jobs:
             --prerelease \
             --latest=false \
             --verify-tag \
-            --notes "OpenCode Plus immutable prerelease ${{ inputs.tag }}" \
+            --notes "OpenCodePlus test release ${{ inputs.tag }}. It reaches every install once it is marked Latest." \
             opencodeplus-linux-arm64.tar.gz \
             opencodeplus-linux-x64.tar.gz \
             opencodeplus-darwin-arm64.tar.gz \

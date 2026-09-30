@@ -480,10 +480,49 @@ describe("installer download location and shell", () => {
     )
   })
 
-  test("a download without a version is refused instead of guessing a latest release", async () => {
-    const res = await runInstaller(["--prefix", join(testDir, "opt/none"), "--no-modify-path"])
+  test("without a version it installs the Latest release, fetching the archive under its fixed version", async () => {
+    const assetDir = join(testDir, "assets")
+    const log = join(testDir, "curl.log")
+    const version = "2.0.18-plus-1.0.0"
+    const { archiveName } = await setupReleaseAssets(assetDir, { version })
+    const bin = await stubCurl(assetDir, log)
+    const res = await runInstaller(["--prefix", join(testDir, "opt/latest"), "--no-modify-path"], {
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, OPENCODE_RELEASE_BASE_URL: "", OPENCODE_RELEASE_LATEST_URL: "" },
+    })
+
+    expect(res.exitCode).toBe(0)
+    // Only the manifest comes from the moving Latest address; the archive comes from
+    // the immutable release the manifest names, so a Latest change in between cannot mix releases.
+    expect((await Bun.file(log).text()).trim().split("\n")).toEqual([
+      "https://github.com/floris3456/OpenCodePlus/releases/latest/download/release.json",
+      `https://github.com/floris3456/OpenCodePlus/releases/download/v${version}/${archiveName}`,
+    ])
+    expect(await Bun.file(join(testDir, `opt/latest/releases/${version}/bin/opencodeplus`)).exists()).toBe(true)
+  })
+
+  test("a Latest release is checked like any other: a wrong archive hash installs nothing", async () => {
+    const assetDir = join(testDir, "assets")
+    const prefix = join(testDir, "opt/latest-tampered")
+    await setupReleaseAssets(assetDir, { version: "2.0.18-plus-1.0.0", tamperArchiveSha: true })
+    const bin = await stubCurl(assetDir, join(testDir, "curl.log"))
+    const res = await runInstaller(["--prefix", prefix, "--no-modify-path"], {
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, OPENCODE_RELEASE_BASE_URL: "", OPENCODE_RELEASE_LATEST_URL: "" },
+    })
+
     expect(res.exitCode).not.toBe(0)
-    expect(res.stderr).toContain("a download needs a release version")
+    expect(res.stderr).toContain("Archive checksum mismatch")
+    expect(await Bun.file(join(prefix, "releases/2.0.18-plus-1.0.0/bin/opencodeplus")).exists()).toBe(false)
+    expect(await Bun.file(join(prefix, "bin/opencodeplus")).exists()).toBe(false)
+  })
+
+  test("without a version and without a Latest release it stops and says how to name one", async () => {
+    const bin = await stubCurl(join(testDir, "no-assets"), join(testDir, "curl.log"))
+    const res = await runInstaller(["--prefix", join(testDir, "opt/none"), "--no-modify-path"], {
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, OPENCODE_RELEASE_LATEST_URL: "" },
+    })
+    expect(res.exitCode).not.toBe(0)
+    expect(res.stderr).toContain("Failed to download release manifest from https://github.com/floris3456/OpenCodePlus/releases/latest/download/release.json")
+    expect(res.stderr).toContain("name one with --version")
   })
 
   // dash is /bin/sh on Debian and Ubuntu, where `curl ... | sh` meets it and where CI

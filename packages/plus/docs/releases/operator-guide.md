@@ -20,13 +20,28 @@ An operator inspecting a live system must distinguish between three distinct app
 
 ### Installing a Release
 
-Each release is a GitHub prerelease of `floris3456/OpenCodePlus`, tagged `v<version>`. `install.sh` downloads one fixed release per invocation from `https://github.com/floris3456/OpenCodePlus/releases/download/v<version>/` (override with `--base-url` or `OPENCODE_RELEASE_BASE_URL`); there is no implicit "latest", so a download without `--version` is refused. It is a bash script: pipe it into `bash`, not `sh`.
+Each release is a GitHub release of `floris3456/OpenCodePlus`, tagged `v<version>` (see [Release versions and publication](#release-versions-and-publication)). `install.sh` installs one fixed release per invocation. With `--version` it downloads that release from `https://github.com/floris3456/OpenCodePlus/releases/download/v<version>/` (override with `--base-url` or `OPENCODE_RELEASE_BASE_URL`). Without `--version` it installs the release marked **Latest**: it reads `release.json` from `https://github.com/floris3456/OpenCodePlus/releases/latest/download/` (override with `OPENCODE_RELEASE_LATEST_URL`), then downloads the archive from that manifest's own fixed-version address, so every check is the same as for a named version. It is a bash script: pipe it into `bash`, not `sh`.
 
 ```bash
+# The Latest release
+curl -fsSL https://github.com/floris3456/OpenCodePlus/releases/latest/download/install.sh | bash
+# A named release, including a test release
 curl -fsSL https://github.com/floris3456/OpenCodePlus/releases/download/v<version>/install.sh | bash -s -- --version v<version>
 ```
 
 The installer verifies `release.json`, the archive SHA-256 and the extracted binary SHA-256 before anything is installed, needs no Node, npm or Bun, and never edits a read-only shell profile.
+
+### Release versions and publication
+
+A release version names the opencode release its source contains, then the OpenCodePlus release number: `2.0.18-plus-1.0.0`, tagged `v2.0.18-plus-1.0.0` and shown as "OpenCodePlus 1.0.0 (opencode 2.0.18)". Both parts are exactly three numbers without leading zeros. `packages/util/src/plus-version.ts` (`PlusVersion`) parses and orders them.
+
+- **Numbering.** The middle Plus number goes up for a new feature (the last goes back to 0); the last goes up for fixes and additions to existing features; the first goes up only when the owner calls a change big. The Plus part stays the same when only opencode changed, and the opencode part stays the same when only OpenCodePlus changed.
+- **Order.** The Plus part decides, then the opencode part, each number by number (`1.0.10` is newer than `1.0.9`). Every release is newer than every published release. Its opencode part does not go down unless the owner explicitly allows it, and then the Plus part has to go up.
+- **Tag build.** `ocp-build.yml` step *Check release version* (`packages/plus/script/release/version.ts`) refuses a tag that is not in this form, or whose opencode part differs from `packages/cli/package.json`, before anything is built. Releases from before this scheme (`v0.0.0-plus-rN.M`) cannot be rebuilt by this source.
+- **Test release.** `ocp-release.yml` step *Verify release is newer than every published release* refuses a release that is not newer than every published non-draft release (dispatch input `allow_older_opencode` allows an older opencode part). It publishes a GitHub prerelease, never Latest. Installs with "include test releases" turned on are offered it.
+- **Latest.** After the owner has updated to the test release and used it, `ocp-latest.yml` (dispatch inputs `approval: approve` and `tag`) marks it Latest. It refuses a draft, a release that is not immutable, a release without exactly the seven release assets, and one that is not newer than the current Latest. It then checks that GitHub reports the release as Latest. From then on every install's `/update` offers it and `install.sh` without `--version` installs it. Immutable releases keep their assets and tag locked; GitHub allows changing only the prerelease and Latest flags.
+
+The publication and Latest workflows run without a checkout, so their ordering is bash; `packages/plus/test/release/workflows.test.ts` runs both steps against `PlusVersion` for every pair in a version grid.
 
 ### Install Prefix and Directory Layout
 

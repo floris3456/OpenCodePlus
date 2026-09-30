@@ -50,8 +50,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Tags carry the leading "v" (v0.0.0-plus-r4.1); versions do not
-      # (0.0.0-plus-r4.1). The binary, the inner metadata, release.json, and
+      # Tags carry the leading "v" (v2.0.18-plus-1.0.0); versions do not
+      # (2.0.18-plus-1.0.0). The binary, the inner metadata, release.json, and
       # install.sh all compare against the unprefixed form, so the tag form is
       # stripped here once instead of being carried into any artifact.
       - name: Resolve release version
@@ -79,6 +79,14 @@ jobs:
         with:
           bun-version: "1.4.2"
           expected-sha256: ${{ matrix.bun_sha256 }}
+
+      # A release tag names the opencode release this source contains, then the
+      # OpenCodePlus release number: v2.0.18-plus-1.0.0. A malformed tag, or one
+      # naming another opencode than packages/cli/package.json, stops here before
+      # anything is built. Branch builds carry 0.0.0-<sha> and are never released.
+      - name: Check release version
+        if: github.ref_type == 'tag'
+        run: bun packages/plus/script/release/version.ts "$OPENCODE_VERSION"
 
       - name: Resolve build identity
         run: |

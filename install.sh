@@ -20,7 +20,7 @@ Usage: install.sh [options]
 
 Options:
     -h, --help               Display this help message
-    -v, --version <version>  Install a specific version (e.g. 1.0.0)
+    -v, --version <version>  Install a specific version (e.g. v2.0.18-plus-1.0.0; default: the Latest release)
     -p, --prefix <path>      Installation prefix (default: \$HOME/.opencodeplus)
         --stage, --staging   Stage release directory only; do not link binary into PATH
         --no-modify-path     Do not modify shell profile config files (.bashrc, .zshrc, etc.)
@@ -40,8 +40,10 @@ offline=false
 asset_dir=""
 archive_path=""
 manifest_path=""
-# Releases are GitHub release assets: <base>/v<version>/<asset>.
+# Releases are GitHub release assets: <base>/v<version>/<asset>. The release
+# the owner marked Latest also serves its assets at <latest>/<asset>.
 base_url="${OPENCODE_RELEASE_BASE_URL:-https://github.com/floris3456/OpenCodePlus/releases/download}"
+latest_url="${OPENCODE_RELEASE_LATEST_URL:-https://github.com/floris3456/OpenCodePlus/releases/latest/download}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -225,17 +227,22 @@ if [ -z "$manifest_path" ]; then
             exit 1
         fi
     else
-        # A download installs exactly one fixed release per invocation; there is
-        # no implicit "latest" (releases are prereleases, never marked Latest).
+        # A download installs exactly one fixed release per invocation. Without
+        # --version that is the release the owner marked Latest: its manifest
+        # names its fixed version, and from there everything is downloaded and
+        # checked exactly as for a named version. Test releases are never Latest.
         if [ -z "$requested_version" ]; then
-            echo "Error: a download needs a release version, e.g. --version v0.0.0-plus-r4.1 (releases: https://github.com/floris3456/OpenCodePlus/releases)" >&2
-            exit 1
+            manifest_url="$latest_url/release.json"
+        else
+            manifest_url="$base_url/v$requested_version/release.json"
         fi
-        manifest_url="$base_url/v$requested_version/release.json"
         verify_url_origin "$manifest_url"
         manifest_path="$tmp_dir/release.json"
         curl -fsSL "$manifest_url" -o "$manifest_path" || {
             echo "Error: Failed to download release manifest from $manifest_url" >&2
+            if [ -z "$requested_version" ]; then
+                echo "If no release is marked Latest yet, name one with --version (releases: https://github.com/floris3456/OpenCodePlus/releases)" >&2
+            fi
             exit 1
         }
     fi

@@ -114,7 +114,8 @@
         "test",
         "test/product.test.ts",
         "test/global.test.ts",
-        "test/global-roots.test.ts"
+        "test/global-roots.test.ts",
+        "test/plus-version.test.ts"
       ],
       "cwd": "packages/util"
     },

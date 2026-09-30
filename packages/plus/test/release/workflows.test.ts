@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { PlusVersion } from "@opencode/util/plus-version"
 
 interface ActionStep {
   name?: string
@@ -232,6 +233,140 @@ async function runBunShaVerification(
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+}
+
+interface ReleaseApi {
+  /** Tag names `gh api .../releases --jq ...` prints, one per line. */
+  releases?: string
+  /** Lines `gh api .../releases/tags/<tag> --jq ...` prints. */
+  release?: string
+  /** The current Latest tag, or "404" when there is none. */
+  latest?: string
+  /** What GitHub reports as Latest once `gh release edit` ran. */
+  latestAfterEdit?: string
+}
+
+/**
+ * Runs real workflow step scripts in order against a stub `gh` whose release
+ * API answers come from `api`; "404" answers as GitHub does for a missing
+ * resource and "ERR" as a server failure. Later steps run only while earlier
+ * ones succeed, as in a job. Returns every gh call so a test can show which
+ * mutations happened.
+ */
+async function runReleaseSteps(
+  scripts: string[],
+  env: Record<string, string>,
+  api: ReleaseApi,
+): Promise<{ exitCode: number; output: string; calls: string[] }> {
+  const dir = await mkdtemp(join(tmpdir(), "release-steps-"))
+  try {
+    const stubBin = join(dir, "bin")
+    await mkdir(stubBin, { recursive: true })
+    const log = join(dir, "gh.log")
+    await writeFile(log, "")
+    await writeFile(
+      join(stubBin, "gh"),
+      [
+        "#!/usr/bin/env bash",
+        `echo "$*" >> ${JSON.stringify(log)}`,
+        "answer() {",
+        '  case "$1" in',
+        '    404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;',
+        '    ERR) echo "gh: Server Error (HTTP 500)" >&2; exit 1 ;;',
+        "    *) printf '%s\\n' \"$1\"; exit 0 ;;",
+        "  esac",
+        "}",
+        'case "$*" in',
+        '  "api repos/acme/opencodeplus/releases?per_page=100 "*) answer "$STUB_RELEASES" ;;',
+        '  "api repos/acme/opencodeplus/releases/tags/"*) answer "$STUB_RELEASE" ;;',
+        `  "api repos/acme/opencodeplus/releases/latest "*) if [ -f ${JSON.stringify(`${log}.edited`)} ]; then answer "$STUB_LATEST_AFTER"; else answer "$STUB_LATEST"; fi ;;`,
+        `  "release edit "*) touch ${JSON.stringify(`${log}.edited`)} ;;`,
+        '  *) echo "unexpected gh call: $*" >&2; exit 1 ;;',
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    )
+
+    const output: string[] = []
+    let exitCode = 0
+    for (const [index, script] of scripts.entries()) {
+      const scriptPath = join(dir, `step-${index}.sh`)
+      await writeFile(scriptPath, script)
+      const proc = Bun.spawn(["bash", scriptPath], {
+        cwd: dir,
+        env: {
+          PATH: `${stubBin}:${process.env.PATH ?? ""}`,
+          REPOSITORY: "acme/opencodeplus",
+          GH_REPO: "acme/opencodeplus",
+          STUB_RELEASES: api.releases ?? "",
+          STUB_RELEASE: api.release ?? "404",
+          STUB_LATEST: api.latest ?? "404",
+          STUB_LATEST_AFTER: api.latestAfterEdit ?? "404",
+          ...env,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      output.push(stdout, stderr)
+      exitCode = code
+      if (code !== 0) break
+    }
+    return {
+      exitCode,
+      output: output.join(""),
+      calls: (await Bun.file(log).text()).split("\n").filter(Boolean),
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
+// A grid of release versions covering both parts and the 9 → 10 digit boundary
+// that text comparison gets wrong.
+const versionGrid = ["2.0.9", "2.0.10", "3.0.0"].flatMap((opencode) =>
+  ["1.0.9", "1.0.10", "1.1.0"].map((plus) => `v${opencode}-plus-${plus}`),
+)
+
+function requireTagVersion(tag: string) {
+  const version = PlusVersion.fromTag(tag)
+  if (!version) throw new Error(`expected ${tag} to be a release tag`)
+  return version
+}
+
+/** What publication must decide, from PlusVersion alone. */
+function publishable(tag: string, published: string[], allowOlderOpencode = false) {
+  const version = PlusVersion.fromTag(tag)
+  if (!version) return false
+  const others = published.flatMap((other) => PlusVersion.fromTag(other) ?? [])
+  if (others.some((other) => PlusVersion.compare(other, version) === 0)) return false
+  const newest = others.toSorted(PlusVersion.compare).at(-1)
+  if (!newest) return true
+  return PlusVersion.refuseNext(newest, version, { allowOlderOpencode }) === undefined
+}
+
+/** What marking Latest must decide, from PlusVersion alone. */
+function latestable(tag: string, current: string | undefined) {
+  const version = PlusVersion.fromTag(tag)
+  if (!version) return false
+  if (current === undefined || current === tag) return true
+  const previous = PlusVersion.fromTag(current)
+  if (!previous) return false
+  return PlusVersion.compare(version, previous) > 0
+}
+
+const completeAssets =
+  "SHA256SUMS install.sh opencodeplus-darwin-arm64.tar.gz opencodeplus-darwin-x64.tar.gz opencodeplus-linux-arm64.tar.gz opencodeplus-linux-x64.tar.gz release.json"
+
+function releaseLookup(tag: string, options: { draft?: boolean; immutable?: boolean; assets?: string } = {}) {
+  return [tag, String(options.draft ?? false), String(options.immutable ?? true), options.assets ?? completeAssets].join(
+    "\n",
+  )
 }
 
 describe("native build workflow (ocp-build.yml)", () => {
@@ -492,6 +627,44 @@ describe("native build workflow (ocp-build.yml)", () => {
     const gateRun = doc.jobs?.build?.steps?.find((step) => step.name?.includes("cold-runtime gate"))?.run ?? ""
     expect(gateRun).toContain('awk -v want="$OPENCODE_VERSION"')
     expect(gateRun).toContain('$i == ("v" want)')
+  })
+
+  test("a tag build refuses a malformed version, or one naming another opencode, before building", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-build.yml")
+    const steps = doc.jobs?.build?.steps ?? []
+    const index = (name: string) => steps.findIndex((step) => step.name === name)
+    const check = steps[index("Check release version")]
+
+    expect(check).toBeDefined()
+    expect(check.if).toBe("github.ref_type == 'tag'")
+    expect(check.run).toBe('bun packages/plus/script/release/version.ts "$OPENCODE_VERSION"')
+    // It needs the resolved version and installed dependencies, and runs before any build output exists.
+    expect(index("Check release version")).toBeGreaterThan(index("Resolve release version"))
+    expect(index("Check release version")).toBeGreaterThan(index("Setup OpenCode Plus"))
+    expect(index("Check release version")).toBeLessThan(index("Resolve build identity"))
+    expect(index("Check release version")).toBeLessThan(index("Build target binary"))
+
+    // The step's own command, run against this source.
+    const opencode = (await loadJson<{ version: string }>("packages/cli/package.json")).version
+    const run = (version: string) => {
+      const result = Bun.spawnSync(["bun", "packages/plus/script/release/version.ts", version], { cwd: repoRoot })
+      return { exitCode: result.exitCode, output: `${result.stdout}${result.stderr}` }
+    }
+
+    const accepted = run(`${opencode}-plus-1.0.0`)
+    expect(accepted.exitCode).toBe(0)
+    expect(accepted.output).toContain(`OpenCodePlus 1.0.0 (opencode ${opencode})`)
+
+    const other = opencode === "9.9.9" ? "9.9.8" : "9.9.9"
+    const namesOther = run(`${other}-plus-1.0.0`)
+    expect(namesOther.exitCode).not.toBe(0)
+    expect(namesOther.output).toContain(`this source contains opencode ${opencode}`)
+
+    for (const version of ["0.0.0-plus-r5.3", `${opencode}-plus-1.0`, `v${opencode}-plus-1.0.0`, ""]) {
+      const refused = run(version)
+      expect(refused.exitCode).not.toBe(0)
+      expect(refused.output).toContain("must look like")
+    }
   })
 
   test("Linux targets build natively at the fixed build path pinned in release/toolchain.json", async () => {
@@ -878,12 +1051,202 @@ describe("release publication workflow (ocp-release.yml)", () => {
     expect(guard?.run).toContain("repos/${REPOSITORY}/")
   })
 
+  test("checks the version order before downloading or publishing, listing only non-draft releases", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const steps = doc.jobs?.publish?.steps ?? []
+    const index = (name: string) => steps.findIndex((step) => step.name === name)
+    const order = steps[index("Verify release is newer than every published release")]
+
+    expect(order).toBeDefined()
+    expect(index("Verify release is newer than every published release")).toBeGreaterThan(
+      index("Verify build run identity for tag"),
+    )
+    expect(index("Verify release is newer than every published release")).toBeLessThan(
+      steps.findIndex((step) => step.uses?.includes("download-artifact")),
+    )
+    expect(order.env?.RELEASE_TAG).toBe("${{ inputs.tag }}")
+    expect(order.env?.ALLOW_OLDER_OPENCODE).toBe("${{ inputs.allow_older_opencode }}")
+    expect(order.run).toContain("--paginate --jq '.[] | select(.draft | not) | .tag_name'")
+
+    const dispatch = doc.on?.workflow_dispatch as { inputs?: Record<string, { type?: string; default?: unknown }> }
+    expect(dispatch.inputs?.allow_older_opencode).toMatchObject({ type: "boolean", default: false })
+  })
+
+  test("publishes only a release newer than every published one, in PlusVersion order", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const script =
+      doc.jobs?.publish?.steps?.find((step) => step.name === "Verify release is newer than every published release")
+        ?.run ?? ""
+    const decide = async (tag: string, published: string[], allow = false) => {
+      const result = await runReleaseSteps(
+        [script],
+        { RELEASE_TAG: tag, ALLOW_OLDER_OPENCODE: String(allow) },
+        { releases: published.join("\n") },
+      )
+      return result.exitCode === 0
+    }
+
+    // Every pair in the grid, both with and without the owner's allowance, decided
+    // by the step exactly as PlusVersion decides it.
+    const disagreements: string[] = []
+    for (const tag of versionGrid)
+      for (const published of versionGrid)
+        for (const allow of [false, true]) {
+          const expected = publishable(tag, [published], allow)
+          if ((await decide(tag, [published], allow)) !== expected)
+            disagreements.push(`${tag} after ${published} (allow ${allow}): expected ${expected}`)
+        }
+    expect(disagreements).toEqual([])
+
+    // The newest of several, whatever order GitHub lists them in, with releases from
+    // before the scheme ignored.
+    const published = ["v2.0.18-plus-1.0.10", "v0.0.0-plus-r5.3", "v2.0.20-plus-1.0.9", "v0.0.0-plus-r4c.1"]
+    expect(await decide("v2.0.20-plus-1.0.10", published)).toBe(true)
+    expect(await decide("v2.0.18-plus-1.0.11", published)).toBe(true)
+    expect(await decide("v2.0.20-plus-1.0.9", published)).toBe(false)
+    expect(await decide("v2.0.9-plus-1.0.11", published)).toBe(false)
+    expect(await decide("v2.0.9-plus-1.0.11", published, true)).toBe(true)
+
+    // The first release of the scheme, and tags that are not release tags.
+    expect(await decide("v2.0.18-plus-1.0.0", ["v0.0.0-plus-r5.3"])).toBe(true)
+    expect(await decide("v2.0.18-plus-1.0.0", [])).toBe(true)
+    for (const tag of ["v0.0.0-plus-r5.4", "2.0.18-plus-1.0.0", "v2.0.18-plus-1.0", "v2.0.18-plus-01.0.0"])
+      expect(await decide(tag, [])).toBe(false)
+  })
+
+  test("publication refuses when the published releases cannot be listed", async () => {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
+    const script =
+      doc.jobs?.publish?.steps?.find((step) => step.name === "Verify release is newer than every published release")
+        ?.run ?? ""
+    const result = await runReleaseSteps(
+      [script],
+      { RELEASE_TAG: "v2.0.18-plus-1.0.0", ALLOW_OLDER_OPENCODE: "false" },
+      { releases: "ERR" },
+    )
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain("Cannot list the published releases")
+  })
+
   test("grants contents: write and actions: read, and no other permission", async () => {
     const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-release.yml")
 
     // contents: write publishes the release; actions: read resolves the build run
     // and lets download-artifact fetch that run's artifact. Nothing else is needed.
     expect(doc.permissions).toEqual({ contents: "write", actions: "read" })
+  })
+})
+
+describe("Latest marking workflow (ocp-latest.yml)", () => {
+  async function latestSteps() {
+    const doc = await loadYaml<WorkflowDoc>(".github/workflows/ocp-latest.yml")
+    const steps = doc.jobs?.latest?.steps ?? []
+    return {
+      doc,
+      steps,
+      verify: steps.find((step) => step.name === "Verify release can become Latest")?.run ?? "",
+      mark: steps.find((step) => step.name === "Mark release Latest")?.run ?? "",
+    }
+  }
+
+  test("runs only by manual approval, in the protected environment, without checkout or candidate code", async () => {
+    const { doc, steps } = await latestSteps()
+    const dispatch = doc.on?.workflow_dispatch as { inputs?: Record<string, { required?: boolean }> }
+
+    expect(Object.keys(doc.on ?? {})).toEqual(["workflow_dispatch"])
+    expect(dispatch.inputs?.approval?.required).toBe(true)
+    expect(dispatch.inputs?.tag?.required).toBe(true)
+    expect(doc.permissions).toEqual({ contents: "write" })
+    expect(doc.jobs?.latest?.environment).toBe("ocp-release")
+    expect(steps.map((step) => step.name)).toEqual([
+      "Verify approval input",
+      "Verify release can become Latest",
+      "Mark release Latest",
+    ])
+    for (const step of steps) {
+      expect(step.uses).toBeUndefined()
+      expect(step.run ?? "").not.toContain("bun ")
+      expect(step.run ?? "").not.toContain("gh release upload")
+      expect(step.run ?? "").not.toContain("gh release delete")
+    }
+  })
+
+  test("refuses without the approval input", async () => {
+    const { steps } = await latestSteps()
+    const approval = steps.find((step) => step.name === "Verify approval input")
+    expect(approval?.env?.APPROVAL).toBe("${{ inputs.approval }}")
+    const refused = await runReleaseSteps([approval?.run ?? ""], { APPROVAL: "yes" }, {})
+    expect(refused.exitCode).not.toBe(0)
+    const accepted = await runReleaseSteps([approval?.run ?? ""], { APPROVAL: "approve" }, {})
+    expect(accepted.exitCode).toBe(0)
+  })
+
+  test("marks Latest only a release newer than the current Latest, in PlusVersion order", async () => {
+    const { verify, mark } = await latestSteps()
+    const decide = async (tag: string, current: string | undefined) => {
+      const result = await runReleaseSteps(
+        [verify, mark],
+        { RELEASE_TAG: tag },
+        { release: releaseLookup(tag), latest: current ?? "404", latestAfterEdit: tag },
+      )
+      return {
+        accepted: result.exitCode === 0,
+        // Marking happens exactly when the check accepts: a refusal changes nothing.
+        edited: result.calls.some((call) => call.startsWith("release edit ")),
+        result,
+      }
+    }
+
+    const disagreements: string[] = []
+    for (const tag of versionGrid)
+      for (const current of [undefined, ...versionGrid]) {
+        const expected = latestable(tag, current)
+        const decision = await decide(tag, current)
+        if (decision.accepted !== expected || decision.edited !== expected)
+          disagreements.push(`${tag} over ${current ?? "none"}: expected ${expected}`)
+      }
+    expect(disagreements).toEqual([])
+
+    const first = await decide("v2.0.18-plus-1.0.0", undefined)
+    expect(first.result.calls).toContain(`release edit v2.0.18-plus-1.0.0 --prerelease=false --latest`)
+    expect(first.result.output).toContain("v2.0.18-plus-1.0.0 is Latest.")
+
+    // A Latest from outside the scheme cannot be compared, so it is not replaced.
+    expect((await decide("v2.0.18-plus-1.0.0", "v0.0.0-plus-r5.3")).accepted).toBe(false)
+  })
+
+  test("refuses an incomplete, mutable or draft release and a failed lookup, changing nothing", async () => {
+    const { verify, mark } = await latestSteps()
+    const tag = "v2.0.18-plus-1.0.0"
+    const refusals: Array<[string, ReleaseApi, string]> = [
+      ["draft", { release: releaseLookup(tag, { draft: true }) }, "is a draft"],
+      ["mutable", { release: releaseLookup(tag, { immutable: false }) }, "is not immutable"],
+      [
+        "missing asset",
+        { release: releaseLookup(tag, { assets: completeAssets.replace(" opencodeplus-darwin-x64.tar.gz", "") }) },
+        "not exactly",
+      ],
+      ["extra asset", { release: releaseLookup(tag, { assets: `${completeAssets} notes.txt` }) }, "not exactly"],
+      ["not published", { release: "404" }, "is not a published release"],
+      ["Latest unreadable", { release: releaseLookup(tag), latest: "ERR" }, "Cannot read the current Latest release"],
+    ]
+    for (const [label, api, message] of refusals) {
+      const result = await runReleaseSteps([verify, mark], { RELEASE_TAG: tag }, { latestAfterEdit: tag, ...api })
+      expect({ label, exitCode: result.exitCode === 0 }).toEqual({ label, exitCode: false })
+      expect(result.output).toContain(message)
+      expect(result.calls.filter((call) => call.startsWith("release edit"))).toEqual([])
+    }
+  })
+
+  test("fails when GitHub does not report the release as Latest afterwards", async () => {
+    const { verify, mark } = await latestSteps()
+    const result = await runReleaseSteps(
+      [verify, mark],
+      { RELEASE_TAG: "v2.0.18-plus-1.0.1" },
+      { release: releaseLookup("v2.0.18-plus-1.0.1"), latest: "v2.0.18-plus-1.0.0", latestAfterEdit: "v2.0.18-plus-1.0.0" },
+    )
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output).toContain("GitHub reports 'v2.0.18-plus-1.0.0' as Latest after marking v2.0.18-plus-1.0.1")
   })
 })
 
@@ -1021,6 +1384,7 @@ describe("cross-workflow security and safety invariants", () => {
     ".github/workflows/ocp-build.yml",
     ".github/workflows/ocp-ci.yml",
     ".github/workflows/ocp-release.yml",
+    ".github/workflows/ocp-latest.yml",
     ".github/workflows/ocp-upstream-inventory.yml",
   ]
 
@@ -1089,15 +1453,18 @@ describe("cross-workflow security and safety invariants", () => {
   })
 
   test("only release workflow references secrets, and only GITHUB_TOKEN", async () => {
-    const [buildText, ciText, releaseText, inventoryText, actionText] = await Promise.all([
+    const [buildText, ciText, releaseText, latestText, inventoryText, actionText] = await Promise.all([
       Bun.file(join(repoRoot, ".github/workflows/ocp-build.yml")).text(),
       Bun.file(join(repoRoot, ".github/workflows/ocp-ci.yml")).text(),
       Bun.file(join(repoRoot, ".github/workflows/ocp-release.yml")).text(),
+      Bun.file(join(repoRoot, ".github/workflows/ocp-latest.yml")).text(),
       Bun.file(join(repoRoot, ".github/workflows/ocp-upstream-inventory.yml")).text(),
       Bun.file(join(repoRoot, ".github/actions/setup-ocp/action.yml")).text(),
     ])
 
     expect(buildText).not.toContain("secrets.")
+    // Marking Latest uses the job's github.token, never a stored secret.
+    expect(latestText).not.toContain("secrets.")
     expect(ciText).not.toContain("secrets.")
     expect(inventoryText).not.toContain("secrets.")
     expect(actionText).not.toContain("secrets.")

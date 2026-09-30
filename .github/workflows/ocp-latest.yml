@@ -1,0 +1,155 @@
+name: ocp-latest
+
+# The second step of a release. ocp-release.yml publishes a test release (a
+# GitHub prerelease) that only installs with "include test releases" turned on
+# are offered. After the owner has updated to it and used it, this workflow marks
+# it Latest: every install's /update then offers it, and
+# releases/latest/download/<asset> serves its assets. Immutable releases keep
+# their assets and tag locked; GitHub still allows changing the prerelease and
+# Latest flags, which is all this workflow changes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: "Type 'approve' to offer this release to every OpenCodePlus install"
+        required: true
+        type: string
+      tag:
+        description: "Published release tag to mark Latest (e.g. v2.0.18-plus-1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  latest:
+    name: mark release Latest
+    runs-on: ubuntu-24.04
+    environment: ocp-release
+    steps:
+      - name: Verify approval input
+        shell: bash
+        env:
+          APPROVAL: ${{ inputs.approval }}
+        run: |
+          if [ "${APPROVAL}" != "approve" ]; then
+            echo "::error::Marking a release Latest requires explicit approval input ('approve'). Received: '${APPROVAL}'"
+            exit 1
+          fi
+
+      # The release must be a complete immutable release, and newer than the
+      # current Latest: installs never move to an older release. The order is
+      # PlusVersion.compare (packages/util/src/plus-version.ts), the same as the
+      # check in ocp-release.yml; workflows.test.ts runs this step against it.
+      - name: Verify release can become Latest
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # The six numbers in comparison order: the Plus part, then the opencode
+          # part. No leading zeros and at most nine digits, so bash compares them
+          # as decimal integers.
+          version_key() {
+            local n='(0|[1-9][0-9]{0,8})' d='[.]'
+            local re="^$n$d$n$d$n-plus-$n$d$n$d$n\$"
+            [[ "$1" =~ $re ]] || return 1
+            echo "${BASH_REMATCH[4]} ${BASH_REMATCH[5]} ${BASH_REMATCH[6]} ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+          }
+
+          # newer A B: A is a newer release than B.
+          newer() {
+            local a b i
+            read -ra a <<< "$(version_key "$1")"
+            read -ra b <<< "$(version_key "$2")"
+            for i in 0 1 2 3 4 5; do
+              if (( a[i] > b[i] )); then return 0; fi
+              if (( a[i] < b[i] )); then return 1; fi
+            done
+            return 1
+          }
+
+          version="${RELEASE_TAG#v}"
+          if [ "${RELEASE_TAG}" = "${version}" ] || ! version_key "${version}" > /dev/null; then
+            echo "::error::Tag '${RELEASE_TAG}' is not a release tag like v2.0.18-plus-1.0.0."
+            exit 1
+          fi
+
+          release=$(gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '.tag_name, .draft, .immutable, (.assets | map(.name) | sort | join(" "))') || {
+            echo "::error::${RELEASE_TAG} is not a published release of ${REPOSITORY}. Publish it with ocp-release first."
+            exit 1
+          }
+          mapfile -t fields <<< "${release}"
+          if [ "${#fields[@]}" -ne 4 ] || [ "${fields[0]}" != "${RELEASE_TAG}" ]; then
+            echo "::error::The release lookup for ${RELEASE_TAG} returned an unexpected response."
+            exit 1
+          fi
+          if [ "${fields[1]}" != "false" ]; then
+            echo "::error::${RELEASE_TAG} is a draft. Only a published release can become Latest."
+            exit 1
+          fi
+          if [ "${fields[2]}" != "true" ]; then
+            echo "::error::${RELEASE_TAG} is not immutable, so its assets could still change after installs are offered it."
+            exit 1
+          fi
+          expected="SHA256SUMS install.sh opencodeplus-darwin-arm64.tar.gz opencodeplus-darwin-x64.tar.gz opencodeplus-linux-arm64.tar.gz opencodeplus-linux-x64.tar.gz release.json"
+          if [ "${fields[3]}" != "${expected}" ]; then
+            echo "::error::${RELEASE_TAG} has assets '${fields[3]}', not exactly '${expected}'."
+            exit 1
+          fi
+
+          # GitHub answers 404 while no release is Latest; any other failure stops.
+          if current=$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name' 2>&1); then
+            :
+          else
+            case "${current}" in
+              *"HTTP 404"*) current="" ;;
+              *)
+                echo "::error::Cannot read the current Latest release of ${REPOSITORY}: ${current}"
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ -z "${current}" ]; then
+            echo "No release is Latest yet; ${RELEASE_TAG} becomes the first."
+            exit 0
+          fi
+          if [ "${current}" = "${RELEASE_TAG}" ]; then
+            echo "${RELEASE_TAG} is already Latest."
+            exit 0
+          fi
+          current_version="${current#v}"
+          if [ "${current}" = "${current_version}" ] || ! version_key "${current_version}" > /dev/null; then
+            echo "::error::The current Latest release '${current}' is not a release tag like v2.0.18-plus-1.0.0, so it cannot be compared."
+            exit 1
+          fi
+          if ! newer "${version}" "${current_version}"; then
+            echo "::error::${version} is not newer than the current Latest release ${current_version}. Installs never move to an older release."
+            exit 1
+          fi
+          echo "${version} is newer than the current Latest release ${current_version}."
+
+      - name: Mark release Latest
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # This job performs no checkout; GH_REPO names the repository for gh.
+          GH_REPO: ${{ github.repository }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "${RELEASE_TAG}" --prerelease=false --latest
+          latest=$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')
+          if [ "${latest}" != "${RELEASE_TAG}" ]; then
+            echo "::error::GitHub reports '${latest}' as Latest after marking ${RELEASE_TAG}."
+            exit 1
+          fi
+          echo "${RELEASE_TAG} is Latest."
