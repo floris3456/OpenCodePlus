@@ -19,7 +19,8 @@ import { testEffect } from "./lib/effect"
 import { PluginTestLayer } from "./plugin/fixture"
 
 // Zen's free tier refuses a request that does not declare the shell and read tools (FreeTierError, "can only be
-// used from within OpenCode"): a title request and an agent denied the shell must still declare both names.
+// used from within OpenCode"): an agent denied the shell must still declare both names. OpenCode's own title
+// request is served without tools and refused with them, so it declares none.
 
 const it = testEffect(PluginTestLayer)
 
@@ -76,9 +77,17 @@ const call = (name: string) => ({
 })
 
 describe("SessionModelRequest Zen free tier", () => {
-  it.effect("a free Zen title request declares shell and read, and neither runs", () =>
+  it.effect("a free Zen title request declares no tools: Zen serves OpenCode's title request only without them", () =>
     Effect.gen(function* () {
       const prepared = yield* (yield* requests).title({ ...input, model: free })
+      expect(prepared.request.tools).toEqual([])
+      expect(prepared.request.toolChoice).toBeUndefined()
+    }),
+  )
+
+  it.effect("a free Zen request of an agent with no tools declares shell and read, and neither runs", () =>
+    Effect.gen(function* () {
+      const prepared = yield* (yield* requests).primary({ ...input, model: free })
       expect(prepared.request.tools.map((tool) => tool.name)).toEqual(["shell", "read"])
       // Leaving the tool choice alone: the runner reads "none" as "out of agent steps".
       expect(prepared.request.toolChoice).toBeUndefined()

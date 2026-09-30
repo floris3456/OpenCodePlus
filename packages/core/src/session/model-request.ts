@@ -55,8 +55,10 @@ const ESTIMATE_ERROR = 0.15
 // Never ask for less; only reachable with automatic compaction off, since it keeps the window from filling this far.
 const OUTPUT_TOKEN_MIN = 1_024
 // Zen's free tier serves only requests that declare OpenCode's shell and read tools and refuses the rest as not
-// coming from OpenCode ("FreeTierError"). A request without them (a title, an agent denied the shell) declares
-// placeholders under those names; they execute nothing, so a call to one fails as for any unavailable tool.
+// coming from OpenCode ("FreeTierError"). A request without them (an agent denied the shell or given no tools)
+// declares placeholders under those names; they execute nothing, so a call to one fails as for any unavailable
+// tool. Title requests are the exception: Zen serves OpenCode's title request as it is, without tools, and
+// refuses it once it declares any.
 const FREE_TIER_TOOLS = ["shell", "read"]
 const FREE_TIER_PLACEHOLDER = "Not available to you. Never call this tool."
 
@@ -294,7 +296,7 @@ export const layer = Layer.effect(
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
       const affinity = session.parentID ?? session.fork?.sessionID ?? session.id
-      const placeholders = freeTierPlaceholders(model, hooked)
+      const placeholders = kind === "title" ? [] : freeTierPlaceholders(model, hooked)
       const base = LLM.request({
         model: model.model,
         http: {
