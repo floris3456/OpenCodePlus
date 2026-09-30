@@ -503,6 +503,60 @@ test("Snapshot with populated optional fields round-trips correctly", () => {
   expect(decoded).toEqual(fullSnapshot)
 })
 
+test("Defaults › Models records, host models and model interval round-trip without undefined keys", () => {
+  const snapshot: Plus.Snapshot = {
+    revision: 1,
+    globalRevision: 2,
+    agents: [],
+    items: [],
+    servers: [],
+    protectedAgents: [],
+    records: [
+      {
+        type: "model",
+        level: "project",
+        agent: "alice",
+        providerID: "acme",
+        modelID: "nova-1",
+        warming: "45m",
+        interval: "3m30s",
+        prompt: "keep this chat warm",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    modelSettings: [
+      { type: "modelSettings", level: "defaults", warming: "on", interval: "5m", updated: "2026-01-01T00:00:00.000Z" },
+      { type: "modelSettings", level: "defaults", providerID: "acme", modelID: "nova-1", effort: "high", updated: "2026-01-01T00:00:00.000Z" },
+    ],
+    hostModels: [
+      { providerID: "acme", modelID: "nova-1", variants: ["low", "high"], warming: { on: true, interval: 210_000, duration: 1_800_000 } },
+      { providerID: "acme", modelID: "nova-2", variants: [] },
+    ],
+  }
+  const encoded = Schema.encodeSync(Plus.Snapshot)(snapshot)
+  expectRpcBody(encoded)
+  assertNoUndefinedValues(encoded)
+  expect(Schema.decodeUnknownSync(Plus.Snapshot)(encoded)).toEqual(snapshot)
+
+  // A set clears with null and leaves absent fields out of the body.
+  const input: Plus.SetModelSettingsInput = { providerID: "acme", modelID: "nova-1", interval: "5m", warming: null, effort: null }
+  const encodedInput = Schema.encodeSync(Plus.SetModelSettingsInput)(input)
+  expectRpcBody(encodedInput)
+  assertNoUndefinedValues(encodedInput)
+  expect(Schema.decodeUnknownSync(Plus.SetModelSettingsInput)(encodedInput)).toEqual(input)
+  const output: Plus.SetModelSettingsOutput = {
+    record: { type: "modelSettings", level: "defaults", providerID: "acme", modelID: "nova-1", interval: "5m", updated: "2026-01-01T00:00:00.000Z" },
+    revision: 3,
+    globalRevision: 4,
+  }
+  const encodedOutput = Schema.encodeSync(Plus.SetModelSettingsOutput)(output)
+  expectRpcBody(encodedOutput)
+  assertNoUndefinedValues(encodedOutput)
+  expect(Schema.decodeUnknownSync(Plus.SetModelSettingsOutput)(encodedOutput)).toEqual(output)
+  const removed: Plus.SetModelSettingsOutput = { record: null, revision: 3, globalRevision: 4 }
+  expect(Schema.decodeUnknownSync(Plus.SetModelSettingsOutput)(Schema.encodeSync(Plus.SetModelSettingsOutput)(removed))).toEqual(removed)
+})
+
 test("Address schema handles null agent and section correctly", () => {
   const addressWithNulls: Plus.Address = {
     level: "defaults",
