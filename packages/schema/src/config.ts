@@ -38,6 +38,10 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   update: Schema.Literals(["disable", "notify", "auto"]).pipe(optional).annotate({
     description: "Disable updates, notify when one is available, or install updates automatically",
   }),
+  update_test_releases: Schema.Boolean.pipe(optional).annotate({
+    description:
+      "OpenCodePlus: also offer test releases (GitHub prereleases), not only the release marked Latest (default: false)",
+  }),
   share: Schema.Literals(["manual", "auto", "disabled"]).pipe(optional).annotate({
     description: "Control whether sessions may be shared manually, automatically, or not at all",
   }),

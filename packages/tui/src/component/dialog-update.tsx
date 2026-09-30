@@ -8,6 +8,8 @@ import { errorMessage } from "../util/error"
 import { Spinner } from "./spinner"
 
 export function DialogUpdate(props: {
+  product?: string
+  describe?: (version: string) => string
   check?: (signal: AbortSignal) => Promise<string | undefined>
   state: () => UpdateState | undefined
   skip: () => void
@@ -16,6 +18,8 @@ export function DialogUpdate(props: {
 }) {
   const dialog = useDialog()
   const theme = useTheme().surface("dialog")
+  const product = () => props.product ?? "OpenCode"
+  const describe = (version: string) => props.describe?.(version) ?? `${product()} ${version}`
   const [error, setError] = createSignal<string>()
   const [active, setActive] = createSignal(0)
   const controller = new AbortController()
@@ -90,7 +94,7 @@ export function DialogUpdate(props: {
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text.base}>
           {state().type === "installing"
-            ? "Updating OpenCode"
+            ? `Updating ${product()}`
             : state().type === "available" || state().type === "failed"
               ? "Update available"
               : "Update"}
@@ -107,13 +111,15 @@ export function DialogUpdate(props: {
                 <Spinner shimmer={theme.text.base}>Checking for updates…</Spinner>
               </Match>
               <Match when={current.type === "available"}>
-                <text fg={theme.text.muted}>
-                  An update is available. After installing, you'll be prompted to restart OpenCode.
+                <text fg={theme.text.muted} wrapMode="word">
+                  {current.type === "available"
+                    ? `${props.describe ? `${props.describe(current.version)} is` : "An update is"} available. After installing, you'll be prompted to restart ${product()}.`
+                    : ""}
                 </text>
               </Match>
               <Match when={current.type === "installing"}>
                 <Spinner shimmer={theme.text.base}>
-                  {current.type === "installing" ? `Installing OpenCode ${current.version}…` : ""}
+                  {current.type === "installing" ? (current.message ?? `Installing ${describe(current.version)}…`) : ""}
                 </Spinner>
               </Match>
               <Match when={current.type === "installed"}>
@@ -122,7 +128,7 @@ export function DialogUpdate(props: {
                 </text>
               </Match>
               <Match when={current.type === "current"}>
-                <text fg={theme.text.muted}>OpenCode is already up to date.</text>
+                <text fg={theme.text.muted}>{product()} is already up to date.</text>
               </Match>
               <Match when={current.type === "unavailable"}>
                 <text fg={theme.text.muted} wrapMode="word">

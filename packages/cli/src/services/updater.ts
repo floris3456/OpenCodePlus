@@ -10,8 +10,10 @@ import { stripVTControlCharacters } from "node:util"
 import { RetainedImage } from "./retained-image"
 import { action, parseReleaseVersion, type Policy } from "./updater-action"
 import { errorMessage } from "../util/error"
+import { PlusUpdate } from "./plus-update"
+import { PlusVersion } from "@opencode/util/plus-version"
 
-export const methods = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew"] as const
+export const methods = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew", "opencodeplus"] as const
 
 export type Method = (typeof methods)[number]
 export type RunResult = { readonly type: "available" | "installed"; readonly version: string }
@@ -53,6 +55,7 @@ const installNames: Record<Method, string> = {
   yarn: "Yarn",
   vp: "Vite+",
   brew: "Homebrew",
+  opencodeplus: "The OpenCodePlus installer",
 }
 
 function conciseDetail(input: string) {
@@ -96,10 +99,12 @@ function resultDetail(result: { code: number; stdout: string; stderr: string }) 
 export interface Interface {
   readonly run: (onInstall?: (version: string) => void) => Effect.Effect<RunResult | undefined>
   readonly check: () => Effect.Effect<CheckResult | undefined, Error>
-  readonly apply: (version: string) => Effect.Effect<void, Error>
+  readonly apply: (version: string, progress?: (message: string) => void) => Effect.Effect<void, Error>
   readonly method: () => Effect.Effect<Method | undefined>
   readonly latest: () => Effect.Effect<string, Error>
-  readonly upgrade: (method: Method, version: string) => Effect.Effect<void, Error>
+  readonly upgrade: (method: Method, version: string, progress?: (message: string) => void) => Effect.Effect<void, Error>
+  /** Resolves once no OpenCodePlus switch runs in this process; a reconnect waits for it. */
+  readonly settled: () => Promise<void>
   readonly removal: (
     method: Method,
   ) => { readonly command: ReadonlyArray<string>; readonly run: Effect.Effect<void, Error> } | undefined
@@ -107,16 +112,12 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/cli/Updater") {}
 
-/**
- * OpenCodePlus ships no self-updater channel: polling would only repeat a check the
- * product cannot act on, so the loop completes immediately there and never schedules.
- */
+/** Repeats an update check, so a long-running TUI learns about a release published after it started. */
 export const pollUpdates = Effect.fnUntraced(function* (input: {
   readonly check: Effect.Effect<unknown>
   readonly initialDelay?: Duration.Input
   readonly interval?: Duration.Input
 }) {
-  if (Product.namespace === "opencodeplus") return
   const interval = input.interval ?? "10 minutes"
   return yield* input.check.pipe(
     Effect.repeat(Schedule.spaced(interval)),
@@ -145,6 +146,8 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const global = yield* Global.Service
   const appProcess = yield* AppProcess.Service
+  // OpenCodePlus updates from its own GitHub releases through its own installer.
+  const plus = Product.namespace === "opencodeplus" ? yield* PlusUpdate.make : undefined
   const installedVersion = yield* Ref.make(OPENCODE_VERSION)
   const channel = OPENCODE_CHANNEL.replace(/[^a-zA-Z0-9._-]/g, "-")
   const installedPackage = yield* Effect.gen(function* () {
@@ -193,7 +196,7 @@ const make = Effect.gen(function* () {
   )
 
   const method = Effect.fnUntraced(function* () {
-    if (Product.namespace === "opencodeplus") return undefined
+    if (plus) return (yield* plus.detect()) ? ("opencodeplus" as const) : undefined
     if (path.resolve(process.execPath) === curlBinary) return "curl"
     const executable = yield* fs.realPath(process.execPath).pipe(Effect.orElseSucceed(() => process.execPath))
     if (
@@ -231,7 +234,7 @@ const make = Effect.gen(function* () {
 
   const removal = (method: Method) => {
     if (Product.namespace === "opencodeplus") return undefined
-    if (method === "curl" || method === "brew" || !installedPackage) return undefined
+    if (method === "curl" || method === "brew" || method === "opencodeplus" || !installedPackage) return undefined
     const commands = {
       npm: ["npm", "uninstall", "--global", installedPackage],
       pnpm: ["pnpm", "remove", "--global", installedPackage],
@@ -304,12 +307,53 @@ const make = Effect.gen(function* () {
   })
 
   const latest = () =>
-    Product.namespace === "opencodeplus"
-      ? Effect.fail(new Error("Self-update is disabled for OpenCodePlus"))
+    plus
+      ? plus.newest({ fresh: true }).pipe(
+          Effect.flatMap((newest) =>
+            newest ? Effect.succeed(newest.version) : Effect.fail(new Error("No OpenCodePlus release is available yet")),
+          ),
+        )
       : method().pipe(
           Effect.flatMap(release),
           Effect.map((data) => data.version),
         )
+
+  const plusNotInstalled =
+    "This OpenCodePlus was not installed by its installer, so it cannot update itself. Install it with: curl -fsSL https://github.com/floris3456/OpenCodePlus/releases/latest/download/install.sh | bash"
+
+  // What to tell an OpenCodePlus install: a newer release, or a release another
+  // TUI already switched to that this one has not restarted into.
+  const plusNotice = Effect.fnUntraced(function* (
+    updater: PlusUpdate.Interface,
+    install: PlusUpdate.Install,
+    fresh: boolean,
+  ) {
+    const newest = yield* updater.newest({ fresh })
+    if (newest && PlusUpdate.newer(newest.version, install.active)) return { type: "available" as const, version: newest.version }
+    if (PlusUpdate.newer(install.active, install.running)) return { type: "installed" as const, version: install.active }
+    return undefined
+  })
+
+  const plusUpgrade = Effect.fnUntraced(function* (
+    updater: PlusUpdate.Interface,
+    method: Method,
+    input: string,
+    progress?: (message: string) => void,
+  ) {
+    const version = input.trim().replace(/^v/, "")
+    if (!PlusVersion.parse(version)) return yield* Effect.fail(new Error(`Invalid version: ${input}`))
+    if (method !== "opencodeplus")
+      return yield* Effect.fail(new Error("OpenCodePlus updates only through its own installer (--method opencodeplus)"))
+    const install = yield* updater.detect()
+    if (!install) return yield* Effect.fail(new Error(plusNotInstalled))
+    // Another TUI already switched this install; restarting is all that is left.
+    if (version === install.active) return
+    if (!PlusUpdate.newer(version, install.active))
+      return yield* Effect.fail(
+        new Error(`${PlusUpdate.describe(version)} is not newer than ${PlusUpdate.describe(install.active)}`),
+      )
+    yield* updater.update(install, version, progress)
+  })
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -363,17 +407,17 @@ const make = Effect.gen(function* () {
     )
   }
 
-  const upgrade = Effect.fnUntraced(function* (method: Method, input: string) {
-    if (Product.namespace === "opencodeplus")
-      return yield* Effect.fail(new Error("Self-update is disabled for OpenCodePlus"))
+  const upgrade = Effect.fnUntraced(function* (method: Method, input: string, progress?: (message: string) => void) {
+    if (plus) return yield* plusUpgrade(plus, method, input, progress)
     if (!parseReleaseVersion(input)) return yield* Effect.fail(new Error(`Invalid version: ${input}`))
+    if (method === "opencodeplus") return yield* Effect.fail(new Error("The opencodeplus method updates OpenCodePlus only"))
     const version = input.trim().replace(/^v/, "")
     const packageName = (yield* release(method)).package
     const target = `${packageName}@${version}`
     if (installedPackage && packageName !== installedPackage && (method === "pnpm" || method === "yarn")) {
       return yield* Effect.fail(new Error(`Reinstall ${target} with ${method} to migrate from ${installedPackage}.`))
     }
-    const commands: Record<Exclude<Method, "bun" | "curl" | "brew">, string[]> = {
+    const commands: Record<Exclude<Method, "bun" | "curl" | "brew" | "opencodeplus">, string[]> = {
       // Keep the old package: uninstalling it can unlink the replacement command.
       npm: [
         "npm",
@@ -449,10 +493,6 @@ const make = Effect.gen(function* () {
   })
 
   const inspect = Effect.fnUntraced(function* () {
-    if (Product.namespace === "opencodeplus") {
-      yield* Effect.logInfo("update check skipped", { reason: "opencodeplus-disabled" })
-      return undefined
-    }
     if (OPENCODE_LOCAL || ["1", "true"].includes(process.env.OPENCODE_DISABLE_AUTOUPDATE?.toLowerCase() ?? "")) {
       yield* Effect.logInfo("update check skipped", {
         reason: OPENCODE_LOCAL ? "local-install" : "disabled",
@@ -495,23 +535,22 @@ const make = Effect.gen(function* () {
     return true
   })
 
-  const apply = Effect.fn("cli.updater.apply")(function* (version: string) {
-    if (Product.namespace === "opencodeplus")
-      return yield* Effect.fail(new Error("Self-update is disabled for OpenCodePlus"))
+  const apply = Effect.fn("cli.updater.apply")(function* (version: string, progress?: (message: string) => void) {
+    if (plus) return yield* plusUpgrade(plus, "opencodeplus", version, progress)
     if (!(yield* install(version))) return yield* Effect.fail(new Error("Installation method not found"))
   })
 
   const check = Effect.fn("cli.updater.check")(function* () {
-    if (Product.namespace === "opencodeplus")
-      return {
-        type: "unavailable" as const,
-        message: "Updates are disabled for OpenCodePlus.",
-      }
     if (OPENCODE_LOCAL)
       return {
         type: "unavailable" as const,
-        message: "This build runs from a source checkout. Use an installed OpenCode release to check for updates.",
+        message: `This build runs from a source checkout. Use an installed ${Product.displayName} release to check for updates.`,
       }
+    if (plus) {
+      const install = yield* plus.detect()
+      if (!install) return { type: "unavailable" as const, message: plusNotInstalled }
+      return yield* plusNotice(plus, install, true)
+    }
     const version = yield* latest()
     if (!parseReleaseVersion(version)) return yield* Effect.fail(new Error(`Invalid version: ${version}`))
     const current = yield* Ref.get(installedVersion)
@@ -526,7 +565,16 @@ const make = Effect.gen(function* () {
 
   const run = Effect.fn("cli.updater.run")(
     function* (onInstall: (version: string) => void = () => {}) {
-      if (Product.namespace === "opencodeplus") return undefined
+      if (plus) {
+        // OpenCodePlus only notifies: switching stops the shared background service,
+        // so only a person starts it ("auto" notifies too).
+        if (OPENCODE_LOCAL || ["1", "true"].includes(process.env.OPENCODE_DISABLE_AUTOUPDATE?.toLowerCase() ?? ""))
+          return undefined
+        if ((yield* readPolicy()) === "disable") return undefined
+        const install = yield* plus.detect()
+        if (!install) return undefined
+        return yield* plusNotice(plus, install, false)
+      }
       const result = yield* inspect()
       if (!result) return undefined
       if (result.policy === "notify") return { type: "available" as const, version: result.version }
@@ -537,7 +585,9 @@ const make = Effect.gen(function* () {
     Effect.catch((error) => Effect.logWarning("update check failed", { error }).pipe(Effect.as(undefined))),
   )
 
-  return Service.of({ run, check, apply, method, latest, upgrade, removal })
+  const settled = () => plus?.settled() ?? Promise.resolve()
+
+  return Service.of({ run, check, apply, method, latest, upgrade, removal, settled })
 })
 
 export const layer = Layer.effect(Service, make)

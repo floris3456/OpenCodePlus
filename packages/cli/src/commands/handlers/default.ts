@@ -7,6 +7,8 @@ import { Config } from "../../config"
 import { Context, Effect, Fiber, FileSystem, Option, Queue } from "effect"
 import { ServerConnection } from "../../services/server-connection"
 import { Updater } from "../../services/updater"
+import { PlusUpdate } from "../../services/plus-update"
+import { Product } from "@opencode/util/product"
 import { UpdatePreflight } from "../../services/update-preflight"
 import { Npm } from "@opencode/util/npm"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../../version"
@@ -73,10 +75,12 @@ export default Runtime.handler(Commands, (input) =>
       },
       server: {
         endpoint: server.endpoint,
+        // While this process switches OpenCodePlus releases the service is down on
+        // purpose; reconnecting then would restart this (old) release, so it waits.
         service: service
           ? {
-              reconnect: (signal) => runServicePromise(service.reconnect(), { signal }),
-              restart: () => runServicePromise(service.restart()),
+              reconnect: (signal) => updater.settled().then(() => runServicePromise(service.reconnect(), { signal })),
+              restart: () => updater.settled().then(() => runServicePromise(service.restart())),
             }
           : undefined,
       },
@@ -93,10 +97,25 @@ export default Runtime.handler(Commands, (input) =>
       },
       updater: {
         remote: requestedServer !== undefined,
+        ...(Product.namespace === "opencodeplus" ? { product: Product.displayName, describe: PlusUpdate.describe } : {}),
         subscribe: (notify, signal) =>
           runPromise(
             Fiber.join(update).pipe(
               Effect.flatMap((result) => (result === undefined ? Effect.void : Effect.sync(() => notify(result)))),
+              // OpenCodePlus keeps checking, so a release published while this TUI runs
+              // shows on the home screen of the next new chat.
+              Effect.andThen(
+                Product.namespace === "opencodeplus"
+                  ? Updater.pollUpdates({
+                      initialDelay: "10 minutes",
+                      check: updater
+                        .run()
+                        .pipe(
+                          Effect.flatMap((result) => (result === undefined ? Effect.void : Effect.sync(() => notify(result)))),
+                        ),
+                    })
+                  : Effect.void,
+              ),
             ),
             { signal },
           ),
@@ -107,7 +126,7 @@ export default Runtime.handler(Commands, (input) =>
             updateListeners.delete(notify),
           )
         },
-        apply: (version) => runPromise(updater.apply(version)),
+        apply: (version, progress) => runPromise(updater.apply(version, progress)),
       },
       packages: {
         prepare: (spec, install = true) => runPromise(install ? npm.add(spec) : npm.resolve(spec)),

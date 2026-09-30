@@ -12,7 +12,7 @@ type ClientNotice = { readonly type: "available" | "installed"; readonly version
 type Notice = ClientNotice & ({ readonly source: "client" } | { readonly source: "server"; readonly remote: boolean })
 export type UpdateState =
   | ClientNotice
-  | { readonly type: "installing"; readonly version: string }
+  | { readonly type: "installing"; readonly version: string; readonly message?: string }
   | { readonly type: "failed"; readonly message: string }
 
 export type UpdateSource = {
@@ -22,7 +22,12 @@ export type UpdateSource = {
     signal: AbortSignal,
     onInstall: (version: string) => void,
   ) => Promise<ClientNotice | { readonly type: "unavailable"; readonly message: string } | undefined>
-  readonly apply: (version: string) => Promise<void>
+  /** Installs `version`; `progress` names the step it is on, when it reports steps. */
+  readonly apply: (version: string, progress?: (message: string) => void) => Promise<void>
+  /** The product name shown in update texts (default "OpenCode"). */
+  readonly product?: string
+  /** How a version is shown (default "v<version>"). */
+  readonly describe?: (version: string) => string
 }
 
 export const { use: useUpdateNotification, provider: UpdateNotificationProvider } = createSimpleContext({
@@ -66,7 +71,11 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
       const current = state()
       if (!updater || !current || current.type !== "available") return
       setState({ type: "installing", version: current.version })
-      await updater.apply(current.version).then(
+      await updater
+        .apply(current.version, (message) => {
+          if (state()?.type === "installing") setState({ type: "installing", version: current.version, message })
+        })
+        .then(
         () => setState({ type: "installed", version: current.version }),
         (error) => setState({ type: "failed", message: errorMessage(error) }),
       )
@@ -105,6 +114,8 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
       const status = state()?.type
       dialog.replace(() => (
         <DialogUpdate
+          product={props.updater?.product}
+          describe={props.updater?.describe}
           check={status === undefined || status === "failed" ? check : undefined}
           state={state}
           skip={dismiss}
@@ -151,6 +162,7 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
       notification,
       dismiss,
       open: props.updater ? open : undefined,
+      describe: (version: string) => props.updater?.describe?.(version) ?? `v${version}`,
     }
   },
 })

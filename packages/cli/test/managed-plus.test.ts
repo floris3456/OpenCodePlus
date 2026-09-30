@@ -1,6 +1,6 @@
 import { NodeFileSystem, NodeServices } from "@effect/platform-node"
 import { expect, test } from "bun:test"
-import { Effect, Layer, Queue } from "effect"
+import { Effect } from "effect"
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -11,11 +11,15 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-test("Plus product identity disables self-update and automatic service replacement", async () => {
+test("Plus product identity updates only through its own installer and never replaces the service automatically", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-plus-managed-"))
   const previous = process.env.OPENCODE_PRODUCT
+  // No release is published on this site, so every lookup finds nothing.
+  const site = Bun.serve({ port: 0, fetch: () => new Response("Not Found", { status: 404 }) })
+  const previousSite = process.env.OPENCODEPLUS_RELEASE_SITE
   try {
     process.env.OPENCODE_PRODUCT = "opencodeplus"
+    process.env.OPENCODEPLUS_RELEASE_SITE = `http://127.0.0.1:${site.port}`
 
     expect(Product.namespace).toBe("opencodeplus")
     expect(Product.channel).toBe("plus")
@@ -30,51 +34,36 @@ test("Plus product identity disables self-update and automatic service replaceme
     await Effect.runPromise(
       Effect.gen(function* () {
         const updater = yield* Updater.Service
+        const failure = <A>(effect: Effect.Effect<A, Error>) =>
+          effect.pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          )
 
-        // check returns unavailable
-        const check = yield* updater.check()
-        expect(check).toEqual({
+        // This test process runs from source and is not an install.sh install:
+        // nothing is offered, and updating explains how to install one that can.
+        expect(yield* updater.check()).toEqual({
           type: "unavailable",
-          message: "Updates are disabled for OpenCodePlus.",
+          message: "This build runs from a source checkout. Use an installed OpenCodePlus release to check for updates.",
         })
+        expect(yield* updater.run()).toBeUndefined()
+        expect(yield* updater.method()).toBeUndefined()
+        const notInstalled = yield* failure(updater.apply("2.0.18-plus-1.0.1"))
+        expect(notInstalled).toContain("was not installed by its installer")
+        expect(notInstalled).toContain("https://github.com/floris3456/OpenCodePlus/releases/latest/download/install.sh")
 
-        // run returns undefined without checking or installing
-        const run = yield* updater.run()
-        expect(run).toBeUndefined()
-
-        // apply fails with disabled error
-        const applyError = yield* updater.apply("2.0.0").pipe(
-          Effect.flip,
-          Effect.map((error) => error.message),
+        // A package manager never installs OpenCodePlus.
+        expect(yield* failure(updater.upgrade("npm", "2.0.18-plus-1.0.1"))).toContain(
+          "updates only through its own installer",
         )
-        expect(applyError).toContain("Self-update is disabled for OpenCodePlus")
-
-        // upgrade fails with disabled error
-        const upgradeError = yield* updater.upgrade("npm", "2.0.0").pipe(
-          Effect.flip,
-          Effect.map((error) => error.message),
-        )
-        expect(upgradeError).toContain("Self-update is disabled for OpenCodePlus")
-
-        // latest fails with disabled error
-        const latestError = yield* updater.latest().pipe(
-          Effect.flip,
-          Effect.map((error) => error.message),
-        )
-        expect(latestError).toContain("Self-update is disabled for OpenCodePlus")
-
-        // method returns undefined
-        const method = yield* updater.method()
-        expect(method).toBeUndefined()
+        expect(yield* failure(updater.latest())).toContain("No OpenCodePlus release is available yet")
+        // A malformed version is refused before anything is looked up or run.
+        for (const version of ["", "latest", "2.0.18-plus-1.0", "2.0.18-plus-1.0.1; echo unsafe", "0.0.0-plus-r5.4"])
+          expect(yield* failure(updater.upgrade("opencodeplus", version))).toBe(`Invalid version: ${version}`)
 
         // removal returns undefined
         const removal = updater.removal("npm")
         expect(removal).toBeUndefined()
-
-        // pollUpdates completes immediately
-        const checks = yield* Queue.unbounded<void>()
-        yield* Updater.pollUpdates({ check: Queue.offer(checks, undefined).pipe(Effect.asVoid) })
-        expect(yield* Queue.size(checks)).toBe(0)
 
         // service config options disable replacement
         const options = yield* ServiceConfig.options()
@@ -91,8 +80,11 @@ test("Plus product identity disables self-update and automatic service replaceme
       ),
     )
   } finally {
+    site.stop(true)
     if (previous === undefined) delete process.env.OPENCODE_PRODUCT
     else process.env.OPENCODE_PRODUCT = previous
+    if (previousSite === undefined) delete process.env.OPENCODEPLUS_RELEASE_SITE
+    else process.env.OPENCODEPLUS_RELEASE_SITE = previousSite
     await fs.rm(root, { recursive: true, force: true })
   }
 })

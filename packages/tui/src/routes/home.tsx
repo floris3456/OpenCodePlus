@@ -163,8 +163,8 @@ function UpdateNotification(props: { width: number }) {
                 {remote
                   ? "remote server update available"
                   : state.type === "installed"
-                    ? ` restart to use v${state.version}`
-                    : ` to install v${state.version}`}
+                    ? ` restart to use ${update.describe(state.version)}`
+                    : ` to install ${update.describe(state.version)}`}
               </FadeInText>
             </box>
           </Show>
