@@ -1,9 +1,14 @@
 import type { Plugin } from "@opencode/plugin/tui"
+import type { PromptSendInput } from "@opencode/plugin/tui/context"
 import { createEffect, createSignal, Show } from "solid-js"
 import { Definition, type Plus } from "../rpc.js"
 
 // Cache warming in the TUI: a countdown under the prompt to when warming stops
-// for this chat, and a per-chat on/off switch (<leader>k).
+// for this chat, a per-chat on/off switch (<leader>k), and a confirmation
+// before a message goes into a cold cache.
+
+/** How long a held send waits for the confirming second submit, as interrupting a running chat does. */
+export const CONFIRM_MS = 5000
 
 /** 1:05:09, 23:41, 0:07. */
 export function formatRemaining(ms: number): string {
@@ -35,6 +40,11 @@ export function warmingLabel(
     }
   if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
   return undefined
+}
+
+/** The footer while a send into a cold cache waits for its confirming submit. */
+export function confirmText(key: string): string {
+  return `cache cold · ${key} again to send`
 }
 
 /** What the switch turns the chat to: off while warming runs or is switched on, else on. */
@@ -76,6 +86,32 @@ export function createWarming(context: Plugin.Context) {
 
   const label = () => warmingLabel(status(), now() + tracked.skew)
 
+  // A message into a cold cache pays for the whole prompt again. The first
+  // submit holds it and the footer asks for a second, like interrupting a
+  // running chat; a second submit within CONFIRM_MS sends. A running chat is
+  // using its cache, and a chat that never warmed shows nothing to confirm.
+  const [armed, setArmed] = createSignal<string | undefined>()
+  const [flash, setFlash] = createSignal(false)
+  const timers = { disarm: undefined as ReturnType<typeof setTimeout> | undefined, flash: undefined as ReturnType<typeof setTimeout> | undefined }
+  function guard(input: PromptSendInput): boolean {
+    const sessionID = input.sessionID
+    if (sessionID === undefined || input.mode !== "normal" || sessionID !== tracked.sessionID) return true
+    if (label()?.tone !== "warning" || context.data.session.status(sessionID) === "running") return true
+    clearTimeout(timers.disarm)
+    clearTimeout(timers.flash)
+    if (armed() === sessionID) {
+      setArmed(undefined)
+      setFlash(false)
+      return true
+    }
+    setArmed(sessionID)
+    setFlash(true)
+    timers.flash = setTimeout(() => setFlash(false), 220)
+    timers.disarm = setTimeout(() => setArmed(undefined), CONFIRM_MS)
+    return false
+  }
+  const disposeGuard = context.ui.prompt.guard(guard)
+
   async function toggle(): Promise<void> {
     const route = context.ui.router.current()
     if (route.type !== "session") {
@@ -115,16 +151,24 @@ export function createWarming(context: Plugin.Context) {
   // last session stays tracked instead of being dropped on cleanup.
   function Footer(props: { readonly sessionID?: string }) {
     createEffect(() => track(props.sessionID))
+    const warning = () => context.theme.text.feedback.warning.base
+    const confirming = () => props.sessionID !== undefined && armed() === props.sessionID && label()?.tone === "warning"
+    const key = () => context.keymap.shortcuts("prompt.submit")[0] ?? "enter"
     return (
       <Show when={props.sessionID !== undefined ? label() : undefined}>
         {(footer) => (
-          <text
-            fg={footer().tone === "warning" ? context.theme.text.feedback.warning.base : context.theme.text.muted}
-            wrapMode="none"
-            flexShrink={0}
+          <Show
+            when={confirming()}
+            fallback={
+              <text fg={footer().tone === "warning" ? warning() : context.theme.text.muted} wrapMode="none" flexShrink={0}>
+                {footer().text}
+              </text>
+            }
           >
-            {footer().text}
-          </text>
+            <text fg={flash() ? context.theme.decrease(warning(), 2) : warning()} wrapMode="none" flexShrink={0}>
+              {confirmText(key())}
+            </text>
+          </Show>
         )}
       </Show>
     )
@@ -136,7 +180,10 @@ export function createWarming(context: Plugin.Context) {
     Footer,
     dispose() {
       clearInterval(tick)
+      clearTimeout(timers.disarm)
+      clearTimeout(timers.flash)
       disposeEvents()
+      disposeGuard()
     },
   }
 }

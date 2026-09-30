@@ -25,6 +25,7 @@ import { useLocal } from "../context/local"
 import { abbreviateHome } from "../util/path-format"
 import { DialogAgent } from "../component/dialog-agent"
 import { composerPluginTabs } from "../routes/session/composer/team-monitor-tab"
+import { promptSendGuards } from "../component/prompt/send-guard"
 
 export type Dispose = () => Promise<void>
 
@@ -302,6 +303,19 @@ export function createPluginContext(input: {
             host.local.model.variant.set(variant)
             return true
           },
+        },
+      },
+      prompt: {
+        guard(check) {
+          const unregister = promptSendGuards.register(check)
+          let cleaned = false
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unregister()
+          }
+          input.owned.push(async () => cleanup())
+          return cleanup
         },
       },
       slot(value: SlotClaim) {

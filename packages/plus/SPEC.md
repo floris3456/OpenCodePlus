@@ -1296,6 +1296,13 @@ when switched on) in the warning feedback colour instead of disappearing; a chat
 that never had a window shows nothing. `warming.changed`
 fires when a decision or the switch changes what the footer shows.
 
+While the footer shows `cache cold`, a message submitted to that idle chat is
+held (the host's `ui.prompt.guard`): nothing is sent, the text stays, and the
+footer reads `cache cold · enter again to send` in the warning colour, like
+`esc again to interrupt`. A second submit within 5 seconds sends; after that the
+next submit is held again. Shell commands, a running chat, a warm cache and a
+chat with warming off or never warmed send at once.
+
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
 `provenance`, `custom`, `policy?` (`{ on, off }`, each an array of

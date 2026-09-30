@@ -162,6 +162,14 @@ type PromptFooterInput = {
   readonly showDetails: boolean
 }
 
+/** A message the prompt is about to send, as a send check sees it. */
+export interface PromptSendInput {
+  readonly sessionID?: string
+  readonly mode: "normal" | "shell"
+  /** steer sends now; queue waits for the running reply. */
+  readonly delivery: "steer" | "queue"
+}
+
 export type PanelPresentation = "panel" | "fullscreen"
 
 /** Client-local state of the selected session panel. The host owns its layout and input scope. */
@@ -552,6 +560,14 @@ export interface UI {
       /** Selects a variant of the selected model, or the model default when undefined. Returns false when no model is selected or the variant is unavailable. */
       set(variant: string | undefined): boolean
     }
+  }
+  readonly prompt: {
+    /**
+     * Checks every message the prompt is about to send. Return false to hold it: nothing is sent and the
+     * text stays in the prompt. Every registered check runs for each send; any false holds it. A check that
+     * holds says why itself (a footer slot, a toast).
+     */
+    guard(check: (input: PromptSendInput) => boolean): () => void
   }
   /** Claims a place in the slot tree; see SlotClaim. */
   readonly slot: (claim: SlotClaim) => () => void

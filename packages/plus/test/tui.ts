@@ -3,6 +3,7 @@ import { RGBA } from "@opentui/core"
 import { createTestRenderer, type MockMouse } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
+import type { PromptSendInput } from "@opencode/plugin/tui/context"
 import type { Agent } from "@opencode/schema/agent"
 import { createComponent, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -74,6 +75,9 @@ export function createTestTheme() {
   const scale = (color: RGBA) => Object.fromEntries([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950].map((step) => [step, color]))
 
   return {
+    // The real theme steps a colour along its hue scale; the test theme's scales are flat.
+    increase: (color: RGBA) => color,
+    decrease: (color: RGBA) => color,
     categorical: [scale(blue), scale(green), scale(yellow), scale(red)],
     border: { base: gray },
     scrollbar: { base: gray },
@@ -210,6 +214,8 @@ export interface TestFixture {
   readonly resize: (width: number, height: number) => void
   /** Types into the focused input (the filter bar, an editor). */
   readonly typeText: (text: string) => Promise<void>
+  /** Runs the registered ui.prompt.guard checks as the host prompt does before a send; true when none holds it. */
+  readonly send: (input: PromptSendInput) => boolean
   readonly [Symbol.asyncDispose]: () => Promise<void>
 }
 
@@ -233,6 +239,8 @@ export interface RenderFixtureOptions {
   readonly holdSnapshots?: boolean
   /** Extra RPC methods (monitor.query, …) answered by the test. */
   readonly rpc?: Readonly<Record<string, (input: never) => Promise<unknown>>>
+  /** data.session.status per session id; idle when absent. */
+  readonly sessionStatus?: Readonly<Record<string, "idle" | "running">>
 }
 
 export async function renderPlusFixture(options: RenderFixtureOptions): Promise<TestFixture> {
@@ -286,6 +294,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   const memoryCells = new Map<string, { value: unknown }>()
   const storeCells = options.storage ?? new Map<string, unknown>()
   const [keymapMode, setKeymapMode] = createSignal("normal")
+  const promptGuards = new Set<(input: PromptSendInput) => boolean>()
   // Held snapshot answers: the test asserts on the frame while an RPC is in
   // flight, then releases it to observe the fresh snapshot replace the cached.
   const heldSnapshots: (() => void)[] = []
@@ -434,6 +443,9 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       }),
     },
     data: {
+      session: {
+        status: (sessionID: string) => options.sessionStatus?.[sessionID] ?? "idle",
+      },
       location: {
         // No location is open in the fixture: callers fall back to none.
         default: () => undefined,
@@ -561,6 +573,14 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         close: () => false,
       },
       slot: () => () => {},
+      prompt: {
+        guard: (check: (input: PromptSendInput) => boolean) => {
+          promptGuards.add(check)
+          return () => {
+            promptGuards.delete(check)
+          }
+        },
+      },
     },
   }
 
@@ -624,6 +644,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     commands,
     resize,
     typeText: (text) => output.mockInput.typeText(text),
+    send: (input) => [...promptGuards].map((check) => check(input)).every(Boolean),
     [Symbol.asyncDispose]: async () => {
       destroy()
     },

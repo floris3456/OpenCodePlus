@@ -69,6 +69,7 @@ import { directoryRecentValue } from "../../prompt/directory-completion"
 import { useWorkingDirectoryActions } from "../../ui/working-directory-actions"
 import { truncateFilePath } from "../../ui/file-path"
 import { PromptMetadataRow } from "./metadata"
+import { promptSendGuards } from "./send-guard"
 
 export type PromptProps = {
   sessionID?: string
@@ -1174,6 +1175,10 @@ export function Prompt(props: PromptProps) {
       })
       return false
     }
+
+    // A plugin may hold the send (for example to confirm sending into a cold
+    // prompt cache); the text stays and a second submit asks again.
+    if (!promptSendGuards.allows({ sessionID: props.sessionID, mode: store.mode, delivery })) return false
 
     // Snapshot the composer and clear it synchronously, before the first await.
     // Everything below reads the snapshot: text typed while a request is in
