@@ -43,6 +43,16 @@ A release version names the opencode release its source contains, then the OpenC
 
 The publication and Latest workflows run without a checkout, so their ordering is bash; `packages/plus/test/release/workflows.test.ts` runs both steps against `PlusVersion` for every pair in a version grid.
 
+### Updating an install (`/update`, `opencodeplus upgrade`)
+
+An install made by `install.sh` updates itself (`packages/cli/src/services/plus-update.ts`); a source run or any other layout is told how to install one that can.
+
+- **Finding releases.** The TUI checks at start and every ten minutes. It reads the Latest release's `release.json` from `releases/latest/download/` (GitHub's file host, not the rate-limited API). With `"update_test_releases": true` in `opencode.json` it lists releases through the GitHub API and offers the newest non-draft one. All TUIs of an install share one answer for five minutes (`<cache>/update-check.json`). The home screen shows "/update to install OpenCodePlus 1.0.1 (opencode 2.0.18)"; `"update": "disable"` turns this off, and `"auto"` only notifies, because a switch stops the shared service.
+- **Staging.** `release.json`, `install.sh`, `SHA256SUMS` and this platform's archive are downloaded from the release's fixed-version address. Each file must match both `release.json` and `SHA256SUMS`. That release's own `install.sh --manifest --archive --stage` installs it beside the incumbent; the binary's SHA-256 is checked again and the binary must answer `--version`. A refusal installs nothing and moves nothing.
+- **Switching.** It waits until `/api/session/active` is empty ("Waiting for N running chats to finish…"), stops the service (`service stop`, persistent terminals handed off), copies the database files to `<data>/update-backups/` (the newest three are kept), moves `<prefix>/bin/opencodeplus` with a temporary symlink and an atomic rename, starts the new release's service and requires `/api/info` to report the new version and registered pid. Any failure after the stop stops what started, restores the database copy and the previous pointer, and starts the previous release again. The TUI then asks for a restart; it waits with reconnecting until the switch ends, so it does not restart the old release in between.
+- **Who starts it.** Only a person, from their own TUI or shell: there is no server route and no tool for it. An agent with unrestricted shell access runs as the same user and could run `opencodeplus upgrade` as well; tool permissions are the boundary there, as for any other command.
+- **Limits.** A prompt submitted in the moment between the last idle check and the stop is interrupted, and the service's startup recovery resumes it. On a host whose service a release controller manages (`bin/ocp-release`), a switch made this way leaves the controller's records describing the previous generation; re-initialise the controller before using it again.
+
 ### Install Prefix and Directory Layout
 
 The default install prefix `<prefix>` is `$HOME/.opencodeplus` (overridable during installation via `-p, --prefix <path>` or the `PREFIX` environment variable).

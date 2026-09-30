@@ -5,9 +5,12 @@ import { Effect, Schema } from "effect"
 /**
  * Process-local admission fence for a controller-authorized transition.
  *
- * The product never decides to replace itself: an external controller issues the
+ * The service never decides to replace itself: here an external controller issues the
  * authority, and the only thing this process does is stop admitting new work into
- * sessions that are about to go away. The hold is named by the controller's token,
+ * sessions that are about to go away. (The other way a release changes is a person's
+ * /update or `opencodeplus upgrade`, run by that person's client, which waits for
+ * running sessions and restarts this service from outside; see the CLI's
+ * services/plus-update.ts. Neither path has a server route or tool that starts it.) The hold is named by the controller's token,
  * so releasing is explicit and only the holder can do it. Every ambiguous outcome
  * — an unknown token, a release from a non-holder, a second transition arriving
  * over an existing hold — leaves the fence engaged and refuses the caller.
