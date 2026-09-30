@@ -41,7 +41,7 @@ A release version names the opencode release its source contains, then the OpenC
 - **Test release.** `ocp-release.yml` step *Verify release is newer than every published release* refuses a release that is not newer than every published non-draft release (dispatch input `allow_older_opencode` allows an older opencode part). It publishes a GitHub prerelease, never Latest. Installs with "include test releases" turned on are offered it.
 - **Latest.** After the owner has updated to the test release and used it, `ocp-latest.yml` (dispatch inputs `approval: approve` and `tag`) marks it Latest. It refuses a draft, a release that is not immutable, a release without exactly the seven release assets, and one that is not newer than the current Latest. It then checks that GitHub reports the release as Latest. From then on every install's `/update` offers it and `install.sh` without `--version` installs it. Immutable releases keep their assets and tag locked; GitHub allows changing only the prerelease and Latest flags.
 
-The publication and Latest workflows run without a checkout, so their ordering is bash; `packages/plus/test/release/workflows.test.ts` runs both steps against `PlusVersion` for every pair in a version grid.
+Both are started on the release tag (`gh workflow run ocp-release.yml --ref v<version> ...`, likewise `ocp-latest.yml`): their `ocp-release` environment only accepts `v*` tags. The publication and Latest workflows run without a checkout, so their ordering is bash; `packages/plus/test/release/workflows.test.ts` runs both steps against `PlusVersion` for every pair in a version grid.
 
 ### Updating an install (`/update`, `opencodeplus upgrade`)
 
