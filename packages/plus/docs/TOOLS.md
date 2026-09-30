@@ -50,16 +50,16 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 | --- | --- | --- |
 | `instructions_list` | `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | Query result (`packages/plus/src/tools.ts:133`, `packages/plus/src/tools.ts:248`) |
 | `instructions_show` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
-| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
+| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming`, `interval`, `prompt`, `effort` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
 | `instructions_create` | `kind` plus kind fields (`packages/plus/src/tools.ts:181`) | `{ …created, id, item }` per kind (§4) |
 | `instructions_delete` | `id`, `confirm`, `force` (User preset linked only from other projects) | Removal result plus `status` (`packages/plus/src/tools.ts:217`, `packages/plus/src/tools.ts:1359`) |
 | `instructions_log` | `where`, `limit`, `offset` | Change-log entries, newest first (`packages/plus/src/tools.ts:222`, `packages/plus/src/tools.ts:104`) |
 
-`where` uses `key:value` terms; the structural keys (`kind`, `item`, `tool`,
-`group`, `server`, `namespace`, `level`, `catalogue`, `agent`, `state`, `team`,
-`run`, …) are listed in the `instructions-tools` teaching text
+`where` uses `key:value` terms; the structural keys (`kind`, `item`
+(… `model`, `modeldefault`, …), `tool`, `group`, `server`, `namespace`,
+`level`, `catalogue`, `agent`, `state`, `team`, `run`, …) are listed in the `instructions-tools` teaching text
 (`packages/plus/src/instructions/teaching.ts:48`,
 `packages/plus/src/instructions/query.ts:933`). The `server:` filter matches
 both tool rows that carry a `server` and the `mcp:<name>` inventory row itself
@@ -91,13 +91,23 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   pins or unpins a Code Mode tool; `active: true` activates a model row;
   `warming` on a model row sets cache warming for that agent on that model at
   that level (`off`, `on`, or a total time 1m–24h such as `45m`, `2h`,
-  `1h30m`; empty inherits; TUI `w`), and on any other row it is refused;
-  `resolve` resolves a review row; on a perm row `label`, `patterns`,
-  `keywords` and `message` update the rule, and a message-only edit derives
-  label and patterns from the rule it edits
+  `1h30m`; empty inherits; TUI `w`), `interval`/`prompt` set the ping interval
+  (30s–24h, e.g. `4m`, `3m30s`) and the keep-alive text, and on any other row
+  they are refused; `resolve` resolves a review row; on a perm row `label`,
+  `patterns`, `keywords` and `message` update the rule, and a message-only edit
+  derives label and patterns from the rule it edits
   (`packages/plus/src/tools.ts:733`–`packages/plus/src/tools.ts:753`,
   `packages/plus/src/tools.ts:862`–`packages/plus/src/tools.ts:881`).
   A bare `id` toggles (`packages/plus/src/tools.ts:600`).
+- A **Defaults › Models** row (`item:defaults:/models:modeldefault:*` for
+  Every model, `…:<provider>/<model>` per model; `model-settings.ts`) takes
+  `warming`, `interval`, `prompt` and `effort` (strings set, empty clears) and
+  `state on|off` as the warming switch; it writes through `modelSettings.set`,
+  not the inventory mutate. `reset` and `delete` (with `confirm: true`) clear
+  every field, removing the row (`packages/plus/src/tools.ts` `setModelDefaults`,
+  `packages/plus/src/tools.ts` `clearModelDefaults`). `show` returns the
+  stored `record` and, for `resolved`, a `summary` with each effective value
+  and the layer it came from.
 - `reset` removes the stored text/state at the addressed row (model rows clear
   only that level's active flag) (`packages/plus/src/tools.ts:79`).
 - `split` sets manual boundaries or appends one section
@@ -686,6 +696,7 @@ accepts an optional `actor` on every write
 | `model.add` | `PortableModelAddInput` → `PortableModelRef` | `model.exists`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1335` |
 | `model.remove` | `PortableModelRemoveInput` → `PortableModelRef` | `model.missing`, `model.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1345` |
 | `catalog.models` | `Empty` → `PortableCatalogModelsOutput` | — | `packages/plus/src/rpc.ts:1355` |
+| `modelSettings.set` | `PortableSetModelSettingsInput` → `PortableSetModelSettingsOutput` | `modelSettings.invalid` | `packages/plus/src/rpc.ts` |
 | `warming.status` | `PortableWarmingSessionInput` → `PortableWarmingStatus` | — | `packages/plus/src/rpc.ts` |
 | `warming.set` | `PortableWarmingSetInput` → `PortableWarmingStatus` | — | `packages/plus/src/rpc.ts` |
 | `rule.add` | `PortableRuleAddInput` → `PortableRuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` | `packages/plus/src/rpc.ts:1362` |

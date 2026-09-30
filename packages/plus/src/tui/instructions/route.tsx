@@ -6,6 +6,7 @@ import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { isModelDefaultRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -884,6 +885,22 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   function revealChain(chain: readonly TreeNode[], row?: string) {
+    // A Defaults › Models row: its section is the owner row and its own rows
+    // are the list (workspace.ts), so focus lands in the list directly.
+    const modelsOwner = chain.findIndex((entry) => entry.id === MODELS_GROUP_ID)
+    if (modelsOwner !== -1) {
+      const owner = chain[modelsOwner]!
+      const key = `${owner.id}#models`
+      batch(() => {
+        setNavCollapsed(new Set([...navCollapsed()].filter((id) => !chain.some((entry) => entry.id === id))))
+        setOwners({ ...owners(), [level()]: key })
+        setNavSelected({ ...navSelected(), [level()]: key })
+        setCategories({ ...categories(), [key]: owner.id })
+        setListSelected({ ...listSelected(), [`${key}|${owner.id}`]: row ?? chain[chain.length - 1]!.id })
+        setFocus("list")
+      })
+      return
+    }
     const ownerIndex = chain.findIndex((entry, at) => {
       const next = chain[at + 1]
       return next !== undefined && next.kind === "group" && /:(settings|models|compaction|tools|base|skills|system|mcp)$/.test(next.id)
@@ -1057,6 +1074,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node?.actions?.split === true) openMode("split", node)
   }
 
+  function isModelDefaultRow(node: TreeNode): boolean {
+    return isModelDefaultRowId(node.id)
+  }
+
   // Enter on a normal row opens the editor; on a review row the review: a
   // keep/take choice for a changed state, pin or active model (§3.6), the diff
   // for text (after the choice when both are under review); on a permission
@@ -1066,9 +1087,18 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const row = currentRow()
     if (node === undefined) return
     if (focus() === "nav") {
-      if (row !== undefined && (row.role === "owner" || row.role === "every")) right()
-      else if (row?.expandable === true) setOpen(row, !row.expanded)
-      return
+      if (row !== undefined && (row.role === "owner" || row.role === "every")) {
+        right()
+        return
+      }
+      if (row?.expandable === true) {
+        setOpen(row, !row.expanded)
+        return
+      }
+      // An addressable leaf row in the sidebar edits like its list
+      // counterpart: the Defaults › Models rows hang directly off their
+      // section, so the sidebar is the only pane that lists them.
+      if (row === undefined || node.address === undefined || node.actions?.edit !== true) return
     }
     if (filtering() && state.filter().trim().length > 0) {
       jumpTo(node)
@@ -1101,7 +1131,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       return
     }
     // Enter on a model row edits the candidate and its warming; an inherited
-    // row plants a local record, like activation.
+    // row plants a local record, like activation. A Defaults › Models row
+    // edits its own fields through modelSettings.set.
+    if (isModelDefaultRow(node)) {
+      void dialogs.editModelSettings(node)
+      return
+    }
     if (isModelRow(node)) {
       void dialogs.editModel(node)
       return

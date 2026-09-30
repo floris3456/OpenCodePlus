@@ -14,13 +14,14 @@ import type {
   RuleRecord,
   SplitRecord,
 } from "./model.js"
+import type { ModelSettingsRecord } from "./model-settings.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
 import { basicMemberForRetiredAgent, basicTeamId, retiredMemberPresets } from "./presets.js"
 import { ensure } from "../project.js"
 
 export type { CustomizationRecord, SplitRecord }
-export type { ModelRecord, RuleRecord }
+export type { ModelRecord, ModelSettingsRecord, RuleRecord }
 export type { TeamRecord }
 export type { EntryRecord, LinkRecord, PresetRecord }
 export type StoredRecord =
@@ -28,6 +29,7 @@ export type StoredRecord =
   | SplitRecord
   | TeamRecord
   | ModelRecord
+  | ModelSettingsRecord
   | RuleRecord
   | LinkRecord
   | EntryRecord
@@ -153,7 +155,23 @@ const V2Model = Schema.Struct({
   active: Schema.optional(Schema.Literal(true)),
   basedOn: Schema.optional(Schema.String),
   warming: Schema.optional(Schema.String),
+  interval: Schema.optional(Schema.String),
+  prompt: Schema.optional(Schema.String),
   removed: Schema.optional(Schema.Literal(true)),
+  updated: Schema.String,
+})
+
+// Defaults › Models: the model settings every agent falls back to, one row
+// per model and one "Every model" row (no providerID/modelID).
+const V2ModelSettings = Schema.Struct({
+  type: Schema.Literal("modelSettings"),
+  level: Schema.Literal("defaults"),
+  providerID: Schema.optional(Schema.String),
+  modelID: Schema.optional(Schema.String),
+  warming: Schema.optional(Schema.String),
+  interval: Schema.optional(Schema.String),
+  prompt: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.String),
   updated: Schema.String,
 })
 
@@ -218,7 +236,7 @@ const V2Preset = Schema.Struct({
   updated: Schema.String,
 })
 
-const V2Record = Schema.Union([V2Customization, V2Split, V2Team, V2Model, V2Rule, V2Link, V2Entry, V2Preset])
+const V2Record = Schema.Union([V2Customization, V2Split, V2Team, V2Model, V2ModelSettings, V2Rule, V2Link, V2Entry, V2Preset])
 
 const V2Header = Schema.Struct({
   version: Schema.Literal(2),
@@ -654,10 +672,13 @@ function parseV2(lines: string[]): StoredRecord[] {
           ...(record.active === undefined ? {} : { active: record.active }),
           ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
           ...(record.warming === undefined ? {} : { warming: record.warming }),
+          ...(record.interval === undefined ? {} : { interval: record.interval }),
+          ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
           ...(record.removed === undefined ? {} : { removed: record.removed }),
           updated: record.updated,
         },
       ]
+    if (record.type === "modelSettings") return [stable(record)]
     if (record.type === "link" || record.type === "entry" || record.type === "preset") return [stable(record)]
     if (record.type === "rule")
       return [
@@ -781,6 +802,8 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 // pattern and name; presets by kind, team and id. All end with `updated`.
 function sortKey(record: StoredRecord): string[] {
   if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
+  if (record.type === "modelSettings")
+    return ["modelSettings", record.providerID ?? "", record.modelID ?? "", record.updated]
   if (record.type === "entry") return ["entry", record.catalogue, record.team ?? "", record.name, record.updated]
   if (record.type === "preset") return ["preset", record.kind, record.team ?? "", record.id, record.updated]
   const teamKey = record.team !== undefined ? `${record.team.level}:${record.team.team}` : ""
@@ -869,6 +892,18 @@ export function stable(record: StoredRecord): StoredRecord {
       enabled: record.enabled,
       updated: record.updated,
     }
+  if (record.type === "modelSettings")
+    return {
+      type: "modelSettings",
+      level: "defaults",
+      ...(record.providerID === undefined ? {} : { providerID: record.providerID }),
+      ...(record.modelID === undefined ? {} : { modelID: record.modelID }),
+      ...(record.warming === undefined ? {} : { warming: record.warming }),
+      ...(record.interval === undefined ? {} : { interval: record.interval }),
+      ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+      ...(record.effort === undefined ? {} : { effort: record.effort }),
+      updated: record.updated,
+    }
   if (record.type === "model")
     return {
       type: "model",
@@ -882,6 +917,8 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.active === undefined ? {} : { active: record.active }),
       ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
       ...(record.warming === undefined ? {} : { warming: record.warming }),
+      ...(record.interval === undefined ? {} : { interval: record.interval }),
+      ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       updated: record.updated,
     }

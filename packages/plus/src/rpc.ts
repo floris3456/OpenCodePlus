@@ -200,9 +200,47 @@ export const SnapshotModelRecord = Schema.Struct({
   active: Schema.optionalKey(Schema.Literal(true)),
   basedOn: Schema.optionalKey(Schema.String),
   warming: Schema.optionalKey(Schema.String),
+  interval: Schema.optionalKey(Schema.String),
+  prompt: Schema.optionalKey(Schema.String),
   removed: Schema.optionalKey(Schema.Literal(true)),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotModelRecord" })
+
+// Defaults › Models: the model settings every agent falls back to. A separate
+// snapshot field like `teams`, never a SnapshotRecord: instructions.mutate
+// carries the stored rows over so a client that does not know them cannot
+// drop them, and modelSettings.set edits them.
+export interface SnapshotModelSettingsRecord extends Schema.Schema.Type<typeof SnapshotModelSettingsRecord> {}
+export const SnapshotModelSettingsRecord = Schema.Struct({
+  type: Schema.Literal("modelSettings"),
+  level: Schema.Literal("defaults"),
+  providerID: Schema.optionalKey(Schema.String),
+  modelID: Schema.optionalKey(Schema.String),
+  warming: Schema.optionalKey(Schema.String),
+  interval: Schema.optionalKey(Schema.String),
+  prompt: Schema.optionalKey(Schema.String),
+  effort: Schema.optionalKey(Schema.String),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotModelSettingsRecord" })
+
+// One catalog model for the Defaults › Models rows: its variants (for the
+// effort default) and the host's opencode.json warming (shown as the source
+// below Plus's Every model row). Numbers are milliseconds.
+export interface HostWarmingRecord extends Schema.Schema.Type<typeof HostWarmingRecord> {}
+export const HostWarmingRecord = Schema.Struct({
+  on: Schema.Boolean,
+  duration: Schema.optionalKey(Schema.Number),
+  interval: Schema.optionalKey(Schema.Number),
+  prompt: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.HostWarmingRecord" })
+
+export interface SnapshotHostModel extends Schema.Schema.Type<typeof SnapshotHostModel> {}
+export const SnapshotHostModel = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variants: Schema.Array(Schema.String),
+  warming: Schema.optionalKey(HostWarmingRecord),
+}).annotate({ identifier: "Plus.SnapshotHostModel" })
 
 export interface SnapshotRuleRecord extends Schema.Schema.Type<typeof SnapshotRuleRecord> {}
 export const SnapshotRuleRecord = Schema.Struct({
@@ -381,6 +419,8 @@ export const Snapshot = Schema.Struct({
   links: Schema.optionalKey(Schema.Array(SnapshotLinkRecord)),
   entries: Schema.optionalKey(Schema.Array(SnapshotEntryRecord)),
   presets: Schema.optionalKey(Schema.Array(SnapshotPresetRecord)),
+  modelSettings: Schema.optionalKey(Schema.Array(SnapshotModelSettingsRecord)),
+  hostModels: Schema.optionalKey(Schema.Array(SnapshotHostModel)),
   listing: Schema.optionalKey(Schema.Array(PresetListEntry)),
   servers: Schema.Array(ServerEntry),
   protectedAgents: Schema.Array(Schema.String),
@@ -620,6 +660,32 @@ export const SetTeamEnabledInput = Schema.Struct({
   team: Schema.String,
   enabled: Schema.Boolean,
 }).annotate({ identifier: "Plus.SetTeamEnabledInput" })
+
+// Defaults › Models edits. A string sets a field, null clears it (the level
+// below decides again), absent leaves it alone; with no providerID/modelID
+// the row is Every model.
+export interface SetModelSettingsInput extends Schema.Schema.Type<typeof SetModelSettingsInput> {}
+export const SetModelSettingsInput = Schema.Struct({
+  providerID: Schema.optionalKey(Schema.String),
+  modelID: Schema.optionalKey(Schema.String),
+  warming: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  interval: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  prompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  effort: Schema.optionalKey(Schema.NullOr(Schema.String)),
+}).annotate({ identifier: "Plus.SetModelSettingsInput" })
+
+export interface SetModelSettingsOutput extends Schema.Schema.Type<typeof SetModelSettingsOutput> {}
+export const SetModelSettingsOutput = Schema.Struct({
+  /** The stored row, or null when every field was cleared and it was removed. */
+  record: Schema.NullOr(SnapshotModelSettingsRecord),
+  revision: Schema.Number,
+  globalRevision: Schema.Number,
+}).annotate({ identifier: "Plus.SetModelSettingsOutput" })
+
+export interface ModelSettingsInvalid extends Schema.Schema.Type<typeof ModelSettingsInvalid> {}
+export const ModelSettingsInvalid = Schema.Struct({
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.ModelSettingsInvalid" })
 
 export interface TeamRef extends Schema.Schema.Type<typeof TeamRef> {}
 export const TeamRef = Schema.Struct({
@@ -1509,6 +1575,15 @@ const PortableInstructionInvalid = Schema.toStandardSchemaV1(
 const PortableMcpExists = Schema.toStandardSchemaV1(McpExists.annotate({ identifier: "Plus.McpExists" }))
 const PortableMcpMissing = Schema.toStandardSchemaV1(McpMissing.annotate({ identifier: "Plus.McpMissing" }))
 const PortableMcpInvalid = Schema.toStandardSchemaV1(McpInvalid.annotate({ identifier: "Plus.McpInvalid" }))
+const PortableSetModelSettingsInput = Schema.toStandardSchemaV1(
+  SetModelSettingsInput.annotate({ identifier: "Plus.SetModelSettingsInput" }),
+)
+const PortableSetModelSettingsOutput = Schema.toStandardSchemaV1(
+  SetModelSettingsOutput.annotate({ identifier: "Plus.SetModelSettingsOutput" }),
+)
+const PortableModelSettingsInvalid = Schema.toStandardSchemaV1(
+  ModelSettingsInvalid.annotate({ identifier: "Plus.ModelSettingsInvalid" }),
+)
 const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ identifier: "Plus.TeamInvalid" }))
 const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
 const PortableTeamExists = Schema.toStandardSchemaV1(TeamExists.annotate({ identifier: "Plus.TeamExists" }))
@@ -1717,6 +1792,13 @@ export const Definition = Rpc.define({
       errors: {
         "team.unknown": PortableTeamUnknown,
         "team.invalid": PortableTeamInvalid,
+      },
+    },
+    "modelSettings.set": {
+      input: PortableSetModelSettingsInput,
+      output: PortableSetModelSettingsOutput,
+      errors: {
+        "modelSettings.invalid": PortableModelSettingsInvalid,
       },
     },
     "team.addAgent": {

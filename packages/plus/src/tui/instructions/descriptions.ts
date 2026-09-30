@@ -1,4 +1,5 @@
 import type { Catalogue, Level } from "../../instructions/model.js"
+import { MODELS_GROUP_ID, MODELS_OWNER } from "../../instructions/model-settings.js"
 import { categorySummary } from "../../instructions/permission-catalog.js"
 import type { TreeNode } from "../../instructions/tree.js"
 
@@ -22,6 +23,7 @@ export function structureDetail(node: TreeNode): string | undefined {
   if (presetOrigin !== null) return presetOriginDetail(presetOrigin[1] as Catalogue, presetOrigin[2] as Origin)
   const origin = node.id.match(/^group:(project|global|defaults):agents:(native(?::special)?|plus|user)$/)
   if (origin !== null) return originDetail(origin[1] as Level, origin[2] ?? "")
+  if (node.id === MODELS_GROUP_ID) return MODELS_SECTION
   const shared = node.id.match(/^group:defaults:(:|\/teams:)(settings|models|compaction|tools|base|skills|system|mcp)$/)
   if (shared !== null) return sharedDetail(shared[1] === ":" ? "agents" : "teams", shared[2] ?? "")
   const parts = parseOwnerGroup(node.id)
@@ -32,6 +34,8 @@ export function structureDetail(node: TreeNode): string | undefined {
 }
 
 type Origin = "native" | "plus" | "user"
+
+const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: how long to keep the prompt cache warm, how often to ping it, the keep-alive text, and the default effort (variant). "Every model" sits below the per-model rows and above opencode.json and the built-in defaults.`
 
 const ROOTS: Record<string, string> = {
   "root:project": "Customizations for this project: its agents and teams, and the rows they resolve to. Project rows override Global and Defaults.",

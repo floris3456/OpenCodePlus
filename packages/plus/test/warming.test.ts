@@ -16,7 +16,8 @@ import {
 } from "../src/instructions/model.js"
 import { setModelWarmingRow } from "../src/instructions/ops.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import { warmingRowOf } from "../src/index.js"
+import { warmingRowsOf } from "../src/index.js"
+import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { createWarmingStore, decideWarming, WARMING_DEFAULTS } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
 
@@ -30,6 +31,13 @@ const record = (overrides: Partial<ModelRecord>): ModelRecord => ({
   agent: "alpha",
   providerID: "anthropic",
   modelID: "claude",
+  updated: UPDATED,
+  ...overrides,
+})
+
+const defaultsRecord = (overrides: Partial<ModelSettingsRecord>): ModelSettingsRecord => ({
+  type: "modelSettings",
+  level: "defaults",
   updated: UPDATED,
   ...overrides,
 })
@@ -74,24 +82,70 @@ test("warming values parse to off, on, or a total time between 1m and 24h", () =
   expect("error" in parseWarming("")).toBe(true)
 })
 
-test("the per-chat switch beats the model row, which beats the host configuration", () => {
-  const twoHours = { on: true, duration: 120 * MINUTE } as const
+test("the per-chat switch beats the model rows, which beat the host configuration", () => {
+  const twoHours = { warming: { value: "2h", level: "project" as const } }
   // Nothing set: core's proposal passes through untouched, including "off".
-  expect(decideWarming({ configured, row: undefined, chat: undefined })).toEqual({ settings: configured, source: "config" })
-  expect(decideWarming({ configured: undefined, row: undefined, chat: undefined })).toEqual({ settings: undefined, source: "config" })
+  expect(decideWarming({ configured, rows: {}, chat: undefined })).toEqual({ settings: configured, source: "config" })
+  expect(decideWarming({ configured: undefined, rows: {}, chat: undefined })).toEqual({ settings: undefined, source: "config" })
   // The model row switches it off, or sets the total time over the configuration.
-  expect(decideWarming({ configured, row: { on: false }, chat: undefined })).toEqual({ settings: undefined, source: "model" })
-  expect(decideWarming({ configured, row: twoHours, chat: undefined }).settings).toEqual({ ...configured, duration: 120 * MINUTE })
-  expect(decideWarming({ configured, row: { on: true }, chat: undefined }).settings).toEqual(configured)
+  expect(decideWarming({ configured, rows: { row: { warming: { value: "off", level: "project" } } }, chat: undefined })).toEqual({
+    settings: undefined,
+    source: "model",
+    level: "project",
+  })
+  expect(decideWarming({ configured, rows: { row: twoHours }, chat: undefined }).settings).toEqual({ ...configured, duration: 120 * MINUTE })
+  expect(decideWarming({ configured, rows: { row: { warming: { value: "on", level: "project" } } }, chat: undefined }).settings).toEqual(configured)
   // A model row turns warming on where the configuration leaves it off, with core's defaults.
-  expect(decideWarming({ configured: undefined, row: twoHours, chat: undefined }).settings).toEqual({
+  expect(decideWarming({ configured: undefined, rows: { row: twoHours }, chat: undefined }).settings).toEqual({
     ...WARMING_DEFAULTS,
     duration: 120 * MINUTE,
   })
   // The chat switch wins both ways and keeps the row's total time when on.
-  expect(decideWarming({ configured, row: twoHours, chat: "off" })).toEqual({ settings: undefined, source: "chat" })
-  expect(decideWarming({ configured, row: { on: false }, chat: "on" })).toEqual({ settings: configured, source: "chat" })
-  expect(decideWarming({ configured: undefined, row: twoHours, chat: "on" }).settings?.duration).toBe(120 * MINUTE)
+  expect(decideWarming({ configured, rows: { row: twoHours }, chat: "off" })).toEqual({ settings: undefined, source: "chat" })
+  expect(decideWarming({ configured, rows: { row: { warming: { value: "off", level: "project" } } }, chat: "on" })).toEqual({
+    settings: configured,
+    source: "chat",
+  })
+  expect(decideWarming({ configured: undefined, rows: { row: twoHours }, chat: "on" }).settings?.duration).toBe(120 * MINUTE)
+})
+
+test("the interval and the keep-alive prompt resolve per field, row over Defaults over the host", () => {
+  const row = {
+    warming: { value: "2h", level: "project" as const },
+    interval: { value: "3m30s", level: "project" as const },
+    prompt: { value: "ping", level: "project" as const },
+  }
+  expect(decideWarming({ configured, rows: { row }, chat: undefined }).settings).toEqual({
+    prompt: "ping",
+    interval: 3.5 * MINUTE,
+    duration: 120 * MINUTE,
+  })
+  // Defaults › Models › this model: the agent row still wins over it, field by field.
+  const modelRow = defaultsRecord({ interval: "5m" })
+  expect(decideWarming({ configured, rows: { row: { interval: row.interval }, model: modelRow }, chat: undefined }).settings?.interval).toBe(3.5 * MINUTE)
+  expect(decideWarming({ configured, rows: { model: modelRow }, chat: undefined }).settings).toEqual({
+    prompt: configured.prompt,
+    interval: 5 * MINUTE,
+    duration: configured.duration,
+  })
+  expect(decideWarming({ configured, rows: { model: modelRow }, chat: undefined })).toMatchObject({
+    source: "model",
+    level: "defaults",
+  })
+  // The model's Defaults row wins over Every model, and Every model over the host.
+  const everyRow = defaultsRecord({ warming: "on", interval: "25m", prompt: "keep" })
+  expect(
+    decideWarming({ configured, rows: { model: defaultsRecord({ warming: "off" }), every: everyRow }, chat: undefined }),
+  ).toEqual({ settings: undefined, source: "model", level: "defaults" })
+  const every = decideWarming({ configured, rows: { every: everyRow }, chat: undefined })
+  expect(every).toMatchObject({ source: "model", level: "defaults" })
+  expect(every.settings).toEqual({ prompt: "keep", interval: 25 * MINUTE, duration: configured.duration })
+  // A Defaults row that only sets the interval does not switch warming on where the host left it off.
+  expect(decideWarming({ configured: undefined, rows: { model: modelRow }, chat: undefined })).toEqual({
+    settings: undefined,
+    source: "model",
+    level: "defaults",
+  })
 })
 
 test("two agents on the same model in one project resolve their own total times", () => {
@@ -170,18 +224,45 @@ test("the hook row lookup follows the session's agent", () => {
       { id: "beta", scope: "project" as const },
     ],
     cachedModels: [record({ agent: "alpha", warming: "45m" }), record({ agent: "beta", warming: "2h" })],
+    cachedModelSettings: [],
     cachedScopes: scopes,
   }
   const model = { providerID: "anthropic", id: "claude" }
-  expect(warmingRowOf(state, "alpha", model)?.value).toBe("45m")
-  expect(warmingRowOf(state, "beta", model)?.value).toBe("2h")
-  expect(warmingRowOf(state, "unknown", model)).toBeUndefined()
+  expect(warmingRowsOf(state, "alpha", model).row?.warming?.value).toBe("45m")
+  expect(warmingRowsOf(state, "beta", model).row?.warming?.value).toBe("2h")
+  expect(warmingRowsOf(state, "unknown", model).row).toBeUndefined()
+})
+
+test("the hook rows include the Defaults › Models rows for the session's model", () => {
+  const state = {
+    cachedAgents: [{ id: "alpha", scope: "project" as const }],
+    cachedModels: [],
+    cachedModelSettings: [
+      defaultsRecord({ interval: "25m" }),
+      defaultsRecord({ providerID: "anthropic", modelID: "claude", warming: "2h" }),
+    ],
+    cachedScopes: scopes,
+  }
+  const rows = warmingRowsOf(state, "alpha", { providerID: "anthropic", id: "claude" })
+  expect(rows.row).toBeUndefined()
+  expect(rows.model).toMatchObject({ warming: "2h" })
+  expect(rows.every).toMatchObject({ interval: "25m" })
+  const decision = decideWarming({ configured, rows, chat: undefined })
+  expect(decision).toMatchObject({ source: "model", level: "defaults" })
+  expect(decision.settings).toEqual({ prompt: configured.prompt, interval: 25 * MINUTE, duration: 120 * MINUTE })
+  // A model with no row of its own still sees Every model.
+  const other = warmingRowsOf(state, "alpha", { providerID: "openai", id: "gpt" })
+  expect(other.model).toBeUndefined()
+  expect(other.every).toMatchObject({ interval: "25m" })
+  // No Defaults rows at all leaves core's proposal in charge.
+  const bare = warmingRowsOf({ ...state, cachedModelSettings: [] }, "alpha", { providerID: "anthropic", id: "claude" })
+  expect(bare).toEqual({})
 })
 
 test("the store applies the decision to the hook event and records the window for the countdown", async () => {
   const store = createWarmingStore(await tempFile())
   const activity = event({})
-  expect(await store.decide(activity, { value: "2h", level: "project" })).toBe(true)
+  expect(await store.decide(activity, { row: { warming: { value: "2h", level: "project" } } })).toBe(true)
   expect(activity.settings?.duration).toBe(120 * MINUTE)
   const status = await store.status("ses_warm", 1_000_000 + MINUTE)
   expect(status).toMatchObject({
@@ -200,7 +281,7 @@ test("the store applies the decision to the hook event and records the window fo
   })
   // A model row switched off stops warming at the next decision.
   const warm = event({ phase: "warm", now: 1_000_000 + 2 * MINUTE })
-  await store.decide(warm, { value: "off", level: "global" })
+  await store.decide(warm, { row: { warming: { value: "off", level: "global" } } })
   expect(warm.settings).toBeUndefined()
   expect((await store.status("ses_warm", 1_000_000 + 3 * MINUTE)).active).toBe(false)
 })
@@ -208,7 +289,7 @@ test("the store applies the decision to the hook event and records the window fo
 test("the per-chat switch persists across a restart and stops warming before the next request", async () => {
   const file = await tempFile()
   const store = createWarmingStore(file)
-  await store.decide(event({}), undefined)
+  await store.decide(event({}), {})
   expect((await store.status("ses_warm", 1_000_000)).active).toBe(true)
   const off = await store.setChat("ses_warm", "off")
   expect(off).toMatchObject({ chat: "off", active: false })
@@ -216,20 +297,20 @@ test("the per-chat switch persists across a restart and stops warming before the
   const restarted = createWarmingStore(file)
   expect((await restarted.status("ses_warm")).chat).toBe("off")
   const warm = event({ phase: "warm", now: 1_000_000 + 4 * MINUTE })
-  await restarted.decide(warm, { value: "2h", level: "project" })
+  await restarted.decide(warm, { row: { warming: { value: "2h", level: "project" } } })
   expect(warm.settings).toBeUndefined()
   // Control: another chat with no switch keeps the configuration.
   const other = event({ sessionID: Session.ID.make("ses_other") })
-  await restarted.decide(other, undefined)
+  await restarted.decide(other, {})
   expect(other.settings).toEqual(configured)
   // Switching on beats a model row set to off; "default" returns to the row.
   await restarted.setChat("ses_warm", "on")
   const on = event({})
-  await restarted.decide(on, { value: "off", level: "project" })
+  await restarted.decide(on, { row: { warming: { value: "off", level: "project" } } })
   expect(on.settings).toEqual(configured)
   await restarted.setChat("ses_warm", "default")
   const follows = event({})
-  await restarted.decide(follows, { value: "off", level: "project" })
+  await restarted.decide(follows, { row: { warming: { value: "off", level: "project" } } })
   expect(follows.settings).toBeUndefined()
   expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({})
 })

@@ -13,6 +13,17 @@ import type {
   SplitRecord,
 } from "./model.js"
 import { chainContext, presetListing, withOwnerRoles, type PresetState } from "./presets.js"
+import {
+  everySettings,
+  isEvery,
+  modelDefaultView,
+  parseModelDefaultItemId,
+  settingsFor,
+  type HostModel,
+  type ModelDefaultView,
+  type ModelSettingsKey,
+  type ModelSettingsRecord,
+} from "./model-settings.js"
 import type { MemoInput, TeamInput } from "./tree.js"
 
 export function itemOf(item: Plus.SnapshotItem): Item {
@@ -122,6 +133,8 @@ function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
     ...(record.active === undefined ? {} : { active: record.active }),
     ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
     ...(record.warming === undefined ? {} : { warming: record.warming }),
+    ...(record.interval === undefined ? {} : { interval: record.interval }),
+    ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
     updated: record.updated,
   }
@@ -175,6 +188,61 @@ export function teamOf(team: Plus.TeamEntry): TeamInput {
   }
 }
 
+export function modelSettingsRecordOf(record: Plus.SnapshotModelSettingsRecord): ModelSettingsRecord {
+  return {
+    type: "modelSettings",
+    level: "defaults",
+    ...(record.providerID === undefined ? {} : { providerID: record.providerID }),
+    ...(record.modelID === undefined ? {} : { modelID: record.modelID }),
+    ...(record.warming === undefined ? {} : { warming: record.warming }),
+    ...(record.interval === undefined ? {} : { interval: record.interval }),
+    ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+    ...(record.effort === undefined ? {} : { effort: record.effort }),
+    updated: record.updated,
+  }
+}
+
+export function hostModelOf(record: Plus.SnapshotHostModel): HostModel {
+  return {
+    providerID: record.providerID,
+    modelID: record.modelID,
+    variants: [...record.variants],
+    ...(record.warming === undefined
+      ? {}
+      : {
+          warming: {
+            on: record.warming.on,
+            ...(record.warming.duration === undefined ? {} : { duration: record.warming.duration }),
+            ...(record.warming.interval === undefined ? {} : { interval: record.warming.interval }),
+            ...(record.warming.prompt === undefined ? {} : { prompt: record.warming.prompt }),
+          },
+        }),
+  }
+}
+
+/** What one Defaults › Models row resolves to now, from the snapshot alone (tree rows, inspector, dialogs). */
+export function modelDefaultsViewOf(
+  snapshot: Plus.Snapshot,
+  item: string | undefined,
+): (ModelDefaultView & { readonly key: ModelSettingsKey; readonly record?: ModelSettingsRecord }) | undefined {
+  const key = item === undefined ? undefined : parseModelDefaultItemId(item)
+  if (key === undefined) return undefined
+  const records = (snapshot.modelSettings ?? []).map(modelSettingsRecordOf)
+  const own = settingsFor(records, key)
+  const every = isEvery(key) ? undefined : everySettings(records)
+  const host =
+    isEvery(key)
+      ? undefined
+      : (snapshot.hostModels ?? []).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)
+  const view = modelDefaultView({
+    ...(own === undefined ? {} : { record: own }),
+    ...(every === undefined ? {} : { every }),
+    ...(host?.warming === undefined ? {} : { host: host.warming }),
+    ...(host === undefined ? {} : { variants: host.variants }),
+  })
+  return { ...view, key, ...(own === undefined ? {} : { record: own }) }
+}
+
 export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
   return {
     // Presets and Defaults entries get the Role/persona row discovery gives
@@ -190,6 +258,8 @@ export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
       ),
     agents: snapshot.agents.map(agentOf),
     teams: (snapshot.teams ?? []).map(teamOf),
+    modelSettings: (snapshot.modelSettings ?? []).map(modelSettingsRecordOf),
+    hostModels: (snapshot.hostModels ?? []).map(hostModelOf),
     ...presetStateOfSnapshot(snapshot),
   }
 }

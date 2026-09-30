@@ -683,7 +683,12 @@ test("memo shares one resolve cache with no double resolves", () => {
   expect(memo.whole.size).toBe(0)
   expect(memo.section.size).toBe(0)
   const tree = expandedTree(snapshot)
-  const itemCount = new Set(tree.filter((node) => node.kind === "item").map((node) => node.id)).size
+  // Defaults › Models rows carry no text records: they resolve through
+  // modelDefaultView, never through resolve(), so the whole-memo invariant
+  // counts the resolvable item rows only.
+  const itemCount = new Set(
+    tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true).map((node) => node.id),
+  ).size
   const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
   query(snapshot, { where: "text:e tokens:>0 upstream:e" }, memo)
   expect(memo.whole.size).toBe(itemCount)
@@ -697,7 +702,9 @@ test("badge-backed queries resolve each address at most once through the shared 
   const snapshot = input()
   const memo = buildMemo(snapshot)
   const tree = expandedTree(snapshot)
-  const itemCount = new Set(tree.filter((node) => node.kind === "item").map((node) => node.id)).size
+  const itemCount = new Set(
+    tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true).map((node) => node.id),
+  ).size
   const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
   const found = query(snapshot, { where: "review:true" }, memo)
   expect(found.total).toBeGreaterThan(0)

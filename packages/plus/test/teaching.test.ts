@@ -75,7 +75,7 @@ test("the skill content covers the tool surface", async () => {
   for (const phrase of [
     "list({ where?, fields?, sort?, limit?, offset? })",
     'show({ id, view? })',
-    "set({ id, text?, state?, pin?, active?, resolve? })",
+    "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, prompt?, effort? })",
     "reset({ id })",
     "split({ id, boundaries?, add? })",
     "create({ kind, ...fields })",
@@ -87,6 +87,7 @@ test("the skill content covers the tool surface", async () => {
     "original→upstream",
     'set({ id, mode: "primary" })',
     "setting:<field>",
+    "modeldefault:*",
     "compaction:strategy",
     "compaction:model",
     "compaction:instructions",

@@ -10,13 +10,16 @@ import {
   clearModelActive,
   ensureActivateModel,
   fingerprint,
+  formatDuration,
+  formatWarming,
   hasModelRecordAt,
   merge,
   modelKey,
   modelRuntimeScope,
-  formatWarming,
   ownAndAbove,
+  parseInterval,
   parseModelItemId,
+  parsePrompt,
   parseWarming,
   removeModelRecord,
   resolve,
@@ -26,6 +29,7 @@ import {
   sameModelCandidate,
   sameTeam,
   scopedTo,
+  setModelSettings,
   setModelWarming,
   tombstoneModelRecord,
 } from "./model.js"
@@ -38,6 +42,7 @@ import type {
   ModelCandidate,
   ModelInput,
   ModelRecord,
+  ModelWarmingFields,
   PresetRef,
   RecordScope,
   ReviewPart,
@@ -1358,6 +1363,10 @@ export interface ModelEditFields {
   readonly variant?: string
   /** undefined = leave warming alone; "" clears it; else a parseWarming value. */
   readonly warming?: string
+  /** undefined = leave the ping interval alone; "" clears it; else a parseInterval value. */
+  readonly interval?: string
+  /** undefined = leave the keep-alive text alone; "" clears it; else a parsePrompt value. */
+  readonly prompt?: string
 }
 
 // Enter on a model row: replace the candidate (provider/model/variant) at this
@@ -1392,12 +1401,23 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   const withActive = staysActive && (targetChanged || local === undefined || local.active !== true)
     ? activateModel(swapped, addr, to, context)
     : swapped
-  const parsed = fields.warming === undefined || fields.warming.trim().length === 0 ? undefined : parseWarming(fields.warming)
-  if (parsed !== undefined && "error" in parsed) return { refusal: parsed.error }
-  const next = fields.warming === undefined ? withActive : setModelWarming(withActive, addr, to, parsed === undefined ? undefined : formatWarming(parsed), now())
+  const warming = fields.warming === undefined || fields.warming.trim().length === 0 ? undefined : parseWarming(fields.warming)
+  if (warming !== undefined && "error" in warming) return { refusal: warming.error }
+  const interval = fields.interval === undefined || fields.interval.trim().length === 0 ? undefined : parseInterval(fields.interval)
+  if (interval !== undefined && "error" in interval) return { refusal: interval.error }
+  const prompt = fields.prompt === undefined || fields.prompt.trim().length === 0 ? undefined : parsePrompt(fields.prompt)
+  if (prompt !== undefined && "error" in prompt) return { refusal: prompt.error }
+  const fieldsSet = fields.warming !== undefined || fields.interval !== undefined || fields.prompt !== undefined
+  const settings = {
+    ...(fields.warming === undefined ? {} : { warming: warming === undefined ? null : formatWarming(warming) }),
+    ...(fields.interval === undefined ? {} : { interval: interval === undefined ? null : formatDuration(interval.interval) }),
+    ...(fields.prompt === undefined ? {} : { prompt: prompt === undefined ? null : prompt.prompt }),
+  }
+  const next = fieldsSet ? setModelSettings(withActive, addr, to, settings, now()) : withActive
   if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
-  const status = fields.warming !== undefined && JSON.stringify(withActive) === JSON.stringify(models)
-    ? (parsed === undefined ? `Cache warming for "${node.label}" inherits` : `Cache warming for "${node.label}": ${formatWarming(parsed)}`)
+  const onlySettings = fieldsSet && JSON.stringify(withActive) === JSON.stringify(models)
+  const status = onlySettings
+    ? `Cache warming for "${node.label}": ${warmingSummaryOf(settings)}`
     : `Updated "${node.label}"`
   return { models: next, status, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
 }
@@ -1453,4 +1473,14 @@ function claim(base: string, used: Set<string>): string {
 
 function now(): string {
   return new Date().toISOString()
+}
+
+// The one-line "warming" status a fields-only save reports.
+function warmingSummaryOf(settings: ModelWarmingFields): string {
+  const parts = [
+    ...(settings.warming === undefined || settings.warming === null ? [] : [`${settings.warming}`]),
+    ...(settings.interval === undefined || settings.interval === null ? [] : [`every ${settings.interval}`]),
+    ...(settings.prompt === undefined || settings.prompt === null ? [] : ["a prompt"]),
+  ]
+  return parts.length === 0 ? "inherits" : parts.join(", ")
 }

@@ -10,6 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -155,12 +156,19 @@ function sliceOf(
     skipBelow = undefined
     const parent = parents.get(node.id)
     const role = navRole(node, parent)
+    const depth = node.depth - top.depth - 1
+    // The Defaults › Models section is owner-like: one sidebar row whose rows
+    // are the list pane (so their values show in the list's meta line).
+    if (node.id === MODELS_GROUP_ID) {
+      nav.push({ key: `${node.id}#models`, node, label: node.label, depth, role: "every", expandable: false, expanded: false })
+      skipBelow = node.depth
+      continue
+    }
     // A category straight under a catalogue belongs to its "Every …" owner row.
     if (node.kind === "group" && CATEGORY.test(node.id)) {
       skipBelow = node.depth
       continue
     }
-    const depth = node.depth - top.depth - 1
     if (role === "owner") {
       nav.push({ key: node.id, node, label: node.label, depth, role, expandable: false, expanded: false })
       skipBelow = node.depth
@@ -187,6 +195,12 @@ function sliceOf(
   const owner = owners.find((row) => row.key === input.owner) ?? owners[0]
   if (owner === undefined) return { nav, categories: [], list: [] }
   const ownerIndex = rows.findIndex((node) => node.id === owner.node.id)
+  // The Defaults › Models section is its own category: Every model and the
+  // per-model rows are the list, so the section needs no second group level.
+  if (owner.node.id === MODELS_GROUP_ID) {
+    const list = directChildren(rows, ownerIndex).map((node) => listRow(node, owner.node.depth, open))
+    return { nav, owner, categories: [owner.node], category: owner.node, list }
+  }
   const children = directChildren(rows, ownerIndex)
   const categories = children.filter((node) => node.kind === "group" && (owner.role === "owner" || CATEGORY.test(node.id)))
   const category = categories.find((node) => node.id === input.category) ?? categories[0]

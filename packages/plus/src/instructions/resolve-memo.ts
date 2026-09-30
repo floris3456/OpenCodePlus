@@ -1,4 +1,5 @@
 import { catalogueOf, resolve, resolveSplit } from "./model.js"
+import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
 import type {
   Address,
@@ -32,6 +33,10 @@ export interface MemoInput extends PresetState {
   readonly records: readonly (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]
   readonly agents: readonly AgentSource[]
   readonly teams?: readonly TeamInput[]
+  /** Defaults › Models rows (their own surface, edited through modelSettings.set). */
+  readonly modelSettings?: readonly ModelSettingsRecord[]
+  /** Per-model host configuration (opencode.json) and catalog variants, for the Defaults › Models rows. */
+  readonly hostModels?: readonly HostModel[]
 }
 
 export interface BuildContext {
@@ -49,6 +54,10 @@ export interface BuildContext {
   /** presetKey → label, for "from preset X". */
   readonly labels: ReadonlyMap<string, string>
   readonly entries: readonly EntryRecord[]
+  /** Defaults › Models rows (model-settings.ts). */
+  readonly modelSettings: readonly ModelSettingsRecord[]
+  /** Per-model host configuration and catalog variants. */
+  readonly hostModels: readonly HostModel[]
 }
 
 export function contextOf(input: MemoInput): BuildContext {
@@ -72,6 +81,8 @@ export function contextOf(input: MemoInput): BuildContext {
     }),
     agents: input.agents,
     teams: input.teams ?? [],
+    modelSettings: input.modelSettings ?? [],
+    hostModels: input.hostModels ?? [],
   }
 }
 

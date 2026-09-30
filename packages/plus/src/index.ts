@@ -35,8 +35,16 @@ import { enforcementState, type EnforcementState, type PermissionTable } from ".
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
+import {
+  everySettings,
+  MODEL_SETTINGS_FIELDS,
+  setModelSettingsRecord,
+  settingsFor,
+  warmingFieldsOf,
+  type ModelSettingsRecord,
+} from "./instructions/model-settings.js"
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
-import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelWarming, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
+import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
@@ -62,7 +70,7 @@ import { ensure, read } from "./project.js"
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
-import { warmingStore } from "./warming.js"
+import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
@@ -86,6 +94,8 @@ export interface PlusState {
   activeModels: Map<string, ModelRefLike>
   /** Model records from the last publish or refresh: cache warming reads each agent's model rows here. */
   cachedModels: readonly ModelRecord[]
+  /** Defaults › Models rows from the same read: cache warming falls back to them per field. */
+  cachedModelSettings: readonly ModelSettingsRecord[]
   /** When cache warming last checked the store for changes from another directory. */
   warmingCheckedAt: number
   cachedAgents: readonly AgentSource[]
@@ -118,6 +128,7 @@ export function createState(): PlusState {
     modelBaselines: new Map(),
     activeModels: new Map(),
     cachedModels: [],
+    cachedModelSettings: [],
     warmingCheckedAt: 0,
     cachedAgents: [],
     cachedScopes: { global: new Set(), defaults: new Set() },
@@ -351,6 +362,14 @@ export type SetTeamEnabledResult =
         | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
     }
 
+export type SetModelSettingsResult =
+  | { ok: true; value: Plus.SetModelSettingsOutput }
+  | { ok: false; error: { code: "modelSettings.invalid"; message: string; data: Plus.ModelSettingsInvalid } }
+
+function invalidModelSettings(reason: string): SetModelSettingsResult {
+  return { ok: false, error: { code: "modelSettings.invalid", message: reason, data: { reason } } }
+}
+
 export type CreateTeamResult =
   | { ok: true; value: Plus.TeamRef }
   | {
@@ -474,6 +493,7 @@ export interface PlusApi {
   readonly removeMcp: (input: Plus.McpRef & { readonly actor?: Plus.Actor }) => Promise<RemoveMcpResult>
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
+  readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
@@ -531,7 +551,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...input.records.map(toRecord),
         ...loaded.records.filter(
           (record) =>
-            record.type === "team" || record.type === "link" || record.type === "entry" || record.type === "preset",
+            record.type === "team" ||
+            record.type === "link" ||
+            record.type === "entry" ||
+            record.type === "preset" ||
+            record.type === "modelSettings",
         ),
       ]
       // T3: a tool actor may not change a protected agent's row through a
@@ -539,10 +563,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // changed rows count: a caller that carries a protected agent's records
       // back unchanged (the normal full-snapshot mutate) is not refused.
       const protectedRow = deltaRows(loaded.records, records).find(
-        (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord> =>
+        (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord> =>
           record.type !== "team" &&
           record.type !== "entry" &&
           record.type !== "preset" &&
+          record.type !== "modelSettings" &&
           // A preset's rows are not an agent's, whatever its id.
           record.level !== "preset" &&
           record.agent !== null &&
@@ -726,7 +751,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const target = { level: input.scope, agent: to.id }
       const moved = await updateRecords(directory, (current) =>
         current.flatMap((record): StoredRecord[] => {
-          if (record.type === "team" || record.type === "entry" || record.type === "preset") return [record]
+          if (record.type === "team" || record.type === "entry" || record.type === "preset" || record.type === "modelSettings")
+            return [record]
           if (scopedTo(record, target)) return []
           return [scopedTo(record, source) ? { ...record, agent: to.id } : record]
         }),
@@ -1226,6 +1252,63 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       await Effect.runPromise(emitTeamsChanged(state))
       return { ok: true as const, value: { level: input.level, team: validated.team, enabled: input.enabled, exclusive: true as const, disabledTeams: saved.disabledTeams } }
+    },
+    setModelSettings: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const providerID = input.providerID?.trim()
+      const modelID = input.modelID?.trim()
+      if ((providerID === undefined) !== (modelID === undefined))
+        return invalidModelSettings("providerID and modelID go together; omit both for the Every model row")
+      const key = { ...(providerID === undefined ? {} : { providerID }), ...(modelID === undefined ? {} : { modelID }) }
+      const parsed = warmingFieldsOf({
+        ...(input.warming === undefined || input.warming === null ? {} : { warming: input.warming }),
+        ...(input.interval === undefined || input.interval === null ? {} : { interval: input.interval }),
+        ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
+      })
+      if ("error" in parsed) return invalidModelSettings(parsed.error)
+      const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
+        value === undefined ? undefined : value === null ? null : (parsed.fields[field] ?? null)
+      const fields = {
+        warming: cleared(input.warming, "warming"),
+        interval: cleared(input.interval, "interval"),
+        prompt: cleared(input.prompt, "prompt"),
+        ...(input.effort === undefined
+          ? {}
+          : { effort: input.effort === null || input.effort.trim().length === 0 ? null : input.effort.trim() }),
+      }
+      const updated = new Date().toISOString()
+      const write = async () => {
+        const current = await load(directory)
+        const next = setModelSettingsRecord(modelSettingsOf(current.records), key, fields, updated)
+        const record = settingsFor(next, key)
+        const saved = await save(directory, {
+          expectedProjectRevision: current.projectRevision,
+          expectedGlobalRevision: current.globalRevision,
+          records: [...current.records.filter((entry) => entry.type !== "modelSettings"), ...next],
+        })
+        if (!saved.ok) return { ok: false as const }
+        return { ok: true as const, changed: saved.changed.global, record, revision: saved.projectRevision, globalRevision: saved.globalRevision }
+      }
+      let saved = await write()
+      if (!saved.ok) saved = await write()
+      if (!saved.ok) return invalidModelSettings("the store changed concurrently; retry")
+      const label = key.providerID === undefined ? "Every model" : `${key.providerID}/${key.modelID}`
+      if (saved.changed) {
+        const described = MODEL_SETTINGS_FIELDS.flatMap((field) => {
+          const value = saved.record?.[field]
+          return value === undefined ? [] : [`${field} ${value}`]
+        }).join(", ")
+        await append(globalLogPath(), {
+          ts: updated,
+          actor: normalizeActor(input.actor),
+          op: "modelSettings.set",
+          target: key.providerID === undefined ? "modeldefault:every" : `modeldefault:${key.providerID}/${key.modelID}`,
+          summary: saved.record === undefined ? `modelSettings.clear ${label}` : `modelSettings.set ${label} (${described})`,
+          revision: saved.globalRevision,
+        })
+      }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return { ok: true as const, value: { record: saved.record ?? null, revision: saved.revision, globalRevision: saved.globalRevision } }
     },
     addTeamAgent: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -1939,7 +2022,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         records.filter(
           (record) =>
             !(record.type === "entry" && matches(record)) &&
-            !(record.type !== "team" && record.type !== "entry" && record.type !== "preset" && nodes.some((node) => scopedTo(record, node))),
+            !(
+              record.type !== "team" &&
+              record.type !== "entry" &&
+              record.type !== "preset" &&
+              record.type !== "modelSettings" &&
+              nodes.some((node) => scopedTo(record, node))
+            ),
         ),
       )
       if (!saved.ok) return { ok: false as const, error: entryInvalid(name ?? team ?? "", "the store changed concurrently; retry") }
@@ -1990,7 +2079,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const saved = await updateRecords(directory, (records) =>
         records.map((record): StoredRecord => {
           if (record.type === "entry") return same(record, name) ? { ...record, name: to.name, updated } : record
-          if (record.type === "team" || record.type === "preset") return record
+          if (record.type === "team" || record.type === "preset" || record.type === "modelSettings") return record
           return scopedTo(record, from) ? { ...record, agent: to.name } : record
         }),
       )
@@ -2108,7 +2197,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const removed = (record: StoredRecord) => {
           if (record.type === "link" && targetsPreset(record.preset, input.ref)) return true
           if (record.type === "preset") return owners.some((owner) => presetRecordOwns(record, owner))
-          if (record.type === "team" || record.type === "entry") return false
+          if (record.type === "team" || record.type === "entry" || record.type === "modelSettings") return false
           return owners.some((owner) => scopedTo(record, owner))
         }
         return { result: { users, elsewhere, orphans: links.filter((record) => targetsPreset(record.preset, input.ref)).length }, records: loaded.records.filter((record) => !removed(record)) }
@@ -2808,6 +2897,12 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         }
         return result.value
       }),
+    "modelSettings.set": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.setModelSettings(input))
+        if (!result.ok) return yield* Effect.fail(context.error("modelSettings.invalid", result.error.message, result.error.data))
+        return result.value
+      }),
     "team.addAgent": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.addTeamAgent(input))
@@ -3021,18 +3116,18 @@ function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming)
       state.warmingCheckedAt = Date.now()
       await refreshActiveModelsIfStale(await activationDirectory(ctx.location.directory), state)
     }
-    return warmingStore.decide(event, warmingRowOf(state, event.agent, event.model))
+    return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model))
   }).pipe(
     Effect.flatMap((changed) => (changed ? emitWarmingChanged(state, event.sessionID) : Effect.void)),
     Effect.catchCause((cause) => Effect.logWarning("plus cache warming decision failed", { cause, sessionID: event.sessionID })),
   )
 }
 
-export function warmingRowOf(
-  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedScopes">,
+export function warmingRowsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
   agentID: string,
   model: { readonly providerID: string; readonly id: string; readonly variant?: string },
-): { readonly value: string; readonly level: Level } | undefined {
+): WarmingRows {
   const agent = dedupeAgents([
     ...state.cachedAgents.filter((entry) => entry.team !== undefined),
     ...state.cachedAgents.filter((entry) => entry.team === undefined),
@@ -3042,10 +3137,19 @@ export function warmingRowOf(
     agent === undefined
       ? { level: "project" as const, scopes: state.cachedScopes }
       : runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, state.cachedScopes)
-  return resolveModelWarming(
+  const target = { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) }
+  const row = resolveModelFields(
     { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
-    { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) },
+    target,
   )
+  const key = { providerID: model.providerID, modelID: model.id }
+  const modelRow = settingsFor(state.cachedModelSettings, key)
+  const everyRow = everySettings(state.cachedModelSettings)
+  return {
+    ...(Object.keys(row).length === 0 ? {} : { row }),
+    ...(modelRow === undefined ? {} : { model: modelRow }),
+    ...(everyRow === undefined ? {} : { every: everyRow }),
+  }
 }
 
 interface LoadedStores {
@@ -3308,6 +3412,10 @@ function isTeamRecord(record: StoredRecord): record is TeamRecord {
 
 function modelsOf(records: readonly StoredRecord[]): ModelRecord[] {
   return records.filter((record): record is ModelRecord => record.type === "model")
+}
+
+function modelSettingsOf(records: readonly StoredRecord[]): ModelSettingsRecord[] {
+  return records.filter((record): record is ModelSettingsRecord => record.type === "modelSettings")
 }
 
 function rulesOf(records: readonly StoredRecord[]): RuleRecord[] {
@@ -3636,6 +3744,10 @@ function recordTarget(record: StoredRecord): string {
   if (record.type === "preset")
     return record.team === undefined ? `${record.kind}:preset:${record.id}` : `team:preset:${record.team}:${record.id}`
   if (record.type === "link") return `link:${record.level}:${record.agent ?? ""}`
+  if (record.type === "modelSettings")
+    return record.providerID === undefined || record.modelID === undefined
+      ? "modeldefault:every"
+      : `modeldefault:${record.providerID}/${record.modelID}`
   if (record.type === "model")
     return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
   if (record.type === "rule") return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
@@ -3856,6 +3968,8 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.active === undefined ? {} : { active: record.active }),
       ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
       ...(record.warming === undefined ? {} : { warming: record.warming }),
+      ...(record.interval === undefined ? {} : { interval: record.interval }),
+      ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       updated: record.updated,
     }
@@ -4340,6 +4454,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.modelBaselines = new Map()
       state.activeModels = new Map()
       state.cachedModels = []
+      state.cachedModelSettings = []
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
       state.teamOutputIds = new Map()
@@ -4546,6 +4661,7 @@ function publishFresh(
       )
       state.activeModels = buildActiveModels(publishAgents, modelRecords, publishScopes)
       state.cachedModels = modelRecords
+      state.cachedModelSettings = modelSettingsOf(stored.records)
       state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
       state.cachedScopes = publishScopes
       const fingerprint = JSON.stringify({
@@ -5312,6 +5428,7 @@ async function refreshActiveModelsIfStale(directory: string, state: PlusState): 
   // context keeps its agents and preset catalogue and takes the fresh ones.
   const fresh = presetStateOf(stored.records)
   state.cachedModels = modelsOf(stored.records)
+  state.cachedModelSettings = modelSettingsOf(stored.records)
   // Cache warming resolves model rows with the same fresh context.
   state.cachedScopes = { ...state.cachedScopes, links: fresh.links, entries: fresh.entries }
   state.activeModels = buildActiveModels(state.cachedAgents, state.cachedModels, state.cachedScopes)
@@ -5485,6 +5602,8 @@ function toSnapshot(
             ...(record.active === undefined ? {} : { active: record.active }),
             ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
             ...(record.warming === undefined ? {} : { warming: record.warming }),
+            ...(record.interval === undefined ? {} : { interval: record.interval }),
+            ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
             updated: record.updated,
           },
@@ -5509,9 +5628,15 @@ function toSnapshot(
       // Team records stay out of `records`: clients read enablement through
       // `teams` instead, and instructions.mutate re-merges stored team
       // records so a client that cannot see them cannot delete them. Links,
-      // Defaults entries and presets are handled the same way: they cross in
-      // their own fields below.
-      if (record.type === "team" || record.type === "link" || record.type === "entry" || record.type === "preset")
+      // Defaults entries, presets and Defaults › Models rows are handled the
+      // same way: they cross in their own fields below.
+      if (
+        record.type === "team" ||
+        record.type === "link" ||
+        record.type === "entry" ||
+        record.type === "preset" ||
+        record.type === "modelSettings"
+      )
         return []
       return [
         {
@@ -5535,6 +5660,13 @@ function toSnapshot(
       ]
     }),
     ...snapshotPresetState(loaded.records),
+    modelSettings: modelSettingsOf(loaded.records).map((record) => ({ ...record })),
+    hostModels: discovered.hostModels.map((entry) => ({
+      providerID: entry.providerID,
+      modelID: entry.modelID,
+      variants: [...entry.variants],
+      ...(entry.warming === undefined ? {} : { warming: { ...entry.warming } }),
+    })),
     listing: listing.map((entry) => ({
       ref: entry.ref.kind === "member" ? { kind: "member" as const, team: entry.ref.team, id: entry.ref.id } : { kind: entry.ref.kind, id: entry.ref.id },
       origin: entry.origin,

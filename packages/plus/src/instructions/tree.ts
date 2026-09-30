@@ -8,7 +8,7 @@ import {
   hasModelActiveAt,
   modelCandidates,
   modelRuntimeScope,
-  resolveModelWarming,
+  resolveModelFields,
   modelItemId,
   parseModelItemId,
   presetKey,
@@ -35,6 +35,22 @@ import type {
   TeamRef,
 } from "./model.js"
 import { fromLabel } from "./from-label.js"
+import {
+  hostModelOf,
+  modelDefaultItemId,
+  modelDefaultKeys,
+  modelDefaultRowId,
+  modelDefaultValue,
+  modelDefaultView,
+  everySettings,
+  settingsFor,
+  MODELS_GROUP_ID,
+  MODELS_OWNER,
+  type HostWarming,
+  type ModelDefaultView,
+  type ModelSettingsKey,
+  type ModelSettingsRecord,
+} from "./model-settings.js"
 import { linkOf, presetOfAddress, type PresetEntry } from "./presets.js"
 import {
   buildMemo,
@@ -164,6 +180,12 @@ export interface TreeNodeBadges {
   /** Model rows: cache warming for this agent and model ("off", "on", "45m" …) and the level that set it. */
   readonly warming?: string
   readonly warmingFrom?: Level
+  /** Model rows: the keep-alive interval ("4m", "3m30s" …) and the level that set it. */
+  readonly interval?: string
+  readonly intervalFrom?: Level
+  /** Model rows: the keep-alive text and the level that set it. */
+  readonly prompt?: string
+  readonly promptFrom?: Level
 }
 
 export interface TreeNodeActions {
@@ -442,6 +464,13 @@ function canDescend(node: Lazy, rowId: string): boolean {
       }
     }
 
+    // Defaults › Models: group:defaults:/models, its rows carry the same
+    // /models owner segment (model-settings.ts).
+    if (node.id === `group:defaults:${MODELS_OWNER}`) {
+      if (rowKind !== "item" && rowKind !== "section") return false
+      return parts[2] === MODELS_OWNER
+    }
+
     // Shared defaults category groups, one set per catalogue:
     // group:defaults::<category> and group:defaults:/teams:<category>.
     if (node.id.startsWith("group:defaults::") || node.id.startsWith(`group:defaults:${teamsOwnerSegment}:`)) {
@@ -635,7 +664,75 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     label: level === "project" ? "Project" : level === "global" ? "Global" : "Defaults",
     depth: 0,
     actions: noActions(),
-    children: () => [lazyAgentsGroup(ctx, memo, level), lazyTeamsGroup(ctx, memo, level)],
+    children: () => [
+      lazyAgentsGroup(ctx, memo, level),
+      ...(level === "defaults" ? [lazyModelsSection(ctx, memo)] : []),
+      lazyTeamsGroup(ctx, memo, level),
+    ],
+  })
+}
+
+// Defaults › Models (model-settings.ts): the model settings every agent falls
+// back to when its own row does not set them. One "Every model" row and one
+// row per model, the models Plus knows from stored rows, agent models and
+// opencode.json warming. Rows edit through modelSettings.set, not the
+// inventory mutate: they are their own surface, not agent rows.
+function lazyModelsSection(ctx: BuildContext, memo: Memo): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: MODELS_GROUP_ID,
+    label: "Models",
+    depth: 1,
+    actions: noActions(),
+    children: () =>
+      [
+        {} as ModelSettingsKey,
+        ...modelDefaultKeys({
+          modelSettings: ctx.modelSettings,
+          models: ctx.models,
+          agents: ctx.agents,
+          hostModels: ctx.hostModels,
+        }),
+      ].map((key) => lazyModelDefault(ctx, memo, key)),
+  })
+}
+
+function modelDefaultLabel(key: ModelSettingsKey): string {
+  return key.providerID === undefined || key.modelID === undefined ? "Every model" : `${key.providerID}/${key.modelID}`
+}
+
+function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey): Lazy {
+  const item = modelDefaultItemId(key)
+  const record = settingsFor(ctx.modelSettings, key)
+  const address: Address = { level: "defaults", agent: null, item, section: null }
+  const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
+  const view = (): ModelDefaultView =>
+    modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+  return {
+    id: modelDefaultRowId(key),
+    kind: "item",
+    label: modelDefaultLabel(key),
+    depth: 2,
+    address,
+    actions: { toggle: false, edit: true, reset: record !== undefined, remove: record !== undefined, split: false, pin: false },
+    selfReview: () => false,
+    partial: () => ({ value: modelDefaultValue(view()), ...(record === undefined ? {} : { modified: true as const }) }),
+    reviewCount: () => 0,
+    children: () => [],
+  }
+}
+
+function modelDefaultViewOf(
+  record: ModelSettingsRecord | undefined,
+  every: ModelSettingsRecord | undefined,
+  host: HostWarming | undefined,
+  variants: readonly string[] | undefined,
+): ModelDefaultView {
+  return modelDefaultView({
+    ...(record === undefined ? {} : { record }),
+    ...(every === undefined ? {} : { every }),
+    ...(host === undefined ? {} : { host }),
+    ...(variants === undefined ? {} : { variants }),
   })
 }
 
@@ -1608,7 +1705,7 @@ function lazyModelItem(
     // row's own level: a review belongs to the level that chose the model.
     selfReview: () => isActive && active?.review === true && active.source === level,
     partial: () => {
-      const warming = resolveModelWarming(
+      const fields = resolveModelFields(
         { models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) },
         target,
       )
@@ -1619,7 +1716,9 @@ function lazyModelItem(
         source: candidate.source,
         from: candidate.from,
         fromLabel: fromLabel(candidate.from, { labels: ctx.labels, level, ...ownOption(ctx, level, owner, teamRef) }),
-        ...(warming === undefined ? {} : { warming: warming.value, warmingFrom: warming.level }),
+        ...(fields.warming === undefined ? {} : { warming: fields.warming.value, warmingFrom: fields.warming.level }),
+        ...(fields.interval === undefined ? {} : { interval: fields.interval.value, intervalFrom: fields.interval.level }),
+        ...(fields.prompt === undefined ? {} : { prompt: fields.prompt.value, promptFrom: fields.prompt.level }),
       }
     },
     reviewCount: () => 0,

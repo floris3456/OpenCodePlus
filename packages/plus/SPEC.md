@@ -13,13 +13,19 @@ roots holds exactly two **catalogues**, `Agents` (`group:<level>:agents`,
 `[a: add agent]`) and `Teams` (`group:<level>:teams`, `[a: add team]`). A
 catalogue owns its population and, at `Defaults`, its own shared inventory, and
 a row resolved through one catalogue never reads the other's inventory
-(`model.ts` `resolutionChain`).
+(`model.ts` `resolutionChain`). `Defaults` additionally holds the
+agent-independent **Models** section (`group:defaults:/models`,
+`model-settings.ts`): the model settings every agent falls back to when its own
+model row does not set them, so it is not a catalogue and owns no inventory.
 
 ```
 Defaults
   Agents                                    group:defaults:agents
     OpenCode / Special / Plus / User        (unchanged agent subtrees)
     Models · Tools · Base · Skills · System · MCP     group:defaults::<category>
+  Models                                    group:defaults:/models
+    Every model                             item:defaults:/models:modeldefault:*
+    <provider>/<model>                      item:defaults:/models:modeldefault:<provider>/<model>
   Teams                                     group:defaults:teams
     <team> > <member>                       (unchanged team subtrees)
     Models · Tools · Base · Skills · System · MCP     group:defaults:/teams:<category>
@@ -195,6 +201,7 @@ title `Preset`) groups its options by `category`: `Agent presets · OpenCode`,
 | a User team preset row | prompt `Member name` → `Preset` | `preset.addMember {team, id, from?}` |
 | any Models group (agent, member, entry, preset, member preset) | `Model provider` → `Model` (→ `Variant`) | `model.add` at the group's owner, team-scoped where its rows are |
 | enter on a model row | `Model` (`provider/model`, prefilled, validated against `catalog.models`) → `Variant` (prefilled, empty = none) → `Cache warming` (prefilled with the local value, placeholder the inherited one) | `ops.ts` `editModelRow` content saved through `instructions.mutate`; an inherited/upstream row plants a local record, the effective model stays effective |
+| enter on a Defaults › Models row | `Warming` → `Ping every` → `Keep-alive prompt` → `Effort`, each prefilled with the row's own value and the effective one as placeholder; empty clears | `modelSettings.set` (`{ providerID?, modelID?, warming?, interval?, prompt?, effort? }`, strings set, `null` clears, absent leaves); a row left with no field is removed |
 | outside Project/Global (generic `Add` → Agent/Team) | … then `Agent scope` / `Team scope` last | as above |
 
 A created row is revealed (`state.reveal`: its ancestors expand and it is
@@ -300,7 +307,10 @@ names state and text sources (`state and text: from preset Orchestrator`,
 level named when the row's own source differs), `warming <value> · set at
 <level>` or `host configuration (enter edits it here)`, and `effective
 <model> · active at <level>` when the group's effective model is not one of
-its rows. The Models group also notes that with nothing active OpenCode falls
+its rows. Defaults › Models rows add `warming`, `ping every`, `keep-alive`,
+`effort` and `applies to`, each value with the layer it came from
+(`Defaults › Models (this model)`, `Every model`, `opencode.json (… )`,
+`built-in default`). The Models group also notes that with nothing active OpenCode falls
 back to its host configuration, removed rows included. Owner rows add `preset`
 (`Orchestrator (Plus)`, or `No preset`; nothing for
 a shipped preset of its own). Defaults entry rows add what they match
@@ -440,8 +450,8 @@ group carries `badges.effective` (`<model> · active at <level>`, on its rows
 too) and no row reads active. Toggle activates exclusively at this level (creating the local
 row when the candidate is inherited); `d` deletes a live local record or
 hides an inherited/upstream row with a tombstone; the effective row refuses;
-enter (`editModelRow`) replaces the candidate and sets its warming; no split
-or pin.
+enter (`editModelRow`) replaces the candidate and sets its warming, ping
+interval and keep-alive prompt; no split or pin.
 
 Tool rows (`tree.ts` `lazyItem`, `toolPermissions`): every tool row, Code
 Mode and MCP included, expands into Description and Permissions.
@@ -862,12 +872,16 @@ export function modelRuntimeScope(input: { scopes: Scopes; level: Level; owner: 
   `removeModelRow`) read the same chain.
 - Cache warming per agent and model: a model record may carry `warming`
   (`"off"`, `"on"`, or a total time `"45m"`, `"2h"`, `"1h30m"`; 1m to 24h,
-  canonicalised by `parseWarming`/`formatWarming`). `resolveModelWarming`
-  returns the first record down the agent's resolution chain for that model
-  (same variant first, then the variant-less row) that sets it, with its
-  level. `setModelWarming` sets or clears it at one address, planting an
-  inactive candidate when the model is only inherited there. See "Cache
-  warming" below.
+  canonicalised by `parseWarming`/`formatWarming`), `interval` (`"4m"`,
+  `"3m30s"`; 30s to 24h, `parseInterval`/`formatDuration`) and `prompt` (the
+  keep-alive text). `resolveModelWarming`/`resolveModelField` return the
+  first record down the agent's resolution chain for that model (same variant
+  first, then the variant-less row) that sets a field, with its level;
+  `setModelSettings` (and `setModelWarming` for the one field) sets or clears
+  fields at one address, planting an inactive candidate when the model is
+  only inherited there. The Defaults › Models rows are the same three fields
+  and `effort` on `ModelSettingsRecord` (`model-settings.ts`), resolved after
+  the agent rows and before `opencode.json`. See "Cache warming" below.
 - Active-model review: `activateModel`/`ensureActivateModel` with a
   `ModelContext { scopes, upstream? }` store `basedOn` = the key of the active
   model above (`aboveActiveModelKey`, "" when none); `resolveActiveModel`
@@ -933,7 +947,7 @@ export interface SplitRecord {
 }
 export type StoredRecord =
   | CustomizationRecord | SplitRecord | TeamRecord | ModelRecord | RuleRecord
-  | LinkRecord | EntryRecord | PresetRecord
+  | ModelSettingsRecord | LinkRecord | EntryRecord | PresetRecord
 ```
 
 Preset records (DESIGN §7): `LinkRecord {type:"link", level, agent|null,
@@ -944,10 +958,17 @@ level:"preset", kind:"agent"|"team", id, team?, fields?: {mode?,
 description?}, updated}`. `CustomizationRecord` gains `basedOnState?`,
 `basedOnPin?` (after `acknowledged`); `ModelRecord` gains `basedOn?` (after
 `active`). Level `preset` routes to the global file; team records never carry
-it. Sort keys: links `["link", agent, team, catalogue, level, preset kind,
-preset team, preset id, updated]`, entries `["entry", catalogue, team, name,
-updated]`, presets `["preset", kind, team, id, updated]`. The catalogue
-migration considers only customization, split, model and rule records.
+it. `ModelSettingsRecord {type:"modelSettings", level:"defaults", providerID?,
+modelID?, warming?, interval?, prompt?, effort?, updated}` (both ids absent =
+Every model). Sort keys: links `["link", agent, team, catalogue, level, preset
+kind, preset team, preset id, updated]`, entries `["entry", catalogue, team,
+name, updated]`, presets `["preset", kind, team, id, updated]`,
+`modelSettings` `["modelSettings", providerID ?? "", modelID ?? "", updated]`.
+A `modelSettings` record always routes to the global file (level
+`defaults`), is carried over by `instructions.mutate` like links, entries,
+presets and teams, and crosses the snapshot in its own `modelSettings` field.
+The catalogue migration considers only customization, split, model and rule
+records.
 The snapshot carries links, entries and user presets in their own fields
 (`Snapshot.links`, `.entries`, `.presets`), never in `records`, and
 `instructions.mutate` re-merges the stored ones like team records, so a client
@@ -1029,6 +1050,8 @@ export interface ModelRecord {
   readonly active?: true
   readonly basedOn?: string
   readonly warming?: string
+  readonly interval?: string
+  readonly prompt?: string
   readonly removed?: true
   readonly updated: string
 }
@@ -1132,6 +1155,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `model.add` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.exists`, `model.invalid`, `agent.protected` |
 | `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.missing`, `model.invalid`, `agent.protected` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | — |
+| `modelSettings.set` | `{ providerID?, modelID?, warming?, interval?, prompt?, effort? }` (strings set, `null` clears, absent leaves; no ids = Every model) | `SetModelSettingsOutput` (`{ record: SnapshotModelSettingsRecord \| null, revision, globalRevision }`) | `modelSettings.invalid` |
 | `warming.status` | `{ sessionID }` | `WarmingStatus` (`{ sessionID, chat: on\|off\|default, active, source?, level?, since?, expires?, interval?, lastWarm?, now }`) | — |
 | `warming.set` | `{ sessionID, chat: on\|off\|default }` | `WarmingStatus` | — |
 | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
@@ -1271,19 +1295,28 @@ Events: `instructions.changed`, `teams.changed`, `warming.changed` (`{ sessionID
 
 Core keeps a chat's provider prompt cache warm with keep-alive requests after
 its latest real request (core `warming` configuration, default interval 4
-minutes, total time 30 minutes). Plus decides it per chat through core's
-session `warming` hook, which runs when a real request starts the window
-(`activity`) and before each keep-alive request (`warm`):
+minutes, total time 30 minutes; built-in warming is off until a row or the
+configuration turns it on). Plus decides it per chat through core's session
+`warming` hook, which runs when a real request starts the window (`activity`)
+and before each keep-alive request (`warm`). Each field — the warming time
+that also decides on/off, the ping interval and the keep-alive prompt —
+resolves down the layers, most specific first:
 
-1. the per-chat switch (`warming.set`, TUI `<leader>k`): `off` stops warming,
-   `on` warms with the configured settings (core defaults when the
-   configuration leaves warming off);
-2. else the agent's model row (`ModelRecord.warming`, resolved down the
-   agent's chain for the chat's current model): `off` stops it, `on` or a total
-   time turns it on, a total time replacing the configured duration;
-3. else the host configuration core proposed, unchanged.
+1. the per-chat switch (`warming.set`, TUI `<leader>k`): `off` stops warming;
+   `on` warms with the rows' durations, interval and prompt over the built-in
+   defaults when nothing else enables them;
+2. the agent's model row (`ModelRecord.warming`, `interval`, `prompt`, each
+   resolved down the agent's chain for the chat's current model): `off` stops
+   it, `on` or a total time turns it on, a total time replacing the
+   configured duration;
+3. Defaults › Models › `<that model>`, then Defaults › Models › Every model
+   (`ModelSettingsRecord.warming`, `interval`, `prompt`);
+4. else the host configuration core proposed (provider and model
+   `opencode.json` settings, then its top-level `warming`), unchanged;
+5. else the built-in defaults (`WARMING_DEFAULTS`: 4 minutes, 30 minutes,
+   the fixed keep-alive text) and the built-in `on: false`.
 
-A total time on the model row also applies when the chat switch is `on`.
+A total time on any row also applies when the chat switch is `on`.
 Changes reach a running window before its next keep-alive request; a window
 is only started by a real request. The switch persists per session in
 `$XDG_DATA_HOME/opencodeplus/warming/chats.json` (newest 500). `warming.status`
@@ -1320,7 +1353,11 @@ rows the server enforces;
 `AssembledTool` carries `codemode`, `pinned`. `SnapshotRecord` is the union
 of `SnapshotCustomizationRecord`, `SnapshotSplitRecord`,
 `SnapshotModelRecord` (`{ type: "model", level, agent, team?: { level, team }, providerID, modelID,
-variant?, active?: true, basedOn?, warming?, removed?: true, updated }`), and `SnapshotRuleRecord`
+variant?, active?: true, basedOn?, warming?, interval?, prompt?, removed?: true, updated }`),
+`modelSettings` (`SnapshotModelSettingsRecord[]`, server-owned like `teams`: `{ type:
+"modelSettings", level: "defaults", providerID?, modelID?, warming?, interval?, prompt?, effort?, updated }`),
+`hostModels` (`SnapshotHostModel[]`: `{ providerID, modelID, variants: string[], warming?: { on,
+duration?, interval?, prompt? } }`, the catalog's per-model opencode.json value), and `SnapshotRuleRecord`
 (`{ type: "rule", level, agent, team?: { level, team }, tool, id, label, patterns, keywords,
 message?, updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "plus" |
 "user"`, computed server-side), `model?` (`{ providerID, modelID,

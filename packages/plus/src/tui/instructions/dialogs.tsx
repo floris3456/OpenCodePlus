@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
-import { parseModelItemId, parsePermItemId } from "../../instructions/model.js"
+import { formatDuration, parseModelItemId, parsePermItemId } from "../../instructions/model.js"
+import { fromWords, isModelDefaultRowId, parseModelDefaultItemId } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
@@ -101,6 +102,62 @@ export function createInstructionsDialogs(
     return addMcp()
   }
 
+  // Enter on a Defaults › Models row: the warming time, the interval between
+  // pings, the keep-alive text and the default effort (variant). Prefilled with
+  // the row's own values; an empty answer clears that field so the level below
+  // decides, with the effective value shown as the placeholder.
+  async function editModelSettings(node: TreeNode): Promise<void> {
+    if (disposed) return
+    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    if (key === undefined || !isModelDefaultRowId(node.id)) {
+      context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
+      return
+    }
+    const current = await currentSnapshot()
+    if (disposed || current === undefined) return
+    const effective = state.modelDefaultsView(node)
+    if (effective === undefined) return
+    const own = effective.record
+    const rawWarming = await context.ui.dialog.prompt({
+      title: `Warming · ${node.label}`,
+      description: `off, on, or the total time to keep the cache warm after the last reply (1m to 24h). Empty inherits. Now: ${effective.on.value ? formatDuration(effective.duration.value) : "off"} (${fromWords(effective.on.from)}).`,
+      value: own?.warming ?? "",
+      placeholder: effective.on.value ? formatDuration(effective.duration.value) : "off",
+    })
+    if (disposed || rawWarming === undefined) return
+    const rawInterval = await context.ui.dialog.prompt({
+      title: `Ping every · ${node.label}`,
+      description: `Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT. Empty inherits. Now: ${formatDuration(effective.interval.value)} (${fromWords(effective.interval.from)}).`,
+      value: own?.interval ?? "",
+      placeholder: formatDuration(effective.interval.value),
+    })
+    if (disposed || rawInterval === undefined) return
+    const rawPrompt = await context.ui.dialog.prompt({
+      title: `Keep-alive prompt · ${node.label}`,
+      description: "The text of the keep-alive request. Empty inherits.",
+      value: own?.prompt ?? "",
+      placeholder: effective.prompt.value,
+    })
+    if (disposed || rawPrompt === undefined) return
+    const variants =
+      key.providerID === undefined || key.modelID === undefined
+        ? []
+        : ((current.hostModels ?? []).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)?.variants ?? [])
+    const rawEffort = await context.ui.dialog.prompt({
+      title: `Effort · ${node.label}`,
+      description: `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}. Empty inherits.`,
+      value: own?.effort ?? "",
+      placeholder: effective.effort?.value ?? "",
+    })
+    if (disposed || rawEffort === undefined) return
+    await state.editModelSettings(node, {
+      warming: rawWarming.trim().length === 0 ? null : rawWarming.trim(),
+      interval: rawInterval.trim().length === 0 ? null : rawInterval.trim(),
+      prompt: rawPrompt.trim().length === 0 ? null : rawPrompt.trim(),
+      effort: rawEffort.trim().length === 0 ? null : rawEffort.trim(),
+    })
+  }
+
   // enter on a model row: the model (prefilled, validated against the host
 // catalog), the variant/effort (prefilled, empty = none), and cache warming
 // (off, on, a total time, or blank to inherit — the inherited value shows as
@@ -167,11 +224,33 @@ async function editModel(node: TreeNode): Promise<void> {
   })
   if (disposed) return
   if (rawWarming === undefined) return
+  const localInterval = node.badges.intervalFrom === address.level ? node.badges.interval : undefined
+  const rawInterval = await context.ui.dialog.prompt({
+    title: `Ping every · ${node.label}`,
+    description: `Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT. Blank inherits${
+      node.badges.interval === undefined || localInterval !== undefined ? "" : ` ${node.badges.interval} from ${displayLevel(node.badges.intervalFrom ?? "project")}`
+    }.`,
+    value: localInterval ?? "",
+    placeholder: node.badges.interval ?? "",
+  })
+  if (disposed) return
+  if (rawInterval === undefined) return
+  const localPrompt = node.badges.promptFrom === address.level ? node.badges.prompt : undefined
+  const rawPrompt = await context.ui.dialog.prompt({
+    title: `Keep-alive prompt · ${node.label}`,
+    description: `The text of the keep-alive request. Blank inherits${localPrompt !== undefined || node.badges.prompt === undefined ? "" : " the value below"}.`,
+    value: localPrompt ?? "",
+    placeholder: node.badges.prompt ?? "",
+  })
+  if (disposed) return
+  if (rawPrompt === undefined) return
   await state.editModel(node, {
     providerID,
     modelID,
     ...(variant.length === 0 ? {} : { variant }),
     warming: rawWarming,
+    interval: rawInterval,
+    prompt: rawPrompt,
   })
 }
 
@@ -1036,7 +1115,7 @@ async function editModel(node: TreeNode): Promise<void> {
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, addRule, editRule, relink, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSettings, addRule, editRule, relink, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

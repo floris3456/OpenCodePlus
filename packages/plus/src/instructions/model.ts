@@ -863,6 +863,8 @@ function cleared(record: ModelRecord): ModelRecord {
     modelID: record.modelID,
     ...(record.variant === undefined ? {} : { variant: record.variant }),
     ...(record.warming === undefined ? {} : { warming: record.warming }),
+    ...(record.interval === undefined ? {} : { interval: record.interval }),
+    ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
     updated: record.updated,
   }
@@ -921,6 +923,10 @@ export interface ModelRecord {
   readonly basedOn?: string
   /** Cache warming for this agent on this model: "off", "on", or a total time such as "45m" or "2h"; absent inherits. */
   readonly warming?: string
+  /** Time between keep-alive requests, such as "4m" or "3m30s"; absent inherits (Defaults › Models, then the host). */
+  readonly interval?: string
+  /** The keep-alive request's text; absent inherits. */
+  readonly prompt?: string
   /**
    * Tombstone: `d` on an inherited or upstream candidate hides it at this
    * level without touching the source level. A tombstone is never active and
@@ -1914,14 +1920,50 @@ export function formatDuration(ms: number): string {
   return text.length === 0 ? "0s" : text
 }
 
-// Set (or with undefined clear) warming on the candidate at this address,
+// Keep-alive interval: the idle time between two keep-alive requests, in
+// whole hours, minutes and seconds ("4m", "3m30s", "25m"). It has to stay
+// under the provider's cache lifetime (5 minutes for a default Anthropic
+// cache, 30 minutes for GPT-5.6's) or every ping arrives at a cold cache.
+export const INTERVAL_MIN_MS = 30 * 1000
+
+export function parseInterval(text: string): { readonly interval: number } | { readonly error: string } {
+  const value = text.trim().toLowerCase().replaceAll(" ", "")
+  const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value)
+  if (match === null || value.length === 0)
+    return { error: `"${text.trim()}" is not an interval: use a time such as 4m, 3m30s or 25m` }
+  const interval = (Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)) * 1000
+  if (interval < INTERVAL_MIN_MS) return { error: `Interval must be at least 30s, got "${text.trim()}"` }
+  if (interval > WARMING_MAX_MS) return { error: `Interval must be at most 24h, got "${text.trim()}"` }
+  return { interval }
+}
+
+export const PROMPT_MAX_LENGTH = 2000
+
+/** The keep-alive text: any non-empty text up to 2000 characters, trimmed. */
+export function parsePrompt(text: string): { readonly prompt: string } | { readonly error: string } {
+  const prompt = text.trim()
+  if (prompt.length === 0) return { error: "The keep-alive prompt cannot be empty" }
+  if (prompt.length > PROMPT_MAX_LENGTH) return { error: `The keep-alive prompt must be at most ${PROMPT_MAX_LENGTH} characters` }
+  return { prompt }
+}
+
+/** The warming fields a model row carries. */
+export type ModelWarmingField = "warming" | "interval" | "prompt"
+
+/**
+ * One save's warming fields in stored form: a string sets the field, `null`
+ * clears it (the level below decides again), absent leaves it alone.
+ */
+export type ModelWarmingFields = { readonly [field in ModelWarmingField]?: string | null }
+
+// Set (or with null clear) warming fields on the candidate at this address,
 // planting an inactive candidate row when the model is only inherited here.
-// Clearing where no record here sets warming returns an identical list.
-export function setModelWarming(
+// Clearing only fields no record here sets returns an identical list.
+export function setModelSettings(
   models: readonly ModelRecord[],
   address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
-  warming: string | undefined,
+  fields: ModelWarmingFields,
   updated: string,
 ): ModelRecord[] {
   const wanted = (record: ModelRecord) =>
@@ -1930,40 +1972,67 @@ export function setModelWarming(
     record.providerID === target.providerID &&
     record.modelID === target.modelID &&
     record.variant === target.variant
-  if (warming === undefined && !models.some((record) => wanted(record) && record.warming !== undefined)) return [...models]
+  const named = (Object.keys(fields) as ModelWarmingField[]).filter((field) => fields[field] !== undefined)
+  const sets = named.some((field) => fields[field] !== null)
+  const clears = named.filter((field) => fields[field] === null)
+  if (!sets && !models.some((record) => wanted(record) && clears.some((field) => record[field] !== undefined))) return [...models]
   return addModelRecord(models, address, target, updated).map((record) => {
     if (!wanted(record)) return record
-    if (warming !== undefined) return { ...record, warming, updated }
-    return {
-      type: "model" as const,
-      level: record.level,
-      agent: record.agent,
-      ...(record.team !== undefined ? { team: record.team } : {}),
-      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
-      providerID: record.providerID,
-      modelID: record.modelID,
-      ...(record.variant === undefined ? {} : { variant: record.variant }),
-      ...(record.active === undefined ? {} : { active: record.active }),
-      ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
-      updated,
-    }
+    const next = named.reduce<ModelRecord>((acc, field) => {
+      const value = fields[field]
+      if (value === null) return withoutField(acc, field)
+      return { ...acc, [field]: value }
+    }, record)
+    return { ...next, updated }
   })
 }
 
+function withoutField(record: ModelRecord, field: ModelWarmingField): ModelRecord {
+  return {
+    type: "model",
+    level: record.level,
+    agent: record.agent,
+    ...(record.team !== undefined ? { team: record.team } : {}),
+    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+    providerID: record.providerID,
+    modelID: record.modelID,
+    ...(record.variant === undefined ? {} : { variant: record.variant }),
+    ...(record.active === undefined ? {} : { active: record.active }),
+    ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
+    ...(field === "warming" || record.warming === undefined ? {} : { warming: record.warming }),
+    ...(field === "interval" || record.interval === undefined ? {} : { interval: record.interval }),
+    ...(field === "prompt" || record.prompt === undefined ? {} : { prompt: record.prompt }),
+    ...(record.removed === undefined ? {} : { removed: record.removed }),
+    updated: record.updated,
+  }
+}
+
+/** setModelSettings for the warming time alone; undefined clears it. */
+export function setModelWarming(
+  models: readonly ModelRecord[],
+  address: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+  warming: string | undefined,
+  updated: string,
+): ModelRecord[] {
+  return setModelSettings(models, address, target, { warming: warming ?? null }, updated)
+}
+
 /**
- * The warming value for `target` down the agent's resolution chain: the first
+ * One warming field for `target` down the agent's resolution chain: the first
  * record for that model (same variant, else the variant-less row) that sets
- * warming. Undefined when nothing on the chain sets it.
+ * it. Undefined when nothing on the chain sets it.
  */
-export function resolveModelWarming(
+export function resolveModelField(
   input: ModelInput,
   target: ModelRefLike,
+  field: ModelWarmingField,
 ): { readonly value: string; readonly level: Level } | undefined {
   const hidden = hiddenKeys(input)
   if (hidden.has(modelKey(target))) return undefined
   const matches = (record: ModelRecord, variant: string | undefined) =>
     record.removed !== true &&
-    record.warming !== undefined &&
+    record[field] !== undefined &&
     record.providerID === target.providerID &&
     record.modelID === target.modelID &&
     record.variant === variant
@@ -1973,7 +2042,28 @@ export function resolveModelWarming(
     const found =
       scoped.find((record) => matches(record, target.variant)) ??
       (target.variant === undefined ? undefined : scoped.find((record) => matches(record, undefined)))
-    if (found?.warming !== undefined) return { value: found.warming, level: node.level }
+    const value = found?.[field]
+    if (value !== undefined) return { value, level: node.level }
   }
   return undefined
+}
+
+/** The warming time for `target` down the agent's chain (resolveModelField for `warming`). */
+export function resolveModelWarming(
+  input: ModelInput,
+  target: ModelRefLike,
+): { readonly value: string; readonly level: Level } | undefined {
+  return resolveModelField(input, target, "warming")
+}
+
+export type ResolvedModelFields = { readonly [field in ModelWarmingField]?: { readonly value: string; readonly level: Level } }
+
+/** Every warming field the agent's chain sets for `target`, each with the level that set it. */
+export function resolveModelFields(input: ModelInput, target: ModelRefLike): ResolvedModelFields {
+  return Object.fromEntries(
+    (["warming", "interval", "prompt"] as const).flatMap((field) => {
+      const found = resolveModelField(input, target, field)
+      return found === undefined ? [] : [[field, found]]
+    }),
+  )
 }

@@ -243,14 +243,14 @@ test("model.add writes a Teams-catalogue shared row only when asked", async () =
   expect(rules.find((record) => record.type === "rule" && record.id === "no-rm")?.catalogue).toBeUndefined()
 })
 
-test("collapsed roots still expand into the two catalogues", () => {
+test("collapsed roots still expand into the two catalogues and the Models section", () => {
   const rows = tree({ items: [bashItem()], records: [], agents: agents(), expanded: new Set(["root:defaults"]) })
   // Presets is the last root: Defaults' own rows are the ones before it.
   const defaults = rows.slice(
     rows.findIndex((row) => row.id === "root:defaults") + 1,
     rows.findIndex((row) => row.id === "root:preset"),
   )
-  expect(defaults.map((row) => row.id)).toEqual(["group:defaults:agents", "group:defaults:teams"])
-  expect(defaults.map((row) => row.depth)).toEqual([1, 1])
+  expect(defaults.map((row) => row.id)).toEqual(["group:defaults:agents", "group:defaults:/models", "group:defaults:teams"])
+  expect(defaults.map((row) => row.depth)).toEqual([1, 1, 1])
   expect(rows.at(-1)?.id).toBe("root:preset")
 })

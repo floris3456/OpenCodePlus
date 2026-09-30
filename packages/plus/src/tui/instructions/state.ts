@@ -15,7 +15,13 @@ import type {
 } from "../../instructions/model.js"
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
 import { buildTreeMemo, controlChoices, treeOf, withControlItems, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
-import { agentOf, contextOfSnapshot, itemOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
+import {
+  isModelDefaultRowId,
+  parseModelDefaultItemId,
+  type HostModel,
+  type ModelSettingsRecord,
+} from "../../instructions/model-settings.js"
+import { agentOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, modelSettingsRecordOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
   addSection,
@@ -42,7 +48,7 @@ import {
   type StateReviewChoice,
 } from "../../instructions/ops.js"
 import { matchedTree, query } from "../../instructions/query.js"
-import { Definition, type Snapshot, type SnapshotRecord } from "../../rpc.js"
+import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 
 export type { TreeNode }
@@ -123,6 +129,8 @@ export function toRpcRecords(
         ...(record.active === undefined ? {} : { active: record.active }),
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         ...(record.warming === undefined ? {} : { warming: record.warming }),
+        ...(record.interval === undefined ? {} : { interval: record.interval }),
+        ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
         ...(record.removed === undefined ? {} : { removed: record.removed }),
         updated: record.updated,
       }),
@@ -188,6 +196,18 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       ...teamOf(team),
       ...(team.overlay !== undefined ? { overlay: [...team.overlay] } : {}),
     }))
+  })
+
+  const modelSettingsForTree = createMemo<ModelSettingsRecord[]>(() => {
+    const current = snapshot()
+    if (!current) return []
+    return (current.modelSettings ?? []).map(modelSettingsRecordOf)
+  })
+
+  const hostModelsForTree = createMemo<HostModel[]>(() => {
+    const current = snapshot()
+    if (!current) return []
+    return (current.hostModels ?? []).map(hostModelOf)
   })
 
   const presetStateForTree = createMemo<PresetState>(() => {
@@ -398,6 +418,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       records: recordsForTree(),
       agents: agentsForTree(),
       teams: teamsForTree(),
+      modelSettings: modelSettingsForTree(),
+      hostModels: hostModelsForTree(),
       ...presetStateForTree(),
     }
   }
@@ -545,6 +567,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   async function resetNode(node: TreeNode): Promise<boolean> {
+    if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
     if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = resetModelRow(memoInput(), node.id, treeMemo())
@@ -672,6 +695,47 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persistModels(result.models, result.status, result.retryHint)
   }
 
+  /** What a Defaults › Models row resolves to now, for the inspector and its edit dialog. */
+  function modelDefaultsView(node: TreeNode) {
+    const current = snapshot()
+    return current === undefined ? undefined : modelDefaultsViewOf(current, node.address?.item)
+  }
+
+  // Enter on a Defaults › Models row: set or clear its fields through
+  // modelSettings.set. The rows are server-owned (a separate snapshot field),
+  // so this is its own call, not the inventory mutate.
+  async function editModelSettings(
+    node: TreeNode,
+    fields: { warming?: string | null; interval?: string | null; prompt?: string | null; effort?: string | null },
+  ): Promise<boolean> {
+    const current = snapshot()
+    if (!current) {
+      setStatus("No snapshot loaded")
+      return false
+    }
+    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    if (key === undefined) {
+      setStatus(`"${node.label}" is not a Defaults › Models row`)
+      return false
+    }
+    const requestGen = ++generation
+    setLoading(true)
+    try {
+      const result = await plus["modelSettings.set"]({ ...key, ...fields }, { location: context.location })
+      if (disposed || requestGen !== generation) return false
+      setSnapshot(await plus["instructions.snapshot"](undefined, { location: context.location }))
+      if (disposed) return false
+      setStatus(defaultsStatus(node.label, result.record))
+      return true
+    } catch (error: unknown) {
+      if (disposed || requestGen !== generation) return false
+      setStatus(errorMessage(error))
+      return false
+    } finally {
+      if (!disposed && requestGen === generation) setLoading(false)
+    }
+  }
+
   async function resolveEdit(node: TreeNode, edited: string): Promise<boolean> {
     if (blockedControlWrite(node)) return false
     const result = resolveReview(memoInput(), node.id, "edit", edited, undefined, treeMemo())
@@ -715,6 +779,21 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // every item and section row so refusals reach the user as status text;
   // rows without remove actions never delete.
   async function remove(node: TreeNode): Promise<boolean> {
+    if (isModelDefaultRowId(node.id)) {
+      if (node.actions?.remove !== true) {
+        setStatus(`"${node.label}" has no Defaults › Models values to clear`)
+        return false
+      }
+      const confirmed = await context.ui.dialog.confirm({
+        title: `Clear "${node.label}"?`,
+        message: `Clear the Defaults › Models values for "${node.label}"? Warming then follows the level below it again.`,
+      })
+      if (confirmed !== true) {
+        setStatus(`Delete of "${node.label}" cancelled`)
+        return false
+      }
+      return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
+    }
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = removeModelRow(memoInput(), node.id, treeMemo())
       if ("refusal" in result) {
@@ -912,6 +991,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     modelReview,
     resolveModel,
     editModel,
+    editModelSettings,
+    modelDefaultsView,
     reveal,
     revealed,
     treeWith,
@@ -926,6 +1007,17 @@ export type InstructionsState = ReturnType<typeof createInstructionsState>
 
 function now(): string {
   return new Date().toISOString()
+}
+
+function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord | null): string {
+  if (record === null) return `Defaults › Models "${label}" inherits`
+  const set = [
+    ...(record.warming === undefined ? [] : [`warming ${record.warming}`]),
+    ...(record.interval === undefined ? [] : [`every ${record.interval}`]),
+    ...(record.prompt === undefined ? [] : ["a prompt"]),
+    ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
+  ]
+  return `Defaults › Models "${label}": ${set.join(", ")}`
 }
 
 function errorMessage(error: unknown): string {

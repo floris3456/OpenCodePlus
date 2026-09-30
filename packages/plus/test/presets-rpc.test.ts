@@ -553,7 +553,10 @@ test("agent.rename moves the agent's link and its own records to the new id", as
   await Effect.runPromise(handlers["agent.rename"]({ scope: "project", from: "alice", to: "Alice-2" }, throwingContext()))
   const records = await stored(project)
   const owners = records
-    .filter((record) => record.type !== "team" && record.type !== "entry" && record.type !== "preset")
+    .filter(
+      (record) =>
+        record.type !== "team" && record.type !== "entry" && record.type !== "preset" && record.type !== "modelSettings",
+    )
     .map((record) => `${record.type} ${record.level}/${record.agent}${record.team === undefined ? "" : `@${record.team.team}`}`)
     .toSorted()
   expect(owners).toEqual(

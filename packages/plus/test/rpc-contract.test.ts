@@ -54,6 +54,7 @@ test("every method and event is declared", () => {
     "link.set",
     "warming.status",
     "warming.set",
+    "modelSettings.set",
     "monitor.query",
     "monitor.mark",
   ]

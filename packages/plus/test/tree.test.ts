@@ -175,10 +175,11 @@ test("identical subtree under each of the three roots", () => {
   }
 })
 
-test("Defaults holds two catalogues, each owning its shared inventories in order", () => {
+test("Defaults holds two catalogues with the Models section between them, each owning its shared inventories in order", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toEqual([
     "group:defaults:agents",
+    "group:defaults:/models",
     "group:defaults:teams",
   ])
   expect(childrenOf(nodes, "group:defaults:agents").map((node) => node.id)).toEqual([
@@ -235,7 +236,7 @@ test("Project and Global hold Agents and Teams groups", () => {
   expect(childrenOf(nodes, "group:global:agents:user").map((node) => node.id)).toEqual(["agent:global:Helper"])
 })
 
-test("Teams group sits beside Agents at all three levels", () => {
+test("Teams group sits beside Agents at Project and Global and after the Models section at Defaults", () => {
   const nodes = expandAll({
     items: items(),
     records: [],
@@ -261,8 +262,9 @@ test("Teams group sits beside Agents at all three levels", () => {
   expect(defaultsGroup?.add).toBe("team")
   expect(childrenOf(nodes, "root:project").map((node) => node.id)).toEqual(["group:project:agents", "group:project:teams"])
   expect(childrenOf(nodes, "root:global").map((node) => node.id)).toEqual(["group:global:agents", "group:global:teams"])
-  expect(childrenOf(nodes, "root:defaults").slice(0, 2).map((node) => node.id)).toEqual([
+  expect(childrenOf(nodes, "root:defaults").map((node) => node.id)).toEqual([
     "group:defaults:agents",
+    "group:defaults:/models",
     "group:defaults:teams",
   ])
   // No Defaults teams here, so the group holds only its own inventory.
@@ -1052,6 +1054,7 @@ test("expansion emits only expanded children", () => {
     "root:global",
     "root:defaults",
     "group:defaults:agents",
+    "group:defaults:/models",
     "group:defaults:teams",
     "root:preset",
   ])
@@ -1072,6 +1075,7 @@ test("expansion emits only expanded children", () => {
     "group:defaults::skills",
     "group:defaults::system",
     "group:defaults::mcp",
+    "group:defaults:/models",
     "group:defaults:teams",
     "root:preset",
   ])

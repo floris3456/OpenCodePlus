@@ -13,6 +13,7 @@ import type {
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
 import { materialize, skeletonOf, teamsOwnerSegment, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
+import { parseModelDefaultItemId } from "./model-settings.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -626,6 +627,8 @@ function itemKindOf(state: QueryState, candidate: Candidate): string | undefined
   if (address === undefined) return undefined
   const item = lookupItem(state, address.item, address.agent, address)
   if (item !== undefined) return item.kind
+  // A Defaults › Models row has no upstream item; its own kind names it.
+  if (parseModelDefaultItemId(address.item) !== undefined) return "modeldefault"
   if (!candidate.orphan) return undefined
   const prefix = address.item.split(":")[0]
   return prefix === undefined || prefix === "" ? undefined : prefix
@@ -1078,7 +1081,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => allowed.some((alt) => candidate.kind === lower(alt))
     }
     case "item": {
-      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "perm", "setting", "compaction"], term)
+      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "perm", "setting", "compaction"], term)
       return (candidate) => allowed.some((alt) => itemKindOf(state, candidate) === lower(alt))
     }
     case "tool": {

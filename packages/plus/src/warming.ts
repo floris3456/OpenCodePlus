@@ -3,13 +3,22 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Product } from "@opencode/util/product"
-import { parseWarming, type Level, type WarmingValue } from "./instructions/model.js"
+import { type Level, type ResolvedModelFields } from "./instructions/model.js"
+import {
+  effectiveWarming,
+  BUILT_IN_BASE,
+  type ModelSettingsRecord,
+  type SettingFrom,
+  type WarmingBase,
+} from "./instructions/model-settings.js"
 
 // Cache warming ("pinging"): core sends keep-alive requests after a chat's
 // last real request so the provider prompt cache stays warm. Plus decides it
-// per chat through the session `warming` hook:
+// per chat through the session `warming` hook, field by field:
 //
-//   per-chat switch (on/off)  >  the agent's model row (off, on, total time)  >  host configuration
+//   per-chat switch (on/off)  >  the agent's model row  >  Defaults › Models
+//   (this model, then Every model)  >  the host configuration core proposed
+//   (opencode.json)  >  built-in defaults
 //
 // and remembers each chat's window so the TUI can count down to its end.
 
@@ -23,28 +32,70 @@ export const WARMING_DEFAULTS: SessionWarmingSettings = {
 export type ChatSwitch = "on" | "off"
 export type WarmingSource = "chat" | "model" | "config"
 
+/** A Plus layer that decided some field: the agent's row, or the Defaults › Models rows. */
+export interface WarmingRows {
+  /** The agent's model row, each field with the level that set it. */
+  readonly row?: ResolvedModelFields
+  /** Defaults › Models › <this model>. */
+  readonly model?: ModelSettingsRecord
+  /** Defaults › Models › Every model. */
+  readonly every?: ModelSettingsRecord
+}
+
 export interface WarmingDecision {
   readonly settings: SessionWarmingSettings | undefined
   readonly source: WarmingSource
+  /** The level whose row decided, when a Plus row did: an agent row's level, or "defaults". */
+  readonly level?: Level
 }
 
 /**
  * The settings Plus hands back to core. `configured` is what core proposes:
  * the host configuration at activity, the settings in force before a warming
- * request. A total time on the model row applies whenever warming runs.
+ * request. Each field resolves down the layers; a total time on any Plus row
+ * applies whenever warming runs.
  */
 export function decideWarming(input: {
   readonly configured: SessionWarmingSettings | undefined
-  readonly row: WarmingValue | undefined
+  readonly rows: WarmingRows
   readonly chat: ChatSwitch | undefined
 }): WarmingDecision {
-  const base = input.configured ?? WARMING_DEFAULTS
-  const duration = input.row?.on === true && input.row.duration !== undefined ? input.row.duration : base.duration
+  const on = input.configured !== undefined || input.chat === "on"
+  const base: WarmingBase =
+    input.configured === undefined ? { ...BUILT_IN_BASE, on } : { on: true, ...input.configured, from: "config" }
+  const effective = effectiveWarming({
+    ...(input.rows.row === undefined ? {} : { row: input.rows.row }),
+    ...(input.rows.model === undefined ? {} : { model: input.rows.model }),
+    ...(input.rows.every === undefined ? {} : { every: input.rows.every }),
+    base,
+  })
+  const level = plusLevel(effective.on, effective.duration, effective.interval, effective.prompt)
   if (input.chat === "off") return { settings: undefined, source: "chat" }
-  if (input.chat === "on") return { settings: { ...base, duration }, source: "chat" }
-  if (input.row === undefined) return { settings: input.configured, source: "config" }
-  if (!input.row.on) return { settings: undefined, source: "model" }
-  return { settings: { ...base, duration }, source: "model" }
+  // The chat switch turns warming on for this window wherever the rows would
+  // leave it off; it still picks up their durations and prompt.
+  if (input.chat === "on")
+    return {
+      settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
+      source: "chat",
+    }
+  const source: WarmingSource = level === undefined ? "config" : "model"
+  if (!effective.on.value) return { settings: undefined, source, ...(level === undefined ? {} : { level }) }
+  return {
+    settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
+    source,
+    ...(level === undefined ? {} : { level }),
+  }
+}
+
+// The most specific Plus layer that decided any displayed field: a level for
+// an agent row, "defaults" for a Defaults › Models row. Undefined when only
+// the host configuration (or the built-in defaults) decided everything.
+function plusLevel(...fields: { readonly from: SettingFrom }[]): Level | undefined {
+  const levels = fields.map((field) => field.from)
+  const agent = levels.find((from): from is Level => from === "project" || from === "global" || from === "defaults" || from === "preset")
+  if (agent !== undefined) return agent
+  if (levels.some((from) => from === "model" || from === "every")) return "defaults"
+  return undefined
 }
 
 export interface WarmingWindow {
@@ -78,7 +129,7 @@ interface Tracked {
 
 export interface WarmingStore {
   /** Decide one hook event and record the chat's window. Returns true when the visible status changed. */
-  decide(event: SessionWarming, row: { readonly value: string; readonly level: Level } | undefined): Promise<boolean>
+  decide(event: SessionWarming, rows: WarmingRows): Promise<boolean>
   status(sessionID: string, now?: number): Promise<WarmingStatus>
   setChat(sessionID: string, chat: ChatSwitch | "default"): Promise<WarmingStatus>
 }
@@ -130,11 +181,9 @@ export function createWarmingStore(file: string = warmingChatsPath()): WarmingSt
     }
   }
   return {
-    async decide(event, row) {
+    async decide(event, rows) {
       const chat = (await load()).get(event.sessionID)
-      const parsed = row === undefined ? undefined : parseWarming(row.value)
-      const value = parsed === undefined || "error" in parsed ? undefined : parsed
-      const decision = decideWarming({ configured: event.settings, row: value, chat })
+      const decision = decideWarming({ configured: event.settings, rows, chat })
       event.settings = decision.settings
       const before = tracked.get(event.sessionID)
       const settings = decision.settings
@@ -154,7 +203,7 @@ export function createWarmingStore(file: string = warmingChatsPath()): WarmingSt
       const next: Tracked = {
         ...(window === undefined ? {} : { window }),
         source: decision.source,
-        ...(decision.source === "model" && row !== undefined ? { level: row.level } : {}),
+        ...(decision.source === "model" && decision.level !== undefined ? { level: decision.level } : {}),
       }
       tracked.set(event.sessionID, next)
       return (

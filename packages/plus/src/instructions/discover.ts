@@ -2,6 +2,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Transform } from "@opencode/plugin/effect/registration"
 import type { Agent } from "@opencode/schema/agent"
 import type { Mcp } from "@opencode/schema/mcp"
+import type { Model } from "@opencode/schema/model"
 import type { Skill } from "@opencode/schema/skill"
 import type { Tool } from "@opencode/schema/tool"
 import { Deferred, Effect } from "effect"
@@ -31,6 +32,7 @@ import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 import { pendingMcpTools, type KnownMcpTools } from "./mcp-tools.js"
+import { decodeHostWarming, type HostModel } from "./model-settings.js"
 
 export type { AgentScope, AgentSource } from "./model.js"
 export type { ModelBaseline, ModelRefLike, PromptBaseline } from "./inventory.js"
@@ -45,6 +47,8 @@ export interface Discovered {
   readonly modelUpstream: ReadonlyMap<string, ModelRefLike | undefined>
   /** Live host agent registry as observed at discovery time. Exported so the publish fingerprint can unmask Plus-installed team output (description/mode) back to upstream instead of reporting it as new inventory. */
   readonly hosts: readonly Agent.Info[]
+  /** Every catalog model with its variants and the host's opencode.json warming, for Defaults › Models. */
+  readonly hostModels: readonly HostModel[]
 }
 
 export interface BaseTemplate {
@@ -195,7 +199,28 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent, inheritedInstructions)),
     ...controlItems(undefined, {}, inheritedInstructions),
   ]
-  return { items, agents: withBase, servers: mcp.servers, bodies, modelUpstream: upstream, hosts: agents }
+  return { items, agents: withBase, servers: mcp.servers, bodies, modelUpstream: upstream, hosts: agents, hostModels: await hostModelsOf(input.ctx) }
+}
+
+/** The catalog's models with their variants and host warming; a catalog that cannot be read contributes nothing. */
+async function hostModelsOf(ctx: Context): Promise<HostModel[]> {
+  const listed = await Effect.runPromise(
+    ctx.model.list().pipe(
+      Effect.catchCause(() =>
+        Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+      ),
+    ),
+  )
+  return listed.data.map((entry) => {
+    const settings = entry.settings as { readonly warming?: unknown } | undefined
+    const warming = decodeHostWarming(settings?.warming)
+    return {
+      providerID: String(entry.providerID),
+      modelID: String(entry.id),
+      variants: (entry.variants ?? []).map((variant) => String(variant.id)),
+      ...(warming === undefined ? {} : { warming }),
+    }
+  })
 }
 
 function unmaskedModel(model: ModelRefLike | undefined): Agent.Info["model"] {

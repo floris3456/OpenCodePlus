@@ -3,6 +3,9 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { fromWords, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { formatDuration } from "../../instructions/model.js"
+import { modelDefaultsViewOf } from "../../instructions/snapshot.js"
 import type { Snapshot } from "../../rpc.js"
 import {
   addressLine,
@@ -55,9 +58,10 @@ export function kindWord(node: TreeNode): string {
   if (node.kind === "agent") return node.owner?.entry !== undefined ? "Defaults entry" : node.owner?.preset !== undefined ? "preset" : "agent"
   if (node.kind === "team") return node.id.includes(":special:") ? "special agent" : node.owner?.agent === null ? "team" : "member"
   if (node.kind === "root") return "level"
-  if (node.kind === "group") return "group"
+  if (node.kind === "group") return node.id === MODELS_GROUP_ID ? "category" : "group"
   if (node.kind === "section") return "section"
   if (item?.startsWith("perm:") === true) return "permission"
+  if (item?.startsWith("modeldefault:") === true) return "model defaults"
   if (item?.startsWith("model:") === true) return "model"
   if (item?.startsWith("tool:") === true) return "tool"
   if (item?.startsWith("skill:") === true) return "skill"
@@ -68,6 +72,19 @@ export function kindWord(node: TreeNode): string {
 
 export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly Row[], memo?: Memo): Fact[] {
   const facts: Fact[] = []
+  const defaults = modelDefaultsView(node, snapshot)
+  if (defaults !== undefined) {
+    facts.push([
+      "warming",
+      defaults.on.value ? `${formatDuration(defaults.duration.value)} · ${fromWords(defaults.duration.from)}` : `off · ${fromWords(defaults.on.from)}`,
+      defaults.on.value ? "value" : undefined,
+    ] as Fact)
+    facts.push(["ping every", `${formatDuration(defaults.interval.value)} · ${fromWords(defaults.interval.from)}`])
+    facts.push(["keep-alive", `${defaults.prompt.value} · ${fromWords(defaults.prompt.from)}`])
+    if (defaults.effort !== undefined) facts.push(["effort", `${defaults.effort.value} · ${fromWords(defaults.effort.from)}`])
+    facts.push(["applies to", defaults.key.providerID === undefined ? "every model" : `${defaults.key.providerID}/${defaults.key.modelID}, unless an agent's own model row sets a field`])
+    return facts
+  }
   if (node.badges.state !== undefined) {
     const locked = node.badges.unexcludable === true || node.badges.unsupported === true
     facts.push(["state", `${node.badges.state}${locked ? " · always live (exclude sections instead)" : ""}`])
@@ -96,6 +113,10 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
         ? "host configuration (enter edits it here)"
         : `${node.badges.warming} · set at ${displayLevel(node.badges.warmingFrom ?? "project")}`,
     ])
+    if (node.badges.interval !== undefined)
+      facts.push(["ping every", `${node.badges.interval} · set at ${displayLevel(node.badges.intervalFrom ?? "project")}`])
+    if (node.badges.prompt !== undefined)
+      facts.push(["keep-alive", `${node.badges.prompt} · set at ${displayLevel(node.badges.promptFrom ?? "project")}`])
   }
   if (node.badges.effective !== undefined) facts.push(["effective", node.badges.effective])
   const perm = permDetail(node, snapshot)
@@ -136,7 +157,23 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
 export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   const notes = controlDetail(node, snapshot, memo).filter((line) => !line.startsWith("Value: "))
   const detail = structureDetail(node)
-  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node)]
+  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot)]
+}
+
+// One Defaults › Models row's resolution order, in words. The agent's row wins
+// field by field; below this row sit opencode.json (per model or provider) and
+// the built-in defaults.
+function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
+  const defaults = modelDefaultsView(node, snapshot)
+  if (defaults === undefined) return []
+  const rows = ["The agent's own model row sets a field first; whatever it leaves out resolves here."]
+  if (defaults.key.providerID !== undefined) rows.push("Below this row: Every model, then opencode.json, then the built-in defaults.")
+  else rows.push("Below this row: opencode.json and the built-in defaults. Enter edits; empty clears a field.")
+  return rows
+}
+
+function modelDefaultsView(node: TreeNode, snapshot: Snapshot) {
+  return modelDefaultsViewOf(snapshot, node.address?.item)
 }
 
 // The Models group's note: what happens when nothing is active, including the

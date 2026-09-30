@@ -30,6 +30,7 @@ import type {
   PresetCreateInput,
   PresetDeleteInput,
   RuleAddInput,
+  SetModelSettingsInput,
   Snapshot,
   TeamAddAgentInput,
 } from "../src/rpc.js"
@@ -45,6 +46,8 @@ export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
     ...(overrides?.entries === undefined ? {} : { entries: overrides.entries }),
     ...(overrides?.presets === undefined ? {} : { presets: overrides.presets }),
     ...(overrides?.teams === undefined ? {} : { teams: overrides.teams }),
+    ...(overrides?.modelSettings === undefined ? {} : { modelSettings: overrides.modelSettings }),
+    ...(overrides?.hostModels === undefined ? {} : { hostModels: overrides.hostModels }),
     ...(overrides?.listing === undefined ? {} : { listing: overrides.listing }),
     servers: overrides?.servers ?? [],
     protectedAgents: overrides?.protectedAgents ?? [],
@@ -142,6 +145,7 @@ export interface FakeRpc {
   readonly presetDeletes: PresetDeleteInput[]
   readonly linkSets: LinkSetInput[]
   readonly modelAdds: ModelAddInput[]
+  readonly modelSettingsSets: SetModelSettingsInput[]
   /** Every toast shown, in order. */
   readonly toasts: { variant?: string; message: string }[]
   /** Full prompt and select inputs (titles, descriptions, options, current), in order. */
@@ -283,6 +287,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     dialogConfirms: [],
     agentSelects: [],
     snapshotCalls: 0,
+    modelSettingsSets: [],
   }
   const promptScript = [...(options.dialogs?.prompts ?? [])]
   const selectScript = [...(options.dialogs?.selects ?? [])]
@@ -430,6 +435,25 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fake.modelAdds.push(input)
           fail("model.add")
           return { level: input.level, agent: input.agent, providerID: input.providerID, modelID: input.modelID }
+        },
+        "modelSettings.set": async (input: SetModelSettingsInput) => {
+          fake.modelSettingsSets.push(input)
+          fail("modelSettings.set")
+          return {
+            record: {
+              type: "modelSettings",
+              level: "defaults",
+              ...(input.providerID === undefined ? {} : { providerID: input.providerID }),
+              ...(input.modelID === undefined ? {} : { modelID: input.modelID }),
+              ...(input.warming === undefined || input.warming === null ? {} : { warming: input.warming }),
+              ...(input.interval === undefined || input.interval === null ? {} : { interval: input.interval }),
+              ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
+              ...(input.effort === undefined || input.effort === null ? {} : { effort: input.effort }),
+              updated: "2026-01-01T00:00:00.000Z",
+            },
+            revision: 1,
+            globalRevision: 1,
+          }
         },
         ...options.rpc,
         events: {

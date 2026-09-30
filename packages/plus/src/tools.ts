@@ -60,6 +60,15 @@ import { controlItemFor, isControl } from "./instructions/agent-controls.js"
 import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
 import type { MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
+import {
+  everySettings,
+  hostModelOf,
+  isModelDefaultRowId,
+  modelDefaultValue,
+  modelDefaultView,
+  parseModelDefaultItemId,
+  settingsFor,
+} from "./instructions/model-settings.js"
 import { presetListing } from "./instructions/presets.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
@@ -81,7 +90,8 @@ const ShowDescription =
   "Resolved rows expose stateFrom and textFrom owner identities separately; from remains the state-source label.\n" +
   "Views: resolved (default), upstream, mine, diff, record, sections, assembled (agent rows only).\n" +
   "Team and member rows carry no text: resolved returns the entity (level, team, enabled/members, or member registered), record nests it under record.\n" +
-  "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary."
+  "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary.\n" +
+  "A Defaults › Models row resolves to a summary with each effective keep-alive value and the layer it came from."
 
 const SetDescription =
   "Save an override, toggle, pin, activate a model, resolve a review row, or relink (TUI Enter/Space/p/k/t/e/l).\n" +
@@ -90,12 +100,13 @@ const SetDescription =
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
-  "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits."
+  "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
+  "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
   "Agent/member rows reset their settings and compaction controls at this level.\n" +
-  "Removes the stored text/state at the addressed row (model rows clear only that level's active flag). Writes pass actor tool and retry once when stale."
+  "Removes the stored text/state at the addressed row (model rows clear only that level's active flag; a Defaults › Models row clears its keep-alive fields and goes away). Writes pass actor tool and retry once when stale."
 
 const SplitDescription =
   "Set manual sections or append one (TUI `s` / `a` on an item).\n" +
@@ -117,7 +128,7 @@ const CreateDescription =
 
 const DeleteDescription =
   "Delete a user-owned row (agent, team, member, file, Defaults entry, user preset); refuses without `confirm`.\n" +
-  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A model row deletes its local candidate or hides an inherited/upstream one at this level; the row that is the effective model refuses (activate another model first). A preset any live row links to is refused (preset.inUse lists who); links whose owner is gone are removed with the preset. Links only other projects hold are overridden with force:true (they then show as a missing preset)."
+  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A model row deletes its local candidate or hides an inherited/upstream one at this level; the row that is the effective model refuses (activate another model first). A Defaults › Models row with values clears them (it disappears); one with none refuses. A preset any live row links to is refused (preset.inUse lists who); links whose owner is gone are removed with the preset. Links only other projects hold are overridden with force:true (they then show as a missing preset)."
 
 const LogDescription =
   "Change history (who/what/when).\n" +
@@ -192,6 +203,9 @@ const SetInput = Schema.Struct({
   message: Schema.optionalKey(Schema.String),
   preset: Schema.optionalKey(Schema.NullOr(PresetInput)),
   warming: Schema.optionalKey(Schema.String),
+  interval: Schema.optionalKey(Schema.String),
+  prompt: Schema.optionalKey(Schema.String),
+  effort: Schema.optionalKey(Schema.String),
 })
 
 const ResetInput = Schema.Struct({
@@ -319,6 +333,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelDefaultRowId(input.id)) return yield* setModelDefaults(api, node, actor, input)
+          if (input.effort !== undefined)
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no effort; effort is set on a Defaults › Models row` }))
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
@@ -349,6 +366,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelDefaultRowId(input.id)) return yield* clearModelDefaults(api, node, actor, "reset")
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* resetModel(api, snapshot, memo, input.id, actor)
           const op = reset(memo, input.id)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
@@ -413,6 +431,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelDefaultRowId(input.id)) {
+            if (node.actions?.remove !== true)
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no Defaults › Models values to clear` }))
+            return yield* clearModelDefaults(api, node, actor, "remove")
+          }
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* deleteModelRow(api, snapshot, memo, input.id, actor)
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* deleteRuleRow(api, snapshot, memo, input.id, actor)
           const plan = removalPlan(memo, input.id)
@@ -539,6 +562,8 @@ function toSnapshotRecords(
         ...(record.active === undefined ? {} : { active: record.active }),
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         ...(record.warming === undefined ? {} : { warming: record.warming }),
+        ...(record.interval === undefined ? {} : { interval: record.interval }),
+        ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
         ...(record.removed === undefined ? {} : { removed: record.removed }),
         updated: record.updated,
       }),
@@ -818,19 +843,36 @@ function parseModelText(text: string): { providerID: string; modelID: string; va
   return { providerID, modelID, ...(variant === undefined ? {} : { variant }) }
 }
 
+// The candidate a model row addresses: `model:<provider>/<model>[@variant]`.
+function modelTargetOfAddress(node: TreeNode | undefined): { providerID: string; modelID: string; variant?: string } | undefined {
+  const item = node?.address?.item
+  if (item === undefined || !item.startsWith("model:")) return undefined
+  return parseModelItemId(item)
+}
+
 function setModel(
   api: PlusApi,
   snapshot: Plus.Snapshot,
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; warming?: string },
+  input: {
+    text?: string
+    state?: "on" | "off"
+    pin?: boolean
+    active?: boolean
+    resolve?: "keep" | "take" | "edit"
+    warming?: string
+    interval?: string
+    prompt?: string
+    effort?: string
+  },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
     // Cache warming for this agent on this model at this level; "" inherits.
-    if (input.warming !== undefined && input.text === undefined) {
+    if (input.warming !== undefined && input.text === undefined && input.interval === undefined && input.prompt === undefined) {
       const warming = input.warming
       const op = setModelWarmingRow(memo, id, warming)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
@@ -843,11 +885,24 @@ function setModel(
     }
     // A model row's text replaces the candidate (and may set warming in the
     // same save), the tool-side equivalent of the TUI's enter edit dialog.
-    if (input.text !== undefined) {
-      const parsed = parseModelText(input.text)
+    // Interval, prompt or warming alone keep the row's candidate.
+    if (input.text !== undefined || input.interval !== undefined || input.prompt !== undefined || input.warming !== undefined) {
+      const parsed = input.text === undefined ? modelTargetOfAddress(node) : parseModelText(input.text)
       if (parsed === undefined)
-        return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes provider/model or provider/model#variant (got "${input.text}")` }))
-      const fields: ModelEditFields = { ...parsed, ...(input.warming === undefined ? {} : { warming: input.warming }) }
+        return yield* Effect.fail(
+          new Tool.Error({
+            message:
+              input.text === undefined
+                ? `"${label}" has no model candidate to set`
+                : `"${label}" takes provider/model or provider/model#variant (got "${input.text}")`,
+          }),
+        )
+      const fields: ModelEditFields = {
+        ...parsed,
+        ...(input.warming === undefined ? {} : { warming: input.warming }),
+        ...(input.interval === undefined ? {} : { interval: input.interval }),
+        ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+      }
       const op = editModelRow(memo, id, fields)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
@@ -883,6 +938,93 @@ function setModel(
     })
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
+}
+
+// Defaults › Models rows (model-settings.ts) edit through modelSettings.set, not
+// the inventory mutate: they are server-owned rows like teams. A string sets a
+// field, "" clears it, absent leaves it; `state` sets the warming switch.
+function setModelDefaults(
+  api: PlusApi,
+  node: TreeNode,
+  actor: Plus.Actor,
+  input: {
+    state?: "on" | "off"
+    warming?: string
+    interval?: string
+    prompt?: string
+    effort?: string
+    text?: string
+    pin?: boolean
+    active?: boolean
+    resolve?: "keep" | "take" | "edit"
+    mode?: "primary" | "subagent" | "all"
+  },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes warming, interval, prompt or effort, not text` }))
+    if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" cannot be pinned` }))
+    if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row` }))
+    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no review to resolve` }))
+    if (input.mode !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no mode` }))
+    if (
+      input.warming === undefined &&
+      input.interval === undefined &&
+      input.prompt === undefined &&
+      input.effort === undefined &&
+      input.state === undefined
+    )
+      return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
+    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    if (key === undefined) return yield* Effect.fail(unknownError(node.id))
+    const result = yield* Effect.promise(() =>
+      api.setModelSettings({
+        ...key,
+        ...(input.state === undefined ? {} : { warming: input.state }),
+        ...(input.warming === undefined ? {} : { warming: input.warming }),
+        ...(input.interval === undefined ? {} : { interval: input.interval }),
+        ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+        ...(input.effort === undefined ? {} : { effort: input.effort }),
+        actor,
+      }),
+    )
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `modelSettings.invalid: ${result.error.message}` }))
+    return { output: { id: node.id, status: defaultsStatus(node.label, result.value.record), revision: result.value.revision, globalRevision: result.value.globalRevision } }
+  })
+}
+
+function clearModelDefaults(
+  api: PlusApi,
+  node: TreeNode,
+  actor: Plus.Actor,
+  verb: "reset" | "remove",
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    if (key === undefined) return yield* Effect.fail(unknownError(node.id))
+    const result = yield* Effect.promise(() =>
+      api.setModelSettings({ ...key, warming: null, interval: null, prompt: null, effort: null, actor }),
+    )
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `modelSettings.invalid: ${result.error.message}` }))
+    return {
+      output: {
+        id: node.id,
+        status: `${verb === "remove" ? "Cleared" : "Reset"} "${node.label}" to inherit`,
+        revision: result.value.revision,
+        globalRevision: result.value.globalRevision,
+      },
+    }
+  })
+}
+
+function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord | null): string {
+  if (record === null) return `Defaults › Models "${label}" inherits`
+  const set = [
+    ...(record.warming === undefined ? [] : [`warming ${record.warming}`]),
+    ...(record.interval === undefined ? [] : [`every ${record.interval}`]),
+    ...(record.prompt === undefined ? [] : ["a prompt"]),
+    ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
+  ]
+  return `Defaults › Models "${label}": ${set.join(", ")}`
 }
 
 function setPerm(
@@ -1136,6 +1278,37 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         )
       if (view === "record") return { output: { id, view, record: entity } }
       return { output: { id, view, ...entity } }
+    }
+    if (isModelDefaultRowId(id)) {
+      const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+      if (key === undefined) return yield* Effect.fail(unknownError(id))
+      const record = settingsFor(memo.modelSettings ?? [], key)
+      if (view === "record") return { output: { id, view, record: record ?? null } }
+      if (view !== "resolved")
+        return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view is not available for a Defaults › Models row (got ${id})` }))
+      const host =
+        key.providerID === undefined || key.modelID === undefined
+          ? undefined
+          : hostModelOf(memo.hostModels ?? [], { providerID: key.providerID, modelID: key.modelID })
+      const resolved = modelDefaultView({
+        ...(record === undefined ? {} : { record }),
+        ...(everySettings(memo.modelSettings ?? []) === undefined ? {} : { every: everySettings(memo.modelSettings ?? []) }),
+        ...(host?.warming === undefined ? {} : { host: host.warming }),
+        ...(host === undefined ? {} : { variants: host.variants }),
+      })
+      return {
+        output: {
+          id,
+          view,
+          label: node.label,
+          summary: modelDefaultValue(resolved),
+          warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
+          interval: { value: resolved.interval.value, from: resolved.interval.from },
+          prompt: { value: resolved.prompt.value, from: resolved.prompt.from },
+          ...(resolved.effort === undefined ? {} : { effort: { value: resolved.effort.value, from: resolved.effort.from } }),
+          ...(record === undefined ? {} : { record }),
+        },
+      }
     }
     if (node.address === undefined)
       return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view needs an addressed row (got ${id})` }))

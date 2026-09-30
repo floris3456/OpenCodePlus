@@ -3974,7 +3974,7 @@ test("inspector: a team's Special agent shows its team-scoped active model and s
 // Inherited rows are listed, so editing one plants a local record; the
 // dialog validates the model against the host catalog and shows the
 // inherited warming.
-test("enter on a model row edits model, variant and warming; w is no longer bound", async () => {
+test("enter on a model row edits model, variant, warming, interval and prompt; w is no longer bound", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("alice")],
     records: [
@@ -3989,7 +3989,7 @@ test("enter on a model row edits model, variant and warming; w is no longer boun
     snapshots: [snapshot],
     width: 160,
     models,
-    dialogs: { prompts: ["acme/nova-2", "high", "45m"] },
+    dialogs: { prompts: ["acme/nova-2", "high", "45m", "3m30s", "ping"] },
   })
   try {
     await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
@@ -3998,17 +3998,77 @@ test("enter on a model row edits model, variant and warming; w is no longer boun
     expect(footer(fixture.captureCharFrame())).toContain("enter edit model")
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.mutateInputs.length === 1)
-    // The prompts prefill the current model and variant; warming starts empty
-    // (the dialogs fixture answers each in order).
+    // The prompts prefill the current model and variant; warming, interval and
+    // prompt start empty (the dialogs fixture answers each in order).
     expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? ""])).toEqual([
       ["Model", "acme/nova-1"],
       ["Variant", ""],
       ["Cache warming · acme/nova-1", ""],
+      ["Ping every · acme/nova-1", ""],
+      ["Keep-alive prompt · acme/nova-1", ""],
     ])
     const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice")
     expect(own).toEqual([
-      expect.objectContaining({ providerID: "acme", modelID: "nova-2", variant: "high", warming: "45m" }),
+      expect.objectContaining({ providerID: "acme", modelID: "nova-2", variant: "high", warming: "45m", interval: "3m30s", prompt: "ping" }),
     ])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+// Enter on a Defaults › Models row edits the four keep-alive fields through
+// modelSettings.set (not the inventory mutate).
+test("enter on a Defaults › Models row edits warming, interval, prompt and effort", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("alice")],
+    modelSettings: [
+      {
+        type: "modelSettings" as const,
+        level: "defaults" as const,
+        providerID: "acme",
+        modelID: "nova-1",
+        warming: "30m",
+        updated: PRESET_UPDATED,
+      },
+    ],
+    hostModels: [
+      {
+        providerID: "acme",
+        modelID: "nova-1",
+        variants: ["low", "high"],
+        warming: { on: true, interval: 210_000, duration: 1_800_000 },
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 160,
+    dialogs: { prompts: ["45m", "5m", "keep warm", "high"] },
+  })
+  try {
+    await goto(fixture, "item:defaults:/models:modeldefault:acme/nova-1", "acme/nova-1")
+    await fixture.waitForFrame((frame) => frame.includes("acme/nova-1"))
+    expect(dispatch(fixture, "return")).toBe(true)
+    await until(fixture, () => fixture.fake.modelSettingsSets.length === 1)
+    // Prefilled with the row's own warming; the interval, prompt and effort
+    // start empty with the effective values as placeholders.
+    expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? ""])).toEqual([
+      ["Warming · acme/nova-1", "30m"],
+      ["Ping every · acme/nova-1", ""],
+      ["Keep-alive prompt · acme/nova-1", ""],
+      ["Effort · acme/nova-1", ""],
+    ])
+    expect(fixture.fake.promptInputs[1]?.placeholder).toBe("3m30s")
+    expect(fixture.fake.modelSettingsSets[0]).toEqual({
+      providerID: "acme",
+      modelID: "nova-1",
+      warming: "45m",
+      interval: "5m",
+      prompt: "keep warm",
+      effort: "high",
+    })
+    expect(fixture.fake.mutateInputs).toEqual([])
+    await fixture.waitForFrame((frame) => frame.includes("Defaults › Models"))
   } finally {
     fixture.destroy()
   }
