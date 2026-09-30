@@ -499,10 +499,10 @@ A keep-alive only helps while the provider's cache still holds the prefix, so th
 | OpenAI (GPT-5.6 and later) | `prompt_cache_options.ttl`, at least 30 minutes after the latest write or reuse; earlier models: `prompt_cache_retention` `in_memory` (~5–10 min) or `24h` extended | ~25 minutes for the 30-minute TTL, ~4 minutes for `in_memory` |
 | OpenAI-compatible gateways (CLIProxyAPI, and the GPT variants routed through it here) | whatever the upstream applies; frequently the 5–10 minute in-memory window | keep it as short as the Anthropic row unless the gateway documents more |
 | Google Gemini | implicit caching per request; explicit `cachedContents` carry their own TTL | explicit caches: under the TTL; implicit: a few minutes |
-| DeepSeek (and this workspace's DeepSeek routes) | disk prefix cache, best-effort, cleared after hours to days of disuse | a few minutes; the cache is cheap to re-warm |
+| DeepSeek (and this workspace's DeepSeek routes) | disk prefix cache, enabled by default and automatic; best-effort, and entries not seen for hours to days are cleared. There is no cache-control call and nothing to refresh | none — leave warming off. A ping every few minutes cannot extend a cache that already lives for hours, and each ping is a paid read. If a very large context must survive a known short gap, an interval of tens of minutes is plenty |
 | Zai, Mistral, others | no server-side prefix cache to keep warm | warming adds cost without a cache benefit; leave it off |
 
-Anthropic refreshes a 5-minute cache on read, which is why the round trips here work with 3.5-minute pings; OpenAI's 30-minute TTL needs no faster ping than ~25 minutes. A per-model row in Defaults › Models (or the model's own opencode.json `settings.warming`) is the way to give one model a different interval from the rest.
+Anthropic refreshes a 5-minute cache on read, which is why the round trips here work with 3.5-minute pings; OpenAI's 30-minute TTL needs no faster ping than ~25 minutes; DeepSeek's disk cache lasts for hours to days on its own, so it needs no keep-alive at all — warming it mostly pays for reads that would have hit anyway, and a cold prefix is simply re-cached by the next real request at cache-miss input rates (no separate write fee, no TTL to refresh). A per-model row in Defaults › Models (or the model's own opencode.json `settings.warming`) is the way to give one model a different interval from the rest.
 
 Keep-alive requests are real provider requests and cost tokens (cache reads are cheap, cache writes are not).
 
