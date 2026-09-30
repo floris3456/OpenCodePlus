@@ -9,7 +9,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { Effect, Exit, Scope, Semaphore, Stream } from "effect"
+import { Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -97,6 +97,8 @@ export interface PlusState {
   enforcement: EnforcementState
   agentObserver?: Registration
   agentUpstream?: readonly Agent.Info[]
+  /** The tool registry's ids as the last discovery found them; a registry that lists others has changed under it. */
+  discoveredTools?: ReadonlySet<string>
 }
 
 export function createState(): PlusState {
@@ -4009,6 +4011,9 @@ async function discoverAll(
   }
   const resolved = await resolveBaseTemplates(ctx)
   const teams = await discoverAllTeams(directory, builtins)
+  // Read before discovery reads the registry: a change in between shows as a
+  // difference later and costs one more (unchanged) publish, never a miss.
+  state.discoveredTools = new Set((await Effect.runPromise(ctx.tool.list())).map((tool) => tool.id))
   const discovered = await discover({
     ctx,
     records: customizationsOf(loaded.records),
@@ -4313,6 +4318,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       if (state.agentObserver !== undefined) yield* state.agentObserver.dispose
       state.agentObserver = undefined
       state.agentUpstream = undefined
+      state.discoveredTools = undefined
       yield* disposeTooling(state)
       yield* disposeTeamTooling(state)
       state.fingerprint = undefined
@@ -5214,6 +5220,37 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     yield* refresh
     yield* sessions
     yield* runs
+    yield* watchToolRegistry(ctx, state)
+  })
+}
+
+// An MCP server's tools join the tool registry after Plus's first discovery (a
+// server connects later: the search server Plus registers always does) or
+// change when it reconnects or announces new tools. None of that reaches a
+// plugin as an event: mcp.tools.changed is not a server event. Until a
+// discovery lists those tools they have no rows, so no member's "off" row
+// denies them. A transform replays on every registry rebuild, so it signals
+// each one; a rebuild whose tools differ from the last discovery's refreshes.
+// Discovery's own registry reads rebuild too, but list the same tools.
+export function watchToolRegistry(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const rebuilt = yield* Queue.sliding<void>(1)
+    yield* ctx.tool.transform(() => {
+      Queue.offerUnsafe(rebuilt, undefined)
+    })
+    yield* Stream.fromQueue(rebuilt).pipe(
+      Stream.debounce("100 millis"),
+      Stream.runForEach(() =>
+        Effect.gen(function* () {
+          const known = state.discoveredTools
+          if (known === undefined) return
+          const listed = yield* ctx.tool.list()
+          if (listed.length === known.size && listed.every((tool) => known.has(tool.id))) return
+          yield* refreshFromHost(ctx, state)
+        }).pipe(Effect.catchCause((cause) => Effect.logWarning("plus tool registry refresh failed", { cause }))),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    )
   })
 }
 

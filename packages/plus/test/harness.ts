@@ -762,7 +762,8 @@ function toolDomain(): ToolDomain {
         return { dispose: Effect.void }
       }),
     reload: () => Effect.void,
-    list: die("unused tool.list"),
+    // The same empty registry the transform editor lists.
+    list: () => Effect.succeed([]),
     hook: die("unused tool.hook"),
   }
 }
