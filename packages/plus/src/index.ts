@@ -35,6 +35,7 @@ import { enforcementState, type EnforcementState, type PermissionTable } from ".
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
+import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
 import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelWarming, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
@@ -99,6 +100,8 @@ export interface PlusState {
   agentUpstream?: readonly Agent.Info[]
   /** The tool registry's ids as the last discovery found them; a registry that lists others has changed under it. */
   discoveredTools?: ReadonlySet<string>
+  /** The tools each MCP server registered when last connected (mcp-tools.ts). */
+  knownMcpTools?: KnownMcpTools
 }
 
 export function createState(): PlusState {
@@ -4013,7 +4016,15 @@ async function discoverAll(
   const teams = await discoverAllTeams(directory, builtins)
   // Read before discovery reads the registry: a change in between shows as a
   // difference later and costs one more (unchanged) publish, never a miss.
-  state.discoveredTools = new Set((await Effect.runPromise(ctx.tool.list())).map((tool) => tool.id))
+  const registry = await Effect.runPromise(ctx.tool.list())
+  state.discoveredTools = new Set(registry.map((tool) => tool.id))
+  // Remember what each connected MCP server registered, for the next start.
+  state.knownMcpTools ??= await loadKnownMcpTools()
+  const learned = learnMcpTools(state.knownMcpTools, registry)
+  if (learned !== undefined) {
+    state.knownMcpTools = learned
+    await saveKnownMcpTools(learned).catch(() => undefined)
+  }
   const discovered = await discover({
     ctx,
     records: customizationsOf(loaded.records),
@@ -4027,6 +4038,7 @@ async function discoverAll(
     teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
     agentUpstream: state.agentUpstream,
     splits: splitsOf(loaded.records),
+    knownMcpTools: state.knownMcpTools,
   })
   const memberControls = (await Promise.all(teams.flatMap((team) => team.agents.map(async (member) => {
     // Member installation overlays host agents, so omitted file fields inherit

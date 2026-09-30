@@ -30,6 +30,7 @@ import { catalogItems, categoryOfRow } from "./permission-catalog.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
+import { pendingMcpTools, type KnownMcpTools } from "./mcp-tools.js"
 
 export type { AgentScope, AgentSource } from "./model.js"
 export type { ModelBaseline, ModelRefLike, PromptBaseline } from "./inventory.js"
@@ -72,6 +73,8 @@ export interface DiscoverInput {
   /** Registry observed before Plus transforms; includes agents Plus removes. */
   readonly agentUpstream?: readonly Agent.Info[]
   readonly splits?: readonly SplitRecord[]
+  /** The tools each MCP server registered when last connected: rows for a server that has not registered yet. */
+  readonly knownMcpTools?: KnownMcpTools
 }
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
@@ -83,8 +86,9 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...live.filter((agent) => !input.agentUpstream?.some((upstream) => upstream.id === agent.id)),
   ]
   const skills = await yieldList(input.ctx.skill.list())
-  const tools = await readTransform(input.ctx.tool.transform, (editor) => editor.list())
+  const registry = await readTransform(input.ctx.tool.transform, (editor) => editor.list())
   const servers = await readTransform(input.ctx.mcp.transform, (editor) => editor.list())
+  const tools = [...registry, ...pendingMcpTools(registry, servers, input.knownMcpTools ?? new Map())]
   const baselines = input.baselines ?? new Map<string, PromptBaseline>()
   const modelBaselines = input.modelBaselines ?? new Map<string, ModelBaseline>()
   const modelRecords = input.modelRecords ?? []

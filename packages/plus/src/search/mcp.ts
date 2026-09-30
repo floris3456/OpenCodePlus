@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { readKey } from "./keys.js"
+import { searchToolDescription } from "./tools.js"
 
 function result(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] }
@@ -36,8 +37,7 @@ export function registerExaTools(server: McpServer) {
   server.registerTool(
     "exa_code_search",
     {
-      description:
-        "Search billions of GitHub repos, docs, Stack Overflow, and dev blogs for real, working code examples via Exa. Be specific about language, framework, and version. Prefer highlights over full text to get targeted code snippets.",
+      description: searchToolDescription("exa_code_search"),
       inputSchema: {
         query: z.string().min(1).describe("Natural language describing the code you need; specify language/framework/version"),
         type: z.enum(["fast", "auto", "neural", "keyword"]).default("fast"),
@@ -69,8 +69,7 @@ export function registerTavilyTools(server: McpServer) {
   server.registerTool(
     "tavily_search",
     {
-      description:
-        "Search the web via Tavily. Returns LLM-optimized results with content snippets and relevance scores. Prefer specific queries under 400 chars.",
+      description: searchToolDescription("tavily_search"),
       inputSchema: {
         query: z.string().min(1).max(400),
         search_depth: z.enum(["ultra-fast", "fast", "basic", "advanced"]).default("basic"),
@@ -92,8 +91,7 @@ export function registerTavilyTools(server: McpServer) {
   server.registerTool(
     "tavily_extract",
     {
-      description:
-        "Extract clean content from up to 20 URLs via Tavily. Provide a query with chunks_per_source to return only the most relevant chunks and avoid context bloat.",
+      description: searchToolDescription("tavily_extract"),
       inputSchema: {
         urls: z.array(z.string().url()).min(1).max(20),
         extract_depth: z.enum(["basic", "advanced"]).default("basic"),
