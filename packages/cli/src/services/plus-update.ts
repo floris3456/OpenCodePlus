@@ -30,7 +30,8 @@ import { databasePath } from "../database-path"
 import { ServiceConfig } from "./service-config"
 
 const BINARY = "opencodeplus"
-const CHECK_INTERVAL = 10 * 60_000
+// Shorter than the TUI's ten-minute poll, so every poll can see a release published since the last one.
+const CACHE_FOR = 5 * 60_000
 const KEPT_BACKUPS = 3
 const INSTALLED = new RegExp(`^(.+)/releases/([^/]+)/bin/${BINARY}$`)
 const POINTER = new RegExp(`^\\.\\./releases/([^/]+)/bin/${BINARY}$`)
@@ -131,7 +132,7 @@ export const make = Effect.gen(function* () {
     return values.findLast((value) => value !== undefined) ?? false
   })
 
-  /** The newest release this install is offered; every TUI of an install shares one answer for ten minutes. */
+  /** The newest release this install is offered; every TUI of an install shares one answer for five minutes. */
   const newest = Effect.fnUntraced(function* (input: { readonly fresh?: boolean } = {}) {
     const test = yield* readTestReleases()
     const source = test ? api() : site()
@@ -139,7 +140,7 @@ export const make = Effect.gen(function* () {
     const reusable = Option.filter(
       cached,
       (value) =>
-        !input.fresh && value.test === test && value.source === source && Date.now() - value.checkedAt < CHECK_INTERVAL,
+        !input.fresh && value.test === test && value.source === source && Date.now() - value.checkedAt < CACHE_FOR,
     )
     const version = Option.isSome(reusable)
       ? reusable.value.version
@@ -311,7 +312,7 @@ export const make = Effect.gen(function* () {
               ),
             onSuccess: () =>
               Effect.fail(
-                new UpdateError(`${describe(version)} did not start (${message(error)}); OpenCodePlus is back on ${describe(previous)}.`),
+                new UpdateError(`${describe(version)} did not start (${message(error)}); back on ${describe(previous)}.`),
               ),
           }),
         ),

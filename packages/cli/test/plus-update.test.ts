@@ -191,7 +191,7 @@ describe("PlusUpdate", () => {
     expect((await run((updater) => updater.newest()))?.version).toBe("2.0.18-plus-1.0.10")
   })
 
-  test("shares one answer for ten minutes unless asked for a fresh one", async () => {
+  test("shares one answer for five minutes unless asked for a fresh one", async () => {
     await publish("2.0.18-plus-1.0.0")
     site.latest = "2.0.18-plus-1.0.0"
     await run((updater) => updater.newest())
