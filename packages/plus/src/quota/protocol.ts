@@ -15,6 +15,7 @@ export const Notice = Schema.Struct({
   generation: Schema.Number,
 })
 export const Snapshot = Schema.Struct({
+  mode: Schema.optional(Schema.Literals(["off", "shadow", "enforce"])),
   primary_used: Schema.Boolean,
   consumed: Schema.String,
   protocol: Schema.Literal(1),

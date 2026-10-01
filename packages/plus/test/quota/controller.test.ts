@@ -37,7 +37,7 @@ function fixture() {
     fetch(request) {
       state.reads++
       state.routes.push(new URL(request.url).searchParams.get("model") ?? "")
-      if (!request.headers.has("Authorization")) return Response.json({ protocol: 1 })
+      if (!request.headers.has("Authorization")) return Response.json({ protocol: 1, mode: state.snapshot.mode })
       if (!state.known) return new Response(null, { status: 401 })
       return Response.json(state.snapshot, { status: state.status })
     },
@@ -71,6 +71,27 @@ function fixture() {
   })
   return { state, controller, event, server, store, notices }
 }
+test("shadow enrollment and reminders never request compaction or a checkpoint", async () => {
+  const f = fixture()
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow", primary_used: false, available: false }
+  const opaque = { ...f.event(), boundary: { fresh: false, portable: false } }
+  await f.controller.decide(opaque)
+  expect(opaque.compact).toBeUndefined()
+  expect(opaque.refusal).toBeUndefined()
+  f.state.known = true
+  f.state.snapshot = {
+    ...f.state.snapshot,
+    cursor: 1,
+    events: [
+      { cursor: 1, id: "manual-reminder", kind: "reminder", text: "Compact or start a new chat now", generation: 1 },
+    ],
+  }
+  await f.controller.decide(opaque)
+  expect(opaque.compact).toBeUndefined()
+  expect(opaque.refusal).toBeUndefined()
+  expect(f.notices.size).toBe(1)
+  expect([...f.notices.values()][0]?.text).toContain("new chat now")
+})
 test("shared budget waits retry through Core without compacting or changing a binding", async () => {
   const f = fixture()
   f.state.known = true

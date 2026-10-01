@@ -26,6 +26,7 @@ type Route = {
   refusal?: string
   retryCode?: string
   budgetWaits?: number
+  mode?: "off" | "shadow" | "enforce"
 }
 
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
@@ -108,13 +109,20 @@ export class QuotaController {
     if (response.status === 401 && route.stored.generation === 0) {
       const health = await this.io.fetch(route.endpoint, { signal: AbortSignal.timeout(5000), redirect: "error" })
       const data: unknown = await health.json()
-      Schema.decodeUnknownSync(Schema.Struct({ protocol: Schema.Literal(1) }))(data)
+      const status = Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: Schema.Literal(1),
+          mode: Schema.optional(Schema.Literals(["off", "shadow", "enforce"])),
+        }),
+      )(data)
       if (!health.ok) throw new Error("Quota plugin is unavailable")
+      route.mode = status.mode
       return
     }
     if (!response.ok) throw new Error(`Quota coordination unavailable (${response.status}); generation is paused`)
     const snapshot = Schema.decodeUnknownSync(Snapshot)(await response.json())
     route.snapshot = snapshot
+    route.mode = snapshot.mode
     route.stored = { ...route.stored, generation: snapshot.generation }
     for (const event of snapshot.events) {
       // Cursor only advances after durable idempotent admission of the notice.
@@ -141,6 +149,9 @@ export class QuotaController {
       return
     }
     const snapshot = route.snapshot
+    // Shadow enrollment observes the existing route without forcing a portable
+    // checkpoint. Native context-length/manual compaction remains unchanged.
+    if (route.mode === "shadow") return
     if (!snapshot?.primary_used && !event.boundary.portable) {
       if (event.auto || event.reason === "manual") {
         event.compact = true
