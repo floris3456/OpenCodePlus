@@ -19,6 +19,8 @@ import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Layer, Result, Stream } from "effect"
+import { PluginHooks } from "../plugin/hooks.js"
+import { compactionBoundary } from "./compaction-boundary.js"
 import { Bus } from "../bus.js"
 import { Agent } from "../agent.js"
 import { Database } from "../database/database.js"
@@ -185,6 +187,7 @@ const LEGACY_HEADING = "## Additional Context"
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
     const bus = yield* Bus.Service
     const llm = yield* LLMClient.Service
     const db = (yield* Database.Service).db
@@ -207,10 +210,20 @@ export const layer = Layer.effect(
       const settings = state.get()
       const context = trigger.context
 
-      // Only the user compacts when automatic compaction is off, overflow included.
-      if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
       const ceiling = calculateCeiling(context.model.limit, settings.buffer)
-      if (trigger.reason === "auto" && !due(context, ceiling)) return { status: "skipped" }
+      const decision = yield* hooks.trigger("session", "compaction.decide", {
+        sessionID: context.session.id,
+        agent: context.agent.id,
+        model: context.model.ref,
+        reason: trigger.reason,
+        auto: settings.auto,
+        due: due(context, ceiling),
+        boundary: compactionBoundary(context.messages),
+      })
+      if (decision.refusal) return { status: "failed", error: decision.refusal }
+      // Plugins may request earlier compaction, but cannot override this preference.
+      if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
+      if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact) return { status: "skipped" }
       // An unknown window never triggers auto compaction, but the compaction request still needs a size to aim for.
       const cap = Number.isFinite(ceiling)
         ? ceiling
@@ -221,7 +234,16 @@ export const layer = Layer.effect(
 
       // An explicit remote strategy demands provider compaction even when the active model would choose a
       // summary, and an explicit local strategy demands a summary even when the model supports native.
-      const strategy = context.agent.info.compaction?.strategy ?? "auto"
+      const configuredStrategy = context.agent.info.compaction?.strategy ?? "auto"
+      if (decision.portable && configuredStrategy === "remote")
+        return {
+          status: "failed",
+          error: {
+            type: "compaction.unavailable",
+            message: "Credential handoff requires a local portable summary; this agent requires remote compaction",
+          },
+        }
+      const strategy = decision.portable ? "local" : configuredStrategy
       // Native compaction cannot recover a context the provider already rejected: the replacement window
       // would come from the same rejected endpoint. Only auto or local may recover an overflow.
       if (trigger.reason === "overflow" && strategy === "remote")
@@ -234,7 +256,12 @@ export const layer = Layer.effect(
       const native = strategy === "remote" || (strategy === "auto" && context.model.compaction?.type === "native")
       const settle = (owner: Trigger) =>
         Effect.matchEffect({
-          onSuccess: (result: Result) => publish(owner, result),
+          onSuccess: (result: Result) =>
+            publish(owner, {
+              ...result,
+              ...(decision.portable ? { providerState: undefined } : {}),
+              metadata: { ...result.metadata, ...decision.metadata },
+            }),
           onFailure: (failure: Failure) => publish(owner, failure),
         })
 
@@ -743,7 +770,16 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, Database.node, llmClient, Agent.node, Model.node, SessionRunnerModel.node, SessionModelRequest.node],
+  deps: [
+    PluginHooks.node,
+    Bus.node,
+    Database.node,
+    llmClient,
+    Agent.node,
+    Model.node,
+    SessionRunnerModel.node,
+    SessionModelRequest.node,
+  ],
 })
 
 /** History loads from the latest completed compaction, so a previous one is always the first message. */

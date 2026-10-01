@@ -1,3 +1,4 @@
+import type { SessionCompactionDecision } from "../compaction-decision.js"
 import type { SessionApi } from "@opencode/client/effect/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai"
 import type { Agent } from "@opencode/schema/agent"
@@ -170,6 +171,7 @@ export interface SessionCatalog {
 export interface SessionHooks {
   readonly prompt: SessionPrompt
   readonly context: SessionContext
+  readonly "compaction.decide": SessionCompactionDecision
   readonly compaction: SessionCompaction
   readonly generate: SessionGenerate
   readonly title: SessionTitle

@@ -1,0 +1,242 @@
+import { afterEach, expect, test } from "bun:test"
+import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
+import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
+import { Session } from "@opencode/schema/session"
+import { QuotaController } from "../../src/quota/controller.js"
+import type { Snapshot, Stored } from "../../src/quota/protocol.js"
+import { portableMessages } from "../../src/quota/portable.js"
+
+const servers: ReturnType<typeof Bun.serve>[] = []
+afterEach(() => {
+  servers.splice(0).forEach((server) => server.stop(true))
+})
+function fixture() {
+  const state = {
+    known: false,
+    status: 200,
+    reads: 0,
+    routes: [] as string[],
+    snapshot: {
+      protocol: 1,
+      primary_used: true,
+      consumed: "",
+      cursor: 0,
+      generation: 1,
+      alias: "Small",
+      intent: "",
+      available: true,
+      windows: [],
+      events: [],
+    } as Snapshot,
+  }
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      state.reads++
+      state.routes.push(new URL(request.url).searchParams.get("model") ?? "")
+      if (!request.headers.has("Authorization")) return Response.json({ protocol: 1 })
+      if (!state.known) return new Response(null, { status: 401 })
+      return Response.json(state.snapshot, { status: state.status })
+    },
+  })
+  servers.push(server)
+  const store = new Map<string, Stored>()
+  const notices = new Map<string, { session: string; text: string }>()
+  const controller = new QuotaController(
+    { routes: { proxy: server.url.href, other: server.url.href } },
+    "installation",
+    {
+      read: async (key) => store.get(key),
+      write: async (key, value) => {
+        store.set(key, value)
+      },
+      notify: async (session, id, text) => {
+        notices.set(id, { session, text })
+      },
+      fetch,
+      now: Date.now,
+    },
+  )
+  const event = (auto = true): SessionCompactionDecision => ({
+    sessionID: Session.ID.make("ses_test"),
+    agent: Agent.ID.make("build"),
+    model: Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.ID.make("proxy") }),
+    reason: "auto",
+    auto,
+    due: false,
+    boundary: { fresh: false, portable: true },
+  })
+  return { state, controller, event, server, store, notices }
+}
+test("threshold requires compaction only when enabled, with committed checkpoint completion", async () => {
+  const f = fixture()
+  await f.controller.decide(f.event())
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, intent: "intent-1" }
+  const before = f.event()
+  await f.controller.decide(before)
+  expect(before.compact).toBe(true)
+  expect(before.portable).toBe(true)
+  const finished = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "committed" } }
+  await f.controller.decide(finished)
+  expect(finished.compact).toBeUndefined()
+  const off = f.event(false)
+  await f.controller.decide(off)
+  expect(off.compact).toBeUndefined()
+  const headers = await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)
+  const claim = JSON.parse(Buffer.from(headers["X-Quota-Handoff"], "base64url").toString())
+  expect(claim).toMatchObject({ auto: false, intent: "intent-1", generation: 1 })
+  expect(JSON.stringify(headers)).not.toContain([...f.store.values()][0]!.capability)
+})
+test("a consumed checkpoint cannot authorize another handoff", async () => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, intent: "intent-2", consumed: "old" }
+  const event = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "old" } }
+  await f.controller.decide(event)
+  expect(event.compact).toBe(true)
+})
+test("no capacity and auto-off opaque checkpoints refuse generation", async () => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, intent: "intent", available: false }
+  const event = f.event()
+  await f.controller.decide(event)
+  expect(event.refusal?.type).toBe("quota.no-capacity")
+  expect(f.notices.size).toBe(1)
+  f.state.snapshot = { ...f.state.snapshot, available: true }
+  const opaque = { ...f.event(false), boundary: { fresh: false, portable: false } }
+  await f.controller.decide(opaque)
+  expect(opaque.refusal?.type).toBe("quota.context-unavailable")
+})
+test("notice replay deduplicates and polling does not wake an unrelated chat", async () => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = {
+    ...f.state.snapshot,
+    cursor: 1,
+    events: [{ cursor: 1, id: "notice", kind: "warning", text: "20% remaining", generation: 1 }],
+  }
+  await f.controller.decide(f.event())
+  await f.controller.decide(f.event())
+  expect(f.notices.size).toBe(1)
+  expect([...f.notices.values()][0]?.session).toBe("ses_test")
+  expect(await f.controller.status("unrelated")).toEqual([])
+})
+test("a pre-admission race gets one retry per persisted intent", async () => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, intent: "race" }
+  await f.controller.decide(f.event())
+  const error = () =>
+    Response.json(
+      {
+        error: {
+          code: "internal_server_error",
+          message: "quota_checkpoint_required: A portable checkpoint is required",
+        },
+      },
+      { status: 500 },
+    )
+  await f.controller.response("ses_test", "proxy", "model", error())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  await f.controller.response("ses_test", "proxy", "model", error())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(false)
+  expect([...f.store.values()][0]?.retryIntent).toBe("1/race")
+})
+test("missing binding acknowledgement and unavailable polling fail closed", async () => {
+  const f = fixture()
+  f.state.known = true
+  await f.controller.decide(f.event())
+  await expect(f.controller.response("ses_test", "proxy", "model", new Response("ok"))).rejects.toThrow("acknowledge")
+  f.state.status = 503
+  const event = f.event()
+  await f.controller.decide(event)
+  expect(event.refusal?.type).toBe("quota.unavailable")
+  await expect(f.controller.headers("ses_test", "proxy", "model", "primary", "https://other.invalid")).rejects.toThrow(
+    "endpoint",
+  )
+})
+test("portable context retains readable history and tool pairs without account proof", () => {
+  const result = portableMessages([
+    {
+      role: "assistant",
+      providerMetadata: { test: { secret: "old-account" } },
+      content: [
+        { type: "reasoning", text: "Reason", providerMetadata: { test: { encrypted: "old" } } },
+        { type: "text", text: "Answer" },
+      ],
+    },
+  ])
+  expect(result[0]?.content).toEqual([
+    { type: "text", text: "Reason" },
+    { type: "text", text: "Answer", providerMetadata: undefined },
+  ])
+  expect(JSON.stringify(result)).not.toContain("old-account")
+})
+
+test("no capacity is not retried and unrelated native retries retain their decision", async () => {
+  const f = fixture()
+  f.state.known = true
+  await f.controller.decide(f.event())
+  await f.controller.response(
+    "ses_test",
+    "proxy",
+    "model",
+    Response.json(
+      { error: { message: "quota_no_capacity: All windows held", code: "internal_server_error" } },
+      { status: 500 },
+    ),
+  )
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(false)
+  await f.controller.response(
+    "ses_test",
+    "proxy",
+    "model",
+    Response.json({ error: { message: "Transient provider failure", code: "internal_server_error" } }, { status: 500 }),
+  )
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBeUndefined()
+})
+test("healthy native checkpoints stay bound; auto-off handoff keeps replay portable", async () => {
+  const f = fixture()
+  f.state.known = true
+  const native = { ...f.event(), boundary: { fresh: false, portable: false } }
+  await f.controller.decide(native)
+  expect(native.compact).toBeUndefined()
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(false)
+  f.state.snapshot = { ...f.state.snapshot, intent: "handoff" }
+  await f.controller.decide(f.event(false))
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(true)
+  f.state.snapshot = { ...f.state.snapshot, intent: "", generation: 2 }
+  await f.controller.decide(f.event(false))
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(true)
+})
+
+test("provider aliases sharing one model have distinct routes and capabilities", async () => {
+  const f = fixture()
+  const primary = await f.controller.headers("ses_test", "proxy", "model", "title", f.server.url.href)
+  const alias = await f.controller.headers("ses_test", "other", "model", "title", f.server.url.href)
+  const decode = (header: string) => JSON.parse(Buffer.from(header, "base64url").toString())
+  expect(decode(primary["X-Quota-Handoff"]).route).toBe("proxy/model")
+  expect(decode(alias["X-Quota-Handoff"]).route).toBe("other/model")
+  expect(decode(primary["X-Quota-Handoff"]).capability).not.toBe(decode(alias["X-Quota-Handoff"]).capability)
+  expect(f.state.routes).toContain("proxy/model")
+  expect(f.state.routes).toContain("other/model")
+})
+
+test("auxiliary enrollment still requires portable first primary context", async () => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, primary_used: false }
+  const opaque = { ...f.event(), boundary: { fresh: false, portable: false } }
+  await f.controller.decide(opaque)
+  expect(opaque.compact).toBe(true)
+  expect(opaque.portable).toBe(true)
+  const off = { ...f.event(false), boundary: { fresh: false, portable: false } }
+  await f.controller.decide(off)
+  expect(off.refusal?.type).toBe("quota.context-unavailable")
+  expect(off.compact).toBeUndefined()
+})

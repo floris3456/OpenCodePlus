@@ -1,3 +1,4 @@
+import { registerQuota } from "./quota/register.js"
 import { Plugin } from "@opencode/plugin/effect"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -143,6 +144,7 @@ export default Plugin.define({
   id: "opencode.plus",
   effect: (ctx) =>
     Effect.gen(function* () {
+      yield* registerQuota(ctx)
       const state = createState()
       // Applied registrations live on detached scopes, so without this
       // finalizer they outlive the plugin when core unloads or reactivates it.
