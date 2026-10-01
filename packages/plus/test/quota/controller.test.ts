@@ -71,6 +71,26 @@ function fixture() {
   })
   return { state, controller, event, server, store, notices }
 }
+test("shared budget waits retry through Core without compacting or changing a binding", async () => {
+  const f = fixture()
+  f.state.known = true
+  await f.controller.decide(f.event())
+  const refusal = () => Response.json({ error: { code: "quota_budget_wait" } }, { status: 409 })
+  for (let i = 0; i < 2; i++) {
+    await f.controller.response("ses_test", "proxy", "model", refusal())
+    expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(500)
+  }
+  const event = f.event()
+  await f.controller.decide(event)
+  expect(event.compact).toBeUndefined()
+  expect(event.refusal).toBeUndefined()
+  expect(f.notices.size).toBe(1)
+  expect([...f.store.values()][0]?.generation).toBe(1)
+  // A later real handoff still follows the persisted-checkpoint path.
+  f.state.snapshot = { ...f.state.snapshot, intent: "drain-after-settlement" }
+  await f.controller.decide(event)
+  expect(event.compact).toBe(true)
+})
 test("threshold requires compaction only when enabled, with committed checkpoint completion", async () => {
   const f = fixture()
   await f.controller.decide(f.event())

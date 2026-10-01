@@ -25,6 +25,7 @@ type Route = {
   reading?: Promise<void>
   refusal?: string
   retryCode?: string
+  budgetWaits?: number
 }
 
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
@@ -241,6 +242,7 @@ export class QuotaController {
       return
     }
     route.retryCode = undefined
+    route.budgetWaits = 0
     const header = response.headers.get("X-Quota-Binding")
     if (response.headers.get("X-Quota-Protocol") !== "1" || !header) {
       route.refusal = "Quota plugin did not acknowledge this request. Generation is paused."
@@ -258,6 +260,20 @@ export class QuotaController {
     if (!route.retryCode) return undefined
     const code = route.retryCode
     route.retryCode = undefined
+    if (code === "quota_budget_wait") {
+      route.budgetWaits = (route.budgetWaits ?? 0) + 1
+      if (route.budgetWaits > 120) return false
+      await this.poll(route)
+      if (route.budgetWaits === 1)
+        await this.notice(
+          route,
+          "waiting",
+          `budget-wait/${route.snapshot?.generation ?? 0}/${route.stored.cursor}`,
+          "Waiting for running requests to settle their shared quota reservations before continuing or compacting.",
+        )
+      // Core owns the interruptible delay and rebuilds the next physical request.
+      return 500
+    }
     if (code !== "quota_checkpoint_required" && code !== "quota_generation_changed") return false
     await this.poll(route)
     const token = `${route.snapshot?.generation}/${route.snapshot?.intent}`
@@ -290,6 +306,7 @@ export class QuotaController {
       .filter((route) => route.session === session)
       .forEach((route) => {
         route.active = active
+        if (!active) route.budgetWaits = 0
       })
   }
   async tick() {

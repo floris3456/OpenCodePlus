@@ -62,7 +62,9 @@ export function registerQuota(ctx: Context) {
       Effect.promise(async () => {
         if (!controller.enabled(event.model.providerID)) return
         const retry = await controller.retry(event.sessionID, event.model.providerID, event.model.id)
-        if (retry !== undefined) event.decision = retry ? { retry: true, delay: 0 } : { retry: false }
+        if (retry !== undefined)
+          event.decision =
+            typeof retry === "number" ? { retry: true, delay: retry } : retry ? { retry: true, delay: 0 } : { retry: false }
       }),
     )
     yield* ctx.session.hook("warming", (event) =>
