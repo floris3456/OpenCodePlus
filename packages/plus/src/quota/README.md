@@ -1,16 +1,20 @@
 # Credential quota handoff
 
-Enable through the existing Plus plugin options:
+Create `quota-handoff.json` in the host's global config directory (normally
+`~/.config/opencodeplus`, or `OPENCODE_CONFIG_DIR` when set):
 
 ```json
 {
-  "quota": {
-    "routes": {
-      "YOUR_CPA_PROVIDER_ID": "https://cliproxy.boe.moe"
-    }
+  "routes": {
+    "YOUR_CPA_PROVIDER_ID": "https://cliproxy.boe.moe"
   }
 }
 ```
+
+Load it with the next controlled host start. Built-in plugin selectors do not
+forward options in this OpenCode version. Embedders that instantiate Plus directly
+may alternatively provide the same object as `options.quota`. Project-local files
+cannot enable the feature. This file contains route origins only, never credentials.
 
 The map uses OpenCode provider IDs; the origin must match the actual model route.
 Set the managed provider's existing `settings.transport` to `"http"`. WebSocket
@@ -38,5 +42,5 @@ When no replacement exists, the chat pauses. A confirmed reset can resume its
 existing binding without a needless compaction. Returning from another account
 still requires a fresh chat or a newly committed portable checkpoint.
 
-This module is disabled unless `quota` options are present. Changing credentials
+This module is disabled unless this file or explicit `quota` options are present. Changing credentials
 never changes the model. No CPAMP API, management key, or usage queue is used.
