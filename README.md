@@ -43,7 +43,26 @@
 
 ---
 
-### Installation
+### OpenCodePlus installation (macOS and Linux)
+
+Install the native OpenCodePlus test release with its own installer:
+
+```bash
+curl -fsSL https://github.com/floris3456/OpenCodePlus/releases/download/v2.0.18-plus-1.1.1/install.sh | bash -s -- --version v2.0.18-plus-1.1.1
+```
+
+Open a new terminal and run `opencodeplus`. The executable is installed under
+`~/.opencodeplus/bin`, and the initial configuration is created at
+`~/.config/opencodeplus/opencode.json`. Existing configuration is preserved.
+The installer sets up your login shell's PATH; it preserves older commands such
+as a Docker launcher in `~/bin`. Follow its printed PATH command to use the native
+installation immediately in the current terminal.
+
+Test releases need an explicit version until the owner marks a release Latest.
+See the [OpenCodePlus installation and update guide](packages/plus/docs/releases/operator-guide.md#installing-a-release)
+for custom paths, test-release updates and the staged-update behavior.
+
+### Upstream OpenCode installation
 
 ```bash
 # YOLO

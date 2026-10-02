@@ -450,6 +450,86 @@ if [ "$actual_binary_sha" != "$expected_binary_sha" ]; then
     exit 1
 fi
 
+# Complete only an activated install. Staging must not change config or shell setup.
+finish_install() {
+    local config_dir config_file path_command profile_file profile_dir
+    config_dir="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencodeplus}"
+    config_file="$config_dir/opencode.json"
+    if [ -e "$config_dir/opencode.jsonc" ] || [ -L "$config_dir/opencode.jsonc" ]; then
+        config_file="$config_dir/opencode.jsonc"
+    elif [ ! -e "$config_file" ] && [ ! -L "$config_file" ]; then
+        (
+            umask 077
+            mkdir -p "$config_dir"
+            cat > "$config_file" <<'CONFIG'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "update_test_releases": false
+}
+CONFIG
+        )
+        echo "Created configuration at $config_file"
+    fi
+    echo "Configuration: $config_file"
+    echo "Native executable: $bin_dir/opencodeplus"
+
+    # %q keeps spaces and shell metacharacters literal in bash/zsh profile text.
+    path_command="export PATH=$(printf '%q' "$bin_dir"):\$PATH"
+    if [ "$no_modify_path" = "true" ]; then
+        echo "To use this installation in your current shell, run:"
+        echo "  $path_command"
+        return
+    fi
+
+    local login_shell="${SHELL:-}"
+    case "${login_shell##*/}" in
+        zsh)
+            profile_dir="${ZDOTDIR:-$HOME}"
+            profile_file="$profile_dir/.zshrc"
+            ;;
+        bash)
+            profile_dir="$HOME"
+            profile_file="$HOME/.bashrc"
+            if [ "$os" = "darwin" ]; then
+                # A macOS bash login shell reads the first existing login profile.
+                profile_file="$HOME/.bash_profile"
+                if [ ! -e "$profile_file" ]; then
+                    if [ -e "$HOME/.bash_login" ]; then profile_file="$HOME/.bash_login"
+                    elif [ -e "$HOME/.profile" ]; then profile_file="$HOME/.profile"
+                    fi
+                fi
+            fi
+            ;;
+        sh|dash|ksh|"")
+            profile_dir="$HOME"
+            profile_file="$HOME/.profile"
+            ;;
+        *)
+            echo "Add $bin_dir to PATH in your shell configuration."
+            return
+            ;;
+    esac
+
+    # Respect intentional read-only profiles, including when installing as root.
+    if [ -e "$profile_file" ] || [ -L "$profile_file" ]; then
+        if [ ! -w "$profile_file" ] || [ -z "$(find -H "$profile_file" -prune -perm -200 2>/dev/null)" ]; then
+            echo "Could not write to $profile_file (file is read-only)."
+            echo "To use this installation in your current shell, run:"
+            echo "  $path_command"
+            return
+        fi
+    else
+        mkdir -p "$profile_dir"
+    fi
+
+    if ! grep -Fqx "$path_command" "$profile_file" 2>/dev/null; then
+        printf '\n# OpenCodePlus\n%s\n' "$path_command" >> "$profile_file"
+        echo "Added $bin_dir to PATH in $profile_file"
+    fi
+    echo "Open a new terminal, or use this installation now by running:"
+    echo "  $path_command"
+}
+
 # 9. Release directory immutability & Idempotent reinstall
 release_dir="$prefix/releases/$version"
 bin_dir="$prefix/bin"
@@ -463,6 +543,11 @@ if [ -d "$release_dir" ]; then
     if [ ! -e "$bin_dir/opencodeplus" ] && [ ! -L "$bin_dir/opencodeplus" ]; then
         mkdir -p "$bin_dir"
         ln -sf "../releases/$version/bin/opencodeplus" "$bin_dir/opencodeplus"
+    fi
+    # Reinstalling the active version repairs missing config/profile setup too.
+    # An already installed but inactive version remains staged.
+    if [ "$(readlink "$bin_dir/opencodeplus")" = "../releases/$version/bin/opencodeplus" ]; then
+        finish_install
     fi
     exit 0
 fi
@@ -495,56 +580,4 @@ mkdir -p "$bin_dir"
 ln -sf "../releases/$version/bin/opencodeplus" "$bin_dir/opencodeplus"
 chmod 755 "$bin_dir/opencodeplus"
 
-# 12. Shell profile configuration
-path_command="export PATH=\"$bin_dir:\$PATH\""
-if [ "$no_modify_path" = "true" ]; then
-    echo "To add $bin_dir to your PATH, run:"
-    echo "  $path_command"
-    exit 0
-fi
-
-# Candidate profiles
-candidate_profiles=(
-    "${HOME}/.bashrc"
-    "${HOME}/.bash_profile"
-    "${HOME}/.zshrc"
-    "${HOME}/.profile"
-)
-
-profile_file=""
-for p in "${candidate_profiles[@]}"; do
-    if [ -f "$p" ]; then
-        profile_file="$p"
-        break
-    fi
-done
-
-if [ -z "$profile_file" ]; then
-    echo "No shell profile file found. Manually add $bin_dir to your PATH:"
-    echo "  $path_command"
-    exit 0
-fi
-
-if [[ ":$PATH:" == *":$bin_dir:"* ]]; then
-    exit 0
-fi
-
-# A profile whose owner has no write permission was made read-only on purpose. Root passes
-# the -w test for any file, so the owner's write bit is checked as well, on the file a
-# symlinked profile points to (-H), not on the link.
-if [ ! -w "$profile_file" ] || [ -z "$(find -H "$profile_file" -prune -perm -200 2>/dev/null)" ]; then
-    echo "Could not write to $profile_file (file is read-only)."
-    echo "Manually add the directory to your PATH:"
-    echo "  $path_command"
-    exit 0
-fi
-
-if grep -Fqs "$bin_dir" "$profile_file"; then
-    exit 0
-fi
-
-echo "" >> "$profile_file"
-echo "# opencodeplus" >> "$profile_file"
-echo "$path_command" >> "$profile_file"
-echo "Added $bin_dir to PATH in $profile_file"
-exit 0
+finish_install

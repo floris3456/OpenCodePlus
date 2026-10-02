@@ -88,6 +88,11 @@ jobs:
         if: github.ref_type == 'tag'
         run: bun packages/plus/script/release/version.ts "$OPENCODE_VERSION"
 
+      # Exercise the standalone installer with /bin/bash, including macOS Bash 3.2.
+      - name: Native installer setup gate
+        working-directory: packages/plus
+        run: bun test test/release/installer.test.ts
+
       - name: Resolve build identity
         run: |
           bun -e '

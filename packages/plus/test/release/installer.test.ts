@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -15,6 +15,7 @@ import { type ReleaseTarget, type ArtifactIdentity } from "../../src/release/ide
 
 let testDir: string
 const repoRoot = join(import.meta.dirname, "../../../..")
+const bashProfile = process.platform === "darwin" ? ".bash_profile" : ".bashrc"
 
 beforeEach(async () => {
   testDir = await mkdtemp(join(tmpdir(), "installer-test-"))
@@ -48,10 +49,14 @@ async function runInstaller(
   },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const installerPath = join(repoRoot, "install.sh")
-  const proc = Bun.spawn(["bash", installerPath, ...args], {
+  const proc = Bun.spawn(["/bin/bash", installerPath, ...args], {
     cwd: options?.cwd ?? testDir,
     env: {
       ...process.env,
+      HOME: join(testDir, "home"),
+      XDG_CONFIG_HOME: join(testDir, "config"),
+      OPENCODE_CONFIG_DIR: "",
+      SHELL: "/bin/bash",
       ...options?.env,
     },
     stdout: "pipe",
@@ -153,7 +158,7 @@ describe("installer positive execution", () => {
     const prefix = join(testDir, "opt/opencodeplus")
     const fakeHome = join(testDir, "fake-home")
     await mkdir(fakeHome, { recursive: true })
-    await writeFile(join(fakeHome, ".bashrc"), "# existing bashrc\n")
+    await writeFile(join(fakeHome, bashProfile), "# existing bashrc\n")
 
     await setupReleaseAssets(assetDir, { version: "1.0.0" })
 
@@ -176,7 +181,7 @@ describe("installer positive execution", () => {
     expect(runOutput.trim()).toBe("opencodeplus-1.0.0")
 
     // Shell profile updated
-    const bashrcContent = await Bun.file(join(fakeHome, ".bashrc")).text()
+    const bashrcContent = await Bun.file(join(fakeHome, bashProfile)).text()
     expect(bashrcContent.includes(join(prefix, "bin"))).toBe(true)
   })
 
@@ -296,7 +301,7 @@ describe("installer positive execution", () => {
     const fakeHome = join(testDir, "fake-home")
     await mkdir(fakeHome, { recursive: true })
 
-    const bashrc = join(fakeHome, ".bashrc")
+    const bashrc = join(fakeHome, bashProfile)
     await writeFile(bashrc, "# read-only bashrc\n")
     await chmod(bashrc, 0o444) // make read-only
 
@@ -309,7 +314,7 @@ describe("installer positive execution", () => {
 
     expect(res.exitCode).toBe(0)
     expect(res.stdout.includes("read-only")).toBe(true)
-    expect(res.stdout.includes(`export PATH="${prefix}/bin:$PATH"`)).toBe(true)
+    expect(res.stdout.includes(`export PATH=${prefix}/bin:$PATH`)).toBe(true)
 
     // Revert chmod so cleanup succeeds
     await chmod(bashrc, 0o644)
@@ -322,7 +327,7 @@ describe("installer positive execution", () => {
     const prefix = join(testDir, "opt/root-profile")
     const fakeHome = join(testDir, "root-home")
     await mkdir(fakeHome, { recursive: true })
-    const bashrc = join(fakeHome, ".bashrc")
+    const bashrc = join(fakeHome, bashProfile)
     await writeFile(bashrc, "# read-only bashrc\n")
     await chmod(bashrc, 0o444)
     await setupReleaseAssets(assetDir, { version: "1.0.0" })
@@ -338,7 +343,7 @@ describe("installer positive execution", () => {
     // A symlinked profile is judged by the file it points to, not by the link's own mode.
     const linkedHome = join(testDir, "root-linked-home")
     await mkdir(linkedHome, { recursive: true })
-    await symlink(bashrc, join(linkedHome, ".bashrc"))
+    await symlink(bashrc, join(linkedHome, bashProfile))
     const linkedPrefix = join(testDir, "opt/root-linked")
     const linked = await runInstaller(["--offline", "--asset-dir", assetDir, "--prefix", linkedPrefix], {
       env: { HOME: linkedHome },
@@ -422,6 +427,128 @@ describe("installer positive execution", () => {
     ])
     expect(mismatch.exitCode).not.toBe(0)
     expect(mismatch.stderr.includes("does not match manifest version")).toBe(true)
+  })
+})
+
+describe("native installation setup", () => {
+  test("zsh uses its own profile and makes the native command precede an existing launcher", async () => {
+    const assets = join(testDir, "assets")
+    const prefix = join(testDir, "native install")
+    const home = join(testDir, "home")
+    const oldBin = join(home, "bin")
+    await mkdir(oldBin, { recursive: true })
+    await writeFile(join(oldBin, "opencodeplus"), "#!/bin/sh\necho old-launcher\n", { mode: 0o755 })
+    await writeFile(join(home, ".bashrc"), "# preserve bash config\n")
+    await writeFile(join(home, ".zshrc"), "# preserve zsh config\n")
+    await setupReleaseAssets(assets)
+    const env = { HOME: home, SHELL: "/bin/zsh", ZDOTDIR: home, PATH: `${oldBin}:${process.env.PATH}` }
+    const result = await runInstaller(["--asset-dir", assets, "--prefix", prefix], { env })
+    expect(result.exitCode).toBe(0)
+    expect(await Bun.file(join(home, ".bashrc")).text()).toBe("# preserve bash config\n")
+    expect(await Bun.file(join(oldBin, "opencodeplus")).text()).toBe("#!/bin/sh\necho old-launcher\n")
+    const shell = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash"
+    const child = Bun.spawn([shell, "-c", '. "$1"; command -v opencodeplus', "test", join(home, ".zshrc")], {
+      env: { ...process.env, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect((await new Response(child.stdout).text()).trim()).toBe(join(prefix, "bin/opencodeplus"))
+    expect(await child.exited).toBe(0)
+    const config = join(testDir, "config/opencodeplus/opencode.json")
+    expect(await Bun.file(config).json()).toEqual({
+      $schema: "https://opencode.ai/config.json",
+      update_test_releases: false,
+    })
+    expect((await stat(config)).mode & 0o777).toBe(0o600)
+  })
+
+  test("a fresh zsh installation creates its profile under ZDOTDIR", async () => {
+    const assets = join(testDir, "assets")
+    const profileRoot = join(testDir, "zsh-config")
+    await setupReleaseAssets(assets)
+    const result = await runInstaller(["--asset-dir", assets, "--prefix", join(testDir, "install")], {
+      env: { SHELL: "/bin/zsh", ZDOTDIR: profileRoot },
+    })
+    expect(result.exitCode).toBe(0)
+    expect(await Bun.file(join(profileRoot, ".zshrc")).exists()).toBe(true)
+    expect(await Bun.file(join(testDir, "home/.bashrc")).exists()).toBe(false)
+  })
+
+  test.each(["opencode.json", "opencode.jsonc"])(
+    "preserves an existing %s and honors the explicit config directory",
+    async (name) => {
+      const assets = join(testDir, "assets")
+      const config = join(testDir, "custom config")
+      await mkdir(config, { recursive: true })
+      const contents = name.endsWith("jsonc")
+        ? '// existing settings\n{"update_test_releases": true}\n'
+        : '{"update_test_releases": true}\n'
+      await writeFile(join(config, name), contents, { mode: 0o400 })
+      await setupReleaseAssets(assets)
+      const result = await runInstaller(
+        ["--asset-dir", assets, "--prefix", join(testDir, "install"), "--no-modify-path"],
+        {
+          env: { OPENCODE_CONFIG_DIR: config },
+        },
+      )
+      expect(result.exitCode).toBe(0)
+      expect(await Bun.file(join(config, name)).text()).toBe(contents)
+      expect((await stat(join(config, name))).mode & 0o777).toBe(0o400)
+      if (name.endsWith("jsonc")) expect(await Bun.file(join(config, "opencode.json")).exists()).toBe(false)
+      expect(await Bun.file(join(testDir, "config/opencodeplus/opencode.json")).exists()).toBe(false)
+      expect(await Bun.file(join(testDir, "home", bashProfile)).exists()).toBe(false)
+    },
+  )
+
+  test("reinstall repairs missing setup without rewriting the active binary or duplicating PATH", async () => {
+    const assets = join(testDir, "assets")
+    const prefix = join(testDir, "install")
+    const profileRoot = join(testDir, "zsh")
+    const env = { SHELL: "/bin/zsh", ZDOTDIR: profileRoot }
+    await setupReleaseAssets(assets)
+    const args = ["--asset-dir", assets, "--prefix", prefix]
+    expect((await runInstaller([...args, "--no-modify-path"], { env })).exitCode).toBe(0)
+    const binary = join(prefix, "releases/1.0.0/bin/opencodeplus")
+    const before = await stat(binary)
+    await rm(join(testDir, "config/opencodeplus/opencode.json"))
+    expect((await runInstaller(args, { env })).exitCode).toBe(0)
+    expect(await stat(binary)).toEqual(before)
+    expect(await Bun.file(join(testDir, "config/opencodeplus/opencode.json")).exists()).toBe(true)
+    const profile = await Bun.file(join(profileRoot, ".zshrc")).text()
+    expect((await runInstaller(args, { env })).exitCode).toBe(0)
+    expect(await Bun.file(join(profileRoot, ".zshrc")).text()).toBe(profile)
+  })
+
+  test("staging an initial or already installed inactive release creates no config or profile", async () => {
+    const assets = join(testDir, "assets")
+    const prefix = join(testDir, "install")
+    await setupReleaseAssets(assets)
+    const args = ["--asset-dir", assets, "--prefix", prefix, "--stage"]
+    expect((await runInstaller(args)).exitCode).toBe(0)
+    expect((await runInstaller(args)).exitCode).toBe(0)
+    expect(await Bun.file(join(prefix, "bin/opencodeplus")).exists()).toBe(false)
+    expect(await Bun.file(join(testDir, "config/opencodeplus/opencode.json")).exists()).toBe(false)
+    expect(await Bun.file(join(testDir, "home", bashProfile)).exists()).toBe(false)
+  })
+})
+
+describe("inactive release setup", () => {
+  test("reinstalling an inactive version preserves the incumbent and does not initialize config", async () => {
+    const incumbent = join(testDir, "incumbent")
+    const candidate = join(testDir, "candidate")
+    const prefix = join(testDir, "install")
+    await setupReleaseAssets(incumbent, { version: "1.0.0" })
+    await setupReleaseAssets(candidate, { version: "1.0.1" })
+    expect((await runInstaller(["--asset-dir", incumbent, "--prefix", prefix, "--no-modify-path"])).exitCode).toBe(0)
+    await rm(join(testDir, "config/opencodeplus/opencode.json"))
+    const args = ["--asset-dir", candidate, "--prefix", prefix]
+    expect((await runInstaller(args)).exitCode).toBe(0)
+    expect((await runInstaller(args)).exitCode).toBe(0)
+    const active = Bun.spawn([join(prefix, "bin/opencodeplus")], { stdout: "pipe" })
+    expect((await new Response(active.stdout).text()).trim()).toBe("opencodeplus-1.0.0")
+    expect(await active.exited).toBe(0)
+    expect(await Bun.file(join(testDir, "config/opencodeplus/opencode.json")).exists()).toBe(false)
+    expect(await Bun.file(join(testDir, "home", bashProfile)).exists()).toBe(false)
   })
 })
 
@@ -546,7 +673,7 @@ describe("installer download location and shell", () => {
     await setupReleaseAssets(assetDir, { version: "1.0.0" })
     const proc = Bun.spawn(
       ["bash", "--posix", join(repoRoot, "install.sh"), "--offline", "--asset-dir", assetDir, "--no-modify-path"],
-      { cwd: testDir, env: { ...process.env, PREFIX: join(testDir, "opt/posix") }, stdout: "pipe", stderr: "pipe" },
+      { cwd: testDir, env: { ...process.env, PREFIX: join(testDir, "opt/posix"), XDG_CONFIG_HOME: join(testDir, "config"), OPENCODE_CONFIG_DIR: "" }, stdout: "pipe", stderr: "pipe" },
     )
     const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited])
     expect(stderr).toBe("")

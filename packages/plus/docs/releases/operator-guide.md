@@ -31,6 +31,29 @@ curl -fsSL https://github.com/floris3456/OpenCodePlus/releases/download/v<versio
 
 The installer verifies `release.json`, the archive SHA-256 and the extracted binary SHA-256 before anything is installed, needs no Node, npm or Bun, and never edits a read-only shell profile.
 
+On macOS this installs a native Apple Silicon or Intel executable, using the
+system's Bash 3.2 and standard tools. No Docker, Homebrew, Node or Bun installation
+is needed. The default executable is `~/.opencodeplus/bin/opencodeplus`.
+
+After initial activation the installer creates
+`~/.config/opencodeplus/opencode.json` with the test-release setting visible and
+disabled by default. It honors `XDG_CONFIG_HOME` and `OPENCODE_CONFIG_DIR`, and
+preserves an existing `opencode.json` or `opencode.jsonc` byte for byte. Enable
+`"update_test_releases": true` there to include test releases in `/update`.
+
+Shell setup follows `SHELL`: zsh uses `${ZDOTDIR:-$HOME}/.zshrc`, macOS bash uses
+its login profile, Linux bash uses `.bashrc`, and POSIX shells use `.profile`.
+A missing profile is created. The native binary directory is prepended, so an
+older `~/bin/opencodeplus` launcher remains intact and no longer shadows it in a
+new terminal. The installer prints the command to update the current shell's
+PATH as well. Read-only profiles remain unchanged and receive manual instructions;
+`--no-modify-path` skips profile edits while still creating missing configuration.
+
+Reinstalling the active version repairs missing config and shell setup without
+rewriting the immutable release. `--stage`, and installation over an incumbent,
+continue to stage only: they do not create config, change profiles or activate the
+replacement. An existing staged release remains inactive on reinstall.
+
 ### Release versions and publication
 
 A release version names the opencode release its source contains, then the OpenCodePlus release number: `2.0.18-plus-1.0.0`, tagged `v2.0.18-plus-1.0.0` and shown as "OpenCodePlus 1.0.0 (opencode 2.0.18)". Both parts are exactly three numbers without leading zeros. `packages/util/src/plus-version.ts` (`PlusVersion`) parses and orders them.
