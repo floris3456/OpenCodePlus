@@ -4,6 +4,7 @@ import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { createHash } from "node:crypto"
 import { Effect, Schema, Stream } from "effect"
+import { registerUsage } from "./usage-register.js"
 import { quotaConfig } from "./config.js"
 import { QuotaController } from "./controller.js"
 import { Definition } from "./rpc.js"
@@ -13,6 +14,7 @@ import { portableMessages } from "./portable.js"
 export function registerQuota(ctx: Context) {
   return Effect.gen(function* () {
     const config = yield* Effect.promise(() => quotaConfig(ctx.options.quota))
+    yield* registerUsage(ctx, config)
     if (config === undefined) return
     const installation = yield* Effect.promise(() => installationIdentity(ctx))
     const controller = new QuotaController(config, installation, {

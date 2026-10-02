@@ -35,7 +35,7 @@ An existing opaque checkpoint needs local compaction to enroll in quota routing.
 Session capabilities, cursors, route generations and retry intent are in private
 plugin storage. Provider ID and model ID together identify a route. Auxiliary
 requests do not establish primary enrollment, so existing opaque history still
-requires a local checkpoint. RPC exposes only display text. No quota action depends on an LLM
+requires a local checkpoint. RPC exposes display text and credential quota summaries; raw capabilities stay private. No quota action depends on an LLM
 following instructions in a notice. Polling stops when sessions stop executing.
 
 When no replacement exists, the chat pauses. A confirmed reset can resume its
@@ -44,3 +44,35 @@ still requires a fresh chat or a newly committed portable checkpoint.
 
 This module is disabled unless this file or explicit `quota` options are present. Changing credentials
 never changes the model. No CPAMP API, management key, or usage queue is used.
+
+
+## Credential usage command (1.1.2)
+
+- `/usage` opens quota bars for every bridge credential belonging to the selected
+  model's resolved CPA provider. It includes general and applicable model-specific
+  windows, such as five-hour, seven-day Sonnet, and OAuth-app quotas.
+- `/usage --all` shows every configured bridge credential and every recorded
+  window, including other providers and model scopes.
+- **IN USE** identifies the exact credential CPA confirmed for this chat's running
+  primary request. **LAST USED** identifies its most recent primary request while
+  idle; CPA may choose another credential on the next request. Title generation
+  and compaction do not overwrite that identity.
+- Each row includes the credential alias and exact auth ID. Aliases sharing one
+  account are labelled so their bars are not mistaken for additional capacity.
+- Bars show remaining quota, reset date/countdown and stale evidence. Missing,
+  dormant and non-applicable windows are labelled rather than given invented data.
+  Use the mouse wheel or navigation keys to scroll, `r` to refresh, `a` to switch
+  scope, and Escape to close. The open view refreshes every five seconds.
+
+Requires CPA's `quota-handoff` plugin **0.1.2 or newer** and the existing host quota
+configuration. The selected chat/model must have made a CPA request first, because
+that establishes the capability used to authenticate the read. A fresh chat or
+unconfigured provider gets setup guidance. Credentials outside the plugin's
+configured Claude/Codex pool have no quota data in this view.
+
+The read uses the existing GET event route with `view=usage`, `model` and `all`
+query parameters. No additional Caddy route, CPAMP key or management API is needed.
+It does not enroll a chat, acknowledge a notice, reserve capacity, start compaction,
+or change credential selection. Valid reads may trigger the existing rate-limited
+quota sampler; its refresh/backoff policy remains authoritative. Old CPA plugins
+return explicit upgrade guidance rather than empty bars.
