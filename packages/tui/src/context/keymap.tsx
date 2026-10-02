@@ -238,7 +238,10 @@ function createLayer(input: () => KeymapLayer) {
           ...definition,
           name: id,
           opencode: command,
-          run: (context: CommandContext<Renderable, KeyEvent>) => run(value.input(id), context.event),
+          run: (context: CommandContext<Renderable, KeyEvent>) => {
+            settleSequence(value.keymap)
+            return run(value.input(id), context.event)
+          },
           ...(description === undefined ? {} : { desc: description }),
           ...(group === undefined ? {} : { category: group }),
           ...(palette === undefined ? {} : { namespace: "palette" }),
@@ -250,6 +253,7 @@ function createLayer(input: () => KeymapLayer) {
           cmd: () => {
             if (command.enabled === false) return false
             if (typeof command.enabled === "function" && !command.enabled()) return false
+            settleSequence(value.keymap)
             return command.run()
           },
           ...(command.title === undefined && command.description === undefined
@@ -268,6 +272,18 @@ function createLayer(input: () => KeymapLayer) {
       ],
     }
   })
+}
+
+// A command reached through a key sequence (<leader>p) runs while the keymap
+// still holds that sequence, and the keymap re-validates a held sequence
+// whenever a layer goes away. A command that switches views removes layers in
+// the middle of the update, so that check read the old view's layer
+// conditions mid-update and Solid ran the view switch out of order: the new
+// view mounted twice and the first copy was never disposed (Instructions
+// opened from a chat kept a dead copy that took its arrow keys). The sequence
+// is complete once a command runs, so let it go first.
+function settleSequence(keymap: OpenTuiKeymap) {
+  if (keymap.hasPendingSequence()) keymap.clearPendingSequence()
 }
 
 function useShortcuts() {

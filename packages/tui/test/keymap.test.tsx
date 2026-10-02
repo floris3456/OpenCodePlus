@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
+import { useKeymap } from "@opentui/keymap/solid"
 import { ConfigProvider } from "../src/config"
 import { Keymap } from "../src/context/keymap"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
@@ -135,6 +136,39 @@ test("global commands stay reachable when the mode changes", async () => {
   try {
     exercise()
     expect(calls).toEqual(["global", "base", "global"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+// A leader command that leaves a view runs while the keymap still held its
+// sequence. Removing the old view's layers then re-validated that sequence,
+// reading the old view's layer conditions in the middle of the update: the
+// new view mounted twice and the first copy, never disposed, kept its key
+// layer (Instructions opened from a chat lost its arrow keys).
+test("a command reached through a key sequence runs after the sequence is released", async () => {
+  const seen: boolean[] = []
+
+  function Harness() {
+    const keymap = useKeymap()
+    Keymap.createLayer(() => ({
+      mode: "global",
+      commands: [{ id: "test.open", bind: "<leader>p", run: () => void seen.push(keymap.hasPendingSequence()) }],
+    }))
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <ConfigProvider config={createTuiResolvedConfig()}>
+      <Keymap.Provider>
+        <Harness />
+      </Keymap.Provider>
+    </ConfigProvider>
+  ))
+  try {
+    app.mockInput.pressKey("x", { ctrl: true })
+    app.mockInput.pressKey("p")
+    expect(seen).toEqual([false])
   } finally {
     app.renderer.destroy()
   }
