@@ -250,6 +250,12 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
         const requestPath = `/api/session/${segment(input.sessionID)}/context`
         return dataOf(await request("GET", requestPath), "GET", requestPath) as ReadonlyArray<SessionMessage.Info>
       }),
+    compact: (input) =>
+      Effect.promise(async () => {
+        const requestPath = `/api/session/${segment(input.sessionID)}/compact`
+        const body = await request("POST", requestPath, { id: input.id, delivery: input.delivery })
+        return dataOf(body, "POST", requestPath) as SessionInbox.Compaction
+      }),
     // Model hooks stay in the host process; the bridge carries session calls only.
     hook: () => Effect.succeed({ dispose: Effect.void }),
   }

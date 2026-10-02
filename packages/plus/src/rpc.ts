@@ -958,10 +958,22 @@ export const WarmingSetInput = Schema.Struct({
   chat: Schema.Literals(["on", "off", "default"]),
 }).annotate({ identifier: "Plus.WarmingSetInput" })
 
+// Compact before cold, per chat: on compacts an idle chat right before its
+// cache goes cold. Off in every new chat.
+export interface WarmingCompactInput extends Schema.Schema.Type<typeof WarmingCompactInput> {}
+export const WarmingCompactInput = Schema.Struct({
+  sessionID: Schema.String,
+  on: Schema.Boolean,
+}).annotate({ identifier: "Plus.WarmingCompactInput" })
+
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
 export const WarmingStatus = Schema.Struct({
   sessionID: Schema.String,
   chat: Schema.Literals(["on", "off", "default"]),
+  /** Compact before cold is on for this chat; absent from an older server. */
+  compact: Schema.optionalKey(Schema.Boolean),
+  /** When it compacts this chat, while a compaction is scheduled. */
+  compactAt: Schema.optionalKey(Schema.Number),
   active: Schema.Boolean,
   source: Schema.optionalKey(Schema.Literals(["chat", "model", "config"])),
   level: Schema.optionalKey(Level),
@@ -1541,6 +1553,9 @@ const PortableWarmingSessionInput = Schema.toStandardSchemaV1(
   WarmingSessionInput.annotate({ identifier: "Plus.WarmingSessionInput" }),
 )
 const PortableWarmingSetInput = Schema.toStandardSchemaV1(WarmingSetInput.annotate({ identifier: "Plus.WarmingSetInput" }))
+const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
+  WarmingCompactInput.annotate({ identifier: "Plus.WarmingCompactInput" }),
+)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
@@ -1882,6 +1897,11 @@ export const Definition = Rpc.define({
     },
     "warming.set": {
       input: PortableWarmingSetInput,
+      output: PortableWarmingStatus,
+      errors: {},
+    },
+    "warming.compact": {
+      input: PortableWarmingCompactInput,
       output: PortableWarmingStatus,
       errors: {},
     },

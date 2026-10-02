@@ -6,6 +6,7 @@ import {
   parseInterval,
   parsePrompt,
   parseWarming,
+  WARMING_MAX_MS,
   type Level,
   type ModelWarmingFields,
   type ResolvedModelFields,
@@ -134,7 +135,28 @@ export function effectiveWarming(input: {
     if (layer === undefined) return { value: base[key] as NonNullable<Layer[K]>, from: base.from }
     return { value: layer[key] as NonNullable<Layer[K]>, from: layer.from }
   }
-  return { on: pick("on"), duration: pick("duration"), interval: pick("interval"), prompt: pick("prompt") }
+  const interval = pick("interval")
+  const duration = pick("duration")
+  return {
+    on: pick("on"),
+    duration: { ...duration, value: roundWarming(duration.value, interval.value) },
+    interval,
+    prompt: pick("prompt"),
+  }
+}
+
+/**
+ * A warming time is a whole number of keep-alive intervals, rounded up: 30m
+ * with a 4m interval warms 32m, so the window ends on a keep-alive instead of
+ * part-way to the next one. The fields may come from different layers, so
+ * this applies wherever they meet.
+ */
+export function roundWarming(duration: number, interval: number): number {
+  if (!(interval > 0) || duration % interval === 0) return duration
+  const up = Math.ceil(duration / interval) * interval
+  // Past the 24h ceiling a stored time would no longer parse: round down there.
+  if (up <= WARMING_MAX_MS || duration > WARMING_MAX_MS) return up
+  return Math.max(interval, Math.floor(WARMING_MAX_MS / interval) * interval)
 }
 
 function rowLayers(row: ResolvedModelFields | undefined): Layer[] {
@@ -269,6 +291,31 @@ export function setModelSettingsRecord(
       updated,
     },
   ]
+}
+
+/**
+ * A row's own warming time rounded up to a whole number of the interval it
+ * resolves to (its own, else the rows below it), in stored form; undefined
+ * when the row sets no time or the time is already whole. Saving rounds, so
+ * the row reads what warming does.
+ */
+export function roundedWarmingFor(
+  records: readonly ModelSettingsRecord[],
+  key: ModelSettingsKey,
+  host?: HostWarming,
+): string | undefined {
+  const record = settingsFor(records, key)
+  const parsed = record?.warming === undefined ? undefined : parseWarming(record.warming)
+  const duration = parsed === undefined || "error" in parsed || !parsed.on ? undefined : parsed.duration
+  if (duration === undefined) return undefined
+  const every = isEvery(key) ? undefined : everySettings(records)
+  const interval = effectiveWarming({
+    model: record,
+    ...(every === undefined ? {} : { every }),
+    ...(host === undefined ? {} : { host }),
+  }).interval.value
+  const rounded = roundWarming(duration, interval)
+  return rounded === duration ? undefined : formatDuration(rounded)
 }
 
 /**
@@ -461,4 +508,72 @@ export function parseModelDefaultItemId(item: string): ModelSettingsKey | undefi
 
 export function isModelDefaultRowId(rowId: string): boolean {
   return rowId.startsWith(`item:defaults:${MODELS_OWNER}:${MODEL_DEFAULT_PREFIX}`)
+}
+
+// A Defaults › Models row opens into one row per field:
+// `item:defaults:/models:modelsetting:<field>:*` or
+// `…:modelsetting:<field>:<provider>/<model>`. The field leads so a model id
+// with a colon still parses, and `modelsetting:` is not `modeldefault:`, so
+// code that handles the whole row never takes a field row.
+export const MODEL_SETTING_PREFIX = "modelsetting:"
+
+export function modelSettingItemId(key: ModelSettingsKey, field: ModelSettingsField): string {
+  return `${MODEL_SETTING_PREFIX}${field}:${modelDefaultItemId(key).slice(MODEL_DEFAULT_PREFIX.length)}`
+}
+
+export function modelSettingRowId(key: ModelSettingsKey, field: ModelSettingsField): string {
+  return `item:defaults:${MODELS_OWNER}:${modelSettingItemId(key, field)}`
+}
+
+export function parseModelSettingItemId(
+  item: string,
+): { readonly key: ModelSettingsKey; readonly field: ModelSettingsField } | undefined {
+  if (!item.startsWith(MODEL_SETTING_PREFIX)) return undefined
+  const rest = item.slice(MODEL_SETTING_PREFIX.length)
+  const colon = rest.indexOf(":")
+  const field = MODEL_SETTINGS_FIELDS.find((entry) => entry === rest.slice(0, colon))
+  if (colon === -1 || field === undefined) return undefined
+  const key = parseModelDefaultItemId(`${MODEL_DEFAULT_PREFIX}${rest.slice(colon + 1)}`)
+  return key === undefined ? undefined : { key, field }
+}
+
+export function isModelSettingRowId(rowId: string): boolean {
+  return rowId.startsWith(`item:defaults:${MODELS_OWNER}:${MODEL_SETTING_PREFIX}`)
+}
+
+/** The Defaults › Models row a field row belongs to. */
+export function modelSettingParentRowId(rowId: string): string | undefined {
+  const parsed = parseModelSettingItemId(rowId.slice(`item:defaults:${MODELS_OWNER}:`.length))
+  return parsed === undefined ? undefined : modelDefaultRowId(parsed.key)
+}
+
+export const MODEL_SETTING_LABELS: Record<ModelSettingsField, string> = {
+  warming: "Warming",
+  interval: "Ping every",
+  prompt: "Keep-alive prompt",
+  effort: "Effort",
+}
+
+/** One field row's value as the list shows it: the effective value and, when inherited, where from. */
+export function modelSettingValue(view: ModelDefaultView, field: ModelSettingsField, own: ModelSettingsRecord | undefined): string {
+  const found = modelSettingEffective(view, field)
+  if (found === undefined) return "none"
+  // The keep-alive text is a sentence; the row keeps its start and the inspector shows all of it.
+  const effective = field === "prompt" && found.text.length > 24 ? { ...found, text: `${found.text.slice(0, 23)}…` } : found
+  if (own?.[field] === undefined) return `${effective.text} · ${sourceWord(effective.from)}`
+  // "on" keeps the total time of the level below.
+  if (field === "warming" && own.warming === "on") return `on · ${effective.text}`
+  return effective.text
+}
+
+/** One field's effective value in words, with its source. */
+export function modelSettingEffective(
+  view: ModelDefaultView,
+  field: ModelSettingsField,
+): { readonly text: string; readonly from: SettingFrom } | undefined {
+  if (field === "warming")
+    return { text: view.on.value ? formatDuration(view.duration.value) : "off", from: view.on.value ? view.duration.from : view.on.from }
+  if (field === "interval") return { text: formatDuration(view.interval.value), from: view.interval.from }
+  if (field === "prompt") return { text: view.prompt.value, from: view.prompt.from }
+  return view.effort === undefined ? undefined : { text: view.effort.value, from: view.effort.from }
 }

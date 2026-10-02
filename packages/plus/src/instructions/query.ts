@@ -13,7 +13,7 @@ import type {
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
 import { materialize, skeletonOf, teamsOwnerSegment, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
-import { parseModelDefaultItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
+import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -258,7 +258,7 @@ function ownOf(state: QueryState, address: Address): CustomizationRecord | undef
 // Defaults › Models rows keep their record in their own snapshot field, not in
 // the inventory records.
 function modelDefaultRecordOf(state: QueryState, address: Address): ModelSettingsRecord | undefined {
-  const key = parseModelDefaultItemId(address.item)
+  const key = parseModelDefaultItemId(address.item) ?? parseModelSettingItemId(address.item)?.key
   return key === undefined ? undefined : settingsFor(state.memo.ctx.modelSettings, key)
 }
 
@@ -348,6 +348,10 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
         if (node.kind === "group") for (const child of node.children()) walk(child)
       }
       for (const group of groups) walk(group)
+      // A Defaults › Models row's field rows: built from the row alone.
+      if (isModelDefaultRowId(lazy.id))
+        for (const field of lazy.children())
+          push({ id: field.id, kind: field.kind, label: field.label, depth: field.depth, orphan: false, lazy: field, parent: undefined, address: field.address, sectionIds: [] })
       return
     }
     push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [] })
@@ -636,6 +640,7 @@ function itemKindOf(state: QueryState, candidate: Candidate): string | undefined
   if (item !== undefined) return item.kind
   // A Defaults › Models row has no upstream item; its own kind names it.
   if (parseModelDefaultItemId(address.item) !== undefined) return "modeldefault"
+  if (parseModelSettingItemId(address.item) !== undefined) return "modelsetting"
   if (!candidate.orphan) return undefined
   const prefix = address.item.split(":")[0]
   return prefix === undefined || prefix === "" ? undefined : prefix
@@ -1088,7 +1093,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => allowed.some((alt) => candidate.kind === lower(alt))
     }
     case "item": {
-      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "perm", "setting", "compaction"], term)
+      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "modelsetting", "perm", "setting", "compaction"], term)
       return (candidate) => allowed.some((alt) => itemKindOf(state, candidate) === lower(alt))
     }
     case "tool": {

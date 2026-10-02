@@ -115,10 +115,11 @@ test("the interval and the keep-alive prompt resolve per field, row over Default
     interval: { value: "3m30s", level: "project" as const },
     prompt: { value: "ping", level: "project" as const },
   }
+  // 2h is not a whole number of 3m30s pings: it warms 35 of them, 2h2m30s.
   expect(decideWarming({ configured, rows: { row }, chat: undefined }).settings).toEqual({
     prompt: "ping",
     interval: 3.5 * MINUTE,
-    duration: 120 * MINUTE,
+    duration: 122.5 * MINUTE,
   })
   // Defaults › Models › this model: the agent row still wins over it, field by field.
   const modelRow = defaultsRecord({ interval: "5m" })
@@ -139,7 +140,8 @@ test("the interval and the keep-alive prompt resolve per field, row over Default
   ).toEqual({ settings: undefined, source: "model", level: "defaults" })
   const every = decideWarming({ configured, rows: { every: everyRow }, chat: undefined })
   expect(every).toMatchObject({ source: "model", level: "defaults" })
-  expect(every.settings).toEqual({ prompt: "keep", interval: 25 * MINUTE, duration: configured.duration })
+  // The host's 30m with Every model's 25m ping rounds up to two pings.
+  expect(every.settings).toEqual({ prompt: "keep", interval: 25 * MINUTE, duration: 50 * MINUTE })
   // A Defaults row that only sets the interval does not switch warming on where the host left it off.
   expect(decideWarming({ configured: undefined, rows: { model: modelRow }, chat: undefined })).toEqual({
     settings: undefined,
@@ -249,7 +251,8 @@ test("the hook rows include the Defaults › Models rows for the session's model
   expect(rows.every).toMatchObject({ interval: "25m" })
   const decision = decideWarming({ configured, rows, chat: undefined })
   expect(decision).toMatchObject({ source: "model", level: "defaults" })
-  expect(decision.settings).toEqual({ prompt: configured.prompt, interval: 25 * MINUTE, duration: 120 * MINUTE })
+  // 2h with a 25m ping: five whole pings, 2h5m.
+  expect(decision.settings).toEqual({ prompt: configured.prompt, interval: 25 * MINUTE, duration: 125 * MINUTE })
   // A model with no row of its own still sees Every model.
   const other = warmingRowsOf(state, "alpha", { providerID: "openai", id: "gpt" })
   expect(other.model).toBeUndefined()
@@ -343,4 +346,130 @@ test("the footer counts down to the end of the window, then shows the cache cold
   expect(nextChatSwitch({ ...base, active: false }, 0)).toBe("on")
   expect(nextChatSwitch({ ...base, chat: "off", active: false }, 0)).toBe("on")
   expect(nextChatSwitch({ ...base, chat: "on", active: false }, 0)).toBe("off")
+})
+
+// Compact before cold: a fake clock and timers stand in for setTimeout.
+function fakeClock(start: number) {
+  const timers = new Map<number, { readonly run: () => void; readonly at: number }>()
+  const state = { now: start, next: 0 }
+  return {
+    get now() {
+      return state.now
+    },
+    set now(value: number) {
+      state.now = value
+    },
+    options: {
+      now: () => state.now,
+      setTimer: (run: () => void, ms: number) => {
+        state.next += 1
+        timers.set(state.next, { run, at: state.now + ms })
+        return state.next
+      },
+      clearTimer: (timer: unknown) => {
+        timers.delete(timer as number)
+      },
+    },
+    pending: () => [...timers.values()].map((timer) => timer.at),
+    /** Advance to the earliest timer and run it. */
+    async fire() {
+      const [id, timer] = [...timers.entries()].toSorted((left, right) => left[1].at - right[1].at)[0] ?? []
+      if (id === undefined || timer === undefined) throw new Error("no timer")
+      timers.delete(id)
+      state.now = timer.at
+      timer.run()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    },
+  }
+}
+
+test("compact before cold is off in a new chat and, switched on, compacts an idle chat once when its warming window ends", async () => {
+  const file = await tempFile()
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(file, clock.options)
+  const compacted: string[] = []
+  const compact = async (sessionID: string) => {
+    compacted.push(sessionID)
+  }
+  // Off by default: a reply schedules nothing.
+  await store.decide(event({}), {}, compact)
+  expect(clock.pending()).toEqual([])
+  expect(await store.status("ses_warm")).toMatchObject({ compact: false, active: true })
+  // On: the compaction waits for the end of the warming window (30m after the reply).
+  expect(await store.setCompact("ses_warm", true)).toMatchObject({ compact: true, compactAt: 1_000_000 + 30 * MINUTE })
+  // A later reply moves it, leaving one scheduled compaction.
+  clock.now = 1_000_000 + 5 * MINUTE
+  expect(await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)).toBe(true)
+  expect(clock.pending()).toEqual([1_000_000 + 35 * MINUTE])
+  // A keep-alive inside the window keeps it where it is.
+  clock.now = 1_000_000 + 7 * MINUTE
+  await store.decide(event({ phase: "warm", since: 1_000_000 + 5 * MINUTE, now: clock.now }), {}, compact)
+  expect(clock.pending()).toEqual([1_000_000 + 35 * MINUTE])
+  await clock.fire()
+  expect(compacted).toEqual(["ses_warm"])
+  expect((await store.status("ses_warm")).compactAt).toBeUndefined()
+  // Its own request stops warming and schedules no further compaction.
+  const own = event({ kind: "compaction", since: clock.now, now: clock.now })
+  await store.decide(own, {}, compact)
+  expect(own.settings).toBeUndefined()
+  expect(clock.pending()).toEqual([])
+  expect(await store.status("ses_warm", clock.now + MINUTE)).toMatchObject({ active: false, compact: true })
+  expect((await store.status("ses_warm", clock.now + MINUTE)).expires).toBeUndefined()
+  // The next real request schedules again; the switch survives a restart and
+  // another chat stays off.
+  expect(JSON.parse(await fs.readFile(path.join(path.dirname(file), "compact.json"), "utf8"))).toEqual(["ses_warm"])
+  const restarted = createWarmingStore(file, clock.options)
+  await restarted.decide(event({ since: clock.now, now: clock.now }), {}, compact)
+  expect((await restarted.status("ses_warm")).compactAt).toBe(clock.now + 30 * MINUTE)
+  expect((await restarted.status("ses_other")).compact).toBe(false)
+  restarted.dispose()
+  store.dispose()
+})
+
+test("compact before cold skips a running chat, a manual compaction, a cold cache, and stops when switched off", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  const compacted: string[] = []
+  const compact = async (sessionID: string) => {
+    compacted.push(sessionID)
+  }
+  await store.setCompact("ses_warm", true)
+  // Warming off for the chat: the cache goes cold one interval after the reply.
+  await store.setChat("ses_warm", "off")
+  const off = event({})
+  await store.decide(off, { row: { interval: { value: "4m", level: "project" } } }, compact)
+  expect(off.settings).toBeUndefined()
+  expect(clock.pending()).toEqual([1_000_000 + 4 * MINUTE])
+  // A running chat is using its cache: the timer passes without compacting.
+  store.running("ses_warm", true)
+  await clock.fire()
+  expect(compacted).toEqual([])
+  store.running("ses_warm", false)
+  // A manual compaction's request schedules nothing and keeps the chat's warming decision.
+  await store.setChat("ses_warm", "default")
+  const manual = event({ kind: "compaction", since: clock.now, now: clock.now })
+  await store.decide(manual, {}, compact)
+  expect(manual.settings).toEqual(configured)
+  expect(clock.pending()).toEqual([])
+  // Switching on after the window ended leaves the cold cache alone.
+  await store.setCompact("ses_warm", false)
+  await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)
+  clock.now += 31 * MINUTE
+  await store.setCompact("ses_warm", true)
+  expect(clock.pending()).toEqual([])
+  // Switched off, a scheduled compaction is dropped.
+  await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)
+  expect(clock.pending()).toHaveLength(1)
+  expect((await store.setCompact("ses_warm", false)).compact).toBe(false)
+  expect(clock.pending()).toEqual([])
+  // A refused compaction does not stop warming after the next compaction request.
+  await store.setCompact("ses_warm", true)
+  await store.decide(event({ since: clock.now, now: clock.now }), {}, async () => {
+    throw new Error("refused")
+  })
+  await clock.fire()
+  const later = event({ kind: "compaction", since: clock.now, now: clock.now })
+  await store.decide(later, {}, compact)
+  expect(later.settings).toEqual(configured)
+  store.dispose()
 })

@@ -687,7 +687,7 @@ test("memo shares one resolve cache with no double resolves", () => {
   // modelDefaultView, never through resolve(), so the whole-memo invariant
   // counts the resolvable item rows only.
   const itemCount = new Set(
-    tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true).map((node) => node.id),
+    tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true && node.address?.item.startsWith("modelsetting:") !== true).map((node) => node.id),
   ).size
   const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
   query(snapshot, { where: "text:e tokens:>0 upstream:e" }, memo)
@@ -703,7 +703,7 @@ test("badge-backed queries resolve each address at most once through the shared 
   const memo = buildMemo(snapshot)
   const tree = expandedTree(snapshot)
   const itemCount = new Set(
-    tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true).map((node) => node.id),
+    tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true && node.address?.item.startsWith("modelsetting:") !== true).map((node) => node.id),
   ).size
   const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
   const found = query(snapshot, { where: "review:true" }, memo)

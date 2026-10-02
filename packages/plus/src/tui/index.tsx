@@ -69,6 +69,16 @@ export default Plugin.define({
               run: () => warming.toggle(),
             },
             {
+              id: "plus.compact.cold",
+              title: "Compact before cold on/off for this chat",
+              description: "Compact this chat right before its cache goes cold, while the summary still reads a warm cache",
+              group: "OpenCodePlus",
+              palette: true,
+              bind: "<leader>j",
+              slash: { name: "compact-warm" },
+              run: () => warming.toggleCompact(),
+            },
+            {
               id: "plus.warming.follow",
               title: "Cache warming: follow the model settings for this chat",
               group: "OpenCodePlus",
@@ -114,10 +124,15 @@ export default Plugin.define({
       append: "prompt.footer",
       render: (props) => <warming.Footer sessionID={props.sessionID} />,
     })
+    const disposeCompactMarker = context.ui.slot({
+      prepend: "prompt.footer.status",
+      render: (props) => <warming.CompactMarker sessionID={props.sessionID} />,
+    })
     return () => {
       disposeRoute()
       disposeSlot()
       disposeFooter()
+      disposeCompactMarker()
       warming.dispose()
       monitor.dispose()
       disposeQuota()

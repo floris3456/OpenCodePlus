@@ -6,7 +6,7 @@ import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { isModelDefaultRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { isModelDefaultRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -891,8 +891,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (modelsOwner !== -1) {
       const owner = chain[modelsOwner]!
       const key = `${owner.id}#models`
+      // A field row opens the model row above it.
+      const inside = chain.slice(modelsOwner + 1, -1).map((entry) => entry.id)
       batch(() => {
         setNavCollapsed(new Set([...navCollapsed()].filter((id) => !chain.some((entry) => entry.id === id))))
+        setListOpen(new Set([...listOpen(), ...inside]))
+        setListCollapsed(new Set([...listCollapsed()].filter((id) => !inside.includes(id))))
         setOwners({ ...owners(), [level()]: key })
         setNavSelected({ ...navSelected(), [level()]: key })
         setCategories({ ...categories(), [key]: owner.id })
@@ -1050,6 +1054,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       state.setStatus(node.badges.disabled)
       return
     }
+    // A Defaults › Models field is one value, not text: it edits in its prompt.
+    if (isModelSettingRowId(node.id)) {
+      void dialogs.editModelSetting(node)
+      return
+    }
     openMode("edit", node)
   }
 
@@ -1132,9 +1141,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     // Enter on a model row edits the candidate and its warming; an inherited
     // row plants a local record, like activation. A Defaults › Models row
-    // edits its own fields through modelSettings.set.
+    // opens into its fields like → does; each field edits on its own
+    // through modelSettings.set.
+    if (isModelSettingRowId(node.id)) {
+      void dialogs.editModelSetting(node)
+      return
+    }
     if (isModelDefaultRow(node)) {
-      void dialogs.editModelSettings(node)
+      if (row?.expandable === true) setOpen(row, !row.expanded)
       return
     }
     if (isModelRow(node)) {

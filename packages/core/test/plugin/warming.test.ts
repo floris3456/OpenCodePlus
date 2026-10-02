@@ -598,5 +598,30 @@ describe("WarmingPlugin", () => {
         expect(test.seen.every((event) => event.model.providerID === "alpha" && event.model.id === "m1")).toBe(true)
       }),
     )
+
+    it.effect("names the request that started an activity window", () =>
+      Effect.gen(function* () {
+        const test = yield* setup(() => {})
+        const hooks = yield* PluginHooks.Service
+        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
+        yield* triggerGenerate(test.sessions.parent, ref("alpha", "m1"), "side question")
+        yield* hooks.trigger("session", "compaction", {
+          sessionID: test.sessions.parent,
+          agent: Agent.ID.make("build"),
+          model: ref("alpha", "m1"),
+          system: [],
+          messages: [],
+          tools: {},
+          options: {},
+        })
+        yield* advance(2)
+        expect(test.seen.filter((event) => event.phase === "activity").map((event) => event.kind)).toEqual([
+          "primary",
+          "generate",
+          "compaction",
+        ])
+        expect(test.seen.filter((event) => event.phase === "warm").every((event) => event.kind === undefined)).toBe(true)
+      }),
+    )
   })
 })

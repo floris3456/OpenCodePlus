@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
-import { applies, parsePermItemId, resolve, resolveSplit, threeWay } from "../../instructions/model.js"
+import { applies, formatDuration, formatWarming, parsePermItemId, parseWarming, resolve, resolveSplit, threeWay } from "../../instructions/model.js"
 import type {
   Address,
   AgentSource,
@@ -16,8 +16,11 @@ import type {
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
 import { buildTreeMemo, controlChoices, treeOf, withControlItems, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import {
+  isEvery,
   isModelDefaultRowId,
+  modelDefaultItemId,
   parseModelDefaultItemId,
+  parseModelSettingItemId,
   type HostModel,
   type ModelSettingsRecord,
 } from "../../instructions/model-settings.js"
@@ -568,6 +571,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   async function resetNode(node: TreeNode): Promise<boolean> {
     if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
+    const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
+    if (setting !== undefined) return editModelSettings(node, { [setting.field]: null })
     if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = resetModelRow(memoInput(), node.id, treeMemo())
@@ -701,9 +706,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return current === undefined ? undefined : modelDefaultsViewOf(current, node.address?.item)
   }
 
-  // Enter on a Defaults › Models row: set or clear its fields through
-  // modelSettings.set. The rows are server-owned (a separate snapshot field),
-  // so this is its own call, not the inventory mutate.
+  // A Defaults › Models row or one of its field rows: set or clear fields
+  // through modelSettings.set. The rows are server-owned (a separate snapshot
+  // field), so this is its own call, not the inventory mutate.
   async function editModelSettings(
     node: TreeNode,
     fields: { warming?: string | null; interval?: string | null; prompt?: string | null; effort?: string | null },
@@ -713,11 +718,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus("No snapshot loaded")
       return false
     }
-    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    const item = node.address?.item
+    const key = item === undefined ? undefined : (parseModelDefaultItemId(item) ?? parseModelSettingItemId(item)?.key)
     if (key === undefined) {
       setStatus(`"${node.label}" is not a Defaults › Models row`)
       return false
     }
+    const label = isEvery(key) ? "Every model" : `${key.providerID}/${key.modelID}`
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -725,7 +732,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       if (disposed || requestGen !== generation) return false
       setSnapshot(await plus["instructions.snapshot"](undefined, { location: context.location }))
       if (disposed) return false
-      setStatus(defaultsStatus(node.label, result.record))
+      const rounded = roundedNote(fields.warming, result.record?.warming, modelDefaultsViewOf(snapshot()!, modelDefaultItemId(key))?.interval.value)
+      setStatus(`${defaultsStatus(label, result.record)}${rounded}`)
       return true
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return false
@@ -1007,6 +1015,14 @@ export type InstructionsState = ReturnType<typeof createInstructionsState>
 
 function now(): string {
   return new Date().toISOString()
+}
+
+// The server rounds a warming time up to whole pings; say so when it did.
+function roundedNote(typed: string | null | undefined, stored: string | undefined, interval: number | undefined): string {
+  if (typed === undefined || typed === null || stored === undefined) return ""
+  const parsed = parseWarming(typed)
+  if ("error" in parsed || formatWarming(parsed) === stored) return ""
+  return ` (${formatWarming(parsed)} rounds up to ${stored}: whole ${interval === undefined ? "" : `${formatDuration(interval)} `}pings)`
 }
 
 function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord | null): string {

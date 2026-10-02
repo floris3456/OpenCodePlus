@@ -629,6 +629,7 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
           .pipe(Effect.map((interrupted) => ({ interrupted }))),
       wait: (input) => sessions.wait(input.sessionID),
       context: (input) => sessions.context(input.sessionID),
+      compact: sessions.compact,
     },
   }
   return context

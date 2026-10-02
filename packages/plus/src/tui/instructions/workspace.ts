@@ -10,7 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -197,8 +197,9 @@ function sliceOf(
   const ownerIndex = rows.findIndex((node) => node.id === owner.node.id)
   // The Defaults › Models section is its own category: Every model and the
   // per-model rows are the list, so the section needs no second group level.
+  // Each row opens (→) into its fields.
   if (owner.node.id === MODELS_GROUP_ID) {
-    const list = directChildren(rows, ownerIndex).map((node) => listRow(node, owner.node.depth, open))
+    const list = subtreeOf(rows, ownerIndex).map((node) => listRow(node, owner.node.depth, open))
     return { nav, owner, categories: [owner.node], category: owner.node, list }
   }
   const children = directChildren(rows, ownerIndex)
@@ -223,9 +224,10 @@ function listRow(node: TreeNode, base: number, open: ReadonlySet<string>): Row {
   }
 }
 
-/** Rows that can hold children: sections, models, rule rows and controls are leaves. */
+/** Rows that can hold children: sections, models, rule rows, controls and Defaults › Models fields are leaves. */
 export function canExpand(node: TreeNode): boolean {
   if (node.kind === "section") return false
+  if (isModelSettingRowId(node.id)) return false
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   if (node.address?.item.startsWith("model:") === true) return false
   if (node.address?.item.startsWith("perm:") === true) return false

@@ -815,6 +815,7 @@ function sessionDomain(overrides: Partial<SessionDomain> = {}): SessionDomain {
     interrupt: overrides.interrupt ?? die("unused session.interrupt"),
     wait: overrides.wait ?? die("unused session.wait"),
     context: overrides.context ?? die("unused session.context"),
+    compact: overrides.compact ?? die("unused session.compact"),
     hook: overrides.hook ?? die("unused session.hook"),
   }
 }

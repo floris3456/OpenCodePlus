@@ -33,7 +33,15 @@ import {
   modelDefaultRowId,
   modelDefaultValue,
   modelDefaultView,
+  isModelSettingRowId,
+  modelSettingItemId,
+  modelSettingParentRowId,
+  modelSettingRowId,
+  modelSettingValue,
   parseModelDefaultItemId,
+  parseModelSettingItemId,
+  roundedWarmingFor,
+  roundWarming,
   setModelSettingsRecord,
   settingsFor,
   warmingFieldsOf,
@@ -206,8 +214,9 @@ test("a Defaults › Models row resolves field by field: own, Every model, openc
   expect(mixed.duration).toEqual({ value: 90 * MINUTE, from: "config" })
   expect(mixed.own).toBe(true)
   expect(modelDefaultValue(mixed)).toBe("warm 1h30m · every 3m")
-  // Without an own row the summary names the sources.
-  expect(modelDefaultValue(modelDefaultView({ every, host: config }))).toBe("warm 1h30m · every 25m · every model · opencode.json")
+  // Without an own row the summary names the sources. 90m with a 25m ping
+  // warms four whole pings: 1h40m.
+  expect(modelDefaultValue(modelDefaultView({ every, host: config }))).toBe("warm 1h40m · every 25m · every model · opencode.json")
   expect(modelDefaultValue(modelDefaultView({ host: config }))).toBe("warm 1h30m · every 30m · opencode.json")
   // Nothing sets warming, and the built-in default is off.
   expect(modelDefaultValue(modelDefaultView({}))).toBe("warming off · built-in")
@@ -366,7 +375,8 @@ test("Defaults › Models rows render Every model first with per-model rows and 
   // Claude keeps its own config duration while inheriting the rest.
   expect(rows[1]?.badges.value).toBe("warm 30m · every 5m · every model · opencode.json")
   expect(rows[2]?.badges.value).toBe("warm 30m · every 5m · every model")
-  expect(rows[0]?.actions).toMatchObject({ toggle: false, edit: true, reset: true, remove: true })
+  // The row itself opens into its fields; the fields edit.
+  expect(rows[0]?.actions).toMatchObject({ toggle: false, edit: false, reset: true, remove: true })
   // A model with no Plus row and no config shows the built-in values.
   expect(rows[2]?.badges.modified).toBeUndefined()
 })
@@ -388,8 +398,14 @@ test("the query engine finds Defaults › Models rows with item:modeldefault and
     "item:defaults:/models:modeldefault:anthropic/claude",
   ])
   expect(query(input, { where: "label:nova", fields: ["id"] }, memo).rows).toEqual([])
+  // The row and the one field it sets are modified; its other fields inherit.
   expect(query(input, { where: "modified:true", fields: ["id"] }, memo).rows.map((row) => row.id)).toEqual([
     "item:defaults:/models:modeldefault:*",
+    "item:defaults:/models:modelsetting:warming:*",
+  ])
+  expect(query(input, { where: "item:modelsetting label:Ping", fields: ["id"] }, memo).rows.map((row) => row.id)).toEqual([
+    "item:defaults:/models:modelsetting:interval:*",
+    "item:defaults:/models:modelsetting:interval:anthropic/claude",
   ])
   // The Every model row carries its own values, so the badge projection says
   // modified and the record projection returns the stored row.
@@ -459,6 +475,119 @@ test("instructions.set, reset, delete and show cover a Defaults › Models row",
   })
   const badModel = await runFail(set, { id: "item:project:build:model:anthropic/claude", interval: "soon" })
   expect(badModel.message).toContain("not an interval")
+})
+
+test("a warming time is a whole number of pings, rounded up and capped under 24h", () => {
+  expect(roundWarming(30 * MINUTE, 4 * MINUTE)).toBe(32 * MINUTE)
+  expect(roundWarming(32 * MINUTE, 4 * MINUTE)).toBe(32 * MINUTE)
+  expect(roundWarming(30 * MINUTE, 3.5 * MINUTE)).toBe(31.5 * MINUTE)
+  // Rounding up past 24h would store a time that no longer parses: round down there.
+  expect(roundWarming(24 * 60 * MINUTE, 7 * MINUTE)).toBe(205 * 7 * MINUTE)
+  // Resolution rounds where the time and the interval come from different rows.
+  const view = effectiveWarming({ model: record({ warming: "30m" }), every: record({ interval: "4m" }) })
+  expect(view.duration).toEqual({ value: 32 * MINUTE, from: "model" })
+  expect(modelDefaultValue(modelDefaultView({ record: record({ warming: "on" }) }))).toBe("warm 32m · every 4m")
+  // Saving rounds a row's own time against the interval it resolves to.
+  const rows = [record({ interval: "4m" }), record({ providerID: "a", modelID: "b", warming: "30m" })]
+  expect(roundedWarmingFor(rows, { providerID: "a", modelID: "b" })).toBe("32m")
+  expect(roundedWarmingFor(rows, { providerID: "a", modelID: "b" }, { on: true, interval: 3.5 * MINUTE })).toBe("32m")
+  expect(roundedWarmingFor([record({ providerID: "a", modelID: "b", warming: "30m" })], { providerID: "a", modelID: "b" }, { on: true, interval: 3.5 * MINUTE })).toBe("31m30s")
+  // Control: a whole time, "on" and "off" stay as typed.
+  expect(roundedWarmingFor([record({ warming: "32m", interval: "4m" })], {})).toBeUndefined()
+  expect(roundedWarmingFor([record({ warming: "on", interval: "7m" })], {})).toBeUndefined()
+  expect(roundedWarmingFor([record({ warming: "off" })], {})).toBeUndefined()
+})
+
+test("modelSettings.set saves a warming time rounded up to whole pings", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude", { warming: { interval: "3.5 minutes" } })],
+    classifications: { "": "general", claude: "general" },
+  })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const set = (input: Parameters<(typeof handlers)["modelSettings.set"]>[0]) =>
+    Effect.runPromise(handlers["modelSettings.set"](input, thrownContext()))
+  // A model row's time rounds against opencode.json's interval for it (3m30s).
+  expect((await set({ providerID: "anthropic", modelID: "claude", warming: "30m" })).record).toMatchObject({ warming: "31m30s" })
+  expect((await set({ warming: "30m", interval: "4m" })).record).toMatchObject({ warming: "32m", interval: "4m" })
+  // A later interval re-rounds the row's own time.
+  expect((await set({ interval: "5m" })).record).toMatchObject({ warming: "35m", interval: "5m" })
+  // Control: a whole time is stored as typed.
+  expect((await set({ providerID: "anthropic", modelID: "claude", warming: "35m", interval: "5m" })).record).toMatchObject({ warming: "35m" })
+})
+
+test("a Defaults › Models row opens into one field row per field", async () => {
+  const key = { providerID: "bedrock", modelID: "anthropic.claude-v2:0" }
+  expect(modelSettingItemId(key, "interval")).toBe("modelsetting:interval:bedrock/anthropic.claude-v2:0")
+  expect(parseModelSettingItemId("modelsetting:interval:bedrock/anthropic.claude-v2:0")).toEqual({ key, field: "interval" })
+  expect(parseModelSettingItemId("modelsetting:warming:*")).toEqual({ key: {}, field: "warming" })
+  expect(parseModelSettingItemId("modelsetting:colour:*")).toBeUndefined()
+  expect(parseModelSettingItemId("modeldefault:*")).toBeUndefined()
+  expect(isModelSettingRowId(modelSettingRowId(key, "prompt"))).toBe(true)
+  expect(isModelDefaultRowId(modelSettingRowId(key, "prompt"))).toBe(false)
+  expect(modelSettingParentRowId(modelSettingRowId(key, "prompt"))).toBe(modelDefaultRowId(key))
+
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude", { variants: ["low", "high"] })],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  await api.setModelSettings({ warming: "30m", interval: "4m" })
+  const rows = expandedTree(memoInputOf((await api.snapshot()).value))
+  const at = rows.findIndex((row) => row.id === "item:defaults:/models:modeldefault:*")
+  const fields = rows.slice(at + 1, at + 5)
+  expect(fields.map((row) => [row.label, row.depth, row.badges.value])).toEqual([
+    ["Warming", 3, "32m"],
+    ["Ping every", 3, "4m"],
+    ["Keep-alive prompt", 3, `${BUILT_IN_WARMING.prompt.slice(0, 23)}… · built-in`],
+    ["Effort", 3, "none"],
+  ])
+  expect(fields.map((row) => row.actions)).toEqual([
+    { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },
+    { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },
+    { toggle: false, edit: true, reset: false, remove: false, split: false, pin: false },
+    { toggle: false, edit: true, reset: false, remove: false, split: false, pin: false },
+  ])
+  expect(fields[0]?.badges.modified).toBe(true)
+  expect(fields[2]?.badges.modified).toBeUndefined()
+  // The model row inherits every field and says where from.
+  const claude = rows.findIndex((row) => row.id === "item:defaults:/models:modeldefault:anthropic/claude")
+  expect(rows.slice(claude + 1, claude + 3).map((row) => row.badges.value)).toEqual(["32m · every model", "4m · every model"])
+  const view = modelDefaultView({ record: record({ warming: "on" }), every: record({ interval: "4m" }) })
+  expect(modelSettingValue(view, "warming", record({ warming: "on" }))).toBe("on · 32m")
+})
+
+test("instructions tools set, reset and show one Defaults › Models field", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude")],
+    classifications: { "": "general", claude: "general" },
+  })
+  await registerInstructionTools(ctx, createPlusApi(ctx, createState()))
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const show = need(tools, "instructions_show")
+  const reset = need(tools, "instructions_reset")
+  const del = need(tools, "instructions_delete")
+  await runOk(set, { id: "item:defaults:/models:modelsetting:interval:*", text: "4m" })
+  await runOk(set, { id: "item:defaults:/models:modelsetting:warming:*", text: "30m" })
+  expect((await load(project)).records.find((entry) => entry.type === "modelSettings")).toMatchObject({ warming: "32m", interval: "4m" })
+  const shown = (await runOk(show, { id: "item:defaults:/models:modelsetting:warming:*" })) as { field: string; value: unknown }
+  expect(shown).toMatchObject({ field: "warming", value: { text: "32m", from: "model" } })
+  expect((await runFail(set, { id: "item:defaults:/models:modelsetting:interval:*", state: "on" })).message).toContain("takes text")
+  expect((await runFail(del, { id: "item:defaults:/models:modelsetting:interval:*", confirm: true })).message).toContain("reset clears it")
+  // reset clears only that field.
+  await runOk(reset, { id: "item:defaults:/models:modelsetting:interval:*" })
+  const after = (await load(project)).records.find((entry) => entry.type === "modelSettings")
+  expect(after).toMatchObject({ warming: "32m" })
+  expect(after).not.toHaveProperty("interval")
 })
 
 // ---------------------------------------------------------------------------

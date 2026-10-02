@@ -42,8 +42,15 @@ import {
   modelDefaultRowId,
   modelDefaultValue,
   modelDefaultView,
+  isModelSettingRowId,
+  modelSettingItemId,
+  modelSettingParentRowId,
+  modelSettingRowId,
+  modelSettingValue,
   everySettings,
   settingsFor,
+  MODEL_SETTING_LABELS,
+  MODEL_SETTINGS_FIELDS,
   MODELS_GROUP_ID,
   MODELS_OWNER,
   type HostWarming,
@@ -533,6 +540,8 @@ function canDescend(node: Lazy, rowId: string): boolean {
 
   if (node.kind === "item") {
     if (node.address === undefined) return false
+    // A Defaults › Models row holds its field rows.
+    if (isModelSettingRowId(rowId)) return modelSettingParentRowId(rowId) === node.id
     if (rowKind === "section") {
       if (rowId.startsWith(node.id.replace("item:", "section:") + ":")) return true
     }
@@ -708,17 +717,33 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
   const view = (): ModelDefaultView =>
     modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+  // The row opens (→) into one row per field; each field edits on its own.
   return {
     id: modelDefaultRowId(key),
     kind: "item",
     label: modelDefaultLabel(key),
     depth: 2,
     address,
-    actions: { toggle: false, edit: true, reset: record !== undefined, remove: record !== undefined, split: false, pin: false },
+    actions: { toggle: false, edit: false, reset: record !== undefined, remove: record !== undefined, split: false, pin: false },
     selfReview: () => false,
     partial: () => ({ value: modelDefaultValue(view()), ...(record === undefined ? {} : { modified: true as const }) }),
     reviewCount: () => 0,
-    children: () => [],
+    children: () =>
+      MODEL_SETTINGS_FIELDS.map((field): Lazy => {
+        const own = record?.[field] !== undefined
+        return {
+          id: modelSettingRowId(key, field),
+          kind: "item",
+          label: MODEL_SETTING_LABELS[field],
+          depth: 3,
+          address: { level: "defaults", agent: null, item: modelSettingItemId(key, field), section: null },
+          actions: { toggle: false, edit: true, reset: own, remove: false, split: false, pin: false },
+          selfReview: () => false,
+          partial: () => ({ value: modelSettingValue(view(), field, record), ...(own ? { modified: true as const } : {}) }),
+          reviewCount: () => 0,
+          children: () => [],
+        }
+      }),
   }
 }
 

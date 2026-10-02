@@ -229,6 +229,8 @@ export interface RenderFixtureOptions {
   readonly width?: number
   readonly height?: number
   readonly routeData?: unknown
+  /** What router.current() answers; the Instructions route when absent. */
+  readonly route?: unknown
   readonly dialogs?: DialogScript
   readonly mutateResult?: unknown
   /** RPC name → the error it throws (link.set, preset.delete, …). */
@@ -576,12 +578,13 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
       router: {
         register: () => () => {},
         navigate: () => {},
-        current: () => ({
-          type: "plugin",
-          id: "opencode.plus",
-          name: "instructions",
-          data: options.routeData,
-        }),
+        current: () =>
+          options.route ?? {
+            type: "plugin",
+            id: "opencode.plus",
+            name: "instructions",
+            data: options.routeData,
+          },
       },
       panel: {
         open: () => false,

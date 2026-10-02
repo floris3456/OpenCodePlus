@@ -18,6 +18,7 @@ import {
   isEvery,
   modelDefaultView,
   parseModelDefaultItemId,
+  parseModelSettingItemId,
   settingsFor,
   type HostModel,
   type ModelDefaultView,
@@ -225,7 +226,8 @@ export function modelDefaultsViewOf(
   snapshot: Plus.Snapshot,
   item: string | undefined,
 ): (ModelDefaultView & { readonly key: ModelSettingsKey; readonly record?: ModelSettingsRecord }) | undefined {
-  const key = item === undefined ? undefined : parseModelDefaultItemId(item)
+  // A field row resolves through the row it belongs to.
+  const key = item === undefined ? undefined : (parseModelDefaultItemId(item) ?? parseModelSettingItemId(item)?.key)
   if (key === undefined) return undefined
   const records = (snapshot.modelSettings ?? []).map(modelSettingsRecordOf)
   const own = settingsFor(records, key)

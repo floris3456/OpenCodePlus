@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { fromWords, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { fromWords, modelSettingEffective, MODEL_SETTING_LABELS, MODELS_GROUP_ID, parseModelSettingItemId } from "../../instructions/model-settings.js"
 import { formatDuration } from "../../instructions/model.js"
 import { modelDefaultsViewOf } from "../../instructions/snapshot.js"
 import type { Snapshot } from "../../rpc.js"
@@ -62,6 +62,7 @@ export function kindWord(node: TreeNode): string {
   if (node.kind === "section") return "section"
   if (item?.startsWith("perm:") === true) return "permission"
   if (item?.startsWith("modeldefault:") === true) return "model defaults"
+  if (item?.startsWith("modelsetting:") === true) return "model setting"
   if (item?.startsWith("model:") === true) return "model"
   if (item?.startsWith("tool:") === true) return "tool"
   if (item?.startsWith("skill:") === true) return "skill"
@@ -73,6 +74,15 @@ export function kindWord(node: TreeNode): string {
 export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly Row[], memo?: Memo): Fact[] {
   const facts: Fact[] = []
   const defaults = modelDefaultsView(node, snapshot)
+  const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
+  if (defaults !== undefined && setting !== undefined) {
+    const effective = modelSettingEffective(defaults, setting.field)
+    facts.push([MODEL_SETTING_LABELS[setting.field].toLowerCase(), effective === undefined ? "none" : `${effective.text} · ${fromWords(effective.from)}`, "value"] as Fact)
+    if (setting.field === "warming" && defaults.on.value)
+      facts.push(["window", `${Math.round(defaults.duration.value / defaults.interval.value)} × ${formatDuration(defaults.interval.value)} pings`])
+    facts.push(["applies to", defaults.key.providerID === undefined ? "every model" : `${defaults.key.providerID}/${defaults.key.modelID}, unless an agent's own model row sets it`])
+    return facts
+  }
   if (defaults !== undefined) {
     facts.push([
       "warming",
@@ -168,7 +178,12 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
   if (defaults === undefined) return []
   const rows = ["The agent's own model row sets a field first; whatever it leaves out resolves here."]
   if (defaults.key.providerID !== undefined) rows.push("Below this row: Every model, then opencode.json, then the built-in defaults.")
-  else rows.push("Below this row: opencode.json and the built-in defaults. Enter edits; empty clears a field.")
+  else rows.push("Below this row: opencode.json and the built-in defaults.")
+  const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
+  if (setting === undefined) rows.push("→ opens its fields; each edits on its own.")
+  else rows.push("Enter edits; empty inherits. r resets this field.")
+  if (setting?.field === "warming" || setting?.field === "interval")
+    rows.push("A warming time rounds up to whole pings: 30m with a 4m ping warms 32m.")
   return rows
 }
 

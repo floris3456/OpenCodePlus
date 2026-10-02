@@ -35,7 +35,7 @@ export function structureDetail(node: TreeNode): string | undefined {
 
 type Origin = "native" | "plus" | "user"
 
-const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: how long to keep the prompt cache warm, how often to ping it, the keep-alive text, and the default effort (variant). "Every model" sits below the per-model rows and above opencode.json and the built-in defaults.`
+const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: how long to keep the prompt cache warm, how often to ping it, the keep-alive text, and the default effort (variant). "Every model" sits below the per-model rows and above opencode.json and the built-in defaults. → opens a row into its fields; Enter on a field edits it alone. A warming time rounds up to whole pings.`
 
 const ROOTS: Record<string, string> = {
   "root:project": "Customizations for this project: its agents and teams, and the rows they resolve to. Project rows override Global and Defaults.",

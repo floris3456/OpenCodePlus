@@ -4,8 +4,9 @@ import { createEffect, createSignal, Show } from "solid-js"
 import { Definition, type Plus } from "../rpc.js"
 
 // Cache warming in the TUI: a countdown under the prompt to when warming stops
-// for this chat, a per-chat on/off switch (<leader>k), and a confirmation
-// before a message goes into a cold cache.
+// for this chat, a per-chat on/off switch (<leader>k), a confirmation before a
+// message goes into a cold cache, and the per-chat compact before cold switch
+// (<leader>j, /compact-warm) with its marker at the left of the prompt footer.
 
 /** How long a held send waits for the confirming second submit, as interrupting a running chat does. */
 export const CONFIRM_MS = 5000
@@ -54,6 +55,9 @@ export function nextChatSwitch(status: Plus.WarmingStatus | undefined, now: numb
   if (status.chat === "off") return "on"
   return status.active && status.expires !== undefined && status.expires > now ? "off" : "on"
 }
+
+/** The footer marker while compact before cold is on for the chat. */
+export const COMPACT_MARKER = "compact before cold"
 
 export function createWarming(context: Plugin.Context) {
   const plus = context.client.rpc(Definition)
@@ -138,6 +142,29 @@ export function createWarming(context: Plugin.Context) {
     })
   }
 
+  async function toggleCompact(): Promise<void> {
+    const route = context.ui.router.current()
+    if (route.type !== "session") {
+      context.ui.toast.show({ variant: "warning", message: "Open a chat to switch compact before cold" })
+      return
+    }
+    const sessionID = route.sessionID
+    const current = tracked.sessionID === sessionID ? status() : await plus["warming.status"]({ sessionID }).catch(() => undefined)
+    const on = current?.compact !== true
+    const next = await plus["warming.compact"]({ sessionID, on }).catch((error: unknown) => {
+      context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+      return undefined
+    })
+    if (next === undefined) return
+    if (tracked.sessionID === sessionID) setStatus(next)
+    context.ui.toast.show({
+      variant: "info",
+      message: on
+        ? "Compact before cold on: this chat compacts right before its cache goes cold"
+        : "Compact before cold off for this chat",
+    })
+  }
+
   async function follow(): Promise<void> {
     const route = context.ui.router.current()
     if (route.type !== "session") return
@@ -174,10 +201,24 @@ export function createWarming(context: Plugin.Context) {
     )
   }
 
+  // Compact before cold at the left of the footer: two words of state, no countdown.
+  function CompactMarker(props: { readonly sessionID?: string }) {
+    createEffect(() => track(props.sessionID))
+    return (
+      <Show when={props.sessionID !== undefined && status()?.sessionID === props.sessionID && status()?.compact === true}>
+        <text fg={context.theme.text.muted} wrapMode="none" flexShrink={0}>
+          {COMPACT_MARKER}
+        </text>
+      </Show>
+    )
+  }
+
   return {
     toggle,
+    toggleCompact,
     follow,
     Footer,
+    CompactMarker,
     dispose() {
       clearInterval(tick)
       clearTimeout(timers.disarm)

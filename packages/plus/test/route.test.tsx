@@ -4018,7 +4018,7 @@ test("enter on a model row edits model, variant, warming, interval and prompt; w
 
 // Enter on a Defaults › Models row edits the four keep-alive fields through
 // modelSettings.set (not the inventory mutate).
-test("enter on a Defaults › Models row edits warming, interval, prompt and effort", async () => {
+test("a Defaults › Models row opens into its fields, and enter on a field edits that field alone", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("alice")],
     modelSettings: [
@@ -4043,32 +4043,57 @@ test("enter on a Defaults › Models row edits warming, interval, prompt and eff
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
     width: 160,
-    dialogs: { prompts: ["45m", "5m", "keep warm", "high"] },
+    dialogs: { prompts: ["5m", "45m"] },
   })
   try {
     await goto(fixture, "item:defaults:/models:modeldefault:acme/nova-1", "acme/nova-1")
     await fixture.waitForFrame((frame) => frame.includes("acme/nova-1"))
+    expect(listPane(fixture.captureCharFrame())).not.toContain("Ping every")
+    // Enter (like →) opens the row instead of asking for every field in turn.
     expect(dispatch(fixture, "return")).toBe(true)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Keep-alive prompt"))
+    const open = listPane(fixture.captureCharFrame())
+    for (const label of ["Warming", "Ping every", "Keep-alive prompt", "Effort"]) expect(open).toContain(label)
+    // 30m of its own against opencode.json's 3m30s ping warms 31m30s.
+    expect(open).toContain("31m30s")
+    expect(open).toContain("3m30s · opencode.json")
+    expect(fixture.fake.promptInputs).toEqual([])
+    await moveTo(fixture, "Ping every")
+    dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.modelSettingsSets.length === 1)
-    // Prefilled with the row's own warming; the interval, prompt and effort
-    // start empty with the effective values as placeholders.
-    expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? ""])).toEqual([
-      ["Warming · acme/nova-1", "30m"],
-      ["Ping every · acme/nova-1", ""],
-      ["Keep-alive prompt · acme/nova-1", ""],
-      ["Effort · acme/nova-1", ""],
+    expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? "", input.placeholder ?? ""])).toEqual([
+      ["Ping every · acme/nova-1", "", "3m30s"],
     ])
-    expect(fixture.fake.promptInputs[1]?.placeholder).toBe("3m30s")
-    expect(fixture.fake.modelSettingsSets[0]).toEqual({
-      providerID: "acme",
-      modelID: "nova-1",
-      warming: "45m",
-      interval: "5m",
-      prompt: "keep warm",
-      effort: "high",
-    })
+    expect(fixture.fake.modelSettingsSets[0]).toEqual({ providerID: "acme", modelID: "nova-1", interval: "5m" })
+    // The warming field prefills the row's own time and sets nothing else.
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("Warming"))
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.modelSettingsSets.length === 2)
+    expect(fixture.fake.promptInputs[1]).toMatchObject({ title: "Warming · acme/nova-1", value: "30m" })
+    expect(fixture.fake.modelSettingsSets[1]).toEqual({ providerID: "acme", modelID: "nova-1", warming: "45m" })
     expect(fixture.fake.mutateInputs).toEqual([])
-    await fixture.waitForFrame((frame) => frame.includes("Defaults › Models"))
+    // ← closes the row again from a field.
+    dispatch(fixture, "left")
+    dispatch(fixture, "left")
+    await fixture.waitForFrame((frame) => !listPane(frame).includes("Keep-alive prompt"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("the filter reaches a Defaults › Models field row inside its closed model row", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("alice")],
+    hostModels: [{ providerID: "acme", modelID: "nova-1", variants: [] }],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { prompts: ["low"] } })
+  try {
+    await goto(fixture, "item:defaults:/models:modelsetting:effort:*", "Effort")
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.modelSettingsSets.length === 1)
+    expect(fixture.fake.promptInputs[0]?.title).toBe("Effort · Every model")
+    expect(fixture.fake.modelSettingsSets[0]).toEqual({ effort: "low" })
   } finally {
     fixture.destroy()
   }

@@ -14,7 +14,7 @@ import { Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
-import { agentBody, discover, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
+import { agentBody, discover, hostModelsOf, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
@@ -39,6 +39,7 @@ import { memoInputOf } from "./instructions/snapshot.js"
 import {
   everySettings,
   MODEL_SETTINGS_FIELDS,
+  roundedWarmingFor,
   setModelSettingsRecord,
   settingsFor,
   warmingFieldsOf,
@@ -1279,9 +1280,16 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           : { effort: input.effort === null || input.effort.trim().length === 0 ? null : input.effort.trim() }),
       }
       const updated = new Date().toISOString()
+      // A warming time rounds up to whole intervals against opencode.json too.
+      const host =
+        key.providerID === undefined
+          ? undefined
+          : (await hostModelsOf(ctx)).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)?.warming
       const write = async () => {
         const current = await load(directory)
-        const next = setModelSettingsRecord(modelSettingsOf(current.records), key, fields, updated)
+        const merged = setModelSettingsRecord(modelSettingsOf(current.records), key, fields, updated)
+        const rounded = roundedWarmingFor(merged, key, host)
+        const next = rounded === undefined ? merged : setModelSettingsRecord(merged, key, { warming: rounded }, updated)
         const record = settingsFor(next, key)
         const saved = await save(directory, {
           expectedProjectRevision: current.projectRevision,
@@ -3106,6 +3114,12 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         yield* emitWarmingChanged(state, input.sessionID)
         return status
       }),
+    "warming.compact": (input) =>
+      Effect.gen(function* () {
+        const status = yield* Effect.promise(() => warmingStore.setCompact(input.sessionID, input.on))
+        yield* emitWarmingChanged(state, input.sessionID)
+        return status
+      }),
   }
 }
 
@@ -3118,7 +3132,15 @@ function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming)
       state.warmingCheckedAt = Date.now()
       await refreshActiveModelsIfStale(await activationDirectory(ctx.location.directory), state)
     }
-    return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model))
+    return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model), (sessionID) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Effect.logInfo("plus compacting before the cache goes cold", { sessionID })
+          yield* emitWarmingChanged(state, sessionID)
+          yield* ctx.session.compact({ sessionID: Session.ID.make(sessionID) })
+        }).pipe(Effect.tapCause((cause) => Effect.logWarning("plus compact before cold failed", { cause, sessionID }))),
+      ),
+    )
   }).pipe(
     Effect.flatMap((changed) => (changed ? emitWarmingChanged(state, event.sessionID) : Effect.void)),
     Effect.catchCause((cause) => Effect.logWarning("plus cache warming decision failed", { cause, sessionID: event.sessionID })),
@@ -5335,10 +5357,15 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
   )
   // A team run's state follows its host session: idle, failed and interrupted
   // turns settle the attempt and hand the inbox over without any tool call.
+  // Compact before cold reads the same events: a running chat never compacts.
   const runs = ctx.event.subscribe().pipe(
     Stream.filter((event) => SessionRunEvents.has(event.type)),
     Stream.runForEach((event) =>
-      Effect.promise(() => onSessionEvent(ctx, teamsDataDir(), event)).pipe(
+      Effect.promise(() => {
+        const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
+        if (typeof sessionID === "string") warmingStore.running(sessionID, event.type === "session.execution.started")
+        return onSessionEvent(ctx, teamsDataDir(), event)
+      }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus team session event failed", { cause, type: event.type })),
         Effect.asVoid,
       ),

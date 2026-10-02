@@ -64,10 +64,15 @@ import {
   everySettings,
   hostModelOf,
   isModelDefaultRowId,
+  isModelSettingRowId,
   modelDefaultValue,
   modelDefaultView,
+  modelSettingEffective,
   parseModelDefaultItemId,
+  parseModelSettingItemId,
   settingsFor,
+  type ModelSettingsField,
+  type ModelSettingsKey,
 } from "./instructions/model-settings.js"
 import { presetListing } from "./instructions/presets.js"
 import type { PlusApi } from "./index.js"
@@ -333,6 +338,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelSettingRowId(input.id)) {
+            const field = settingOf(node)?.field
+            if (field === undefined) return yield* Effect.fail(unknownError(input.id))
+            if (input.text === undefined)
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes text: its value, or "" to inherit` }))
+            return yield* setModelDefaults(api, node, actor, { [field]: input.text })
+          }
           if (isModelDefaultRowId(input.id)) return yield* setModelDefaults(api, node, actor, input)
           if (input.effort !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no effort; effort is set on a Defaults › Models row` }))
@@ -366,6 +378,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelSettingRowId(input.id)) {
+            const field = settingOf(node)?.field
+            if (field === undefined) return yield* Effect.fail(unknownError(input.id))
+            return yield* clearModelDefaults(api, node, actor, "reset", [field])
+          }
           if (isModelDefaultRowId(input.id)) return yield* clearModelDefaults(api, node, actor, "reset")
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* resetModel(api, snapshot, memo, input.id, actor)
           const op = reset(memo, input.id)
@@ -431,6 +448,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelSettingRowId(input.id))
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a field of its model row: reset clears it` }))
           if (isModelDefaultRowId(input.id)) {
             if (node.actions?.remove !== true)
               return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no Defaults › Models values to clear` }))
@@ -974,7 +993,7 @@ function setModelDefaults(
       input.state === undefined
     )
       return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
-    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    const key = defaultsKeyOf(node)
     if (key === undefined) return yield* Effect.fail(unknownError(node.id))
     const result = yield* Effect.promise(() =>
       api.setModelSettings({
@@ -997,12 +1016,13 @@ function clearModelDefaults(
   node: TreeNode,
   actor: Plus.Actor,
   verb: "reset" | "remove",
+  fields: readonly ModelSettingsField[] = ["warming", "interval", "prompt", "effort"],
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    const key = defaultsKeyOf(node)
     if (key === undefined) return yield* Effect.fail(unknownError(node.id))
     const result = yield* Effect.promise(() =>
-      api.setModelSettings({ ...key, warming: null, interval: null, prompt: null, effort: null, actor }),
+      api.setModelSettings({ ...key, ...Object.fromEntries(fields.map((field) => [field, null])), actor }),
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `modelSettings.invalid: ${result.error.message}` }))
     return {
@@ -1014,6 +1034,17 @@ function clearModelDefaults(
       },
     }
   })
+}
+
+// A Defaults › Models row, or one of its field rows, names the model it sets.
+function defaultsKeyOf(node: TreeNode): ModelSettingsKey | undefined {
+  const item = node.address?.item
+  if (item === undefined) return undefined
+  return parseModelDefaultItemId(item) ?? parseModelSettingItemId(item)?.key
+}
+
+function settingOf(node: TreeNode) {
+  return node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
 }
 
 function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord | null): string {
@@ -1279,8 +1310,8 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       if (view === "record") return { output: { id, view, record: entity } }
       return { output: { id, view, ...entity } }
     }
-    if (isModelDefaultRowId(id)) {
-      const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
+    if (isModelDefaultRowId(id) || isModelSettingRowId(id)) {
+      const key = defaultsKeyOf(node)
       if (key === undefined) return yield* Effect.fail(unknownError(id))
       const record = settingsFor(memo.modelSettings ?? [], key)
       if (view === "record") return { output: { id, view, record: record ?? null } }
@@ -1296,11 +1327,13 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         ...(host?.warming === undefined ? {} : { host: host.warming }),
         ...(host === undefined ? {} : { variants: host.variants }),
       })
+      const setting = settingOf(node)
       return {
         output: {
           id,
           view,
           label: node.label,
+          ...(setting === undefined ? {} : { field: setting.field, value: modelSettingEffective(resolved, setting.field) ?? null }),
           summary: modelDefaultValue(resolved),
           warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
           interval: { value: resolved.interval.value, from: resolved.interval.from },

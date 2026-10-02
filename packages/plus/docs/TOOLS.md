@@ -107,7 +107,11 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   every field, removing the row (`packages/plus/src/tools.ts` `setModelDefaults`,
   `packages/plus/src/tools.ts` `clearModelDefaults`). `show` returns the
   stored `record` and, for `resolved`, a `summary` with each effective value
-  and the layer it came from.
+  and the layer it came from. Each such row holds four field rows
+  (`item:defaults:/models:modelsetting:<field>:<* or provider/model>`): `set`
+  takes `text` as that field's value (empty inherits), `reset` clears that
+  field alone, and `delete` is refused. A warming time is saved rounded up to
+  a whole number of ping intervals.
 - `reset` removes the stored text/state at the addressed row (model rows clear
   only that level's active flag) (`packages/plus/src/tools.ts:79`).
 - `split` sets manual boundaries or appends one section

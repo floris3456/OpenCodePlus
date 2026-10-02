@@ -1,7 +1,15 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
-import { formatDuration, parseModelItemId, parsePermItemId } from "../../instructions/model.js"
-import { fromWords, isModelDefaultRowId, parseModelDefaultItemId } from "../../instructions/model-settings.js"
+import { parseModelItemId, parsePermItemId } from "../../instructions/model.js"
+import {
+  fromWords,
+  isEvery,
+  isModelSettingRowId,
+  modelSettingEffective,
+  MODEL_SETTING_LABELS,
+  parseModelSettingItemId,
+  type ModelSettingsField,
+} from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
@@ -102,14 +110,13 @@ export function createInstructionsDialogs(
     return addMcp()
   }
 
-  // Enter on a Defaults › Models row: the warming time, the interval between
-  // pings, the keep-alive text and the default effort (variant). Prefilled with
-  // the row's own values; an empty answer clears that field so the level below
-  // decides, with the effective value shown as the placeholder.
-  async function editModelSettings(node: TreeNode): Promise<void> {
+  // Enter on a Defaults › Models field row: one prompt for that field,
+  // prefilled with the row's own value; an empty answer clears it so the
+  // level below decides, and the effective value shows as the placeholder.
+  async function editModelSetting(node: TreeNode): Promise<void> {
     if (disposed) return
-    const key = node.address === undefined ? undefined : parseModelDefaultItemId(node.address.item)
-    if (key === undefined || !isModelDefaultRowId(node.id)) {
+    const parsed = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
+    if (parsed === undefined || !isModelSettingRowId(node.id)) {
       context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
       return
     }
@@ -117,45 +124,20 @@ export function createInstructionsDialogs(
     if (disposed || current === undefined) return
     const effective = state.modelDefaultsView(node)
     if (effective === undefined) return
-    const own = effective.record
-    const rawWarming = await context.ui.dialog.prompt({
-      title: `Warming · ${node.label}`,
-      description: `off, on, or the total time to keep the cache warm after the last reply (1m to 24h). Empty inherits. Now: ${effective.on.value ? formatDuration(effective.duration.value) : "off"} (${fromWords(effective.on.from)}).`,
-      value: own?.warming ?? "",
-      placeholder: effective.on.value ? formatDuration(effective.duration.value) : "off",
+    const label = isEvery(parsed.key) ? "Every model" : `${parsed.key.providerID}/${parsed.key.modelID}`
+    const field = parsed.field
+    const now = modelSettingEffective(effective, field)
+    const variants = isEvery(parsed.key)
+      ? []
+      : ((current.hostModels ?? []).find((entry) => entry.providerID === parsed.key.providerID && entry.modelID === parsed.key.modelID)?.variants ?? [])
+    const raw = await context.ui.dialog.prompt({
+      title: `${MODEL_SETTING_LABELS[field]} · ${label}`,
+      description: `${fieldHelp(field, variants)} Empty inherits.${now === undefined ? "" : ` Now: ${now.text} (${fromWords(now.from)}).`}`,
+      value: effective.record?.[field] ?? "",
+      placeholder: now?.text ?? "",
     })
-    if (disposed || rawWarming === undefined) return
-    const rawInterval = await context.ui.dialog.prompt({
-      title: `Ping every · ${node.label}`,
-      description: `Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT. Empty inherits. Now: ${formatDuration(effective.interval.value)} (${fromWords(effective.interval.from)}).`,
-      value: own?.interval ?? "",
-      placeholder: formatDuration(effective.interval.value),
-    })
-    if (disposed || rawInterval === undefined) return
-    const rawPrompt = await context.ui.dialog.prompt({
-      title: `Keep-alive prompt · ${node.label}`,
-      description: "The text of the keep-alive request. Empty inherits.",
-      value: own?.prompt ?? "",
-      placeholder: effective.prompt.value,
-    })
-    if (disposed || rawPrompt === undefined) return
-    const variants =
-      key.providerID === undefined || key.modelID === undefined
-        ? []
-        : ((current.hostModels ?? []).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)?.variants ?? [])
-    const rawEffort = await context.ui.dialog.prompt({
-      title: `Effort · ${node.label}`,
-      description: `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}. Empty inherits.`,
-      value: own?.effort ?? "",
-      placeholder: effective.effort?.value ?? "",
-    })
-    if (disposed || rawEffort === undefined) return
-    await state.editModelSettings(node, {
-      warming: rawWarming.trim().length === 0 ? null : rawWarming.trim(),
-      interval: rawInterval.trim().length === 0 ? null : rawInterval.trim(),
-      prompt: rawPrompt.trim().length === 0 ? null : rawPrompt.trim(),
-      effort: rawEffort.trim().length === 0 ? null : rawEffort.trim(),
-    })
+    if (disposed || raw === undefined) return
+    await state.editModelSettings(node, { [field]: raw.trim().length === 0 ? null : raw.trim() })
   }
 
   // enter on a model row: the model (prefilled, validated against the host
@@ -1115,7 +1097,7 @@ async function editModel(node: TreeNode): Promise<void> {
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSettings, addRule, editRule, relink, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>
@@ -1146,4 +1128,14 @@ function errorMessage(error: unknown): string {
   if (!("message" in error)) return String(error)
   if (typeof error.message !== "string") return String(error)
   return error.message
+}
+
+// What one Defaults › Models field means, for its prompt.
+function fieldHelp(field: ModelSettingsField, variants: readonly string[]): string {
+  if (field === "warming")
+    return "off, on, or the total time to keep the cache warm after the last reply (1m to 24h). A time rounds up to whole pings: 30m with a 4m ping is 32m."
+  if (field === "interval")
+    return "Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT."
+  if (field === "prompt") return "The text of the keep-alive request."
+  return `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}.`
 }

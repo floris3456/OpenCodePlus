@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { CONFIRM_MS, confirmText, createWarming } from "../src/tui/warming.js"
+import { COMPACT_MARKER, CONFIRM_MS, confirmText, createWarming } from "../src/tui/warming.js"
 import { createTestTheme, renderPlusFixture } from "./tui.js"
 
 const MINUTE = 60_000
@@ -145,6 +145,61 @@ test("a warm cache, a chat with warming off and a running chat send at once", as
       await fixture.waitForFrame((next) => next.includes(shown))
       expect([sessionID, fixture.send({ sessionID, mode: "normal", delivery: "steer" })]).toEqual([sessionID, true])
     }
+  } finally {
+    warming.current?.dispose()
+  }
+})
+
+test("compact before cold switches per chat and marks the footer's left edge while on", async () => {
+  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
+  const state = { compact: false }
+  const calls: unknown[] = []
+  const status = () => ({ sessionID: "ses_chat", chat: "default", compact: state.compact, active: false, now: Date.now() })
+  await using fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 80,
+    height: 4,
+    route: { type: "session", sessionID: "ses_chat" },
+    rpc: {
+      "warming.status": async () => status(),
+      "warming.compact": async (input: { sessionID: string; on: boolean }) => {
+        calls.push(input)
+        state.compact = input.on
+        return status()
+      },
+    },
+    render: (context) => {
+      warming.current = createWarming(context)
+      return (
+        <box flexDirection="row" gap={2}>
+          <warming.current.CompactMarker sessionID="ses_chat" />
+          <text>~/project</text>
+        </box>
+      )
+    },
+  })
+  try {
+    // Off in a new chat: nothing in front of the location.
+    await fixture.waitForFrame((frame) => frame.includes("~/project"))
+    expect(fixture.captureCharFrame()).not.toContain(COMPACT_MARKER)
+    await warming.current!.toggleCompact()
+    await fixture.waitForFrame((frame) => frame.includes(COMPACT_MARKER))
+    const line = fixture.captureCharFrame().split("\n").find((entry) => entry.includes(COMPACT_MARKER)) ?? ""
+    expect(line.trimEnd()).toBe(`${COMPACT_MARKER}  ~/project`)
+    const span = fixture
+      .captureSpans()
+      .lines.flatMap((entry) => entry.spans)
+      .find((item) => item.text.startsWith(COMPACT_MARKER))
+    expect(span?.fg.equals(createTestTheme().text.muted)).toBe(true)
+    expect(fixture.fake.toasts.at(-1)?.message).toContain("Compact before cold on")
+    // The same switch turns it off again.
+    await warming.current!.toggleCompact()
+    await fixture.waitForFrame((frame) => !frame.includes(COMPACT_MARKER))
+    expect(calls).toEqual([
+      { sessionID: "ses_chat", on: true },
+      { sessionID: "ses_chat", on: false },
+    ])
+    expect(fixture.fake.toasts.at(-1)?.message).toBe("Compact before cold off for this chat")
   } finally {
     warming.current?.dispose()
   }

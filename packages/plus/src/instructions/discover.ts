@@ -203,7 +203,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
 }
 
 /** The catalog's models with their variants and host warming; a catalog that cannot be read contributes nothing. */
-async function hostModelsOf(ctx: Context): Promise<HostModel[]> {
+export async function hostModelsOf(ctx: Context): Promise<HostModel[]> {
   const listed = await Effect.runPromise(
     ctx.model.list().pipe(
       Effect.catchCause(() =>

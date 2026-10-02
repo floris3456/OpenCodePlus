@@ -129,7 +129,7 @@ export const Plugin = define({
       if (active.epoch === epoch) active.fiber = fiber
     })
 
-    const hook = (event: SessionHooks["context"]) =>
+    const hook = (event: SessionHooks["context"], kind: "primary" | "compaction" | "generate") =>
       Effect.gen(function* () {
         const session = yield* ctx.session.get({ sessionID: event.sessionID }).pipe(Effect.orDie)
         if (session.parentID) return
@@ -152,7 +152,7 @@ export const Plugin = define({
 
         const now = yield* Clock.currentTimeMillis
         const settings = yield* decide(
-          { sessionID: event.sessionID, agent: event.agent, model: event.model, phase: "activity", since: now, now },
+          { sessionID: event.sessionID, agent: event.agent, model: event.model, phase: "activity", kind, since: now, now },
           configured,
         )
         if (!settings) {
@@ -190,8 +190,8 @@ export const Plugin = define({
         })
         yield* reschedule(event.sessionID, scheduled)
       })
-    yield* ctx.session.hook("context", hook)
-    yield* ctx.session.hook("compaction", hook)
-    yield* ctx.session.hook("generate", hook)
+    yield* ctx.session.hook("context", (event) => hook(event, "primary"))
+    yield* ctx.session.hook("compaction", (event) => hook(event, "compaction"))
+    yield* ctx.session.hook("generate", (event) => hook(event, "generate"))
   }),
 })

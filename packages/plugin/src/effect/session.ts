@@ -154,6 +154,8 @@ export interface SessionWarming {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly phase: "activity" | "warm"
+  /** At `activity`, the request that (re)started the window: an agent step, a compaction or a generate call. */
+  readonly kind?: "primary" | "compaction" | "generate"
   /** Epoch ms of the latest non-warming request: the start of the warming window. */
   readonly since: number
   /** Epoch ms of this decision. */
@@ -201,6 +203,7 @@ export type SessionDomain = Pick<
   | "move"
   | "wait"
   | "context"
+  | "compact"
 > & {
   readonly hook: ModelHooks<SessionHooks>
 }
