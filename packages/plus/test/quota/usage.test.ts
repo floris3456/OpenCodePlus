@@ -63,7 +63,8 @@ function fixture() {
     replay: false,
   }
   const store = new Map<string, unknown>([["quota/ses_usage/proxy/claude-sonnet", value]])
-  const read = (next = input) => readUsage(config, { fetch, read: async (key) => store.get(key) }, next)
+  const read = (next = input) =>
+    readUsage(config, { fetch, read: async (key) => store.get(key), key: async () => "fixture-api-key" }, next)
   return { state, server, input, config, store, read, value }
 }
 
@@ -85,21 +86,54 @@ test("usage reads the selected chat/model capability over HTTP without enrollmen
   expect(new URL(f.state.requests[1]!.url).searchParams.get("all")).toBe("true")
 })
 
-test("unconfigured providers and new chats make no request and never create a binding", async () => {
+test("a home view, fresh chat or unused model defaults to all using the CPA key without enrollment", async () => {
   const f = fixture()
-  expect((await readUsage(undefined, { fetch, read: async () => undefined }, f.input)).status).toBe("disabled")
+  f.state.snapshot = { ...usageSnapshot(), all: true, current: "", active: [], last_used: 0 }
+  const before = JSON.stringify([...f.store])
+  for (const input of [
+    { ...f.input, sessionID: undefined },
+    { ...f.input, sessionID: "new" },
+    { ...f.input, modelID: "claude-opus" },
+  ]) {
+    const result = await f.read(input)
+    expect(result.status).toBe("ready")
+    expect(result.snapshot?.all).toBe(true)
+    expect(result.snapshot?.current).toBe("")
+    const request = f.state.requests.at(-1)!
+    expect(request.authorization).toBe("Bearer fixture-api-key")
+    expect(new URL(request.url).searchParams.get("auth")).toBe("api-key")
+    expect(new URL(request.url).searchParams.get("all")).toBe("true")
+    expect(JSON.stringify(result)).not.toContain("fixture-api-key")
+  }
+  expect(JSON.stringify([...f.store])).toBe(before)
   expect((await f.read({ ...f.input, providerID: "other" })).status).toBe("disabled")
-  expect((await f.read({ ...f.input, sessionID: undefined })).status).toBe("unenrolled")
-  expect((await f.read({ ...f.input, sessionID: "ses_other" })).status).toBe("unenrolled")
-  expect((await f.read({ ...f.input, modelID: "claude-opus" })).status).toBe("unenrolled")
-  expect(f.state.requests).toHaveLength(0)
-  expect(f.store.size).toBe(1)
+  expect(f.state.requests).toHaveLength(3)
+})
+
+test("a missing server binding falls back without creating state", async () => {
+  const f = fixture()
+  f.state.snapshot = { ...usageSnapshot(), all: true, current: "", active: [] }
+  const result = await readUsage(
+    f.config,
+    {
+      fetch: Object.assign(async (request: Parameters<typeof fetch>[0], options?: Parameters<typeof fetch>[1]) => {
+        if (new URL(String(request)).searchParams.get("auth") !== "api-key") return new Response(null, { status: 401 })
+        return fetch(request, options)
+      }, fetch),
+      read: async () => f.value,
+      key: async () => "fixture-api-key",
+    },
+    f.input,
+  )
+  expect(result.status).toBe("ready")
+  expect(result.snapshot?.all).toBe(true)
+  expect(f.state.requests).toHaveLength(1)
 })
 
 test("authorization, old plugins, malformed state and HTTP failures have explicit results", async () => {
   const f = fixture()
   f.state.status = 401
-  expect((await f.read()).status).toBe("unenrolled")
+  expect((await f.read()).status).toBe("unavailable")
   f.state.status = 503
   expect((await f.read()).status).toBe("unavailable")
   f.state.status = 200

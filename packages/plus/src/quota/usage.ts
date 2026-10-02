@@ -60,10 +60,14 @@ export const UsageDefinition = Rpc.define({
   events: {},
 })
 
-/** Reads only a persisted capability; opening /usage cannot enroll or wake a chat. */
+/** Reads an existing capability or uses the CPA API key for the all-credentials fallback. Never enrolls or wakes a chat. */
 export async function readUsage(
   config: Config | undefined,
-  io: { read(key: string): Promise<unknown>; fetch: typeof fetch },
+  io: {
+    read(key: string): Promise<unknown>
+    fetch: typeof fetch
+    key?(input: UsageInput, origin: string): Promise<string | undefined>
+  },
   input: UsageInput,
 ): Promise<UsageResult> {
   const origin = config?.routes[input.providerID]
@@ -72,20 +76,11 @@ export async function readUsage(
       status: "disabled",
       message: "Enable this CPA provider in ~/.config/opencodeplus/quota-handoff.json to view credential usage.",
     }
-  if (!input.sessionID)
-    return {
-      status: "unenrolled",
-      message: "Open a chat that has made a request through this CPA model to view its credential quotas.",
-    }
-  const raw = await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`)
-  if (raw === undefined)
-    return {
-      status: "unenrolled",
-      message:
-        "This chat has not used this model through the quota bridge yet. Send a model request first; no credential is selected by /usage.",
-    }
-  const stored = Schema.decodeUnknownOption(Stored)(raw)
-  if (stored._tag === "None")
+  const raw = input.sessionID
+    ? await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`)
+    : undefined
+  const stored = raw === undefined ? undefined : Schema.decodeUnknownOption(Stored)(raw)
+  if (stored?._tag === "None")
     return {
       status: "unavailable",
       message: "This chat’s quota connection could not be read. Make a model request to reconnect the bridge.",
@@ -94,20 +89,36 @@ export async function readUsage(
   url.searchParams.set("view", "usage")
   url.searchParams.set("model", `${input.providerID}/${input.modelID}`)
   url.searchParams.set("all", String(input.all))
-  const response = await io
-    .fetch(url, {
-      headers: { Authorization: `Bearer ${stored.value.capability}` },
-      signal: AbortSignal.timeout(15_000),
-      redirect: "error",
-    })
-    .catch(() => undefined)
+  const request = (key: string) =>
+    io
+      .fetch(url, {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(15_000),
+        redirect: "error",
+      })
+      .catch(() => undefined)
+  const bound = stored?._tag === "Some" ? await request(stored.value.capability) : undefined
+  const fallback = stored === undefined || bound?.status === 401
+  const response = await (async () => {
+    if (!fallback) return bound
+    const key = await io.key?.(input, origin).catch(() => undefined)
+    if (!key) return undefined
+    url.searchParams.set("auth", "api-key")
+    url.searchParams.set("all", "true")
+    return request(key)
+  })()
   if (!response)
-    return { status: "unavailable", message: "The CPA quota bridge could not be reached. Press r to retry." }
+    return {
+      status: "unavailable",
+      message: fallback
+        ? "Could not read usage with this provider’s CPA API key. Check the provider connection and quota bridge address, then press r."
+        : "The CPA quota bridge could not be reached. Press r to retry.",
+    }
   if (response.status === 401)
     return {
-      status: "unenrolled",
+      status: "unavailable",
       message:
-        "CPA has no matching credential binding for this chat and model. Make a model request to reconnect the bridge.",
+        "CPA rejected the usage request. Check this provider’s API key and that CPA has quota-handoff 0.1.2 or newer.",
     }
   if (!response.ok)
     return {
@@ -116,7 +127,7 @@ export async function readUsage(
     }
   const rawSnapshot: unknown = await response.json().catch(() => undefined)
   const parsed = Schema.decodeUnknownOption(UsageSnapshot)(rawSnapshot)
-  if (parsed._tag === "None" || parsed.value.all !== input.all)
+  if (parsed._tag === "None" || parsed.value.all !== (fallback || input.all))
     return {
       status: "unsupported",
       message: "This CPA quota plugin does not support the usage view. Install quota-handoff 0.1.2 or newer on CPA.",

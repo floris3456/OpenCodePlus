@@ -63,7 +63,12 @@ function fixture() {
         return {
           read: async (next: UsageInput) => {
             state.reads.push(next)
-            return state.result
+            return state.result.snapshot
+              ? {
+                  ...state.result,
+                  snapshot: { ...state.result.snapshot, all: state.result.snapshot.current === "" || next.all },
+                }
+              : state.result
           },
         }
       },
@@ -235,6 +240,22 @@ test("all credential bars remain reachable by keyboard scrolling in a short term
     expect(await frame(output)).toContain("Account 0")
     for (let index = 0; index < 10; index++) output.mockInput.pressKey("\u001b[6~")
     expect(await frame(output)).toContain("Account 5")
+  } finally {
+    output.renderer.destroy()
+  }
+})
+
+test("fresh-chat response switches the normal usage dialog to all without an active marker", async () => {
+  const f = fixture()
+  f.state.result = { status: "ready", snapshot: { ...f.state.result.snapshot!, current: "", active: [], all: true } }
+  const output = await createTestRenderer({ width: 100, height: 40 })
+  try {
+    render(() => <UsageView context={f.context} input={input} />, output.renderer)
+    const text = await frame(output)
+    expect(f.state.reads[0]?.all).toBe(false)
+    expect(text).toContain("Credential usage · all")
+    expect(text).not.toContain("[IN USE]")
+    expect(text).not.toContain("[LAST USED]")
   } finally {
     output.renderer.destroy()
   }

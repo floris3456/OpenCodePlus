@@ -61,6 +61,7 @@ export function UsageView(props: { context: Plugin.Context; input: UsageInput })
     if (state.closed || request !== state.request) return
     state.received = Date.now()
     setClock(state.received)
+    if (next.snapshot) setAll(next.snapshot.all)
     setResult(next)
     setLoading(false)
   }
@@ -181,7 +182,7 @@ export function createUsage(context: Plugin.Context) {
           {
             id: "plus.usage.open",
             title: "Credential usage",
-            group: "Session",
+            group: "OpenCodePlus",
             palette: true,
             slash: { name: "usage", arguments: true },
             run(input) {

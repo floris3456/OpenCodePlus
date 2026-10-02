@@ -39,7 +39,7 @@ export default Plugin.define({
             {
               id: "plus.instructions.open",
               title: "Instructions",
-              group: "Project",
+              group: "OpenCodePlus",
               palette: true,
               bind: "<leader>p",
               slash: { name: "instructions" },
@@ -55,7 +55,7 @@ export default Plugin.define({
             {
               id: "plus.monitor.open",
               title: "Tools: calls and tokens",
-              group: "Session",
+              group: "OpenCodePlus",
               palette: true,
               slash: { name: "tools" },
               run: () => monitor.open(),
@@ -63,7 +63,7 @@ export default Plugin.define({
             {
               id: "plus.warming.toggle",
               title: "Cache warming on/off for this chat",
-              group: "Session",
+              group: "OpenCodePlus",
               palette: true,
               bind: "<leader>k",
               run: () => warming.toggle(),
@@ -71,35 +71,35 @@ export default Plugin.define({
             {
               id: "plus.warming.follow",
               title: "Cache warming: follow the model settings for this chat",
-              group: "Session",
+              group: "OpenCodePlus",
               palette: true,
               run: () => warming.follow(),
             },
             {
               id: "plus.agent.create",
               title: "Create agent",
-              group: "Project",
+              group: "OpenCodePlus",
               palette: true,
               run: () => agents.createAgent(),
             },
             {
               id: "plus.agent.rename",
               title: "Rename agent",
-              group: "Project",
+              group: "OpenCodePlus",
               palette: true,
               run: () => agents.renameAgent(),
             },
             {
               id: "plus.agent.delete",
               title: "Delete agent",
-              group: "Project",
+              group: "OpenCodePlus",
               palette: true,
               run: () => agents.deleteAgent(),
             },
             {
               id: "plus.team.select",
               title: "Select team",
-              group: "Project",
+              group: "OpenCodePlus",
               palette: true,
               run: () => {
                 context.ui.agents.open({ filter: "Team:" })

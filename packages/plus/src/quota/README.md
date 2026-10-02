@@ -45,12 +45,12 @@ still requires a fresh chat or a newly committed portable checkpoint.
 This module is disabled unless this file or explicit `quota` options are present. Changing credentials
 never changes the model. No CPAMP API, management key, or usage queue is used.
 
-
 ## Credential usage command (1.1.2)
 
 - `/usage` opens quota bars for every bridge credential belonging to the selected
   model's resolved CPA provider. It includes general and applicable model-specific
-  windows, such as five-hour, seven-day Sonnet, and OAuth-app quotas.
+  windows, such as five-hour, seven-day Sonnet, and OAuth-app quotas. Before the
+  selected chat/model has made a request, it defaults to `/usage --all`.
 - `/usage --all` shows every configured bridge credential and every recorded
   window, including other providers and model scopes.
 - **IN USE** identifies the exact credential CPA confirmed for this chat's running
@@ -65,10 +65,14 @@ never changes the model. No CPAMP API, management key, or usage queue is used.
   scope, and Escape to close. The open view refreshes every five seconds.
 
 Requires CPA's `quota-handoff` plugin **0.1.2 or newer** and the existing host quota
-configuration. The selected chat/model must have made a CPA request first, because
-that establishes the capability used to authenticate the read. A fresh chat or
-unconfigured provider gets setup guidance. Credentials outside the plugin's
-configured Claude/Codex pool have no quota data in this view.
+configuration. An existing chat/model uses its private route capability. Before
+its first request (including the home screen), the host uses the provider's
+configured CPA API key to request all credentials, with no active credential
+marker. CPA validates that key against its own authenticated loopback model-list
+endpoint; this does not execute a model or enroll a chat. The model's base URL and
+quota origin must match before the host sends the key. An unconfigured provider
+gets setup guidance. Credentials outside the plugin's configured Claude/Codex
+pool have no quota data in this view.
 
 The read uses the existing GET event route with `view=usage`, `model` and `all`
 query parameters. No additional Caddy route, CPAMP key or management API is needed.
@@ -76,3 +80,6 @@ It does not enroll a chat, acknowledge a notice, reserve capacity, start compact
 or change credential selection. Valid reads may trigger the existing rate-limited
 quota sampler; its refresh/backoff policy remains authoritative. Old CPA plugins
 return explicit upgrade guidance rather than empty bars.
+
+Plus palette commands are grouped under **OpenCodePlus**, including credential
+usage, instructions, tool statistics, warming, agent management and team selection.
