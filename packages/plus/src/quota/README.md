@@ -45,24 +45,51 @@ still requires a fresh chat or a newly committed portable checkpoint.
 This module is disabled unless this file or explicit `quota` options are present. Changing credentials
 never changes the model. No CPAMP API, management key, or usage queue is used.
 
-## Credential usage command (1.1.2)
+## Credential usage in the sidebar
 
-- `/usage` opens quota bars for every bridge credential belonging to the selected
-  model's resolved CPA provider. It includes general and applicable model-specific
-  windows, such as five-hour, seven-day Sonnet, and OAuth-app quotas. Before the
-  selected chat/model has made a request, it defaults to `/usage --all`.
+Usage is a compact **Usage** section of the session sidebar, below its other
+sections. It appears whenever the sidebar is visible and refreshes every five
+seconds while it is shown; nothing polls while no usage view is mounted.
+
+- `/usage` shows every bridge credential belonging to the selected model's resolved
+  CPA provider, including general and applicable model-specific windows (five-hour,
+  seven-day Sonnet, OAuth-app and other returned windows). Before the selected
+  chat/model has made a request it shows all credentials, labelled
+  "no request from this chat yet".
 - `/usage --all` shows every configured bridge credential and every recorded
-  window, including other providers and model scopes.
-- **IN USE** identifies the exact credential CPA confirmed for this chat's running
-  primary request. **LAST USED** identifies its most recent primary request while
-  idle; CPA may choose another credential on the next request. Title generation
-  and compaction do not overwrite that identity.
-- Each row includes the credential alias and exact auth ID. Aliases sharing one
-  account are labelled so their bars are not mistaken for additional capacity.
-- Bars show remaining quota, reset date/countdown and stale evidence. Missing,
-  dormant and non-applicable windows are labelled rather than given invented data.
-  Use the mouse wheel or navigation keys to scroll, `r` to refresh, `a` to switch
-  scope, and Escape to close. The open view refreshes every five seconds.
+  window, including other providers and model scopes. The section's
+  **● model / ○ all** control (clickable) and the palette's _Usage: show all
+  credentials_ switch scope.
+- `/usage` never opens a modal or changes the sidebar preference. With the sidebar
+  visible (docked, or opened as an overlay with Ctrl+X then B) it scrolls the
+  section into view and highlights its title. Otherwise — terminals narrower than
+  the 120-column docking width, a hidden sidebar, child chats or the home screen —
+  it opens a compact panel above the prompt (below the prompt on the home screen).
+  The panel has a fixed height (40% of the terminal, 6–16 rows), scrolls with the
+  mouse wheel, collapses to a one-line summary (click **▼ Usage** or _Usage: collapse
+  panel_) and closes with **✕** or _Usage: close panel_. It stands aside while the
+  sidebar is visible and returns when the terminal narrows again. Focus stays in the
+  prompt throughout; typing, submitting and drafts are unaffected.
+- **IN USE** (accent bar) identifies the exact credential CPA confirmed for this
+  chat's running primary request. **LAST USED** identifies its most recent primary
+  request while idle; CPA may choose another credential next time. Title
+  generation and compaction do not overwrite that identity. Fresh chats show
+  neither marker.
+- Each credential shows its alias and `provider · exact auth ID`; long aliases and
+  IDs wrap rather than truncate. **Shared quota with …** labels aliases sharing one
+  account so their bars are not mistaken for additional capacity.
+- Window rows are aligned: duration (`5h`, `7d`, `30d`…, with a scope line such as
+  `sonnet` above scoped windows), a remaining-quota bar coloured by the CPA
+  thresholds (≤20% warning, ≤10% error), the remaining percentage (rounded down) and
+  a reset countdown. Text states accompany colour: `STALE` (reading older than the
+  bridge's maximum age), `reset` (reset passed; awaiting a fresh reading),
+  `dormant`, `no limit`/`n/a` and "No quota reading yet". **○ details** (or
+  _Usage: show exact resets and notes_) adds exact reset dates, full window names,
+  exact percentages and reading age.
+- A failed refresh keeps the last reading for the same chat/model/scope, marks the
+  header `retrying` and explains the error; readings recover automatically. A
+  changed chat, model or scope starts empty and discards late responses from the
+  previous selection.
 
 Requires CPA's `quota-handoff` plugin **0.1.2 or newer** and the existing host quota
 configuration. An existing chat/model uses its private route capability. Before
@@ -82,4 +109,5 @@ quota sampler; its refresh/backoff policy remains authoritative. Old CPA plugins
 return explicit upgrade guidance rather than empty bars.
 
 Plus palette commands are grouped under **OpenCodePlus**, including credential
-usage, instructions, tool statistics, warming, agent management and team selection.
+usage (and its scope, details, collapse and close commands), instructions, tool
+statistics, warming, agent management and team selection.

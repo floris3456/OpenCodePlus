@@ -111,8 +111,8 @@ export async function readUsage(
     return {
       status: "unavailable",
       message: fallback
-        ? "Could not read usage with this provider’s CPA API key. Check the provider connection and quota bridge address, then press r."
-        : "The CPA quota bridge could not be reached. Press r to retry.",
+        ? "Could not read usage with this provider’s CPA API key. Check the provider connection and quota bridge address; usage retries automatically."
+        : "The CPA quota bridge could not be reached; usage retries automatically.",
     }
   if (response.status === 401)
     return {
@@ -123,7 +123,7 @@ export async function readUsage(
   if (!response.ok)
     return {
       status: "unavailable",
-      message: `CPA could not retrieve credential usage (HTTP ${response.status}). Press r to retry.`,
+      message: `CPA could not retrieve credential usage (HTTP ${response.status}); usage retries automatically.`,
     }
   const rawSnapshot: unknown = await response.json().catch(() => undefined)
   const parsed = Schema.decodeUnknownOption(UsageSnapshot)(rawSnapshot)
