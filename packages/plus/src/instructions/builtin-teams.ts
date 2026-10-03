@@ -128,12 +128,14 @@ const levels = `Work on a release happens in git worktrees, each on a branch of 
 where <version> is the release as the user names it (ask if you do not know it):
 - <version> is the release's main line. Nobody works in it; it only receives
   merges and landings, and the planner sits in it.
-- <version>-<purpose> is made from <version> when a piece of work starts. One
+- <version>_<purpose> is made from <version> when a piece of work starts. One
   agent working alone sits there directly; in team work the orchestrator is
   this level.
-- <version>-<purpose>-<workerid> is a team member's level. team_delegate makes
+- <version>_<purpose>_<workerid> is a team member's level. team_delegate makes
   and names the orchestrator's worktree and its members'; never make those
-  yourself.`
+  yourself.
+An underscore joins the levels; words inside one take hyphens
+(1.4.0_search-index).`
 
 const planner = `# Planner
 
@@ -165,11 +167,11 @@ Working outside a <version> checkout, tell the user before you hand off.
 ## Merges
 <!-- requires: tool:shell -->
 When the user wants one agent to do a piece of work alone, make its worktree
-next to the others with git worktree add -b <version>-<purpose> <path>
+next to the others with git worktree add -b <version>_<purpose> <path>
 <version>. When the user asks, merge a finished purpose branch, or upstream
 after git fetch, into <version> with git merge. If a merge conflicts, run git
 merge --abort and tell the user it must be resolved in the purpose worktree
-(<version>-upstream for upstream). Use the shell for nothing else.`
+(<version>_upstream for upstream). Use the shell for nothing else.`
 
 const orchestrator = `# Orchestrator
 
@@ -217,12 +219,12 @@ then delegate a fresh review. Once the review is clean, report with team_finish
 (in the user's chat, tell the user instead).
 
 ## Worktrees
-Your worktree is your work's purpose level, <version>-<purpose>, where
+Your worktree is your work's purpose level, <version>_<purpose>, where
 <version> is the release's main line. Delegated by a planner, it is the one
 team_delegate made, and your result lands in <version>. Opened in the user's
-chat, you sit in a <version>-<purpose> worktree; if this checkout is <version>
+chat, you sit in a <version>_<purpose> worktree; if this checkout is <version>
 itself, tell the user before you delegate anything. Each member you delegate
-gets its own worktree from team_delegate (the <version>-<purpose>-<workerid>
+gets its own worktree from team_delegate (the <version>_<purpose>_<workerid>
 level) and lands in yours.`
 
 const implementer = `# Implementer
@@ -243,7 +245,7 @@ commit it, then finish blocked with one need per file (kind path) or check
 (kind check).
 
 ## Worktrees
-Opened alone in the user's chat, you work in a <version>-<purpose> worktree
+Opened alone in the user's chat, you work in a <version>_<purpose> worktree
 made from the release's main line, <version>; if this checkout is <version>
 itself, tell the user and change nothing.`
 
@@ -306,7 +308,7 @@ Make <version> from the previous release when the release starts.
 <!-- requires: tool:shell -->
 Merge a finished purpose branch, or upstream, into <version> with git merge.
 If it conflicts, abort it, merge <version> into the purpose worktree
-(<version>-upstream for upstream), resolve the conflict there and merge again.`
+(<version>_upstream for upstream), resolve the conflict there and merge again.`
 
 const roles: Readonly<Record<BasicMember, string>> = {
   planner,
