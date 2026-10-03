@@ -68,8 +68,22 @@ export function contextUsage(
   const model = models?.find((model) => model.providerID === last.model.providerID && model.id === last.model.id)
   return {
     tokens,
-    percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : undefined,
+    percent: percentOf(tokens, model && usageWindow(model.limit)),
   }
+}
+
+/**
+ * The window usage is measured against: the input limit when the model has one (the prompt
+ * budget compaction works to, e.g. 272k of a 400k GPT window whose rest is reply room),
+ * else the whole context. Undefined when unknown.
+ */
+export function usageWindow(limit: { context?: number; input?: number } | undefined) {
+  const window = limit?.input || limit?.context
+  return window && window > 0 ? window : undefined
+}
+
+function percentOf(tokens: number, window: number | undefined) {
+  return window ? Math.round((tokens / window) * 100) : undefined
 }
 
 export function formatContextUsage(tokens: number, percent?: number) {

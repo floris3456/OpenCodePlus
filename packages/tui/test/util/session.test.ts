@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import type { SessionMessageInfo } from "@opencode/client"
-import { lastAssistantWithUsage, sessionFamily } from "../../src/util/session"
+import type { ModelInfo, SessionMessageInfo } from "@opencode/client"
+import { contextUsage, lastAssistantWithUsage, sessionFamily, usageWindow } from "../../src/util/session"
 
 const assistant = (id: string, input: number): SessionMessageInfo => ({
   id,
@@ -59,5 +59,16 @@ describe("util.session", () => {
 
     messages.push(assistant("msg_after", 5))
     expect(lastAssistantWithUsage(messages)?.tokens.input).toBe(5)
+  })
+
+  test("measures usage against the input limit when the model has one", () => {
+    const model = (limit: ModelInfo["limit"]) => ({ id: "model", providerID: "provider", limit }) as ModelInfo
+    const messages = [assistant("a", 136_000)]
+    // 272k prompt budget inside a 400k window: half the budget is used, not a third of the window.
+    expect(contextUsage(messages, [model({ context: 400_000, input: 272_000, output: 128_000 })])?.percent).toBe(50)
+    expect(contextUsage(messages, [model({ context: 272_000, output: 128_000 })])?.percent).toBe(50)
+    expect(contextUsage(messages, [model({ context: 0, output: 0 })])?.percent).toBeUndefined()
+    expect(usageWindow(undefined)).toBeUndefined()
+    expect(usageWindow({ context: 400_000, input: 0 })).toBe(400_000)
   })
 })

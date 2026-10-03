@@ -122,15 +122,18 @@ export function SessionContextTab() {
       message.tokens.reasoning +
       message.tokens.cache.read +
       message.tokens.cache.write
+    // A model with an input limit (e.g. 272k of a 400k GPT window) is measured against it:
+    // that is the prompt budget compaction works to; the rest of the window is reply room.
+    const window = model ? model.limit.input || model.limit.context : 0
     return {
       message,
       tokens: message.tokens,
       providerLabel: provider?.name ?? message.model.providerID,
       modelLabel: model?.name ?? message.model.id,
-      limit: model?.limit.context,
+      limit: window || undefined,
       input: message.tokens.input,
       total,
-      usage: model?.limit.context ? Math.round((total / model.limit.context) * 100) : null,
+      usage: window ? Math.round((total / window) * 100) : null,
     }
   })
   const formatter = createMemo(() => createSessionContextFormatter(language.intl()))

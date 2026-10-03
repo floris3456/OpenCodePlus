@@ -75,9 +75,11 @@ export function SessionContextUsage(props: SessionContextUsageProps) {
       message.tokens.reasoning +
       message.tokens.cache.read +
       message.tokens.cache.write
+    // Against the input limit when the model has one (the prompt budget), else the context.
+    const window = model ? model.limit.input || model.limit.context : 0
     return {
       total,
-      usage: model?.limit.context ? Math.round((total / model.limit.context) * 100) : null,
+      usage: window ? Math.round((total / window) * 100) : null,
     }
   })
   const cost = createMemo(() => {
