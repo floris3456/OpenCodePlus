@@ -245,9 +245,11 @@ commit it, then finish blocked with one need per file (kind path) or check
 (kind check).
 
 ## Worktrees
-Opened alone in the user's chat, you work in a <version>_<purpose> worktree
-made from the release's main line, <version>; if this checkout is <version>
-itself, tell the user and change nothing.`
+You work in the worktree made for you when you were delegated, and your commits
+land in the worktree of the agent that delegated you, usually an orchestrator's
+<version>_<purpose>. If this checkout is <version> itself, the release's main
+line, change nothing and finish blocked; your report goes to that agent, not to
+the user.`
 
 const reviewer = `# Reviewer
 

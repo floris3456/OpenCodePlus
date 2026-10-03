@@ -263,6 +263,20 @@ test("every Basic body splits into Team member, Delegating and role sections", (
   ])
 })
 
+// A worker is always delegated, so it talks to the agent that delegated it (an
+// orchestrator, usually) through its report: its role never has it ask or tell
+// the user anything.
+test("a Basic worker's role sends what it cannot do to its delegator, not the user", () => {
+  for (const worker of ["implementer", "reviewer", "scout"] as const) {
+    const body = basicBody(worker)
+    const role = body.slice(derive(body, "Role/persona").sections.find((section) => section.id === worker)!.start)
+    expect([worker, role.match(/\b(ask|tell)s? the user\b|user's chat/gi)]).toEqual([worker, null])
+  }
+  const worktrees = basicBody("implementer").split("## Worktrees\n")[1]
+  expect(worktrees).toContain("finish blocked")
+  expect(worktrees).toContain("the agent that delegated you")
+})
+
 // What a Brief to a target must carry, whether it takes followups and what
 // done needs are rows: the tools' descriptions list them per request from those
 // rows (permission-enforce.test.ts), so no body restates one and none goes
