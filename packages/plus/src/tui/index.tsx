@@ -9,6 +9,7 @@ import { createActiveTeam } from "./active-team.js"
 import { createSnapshotCache } from "./snapshot-cache.js"
 import { createWarming } from "./warming.js"
 import { createMonitor } from "./monitor/index.js"
+import { openProjectChecks } from "./project-checks.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -59,6 +60,14 @@ export default Plugin.define({
               palette: true,
               slash: { name: "tools" },
               run: () => monitor.open(),
+            },
+            {
+              id: "plus.checks.open",
+              title: "Project checks: what team runs may be given",
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "checks" },
+              run: () => void openProjectChecks(context),
             },
             {
               id: "plus.warming.toggle",

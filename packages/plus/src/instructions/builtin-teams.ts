@@ -123,10 +123,10 @@ const planner = `# Planner
 Turn the user's goal into a plan file an orchestrator can execute: an Objective
 line that states the outcome, then tasks, each with exact paths, the interfaces
 it touches as file#symbol, the decisions that close questions you resolved, an
-effort and focused checks (\`bun test <file>\` or \`bun run <script>\`, the only
-checks Plus runs; if the project has none, say so). Split only where a reviewer
-could reject one task while approving its neighbour, and fold scaffolding into
-the task that needs it. No placeholders.
+effort and focused checks, named as the project's checks (team_delegate's
+checks field lists them; if the project has none, say so). Split only where a
+reviewer could reject one task while approving its neighbour, and fold
+scaffolding into the task that needs it. No placeholders.
 
 ## Questions
 If you do not know a value, ask the user with the question tool before writing

@@ -129,7 +129,7 @@ test("forbidden checkpoint refuses before file/index changes, allowed checkpoint
   })
 })
 
-test("an invalid check fails E_CHECKS with the exact validateChecks message", async () => {
+test("an invalid check fails E_CHECKS with the exact resolveChecks message", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const caller = baseRun({ id: "main-0123456789abcdef" })
     await saveRun(root, caller)
@@ -137,8 +137,9 @@ test("an invalid check fails E_CHECKS with the exact validateChecks message", as
       await setChecksHandler({ checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] }, callerFor(caller)),
     )
     expect(error.code).toBe("E_CHECKS")
-    expect(error.message).toBe("Checks need distinct short IDs.")
-    expect(error.accepted).toEqual({ id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] })
+    expect(error.message).toBe('Check id "Bad_ID!" must be short kebab-case (a-z, 0-9, -).')
+    // Without project checks the accepted example is a Bun test file.
+    expect(error.accepted).toEqual({ id: "unit", argv: ["bun", "test", "test/unit.test.ts"] })
   })
 })
 
@@ -152,7 +153,7 @@ test("more than 12 checks is refused", async () => {
     }))
     const error = rejected(await setChecksHandler({ checks }, callerFor(caller)))
     expect(error.code).toBe("E_CHECKS")
-    expect(error.message).toBe("E_CHECKS: Use at most 12 focused checks.")
+    expect(error.message).toBe("Use at most 12 focused checks.")
   })
 })
 

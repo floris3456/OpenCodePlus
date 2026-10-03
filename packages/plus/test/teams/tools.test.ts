@@ -650,8 +650,8 @@ test("registered set_checks returns E_CHECKS for an invalid check through the to
     const ctx = toolContext("ses_team_checks_invalid", "orchestrator")
     const message = await runMessage(tool, invalid, ctx)
     expect(message.startsWith("E_CHECKS:")).toBe(true)
-    expect(message).toContain("Checks need distinct short IDs.")
-    expect(message).toContain('\naccepted: {"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}')
+    expect(message).toContain('Check id "Bad_ID!" must be short kebab-case')
+    expect(message).toContain('\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}')
   })
 })
 
@@ -729,7 +729,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         orchCtx,
       )
       expect(checksMsg).toBe(
-        `E_CHECKS: Checks need distinct short IDs.\naccepted: {"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`,
+        `E_CHECKS: Check id "Bad_ID!" must be short kebab-case (a-z, 0-9, -).\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}`,
       )
 
       // 4. E_SUMMARY: Summary with 16 lines in finish

@@ -190,7 +190,7 @@ const CHECKS_ACCEPTED = {
 // Per-check rules ported from validateChecks in scripts/team/roles.ts:52-97.
 // Behaviour is verbatim: same order, same accept/reject outcomes. Array-level
 // rules (max 12, distinct ids) live on ChecksArray below.
-function checkViolation(check: {
+export function checkViolation(check: {
   readonly id: string
   readonly argv: readonly string[]
   readonly cwd?: string | undefined
@@ -226,19 +226,38 @@ function checkViolation(check: {
   return undefined
 }
 
+// A resolved check: the exact command a run stores and runs.
 export const Check = Schema.Struct({
-  id: Schema.String.annotate({ description: "Short kebab-case id, e.g. \"unit\"." }),
-  argv: Schema.Array(Schema.String).annotate({
-    description: "[\"bun\",\"test\",<test file or directory>] or [\"bun\",\"run\",<package script>]; no other command runs.",
-  }),
-  cwd: Schema.optional(Schema.String).annotate({ description: "Repository-relative directory to run in; omit for the root." }),
+  id: Schema.String,
+  argv: Schema.Array(Schema.String),
+  cwd: Schema.optional(Schema.String),
 })
 export type Check = typeof Check.Type
 
-export const ChecksArray = Schema.Array(Check).annotate({
-  description: "Focused checks (at most 12); each must pass at HEAD for done.",
-})
+export const ChecksArray = Schema.Array(Check)
 export type ChecksArray = typeof ChecksArray.Type
+
+// A check as a delegator writes it: one of the project's named checks
+// (.opencodeplus/checks.json, teams/project-checks.ts), or for Bun projects
+// an explicit bun test/bun run command. project-checks.ts resolveChecks turns
+// it into a Check before anything stores it. The per-agent schema narrowing
+// appends the project's check list to the checks field's description.
+export const CheckSpec = Schema.Struct({
+  id: Schema.String.annotate({ description: "Short kebab-case id: a project check's name, or your own name for this check." }),
+  use: Schema.optional(Schema.String).annotate({
+    description: "The project check to run when id is your own name (e.g. the same file check twice with different paths).",
+  }),
+  path: Schema.optional(Schema.String).annotate({ description: "The repository-relative file or directory for a project check that needs one." }),
+  argv: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description: "Only for a Bun project without a named check: [\"bun\",\"test\",<file or dir>] or [\"bun\",\"run\",<package script>].",
+  }),
+  cwd: Schema.optional(Schema.String).annotate({ description: "With argv only: repository-relative directory to run in." }),
+})
+export type CheckSpec = typeof CheckSpec.Type
+
+export const CheckSpecs = Schema.Array(CheckSpec).annotate({
+  description: "Focused checks (at most 12), each a project check by id (with path when it needs one); each must pass at HEAD for done.",
+})
 
 // Throws a ToolError-shaped object on any failure. The message is the
 // underlying rule text; accepted is the documented valid example.
@@ -339,7 +358,7 @@ export const Brief = Schema.Struct({
     }).annotate({ description: "What the child must know before it starts." }),
     () => ({ interfaces: [], decisions: [] }),
   ),
-  checks: field(ChecksArray, () => []),
+  checks: field(CheckSpecs, () => []),
   effort: field(
     Schema.Literals(["small", "medium", "large"]).annotate({
       description: "small ≈ 1 file, medium ≈ 2–5 files, large ≈ a package; sets an advisory budget.",
@@ -360,6 +379,8 @@ export const Brief = Schema.Struct({
   }),
 })
 export type Brief = typeof Brief.Type
+/** A Brief whose checks are resolved to the commands they run (what a run stores). */
+export type ResolvedBrief = Omit<Brief, "checks"> & { readonly checks: readonly Check[] }
 
 // Report building blocks (docs/team-v2/03-tools.md §finish).
 export const Finding = Schema.Struct({
@@ -820,7 +841,7 @@ export const CheckpointInput = Schema.Struct({
 export type CheckpointInput = typeof CheckpointInput.Type
 
 export const SetChecksInput = Schema.Struct({
-  checks: ChecksArray.annotate({
+  checks: CheckSpecs.annotate({
     description: "Your run's integration checks (replaces the list, at most 12): each landing is verified with them.",
   }),
 })

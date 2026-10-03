@@ -69,6 +69,7 @@ import {
 import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions/inventory.js"
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
 import { ensure, read } from "./project.js"
+import { mainCheckout, readProjectChecks, suggestChecks, writeProjectChecks } from "./teams/project-checks.js"
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
@@ -3107,6 +3108,42 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "monitor.query": (input) => Effect.sync(() => monitorQuery(ctx, input)),
     "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
+    "checks.suggest": () =>
+      Effect.promise(async () => {
+        const root = await mainCheckout(ctx.location.directory)
+        if (root === undefined) return { current: [], suggested: [] }
+        const project = await readProjectChecks(root)
+        const suggestions = await suggestChecks(root)
+        const known = new Set((project?.checks ?? []).map((check) => JSON.stringify(check.argv)))
+        return {
+          root,
+          current: [...(project?.checks ?? [])],
+          ...(project?.setup === undefined ? {} : { setup: { id: "setup", ...project.setup } }),
+          ...(project?.invalid === undefined ? {} : { invalid: project.invalid }),
+          // Only what the file does not already hold.
+          suggested: suggestions.checks.filter((check) => !known.has(JSON.stringify(check.argv))),
+          ...(suggestions.setup === undefined || project?.setup !== undefined ? {} : { suggestedSetup: suggestions.setup }),
+        }
+      }),
+    "checks.save": (input, context) =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mainCheckout(ctx.location.directory))
+        if (root === undefined) return yield* Effect.fail(context.error("checks.invalid", "not inside a git repository", { reason: "not inside a git repository" }))
+        const entry = (check: { readonly argv: readonly string[]; readonly cwd?: string; readonly description?: string }) => ({
+          argv: [...check.argv],
+          ...(check.cwd === undefined ? {} : { cwd: check.cwd }),
+          ...(check.description === undefined ? {} : { description: check.description }),
+        })
+        const written = yield* Effect.promise(() =>
+          writeProjectChecks(root, {
+            version: 1,
+            ...(input.setup === undefined ? {} : { setup: entry(input.setup) }),
+            checks: Object.fromEntries(input.checks.map((check) => [check.id, entry(check)])),
+          }),
+        )
+        if (!written.ok) return yield* Effect.fail(context.error("checks.invalid", written.reason, { reason: written.reason }))
+        return { path: written.path, checks: input.checks.map((check) => check.id) }
+      }),
     "warming.status": (input) => Effect.promise(() => warmingStore.status(input.sessionID)),
     "warming.set": (input) =>
       Effect.gen(function* () {

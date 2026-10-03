@@ -239,6 +239,37 @@ only their own run, which `get_context` describes. `followup`, `stop`,
 `supersede` and `diff` never reach past a member's own run and direct children
 until you turn its `Runs` rows on.
 
+**Project checks.** Checks run unattended and without approval, so what runs
+must be a command a person put in the repository. A project names its checks
+in `.opencodeplus/checks.json` in the **main checkout** (read through git's
+common directory, so a run's worktree can never add one; `.opencodeplus` is
+protected state no run may checkpoint):
+
+```json
+{ "version": 1,
+  "setup": { "argv": ["uv", "sync", "--frozen"] },
+  "checks": {
+    "unit": { "argv": ["uv", "run", "pytest"], "description": "all tests" },
+    "test-file": { "argv": ["uv", "run", "pytest", "{path}"], "description": "one file" } } }
+```
+
+A delegator gives a check by name (`{id:"unit"}`), with `path` when the
+check takes `{path}` (`{id:"auth", use:"test-file", path:"tests/test_auth.py"}`;
+the path must be repository-relative, no globs, no leading `-`). The run stores
+and runs the resolved command. `bun test FILE` / `bun run SCRIPT` as `argv`
+keep working for Bun projects. Anything else is refused with `E_CHECKS`
+naming the project's checks. Every request a team member makes lists the
+project's checks on the `checks` field of `team_delegate` and
+`team_set_checks` (and `team_get_context` reports them as `projectChecks`), so
+the first call names a real check. `setup` prepares each fresh worktree once,
+before its first check, in place of the built-in Bun install.
+
+The TUI command **Project checks** (`/checks`) suggests entries from what the
+project's manifests already name (package.json scripts with the package
+manager its lockfile shows, Makefile/justfile targets, pytest with uv or
+poetry, cargo, go) plus a matching setup; you pick and save. Nothing is
+written before you save.
+
 **One switch per skill.** Skills are listed in one place: Tools › `skill` ›
 Permissions › Skills, grouped by origin, each row the skill itself (on/off is
 whether this agent may load it, enforced as a core `skill` deny for exactly

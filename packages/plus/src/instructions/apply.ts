@@ -12,6 +12,7 @@ import { Effect, Exit, Scope } from "effect"
 import path from "node:path"
 import { applies, catalogPath, resolve, resolveActiveModel, runtimeScope, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
 import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
+import { describeProjectChecks, readProjectChecks } from "../teams/project-checks.js"
 import {
   enforcementState,
   hook,
@@ -641,6 +642,17 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
   return out
 }
 
+// The project's named checks (main checkout .opencodeplus/checks.json) on the
+// checks field of team_delegate and team_set_checks. Only when such a tool is
+// in the request; a failed read leaves the tools as they are.
+function describeChecks(ctx: Context, event: { readonly tools: Record<string, { input: unknown }> }): Effect.Effect<void> {
+  if (event.tools.team_delegate === undefined && event.tools.team_set_checks === undefined) return Effect.void
+  return Effect.promise(async () => {
+    const project = await readProjectChecks(ctx.location.directory).catch(() => undefined)
+    describeProjectChecks(event.tools, project)
+  })
+}
+
 // Scrub the session prompt: drop whole lines containing disabled keywords
 // from every tool description and every system part (base plus instructions).
 // Runs inside the existing session.context hook, after the text plans.
@@ -858,7 +870,9 @@ async function applySession(
   }))
   const scrubByAgent = scrubKeywordsByAgent(input)
   const needsScrub = [...scrubByAgent.values()].some((keywords) => keywords.length > 0)
-  const needsNarrowing = tableNarrows(permissions, input.agents.map((agent) => agent.id))
+  // Team members' tools also learn the project's checks per request (the file
+  // can change between publishes), so a team needs the narrowing hook.
+  const needsNarrowing = tableNarrows(permissions, input.agents.map((agent) => agent.id)) || (input.teamAgents?.length ?? 0) > 0
   if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub && !needsNarrowing)
     return { registrations: [], tools: [], agentChanged: false }
   const contextHook = base.length > 0 || native.length > 0 || instructions.length > 0 || needsScrub
@@ -897,7 +911,7 @@ async function applySession(
         applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
         applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
         if (needsNarrowing) narrowTools(event, permissions)
-        return Effect.void
+        return needsNarrowing ? describeChecks(ctx, event) : Effect.void
       })
       installed.push(registration)
     }
@@ -908,7 +922,7 @@ async function applySession(
       const narrowing = await hook(() =>
         ctx.session.hook("context", (event) => {
           narrowTools(event, permissions)
-          return Effect.void
+          return describeChecks(ctx, event)
         }),
       )
       if (narrowing !== undefined) installed.push(narrowing)

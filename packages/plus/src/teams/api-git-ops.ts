@@ -1,7 +1,8 @@
 import path from "node:path"
 import { teamsDataDir } from "../instructions/paths.js"
 import { loadRun } from "./run.js"
-import { SetChecksInput, validateChecks } from "./schema.js"
+import { SetChecksInput, type Check } from "./schema.js"
+import { readProjectChecks, resolveChecks } from "./project-checks.js"
 import { atomicJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
@@ -33,14 +34,15 @@ function thrownError(error: unknown): { code: string; message: string; accepted?
 // array is legal and clears the list.
 export async function setChecksHandler(args: SetChecksInput, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const checks = [...args.checks]
+  const stored = await loadRun(root, caller.run.id)
+  const record = stored ?? caller.run
+  // Stored as the commands they run: a project check by name or a Bun command.
+  let checks: Check[]
   try {
-    validateChecks(checks)
+    checks = resolveChecks(args.checks, await readProjectChecks(record.directory))
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }
-  const stored = await loadRun(root, caller.run.id)
-  const record = stored ?? caller.run
   await atomicJson(path.join(root, "runs", record.id, "checks.json"), checks)
   return succeeded({ checks: checks.map((check) => check.id) })
 }

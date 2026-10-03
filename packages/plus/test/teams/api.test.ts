@@ -18,6 +18,7 @@ import { gc, onSessionEvent } from "../../src/teams/lifecycle.js"
 import { byDirectory, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { writeProjectChecks } from "../../src/teams/project-checks.js"
 import { read } from "../../src/project.js"
 
 // Real temp git repositories plus a real temp state root (scoped
@@ -1497,3 +1498,34 @@ test("get_context reports the worktree's live HEAD, not the stored one", async (
     }
   })
 }, 30000)
+
+// A delegator names a project check; the run stores and renders the command
+// the project wrote (.opencodeplus/checks.json in the main checkout), and a
+// command nobody named is refused with the project's list.
+test("delegate resolves a project check to the project's command and refuses a made-up one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await writeProjectChecks(repo.dir, { version: 1, checks: { unit: { argv: ["pytest", "tests"], description: "all tests" } } })
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_checks" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const delegated = required(await api.delegate(delegateInput({ requestID: "checks-1", checks: [{ id: "unit" }] }), callerFor(parent))) as {
+        run: string
+        briefPath: string
+      }
+      expect(await atomicRead(path.join(root, "runs", delegated.run, "checks.json"))).toEqual([{ id: "unit", argv: ["pytest", "tests"] }])
+      expect(await fs.readFile(delegated.briefPath, "utf8")).toContain("- unit: pytest tests")
+      const refused = await api.delegate(delegateInput({ requestID: "checks-2", checks: [{ id: "x", argv: ["sh", "-c", "id"] }] }), callerFor(parent))
+      if (refused.ok) throw new Error("expected a refusal")
+      expect((refused.error as { code: string }).code).toBe("E_CHECKS")
+      expect((refused.error as { message: string }).message).toContain("Project checks: unit (all tests)")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+async function atomicRead(file: string): Promise<unknown> {
+  return JSON.parse(await fs.readFile(file, "utf8"))
+}

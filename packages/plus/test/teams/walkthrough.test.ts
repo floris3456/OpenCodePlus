@@ -817,7 +817,8 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
       const checksMessage = await runMessage(need(fixture.tools, "team_set_checks"), checksInput, ctx)
       call("team_set_checks", checksInput, checksMessage)
       expect(checksMessage).toBe(
-        `E_CHECKS: Checks must be explicit bun test FILE or bun run SCRIPT commands. Whole-suite bun test is not permitted.\naccepted: {"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`,
+        // The refusal names the check and what this project offers instead.
+        `E_CHECKS: Check "unit": Checks must be explicit bun test FILE or bun run SCRIPT commands. Whole-suite bun test is not permitted. This project names no checks (.opencodeplus/checks.json; the Project checks command in the TUI suggests them), so only bun test FILE and bun run SCRIPT run.\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}`,
       )
 
       const pathsInput = {

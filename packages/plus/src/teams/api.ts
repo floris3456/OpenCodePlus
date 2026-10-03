@@ -68,10 +68,11 @@ import {
   SupersedeInput,
   budgetExhaustion,
   toolError,
-  validateChecks,
   validateSummary,
   type Check,
+  type ResolvedBrief,
 } from "./schema.js"
+import { checksNote, readProjectChecks, resolveChecks } from "./project-checks.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
 import { provision, slug, NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -129,7 +130,7 @@ function fail(code: string, message: string, accepted?: unknown): TeamApiResult 
   return { ok: false, error: { code, message, accepted } }
 }
 
-// Throwing helpers (validateChecks, tasks.claim, checks.run, git) surface as
+// Throwing helpers (resolveChecks, tasks.claim, checks.run, git) surface as
 // toolError-shaped plain objects; anything else is an internal failure.
 function thrownError(error: unknown): TeamApiError {
   if (typeof error === "object" && error !== null) {
@@ -239,11 +240,15 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       "ocp-main",
     )
 
+  // The checks a run stores are the commands they run: a project check by
+  // name (the main checkout's .opencodeplus/checks.json) or a Bun command.
+  let checks: Check[]
   try {
-    validateChecks([...brief.checks])
+    checks = resolveChecks(brief.checks, await readProjectChecks(repo.root))
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }
+  const resolved: ResolvedBrief = { ...brief, checks }
 
   const paths = brief.scope.paths
   for (const candidate of [...paths, ...brief.scope.forbidden]) {
@@ -305,7 +310,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       role: brief.role,
       effort: brief.effort,
       paths: [...paths],
-      checks: [...brief.checks],
+      checks: [...checks],
       deliverable: { ...brief.deliverable },
     })
   }
@@ -346,7 +351,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
           ),
         }
       : undefined
-  const rendered = briefModule.render(brief, {
+  const rendered = briefModule.render(resolved, {
     budget,
     ...(attached === undefined ? {} : { attached }),
     ...(review === undefined ? {} : { review }),
@@ -450,8 +455,8 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const runDir = path.join(root, "runs", childID)
   await mkdir(runDir, { recursive: true })
   await writeFile(path.join(runDir, "brief.md"), rendered, "utf8")
-  await atomicJson(path.join(runDir, "brief.json"), brief)
-  await atomicJson(path.join(runDir, "checks.json"), [...brief.checks])
+  await atomicJson(path.join(runDir, "brief.json"), resolved)
+  await atomicJson(path.join(runDir, "checks.json"), [...checks])
 
   const wanted = state.activeModels.get(brief.role)
   if (wanted !== undefined) {
@@ -522,7 +527,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const configDigest = Release.digest({
     role: brief.role,
     scope: brief.scope,
-    checks: brief.checks,
+    checks,
     budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
   })
 
@@ -840,6 +845,8 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
     briefPath,
     scope,
     checks,
+    // What a run may be given as checks in this project (a delegator's view).
+    projectChecks: checksNote(await readProjectChecks(record.directory).catch(() => undefined)),
     interfaces,
     decisions,
     siblings,

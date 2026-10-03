@@ -1,4 +1,4 @@
-import type { Brief } from "./schema.js"
+import type { Brief, ResolvedBrief } from "./schema.js"
 
 export interface Budget {
   turns: number
@@ -58,7 +58,7 @@ function minutes(ms: number): string {
   return `${Math.round(ms / 60_000)} min`
 }
 
-export function render(brief: Brief, filled: RenderFilled): string {
+export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   const taskOrReq = brief.task ?? brief.requestID
   const paths = brief.scope?.paths ?? []
   const forbidden = brief.scope?.forbidden ?? []
