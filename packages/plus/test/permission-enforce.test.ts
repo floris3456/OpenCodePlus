@@ -30,7 +30,9 @@ import {
 } from "../src/instructions/permission-enforce.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { actionForToolId } from "../src/instructions/tool-permissions.js"
-import { change, linked, presetTable, shippedMembers } from "./teams/preset-table.js"
+import { controlItems } from "../src/instructions/agent-controls.js"
+import { permissionTableOf } from "../src/instructions/apply.js"
+import { change, linked, presetInput, presetTable, shippedMembers } from "./teams/preset-table.js"
 
 function toolItem(tool: string): Item {
   return { id: `tool:${tool}`, kind: "tool", group: "native", title: tool, text: tool, enabled: true, fingerprint: fingerprint(tool) }
@@ -143,7 +145,8 @@ test("a closed Files fallback keeps only allow-listed files, and a deny-list row
   expect(["src/a.ts", "src/.env", "docs/readme.md", ".env"].filter(hidden)).toEqual(["docs/readme.md", ".env"])
   expect(filterGrep(grepMatches, hidden)?.output).toEqual([grepMatches[0], grepMatches[2], grepMatches[4]])
   expect(decide(closed, call("grep", { pattern: "x", path: "src/a.ts" }))).toEqual({})
-  expect(decide(closed, call("grep", { pattern: "x", path: "docs/readme.md" })).refuse).toBe(messageOf(closed, "files.*"))
+  // The refusal names what the closed category still lets through.
+  expect(decide(closed, call("grep", { pattern: "x", path: "docs/readme.md" })).refuse).toBe(`${messageOf(closed, "files.*")}; still allowed: source`)
 
   const denied = rowsFor("grep", { off: ["files.*", "files.env"] }, [source])
   expect(["src/a.ts", "src/.env"].filter(grepHidden(denied))).toEqual(["src/.env"])
@@ -158,7 +161,7 @@ test("an input category with a closed fallback lets through only its allow rows,
   const docs = allowRow("browser_navigate", "sites", "docs", "url", ["*://docs.example.com*"])
   const rows = rowsFor("browser_navigate", { off: ["sites.*", "sites.http"] }, [docs])
   expect(decide(rows, call("browser_navigate", { tabID: "tab_1", url: "https://docs.example.com/guide" }))).toEqual({})
-  expect(decide(rows, call("browser_navigate", { tabID: "tab_1", url: "https://example.org/" })).refuse).toBe(messageOf(rows, "sites.*"))
+  expect(decide(rows, call("browser_navigate", { tabID: "tab_1", url: "https://example.org/" })).refuse).toBe(`${messageOf(rows, "sites.*")}; still allowed: docs`)
   // Plain HTTP is off: it refuses even the allow-listed host.
   const http = decide(rows, call("browser_navigate", { tabID: "tab_1", url: "http://docs.example.com/guide" })).refuse
   expect(http).toContain("Plain HTTP")
@@ -173,7 +176,7 @@ test("an input category with a closed fallback lets through only its allow rows,
   const extract = rowsFor("search_tavily_extract", { off: ["sites.*"] }, [allowRow("search_tavily_extract", "sites", "docs", "urls[]", ["https://docs.example.com*"])])
   expect(decide(extract, call("search_tavily_extract", { urls: ["https://docs.example.com/a", "https://docs.example.com/b"] }))).toEqual({})
   expect(decide(extract, call("search_tavily_extract", { urls: ["https://docs.example.com/a", "https://evil.example/x"] })).refuse).toBe(
-    messageOf(extract, "sites.*"),
+    `${messageOf(extract, "sites.*")}; still allowed: docs`,
   )
 })
 
@@ -650,6 +653,25 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
   expect(described(changed, "implementer").finish).toBe("Report.\nRequirements for done: worktree committed before done.")
 })
 
+// Two members of one kind differ by what they are for: their descriptions
+// ride with team_delegate, as each resolves (a user's own over the preset's).
+test("narrowTools tells a delegator what each open member is for, from its Description row", () => {
+  const roster = [linked("Orchestrator", "orchestrator"), linked("Flash-B-Implementer", "implementer"), linked("Heavy-Implementer", "implementer")]
+  const flash = roster[1]
+  if (flash === undefined) throw new Error("no member")
+  const base = presetInput({ members: roster, records: [change(flash, "setting:description", { text: "Free and fast; first choice for implementing and live testing." })] })
+  const table = permissionTableOf({ ...base, items: [...base.items, ...roster.flatMap((member) => controlItems(member.id))] })
+  const event: Pick<SessionContext, "agent" | "tools"> = {
+    agent: Agent.ID.make("Orchestrator"),
+    tools: { team_delegate: { description: "Delegate a task.", input: { type: "object", properties: { role: { type: "string" } } } } },
+  }
+  narrowTools(event, table)
+  const lines = event.tools.team_delegate?.description.split("\n") ?? []
+  expect(lines).toContain("Flash-B-Implementer: Free and fast; first choice for implementing and live testing.")
+  expect(lines).toContain("Heavy-Implementer: Executes the brief inside scope and finishes.")
+  expect(lines).toContain("Orchestrator: Owns work, delegates by task, verifies and integrates.")
+})
+
 test("delegateTargets lists the on members, sorted, never the other-teams row", () => {
   const members = [...shippedMembers(), linked("ocp-build", "build-seat")]
   const seat = members.find((member) => member.id === "ocp-build")
@@ -751,14 +773,18 @@ test("tableActive installs the hooks only while some row refuses, clamps, asks o
   expect(active(["grep"], {}, [allowRow("grep", "files", "source", "path", ["src/*"], false)])).toBe(false)
   expect(active(["team_delegate"], { off: ["limits.inflight", "access.delegated"] })).toBe(false)
   expect(active(["team_get_context"], { on: ["accepts.reason", "limits.paths"], off: ["bootstrap.chat"] })).toBe(false)
-  // Only the agents asked about count: a member whose grep secret rows are off.
-  const member = permissionTable({
-    items: catalogItems([toolItem("grep")], actionForToolId),
-    teamMembers: ["ocp-deepseek-implementer"],
-    resolve: (item, agent) => ({ enabled: agent === "ocp-deepseek-implementer" && item.ruleId === "files.env" ? false : item.enabled, text: item.text }),
-  })
-  expect(tableActive(member, ["alpha"])).toBe(false)
-  expect(tableActive(member, ["ocp-deepseek-implementer"])).toBe(true)
+  // Only the agents asked about count: an agent whose grep secret rows are off.
+  const agentTable = (teamMembers: readonly string[]) =>
+    permissionTable({
+      items: catalogItems([toolItem("grep")], actionForToolId),
+      teamMembers,
+      resolve: (item, agent) => ({ enabled: agent === "ocp-deepseek-implementer" && item.ruleId === "files.env" ? false : item.enabled, text: item.text }),
+    })
+  expect(tableActive(agentTable([]), ["alpha"])).toBe(false)
+  expect(tableActive(agentTable([]), ["ocp-deepseek-implementer"])).toBe(true)
+  // An enabled team always installs them: each delegated run's edit scope is
+  // enforced on the call, whatever its rows say.
+  expect(tableActive(agentTable(["ocp-deepseek-implementer"]), ["alpha"])).toBe(true)
 })
 
 test("tableNarrows reacts to off values and parameters, on value caps and Delegate to rows", () => {

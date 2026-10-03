@@ -501,7 +501,8 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
       id: "commands",
       label: "Commands",
       kind: "rule",
-      summary: "Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it.",
+      summary:
+        "Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it. With Every other command off, only the allowed rows run, each command of a pipeline or list checked on its own.",
       fallback: { id: "*", label: "Every other command", on: true, patterns: ["*"], kind: "input", field: "command", message: "shell commands are not allowed here" },
       rows: [
         {
@@ -563,6 +564,34 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
           on: true,
           patterns: ["./bin/team *", "bin/team *", "*/bin/team *", "./bin/opencodeplus*", "bin/opencodeplus*", "*/bin/opencodeplus*"],
           message: "workspace team and service scripts are not allowed here",
+        },
+        // Allow-list rows: they matter once Every other command is off, and
+        // then only what they match runs (apply.ts shellAllowList). pilotty
+        // starts whatever program it is given, so this row limits the shell to
+        // driving terminals; it is not a sandbox for what runs inside one.
+        // `stop` and `daemon` end every terminal of every chat, so they stay out.
+        {
+          id: "pilotty",
+          label: "pilotty (driving terminal apps)",
+          on: false,
+          allow: true,
+          kind: "input",
+          field: "command",
+          patterns: [
+            "pilotty spawn *",
+            "pilotty snapshot *",
+            "pilotty output *",
+            "pilotty key *",
+            "pilotty type *",
+            "pilotty click *",
+            "pilotty scroll *",
+            "pilotty resize *",
+            "pilotty wait-for *",
+            "pilotty kill *",
+            "pilotty list-sessions *",
+            "pilotty examples *",
+            "pilotty --help",
+          ],
         },
       ],
     },

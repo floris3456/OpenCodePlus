@@ -1126,7 +1126,8 @@ test("a model update for a current team agent missing from the registry still la
     ctx,
     makeInput({ items: discovered.items, records: [], models, scopes: fromBuild(discovered, "ghost"), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: ["ghost"] }),
   )
-  expect(applied.registrations).toHaveLength(1)
+  // The model registration, plus the per-request tool narrowing every enabled team installs.
+  expect(applied.registrations).toHaveLength(2)
   expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
   expect(agents.state.get("ghost")?.model).toMatchObject({ providerID: "acme", id: "nova-3" })
 })

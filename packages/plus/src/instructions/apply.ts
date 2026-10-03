@@ -14,6 +14,7 @@ import { applies, catalogPath, resolve, resolveActiveModel, runtimeScope, type C
 import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
 import { describeProjectChecks, readProjectChecks } from "../teams/project-checks.js"
 import {
+  allowListMessage,
   enforcementState,
   hook,
   installEnforcement,
@@ -194,6 +195,15 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
         return { enabled: item.enabled, text: item.text }
       const resolved = resolvedFor(item, agent, input)
       return { enabled: resolved.enabled, text: resolved.text }
+    },
+    // The description applyAgentControls installs on the agent: team_delegate
+    // shows it beside each member a delegator may choose.
+    describe: (agentId) => {
+      const agent = byId.get(agentId)
+      if (agent === undefined) return undefined
+      const rows = input.items.filter((item) => item.id === "setting:description" && applies(item, agentId))
+      const item = controlItemFor(rows, { agent: agentId, item: "setting:description", team: agent.team })
+      return item === undefined ? undefined : resolvedFor(item, agent, input).text
     },
   })
 }
@@ -549,6 +559,28 @@ function permDenials(input: ApplyInput): Rule[] {
   )
 }
 
+// The shell's allow-list: while an agent's "Every other command" row is off,
+// only what an allow row that is on matches may run. Plus checks the call as
+// written (permission-enforce.ts); core checks every command it parses out of
+// it — each part of a pipeline, a list or a substitution — so a command
+// chained after an allowed one (`pilotty … && git push`) is refused too. The
+// rows that are off still refuse inside what the list opens: they land after it.
+function shellAllowList(input: ApplyInput): Rule[] {
+  const rows = input.items.filter((item) => item.kind === "perm" && item.permTool === "shell" && item.category === "commands")
+  const closing = rows.find((item) => item.fallback === true)
+  if (closing === undefined) return []
+  const action = closing.permAction ?? actionForToolId("shell")
+  return input.agents.flatMap((agent): Rule[] => {
+    if (!applies(closing, agent.id) || resolvedFor(closing, agent, input).enabled) return []
+    const opened = rows.filter((item) => item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled)
+    const message = allowListMessage(closing.message ?? "this command is not allowed here", opened.map((item) => item.title))
+    return [
+      { agent: agent.id, action, resource: "*", effect: "deny", allowList: "closing", message },
+      ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
+    ]
+  })
+}
+
 interface Rule {
   readonly agent: string
   readonly action: string
@@ -557,22 +589,30 @@ interface Rule {
   readonly message?: string
   /** A row's own refusal (a rule row that is off, the non-member namespace deny): always lands last. */
   readonly refusal?: boolean
+  /** An allow-list (shellAllowList): its closing deny, then what its allow rows open, both before the refusals. */
+  readonly allowList?: "closing" | "opening"
 }
 
 // The order every Plus rule lands in, whichever row produced it: first a
 // role row's whole-resource defaults (its "shell *"), then the role rules that
 // let a specific resource through (a run's scope paths, a planner's plan
-// files), then the role's own refusals, and last every refusal of a row that
-// is off (curated, catalog and user rules, and the non-member namespace deny).
-// Core answers last-match-wins, so a row that is off always refuses what it
-// matches — even with the pattern `*` — and a role's "allow shell *" can no
-// longer undo a "git push" row that is off. Within the defaults an allow comes
-// before an ask before a deny, so the most restrictive default wins; the sort
-// is stable, so each row keeps its own internal order.
-export function orderRules<T extends { readonly resource: string; readonly effect: PolicyRule["effect"]; readonly refusal?: boolean }>(rules: readonly T[]): T[] {
+// files), then the role's own refusals, then a closed allow-list (deny
+// everything, then allow what its rows open), and last every refusal of a row
+// that is off (curated, catalog and user rules, and the non-member namespace
+// deny). Core answers last-match-wins, so a row that is off always refuses
+// what it matches — even with the pattern `*` — and a role's "allow shell *"
+// can no longer undo a "git push" row that is off or a closed allow-list.
+// Within the defaults an allow comes before an ask before a deny, so the most
+// restrictive default wins; the sort is stable, so each row keeps its own
+// internal order.
+export function orderRules<
+  T extends { readonly resource: string; readonly effect: PolicyRule["effect"]; readonly refusal?: boolean; readonly allowList?: "closing" | "opening" },
+>(rules: readonly T[]): T[] {
   const effectRank = { allow: 0, ask: 1, deny: 2 } as const
   const rank = (rule: T) => {
-    if (rule.refusal === true) return 6
+    if (rule.allowList === "closing") return 6
+    if (rule.allowList === "opening") return 7
+    if (rule.refusal === true) return 8
     if (rule.resource === "*") return effectRank[rule.effect]
     return rule.effect === "deny" ? 5 : 3 + effectRank[rule.effect]
   }
@@ -889,6 +929,7 @@ async function applySession(
   // order, so it survives core's last-match-wins evaluation.
   const permDenies = orderRules<Rule>([
     ...permDenials(input),
+    ...shellAllowList(input),
     ...policyRules(input),
     ...teamNamespaceDenials(input),
     ...teamToolDenials(candidates, input.teamAgents),
