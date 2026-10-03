@@ -65,13 +65,18 @@ With CPA's `quota-handoff` plugin **0.1.5-local.1 or newer** and its
    the step that was refused simply runs again from the checkpoint.
 
 The composer shows "… Compacting with … first." while this happens and "Continuing on …
-after compacting with …." afterwards (until the next run); nothing is added to the model's
+after compacting." afterwards (until the next run); nothing is added to the model's
 context. A pending switch survives a restart. If CPA refuses again after that compaction,
 or a switch is retried more than three times, the refusal reaches the chat as an error
 instead of compacting in a loop. A chat with automatic compaction off is switched without
 compaction (CPA admits it), as are brand-new chats and chats whose newest checkpoint CPA has
-not seen yet. A wrong `compactionModel` (not resolvable) fails the compaction with the
-model error rather than silently summarizing on the expensive model.
+not seen yet.
+
+If `compactionModel` cannot write the summary (unknown model, provider refusal, unusable
+reply), `compactionFallback` writes it within the same compaction: the chat history keeps the
+failed attempt (with its error) next to the completed checkpoint, and the step continues as
+usual. Choose a fallback whose window holds the whole conversation. Without a fallback the
+failure ends the turn with the model error; the new account still receives nothing.
 
 ## Credential usage in the sidebar
 

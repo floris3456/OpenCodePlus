@@ -12,7 +12,7 @@ const servers: ReturnType<typeof Bun.serve>[] = []
 afterEach(() => {
   servers.splice(0).forEach((server) => server.stop(true))
 })
-function fixture(compactionModel?: string) {
+function fixture(compactionModel?: string, compactionFallback?: string) {
   const state = {
     known: false,
     status: 200,
@@ -46,7 +46,11 @@ function fixture(compactionModel?: string) {
   const store = new Map<string, Stored>()
   const notices = new Map<string, { session: string; text: string }>()
   const controller = new QuotaController(
-    { routes: { proxy: server.url.href, other: server.url.href }, ...(compactionModel ? { compactionModel } : {}) },
+    {
+      routes: { proxy: server.url.href, other: server.url.href },
+      ...(compactionModel ? { compactionModel } : {}),
+      ...(compactionFallback ? { compactionFallback } : {}),
+    },
     "installation",
     {
       read: async (key) => store.get(key),
@@ -391,7 +395,7 @@ test("an account-switch refusal compacts once with the configured model, then th
     {
       sessionID: "ses_test",
       kind: "switched",
-      text: "Continuing on Large after compacting with proxy/cheap-model#high.",
+      text: "Continuing on Large after compacting.",
     },
   ])
   expect(await f.controller.warming("ses_test")).toBe(true)
@@ -469,4 +473,35 @@ test("without a usable compactionModel the agent's own compaction model writes t
     expect(notice?.text).toContain("Compacting with the agent's compaction model first.")
     if (configured) expect(notice?.text).toContain('compactionModel "not-a-model-reference" is not provider/model')
   }
+})
+
+test("the account-switch decision carries the fallback model; a malformed one is reported and skipped", async () => {
+  const f = fixture("proxy/cheap-model", "proxy/wide-model")
+  f.state.known = true
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  const event = f.event()
+  await f.controller.decide(event)
+  expect(event.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model"))
+  expect(event.compactionFallback).toEqual(Model.Ref.parse("proxy/wide-model"))
+  expect((await f.controller.status("ses_test"))[0]?.text).toEndWith(
+    "Compacting with proxy/cheap-model (fallback proxy/wide-model) first.",
+  )
+  // Outside a pending switch no model is chosen: ordinary compactions keep the agent's settings.
+  const g = fixture("proxy/cheap-model", "not a model")
+  g.state.known = true
+  const ordinary = g.event()
+  await g.controller.decide(ordinary)
+  expect(ordinary.compactionModel).toBeUndefined()
+  expect(ordinary.compactionFallback).toBeUndefined()
+  await g.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await g.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  const malformed = g.event()
+  await g.controller.decide(malformed)
+  expect(malformed.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model"))
+  expect(malformed.compactionFallback).toBeUndefined()
+  expect((await g.controller.status("ses_test"))[0]?.text).toContain(
+    'compactionFallback "not a model" is not provider/model; Compacting with proxy/cheap-model first.',
+  )
 })

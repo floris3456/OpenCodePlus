@@ -46,6 +46,8 @@ export const Config = Schema.Struct({
   routes: Schema.Record(Schema.String, Schema.String),
   /** `provider/model[#variant]` that writes the summary when CPA moves a chat to another account. */
   compactionModel: Schema.optional(Schema.String),
+  /** `provider/model[#variant]` that writes that summary when `compactionModel` fails. */
+  compactionFallback: Schema.optional(Schema.String),
 })
 export type Config = typeof Config.Type
 

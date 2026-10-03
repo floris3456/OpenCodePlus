@@ -20,9 +20,11 @@ Hosts that do not use CPA see nothing from it.
   only) still enables quota and usage, without the catalogue.
 
   Optional `"compactionModel": "<provider>/<model>[#variant]"` (for example
-  `"cliproxyapi/opencode-go/deepseek-v4.1-flash"`) writes the summary when CPA moves
-  a chat to another account (see the quota README, "Account switches"). Without it
-  the agent's normal compaction model writes that summary.
+  `"cliproxyapi/deepseek-v4.1-flash-cheap"`) writes the summary when CPA moves a chat
+  to another account (see the quota README, "Account switches"); without it the
+  agent's normal compaction model writes that summary. Optional
+  `"compactionFallback"` (for example `"cliproxyapi/gemini-3.8-flash-high"`) writes it
+  when the first model fails.
 
 - **Off:** `"plugins": ["-opencode.plus.cliproxyapi"]` in `opencode.json`, or delete
   the file. Without the server half (or without configuration) the TUI half shows no

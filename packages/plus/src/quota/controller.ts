@@ -42,16 +42,15 @@ export const UNENROLLED_BACKOFF = 30_000
 const SWITCH_RETRIES = 3
 
 /**
- * The model that writes the summary when CPA moves a chat to another account. Without one (or with a
- * value that is not `provider/model[#variant]`) the agent's own compaction model writes it.
+ * A model setting for the account-switch summary (`compactionModel`, `compactionFallback`). A value that
+ * is not `provider/model[#variant]` is ignored and reported in the switch notice.
  */
-function summaryModel(value: string | undefined): { ref?: Model.Ref; label: string; problem?: string } {
-  const fallback = "the agent's compaction model"
-  if (!value) return { label: fallback }
+function modelSetting(key: string, value: string | undefined): { ref?: Model.Ref; label?: string; problem?: string } {
+  if (!value) return {}
   try {
     return { ref: Model.Ref.parse(value), label: value }
   } catch {
-    return { label: fallback, problem: `compactionModel "${value}" is not provider/model; ` }
+    return { problem: `${key} "${value}" is not provider/model; ` }
   }
 }
 
@@ -61,7 +60,10 @@ export class QuotaController {
   private readonly running = new Set<string>()
 
   private readonly identity: Promise<string>
-  private readonly summary: ReturnType<typeof summaryModel>
+  /** Writes the account-switch summary; without it the agent's own compaction model does. */
+  private readonly summary: ReturnType<typeof modelSetting>
+  /** Writes that summary when the first model fails, within the same compaction. */
+  private readonly fallback: ReturnType<typeof modelSetting>
 
   constructor(
     readonly config: Config,
@@ -72,7 +74,8 @@ export class QuotaController {
     this.identity = Promise.resolve(installation)
     // Rejections surface at the first request that needs the identity.
     this.identity.catch(() => {})
-    this.summary = summaryModel(config.compactionModel)
+    this.summary = modelSetting("compactionModel", config.compactionModel)
+    this.fallback = modelSetting("compactionFallback", config.compactionFallback)
   }
   enabled(provider: string) {
     return this.config.routes[provider] !== undefined
@@ -197,6 +200,7 @@ export class QuotaController {
         event.compact = true
         event.portable = true
         if (this.summary.ref) event.compactionModel = this.summary.ref
+        if (this.fallback.ref) event.compactionFallback = this.fallback.ref
         event.metadata = { ...event.metadata, "quota.switch": true }
       }
       return
@@ -327,7 +331,7 @@ export class QuotaController {
         {
           sessionID: session,
           kind: "switched",
-          text: `Continuing on ${binding.alias} after compacting with ${this.summary.label}.`,
+          text: `Continuing on ${binding.alias} after compacting.`,
         },
       ]
     }
@@ -375,7 +379,7 @@ export class QuotaController {
         {
           sessionID: session,
           kind: "switching",
-          text: `${route.switchText ?? "CPA is moving this chat to another account."} ${this.summary.problem ?? ""}Compacting with ${this.summary.label} first.`,
+          text: `${route.switchText ?? "CPA is moving this chat to another account."} ${this.summary.problem ?? ""}${this.fallback.problem ?? ""}Compacting with ${this.summary.label ?? "the agent's compaction model"}${this.fallback.label ? ` (fallback ${this.fallback.label})` : ""} first.`,
         },
       ]
       // Core runs its compaction decision before rebuilding the request; decide() asks for the summary.
