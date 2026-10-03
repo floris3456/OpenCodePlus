@@ -26,6 +26,15 @@ const catalogue: Catalogue = {
       tiers: [],
     },
     {
+      id: "gpt-image-1.5",
+      name: "GPT Image 1.5",
+      kind: "image",
+      input: ["text"],
+      outputModalities: ["image"],
+      reasoning: { mode: "none", levels: [] },
+      tiers: [],
+    },
+    {
       id: "gpt-image-2",
       name: "GPT Image 2",
       kind: "image",

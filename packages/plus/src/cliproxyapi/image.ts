@@ -13,7 +13,9 @@ import type { Catalogue } from "./catalog.js"
 export const ImageInput = Schema.Struct({
   prompt: Schema.String.annotate({ description: "What the image should show." }),
   model: Schema.optionalKey(
-    Schema.String.annotate({ description: "CPA image model, e.g. gpt-image-2. Default: the first one CPA lists." }),
+    Schema.String.annotate({
+      description: "CPA image model, e.g. gpt-image-2. Default: gpt-image-2, else the first one CPA lists.",
+    }),
   ),
   size: Schema.optionalKey(
     Schema.String.annotate({ description: "WIDTHxHEIGHT, e.g. 1024x1024. Default: the model's." }),
@@ -37,11 +39,15 @@ export interface ImageTarget {
   readonly catalogue: Catalogue
 }
 
-/** Picks the model: the requested one if it is an image model in a catalogue, else the first image model. */
+export const DEFAULT_IMAGE_MODEL = "gpt-image-2"
+
+/** Picks the model: the requested one if it is an image model in a catalogue, else gpt-image-2 or the first image model. */
 export function chooseImageModel(targets: readonly ImageTarget[], requested: string | undefined) {
   for (const target of targets) {
     const images = target.catalogue.models.filter((model) => model.kind === "image")
-    const model = requested ? images.find((item) => item.id === requested) : images[0]
+    const model = requested
+      ? images.find((item) => item.id === requested)
+      : (images.find((item) => item.id === DEFAULT_IMAGE_MODEL) ?? images[0])
     if (model) return { target, model: model.id }
   }
   return undefined
