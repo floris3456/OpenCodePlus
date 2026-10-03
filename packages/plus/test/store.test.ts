@@ -12,7 +12,10 @@ const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
 afterEach(async () => {
-  process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  // Assigning undefined would store the string "undefined": a relative
+  // config dir that later tests in this process write into.
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
