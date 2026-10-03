@@ -5,18 +5,19 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import { createHash } from "node:crypto"
 import { Effect, Schema, Stream } from "effect"
 import { registerUsage } from "./usage-register.js"
-import { quotaConfig } from "./config.js"
+import type { Config } from "./protocol.js"
 import { QuotaController } from "./controller.js"
 import { Definition } from "./rpc.js"
 import { installationIdentity } from "./identity.js"
 import { portableMessages } from "./portable.js"
 
-export function registerQuota(ctx: Context) {
+export function registerQuota(ctx: Context, config: Config | undefined) {
   return Effect.gen(function* () {
-    const config = yield* Effect.promise(() => quotaConfig(ctx.options.quota))
     yield* registerUsage(ctx, config)
     if (config === undefined) return
-    const installation = yield* Effect.promise(() => installationIdentity(ctx))
+    // Not awaited: the identity may come from migrated storage that becomes
+    // readable only after later plugins start.
+    const installation = installationIdentity(ctx)
     const controller = new QuotaController(config, installation, {
       read: (key) => Effect.runPromise(ctx.storage.get(key)),
       write: (key, value) => Effect.runPromise(ctx.storage.set(key, value)),
@@ -66,7 +67,11 @@ export function registerQuota(ctx: Context) {
         const retry = await controller.retry(event.sessionID, event.model.providerID, event.model.id)
         if (retry !== undefined)
           event.decision =
-            typeof retry === "number" ? { retry: true, delay: retry } : retry ? { retry: true, delay: 0 } : { retry: false }
+            typeof retry === "number"
+              ? { retry: true, delay: retry }
+              : retry
+                ? { retry: true, delay: 0 }
+                : { retry: false }
       }),
     )
     yield* ctx.session.hook("warming", (event) =>

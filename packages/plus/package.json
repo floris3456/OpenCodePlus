@@ -22,6 +22,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./tui": "./src/tui/index.tsx",
+    "./cliproxyapi": "./src/cliproxyapi/index.ts",
+    "./cliproxyapi/tui": "./src/cliproxyapi/tui.tsx",
     "./rpc": "./src/rpc.ts"
   },
   "scripts": {

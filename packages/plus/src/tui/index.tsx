@@ -1,5 +1,3 @@
-import { createUsage } from "../quota/usage-view.js"
-import { createQuota } from "../quota/tui.js"
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
 import { Definition } from "../rpc.js"
@@ -23,8 +21,6 @@ export default Plugin.define({
     const activeTeam = createActiveTeam(context)
     const warming = createWarming(context)
     const monitor = createMonitor(context)
-    const disposeQuota = createQuota(context)
-    const disposeUsage = createUsage(context)
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
@@ -135,8 +131,6 @@ export default Plugin.define({
       disposeCompactMarker()
       warming.dispose()
       monitor.dispose()
-      disposeQuota()
-      disposeUsage()
       agents.dispose()
       activeTeam.dispose()
       snapshots.dispose()

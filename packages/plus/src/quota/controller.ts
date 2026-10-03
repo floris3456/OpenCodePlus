@@ -39,12 +39,17 @@ export class QuotaController {
   private readonly routes = new Map<string, Promise<Route>>()
   private readonly running = new Set<string>()
 
+  private readonly identity: Promise<string>
+
   constructor(
     readonly config: Config,
-    readonly installation: string,
+    installation: string | Promise<string>,
     private readonly io: QuotaIO,
   ) {
     Object.values(config.routes).forEach(endpoint)
+    this.identity = Promise.resolve(installation)
+    // Rejections surface at the first request that needs the identity.
+    this.identity.catch(() => {})
   }
   enabled(provider: string) {
     return this.config.routes[provider] !== undefined
@@ -141,7 +146,7 @@ export class QuotaController {
       await this.notice(
         route,
         event.kind,
-        `${this.installation}/${route.provider}/${route.model}/${event.id}`,
+        `${await this.identity}/${route.provider}/${route.model}/${event.id}`,
         event.text,
       )
     }
@@ -226,7 +231,7 @@ export class QuotaController {
     const event = route.decision
     const claim = {
       protocol: 1,
-      installation: this.installation,
+      installation: await this.identity,
       session,
       route: `${provider}/${model}`,
       request: randomBytes(16).toString("hex"),

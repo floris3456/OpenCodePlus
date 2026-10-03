@@ -58,6 +58,12 @@ export const UsageDefinition = Rpc.define({
       output: Schema.toStandardSchemaV1(UsageResult),
       errors: {},
     },
+    /** Whether CLIProxyAPI is configured on this host; the TUI shows nothing otherwise. */
+    enabled: {
+      input: Schema.toStandardSchemaV1(Schema.Struct({})),
+      output: Schema.toStandardSchemaV1(Schema.Struct({ enabled: Schema.Boolean })),
+      errors: {},
+    },
   },
   events: {},
 })

@@ -19,6 +19,7 @@ export function registerUsage(ctx: Context, config: Config | undefined) {
             input,
           ),
         ),
+      enabled: () => Effect.succeed({ enabled: config !== undefined }),
     })
     .pipe(Effect.orDie)
 }

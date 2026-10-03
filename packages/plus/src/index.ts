@@ -1,4 +1,4 @@
-import { registerQuota } from "./quota/register.js"
+import { provideLegacyQuotaStorage } from "./cliproxyapi/legacy.js"
 import { Plugin } from "@opencode/plugin/effect"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -145,7 +145,9 @@ export default Plugin.define({
   id: "opencode.plus",
   effect: (ctx) =>
     Effect.gen(function* () {
-      yield* registerQuota(ctx)
+      // CPA features moved to the opencode.plus.cliproxyapi plugin; it migrates
+      // quota bindings that earlier versions stored under this plugin's storage.
+      provideLegacyQuotaStorage((key) => Effect.runPromise(ctx.storage.get(key)))
       const state = createState()
       // Applied registrations live on detached scopes, so without this
       // finalizer they outlive the plugin when core unloads or reactivates it.

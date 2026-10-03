@@ -88,6 +88,7 @@ import { WriteTool } from "../tool/plugin/write.js"
 import { AgentPlugin } from "./agent.js"
 import BrowserPlugin from "@opencode/plugin-browser"
 import PlusPlugin from "@opencode/plus"
+import CliproxyapiPlugin from "@opencode/plus/cliproxyapi"
 import { CommandPlugin } from "./command.js"
 import { IdentityPlugin } from "./identity.js"
 import { PlanPlugin } from "./plan.js"
@@ -249,6 +250,10 @@ const pre = [
   WebSearchTool.Plugin,
   WriteTool.Plugin,
   WarmingPlugin.Plugin,
+  // OpenCodePlus CLIProxyAPI features (catalogue, quota, usage). Before config: its
+  // discovered models are the base that providers.<id>.models overrides refine.
+  // Disable with "plugins": ["-opencode.plus.cliproxyapi"].
+  CliproxyapiPlugin,
 ] as const satisfies readonly InternalPlugin[]
 
 const post = [

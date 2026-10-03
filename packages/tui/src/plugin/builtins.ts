@@ -12,6 +12,7 @@ import Stats from "../feature-plugins/system/stats"
 import Latex from "@opencode/latex/plugin"
 import Merman from "@opencode/merman/plugin"
 import Plus from "@opencode/plus/tui"
+import Cliproxyapi from "@opencode/plus/cliproxyapi/tui"
 
 export const builtins = [
   HomeFooter,
@@ -30,4 +31,5 @@ export const builtins = [
   ...(process.env.OPENCODE_STORY ? [Storybook] : []),
   DiffViewer,
   Plus,
+  Cliproxyapi,
 ]
