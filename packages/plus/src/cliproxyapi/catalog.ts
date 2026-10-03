@@ -186,7 +186,8 @@ export function applyCatalogue(
         model.variants = structuredClone(variants) as never
         if (fast) model.body = { ...(model.body ?? {}), service_tier: FAST_TIER } as never
       })
-    define(item.id, item.name, false)
+    // Image models answer only on CPA's images endpoint (image.generate tool), not in chat.
+    define(item.id, item.kind === "image" ? `${item.name} (images)` : item.name, false)
     const fastID = `${item.id}${FAST_SUFFIX}`
     if (item.kind === "chat" && item.tiers.includes(FAST_TIER) && !ids.has(fastID))
       define(fastID, `${item.name} (Fast)`, true)

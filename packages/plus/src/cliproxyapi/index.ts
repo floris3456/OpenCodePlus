@@ -1,14 +1,16 @@
 import { Plugin } from "@opencode/plugin/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Provider } from "@opencode/schema/provider"
-import { Effect, Schedule, Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { registerQuota } from "../quota/register.js"
 import { applyCatalogue, CODEX_CLIENT_VERSION, parseCodexCatalogue, parseDetails, type Catalogue } from "./catalog.js"
 import { cliproxyapiConfig } from "./config.js"
+import { imageToolRegistration, type ImageTarget } from "./image.js"
 import { migratingStorage } from "./legacy.js"
 
 export const ID = "opencode.plus.cliproxyapi"
 const REFRESH = "5 minutes"
+const RETRY = "15 seconds"
 
 const Stored = Schema.Struct({ catalogue: Schema.Unknown, pkg: Schema.optional(Schema.String) })
 
@@ -56,18 +58,34 @@ export function catalogueSync(ctx: Context, routes: Readonly<Record<string, stri
     yield* ctx.provider.transform((providers) => {
       for (const [providerID, entry] of loaded) applyCatalogue(providers, providerID, entry.catalogue, entry.pkg)
     })
+    // Image models only work on CPA's images endpoint; the image tool makes them usable.
+    yield* imageToolRegistration(ctx, () =>
+      Effect.forEach([...loaded], ([providerID, entry]) =>
+        connection(ctx, providerID, routes[providerID]!).pipe(
+          Effect.map((target): ImageTarget[] =>
+            target ? [{ providerID, baseURL: target.baseURL, key: target.key, catalogue: entry.catalogue }] : [],
+          ),
+          Effect.catchCause(() => Effect.succeed([] as ImageTarget[])),
+        ),
+      ).pipe(Effect.map((items) => items.flat())),
+    )
 
+    /** Returns whether every route answered; failed routes keep their last catalogue. */
     const refresh = Effect.fn("CliproxyapiCatalogue.refresh")(function* () {
       let changed = false
+      let complete = true
       for (const [providerID, origin] of Object.entries(routes)) {
         const next = yield* fetchCatalogue(ctx, providerID, origin).pipe(
           Effect.catchCause((cause) =>
-            Effect.logDebug("CPA catalogue refresh failed; keeping the last catalogue", { providerID, cause }).pipe(
+            Effect.logWarning("CPA catalogue refresh failed; keeping the last catalogue", { providerID, cause }).pipe(
               Effect.as(undefined),
             ),
           ),
         )
-        if (!next) continue
+        if (!next) {
+          complete = false
+          continue
+        }
         const previous = loaded.get(providerID)
         if (previous && previous.catalogue.hash === next.catalogue.hash && previous.pkg === next.pkg) continue
         loaded.set(providerID, next)
@@ -75,8 +93,16 @@ export function catalogueSync(ctx: Context, routes: Readonly<Record<string, stri
         changed = true
       }
       if (changed) yield* ctx.provider.reload()
+      return complete
     })
-    yield* refresh().pipe(Effect.ignore, Effect.repeat(Schedule.spaced(REFRESH)), Effect.forkScoped)
+    // Retry quickly until every route answered (the provider may still be settling at
+    // startup), then refresh every five minutes.
+    yield* Effect.forever(
+      refresh().pipe(
+        Effect.catchCause(() => Effect.succeed(false)),
+        Effect.flatMap((complete) => Effect.sleep(complete ? REFRESH : RETRY)),
+      ),
+    ).pipe(Effect.forkScoped)
   })
 }
 
@@ -106,7 +132,12 @@ function connection(ctx: Context, providerID: string, origin: string) {
 function fetchCatalogue(ctx: Context, providerID: string, origin: string) {
   return Effect.gen(function* () {
     const target = yield* connection(ctx, providerID, origin)
-    if (!target) return undefined
+    if (!target)
+      return yield* Effect.die(
+        new Error(
+          `Provider ${providerID} has no API key, or its baseURL origin is not the configured CPA route ${origin}`,
+        ),
+      )
     const get = (query: string) =>
       Effect.promise(async () => {
         const response = await fetch(`${target.baseURL}/models?${query}`, {

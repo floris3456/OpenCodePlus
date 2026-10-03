@@ -174,7 +174,13 @@ describe("opencode.plus.cliproxyapi catalogue", () => {
               body: { service_tier: "priority" },
               limit: { context: 200_000, output: 128_000 },
             })
-            expect(fast?.variants.map((variant) => String(variant.id))).toEqual(["low", "medium", "high", "xhigh", "max"])
+            expect(fast?.variants.map((variant) => String(variant.id))).toEqual([
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+            ])
 
             const deepseek = yield* models.get(providerID, Model.ID.make("opencode-go/deepseek-v4.1-flash"))
             expect(deepseek?.variants as unknown).toEqual([])
