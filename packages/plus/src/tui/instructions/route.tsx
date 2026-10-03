@@ -907,7 +907,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     const ownerIndex = chain.findIndex((entry, at) => {
       const next = chain[at + 1]
-      return next !== undefined && next.kind === "group" && /:(settings|models|compaction|tools|base|skills|system|mcp)$/.test(next.id)
+      return next !== undefined && next.kind === "group" && /:(settings|models|compaction|tools|base|system|mcp)$/.test(next.id)
         && (entry.kind === "agent" || entry.kind === "team" || (entry.kind === "group" && chain[at - 1]?.kind === "root"))
     })
     const node = chain[chain.length - 1]

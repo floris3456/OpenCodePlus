@@ -1531,6 +1531,8 @@ test("every kind resolves from Project: a Defaults-scope agent's tool row saved 
 test("a Defaults entry `*` turning tool:shell off: build's Project row and what apply installs agree", async () => {
   const items: Item[] = [
     { id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "Execute shell commands.", enabled: true, fingerprint: fingerprint("Execute shell commands.") },
+    // Skills are listed under the skill tool, which core always registers.
+    { id: "tool:skill", kind: "tool", group: "native", title: "skill", text: "Load a skill.", enabled: true, fingerprint: fingerprint("Load a skill.") },
     { id: "skill:lint", kind: "skill", group: "project", title: "lint", text: "Lint the code.", enabled: true, fingerprint: fingerprint("Lint the code.") },
   ]
   const sources: AgentSource[] = [{ id: "build", scope: "defaults", origin: "native" }]

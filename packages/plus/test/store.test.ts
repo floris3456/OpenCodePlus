@@ -54,6 +54,7 @@ test("load returns empty when both stores are absent", async () => {
     migrated: false,
     cataloguesMigrated: false,
     presetsMigrated: false,
+    skillsMigrated: false,
   })
 })
 

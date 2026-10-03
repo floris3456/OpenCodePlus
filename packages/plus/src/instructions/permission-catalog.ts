@@ -1205,7 +1205,6 @@ const legacyCategories: Record<string, { readonly id: string; readonly label: st
   glob: { id: "patterns", label: "Search patterns" },
   grep: { id: "patterns", label: "Search patterns" },
   subagent: { id: "agents", label: "Agents" },
-  skill: { id: "skills", label: "Skills" },
 }
 
 export const suggestedCategory = { id: "suggested", label: "Mentioned in instructions" } as const

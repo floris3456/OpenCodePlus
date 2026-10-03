@@ -94,7 +94,11 @@ function fixtureContext(project: string, overrides?: Partial<Parameters<typeof f
   return fullContext({
     directory: project,
     agents: [agentInfo("alpha", "upstream role")],
-    tools: [{ id: "reader", description: "read things", options: { codemode: false } }],
+    // Core always registers the skill tool; skills are listed under it.
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "skill", description: "Load a skill", options: { codemode: false } },
+    ],
     skills: [skillInfo("notes", "skill body")],
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
     ...(overrides ?? {}),
@@ -2300,7 +2304,11 @@ test("every enabled create kind returns the row id show and delete accept, and d
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("alpha", "upstream role")],
-    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    // Core always registers the skill tool; created skills are listed under it.
+    tools: [
+      { id: "shell", description: "Run shell.", options: { codemode: false } },
+      { id: "skill", description: "Load a skill", options: { codemode: false } },
+    ],
     skills: [skillInfo("notes2", "Take notes.", path.join(project, ".opencode", "skill", "notes2", "SKILL.md"))],
     servers: [["search", { type: "remote", url: "https://example.test" }]],
     models: [modelInfo("acme", "nova-2")],

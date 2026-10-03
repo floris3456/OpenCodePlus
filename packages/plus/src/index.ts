@@ -3956,6 +3956,15 @@ async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeo
       summary: "migrate.presets: retired Plus preset links and customizations moved to the Basic team",
       revision: migration.revision,
     })
+  if (migration.skillsMigrated)
+    await append(globalLogPath(), {
+      ts: new Date().toISOString(),
+      actor: { type: "tui" as const },
+      op: "migrate.skills",
+      target: "root:defaults",
+      summary: "migrate.skills: per-skill permission rows' states moved onto the skills (one switch per skill)",
+      revision: migration.revision,
+    })
   return migration.loaded
 }
 

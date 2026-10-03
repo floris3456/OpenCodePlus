@@ -18,6 +18,7 @@ import type { ModelSettingsRecord } from "./model-settings.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
 import { basicMemberForRetiredAgent, basicTeamId, retiredMemberPresets } from "./presets.js"
+import { catalogFor } from "./permission-catalog.js"
 import { ensure } from "../project.js"
 
 export type { CustomizationRecord, SplitRecord }
@@ -47,6 +48,8 @@ export interface Loaded {
   readonly cataloguesMigrated: boolean
   /** True when this load moved links and customizations of the retired Plus presets onto the Basic team preset. */
   readonly presetsMigrated: boolean
+  /** True when this load moved per-skill permission rows' states onto the skills themselves. */
+  readonly skillsMigrated: boolean
 }
 
 export interface SaveInput {
@@ -282,20 +285,23 @@ export async function load(projectDir: string): Promise<Loaded> {
   if (!projectParsed.migrated && !globalParsed.migrated) {
     const catalogues = migrateCatalogues([...projectParsed.records, ...globalParsed.records])
     const presets = migrateRemovedPresets(catalogues.records)
+    const skills = migrateSkillPermissions(presets.records)
     return {
       projectRevision: projectParsed.revision,
       globalRevision: globalParsed.revision,
-      records: presets.records,
+      records: skills.records,
       migrated: false,
       cataloguesMigrated: catalogues.migrated,
       presetsMigrated: presets.migrated,
+      skillsMigrated: skills.migrated,
     }
   }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
   // those route into the global store, not the project file.
   const catalogues = migrateCatalogues(projectParsed.records.concat(globalParsed.records))
   const presets = migrateRemovedPresets(catalogues.records)
-  const routed = route(presets.records)
+  const skills = migrateSkillPermissions(presets.records)
+  const routed = route(skills.records)
   return {
     projectRevision: projectParsed.revision,
     globalRevision: globalParsed.revision,
@@ -303,7 +309,72 @@ export async function load(projectDir: string): Promise<Loaded> {
     migrated: true,
     cataloguesMigrated: catalogues.migrated,
     presetsMigrated: presets.migrated,
+    skillsMigrated: skills.migrated,
   }
+}
+
+// Skills once had two switches per agent: the skill row and a "skill" tool
+// permission row per skill (perm:skill:<id>). Both installed the same deny,
+// so they could disagree on screen while either one took the skill away. The
+// skill row is now the only switch, so each stored state on a per-skill
+// permission row moves onto the skill at the same address. When both are
+// stored there and disagree, off wins: either one already took the skill away.
+//
+// The skill tool's own catalog rows (Approval) and user-created skill rules
+// are real permissions and stay. A per-skill row's text (its pattern) has no
+// meaning on a skill and is dropped with it.
+//
+// Idempotent: a migrated store has no per-skill permission records left.
+export function migrateSkillPermissions(records: readonly StoredRecord[]): {
+  records: StoredRecord[]
+  migrated: boolean
+} {
+  const catalogCategories = new Set(catalogFor("skill").map((category) => category.id))
+  const userRules = new Set(records.flatMap((record) => (record.type === "rule" && record.tool === "skill" ? [record.id] : [])))
+  const skillOf = (record: StoredRecord): string | undefined => {
+    if (record.type !== "customization" || !record.item.startsWith("perm:skill:")) return undefined
+    const id = record.item.slice("perm:skill:".length)
+    if (id.length === 0 || userRules.has(id)) return undefined
+    if (id.includes(".") && catalogCategories.has(id.slice(0, id.indexOf(".")))) return undefined
+    return id
+  }
+  if (!records.some((record) => skillOf(record) !== undefined)) return { records: [...records], migrated: false }
+  const addressKey = (record: CustomizationRecord, item: string) =>
+    JSON.stringify([record.level, record.agent, record.team ?? null, record.catalogue ?? null, item, record.section])
+  const out: StoredRecord[] = []
+  const skillAt = new Map<string, number>()
+  for (const record of records) {
+    if (skillOf(record) !== undefined) continue
+    if (record.type === "customization" && record.item.startsWith("skill:")) skillAt.set(addressKey(record, record.item), out.length)
+    out.push(record)
+  }
+  for (const record of records) {
+    const skill = skillOf(record)
+    if (skill === undefined || record.type !== "customization" || record.state === undefined) continue
+    const key = addressKey(record, `skill:${skill}`)
+    const at = skillAt.get(key)
+    if (at === undefined) {
+      skillAt.set(key, out.length)
+      out.push({
+        type: "customization",
+        level: record.level,
+        agent: record.agent,
+        ...(record.team === undefined ? {} : { team: record.team }),
+        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+        item: `skill:${skill}`,
+        section: null,
+        state: record.state,
+        basedOn: "",
+        ...(record.basedOnState === undefined ? {} : { basedOnState: record.basedOnState }),
+        updated: record.updated,
+      })
+      continue
+    }
+    const existing = out[at] as CustomizationRecord
+    if (existing.state === "off" || record.state === existing.state) continue
+    out[at] = { ...existing, state: record.state === "off" ? "off" : existing.state ?? record.state }
+  }
+  return { records: out, migrated: true }
 }
 
 // The catalogue split: before it there was one shared "everyone" inventory at
@@ -453,20 +524,21 @@ export async function updateGated<T>(
 // the revision race simply migrates on its own next load.
 export async function ensureCatalogues(
   projectDir: string,
-): Promise<{ migrated: boolean; presetsMigrated: boolean; loaded: Loaded; revision: number }> {
+): Promise<{ migrated: boolean; presetsMigrated: boolean; skillsMigrated: boolean; loaded: Loaded; revision: number }> {
   const current = await load(projectDir)
-  if (!current.cataloguesMigrated && !current.presetsMigrated)
-    return { migrated: false, presetsMigrated: false, loaded: current, revision: current.globalRevision }
+  if (!current.cataloguesMigrated && !current.presetsMigrated && !current.skillsMigrated)
+    return { migrated: false, presetsMigrated: false, skillsMigrated: false, loaded: current, revision: current.globalRevision }
   const saved = await save(projectDir, {
     expectedProjectRevision: current.projectRevision,
     expectedGlobalRevision: current.globalRevision,
     records: current.records,
   }, { readTriggeredMigration: true })
   if (!saved.ok)
-    return { migrated: false, presetsMigrated: false, loaded: saved.current, revision: saved.current.globalRevision }
+    return { migrated: false, presetsMigrated: false, skillsMigrated: false, loaded: saved.current, revision: saved.current.globalRevision }
   return {
     migrated: current.cataloguesMigrated,
     presetsMigrated: current.presetsMigrated,
+    skillsMigrated: current.skillsMigrated,
     loaded: await load(projectDir),
     revision: saved.globalRevision,
   }
@@ -484,7 +556,7 @@ async function write(projectDir: string, input: SaveInput, options?: SaveOptions
   // catalogue duplication and the retired-preset move are the same situation:
   // both sides of `same` are already migrated (the load applied them in
   // memory), so only these flags make the moved records reach disk.
-  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated
+  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
   // A read-triggered migration never writes a missing project store, and a
   // forced rewrite still never writes an empty one into a directory that has

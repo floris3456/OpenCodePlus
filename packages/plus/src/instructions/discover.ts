@@ -999,7 +999,6 @@ function permItems(input: {
   const catalog = catalogItems(input.toolRows, (tool) => permActionForTool(input.tools, tool))
   if (eligible.size === 0 && input.ruleRecords.length === 0) return catalog
   const agentIds = [...new Set(input.agents.map((agent) => String(agent.id)))].toSorted()
-  const skillIds = [...new Set(input.skills.map((skill) => String(skill.id)).filter((id) => !id.startsWith("plus/")))].toSorted()
   const texts: { item: string; text: string }[] = [
     ...input.toolRows.map((item) => ({ item: item.id, text: item.text })),
     ...input.baseRows.map((item) => ({ item: item.id, text: item.text })),
@@ -1008,7 +1007,9 @@ function permItems(input: {
     ...input.fileRows.map((item) => ({ item: item.id, text: item.text })),
     ...input.teachingRows.map((item) => ({ item: item.id, text: item.text })),
   ]
-  const mined = mineDiscoveredRules({ texts, agents: agentIds, skills: skillIds })
+  // Skills are not rule rows: each skill item is its own on/off, listed under
+  // the skill tool's Skills category (tree.ts toolPermissions).
+  const mined = mineDiscoveredRules({ texts, agents: agentIds })
   const byId = new Map<string, Item>()
   for (const row of input.toolRows) {
     if (!eligible.has(row.id)) continue
@@ -1017,7 +1018,6 @@ function permItems(input: {
     const curated = [
       ...curatedRules.filter((rule) => rule.tool === toolId),
       ...(toolId === "subagent" ? idRules("subagent", agentIds) : []),
-      ...(toolId === "skill" ? idRules("skill", skillIds) : []),
     ]
     const discovered = mined.filter((entry) => entry.tool === toolId)
     if (curated.length === 0 && discovered.length === 0) continue

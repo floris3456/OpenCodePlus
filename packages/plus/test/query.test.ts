@@ -75,6 +75,8 @@ function items(): Item[] {
     text("gpt base", { id: "base:gpt", kind: "base", group: "none", title: "gpt.txt" }),
     text("claude base", { id: "base:claude", kind: "base", group: "none", title: "claude.txt" }),
     text("custom base", { id: "base:custom", kind: "base", group: "none", title: "Custom.txt", userBase: true }),
+    // Skills are listed under the skill tool, which core always registers.
+    text("load a skill", { id: "tool:skill", kind: "tool", group: "native", title: "skill", order: 2 }),
     text("native skill", { id: "skill:native-one", kind: "skill", group: "native", title: "native-one" }),
     text("project skill", { id: "skill:proj-one", kind: "skill", group: "project", title: "proj-one" }),
     text("review body", { id: "skill:review", kind: "skill", group: "plus", title: "Code Review" }),
@@ -346,7 +348,7 @@ test("team matches team rows, members, and team agents", () => {
   expect(found).toContain("team:project:crew:CrewMate")
   expect(found).toContain("team:project:crew:special")
   expect(found).toContain("agent:project:CrewMate")
-  for (const group of ["models", "tools", "base", "skills", "system"]) {
+  for (const group of ["models", "tools", "base", "system"]) {
     expect(found).toContain(`group:project:crew/:CrewMate:${group}`)
   }
   expect(new Set(found).size).toBe(found.length)

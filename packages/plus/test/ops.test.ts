@@ -34,6 +34,16 @@ function baseInput(overrides?: Partial<MemoInput>): MemoInput {
         enabled: true,
         fingerprint: "fp-bash",
       },
+      // Skills are listed under the skill tool, which core always registers.
+      {
+        id: "tool:skill",
+        kind: "tool",
+        group: "native",
+        title: "skill",
+        text: "load a skill",
+        enabled: true,
+        fingerprint: "fp-skill",
+      },
       {
         id: "tool:coder",
         kind: "tool",

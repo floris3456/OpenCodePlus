@@ -22,13 +22,13 @@ model row does not set them, so it is not a catalogue and owns no inventory.
 Defaults
   Agents                                    group:defaults:agents
     OpenCode / Special / Plus / User        (unchanged agent subtrees)
-    Models · Tools · Base · Skills · System · MCP     group:defaults::<category>
+    Models · Tools · Base · System · MCP     group:defaults::<category>
   Models                                    group:defaults:/models
     Every model                             item:defaults:/models:modeldefault:*
     <provider>/<model>                      item:defaults:/models:modeldefault:<provider>/<model>
   Teams                                     group:defaults:teams
     <team> > <member>                       (unchanged team subtrees)
-    Models · Tools · Base · Skills · System · MCP     group:defaults:/teams:<category>
+    Models · Tools · Base · System · MCP     group:defaults:/teams:<category>
 ```
 
 `Project` and `Global` carry the same two catalogue roots holding their own
@@ -79,6 +79,10 @@ Every agent in the three level roots, every Defaults entry and every preset has 
       <tool>
         Description            (its one section, relabelled; several sections hang under a Description group)
         Permissions            (omitted when the tool lists no row for this owner)
+          Skills               (skill tool only; group:<…>:tool:skill:permissions:skills; the one switch per skill)
+            OpenCode / OpenCodePlus / Global / Defaults / Preset / MCP > <server> / Project [a: add skill]
+              <skill>          (item:<…>:skill:<id>; off = a core `skill` deny for this agent)
+                <section>
           <category>
             <row>
       Code Mode                (only when that origin has Code Mode rows)
@@ -95,10 +99,6 @@ Every agent in the three level roots, every Defaults entry and every preset has 
   Base                     [a: add base prompt]
     <Template>.txt         (the one matching the agent's Plus-active model is marked "active")
       <section>
-  Skills
-    OpenCode / OpenCodePlus / MCP > <server> / Project [a: add skill]
-      <skill>
-        <section>
   System                   [a: add instruction]
     Role/persona           (always first)
     <instruction>
@@ -110,8 +110,9 @@ every level, each member row (`team:<level>:<team>:<member>`, kind `"team"`,
 no address, no toggle) carries `add: "agent"` and is removable when on-disk
 (project/global, invoking `team.removeAgent`) while Defaults registry members
 are refused (`actions.remove === false`). Each member
-row expands to the same five groups an Agents-group agent renders (Models,
-Tools, Base, Skills, System, in that order) with working toggle/edit/reset on
+row expands to the same groups an Agents-group agent renders (Models,
+Tools, Base, System, in that order; skills list under Tools › skill ›
+Permissions › Skills) with working toggle/edit/reset on
 their rows, whether or not the team is enabled and whether or not the host
 registered the agent. The owner for those groups is the bare member id with
 the registered agent when one exists
@@ -122,8 +123,8 @@ the same records as its Agents-catalogue rows (level + agent + item, and
 `address.agent` stays the bare agent id), so an edit made under Teams and one
 made under Agents are one record — but they resolve through different
 catalogues, so they carry their own ids under the member's owner path:
-`group:<level>:<team>/:<member>:models|tools|base|skills|system` for the five
-groups (with nested Tools/Skills subgroup ids extending those prefixes) and
+`group:<level>:<team>/:<member>:models|tools|base|system` for the four
+groups (with nested Tools subgroup ids extending those prefixes) and
 `item:<level>:<team>/:<member>:<itemId>` /
 `section:<level>:<team>/:<member>:<itemId>:<id>` for their rows, whose address
 carries `catalogue: "teams"` and `memberOf: { level, team }`. `memberOf` makes
@@ -2407,7 +2408,9 @@ path is skipped.
   label wins on a pattern-set collision; most-mentioned discovered first,
   then unmentioned curated generics): the curated registry (shell, edit,
   write, read, webfetch, glob, grep entries, plus one `idRules` row per
-  discovered agent/skill id for `subagent`/`skill`), and candidates mined
+  discovered agent id for `subagent`; skills are not rule rows — each skill
+  item is its own switch, listed under the skill tool's Permissions › Skills
+  category), and candidates mined
   from text Plus already holds (tool/base/skill/role/file/teaching rows,
   with `provenance` naming the mentioning item ids). The merged rank carries
   through as `Item.order` so the tree shows most-mentioned first. User

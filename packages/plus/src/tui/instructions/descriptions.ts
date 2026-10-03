@@ -12,6 +12,8 @@ export function structureDetail(node: TreeNode): string | undefined {
   if (node.kind === "root") return ROOTS[node.id]
   if (node.kind !== "group") return undefined
   const permissions = node.id.match(/:tool:([^:]+):permissions(?::(.+))?$/)
+  if (permissions !== null && permissions[1] === "skill" && permissions[2]?.split(":")[0] === "skills")
+    return skillsDetail(permissions[2].split(":").slice(1))
   if (permissions !== null) return permissionDetail(permissions[1] ?? "", permissions[2])
   if (/:tool:[^:]+:description$/.test(node.id)) return TOOL_DESCRIPTION
   if (/^team:(project|global|defaults):.+:special$/.test(node.id)) return TEAM_SPECIAL
@@ -24,12 +26,11 @@ export function structureDetail(node: TreeNode): string | undefined {
   const origin = node.id.match(/^group:(project|global|defaults):agents:(native(?::special)?|plus|user)$/)
   if (origin !== null) return originDetail(origin[1] as Level, origin[2] ?? "")
   if (node.id === MODELS_GROUP_ID) return MODELS_SECTION
-  const shared = node.id.match(/^group:defaults:(:|\/teams:)(settings|models|compaction|tools|base|skills|system|mcp)$/)
+  const shared = node.id.match(/^group:defaults:(:|\/teams:)(settings|models|compaction|tools|base|system|mcp)$/)
   if (shared !== null) return sharedDetail(shared[1] === ":" ? "agents" : "teams", shared[2] ?? "")
   const parts = parseOwnerGroup(node.id)
   if (parts === undefined) return undefined
   if (parts.category === "tools") return toolsDetail(parts)
-  if (parts.category === "skills") return skillsDetail(parts)
   return ownerCategoryDetail(parts)
 }
 
@@ -56,7 +57,7 @@ function catalogueDetail(level: Level, catalogue: Catalogue): string {
   if (level === "project")
     return "Teams defined for this project. Project rows override Global and Defaults, and their members resolve through the Teams catalogue only."
   if (level === "global") return "Teams defined for every project. Global rows override Defaults, and a project's own teams override these."
-  return "The built-in teams plus the shared rows every team member falls back to: Settings, Models, Compaction, Tools, Base, Skills, System and MCP."
+  return "The built-in teams plus the shared rows every team member falls back to: Settings, Models, Compaction, Tools, Base, System and MCP. Skills live under Tools › skill › Permissions › Skills."
 }
 
 function presetCatalogueDetail(catalogue: Catalogue): string {
@@ -95,7 +96,6 @@ function sharedDetail(catalogue: Catalogue, category: string): string {
     return `How every ${noun} compacts a long session by default: strategy, local model and instructions. A more specific row overrides these.`
   if (category === "tools") return `Tools every ${noun} may call, grouped by origin; each row expands to its Description and Permissions.`
   if (category === "base") return `Base prompt templates every ${noun} can follow; the one matching its active Plus model is used automatically.`
-  if (category === "skills") return `Skills every ${noun} can load, grouped by where they came from.`
   if (category === "system") return `System instructions every ${noun} receives, headed by Role/persona.`
   return `MCP servers every ${noun} can call. \`a\` adds one; \`d\` removes it everywhere.`
 }
@@ -172,7 +172,6 @@ function ownerCategoryDetail(part: OwnerGroup): string | undefined {
     return `How ${subject} compacts a long session: strategy, local model and instructions. Remote uses the provider instead and locks the local fields.`
   if (part.category === "tools") return `Tools ${subject} may call, grouped by origin; each row expands to its Description and Permissions.`
   if (part.category === "base") return `Base prompt templates ${subject} can follow. The one matching its active Plus model is used automatically.`
-  if (part.category === "skills") return `Skills ${subject} can load, grouped by where they came from.`
   if (part.category === "system") return `System instructions ${subject} receives. Role/persona is always first; sections can be excluded.`
   return undefined
 }
@@ -198,10 +197,13 @@ function codemodeDetail(namespace: readonly string[]): string {
   return `Code Mode tools of the ${namespace.join(":")} namespace, called inside \`execute\`.`
 }
 
-function skillsDetail(part: OwnerGroup): string | undefined {
-  const head = part.tail[0]
-  const rest = part.tail.slice(1)
-  if (head === undefined) return ownerCategoryDetail(part)
+// The skill tool's Skills category and its origin groups: the one place a
+// skill is switched on or off for an agent and its text is edited.
+function skillsDetail(tail: readonly string[]): string | undefined {
+  const head = tail[0]
+  const rest = tail.slice(1)
+  if (head === undefined)
+    return "The skills this agent may load, grouped by where they came from: one switch per skill (off means the skill is not offered and the skill tool refuses it). A row opens into the skill's text. `a` adds a skill here."
   if (head === "native") return "Skills that ship with OpenCode."
   if (head === "plus") return "Skills that ship with OpenCodePlus."
   if (head === "project") return "Skills in this project's own skill directories (.opencode/skill*)."

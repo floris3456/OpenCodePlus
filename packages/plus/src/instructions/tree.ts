@@ -109,7 +109,8 @@ export type SkillScopeTarget = { scope: "project" | "global" | "defaults" | "pre
 // project, preserving the previous behavior. The subgroup (OpenCode, Project,
 // …) is a skill's origin, not the creation target, so only the level is read.
 export function skillScopeOfNode(node: { readonly id: string } | undefined): SkillScopeTarget {
-  const match = node?.id.match(/^group:(project|global|defaults|preset):(.*):skills(?::.*)?$/)
+  // The skill tool's Skills category: group:<level>:<owner>:tool:skill:permissions:skills[:origin…].
+  const match = node?.id.match(/^group:(project|global|defaults|preset):(.*?):tool:skill:permissions:skills(?::.*)?$/)
   if (match === null || match === undefined) return { scope: "project" }
   const scope = match[1] as SkillScopeTarget["scope"]
   if (scope !== "preset") return { scope }
@@ -876,7 +877,6 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
     lazyControls(memo, "compaction", "defaults", null, depth, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyBase(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
-    lazySkills(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySystem(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyMcpInventory(ctx, memo, catalogue, depth),
   ]
@@ -985,7 +985,6 @@ function lazyOwnerRow(
       lazyControls(memo, "compaction", row.level, row.id, row.depth + 1),
       lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-      lazySkills(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
     ],
   }), row.level, row.id)
@@ -1293,7 +1292,6 @@ function lazyTeamMember(
       lazyControls(memo, "compaction", level, owner, depth + 1, teamRef, "teams", memberPath),
       lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
       lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
-      lazySkills(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:skills`, teamRef, "teams", memberPath),
       lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
     ],
   }), level, owner, teamRef, "teams", memberPath)
@@ -1335,7 +1333,6 @@ function lazyTeamSpecialAgent(
       lazyControls(memo, "compaction", level, owner, 5, teamRef, "teams", specialPath),
       lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
       lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
-      lazySkills(ctx, memo, level, owner, agent, 5, `${specialGroup}:skills`, teamRef, "teams", specialPath),
       lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
     ],
   }), level, owner, teamRef, "teams", specialPath)
@@ -2271,7 +2268,7 @@ function lazyItem(
   const kids = (): readonly Lazy[] => {
     if (perm) return []
     const tool = item.kind === "tool"
-    if (executable) return toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath)
+    if (executable) return toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent)
     const sections = cachedKids(memo, rowId, () => {
       const split = splitOf(memo, level, owner, item, catalogue, teamRef)
       // A tool's text is its Description: one section is the Description row
@@ -2297,7 +2294,7 @@ function lazyItem(
       return sectionKids(ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
     })
     if (!tool) return sections
-    return [...sections, ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath)]
+    return [...sections, ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent)]
   }
   if (perm) {
     return {
@@ -2449,10 +2446,15 @@ export function toolPermissions(
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
+  agent: AgentSource | null = null,
 ): Lazy[] {
   const toolId = item.id.slice("tool:".length)
   const categories = toolPermissionRows(ctx, owner, toolId, level)
-  if (categories.length === 0) return []
+  // The skill tool's Skills category is the one place skills live: each row
+  // is the skill itself (on/off is whether this agent may load it; it opens
+  // into the skill's text), grouped by origin, with Add.
+  const skills = toolId === "skill"
+  if (categories.length === 0 && !skills) return []
   const prefix = `${rowId.replace(/^item:/, "group:")}:permissions`
   return [
     branch(memo, {
@@ -2461,8 +2463,11 @@ export function toolPermissions(
       label: "Permissions",
       depth,
       actions: noActions(),
-      children: () =>
-        categories.map((entry) =>
+      children: () => [
+        ...(skills
+          ? [lazySkills(ctx, memo, level, owner, agent, depth + 1, `${prefix}:skills`, teamRef, catalogue, ownerPath)]
+          : []),
+        ...categories.map((entry) =>
           branch(memo, {
             kind: "group",
             id: `${prefix}:${entry.category}`,
@@ -2473,6 +2478,7 @@ export function toolPermissions(
               entry.rows.map((row) => lazyPermRow(memo, level, owner, row.item, depth + 2, teamRef, catalogue, ownerPath, row.alias)),
           }),
         ),
+      ],
     }),
   ]
 }
