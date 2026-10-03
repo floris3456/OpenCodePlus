@@ -178,8 +178,47 @@ const orchestratorShell: PresetOverrides = rows(off, [
   "perm:shell:git-rewrite",
   "perm:shell:rm",
   "perm:shell:commands.git-changes",
+  "perm:shell:commands.git-merge",
+  "perm:shell:commands.git-refs",
+  "perm:shell:commands.git-worktree-add",
+  "perm:shell:commands.file-writes",
+])
+
+// A planner keeps the release's main line (builtin-teams.ts, its Worktrees and
+// Merges sections): from the shell it makes a purpose worktree from it and
+// merges finished work into it. Every family that changes files, commits,
+// refs, processes, packages, services or the network is off; git merge and
+// git worktree add stay on.
+const plannerShell: PresetOverrides = rows(off, [
+  "perm:shell:git-push",
+  "perm:shell:git-commit",
+  "perm:shell:git-rewrite",
+  "perm:shell:rm",
+  "perm:shell:rm-rf",
+  "perm:shell:env",
+  "perm:shell:sudo",
+  "perm:shell:chmod-chown",
+  "perm:shell:curl-wget",
+  "perm:shell:ssh-scp",
+  "perm:shell:docker",
+  "perm:shell:kubectl",
+  "perm:shell:js-install",
+  "perm:shell:npm-publish",
+  "perm:shell:pip-install",
+  "perm:shell:kill",
+  "perm:shell:disk-destructive",
+  "perm:shell:commands.git-changes",
   "perm:shell:commands.git-refs",
   "perm:shell:commands.file-writes",
+  "perm:shell:commands.kill-by-name",
+  "perm:shell:commands.interpreters",
+  "perm:shell:commands.registry-run",
+  "perm:shell:commands.network-tools",
+  "perm:shell:commands.service-control",
+  "perm:shell:commands.databases",
+  "perm:shell:commands.github-cli",
+  "perm:shell:commands.secret-reads",
+  "perm:shell:commands.workspace-scripts",
 ])
 
 const tavily = rows(off, ["tool:search_tavily_search", "tool:search_tavily_extract"])
@@ -232,7 +271,8 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   planner: {
     ...secrets,
     ...unused,
-    ...rows(off, ["tool:shell", "tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
+    ...plannerShell,
+    ...rows(off, ["tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
     // It keeps team_checkpoint: a delegated planner commits its plan file,
     // the only way the plan reaches its parent (an uncommitted new file shows
     // in no diff and lands nowhere). It keeps team_integrate: in the user's
@@ -241,6 +281,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...teamToolRows(off, ["set_checks", "check"]),
     ...reach(["status", "list"]),
     ...rows(on, [
+      "tool:shell",
       "tool:question",
       "perm:edit:allowed.plans",
       "perm:team_delegate:approval.every",

@@ -120,6 +120,21 @@ the plan's or the project's focused checks, keeping any your Brief assigned.`
 
 // ── # <Role> ──────────────────────────────────────────────────────────────
 
+// The worktree levels of a release, shared by the two members that make
+// worktrees and merge (the planner and the build seat). <version>, <purpose>
+// and <workerid> are placeholders: <version> is the release as the user
+// names it, never a fixed scheme.
+const levels = `Work on a release happens in git worktrees, each on a branch of the same name,
+where <version> is the release as the user names it (ask if you do not know it):
+- <version> is the release's main line. Nobody works in it; it only receives
+  merges and landings, and the planner sits in it.
+- <version>-<purpose> is made from <version> when a piece of work starts. One
+  agent working alone sits there directly; in team work the orchestrator is
+  this level.
+- <version>-<purpose>-<workerid> is a team member's level. team_delegate makes
+  and names the orchestrator's worktree and its members'; never make those
+  yourself.`
+
 const planner = `# Planner
 
 ## The plan
@@ -140,7 +155,20 @@ the plan; in a delegated run, finish needs_context instead.
 In the user's chat, present the plan and stop. When the user approves, delegate
 it to an orchestrator with the plan file as the briefFile and end your turn.
 When its settlement wakes you, follow its next: line (finished work lands in
-this checkout) and tell the user the outcome.`
+this checkout) and tell the user the outcome.
+
+## Worktrees
+${levels}
+Working outside a <version> checkout, tell the user before you hand off.
+
+## Merges
+<!-- requires: tool:shell -->
+When the user wants one agent to do a piece of work alone, make its worktree
+next to the others with git worktree add -b <version>-<purpose> <path>
+<version>. When the user asks, merge a finished purpose branch, or upstream
+after git fetch, into <version> with git merge. If a merge conflicts, run git
+merge --abort and tell the user it must be resolved in the purpose worktree
+(<version>-upstream for upstream). Use the shell for nothing else.`
 
 const orchestrator = `# Orchestrator
 
@@ -177,7 +205,16 @@ When every child is landed and their deferred lists are swept, delegate one
 review of the whole change to a reviewer (deliverable findings); Plus gives it
 the change's range and your check results. Fix its findings through workers,
 then delegate a fresh review. Once the review is clean, report with team_finish
-(in the user's chat, tell the user instead).`
+(in the user's chat, tell the user instead).
+
+## Worktrees
+Your worktree is your work's purpose level, <version>-<purpose>, where
+<version> is the release's main line. Delegated by a planner, it is the one
+team_delegate made, and your result lands in <version>. Opened in the user's
+chat, you sit in a <version>-<purpose> worktree; if this checkout is <version>
+itself, tell the user before you delegate anything. Each member you delegate
+gets its own worktree from team_delegate (the <version>-<purpose>-<workerid>
+level) and lands in yours.`
 
 const implementer = `# Implementer
 
@@ -194,7 +231,12 @@ tests.
 ## Outside your scope
 If you need a file or check outside your scope, finish everything else and
 commit it, then finish blocked with one need per file (kind path) or check
-(kind check).`
+(kind check).
+
+## Worktrees
+Opened alone in the user's chat, you work in a <version>-<purpose> worktree
+made from the release's main line, <version>; if this checkout is <version>
+itself, tell the user and change nothing.`
 
 const reviewer = `# Reviewer
 
@@ -244,7 +286,17 @@ After delegating, end your turn: each settlement arrives as a message with the
 report and a next: line to follow. Work lands in this checkout, which must have
 no uncommitted changes to tracked files. A reviewer reviews what landed here
 since your first team call, with your check results; after fixes, delegate a
-fresh review. Tell the user what was done and what is left.`
+fresh review. Tell the user what was done and what is left.
+
+## Worktrees
+${levels}
+Make <version> from the previous release when the release starts.
+
+## Merges
+<!-- requires: tool:shell -->
+Merge a finished purpose branch, or upstream, into <version> with git merge.
+If it conflicts, abort it, merge <version> into the purpose worktree
+(<version>-upstream for upstream), resolve the conflict there and merge again.`
 
 const roles: Readonly<Record<BasicMember, string>> = {
   planner,

@@ -84,6 +84,13 @@ function resolvedFor(agentId: string): { role: string; items: Record<string, { s
 const retiredTools = ["team_wait"]
 const retired = (id: string): boolean => retiredTools.some((tool) => id === `tool:${tool}` || id.startsWith(`perm:${tool}:`))
 
+// Rows whose shipped text changed after the snapshot was taken: git merge and
+// git worktree add moved out of these shell families into rows of their own
+// (store.ts migrateSplitRows). Their text is the current catalogue's; their
+// state still has to match the snapshot.
+const rewrittenRows = ["perm:shell:commands.git-changes", "perm:shell:commands.git-refs"]
+const currentText = (id: string): string | undefined => migratedInput.after.items.find((item) => item.id === id)?.text
+
 // The snapshot, with the rows the member preset has changed on purpose since.
 function expectedFor(agentId: string, memberId: string): { role: string; items: Record<string, { state: string; text: string }> } {
   const before = fixture.agents[agentId]
@@ -92,7 +99,8 @@ function expectedFor(agentId: string, memberId: string): { role: string; items: 
   const items = Object.fromEntries(
     Object.entries(before.items).filter(([id]) => !retired(id)).map(([id, value]) => {
       const state = member.overrides[id]?.state ?? (member.offPrefixes.some((prefix) => id.startsWith(prefix)) ? "off" : undefined)
-      return [id, state === undefined ? value : { ...value, state }]
+      const text = rewrittenRows.includes(id) ? currentText(id) ?? value.text : value.text
+      return [id, { ...value, text, ...(state === undefined ? {} : { state }) }]
     }),
   )
   return { role: member.role, items }
