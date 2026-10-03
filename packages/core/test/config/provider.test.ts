@@ -289,6 +289,44 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("drops an inherited input limit that a configured context cannot hold", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      // A catalogue model with a 272k prompt budget inside a 400k window.
+      for (const id of ["smaller", "larger", "explicit", "untouched"])
+        yield* providers.transform((editor) => {
+          editor.models.update(providerID, Model.ID.make(id), (model) => {
+            model.limit = { context: 400_000, input: 272_000, output: 128_000 }
+          })
+        })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: {
+                  smaller: { limit: { context: 200_000, output: 64_000 } },
+                  larger: { limit: { context: 500_000, output: 128_000 } },
+                  explicit: { limit: { context: 200_000, input: 150_000, output: 50_000 } },
+                  untouched: { name: "Untouched" },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+      const limit = (id: string) => models.get(providerID, Model.ID.make(id)).pipe(Effect.map((model) => model?.limit))
+      expect(yield* limit("smaller")).toEqual({ context: 200_000, output: 64_000 })
+      expect(yield* limit("larger")).toEqual({ context: 500_000, input: 272_000, output: 128_000 })
+      expect(yield* limit("explicit")).toEqual({ context: 200_000, input: 150_000, output: 50_000 })
+      expect(yield* limit("untouched")).toEqual({ context: 400_000, input: 272_000, output: 128_000 })
+    }),
+  )
+
   for (const scenario of [
     { name: "omitted capabilities", legacy: {}, overrides: {} },
     {

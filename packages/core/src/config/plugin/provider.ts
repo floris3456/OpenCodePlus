@@ -151,7 +151,14 @@ export const Plugin = define({
               }))
             }
             if (config.disabled !== undefined) model.enabled = !config.disabled
-            if (config.limit !== undefined) model.limit = { ...model.limit, ...config.limit }
+            if (config.limit !== undefined) {
+              model.limit = { ...model.limit, ...config.limit }
+              // A configured context below an inherited input limit cannot hold that input;
+              // compaction would otherwise aim past the window. The context then bounds both.
+              const { input, ...rest } = model.limit
+              if (config.limit.input === undefined && input !== undefined && rest.context > 0 && input > rest.context)
+                model.limit = rest
+            }
           })
           if (config.variants === undefined && !source?.base)
             models.update(providerID, id, (model) => {
