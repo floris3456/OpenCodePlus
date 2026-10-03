@@ -186,7 +186,9 @@ test("an orchestrator-preset member's shell change rows refuse every change comm
   expect(evaluate("shell", "git push origin main", rules)).toMatchObject({ effect: "deny", message: "pushing is not allowed here" })
   expect(evaluate("shell", "git commit -m x", rules)).toMatchObject({ effect: "deny", message: "committing is not allowed here" })
   expect(evaluate("shell", "git stash", rules)).toMatchObject({ effect: "deny", message: "changing the git working tree is not allowed here" })
-  expect(evaluate("shell", "git worktree add ../x", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
+  expect(evaluate("shell", "git merge feature", rules)).toMatchObject({ effect: "deny", message: "merging is not allowed here" })
+  expect(evaluate("shell", "git branch -D x", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
+  expect(evaluate("shell", "git worktree add ../x", rules)).toMatchObject({ effect: "deny", message: "making git worktrees is not allowed here" })
   expect(evaluate("shell", "echo x > f.txt", rules)).toMatchObject({ effect: "deny", message: "writing files from the shell is not allowed here" })
   expect(evaluate("shell", "git status", rules).effect).not.toBe("deny")
   expect(evaluate("shell", "bun test test/a.test.ts", rules).effect).not.toBe("deny")
@@ -194,6 +196,26 @@ test("an orchestrator-preset member's shell change rows refuse every change comm
   const reopened = await rulesAfterApply(alice.id, presetInput({ members: [alice], records: [change(alice, "perm:shell:git-push", { state: "on" })] }))
   expect(evaluate("shell", "git push origin main", reopened).effect).not.toBe("deny")
   expect(evaluate("shell", "git commit -m x", reopened).effect).toBe("deny")
+})
+
+// A planner keeps a release's main line: its shell makes a purpose worktree
+// and merges into the line, and every family that changes files, commits or
+// refs otherwise refuses with its own reason.
+test("a planner-preset member's shell merges and makes worktrees, and refuses every other change", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const planner = linked("ocp-planner", "planner")
+  const rules = await rulesAfterApply(planner.id, presetInput({ members: [planner] }))
+  for (const command of ["git worktree add -b 1.2.0-search ../1.2.0-search/repo 1.2.0", "git merge 1.2.0-search", "git merge --abort", "git fetch upstream", "git status"])
+    expect([command, evaluate("shell", command, rules).effect]).not.toEqual([command, "deny"])
+  expect(evaluate("shell", "git add .", rules)).toMatchObject({ effect: "deny", message: "changing the git working tree is not allowed here" })
+  expect(evaluate("shell", "git branch -D 1.2.0-search", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
+  expect(evaluate("shell", "git worktree remove ../x", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
+  expect(evaluate("shell", "git commit -m x", rules)).toMatchObject({ effect: "deny", message: "committing is not allowed here" })
+  expect(evaluate("shell", "git push origin 1.2.0", rules)).toMatchObject({ effect: "deny", message: "pushing is not allowed here" })
+  expect(evaluate("shell", "git reset --hard HEAD~1", rules)).toMatchObject({ effect: "deny", message: "git history rewrites are not allowed here" })
+  expect(evaluate("shell", "rm -rf build", rules).effect).toBe("deny")
+  expect(evaluate("shell", "echo x > f.txt", rules)).toMatchObject({ effect: "deny", message: "writing files from the shell is not allowed here" })
+  expect(evaluate("shell", "bash -c 'git add .'", rules).effect).toBe("deny")
 })
 
 test("Where and a Files fallback are checked on the call: closing them installs no core rule an allow could fight", async () => {
