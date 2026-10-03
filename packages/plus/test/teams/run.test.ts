@@ -105,7 +105,8 @@ describe("run state machine (02 §1)", () => {
       ["idle", "ready", "worktree_ready"],
       ["working", "ready", "worktree_ready"],
       ["ready", "stopped", "exited"],
-      ["stopped", "working", "prompt"],
+      // stopped → working on "prompt" is documented: a prompt resumes a stopped run.
+      ["stopped", "idle", "prompt"],
       ["idle", "reaped", "gc"],
       ["reaped", "starting", "resume"],
       ["reaped", "reaped", "gc"],

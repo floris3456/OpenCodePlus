@@ -23,11 +23,19 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  /** Why the host ended this attempt failed (a provider or quota error, say), as the host reported it. */
+  error?: AttemptError
   requestedModel?: ModelIdentity | null
   loadedModel?: ModelIdentity | null
   resolvedModel?: ModelIdentity | null
   instructionsHash?: string | null
   configDigest?: string | null
+}
+
+export interface AttemptError {
+  type: string
+  message: string
+  status?: number
 }
 
 export interface HistoryEntry {

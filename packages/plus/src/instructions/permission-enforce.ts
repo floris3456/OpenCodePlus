@@ -54,6 +54,8 @@ export interface PermissionTable {
   readonly ruleRows: (agent: string, tool: string) => readonly PermRow[]
   /** Ids of every member of an enabled team. */
   readonly teamMembers: ReadonlySet<string>
+  /** A member's description as it resolves for it (its Description row), when it has one. */
+  readonly describe: (agent: string) => string | undefined
 }
 
 const enforced = new Set(["input", "value", "param", "limit", "approval", "env", "team"])
@@ -65,6 +67,7 @@ export function permissionTable(input: {
   readonly items: readonly Item[]
   readonly teamMembers: readonly string[]
   readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string }
+  readonly describe?: (agent: string) => string | undefined
 }): PermissionTable {
   const rows = input.items.filter((item) => item.kind === "perm" && item.permKind !== undefined && enforced.has(item.permKind))
   const rules = input.items.filter((item) => item.kind === "perm" && (item.permKind === undefined || item.permKind === "rule"))
@@ -100,6 +103,7 @@ export function permissionTable(input: {
           return { item, on: state.enabled, text: state.text }
         }),
     teamMembers: new Set(input.teamMembers),
+    describe: input.describe ?? (() => undefined),
   }
 }
 
@@ -242,6 +246,11 @@ function denied(message: string): string {
   return `Permission denied: ${message}`
 }
 
+/** A closed category's refusal, naming what its allow rows that are on still let through. */
+export function allowListMessage(message: string, open: readonly string[]): string {
+  return open.length === 0 ? message : `${message}; still allowed: ${open.join(", ")}`
+}
+
 function messageOf(row: PermRow, fallback: string): string {
   return denied(row.item.message ?? fallback)
 }
@@ -271,7 +280,8 @@ function inputRefusal(category: string, group: readonly PermRow[], call: Call): 
       if (deny !== undefined) return messageOf(deny, `${deny.item.title} is not allowed here`)
       if (fallback !== undefined && !fallback.on && fallback.item.field === field && rowMatches(fallback, value, call)) {
         const opened = matches.some((row) => row.on && row.item.allow === true)
-        if (!opened) return messageOf(fallback, `${categoryLabel(call.tool, category)}: "${value}" is not allowed here`)
+        const open = rows.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
+        if (!opened) return denied(allowListMessage(fallback.item.message ?? `${categoryLabel(call.tool, category)}: "${value}" is not allowed here`, open))
       }
     }
   }
@@ -801,12 +811,20 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...accepts(table, target), ...checkFilesRule(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
     }
     if (name === "team_finish") definition.description += requirements(rows, "Requirements for done")
     if (name === "team_checkpoint") definition.description += requirements(rows, "Requirements for a commit")
     if (narrowed || targets !== undefined) definition.input = schema as typeof definition.input
   }
+}
+
+// What a target is for, in its own Description row: a delegator choosing
+// among members of one kind (two implementers on different models, say) routes
+// by it.
+function described(table: PermissionTable, target: string): string[] {
+  const description = table.describe(target)?.trim()
+  return description === undefined || description === "" ? [] : [`${target}: ${description.replace(/\.$/, "")}.`]
 }
 
 // What a target's own "Briefs it accepts" rows hold a delegator to, in the

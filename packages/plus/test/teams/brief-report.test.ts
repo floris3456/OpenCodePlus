@@ -78,7 +78,7 @@ describe("brief", () => {
       { budget: policy.effort.small, review: { run: "w-0123456789abcdef", from, to, checks: [{ id: "unit", passed: true }, { id: "lint", passed: false }, { id: "e2e", passed: null }] } },
     )
     expect(out).toContain(
-      `## Review\nYour worktree holds the change's end state (${to.slice(0, 12)}). See the change with team_diff {run: "w-0123456789abcdef", from: "${from}"}.\nChecks at ${to.slice(0, 12)}: unit pass, lint FAIL, e2e not run.`,
+      `## Review\nYour worktree holds the change's end state (${to.slice(0, 12)}). See the change with team_diff {run: "w-0123456789abcdef", from: "${from}"}; when the objective names one task's commits, review those alone (from: the commit before them).\nChecks at ${to.slice(0, 12)}: unit pass, lint FAIL, e2e not run.`,
     )
     const nothing = render(
       { ...briefBase(), deliverable: { kind: "findings" as const } },

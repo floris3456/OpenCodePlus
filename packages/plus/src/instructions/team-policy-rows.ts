@@ -7,7 +7,7 @@
 //
 // - "Delegate to": one row per member of its team (itself included), plus
 //   "Members of other teams". They ship off; a member preset turns on the
-//   members it delegates to.
+//   teammates linked to the presets it delegates to (presets.ts).
 // - Per-run edit scope: one row per live delegated run, carrying the run's own
 //   `scope.paths`.
 //
@@ -82,7 +82,8 @@ export function teamPolicyItems(members: readonly PolicyMember[], runs: readonly
 
 // "Delegate to": one row per member of the member's team, its own included
 // (another run of itself), plus one row for every member of other teams. All
-// ship off: a member preset turns on the members it delegates to.
+// ship off: a member preset turns on the teammates whose links reach a preset
+// it delegates to.
 // team_delegate reads these rows; its `role` parameter lists exactly the
 // members that are on.
 function delegateRows(member: PolicyMember, members: readonly PolicyMember[]): Item[] {

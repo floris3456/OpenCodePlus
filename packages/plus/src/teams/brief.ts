@@ -103,7 +103,7 @@ function reviewSection(review: ReviewContext): string {
     lines.push(`Nothing has landed since ${short(review.from)}: review the files the objective names, as they are in your worktree.`)
   else
     lines.push(
-      `Your worktree holds the change's end state (${short(review.to)}). See the change with team_diff {run: "${review.run}", from: "${review.from}"}.`,
+      `Your worktree holds the change's end state (${short(review.to)}). See the change with team_diff {run: "${review.run}", from: "${review.from}"}; when the objective names one task's commits, review those alone (from: the commit before them).`,
     )
   const results =
     review.checks.length === 0

@@ -268,9 +268,9 @@ test("get_context maps real tool surfaces and the caller's permitted custom rost
     const lead = linked("custom-lead", "orchestrator", "crew")
     const table = presetTable({
       members: [lead, linked("custom-maker", "implementer", "crew"), linked("denied", "reviewer", "crew"), linked("other-reader", "scout", "other")],
-      records: [
-        change(lead, "perm:team_delegate:to.custom-maker", { state: "on" }),
-      ],
+      // The orchestrator preset opens the implementer- and reviewer-linked
+      // teammates by their links; the lead's own row closes the reviewer.
+      records: [change(lead, "perm:team_delegate:to.denied", { state: "off" })],
     })
     const created = fixture()
     const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState(table)), () => table)

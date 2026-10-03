@@ -343,6 +343,44 @@ test("a settled child puts exactly one child.settled item in a working parent's 
   })
 })
 
+// A member whose model is out of quota fails its execution: the parent hears
+// the host's error, so it can hand the Brief to another member instead of
+// guessing at a run that ended without a report.
+test("a child whose execution failed tells its parent the host's error and how to reroute", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-1123456789abcdef",
+      role: "Orchestrator",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      sessionID: "ses_parent_quota",
+      children: ["w-6666666666666666"],
+    })
+    const child = workingChild("w-6666666666666666", parent.id, "ses_child_quota")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const error = { type: "quota.no-capacity", message: "No compatible replacement credential has verified capacity.", status: 429 }
+    await onSessionEvent(context({ session: recordSession().domain }), root, {
+      type: SessionEvent.Execution.Failed.type,
+      data: { sessionID: "ses_child_quota", error },
+    })
+    expect((await loadRun(root, child.id))?.attempts[0]).toMatchObject({ state: "failed", error })
+    const text = (await peek(root, parent.id))[0]?.text ?? ""
+    expect(text).toContain("attempt 1 failed")
+    expect(text).toContain("Error: quota.no-capacity (429): No compatible replacement credential has verified capacity.")
+    expect(text).toContain("next: if the member's model is unavailable (quota, rate limit, provider down), team_supersede it and delegate the same Brief to another member")
+    // A failure the host gives no reason for keeps the plain next step.
+    const silent = workingChild("w-7777777777777777", parent.id, "ses_child_silent")
+    await saveRun(root, silent)
+    await onSessionEvent(context({ session: recordSession().domain }), root, { type: SessionEvent.Execution.Failed.type, data: { sessionID: "ses_child_silent" } })
+    const plain = (await peek(root, parent.id)).find((item) => item.from === silent.id)?.text ?? ""
+    expect(plain).not.toContain("Error:")
+    expect(plain).toContain("next: read team_status and team_diff")
+  })
+})
+
 test("the settlement carries the whole report and the next step, so the parent needs no read", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()

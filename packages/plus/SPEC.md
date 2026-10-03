@@ -992,13 +992,13 @@ the same catalogue from the snapshot's `items` and preset records.
 - **Plus team preset** (`plusTeamPresets`, from `builtin-teams.ts`: one team,
   `basic`). Its member presets are self-contained: each ships every item's
   upstream value overlaid by its own overrides — the former agent preset's rows
-  merged with its in-team "Delegate to" rows
-  (`plusMemberOverrides[team][member]`) — plus `system:role` = its role body,
+  (`plusMemberOverrides[team][member]`), and its "Delegate to" rows answered
+  from each teammate's links (below) — plus `system:role` = its role body,
   `setting:mode` and `setting:description` (`memberShipped`). Nothing links a
   member preset to a hidden agent preset, so "from preset …" names the member
-  preset (`from preset Basic › planner`). The build seat keeps the dynamic
-  rule: every `perm:team_delegate:to.<teammate>` row (never
-  `to.other-teams`) ships on for a build seat however its teammates are named.
+  preset (`from preset Basic › planner`). A build seat's every
+  `perm:team_delegate:to.<teammate>` row but its own (never
+  `to.other-teams`) ships on however its teammates are named or linked.
 - **User presets** are `PresetRecord`s (a member preset is `kind:"agent"`
   with `team`); they ship nothing, their content is ordinary `preset`-level
   records and their links.
@@ -1775,7 +1775,10 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
   delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
   `supersede`, `stop`, `status`, `list` off; Worktree committed before done and
-  Scope paths for a commit on.
+  Scope paths for a commit on. Its shell's Commands list ships closed with the
+  pilotty row open (Every other command off, `commands.pilotty` on), moot while
+  `tool:shell` is off: a level that turns `tool:shell` and `skill:pilotty` on
+  gives it a shell for live tests that drives terminals and runs nothing else.
 - **reviewer** — as implementer's worker rows, with every team tool but
   `finish`, `diff`, `get_context` off, and Corrections by followup off.
 - **scout** — as reviewer without `diff` (it changes nothing), taking
@@ -1787,16 +1790,19 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   delegated run on; every "Delegate to" row on, whoever the teammate is (not
   its own row, nor Members of other teams).
 
-The Basic member presets add each member's "Delegate to" rows by its
-teammates' roles (planner → orchestrator; orchestrator → orchestrator,
-implementer, reviewer, scout; build seat → every other teammate). They name
-teammates by the member ids the Basic roster carries: a teammate renamed after
-the team was created gets a new, off "Delegate to" row, while the build seat's
-rows stay on dynamically. A member's own row (another run of itself) answers
-as its preset's row for the preset's own member id, whatever the agent is
-called (`presets.ts` `memberShipped`, which `PresetCatalog.shipped` hands the
-agent it resolves for): on for an orchestrator, off for every other Basic
-preset, the build seat's fallback included. Delegation depth (3) bounds nested
+The Basic member presets answer each member's "Delegate to" rows by what the
+teammate is linked to, never by its id (`presets.ts` `delegateShipped`):
+planner → orchestrator; orchestrator → orchestrator, implementer, reviewer,
+scout; build seat → every other teammate, linked or not. A teammate counts as
+an implementer when its resolution chain reaches the `basic/implementer`
+member preset — its own link, a user preset that links to it, or a Teams
+Defaults entry linked to it (`model.ts` `linkedPresets`, handed to
+`PresetCatalog.shipped` as `linked`). So a roster of Flash-Implementer,
+Heavy-Implementer and Reviewer linked to the Basic presets opens exactly as
+implementer and reviewer would, and a teammate called "implementer" linked to
+the reviewer preset is a reviewer. A member's own row (another run of itself)
+is answered the same way: on for an orchestrator, off for every other Basic
+preset, the build seat included. Delegation depth (3) bounds nested
 orchestrators.
 
 #### Where a Basic member's guidance lives
@@ -2078,7 +2084,12 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
 3. tells the parent once: one `child.settled` inbox item with the run, the
    attempt and the settled status, the whole report and one `next:` line for
    what that outcome calls for (`lifecycle.childSettledText`), guarded by
-   `notified` on the attempt. An idle parent is prompted with it immediately; a working
+   `notified` on the attempt. An attempt that `session.execution.failed`
+   ended keeps the host's error on the attempt (`error`: type, message,
+   status) and the settlement shows it as `Error: <type> (<status>):
+   <message>`, with a `next:` line that tells an unavailable model (quota,
+   rate limit, provider down) — hand the same Brief to another member — from
+   a broken run. An idle parent is prompted with it immediately; a working
    parent receives it through its own idle handoff. An attempt kept open is
    not settled, so nothing is told;
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run
@@ -2469,7 +2480,9 @@ path is skipped.
   the agent registration (`apply.ts` `permDenials`). Rule rows only ever
   refuse: a category's fallback row and its allow-list rows are input rows,
   checked on the call itself, so no core allow from one category can reopen
-  what another row or a role row closed. The denies land last in
+  what another row or a role row closed (shell's Commands allow-list adds core
+  rules of its own, after every role rule and before every refusal; see Rule
+  order). The denies land last in
   `orderRules` order (below). Rows of every other kind install no core rule:
   `permission-enforce.ts` answers them. The action comes from the
   per-rule `permAction` carried on the perm item by discovery (the tool's own
@@ -2548,8 +2561,20 @@ Row semantics, the same in every category:
 - A deny-list row, the default, refuses what it matches while it is off. It
   ships on (nothing refused) unless what it guards is never wanted.
 - An allow-list row (`allow: true`: Temporary directories, `/tmp/*` and
-  `*/run/plus/tmp/*`, in read's and edit's Where) lets its patterns through
-  while it is on, and only matters once the fallback is off.
+  `*/run/plus/tmp/*`, in read's and edit's Where; `pilotty (driving terminal
+  apps)` in shell's Commands, shipped off) lets its patterns through while it
+  is on, and only matters once the fallback is off. A closed fallback's
+  refusal ends in `; still allowed: <titles of the allow rows that are on>`.
+- Shell's Commands is the one allow-list core enforces as well
+  (`apply.ts` `shellAllowList`): while Every other command is off, the agent
+  gets a deny `*` and an allow per pattern of each allow row that is on. The
+  call as written is checked by Plus, and core checks every command it parses
+  out of it (each part of a pipeline, a list or a substitution), so
+  `pilotty … && git push` is refused. The pilotty row covers its terminal
+  commands (spawn, snapshot, output, key, type, click, scroll, resize,
+  wait-for, kill, list-sessions) but not `stop` or `daemon`, which end every
+  chat's terminals. pilotty runs whatever program it is told to spawn: the row
+  limits the shell to driving terminals, it is not a sandbox.
 - A limit or bound row carries its number as its text; on applies it, off
   removes the cap.
 
@@ -2740,8 +2765,10 @@ answers them through the plugin seams:
   on `value` limit sets `maximum`, and `team_delegate`'s `role` becomes an enum
   of exactly the co-members whose Delegate to rows are on, with `Members you
   may delegate to: <members>.` (or `No member of your team is open to you for
-  delegation.`) appended to its description. Code Mode tools are not narrowed;
-  the tool hook still refuses there.
+  delegation.`) appended to its description, then `<member>: <description>.`
+  for each one whose Description row resolves non-empty
+  (`PermissionTable.describe`), so a delegator can tell members of one kind
+  apart. Code Mode tools are not narrowed; the tool hook still refuses there.
 
 A delegated team run (a `w` run, found through `teams/run.ts` `bySession`)
 has nobody to ask,
@@ -2769,8 +2796,10 @@ Every Plus rule — rule-kind rows' denies (`permDenials`), role rows'
 stable order: first a role row's whole-resource defaults (`*`; `allow`, then
 `ask`, then `deny`), then the role rules that let a specific resource through
 (a run's scope paths, a planner's plan files), then the role's own specific
-refusals, and last every refusal of a row that is off and the namespace deny
-(`refusal`), even one whose pattern is `*`. Core answers last-match-wins, so a
+refusals, then a closed shell allow-list (its deny `*`, then the patterns its
+allow rows open; `allowList` closing and opening), and last every refusal of a
+row that is off and the namespace deny (`refusal`), even one whose pattern is
+`*`. Core answers last-match-wins, so a
 row that is off always refuses what it matches and the most restrictive role
 default wins. This fixed a real bug: role rules used to be appended after
 every row's denies, so an orchestrator's role row `allow shell *` landed last
