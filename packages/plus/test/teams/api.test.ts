@@ -1461,7 +1461,7 @@ test("a review brief names the change since the delegating run started and that 
       ) as { run: string; briefPath: string }
       const brief = await fs.readFile(delegated.briefPath, "utf8")
       expect(brief).toContain(`See the change with team_diff {run: "${delegated.run}", from: "${repo.head}"}.`)
-      expect(brief).toContain(`Checks at ${landed.slice(0, 12)} (you cannot run checks): unit pass, lint not run.`)
+      expect(brief).toContain(`Checks at ${landed.slice(0, 12)}: unit pass, lint not run.`)
       expect(brief).toContain("May edit: nothing (read-only task)")
       // The call the Brief names shows the change: the reviewer's worktree diffed from that commit.
       const reviewer = await loadRun(root, delegated.run)

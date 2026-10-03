@@ -402,13 +402,14 @@ test("a team member's own rows list under the tools they govern, rows for absent
   expect(nodes.find((node) => node.id === to)?.label).toBe("Delegate to")
   const rows = childrenOf(nodes, to)
   expect(rows.map((node) => node.id)).toEqual([
+    `item:project:crew/:${member}:perm:team_delegate:to.${member}`,
     `item:project:crew/:${member}:perm:team_delegate:to.${peer}`,
     `item:project:crew/:${member}:perm:team_delegate:to.other-teams`,
   ])
-  expect(rows[0]?.label).toBe(peer)
-  expect(rows[0]?.badges.state).toBe("off")
-  expect(rows[0]?.actions?.toggle).toBe(true)
-  expect(rows[0]?.address).toEqual({ level: "project", agent: member, item: `perm:team_delegate:to.${peer}`, section: null, catalogue: "teams", memberOf: { level: "project", team: "crew" } })
+  expect(rows[1]?.label).toBe(peer)
+  expect(rows[1]?.badges.state).toBe("off")
+  expect(rows[1]?.actions?.toggle).toBe(true)
+  expect(rows[1]?.address).toEqual({ level: "project", agent: member, item: `perm:team_delegate:to.${peer}`, section: null, catalogue: "teams", memberOf: { level: "project", team: "crew" } })
   // A row whose tool this inventory lacks (edit, for the run's edit scope)
   // stays reachable in one Other permissions group.
   const other = `group:project:crew/:${member}:tools:policy`

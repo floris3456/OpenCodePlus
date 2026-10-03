@@ -87,8 +87,7 @@ test("basic members carry description and mode and no permissions", () => {
     expect(fields?.mode).toBe("primary")
     expect(fields?.permissions).toEqual([])
     // Bodies compose shared first, then the role block.
-    expect(member.body).toContain("team_get_context")
-    expect(member.body.indexOf("team_get_context")).toBeLessThan(member.body.length - 1)
+    expect(member.body.startsWith("# Team member\n")).toBe(true)
   }
 })
 
@@ -98,10 +97,11 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     members: presets.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
   })
   const ceilings: Record<string, readonly string[]> = {
-    // A planner commits its plan file when delegated; workers address only
-    // their own run, which get_context describes (no status); a scout changes
-    // nothing (no diff); the build seat, never delegated to, finishes nothing.
-    planner: ["delegate", "followup", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
+    // A planner commits its plan file when delegated, and in the user's chat
+    // lands what its orchestrator reports done; workers address only their own
+    // run, which get_context describes (no status); a scout changes nothing (no
+    // diff); the build seat, never delegated to, finishes nothing.
+    planner: ["delegate", "followup", "integrate", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
     orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
@@ -135,14 +135,15 @@ test("the live snapshot carries each member's Delegate to rows after the team is
   const rowIds = (member: string) =>
     snapshot.items.filter((item) => item.kind === "perm" && item.agents?.includes(member) === true).map((item) => item.id)
 
-  // Each member owns one "Delegate to" row per teammate plus the other-teams row.
+  // Each member owns one "Delegate to" row per member of its team (its own
+  // included) plus the other-teams row.
   const team = builtinTeams.find((entry) => entry.name === "basic")
   if (team === undefined) throw new Error("missing basic")
   // No member may be silently absent: every shipped member owns its rows.
   for (const member of team.members)
     expect([member.id, rowIds(member.id).toSorted()]).toEqual([
       member.id,
-      [...team.members.filter((peer) => peer.id !== member.id).map((peer) => `perm:team_delegate:to.${peer.id}`), "perm:team_delegate:to.other-teams"].toSorted(),
+      [...team.members.map((peer) => `perm:team_delegate:to.${peer.id}`), "perm:team_delegate:to.other-teams"].toSorted(),
     ])
 })
 
@@ -229,27 +230,25 @@ test("every Basic role names only tools its member preset ships on, and forbids 
 test("every Basic body splits into Team member, Delegating and role sections", () => {
   const ids = (member: Parameters<typeof basicBody>[0]) => derive(basicBody(member), "Role/persona").sections.map((section) => section.id)
   const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety"]
-  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks", "implementer/commits", "implementer/outside-your-scope"])
+  const delegating = ["delegating", "delegating/briefs", "delegating/integration-checks"]
+  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks", "implementer/outside-your-scope"])
   expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/findings"])
   expect(ids("scout")).toEqual([...shared, "scout", "scout/task", "scout/answer"])
-  expect(ids("planner")).toEqual([...shared, "delegating", "delegating/briefs", "planner", "planner/the-plan", "planner/questions", "planner/limits", "planner/hand-off"])
+  expect(ids("planner")).toEqual([...shared, ...delegating, "planner", "planner/the-plan", "planner/questions", "planner/hand-off"])
   expect(ids("orchestrator")).toEqual([
     ...shared,
-    "delegating",
-    "delegating/briefs",
+    ...delegating,
     "orchestrator",
     "orchestrator/ownership",
     "orchestrator/shell",
     "orchestrator/splitting-the-work",
-    "orchestrator/integration-checks",
     "orchestrator/following-children",
     "orchestrator/review-and-finish",
   ])
   // The build seat is never delegated to: no Reporting section.
   expect(ids("build-seat")).toEqual([
     ...shared.filter((id) => id !== "team-member/reporting"),
-    "delegating",
-    "delegating/briefs",
+    ...delegating,
     "build-seat",
     "build-seat/role",
     "build-seat/subagents",
@@ -258,13 +257,13 @@ test("every Basic body splits into Team member, Delegating and role sections", (
   ])
 })
 
-// A Basic body names only its own delegation targets' Brief rules, so a
-// planner is not told about implementers it can never reach.
-test("a delegator's Briefs section names exactly its targets' Brief rules", () => {
-  const rules = (member: Parameters<typeof basicBody>[0]) => basicBody(member).match(/^Required: .*$/m)?.[0]
-  expect(rules("planner")).toBe("Required: an orchestrator's Brief needs a reason.")
-  expect(rules("orchestrator")).toBe("Required: an orchestrator's Brief needs a reason; an implementer's commit Brief needs scope.paths.")
-  expect(rules("build-seat")).toContain("a planner's scope.paths are its plan files only")
+// What a Brief to a target must carry, whether it takes followups and what
+// done needs are rows: the tools' descriptions list them per request from those
+// rows (permission-enforce.test.ts), so no body restates one and none goes
+// stale when a level changes the row.
+test("a Basic body states no Brief rule, followup rule or done requirement a row decides", () => {
+  for (const member of ["planner", "orchestrator", "implementer", "reviewer", "scout", "build-seat"] as const)
+    expect([member, basicBody(member).match(/Required:|needs a reason|needs scope\.paths|plan files only|takes no (followups|corrections)|asks the user to confirm|must pass for|done needs/gi)]).toEqual([member, null])
   for (const worker of ["implementer", "reviewer", "scout"] as const) expect(basicBody(worker)).not.toContain("# Delegating")
 })
 

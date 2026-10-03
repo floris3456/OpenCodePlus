@@ -49,8 +49,8 @@ function delegateStates(member: string) {
   )
 }
 
-function expectedDelegates(member: string, open: readonly string[]) {
-  return Object.fromEntries([...ids.filter((id) => id !== member).map((id) => [`to.${id}`, open.includes(id)]), ["to.other-teams", false]])
+function expectedDelegates(open: readonly string[]) {
+  return Object.fromEntries([...ids.map((id) => [`to.${id}`, open.includes(id)]), ["to.other-teams", false]])
 }
 
 // ── what the rows are ──────────────────────────────────────────────────────
@@ -64,11 +64,11 @@ test("policyMembersOf keeps every member of an enabled team, whatever its id, wi
   ])
 })
 
-test("Delegate to rows list every co-member, name only the member and ship off", () => {
+test("Delegate to rows list every member, the member itself included, name only the member and ship off", () => {
   const items = teamPolicyItems(policyMembersOf(members))
   for (const member of ids) {
     const rows = items.filter((item) => item.agents?.includes(member) === true && item.category === "to")
-    expect([member, rows.map((row) => row.ruleId)]).toEqual([member, [...ids.filter((id) => id !== member).map((id) => `to.${id}`), "to.other-teams"]])
+    expect([member, rows.map((row) => row.ruleId)]).toEqual([member, [...ids.map((id) => `to.${id}`), "to.other-teams"]])
     for (const row of rows) {
       expect([row.id, row.enabled, row.permTool, row.permKind, row.message?.includes(member)]).toEqual([row.id, false, "team_delegate", "team", true])
       if (row.ruleId !== "to.other-teams") expect(row.text).toBe(row.title)
@@ -81,12 +81,31 @@ test("Delegate to rows list every co-member, name only the member and ship off",
 // ── what the presets set ───────────────────────────────────────────────────
 
 test("member presets open Delegate to rows for their teammate roles, and a build seat opens every teammate", () => {
-  for (const planner of planners) expect([planner, delegateStates(planner)]).toEqual([planner, expectedDelegates(planner, orchestrators)])
+  for (const planner of planners) expect([planner, delegateStates(planner)]).toEqual([planner, expectedDelegates(orchestrators)])
+  // An orchestrator also hands a sub-project to another orchestrator run.
   for (const orchestrator of orchestrators)
-    expect([orchestrator, delegateStates(orchestrator)]).toEqual([orchestrator, expectedDelegates(orchestrator, workers)])
+    expect([orchestrator, delegateStates(orchestrator)]).toEqual([orchestrator, expectedDelegates([...orchestrators, ...workers])])
   for (const seat of ["build-seat", "ocp-build"])
-    expect([seat, delegateStates(seat)]).toEqual([seat, expectedDelegates(seat, ids.filter((id) => id !== seat))])
-  for (const worker of workers) expect([worker, delegateStates(worker)]).toEqual([worker, expectedDelegates(worker, [])])
+    expect([seat, delegateStates(seat)]).toEqual([seat, expectedDelegates(ids.filter((id) => id !== seat))])
+  for (const worker of workers) expect([worker, delegateStates(worker)]).toEqual([worker, expectedDelegates([])])
+})
+
+// The own row answers for the agent, not for a member id: an orchestrator
+// under any name may start another run of itself, and no build seat may,
+// whatever it is called, though a build seat opens every other teammate.
+test("an agent's own Delegate to row follows its member preset, whatever the agent is called", () => {
+  const named = [...shippedMembers(), linked("acme-orchestrator", "orchestrator"), linked("acme-build", "build-seat"), linked("acme-scout", "scout")]
+  const resolved = presetInput({ members: named })
+  const own = (id: string) => resolvedStates(resolved, id)[`perm:team_delegate:to.${id}`]
+  expect(["orchestrator", "acme-orchestrator", "build-seat", "acme-build", "acme-scout"].map((id) => [id, own(id)])).toEqual([
+    ["orchestrator", "on"],
+    ["acme-orchestrator", "on"],
+    ["build-seat", "off"],
+    ["acme-build", "off"],
+    ["acme-scout", "off"],
+  ])
+  // Every other teammate's row of a renamed build seat stays on.
+  expect(resolvedStates(resolved, "acme-build")["perm:team_delegate:to.acme-orchestrator"]).toBe("on")
 })
 
 test("Runs rows follow the preset: coordinators read status everywhere, planners and build seats also list", () => {
@@ -380,6 +399,25 @@ test("a delegated run delegates further only while its Delegate from a delegated
   const opened = tableWith({ agent: "planner", id: "perm:team_delegate:access.delegated", enabled: true })
   const started = required(await apiWith(opened).delegate({ ...plan, requestID: "req-2" }, callerFor(planner))) as { run: string }
   expect((await loadRun(root, started.run))?.parent).toBe(planner.id)
+}, 30000)
+
+test("an orchestrator starts another orchestrator run while its own Delegate to row is on", async () => {
+  const repo = await makeRepo()
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_orchestrator" })
+  await saveRun(root, parent)
+  const sub = (requestID: string, reason?: string) =>
+    brief({ requestID, role: "orchestrator", deliverable: { kind: "commit" }, scope: { paths: ["packages/a/*"] }, checks: [], ...(reason === undefined ? {} : { reason }) })
+  const started = required(await apiWith(tableWith()).delegate(sub("sub-1", "packages/a is a separable sub-project"), callerFor(parent))) as { run: string }
+  const child = await loadRun(root, started.run)
+  expect([child?.role, child?.parent]).toEqual(["orchestrator", parent.id])
+  // The orchestrator's Brief rules still apply to it: a reason is required.
+  expect(rejected(await apiWith(tableWith()).delegate(sub("sub-2"), callerFor(parent))).code).toBe("E_REASON")
+  // Off, the same call is refused at the role gate.
+  const closed = rejected(
+    await apiWith(tableWith({ agent: "orchestrator", id: "perm:team_delegate:to.orchestrator", enabled: false })).delegate(sub("sub-3", "a separable sub-project"), callerFor(parent)),
+  )
+  expect(closed.code).toBe("E_ROLE")
+  expect(closed.message).toContain(`may not delegate to "orchestrator"`)
 }, 30000)
 
 test("a Children working at once row edited to 1 refuses a second working child", async () => {

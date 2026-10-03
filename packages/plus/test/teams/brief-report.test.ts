@@ -51,7 +51,7 @@ describe("brief", () => {
     expect(sections[3]).toBe("## Scope\nMay edit: a.ts\nMust not touch: b.ts")
     expect(sections[4]).toBe("## Interfaces to read first\n- q.ts — parsed here")
     expect(sections[5]).toBe("## Decisions already made\n- Do not change the grammar")
-    expect(sections[6]).toBe("## Checks (run with team_check; all must pass for done)\n- q: bun test q.test.ts")
+    expect(sections[6]).toBe("## Checks\n- q: bun test q.test.ts")
     // The budget is advisory everywhere: the Brief says so in the same words the roles use.
     expect(sections[7]).toBe(
       "## Budget\neffort medium: about 1.5M tokens and 60 min. A guide, not a limit: if you need more, keep going and say why in your report.",
@@ -78,14 +78,14 @@ describe("brief", () => {
       { budget: policy.effort.small, review: { run: "w-0123456789abcdef", from, to, checks: [{ id: "unit", passed: true }, { id: "lint", passed: false }, { id: "e2e", passed: null }] } },
     )
     expect(out).toContain(
-      `## Review\nYour worktree holds the change's end state (${to.slice(0, 12)}). See the change with team_diff {run: "w-0123456789abcdef", from: "${from}"}.\nChecks at ${to.slice(0, 12)} (you cannot run checks): unit pass, lint FAIL, e2e not run.`,
+      `## Review\nYour worktree holds the change's end state (${to.slice(0, 12)}). See the change with team_diff {run: "w-0123456789abcdef", from: "${from}"}.\nChecks at ${to.slice(0, 12)}: unit pass, lint FAIL, e2e not run.`,
     )
     const nothing = render(
       { ...briefBase(), deliverable: { kind: "findings" as const } },
       { budget: policy.effort.small, review: { run: "w-0123456789abcdef", from: to, to, checks: [] } },
     )
     expect(nothing).toContain(`Nothing has landed since ${to.slice(0, 12)}`)
-    expect(nothing).toContain("(you cannot run checks): none recorded.")
+    expect(nothing).toContain(`Checks at ${to.slice(0, 12)}: none recorded.`)
   })
 
   test("attached material over 40 KB is replaced with a pointer", () => {

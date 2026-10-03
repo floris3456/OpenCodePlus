@@ -45,13 +45,13 @@ const FollowupDescription = "Send a correction or answer to your child; it becom
 const IntegrateDescription =
   "Land a done child's commits on your branch: rebased onto your HEAD, verified with your integration checks, then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."
-const SetChecksDescription = "Set your run's integration checks: they verify each landing and must pass for your own done."
+const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
 const SupersedeDescription = "Abandon a child run and cancel its task, e.g. to replace a child that is off course."
 const StopDescription = "Stop a child run now (a working child after its turn); a followup resumes it."
 const StatusDescription = "State, latest report, checks and HEAD of your run and your children."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
-const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages.\n" + toolGuidance
+const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again.\n" + toolGuidance
 const CheckDescription = "Run one of your assigned checks in your worktree."
 
 // One team tool call in flight, remembered at `tool.execute.before` so a refusal

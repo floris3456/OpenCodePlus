@@ -1759,8 +1759,9 @@ refused, a requirement demands nothing, a bound is absent.
 What the Basic member presets set (every other row is the catalogue's shipped value):
 
 - **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
-  `team_integrate`, `team_set_checks`, `team_check` off (it keeps
-  `team_checkpoint` to commit its plan file when delegated);
+  `team_set_checks`, `team_check` off (it keeps `team_checkpoint` to commit its
+  plan file when delegated, and `team_integrate` to land in the user's checkout
+  what the orchestrator it delegated to reports done, already verified there);
   Runs on for status, list; Approval on for team_delegate; Access
   "Delegate from a delegated run" off; Files it may change: every other file
   off, plan files on; Briefs it accepts: Plan files only on; Start a team run
@@ -1784,26 +1785,37 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   rows, including Protected files, plus `protectedStateRefusal`); Runs on for status, list; `tool:shell`,
   `tool:question`, `tool:subagent`, Start a team run and Delegate from a
   delegated run on; every "Delegate to" row on, whoever the teammate is (not
-  Members of other teams).
+  its own row, nor Members of other teams).
 
 The Basic member presets add each member's "Delegate to" rows by its
-teammates' roles (planner → orchestrator; orchestrator → implementer, reviewer,
-scout; build seat → every teammate). They name teammates by the member ids the
-Basic roster carries: a teammate renamed after the team was created gets a new,
-off "Delegate to" row, while the build seat's rows stay on dynamically.
+teammates' roles (planner → orchestrator; orchestrator → orchestrator,
+implementer, reviewer, scout; build seat → every other teammate). They name
+teammates by the member ids the Basic roster carries: a teammate renamed after
+the team was created gets a new, off "Delegate to" row, while the build seat's
+rows stay on dynamically. A member's own row (another run of itself) answers
+as its preset's row for the preset's own member id, whatever the agent is
+called (`presets.ts` `memberShipped`, which `PresetCatalog.shipped` hands the
+agent it resolves for): on for an orchestrator, off for every other Basic
+preset, the build seat's fallback included. Delegation depth (3) bounds nested
+orchestrators.
 
 #### Where a Basic member's guidance lives
 
 One home per kind of guidance, so no line repeats or contradicts another:
 
 - **Role/persona** (`instructions/builtin-teams.ts` `basicBody`): who does what
-  and when. Markdown in three parts, each split into `##` sections the
-  Instructions tree derives as separate rows: `# Team member` (Runs and
-  messages, Working, Reporting — not for the build seat, which is never
-  delegated to —, Safety), `# Delegating` (Briefs; only for members
-  that delegate, naming exactly its targets' Brief rules from
-  `basicDelegation`) and `# <Role>`. A section that depends on one tool
-  carries a `<!-- requires: … -->` line (`instructions/requires.ts`).
+  and when, never what a row decides. Markdown in three parts, each split into
+  `##` sections the Instructions tree derives as separate rows: `# Team member`
+  (Runs and messages, Working, Reporting — not for the build seat, which is
+  never delegated to —, Safety), `# Delegating` (Briefs, Integration checks;
+  only for members that delegate) and `# <Role>`. A section that depends on
+  one tool carries a `<!-- requires: … -->` line (`instructions/requires.ts`).
+- **What a row decides** (`permission-enforce.ts` `narrowTools`, per request):
+  `team_delegate`'s description adds, after the members you may delegate to,
+  each target's binding "Briefs it accepts" rows in the words of their
+  refusals (a requirement while on, Corrections by followup while off);
+  `team_finish`'s adds the caller's Requirements for done that are on. No body,
+  Brief or schema text restates them, so a changed row needs no text edit.
 - **Tools and rules** (`instructions/guidance.ts`, row
   `system:tools-and-rules`): instructions that belong to a tool, skill or
   rule, one gated section each, reaching an agent only while that row is on
@@ -1824,8 +1836,9 @@ One home per kind of guidance, so no line repeats or contradicts another:
 Only rows that name something a member alone has are generated, for every
 member of an enabled team (`policyMembersOf` keeps every one):
 
-- `perm:team_delegate:to.<peer>` (Delegate to, `team`) — one per other member
-  of the same enabled team, labelled with its id (text = the id), shipped off;
+- `perm:team_delegate:to.<peer>` (Delegate to, `team`) — one per member of the
+  same enabled team, its own included (another run of itself), labelled with
+  its id (text = the id), shipped off;
   plus `perm:team_delegate:to.other-teams` "Members of other teams", shipped
   off; on, it opens every member of an enabled team that has no row of its
   own. Their fallback is their own shipped state (off).

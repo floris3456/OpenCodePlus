@@ -520,7 +520,8 @@ test("the Basic member presets open Delegate to rows for their teammates' roles"
       .map(([id]) => id.slice("perm:team_delegate:to.".length))
       .toSorted()
   expect(opened("planner")).toEqual(["orchestrator"])
-  expect(opened("orchestrator")).toEqual(["implementer", "reviewer", "scout"])
+  // An orchestrator also hands a sub-project to another orchestrator run.
+  expect(opened("orchestrator")).toEqual(["implementer", "orchestrator", "reviewer", "scout"])
   expect(opened("build-seat")).toEqual(["implementer", "orchestrator", "planner", "reviewer", "scout"].toSorted())
   for (const member of ["implementer", "reviewer", "scout"]) expect([member, opened(member)]).toEqual([member, []])
   // Members of other teams are not named: only the teammate's own row is on.

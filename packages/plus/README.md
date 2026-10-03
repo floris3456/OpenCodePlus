@@ -211,8 +211,9 @@ What the Basic member presets set (on = permitted):
 | paths outside the checkout (read/edit Where, `external_directory`) | on | on | off | off | off | on |
 | `subagent` tool | off | off | off | off | off | on |
 | read or grep secret files ¹ | off | off | off | off | off | on |
-| Tavily search and extract tools | on | on | off | off | off | on |
-| edit files | plan files only ² | yes | yes | yes | yes | yes |
+| Tavily search and extract tools | on | off | off | off | off | on |
+| edit files | plan files only ² | plan files only ² | yes | no | no | yes |
+| delegates to | orchestrator | orchestrator, implementer, reviewer, scout | — | — | — | every other member |
 | asks you before each delegation (Approval) | yes | no | no | no | no | no |
 | start a team run from a chat | yes | yes | no | no | no | yes |
 | delegate from a delegated run | no | yes | no | no | no | yes |
@@ -225,8 +226,9 @@ What the Basic member presets set (on = permitted):
 passwords, frozen team run configs and session databases.
 ² edit → Files it may change: `docs/plans/` and `docs/handoffs/`.
 
-Team tools are tool rows: a planner lacks `integrate`, `set_checks` and
-`check` (it keeps `checkpoint` to commit its plan file when delegated); an
+Team tools are tool rows: a planner lacks `set_checks` and `check` (it keeps
+`checkpoint` to commit its plan file when delegated, and `integrate` to land in
+your checkout what the orchestrator it delegated to reports done); an
 orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
 `finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`
 and `get_context`; a scout only `finish` and `get_context`; a build seat has
@@ -325,16 +327,21 @@ rules on the skill tool stay permissions.
 **Where a Basic member's instructions live.** Each kind of guidance has one
 home, so nothing is said twice or contradicts itself:
 
-- *Role/persona* (`builtin-teams.ts`): who does what and when. The body is
-  markdown in three parts — `# Team member` (every member), `# Delegating`
-  (members who delegate; it names exactly its targets' Brief rules) and
-  `# <Role>` — each split into `##` sections, so the Instructions tree shows
-  one section row per part that a level can turn off or rewrite alone.
+- *Role/persona* (`builtin-teams.ts`): who does what and when, never what a
+  row decides. The body is markdown in three parts — `# Team member` (every
+  member), `# Delegating` (members who delegate: Briefs, Integration checks)
+  and `# <Role>` — each split into `##` sections, so the Instructions tree
+  shows one section row per part that a level can turn off or rewrite alone.
 - *Tool descriptions*: what a tool does and when to call it; the first line
-  stands alone, because a Code Mode catalog shows only that line.
+  stands alone, because a Code Mode catalog shows only that line. What a row
+  decides is added per request from the rows themselves: `team_delegate`
+  lists the members you may delegate to and what each one's "Briefs it
+  accepts" rows require (in the words of their refusals), `team_finish` the
+  caller's Requirements for done. Change a row and the description follows;
+  no text has to.
 - *Input schema field descriptions* (`teams/schema.ts`): how each value must
   look — check commands, the HEAD `checkpoint` and `integrate` expect, commit
-  message types, summary limits, what each report status requires — so a call
+  message types, summary limits, what each report status means — so a call
   is right the first time instead of learning from a refusal. A test keeps
   every field of every team tool described.
 - *The rendered Brief and each settlement*: the facts of one run (below).
@@ -368,13 +375,16 @@ implied. Replayed admissions label the original `receipt` and expose a fresh
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
-Permissions → Delegate to`. It holds one row per other member of the same
-team, named by its id and shipped off, plus `Members of other teams` (off). A
-member created from the shipped Basic preset has its teammate rows on by role
-(planner → orchestrator; orchestrator → implementer, reviewer, scout); a build
-seat has every teammate's row on. Space turns a row on
-or off. The member's `team_delegate` then offers exactly the teammates that
-are on as its `role`, and a refused delegation (`E_ROLE`) names who is open.
+Permissions → Delegate to`. It holds one row per member of the same team, its
+own included (another run of itself), named by its id and shipped off, plus
+`Members of other teams` (off). A member created from the shipped Basic preset
+has its rows on by role (planner → orchestrator; orchestrator → orchestrator,
+implementer, reviewer, scout); a build seat has every other teammate's row on.
+A member's own row follows its preset whatever the member is called: on for an
+orchestrator, off for every other Basic preset. Delegation depth (3, a
+`team_delegate` Limits row) bounds nested orchestrators. Space turns a row on
+or off. The member's `team_delegate` then offers exactly the members that are
+on as its `role`, and a refused delegation (`E_ROLE`) names who is open.
 Like any row, the change can be made at Project, Global or Defaults level.
 
 A rule may carry a **message**, and a refused agent reads it instead of the

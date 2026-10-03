@@ -256,7 +256,7 @@ export const CheckSpec = Schema.Struct({
 export type CheckSpec = typeof CheckSpec.Type
 
 export const CheckSpecs = Schema.Array(CheckSpec).annotate({
-  description: "Focused checks (at most 12), each a project check by id (with path when it needs one); each must pass at HEAD for done.",
+  description: "Focused checks (at most 12), each a project check by id (with path when it needs one).",
 })
 
 // Throws a ToolError-shaped object on any failure. The message is the
@@ -375,7 +375,7 @@ export const Brief = Schema.Struct({
       "A file in your checkout attached to the Brief (inline up to 40 KB): the only way an uncommitted file reaches the child.",
   }),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))).annotate({
-    description: "Why this work needs its own run; an orchestrator requires one.",
+    description: "Why this work needs its own run.",
   }),
 })
 export type Brief = typeof Brief.Type
@@ -406,7 +406,7 @@ export function validateSummary(summary: string): void {
 export const Report = Schema.Struct({
   status: Schema.Literals(["done", "done_with_concerns", "blocked", "needs_context", "rejected"]).annotate({
     description:
-      "done: complete, assigned checks passing at HEAD (finish runs any not yet run), commit work committed. done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
+      "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
   }),
   summary: Schema.String.check(Schema.isMaxLength(1500)).annotate({
     description: "What your parent must act on, at most 15 lines; it receives it in full.",

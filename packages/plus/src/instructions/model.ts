@@ -254,13 +254,15 @@ export interface PresetCatalog {
    * The shipped value of `item` (`section` null = whole item) in a
    * Native/Plus preset; undefined = the preset does not set it. `upstream` is
    * the item being resolved (several items share an id, one per agent, so the
-   * id alone cannot name its upstream value).
+   * id alone cannot name its upstream value), and `agent` the agent it is
+   * resolved for.
    */
   readonly shipped: (
     preset: PresetRef,
     item: string,
     section: string | null,
     upstream?: Pick<Item, "text" | "enabled" | "pinned">,
+    agent?: string | null,
   ) => ShippedValue | undefined
   /** The shipped active model of a Native/Plus preset; undefined = none. */
   readonly model: (preset: PresetRef) => ModelRefLike | undefined
@@ -1439,7 +1441,7 @@ function valueAt(
   section: string | null,
 ): ShippedValue | undefined {
   if (node.shipped === undefined) return at(records, node)
-  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream)
+  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream, input.address.agent)
 }
 
 // §3.3: native agents (and a team's Special agents), items the agent owns and

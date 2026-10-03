@@ -277,8 +277,9 @@ test("get_context maps real tool surfaces and the caller's permitted custom rost
     try {
       await saveRun(root, makeRun("w-1111111111111111", lead.id, "ses_custom_roster"))
       const output = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_custom_roster", lead.id)))
+      // Its own row follows its orchestrator preset: another run of itself.
       expect(output.output).toMatchObject({
-        delegationTargets: ["custom-maker"],
+        delegationTargets: ["custom-lead", "custom-maker"],
         toolSurfaces: {
           direct: teamNames.filter((name) => codemodeFalse.has(name)).map((name) => `team_${name}`),
           codeMode: expect.arrayContaining(teamNames.filter((name) => !codemodeFalse.has(name)).map((name) => `tools.team.${name}`)),

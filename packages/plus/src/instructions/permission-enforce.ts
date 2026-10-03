@@ -801,10 +801,26 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? `Members you may delegate to: ${targets.join(", ")}.` : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => accepts(table, target))].join("\n") : "No member of your team is open to you for delegation."}`
     }
+    if (name === "team_finish") definition.description += requirements(rows)
     if (narrowed || targets !== undefined) definition.input = schema as typeof definition.input
   }
+}
+
+// What a target's own "Briefs it accepts" rows hold a delegator to, in the
+// words its refusals use: each requirement while on, followups while off.
+function accepts(table: PermissionTable, target: string): string[] {
+  return table
+    .toolRows(target, "team_get_context")
+    .filter((row) => row.item.category === "accepts" && row.on !== (row.item.ruleId === "accepts.followup"))
+    .map((row) => `${target} ${row.item.message ?? row.item.title}${row.item.patterns?.length ? ` [${row.item.patterns.join(", ")}]` : ""}.`)
+}
+
+// The agent's own "Requirements for done" rows that are on.
+function requirements(rows: readonly PermRow[]): string {
+  const on = rows.filter((row) => row.on && row.item.category === "requirements").map((row) => row.item.title.charAt(0).toLowerCase() + row.item.title.slice(1))
+  return on.length === 0 ? "" : `\nRequirements for done: ${on.join("; ")}.`
 }
 
 // ── the hooks ───────────────────────────────────────────────────────────────

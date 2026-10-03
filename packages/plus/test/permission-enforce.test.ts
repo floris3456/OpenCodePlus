@@ -25,6 +25,7 @@ import {
   teamAllows,
   teamLimit,
   type Call,
+  type PermissionTable,
   type PermRow,
 } from "../src/instructions/permission-enforce.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
@@ -549,13 +550,22 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
 
   const orchestrator = request("orchestrator")
   narrowTools(orchestrator, table)
-  const open = ["implementer", "reviewer", "scout"]
+  const open = ["implementer", "orchestrator", "reviewer", "scout"]
   expect(orchestrator.tools.team_delegate?.input).toEqual({
     type: "object",
     properties: { role: { type: "string", enum: open }, objective: { type: "string" } },
     required: ["role", "objective"],
   })
-  expect(orchestrator.tools.team_delegate?.description).toBe(`Delegate a task.\nMembers you may delegate to: ${open.join(", ")}.`)
+  // Each target's own Brief rows, in the words its refusals use.
+  expect(orchestrator.tools.team_delegate?.description).toBe(
+    [
+      "Delegate a task.",
+      `Members you may delegate to: ${open.join(", ")}.`,
+      "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable.",
+      "orchestrator needs a reason: say why this member and not another.",
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
+    ].join("\n"),
+  )
   expect(orchestrator.tools.glob?.input).toEqual({ type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] })
 
   const implementer = request("implementer")
@@ -572,6 +582,60 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
   expect(outsider.tools.team_delegate?.description).toBe("Delegate a task.")
 
   expect({ delegate, glob, read }).toEqual(pristine)
+})
+
+// What a Brief to a target must carry and what done needs are rows. The
+// descriptions are built from them per request, so a level that changes a
+// row changes what the model reads, and no text has to follow it.
+test("narrowTools describes the targets' Brief rows and the caller's Requirements for done as they resolve", () => {
+  const members = shippedMembers()
+  const member = (id: string) => {
+    const found = members.find((entry) => entry.id === id)
+    if (found === undefined) throw new Error(`no ${id}`)
+    return found
+  }
+  const described = (table: PermissionTable, agent: string) => {
+    const event: Pick<SessionContext, "agent" | "tools"> = {
+      agent: Agent.ID.make(agent),
+      tools: {
+        team_delegate: { description: "Delegate a task.", input: { type: "object", properties: { role: { type: "string" } } } },
+        team_finish: { description: "Report.", input: { type: "object", properties: { status: { type: "string" } } } },
+      },
+    }
+    narrowTools(event, table)
+    return { delegate: event.tools.team_delegate?.description, finish: event.tools.team_finish?.description }
+  }
+
+  const shipped = presetTable({ members })
+  expect(described(shipped, "build-seat").delegate).toBe(
+    [
+      "Delegate a task.",
+      "Members you may delegate to: implementer, orchestrator, planner, reviewer, scout.",
+      "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable.",
+      "orchestrator needs a reason: say why this member and not another.",
+      "planner accepts plan files only: every scope path must match one of its patterns [docs/plans/*, docs/handoffs/*].",
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
+    ].join("\n"),
+  )
+  expect(described(shipped, "implementer").finish).toBe("Report.\nRequirements for done: assigned checks pass at HEAD; worktree committed before done.")
+  expect(described(shipped, "reviewer").finish).toBe("Report.\nRequirements for done: assigned checks pass at HEAD.")
+
+  // Changed rows, changed descriptions: an orchestrator Brief needs no reason,
+  // an implementer Brief needs a check, and the implementer's done no longer
+  // needs green checks.
+  const changed = presetTable({
+    members,
+    records: [
+      change(member("orchestrator"), "perm:team_get_context:accepts.reason", { state: "off" }),
+      change(member("implementer"), "perm:team_get_context:accepts.check", { state: "on" }),
+      change(member("implementer"), "perm:team_finish:requirements.checks", { state: "off" }),
+    ],
+  })
+  expect(described(changed, "planner").delegate).toBe("Delegate a task.\nMembers you may delegate to: orchestrator.")
+  const seat = described(changed, "build-seat").delegate
+  expect(seat).toContain("\nimplementer needs at least one check.")
+  expect(seat).not.toContain("orchestrator needs")
+  expect(described(changed, "implementer").finish).toBe("Report.\nRequirements for done: worktree committed before done.")
 })
 
 test("delegateTargets lists the on members, sorted, never the other-teams row", () => {

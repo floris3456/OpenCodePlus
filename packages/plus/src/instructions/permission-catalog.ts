@@ -738,7 +738,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       label: "Checks it may assign",
       kind: "input",
       field: "checks[].argv",
-      summary: "Commands a child may be given as checks. Checks are always explicit bun test files or bun run scripts.",
+      summary: "Explicit commands (argv) a child may be given as checks. A project check (.opencodeplus/checks.json) is not limited here.",
       rows: [
         { id: "tests", label: "Test files (bun test FILE)", on: true, patterns: ["bun test *"], message: "assigning test checks is not allowed here" },
         { id: "scripts", label: "Package scripts (bun run SCRIPT)", on: true, patterns: ["bun run *"], message: "assigning package-script checks is not allowed here" },

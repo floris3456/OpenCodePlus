@@ -15,8 +15,8 @@ export function budgetFor(effort: EffortKey, policy: { effort: Record<EffortKey,
 /**
  * What a review needs that only the delegating run knows: where the change
  * under review starts (the reviewer's own worktree is where it ends), and the
- * delegating run's own check results there. A reviewer can neither run checks
- * nor read another run's status, so both travel in its Brief.
+ * delegating run's own check results there. A Basic reviewer ships with
+ * neither team_check nor another run's status, so both travel in its Brief.
  */
 export interface ReviewContext {
   /** The reviewer's own run id, for the exact team_diff call. */
@@ -81,7 +81,7 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
     sections.push(`## Interfaces to read first\n${interfaces.map((i) => `- ${i.path}${i.symbol ? `#${i.symbol}` : ""} — ${i.note}`).join("\n")}`)
   if (decisions.length > 0) sections.push(`## Decisions already made\n${decisions.map((d) => `- ${d}`).join("\n")}`)
   if (checks.length > 0)
-    sections.push(`## Checks (run with team_check; all must pass for done)\n${checks.map((c) => `- ${c.id}: ${c.argv.join(" ")}`).join("\n")}`)
+    sections.push(`## Checks\n${checks.map((c) => `- ${c.id}: ${c.argv.join(" ")}`).join("\n")}`)
   if (filled.review !== undefined) sections.push(reviewSection(filled.review))
   sections.push(
     `## Budget\neffort ${effort}: about ${tokens(budget.tokens)} tokens and ${minutes(budget.wallMs)}. A guide, not a limit: if you need more, keep going and say why in your report.`,
@@ -109,6 +109,6 @@ function reviewSection(review: ReviewContext): string {
     review.checks.length === 0
       ? "none recorded"
       : review.checks.map((check) => `${check.id} ${check.passed === null ? "not run" : check.passed ? "pass" : "FAIL"}`).join(", ")
-  lines.push(`Checks at ${short(review.to)} (you cannot run checks): ${results}.`)
+  lines.push(`Checks at ${short(review.to)}: ${results}.`)
   return lines.join("\n")
 }
