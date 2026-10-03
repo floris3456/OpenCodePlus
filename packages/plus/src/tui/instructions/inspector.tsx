@@ -103,11 +103,11 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   // sent, what it mentions without depending on it, and for a tool, skill or
   // rule the Tools and rules sections that come with it.
   const requires = node.badges.requires
-  if (requires !== undefined && requires.length > 0) {
+  if (requires !== undefined) {
     const met = requires.every((requirement) => requirement.met)
     facts.push([
       "shown when",
-      requires.map((requirement) => `${requirement.id} is ${requirement.on ? "on" : "off"}${requirement.met ? "" : " (it is not here)"}`).join(" and "),
+      `${requires.length === 0 ? "always" : requires.map((requirement) => `${requirement.id} is ${requirement.on ? "on" : "off"}${requirement.met ? "" : " (it is not here)"}`).join(" and ")}${node.badges.requiresFrom === undefined ? "" : ` · ${node.badges.requiresFrom}`} (w changes it)`,
       met ? undefined : "warning",
     ])
   }
@@ -115,7 +115,7 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   if (mentions !== undefined && mentions.length > 0)
     facts.push([
       "mentions",
-      `${mentions.map((mention) => mention.word).join(", ")}, off here: add <!-- requires: ${mentions.map((mention) => mention.id).join(", ")} --> under the heading, or reword`,
+      `${mentions.map((mention) => mention.word).join(", ")}, off here: press w to show it only while ${mentions.map((mention) => mention.id).join(", ")} is on, or reword`,
       "warning",
     ])
   const guidance = node.badges.guidance

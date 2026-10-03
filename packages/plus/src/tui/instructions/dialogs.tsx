@@ -1097,7 +1097,78 @@ async function editModel(node: TreeNode): Promise<void> {
     return slug.length > 0 ? slug : "rule"
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, dispose }
+  // `w`: when a system row or section is sent. A checklist that reopens after
+  // each pick: a row cycles "must be on" → "must be off" → gone; Add picks a
+  // tool, skill, MCP server or rule; Save writes this level's condition.
+  async function when(node: TreeNode | undefined): Promise<void> {
+    if (disposed || node === undefined) return
+    if (node.actions?.requires !== true) {
+      state.setStatus(`"${node.label}" cannot be sent conditionally: only system rows and their sections can`)
+      return
+    }
+    const SAVE = "\u0000save"
+    const ADD = "\u0000add"
+    const ALWAYS = "\u0000always"
+    const FOLLOW = "\u0000follow"
+    const CANCEL = "\u0000cancel"
+    const choices = state.conditionChoices()
+    const labelOf = (id: string) => choices.find((choice) => choice.id === id)?.label ?? id
+    let ids = (node.badges.requires ?? []).map((requirement) => (requirement.on ? requirement.id : `!${requirement.id}`))
+    const own = node.badges.requiresHere === true
+    let cursor: string | undefined
+    for (;;) {
+      const describe = ids.length === 0 ? "always" : ids.map((id) => `${id.replace(/^!/, "")} ${id.startsWith("!") ? "off" : "on"}`).join(" and ")
+      const picked = await context.ui.dialog.select<string>({
+        title: `Shown when — ${node.label}`,
+        placeholder: node.badges.requiresFrom === undefined ? "Sent always now" : `Now from ${node.badges.requiresFrom}`,
+        ...(cursor === undefined ? {} : { current: cursor }),
+        options: [
+          ...ids.map((id) => ({
+            title: `${labelOf(id.replace(/^!/, ""))} must be ${id.startsWith("!") ? "off" : "on"}`,
+            value: `row:${id}`,
+            description: `${id.replace(/^!/, "")} · pick to switch on/off, then to remove`,
+            category: "Shown when every row is as listed",
+          })),
+          { title: "Add a tool, skill, server or rule…", value: ADD, category: "Shown when every row is as listed" },
+          { title: `Save: ${describe}`, value: SAVE, category: "Done" },
+          { title: "Always send it (no condition at this level)", value: ALWAYS, category: "Done" },
+          ...(own ? [{ title: "Drop this level's condition (the level above or its text decides)", value: FOLLOW, category: "Done" }] : []),
+          { title: "Cancel", value: CANCEL, category: "Done" },
+        ],
+      })
+      if (disposed || picked === undefined || picked === CANCEL) return
+      if (picked === SAVE) return void (await state.setRequires(node, ids))
+      if (picked === ALWAYS) return void (await state.setRequires(node, []))
+      if (picked === FOLLOW) return void (await state.setRequires(node, null))
+      if (picked === ADD) {
+        const added = await context.ui.dialog.select<string>({
+          title: "Shown while this row is on",
+          placeholder: "Search tools, skills, MCP servers and rules",
+          options: choices
+            .filter((choice) => !ids.some((id) => id.replace(/^!/, "") === choice.id))
+            .map((choice) => ({
+              title: choice.label,
+              value: choice.id,
+              description: choice.id,
+              category: choice.group === "Rules" ? `Rules · ${choice.tool ?? ""}` : choice.group,
+            })),
+        })
+        if (disposed) return
+        if (added !== undefined) {
+          ids = [...ids, added]
+          cursor = `row:${added}`
+        }
+        continue
+      }
+      // must be on → must be off → removed
+      const id = picked.slice("row:".length)
+      const off = id.startsWith("!")
+      ids = off ? ids.filter((entry) => entry !== id) : ids.map((entry) => (entry === id ? `!${id}` : entry))
+      cursor = off ? undefined : `row:!${id}`
+    }
+  }
+
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, when, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

@@ -3120,3 +3120,30 @@ test("show reports a section's requires line and a tool's Tools and rules sectio
   const shownTool = (await runOk(need(tools, "instructions_show"), { id: tool.id })) as { guidance?: unknown }
   expect(shownTool.guidance).toEqual(["Questions"])
 })
+
+// "Shown when" through the tool: set takes requires (null drops it), show
+// reports the condition and where it comes from, and a typo is refused.
+test("set requires changes when a section is sent; show reports it and its source", async () => {
+  const { api, tools } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  // alpha's own row (alpha is a Defaults entry in this fixture).
+  const section = nodes.find((node) => node.id.startsWith("section:defaults:alpha:system:tools-and-rules:") && node.label === "Questions")
+  if (section === undefined) throw new Error(`missing Questions: ${nodes.filter((node) => node.label === "Questions").map((node) => node.id).join(", ")}`)
+  const show = need(tools, "instructions_show")
+  const set = need(tools, "instructions_set")
+  expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
+  const saved = (await runOk(set, { id: section.id, requires: ["tool:reader"] })) as { status: string }
+  expect(saved.status).toBe('"Questions" is sent when tool:reader on')
+  const shown = (await runOk(show, { id: section.id })) as { requires?: { id: string; on: boolean }[]; requiresFrom?: string; requiresHere?: boolean }
+  expect(shown.requires?.map(({ id, on }) => ({ id, on }))).toEqual([{ id: "tool:reader", on: true }])
+  expect(shown.requiresHere).toBe(true)
+  expect(shown.requiresFrom).not.toBe("its text")
+  expect((await runFail(set, { id: section.id, requires: ["tool:readr"] })).message).toContain('no row "tool:readr" exists; did you mean tool:reader')
+  await runOk(set, { id: section.id, requires: null })
+  expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
+})

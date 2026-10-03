@@ -35,6 +35,7 @@ export const HELP: readonly HelpGroup[] = [
       ["c", "compare your text with upstream (a real diff)"],
       ["r", "reset this level's override"],
       ["p", "pin a Code Mode tool"],
+      ["w", "shown when: send a system row or section only while chosen rows are on"],
       ["s", "split text into sections"],
     ],
   ],

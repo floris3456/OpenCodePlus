@@ -7,7 +7,7 @@ import { copyName, isSkillCopy, resolvedFor, type ApplyAgent, type ToolPlan } fr
 import { applies, catalogPath, isCodeModeToolEntry, type CustomizationRecord, type Item, type Scopes, type SplitRecord } from "./model.js"
 import { scrubLines } from "./tool-permissions.js"
 import { guidanceItemId } from "./paths.js"
-import { applyRequires } from "./requires.js"
+import { gateOf } from "./requires.js"
 import type { Plus } from "../rpc.js"
 
 interface AssembledInput {
@@ -57,7 +57,9 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   const guidance = resolved.get(guidanceItemId)
   if (guidance !== undefined && guidance.enabled) {
     const has = (id: string) => input.items.some((item) => item.id === id && applies(item, owner.id))
-    const text = applyRequires(guidance.assembled, (id) => (has(id) ? resolved.get(id)?.enabled : undefined))
+    const row = input.items.find((item) => item.id === guidanceItemId && applies(item, owner.id))
+    const gate = gateOf((id) => (has(id) ? resolved.get(id)?.enabled : undefined))
+    const text = row === undefined ? "" : resolvedFor(row, owner, input, gate).assembled
     if (text.trim().length > 0) system.push(preserveScrub(text, scrubbed))
   }
   const tools = await listTools(input.ctx)

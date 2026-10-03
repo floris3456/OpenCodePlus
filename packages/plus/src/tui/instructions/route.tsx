@@ -1369,6 +1369,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (canToggle(node) && selectableAgent(node) !== undefined) hints.push(["ctrl+space", "select"])
     if (inList() && comparable(node) && state.threeWay(node!) !== undefined) hints.push(["c", "compare"])
     if (canPin(node)) hints.push(["p", "pin"])
+    if (node?.actions?.requires === true) hints.push(["w", "shown when"])
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
     if (node?.actions?.remove === true) hints.push(["d", "delete"])
@@ -1451,6 +1452,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(inList() && isEditable(node) ? [{ bind: "e", title: "Edit text", group: "Instructions", run: edit }] : []),
         ...(inList() && comparable(node) ? [{ bind: "c", title: "Compare with upstream", group: "Instructions", run: compare }] : []),
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: pin }] : []),
+        ...(node?.actions?.requires === true ? [{ bind: "w", title: "Shown when (send only while rows are on)", group: "Instructions", run: () => void dialogs.when(current()) }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: () => void dialogs.relink(current()) }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },

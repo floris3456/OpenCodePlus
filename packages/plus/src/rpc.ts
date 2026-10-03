@@ -164,6 +164,8 @@ export const SnapshotCustomizationRecord = Schema.Struct({
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(RecordState),
   pin: Schema.optionalKey(Schema.Boolean),
+  /** When the row is sent (requires.ts): row ids, `!id` = must be off; empty = always. */
+  requires: Schema.optionalKey(Schema.Array(Schema.String)),
   basedOn: Schema.String,
   basedOnText: Schema.optionalKey(Schema.String),
   acknowledged: Schema.optionalKey(Schema.String),

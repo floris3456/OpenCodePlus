@@ -124,13 +124,48 @@ export function applyRequires(text: string, isOn: (id: string) => boolean | unde
     at = section.end
   }
   out += text.slice(at)
-  const kept = lines(out)
+  return stripMarkers(out)
+}
+
+/**
+ * What the model reads of a gated text: no marker lines, and no heading left
+ * standing with nothing under it (every section it had was left out).
+ */
+export function stripMarkers(text: string): string {
+  const kept = lines(text)
     .filter((line) => !MARKER.test(line.text))
     .map((line) => line.text)
     .join("\n")
-  // A heading whose every section left reads as noise: drop headings that now
-  // stand alone with nothing under them before the next heading at their depth.
   return dropEmptyHeadings(kept).replace(/\n{3,}/g, "\n\n").trim()
+}
+
+/**
+ * The condition a section's own text states: the marker on its first line,
+ * or on the first line under its heading. Undefined when there is none.
+ */
+export function markerIn(text: string): string[] | undefined {
+  const filled = lines(text).filter((line) => line.text.trim().length > 0)
+  const first = filled[0]
+  if (first === undefined) return undefined
+  const candidate = heading(first.text) !== undefined ? filled[1] : first
+  const match = candidate?.text.match(MARKER)
+  if (match === null || match === undefined) return undefined
+  return parseRequirements(match[1] ?? "").map((requirement) => (requirement.on ? requirement.id : `!${requirement.id}`))
+}
+
+/** A condition as stored: `tool:x`, `!perm:shell:git-push`. */
+export function requirementOf(id: string): Requirement {
+  return id.startsWith("!") ? { id: id.slice(1), on: false } : { id, on: true }
+}
+
+/** The gate for one agent: every id in a condition must be met (requires.ts `met`). */
+export function gateOf(isOn: (id: string) => boolean | undefined): (ids: readonly string[]) => boolean {
+  return (ids) => ids.every((id) => met(requirementOf(id), isOn))
+}
+
+/** The marker line a condition reads as in text. */
+export function markerLine(ids: readonly string[]): string {
+  return `<!-- requires: ${ids.join(", ")} -->`
 }
 
 function dropEmptyHeadings(text: string): string {

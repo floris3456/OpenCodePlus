@@ -1,6 +1,6 @@
 import { builtinBaseIds } from "../agents/base.js"
 import { booleanControl, controlIds, controlItemFor, controlItems, isControl } from "./agent-controls.js"
-import { gatedSections, mentionWarnings, met } from "./requires.js"
+import { mentions, met, requirementOf } from "./requires.js"
 import { guidanceItemId } from "./paths.js"
 import {
   applies,
@@ -155,8 +155,12 @@ export interface RowOwner {
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
-  /** Section rows: the rows its `requires` line names (requires.ts) and whether this owner has each as required. */
+  /** System rows and sections: the rows its condition names (requires.ts) and whether this owner has each as required. */
   readonly requires?: readonly { readonly id: string; readonly on: boolean; readonly met: boolean }[]
+  /** Where that condition comes from: "its text" (the section's own line) or a level ("set here", "from Global", …). */
+  readonly requiresFrom?: string
+  /** This row's own level holds the condition (null on set drops it). */
+  readonly requiresHere?: boolean
   /** Section rows: tools or skills its text names that this owner has off, with no `requires` line covering them. */
   readonly mentions?: readonly { readonly word: string; readonly id: string }[]
   /** Tool, skill and rule rows: the Tools and rules sections that belong to this row. */
@@ -211,6 +215,8 @@ export interface TreeNodeActions {
   readonly remove: boolean
   readonly split: boolean
   readonly pin: boolean
+  /** "Shown when": a condition can be set here (system rows but Role/persona, and their sections; requires.ts). */
+  readonly requires?: boolean
 }
 
 export interface TreeNode {
@@ -2342,6 +2348,9 @@ function lazyItem(
       remove: teamFields(teamRef).team !== undefined ? false : removable(level, owner, item),
       split: splittable,
       pin: codemode && !executable,
+      // An instruction file or Tools and rules can be sent only when rows are
+      // on; Role/persona is always sent (its sections take conditions).
+      ...(item.kind === "system" && item.id !== "system:role" ? { requires: true } : {}),
     },
     selfReview: () => cachedSelfReview(memo, rowId, () => flagOf(memo, level, owner, item, null, catalogue, teamRef)),
     partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle, teamRef, catalogue),
@@ -2606,8 +2615,10 @@ function itemBadges(
   const shadowedBuiltin = item.kind === "base" && item.userBase === true && builtinBaseIds().has(baseIdOf(item.id))
   const codemodeTool = item.kind === "tool" && item.codemode === true
   const guidance = item.kind === "tool" || item.kind === "skill" || item.kind === "mcp" ? guidanceFor(memo, level, owner, item.id, teamRef, catalogue) : []
+  const condition = item.kind === "system" && resolved.requires !== undefined ? conditionBadges(memo, level, owner, resolved.requires, teamRef, catalogue) : {}
   return {
     ...(guidance.length === 0 ? {} : { guidance }),
+    ...condition,
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     source: resolved.source,
@@ -2704,6 +2715,9 @@ function lazySection(
       remove: false,
       split: false,
       pin: false,
+      // A system section can be sent only when rows are on (its wrapper's
+      // body is the whole document: condition the row itself instead).
+      ...(item.kind === "system" && options?.introduction !== true ? { requires: true } : {}),
     },
     selfReview: () => cachedSelfReview(memo, id, () => flagOf(memo, level, owner, item, section.id, catalogue, teamRef)),
     partial: () => sectionBadges(memo, level, owner, item, section, teamRef, catalogue),
@@ -2722,7 +2736,7 @@ function sectionBadges(
   catalogue?: Catalogue,
 ): TreeNodeBadges {
   const resolved = sectionResolveOf(memo, level, owner, item, section.id, catalogue, teamRef)
-  const capability = item.kind === "system" ? capabilityBadges(memo, level, owner, item, section, teamRef, catalogue) : {}
+  const capability = item.kind === "system" ? capabilityBadges(memo, level, owner, item, section, resolved, teamRef, catalogue) : {}
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
@@ -2740,57 +2754,83 @@ function ownerHas(memo: Memo, level: Level, owner: string, id: string, teamRef?:
   return item === undefined ? undefined : wholeOf(memo, level, owner, item, catalogue, teamRef).enabled
 }
 
-const mentionCache = new WeakMap<Memo, Map<string, ReturnType<typeof mentionWarnings>>>()
+const namesCache = new WeakMap<Memo, ReadonlyMap<string, string>>()
 
-// A system section's `requires` line and its uncovered mentions, for this
-// owner. Mentions are worked out once per owner and item over the whole text,
-// so a section under a gated parent counts its parent's line.
+// The words a text uses for each tool and skill (requires.ts `mentions`).
+function namesOf(memo: Memo): ReadonlyMap<string, string> {
+  const cached = namesCache.get(memo)
+  if (cached !== undefined) return cached
+  const names = new Map<string, string>()
+  for (const candidate of memo.ctx.items) {
+    if (candidate.kind === "tool" && candidate.execute !== true) names.set(candidate.id.slice("tool:".length), candidate.id)
+    if (candidate.kind === "skill") names.set(candidate.id.slice("skill:".length), candidate.id)
+  }
+  namesCache.set(memo, names)
+  return names
+}
+
+// A condition as the tree shows it for this owner: each row, and whether the
+// owner meets it. A shared row (no owner) cannot answer.
+function conditionBadges(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  condition: NonNullable<Resolved["requires"]>,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): Pick<TreeNodeBadges, "requires" | "requiresFrom" | "requiresHere"> {
+  return {
+    requires: condition.ids.map((raw) => {
+      const requirement = requirementOf(raw)
+      // A shared row (no owner) has no agent to ask: shown as met.
+      return { ...requirement, met: owner === null || met(requirement, (id) => ownerHas(memo, level, owner, id, teamRef, catalogue)) }
+    }),
+    requiresFrom:
+      condition.from === "text" ? "its text" : fromLabel(condition.from, { labels: memo.ctx.labels, level, ...ownOption(memo.ctx, level, owner, teamRef) }),
+    ...(condition.here ? { requiresHere: true } : {}),
+  }
+}
+
+// A system section's condition (a level's record, else the line in its text)
+// and the tools or skills its own body names that the owner has off with no
+// condition here or above covering them.
 function capabilityBadges(
   memo: Memo,
   level: Level,
   owner: string | null,
   item: Item,
   section: Section,
+  resolved: Resolved,
   teamRef?: RowTeam,
   catalogue?: Catalogue,
-): Pick<TreeNodeBadges, "requires" | "mentions"> {
-  const whole = wholeOf(memo, level, owner, item, catalogue, teamRef).text
-  const gated = gatedSections(whole).find((entry) => entry.start === section.start || entry.name === section.name)
-  const requires =
-    gated === undefined || gated.requires.length === 0
-      ? undefined
-      : gated.requires.map((requirement) => ({
-          ...requirement,
-          met: owner !== null && met(requirement, (id) => ownerHas(memo, level, owner, id, teamRef, catalogue)),
-        }))
-  if (owner === null) return requires === undefined ? {} : { requires }
-  const key = `${level}\u0000${owner}\u0000${JSON.stringify(teamRef ?? null)}\u0000${catalogue ?? ""}\u0000${item.id}`
-  const cache = mentionCache.get(memo) ?? new Map<string, ReturnType<typeof mentionWarnings>>()
-  mentionCache.set(memo, cache)
-  let warnings = cache.get(key)
-  if (warnings === undefined) {
-    const names = new Map<string, string>()
-    for (const candidate of memo.ctx.items) {
-      if (candidate.kind === "tool" && candidate.execute !== true) names.set(candidate.id.slice("tool:".length), candidate.id)
-      if (candidate.kind === "skill") names.set(candidate.id.slice("skill:".length), candidate.id)
-    }
-    warnings = mentionWarnings(whole, names, (id) => ownerHas(memo, level, owner, id, teamRef, catalogue))
-    cache.set(key, warnings)
-  }
-  const mentions = warnings.filter((warning) => warning.section === section.name).map(({ word, id }) => ({ word, id }))
-  return {
-    ...(requires === undefined ? {} : { requires }),
-    ...(mentions.length === 0 ? {} : { mentions }),
-  }
+): Pick<TreeNodeBadges, "requires" | "requiresFrom" | "requiresHere" | "mentions"> {
+  const condition = resolved.requires === undefined ? {} : conditionBadges(memo, level, owner, resolved.requires, teamRef, catalogue)
+  if (owner === null) return condition
+  // The section and its ancestors (ids nest with "/") answer for a mention.
+  const parts = section.id.split("/")
+  const covered = new Set(
+    parts.flatMap((_, index) => sectionResolveOf(memo, level, owner, item, parts.slice(0, index + 1).join("/"), catalogue, teamRef).requires?.ids ?? []),
+  )
+  const covers = (id: string) => covered.has(id) || covered.has(`!${id}`)
+  // Its own body: from its heading to the next heading (a subsection answers for itself).
+  const lines = resolved.text.split("\n")
+  const next = lines.findIndex((line, index) => index > 0 && /^#{1,6}\s/.test(line))
+  const body = (next === -1 ? lines : lines.slice(0, next)).join("\n")
+  const mentioned = [...namesOf(memo)]
+    .filter(([word, id]) => !covers(id) && ownerHas(memo, level, owner, id, teamRef, catalogue) !== true && mentions(body, word))
+    .map(([word, id]) => ({ word, id }))
+  return { ...condition, ...(mentioned.length === 0 ? {} : { mentions: mentioned }) }
 }
 
-// The Tools and rules sections that belong to a row, as this owner reads the
-// row's text (a level may have rewritten or added sections).
+// The Tools and rules sections whose condition names this row, as this owner
+// resolves them (a level may have rewritten, added or re-conditioned sections).
 function guidanceFor(memo: Memo, level: Level, owner: string | null, id: string, teamRef?: RowTeam, catalogue?: Catalogue): readonly string[] {
   const row = memo.ctx.items.find((candidate) => candidate.id === guidanceItemId && (owner === null || applies(candidate, owner)))
   if (row === undefined) return []
-  return gatedSections(wholeOf(memo, level, owner, row, catalogue, teamRef).text)
-    .filter((section) => section.requires.some((requirement) => requirement.id === id))
+  return splitOf(memo, level, owner, row, catalogue, teamRef)
+    .sections.filter((section) =>
+      (sectionResolveOf(memo, level, owner, row, section.id, catalogue, teamRef).requires?.ids ?? []).some((raw) => requirementOf(raw).id === id),
+    )
     .map((section) => section.name)
 }
 

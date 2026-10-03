@@ -127,7 +127,10 @@ test("a modal dialog dims the workspace and closing restores it exactly", async 
 })
 test("help names the model edit on enter and no warming key", () => {
   const entries = HELP.flatMap((group) => group[1])
-  expect(entries.some(([key]) => key === "w")).toBe(false)
+  // `w` is "shown when" now, never the retired warming key.
+  expect(entries.filter(([key]) => key === "w").map(([, label]) => label)).toEqual([
+    "shown when: send a system row or section only while chosen rows are on",
+  ])
   expect(entries.some(([, label]) => label.includes("cache warming"))).toBe(false)
   const enter = entries.find(([key]) => key === "enter")
   expect(enter?.[1]).toContain("edit a model")

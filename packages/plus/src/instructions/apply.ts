@@ -26,7 +26,7 @@ import {
   type PermissionTable,
 } from "./permission-enforce.js"
 import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "./paths.js"
-import { applyRequires } from "./requires.js"
+import { gateOf } from "./requires.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
 
 export interface ApplyAgent {
@@ -317,9 +317,10 @@ interface ChainArgs {
 // the active model (applyModels) resolve through runtimeScope, the chain the
 // tree's Project row shows, so what is displayed is what is enforced: a
 // Defaults entry, a Project or Global row all reach the runtime answer.
-export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs) {
+export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs, gate?: (ids: readonly string[]) => boolean) {
   const runtime = runtimeScope(agent, args.scopes)
   return resolve({
+    ...(gate === undefined ? {} : { gate }),
     upstream: item,
     records: args.records,
     splits: args.splits,
@@ -373,7 +374,7 @@ function parseId(id: string, prefix: string): string {
 // The rows an agent has, resolved for it, as the `requires` markers ask
 // (requires.ts): a section depending on a row the agent has off, or does not
 // have, is left out of what it reads. One answer per row id per agent.
-export function rowGate(input: ApplyInput, agent: ApplyAgent): (text: string) => string {
+export function rowGate(input: ApplyInput, agent: ApplyAgent): (ids: readonly string[]) => boolean {
   const byId = new Map<string, Item[]>()
   for (const item of input.items) byId.set(item.id, [...(byId.get(item.id) ?? []), item])
   const answers = new Map<string, boolean | undefined>()
@@ -384,7 +385,7 @@ export function rowGate(input: ApplyInput, agent: ApplyAgent): (text: string) =>
     answers.set(id, on)
     return on
   }
-  return (text) => applyRequires(text, isOn)
+  return gateOf(isOn)
 }
 
 export function roleUpdates(input: ApplyInput): { agent: string; text: string }[] {
@@ -394,11 +395,13 @@ export function roleUpdates(input: ApplyInput): { agent: string; text: string }[
       if (item.kind !== "system") return []
       if (item.id !== "system:role") return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
-      const text = gate(resolved.assembled)
-      if (isNoop(item, resolved) && text === resolved.assembled) return []
+      // Resolved for this agent with its conditions applied: sections it
+      // does not meet are out and no marker line is left (requires.ts).
+      const resolved = resolvedFor(item, agent, input, gate)
+      const text = resolved.assembled
+      if (isNoop(item, resolved)) return []
       // A disabled role never clears the agent system text.
-      if (!resolved.enabled) return []
+      if (!resolved.enabled || text.trim().length === 0) return []
       return [{ agent: agent.id, text }]
     })
   })
@@ -826,14 +829,14 @@ function instructionPlans(input: ApplyInput): InstructionPlan[] {
       if (item.kind !== "system") return []
       if (item.id === "system:role") return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
-      const text = gate(resolved.assembled)
+      const resolved = resolvedFor(item, agent, input, gate)
+      const text = resolved.assembled
       // The Tools and rules row has no source of its own: it reaches an agent
       // only through this plan, so it is planned exactly when a section of it
       // applies to that agent (and nothing is installed when none does).
       const guidance = item.id === guidanceItemId
       if (guidance && (!resolved.enabled || text.trim().length === 0)) return []
-      if (!guidance && isNoop(item, resolved) && text === resolved.assembled) return []
+      if (!guidance && isNoop(item, resolved)) return []
       return [{ agent: agent.id, path: instructionPlanPath(item.id), text, enabled: resolved.enabled && text.trim().length > 0 }]
     })
   })

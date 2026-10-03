@@ -43,6 +43,8 @@ import {
   saveText,
   setEnabled,
   setPin,
+  setRequires,
+  conditionChoices,
   stateReviewChoice,
   teamPlan,
   toggle,
@@ -98,6 +100,7 @@ export function toRpcRecords(
         ...(record.text === undefined ? {} : { text: record.text }),
         ...(record.state === undefined ? {} : { state: record.state }),
         ...(record.pin === undefined ? {} : { pin: record.pin }),
+        ...(record.requires === undefined ? {} : { requires: [...record.requires] }),
         basedOn: record.basedOn,
         ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
         ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
@@ -555,6 +558,17 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
+  // "Shown when": the rows this system row or section is sent under (null
+  // drops this level's condition; [] sends it always).
+  async function setRequiresRow(node: TreeNode, ids: readonly string[] | null): Promise<boolean> {
+    const result = setRequires(memoInput(), node.id, ids, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
   async function togglePinRow(node: TreeNode): Promise<boolean> {
     return setPinRow(node, node.badges.pinned !== true)
   }
@@ -983,6 +997,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     setEnabled: setEnabledRow,
     setPin: setPinRow,
     togglePin: togglePinRow,
+    setRequires: setRequiresRow,
+    conditionChoices: () => {
+      const memo = treeMemo()
+      return memo === undefined ? [] : conditionChoices(memo)
+    },
     saveText: saveTextRow,
     reset: resetNode,
     saveSplit: saveSplitRow,

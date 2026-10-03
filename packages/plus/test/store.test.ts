@@ -68,6 +68,8 @@ test("save then load round-trips project and global records", async () => {
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
     customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
+    // "Shown when" is stored on its own field and survives the round trip.
+    customization({ agent: "alpha", item: "system:tools-and-rules", section: "tools-and-rules/questions", requires: ["tool:question", "!perm:shell:git-push"] }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1, changed: { project: true, global: true } })

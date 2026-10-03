@@ -497,6 +497,7 @@ function customizationsEqualWithoutUpdated(left: CustomizationRecord, right: Cus
     left.text === right.text &&
     left.state === right.state &&
     left.pin === right.pin &&
+    JSON.stringify(left.requires) === JSON.stringify(right.requires) &&
     left.basedOn === right.basedOn &&
     left.basedOnText === right.basedOnText &&
     left.acknowledged === right.acknowledged &&
@@ -607,6 +608,110 @@ export function setPin(input: MemoInput, rowId: string, value: boolean, sharedMe
     status: value ? `Pinned "${node.label}"` : `Unpinned "${node.label}"`,
     retryHint: `pinned "${node.label}" against a stale revision; retry to apply`,
   }
+}
+
+// ── "shown when": a system row's or section's condition (requires.ts) ─────
+
+const CONDITION_ID = /^!?(tool|skill|mcp|perm):\S+$/
+
+/** One row a condition can name, for a picker: its id, label and kind of row. */
+export interface ConditionChoice {
+  readonly id: string
+  readonly label: string
+  readonly group: "Tools" | "Skills" | "MCP servers" | "Rules"
+  /** Rules: the tool whose permission it is. */
+  readonly tool?: string
+}
+
+/** The rows a condition can name: tools, skills, MCP servers and permission rows, once each. */
+export function conditionChoices(memo: Memo): ConditionChoice[] {
+  const seen = new Set<string>()
+  const out: ConditionChoice[] = []
+  for (const item of memo.ctx.items) {
+    if (seen.has(item.id)) continue
+    const group =
+      item.kind === "tool" && item.execute !== true
+        ? "Tools"
+        : item.kind === "skill"
+          ? "Skills"
+          : item.kind === "mcp"
+            ? "MCP servers"
+            : item.kind === "perm" && item.policy === undefined
+              ? "Rules"
+              : undefined
+    if (group === undefined) continue
+    seen.add(item.id)
+    out.push({ id: item.id, label: item.title, group, ...(item.permTool === undefined ? {} : { tool: item.permTool }) })
+  }
+  return out.toSorted((left, right) => left.group.localeCompare(right.group) || left.id.localeCompare(right.id))
+}
+
+// Up to five row ids a mistyped one probably meant: same kind, and either
+// containing what was typed or within two edits of it.
+function nearIds(wanted: string, known: ReadonlySet<string>): string[] {
+  const kind = wanted.slice(0, wanted.indexOf(":") + 1)
+  const name = wanted.slice(kind.length)
+  return [...known]
+    .filter((candidate) => candidate.startsWith(kind))
+    .map((candidate) => ({ candidate, distance: candidate.includes(name) ? 0 : editDistance(candidate.slice(kind.length), name) }))
+    .filter((entry) => entry.distance <= 2)
+    .toSorted((left, right) => left.distance - right.distance || left.candidate.localeCompare(right.candidate))
+    .slice(0, 5)
+    .map((entry) => entry.candidate)
+}
+
+function editDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= left.length; i++) {
+    const current = [i]
+    for (let j = 1; j <= right.length; j++)
+      current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + (left[i - 1] === right[j - 1] ? 0 : 1))
+    previous = current
+  }
+  return previous[right.length]!
+}
+
+/** A condition in words: `tool:x on and perm:shell:git-push off`. */
+export function describeCondition(ids: readonly string[]): string {
+  if (ids.length === 0) return "always"
+  return ids.map((id) => (id.startsWith("!") ? `${id.slice(1)} off` : `${id} on`)).join(" and ")
+}
+
+/**
+ * Set when a system row or section is sent: `ids` are row ids that must be on
+ * (`!id`: off), an empty list sends it always, null drops this level's
+ * condition so the level above (or the section's own line) decides again.
+ * Every id must name a row that exists, so a typo cannot silently hide text.
+ */
+export function setRequires(input: MemoInput, rowId: string, ids: readonly string[] | null, sharedMemo?: Memo): OpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const memo = found.memo
+  if (node.actions?.requires !== true)
+    return {
+      refusal: `"${node.label}" cannot be sent conditionally: only system rows (instruction files, Tools and rules; not Role/persona as a whole) and the sections of system rows can`,
+    }
+  const chain = chainFor(memo, node)
+  if (!chain) return { refusal: `Item not found for "${node.label}"` }
+  const value = ids === null ? null : [...new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0))]
+  if (value !== null) {
+    const known = new Set(memo.ctx.items.map((item) => item.id))
+    for (const id of value) {
+      if (!CONDITION_ID.test(id))
+        return { refusal: `"${id}" is not a row id: use tool:<id>, skill:<id>, mcp:<server> or perm:<tool>:<rule>, with ! for "must be off"` }
+      const bare = id.replace(/^!/, "")
+      if (!known.has(bare)) {
+        const near = nearIds(bare, known)
+        return { refusal: `no row "${bare}" exists${near.length === 0 ? "" : `; did you mean ${near.join(", ")}?`}` }
+      }
+      if (value.includes(id.startsWith("!") ? bare : `!${bare}`)) return { refusal: `"${bare}" cannot be required both on and off` }
+    }
+  }
+  const next = merge(chain.customizations, chain.address, { requires: value }, chain.upstream, memo.ctx.scopes)
+  const status =
+    value === null ? `"${node.label}" is sent as the level above or its text says` : `"${node.label}" is sent ${value.length === 0 ? "always" : `when ${describeCondition(value)}`}`
+  return { records: next, splits: chain.splits, status, retryHint: `set when "${node.label}" is sent against a stale revision; retry to apply` }
 }
 
 export function saveText(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): OpResult {

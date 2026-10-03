@@ -30,6 +30,7 @@ import {
   setAgentMode,
   setModelWarmingRow,
   setPin,
+  setRequires,
   teamPlan,
   teamRowEntity,
   toggle,
@@ -99,7 +100,7 @@ const ShowDescription =
   "A Defaults › Models row resolves to a summary with each effective keep-alive value and the layer it came from."
 
 const SetDescription =
-  "Save an override, toggle, pin, activate a model, resolve a review row, or relink (TUI Enter/Space/p/k/t/e/l).\n" +
+  "Save an override, toggle, pin, set when shown, activate a model, resolve review or relink (TUI Enter/Space/p/w/k/t/e/l).\n" +
   "Enabling a team is exclusive across loaded project/global/defaults records; disabledTeams reports the other teams disabled by this save.\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
@@ -200,6 +201,12 @@ const SetInput = Schema.Struct({
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
   pin: Schema.optionalKey(Schema.Boolean),
+  requires: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))).annotate({
+    description:
+      "System rows (not Role/persona as a whole) and their sections: send it only while these rows are on for the agent, " +
+      "e.g. [\"tool:question\"]; \"!perm:shell:git-push\" = while that row is off. [] = always; null = drop this level's " +
+      "condition (the level above, or the section's own <!-- requires --> line, decides). Shown as \"shown when\".",
+  }),
   active: Schema.optionalKey(Schema.Boolean),
   resolve: Schema.optionalKey(Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit")])),
   label: Schema.optionalKey(Schema.String),
@@ -548,6 +555,7 @@ function toSnapshotRecords(
         ...(record.text === undefined ? {} : { text: record.text }),
         ...(record.state === undefined ? {} : { state: record.state }),
         ...(record.pin === undefined ? {} : { pin: record.pin }),
+        ...(record.requires === undefined ? {} : { requires: [...record.requires] }),
         basedOn: record.basedOn,
         ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
         ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
@@ -690,14 +698,30 @@ function presetRefOf(snapshot: Plus.Snapshot, input: string | Plus.PresetRef, te
 
 function computeSet(
   memo: MemoInput,
-  input: { id: string; mode?: "primary" | "subagent" | "all"; text?: string; state?: "on" | "off"; pin?: boolean; resolve?: "keep" | "take" | "edit" },
-) {
+  input: {
+    id: string
+    mode?: "primary" | "subagent" | "all"
+    text?: string
+    state?: "on" | "off"
+    pin?: boolean
+    requires?: readonly string[] | null
+    resolve?: "keep" | "take" | "edit"
+  },
+): ReturnType<typeof setRequires> {
   const preserved = modelsOfMemo(memo)
   const preservedRules = rulesOfMemo(memo)
   const withModels = (records: readonly CustomizationRecord[], splits: readonly SplitRecord[]): MemoInput => ({
     ...memo,
     records: [...records, ...splits, ...preserved, ...preservedRules],
   })
+  // The condition is its own field: set it, then whatever else came with it.
+  if (input.requires !== undefined) {
+    const first = setRequires(memo, input.id, input.requires)
+    const rest = { ...input, requires: undefined }
+    const more = rest.mode !== undefined || rest.text !== undefined || rest.state !== undefined || rest.pin !== undefined || rest.resolve !== undefined
+    if ("refusal" in first || !more) return first
+    return computeSet(withModels(first.records, first.splits), rest)
+  }
   if (input.mode !== undefined) {
     const first = setAgentMode(memo, input.id, input.mode)
     if ("refusal" in first || (input.state === undefined && input.text === undefined && input.pin === undefined && input.resolve === undefined)) return first
@@ -1417,6 +1441,8 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           // Instructions that follow capabilities (requires.ts): a section's
           // requires line and uncovered mentions, a row's Tools and rules sections.
           ...(node.badges.requires === undefined ? {} : { requires: node.badges.requires }),
+          ...(node.badges.requiresFrom === undefined ? {} : { requiresFrom: node.badges.requiresFrom }),
+          ...(node.badges.requiresHere === true ? { requiresHere: true } : {}),
           ...(node.badges.mentions === undefined ? {} : { mentions: node.badges.mentions }),
           ...(node.badges.guidance === undefined ? {} : { guidance: node.badges.guidance }),
         },

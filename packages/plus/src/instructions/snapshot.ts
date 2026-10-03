@@ -170,6 +170,7 @@ function customizationOf(record: Plus.SnapshotCustomizationRecord): Customizatio
     ...(record.text === undefined ? {} : { text: record.text }),
     ...(record.state === undefined ? {} : { state: record.state }),
     ...(record.pin === undefined ? {} : { pin: record.pin }),
+    ...(record.requires === undefined ? {} : { requires: [...record.requires] }),
     basedOn: record.basedOn,
     ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
     ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),

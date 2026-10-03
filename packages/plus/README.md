@@ -248,7 +248,14 @@ text can depend on rows, on the first line under its heading:
 ```
 
 Each id is a row's item id (`tool:…`, `skill:…`, `mcp:…`, `perm:<tool>:<rule>`);
-`!id` means the row must be off. Each agent receives the section (and its
+`!id` means the row must be off. That line is the section's default. A level
+can set its own condition without touching the text ("shown when": TUI `w`
+on the row, or `instructions.set({ id, requires: [...] })`; `[]` = always,
+`null` drops it): it is stored as `requires` on the customization record,
+resolves down the chain like on/off (nearest level wins), and works on whole
+system rows too (not Role/persona as a whole). Every id must name an
+existing row; a typo is refused with the nearest ids. The inspector shows
+"shown when … · its text / set here / from <level>". Each agent receives the section (and its
 subsections) only while every named row resolves that way for it, at
 whatever level that was decided; a row the agent does not have meets neither
 form. Marker lines never reach the model (`instructions/requires.ts`, applied
