@@ -244,7 +244,8 @@ interface StatusEntry {
   state: string
   attempt: number
   attemptState: string
-  acked: { attempt: number; at: string } | null
+  /** The open children an idle run with an open attempt is waiting on. */
+  waitingOn: string[]
 }
 
 test("[20b] a team member's ceiling and native denies are instructions rows", async () => {
@@ -417,11 +418,11 @@ test("[20c] a non-member catalog has zero team tools; an implementer-preset memb
   expect(seen.codemode).toEqual(ceiling.filter((name) => codeSet.has(name)).map((name) => `team.${name}`).toSorted())
 }, 60000)
 
-test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification, wait, integrate", async () => {
+test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification, integrate", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
-      banner("20d", "root bootstrap → delegate → get_context → checkpoint → finish → notification → wait → integrate → worktree gone")
+      banner("20d", "root bootstrap → delegate → get_context → checkpoint → finish → notification → integrate → worktree gone")
       const sessions = recordSession()
       const fixture = pluginContext(repo.dir, sessions.domain)
       await enableShippedTeam(await registerAll(fixture.ctx))
@@ -526,24 +527,12 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(inbox[0].text).toContain("attempt 1 succeeded")
       expect(inbox[0].text).toContain("settled: done")
 
-      const waitInput = { runs: [childRun], timeoutMs: 10000 }
-      const waited = await runOk<{ acknowledged: string[]; settled: unknown[] }>(need(fixture.tools, "team_wait"), waitInput, parent)
-      call("team_wait", waitInput, waited)
-      expect(waited.acknowledged).toEqual([childRun])
-
+      // The settlement is the parent's news; team_status reads the same
+      // outcome back, and a settled child is nothing anyone waits on.
       const childStatus = await runOk<StatusEntry[]>(need(fixture.tools, "team_status"), { runs: [childRun] }, parent)
       call("team_status", { runs: [childRun] }, childStatus)
-      expect(childStatus[0].acked?.attempt).toBe(childStatus[0].attempt)
-
-      // A second wait re-reads the same settled attempt: it names the run in
-      // `acknowledged` again and rewrites ack.json, but the acknowledged
-      // attempt does not move, so no new outcome is taken responsibility for.
-      const waitedAgain = await runOk<{ acknowledged: string[] }>(need(fixture.tools, "team_wait"), waitInput, parent)
-      call("team_wait", waitInput, waitedAgain)
-      expect(waitedAgain.acknowledged).toEqual([childRun])
-      const statusAgain = await runOk<StatusEntry[]>(need(fixture.tools, "team_status"), { runs: [childRun] }, parent)
-      call("team_status", { runs: [childRun] }, statusAgain)
-      expect(statusAgain[0].acked?.attempt).toBe(childStatus[0].acked?.attempt)
+      expect(childStatus[0].attemptState).toBe("succeeded")
+      expect(childStatus[0].waitingOn).toEqual([])
 
       const integrateInput = { run: childRun, expectedParentHead: await git(repo.dir, ["rev-parse", "HEAD"]) }
       const integrated = await runOk<{ entry: string; state: string; head: string }>(

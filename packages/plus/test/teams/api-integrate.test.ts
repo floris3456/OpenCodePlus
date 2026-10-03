@@ -508,7 +508,7 @@ test("working child is refused with E_BUSY", async () => {
       await writeReport(root, child.id, 1, "done")
       const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_BUSY")
-      expect(error.message).toBe("Child is working; wait first.")
+      expect(error.message).toBe("Child is working; integrate after its settlement wakes you.")
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

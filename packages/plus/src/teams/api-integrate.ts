@@ -73,7 +73,7 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
     const cleanup = await retryCleanup(ctx, root, parent, child, landed)
     return succeeded({ ...landedValue(landed, [cleanup]), alreadyLanded: true })
   }
-  if (child.state === "working") return fail("E_BUSY", "Child is working; wait first.")
+  if (child.state === "working") return fail("E_BUSY", "Child is working; integrate after its settlement wakes you.")
   // drain also processes older pending/paused entries. Establish actual Session
   // idleness for every child it can land, within one bounded wait budget.
   const queued = entries.filter((item) => item.state === "pending" || item.state === "paused")

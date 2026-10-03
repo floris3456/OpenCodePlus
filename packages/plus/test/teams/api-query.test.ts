@@ -168,7 +168,7 @@ test("an orchestrator sees its own run plus direct children only", async () => {
   })
 })
 
-test("status and wait use Session-cumulative tokens and honestly count attempts", async () => {
+test("status uses Session-cumulative tokens and honestly counts attempts", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -180,7 +180,6 @@ test("status and wait use Session-cumulative tokens and honestly count attempts"
       const api = createTeamApi(ctx, teamState())
       const status = required(await api.status({ runs: [run.id] }, callerFor(family.parent))) as Array<{ budget: Record<string, unknown> }>
       expect(status[0]?.budget).toMatchObject({ attemptsUsed: 1, turnsUsed: 1, tokensUsed: TokenUsage.total(tokens), usageBasis: "Session-cumulative", exhausted: true })
-      expect(required(await api.wait({ runs: [run.id], timeoutMs: 10000, ack: false }, callerFor(family.parent)))).toMatchObject({ overBudget: [run.id] })
       const unavailable = createTeamApi(context(), teamState())
       expect(required(await unavailable.status({ runs: [run.id] }, callerFor(family.parent)))).toMatchObject([{ budget: { tokensUsed: null, exhausted: false } }])
     } finally { await removeRepo(repo.dir) }

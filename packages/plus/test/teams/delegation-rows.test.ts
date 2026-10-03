@@ -89,7 +89,7 @@ test("member presets open Delegate to rows for their teammate roles, and a build
   for (const worker of workers) expect([worker, delegateStates(worker)]).toEqual([worker, expectedDelegates(worker, [])])
 })
 
-test("Runs rows follow the preset: coordinators read status and wait everywhere, planners and build seats also list", () => {
+test("Runs rows follow the preset: coordinators read status everywhere, planners and build seats also list", () => {
   const reach = (member: string): Record<string, string | undefined> =>
     Object.fromEntries(reachTools.flatMap((tool) => ["descendants", "others"].map((relation) => {
       const id = `perm:team_${tool}:runs.${relation}`
@@ -97,9 +97,9 @@ test("Runs rows follow the preset: coordinators read status and wait everywhere,
     })))
   const expected = (open: readonly string[]): Record<string, string | undefined> =>
     Object.fromEntries(reachTools.flatMap((tool) => ["descendants", "others"].map((relation) => [`perm:team_${tool}:runs.${relation}`, open.includes(tool) ? "on" : "off"])))
-  for (const planner of planners) expect([planner, reach(planner)]).toEqual([planner, expected(["status", "wait", "list"])])
-  for (const orchestrator of orchestrators) expect([orchestrator, reach(orchestrator)]).toEqual([orchestrator, expected(["status", "wait"])])
-  expect(reach("ocp-build")).toEqual(expected(["status", "wait", "list"]))
+  for (const planner of planners) expect([planner, reach(planner)]).toEqual([planner, expected(["status", "list"])])
+  for (const orchestrator of orchestrators) expect([orchestrator, reach(orchestrator)]).toEqual([orchestrator, expected(["status"])])
+  expect(reach("ocp-build")).toEqual(expected(["status", "list"]))
   for (const worker of workers) expect([worker, reach(worker)]).toEqual([worker, expected([])])
 })
 

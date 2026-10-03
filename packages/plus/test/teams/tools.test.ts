@@ -39,16 +39,17 @@ const teamNames = [
   "supersede",
   "stop",
   "status",
-  "wait",
   "diff",
   "list",
   "get_context",
   "check",
 ] as const
 
-// Gone from the namespace: search moved to the `search` MCP server, and the
-// rest had no implementation to advertise.
+// Gone from the namespace: search moved to the `search` MCP server, wait is
+// replaced by settlement wake-ups (a delegated run waiting on open children
+// keeps its attempt open), and the rest had no implementation to advertise.
 const removedNames = [
+  "wait",
   "review",
   "shutdown_request",
   "resume",
@@ -244,7 +245,7 @@ async function runMessage(
 test("every team tool registers under namespace team with codemode and permission", async () => {
   const tools = await registeredTools()
   const registered = teamNames.map((name) => need(tools, `team_${name}`))
-  expect(registered).toHaveLength(14)
+  expect(registered).toHaveLength(13)
   for (const [index, tool] of registered.entries()) {
     const name = teamNames[index] as string
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
@@ -501,7 +502,7 @@ test("the instructions namespace still registers alongside team", async () => {
   expect(need(created.tools, "instructions_list").options?.namespace).toBe("instructions")
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
   expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
-  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(14)
+  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(13)
 })
 
 async function auditLines(root: string): Promise<Array<Record<string, unknown>>> {
@@ -655,7 +656,7 @@ test("registered set_checks returns E_CHECKS for an invalid check through the to
   })
 })
 
-test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SUMMARY, E_TIMEOUT_MIN", async () => {
+test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SUMMARY", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-accepted-"))
     try {
@@ -754,18 +755,6 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         `E_SUMMARY: summary is 16 lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤15 lines"`,
       )
 
-      // 5. E_TIMEOUT_MIN: Wait with timeoutMs below 10000ms floor
-      const waitMsg = await runMessage(
-        need(tools, "team_wait"),
-        {
-          runs: ["w-orch000000000001"],
-          timeoutMs: 5000,
-        },
-        orchCtx,
-      )
-      expect(waitMsg).toBe(
-        `E_TIMEOUT_MIN: timeoutMs 5000 is below the 10000ms floor.\naccepted: {"timeoutMs":10000}`,
-      )
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true })
     }
@@ -1615,9 +1604,6 @@ test("C — every field path of every registered team tool treats null as omissi
       run: "w-0123456789abcdef",
     },
     team_status: {},
-    team_wait: {
-      runs: ["w-0123456789abcdef"],
-    },
     team_diff: {
       run: "w-0123456789abcdef",
     },

@@ -1658,14 +1658,15 @@ In a chat, arrow-down to the `Team` composer tab shows runs in the current names
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
 The `team` namespace advertises only tools that work. It holds exactly
-fourteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
+thirteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
 `set_checks`, `supersede` and `stop` (native, `codemode: false`), and
-`status`, `wait`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
+`status`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
-Nine names are **not** in the namespace, not in any team tool row and not named
-by any built-in prompt: `review`, `shutdown_request`, `resume`, `prepare`,
+Ten names are **not** in the namespace, not in any team tool row and not named
+by any built-in prompt: `wait` (a settling child wakes its parent; see
+Waiting on children below), `review`, `shutdown_request`, `resume`, `prepare`,
 `plan_handoff`, `metrics`, `exa_code_search`, `tavily_search` and
 `tavily_extract`. Web and code search are not team tools: they are delivered by
 the `search` MCP server and narrowed per role by a policy row (below).
@@ -1758,24 +1759,24 @@ What the Basic member presets set (every other row is the catalogue's shipped va
 
 - **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
   `team_integrate`, `team_checkpoint`, `team_set_checks`, `team_check` off;
-  Runs on for status, wait, list; Approval on for team_delegate; Access
+  Runs on for status, list; Approval on for team_delegate; Access
   "Delegate from a delegated run" off; Files it may change: every other file
   off, plan files on; Briefs it accepts: Plan files only on; Start a team run
   from a chat on; `tool:question` on.
 - **orchestrator** — secrets off; `tool:question`, `tool:subagent` off;
-  `team_checkpoint` off; the seven shell change rows off; Runs on for status and
-  wait; A reason on; `tool:shell`, Start a team run and Delegate from a
+  `team_checkpoint` off; the seven shell change rows off; Runs on for status; A
+  reason on; `tool:shell`, Start a team run and Delegate from a
   delegated run on.
 - **implementer** — secrets off; outside-checkout rows off (read and edit
   Where, `where.external`, glob/grep roots); `tool:shell`, `tool:question`,
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
   delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
-  `supersede`, `stop`, `wait`, `list` off; Worktree committed before done and
+  `supersede`, `stop`, `list` off; Worktree committed before done and
   Scope paths for a commit on.
 - **reviewer** — as implementer's worker rows, with every team tool but
   `finish`, `status`, `diff`, `get_context` off, and Corrections by followup off.
 - **scout** — as reviewer, taking corrections.
-- **build-seat** — Runs on for status, wait, list; `tool:shell`,
+- **build-seat** — Runs on for status, list; `tool:shell`,
   `tool:question`, `tool:subagent`, Start a team run and Delegate from a
   delegated run on; every "Delegate to" row on, whoever the teammate is (not
   Members of other teams).
@@ -1937,13 +1938,13 @@ Error codes carrying `accepted` today:
 - `E_BASE`: valid base ref (`"ocp-main"`)
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
-- `E_BOUNDS`: `"call wait first"` for both bounds: `In-flight limit <n> reached (<runs>). Wait for a child to settle (tools.team.wait) first.` and `Live team runs limit <n> reached (<runs>). Wait for a run to settle (tools.team.wait) first.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
+- `E_BOUNDS`: `"end your turn and delegate after a child settles"` for both bounds: `In-flight limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` and `Live team runs limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
 - `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
 - `E_ROUNDS`: `"supersede and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
 - `E_NO_COMMIT`: `{"status":"blocked","needs":[{"kind":"info","detail":"why nothing was committed"}]}` for `done` on a commit deliverable with no commit since the base, while its row is on
 - `E_PERMISSION` (from `team_check`): `{"status":"blocked","needs":[{"kind":"check","detail":"<check id>"}]}` when the caller's Checks it may run row for that check's family is off
-- `E_NOT_VISIBLE`: the caller's own run id when `status`, `wait` or `diff` names a run out of its reach; `"a run id from list{}"` when `wait` or `diff` names a run not in the namespace
+- `E_NOT_VISIBLE`: the caller's own run id when `status` or `diff` names a run out of its reach; `"a run id from list{}"` when `diff` names a run not in the namespace
 - `E_REQUEST_ID`: `"requestID \"<requestID>\" was used with different arguments; reuse only to retry the identical call, else pick a new requestID."`; reuse guidance (`"pick a new requestID"`)
 - `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
 - `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
@@ -1961,15 +1962,9 @@ Error codes carrying `accepted` today:
   than failing `E_NO_BRIEF`). The `conventions` field has been removed.
 
 New input and output fields:
-- `wait` input `ack?: boolean` (default `true`). Output gains
-  `acknowledged: RunID[]` — exactly the owned children whose settled attempt
-  this call wrote `runs/<run>/ack.json` for. `ack:false` reads the same
-  outcomes and acknowledges nothing, so `acknowledged` is `[]`.
-- `wait` releases its internal race and pause timers as soon as it returns so
-  a caller process is never held open past its result.
-- `status` entries gain `acked: { attempt, at } | null`, read back from
-  `runs/<run>/ack.json` (`RunAck` in `teams/schema.ts`). `status` itself never
-  acknowledges, so `wait`'s `acknowledged` and `status`'s `acked` always agree.
+- `status` entries carry `waitingOn: RunID[]`: for a run that is idle with
+  its attempt still open, the open children it is waiting on (see Waiting on
+  children); `[]` otherwise.
 - `list` and `status` entries carry `worktree: "present" | "removed" | "dirty"`,
   reporting whether the run's git worktree exists, has been removed (on landing
   via `integrate` or GC reaping), or is stopped with uncommitted/tracked modifications.
@@ -2031,18 +2026,37 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    `interrupted` on `session.execution.interrupted`, otherwise (`session.execution.succeeded`,
    the deprecated `session.idle`) `no_report`
    (walked forward through `finishing` by `run.toFinishing`). An attempt whose
-   `report-<n>.json` already exists belongs to `finish` and is left alone;
+   `report-<n>.json` already exists belongs to `finish` and is left alone. A
+   run that is *waiting on children* also keeps its attempt open (see below);
+   a stop requested while it would wait ends that attempt `interrupted`;
 2. moves the run `working → idle` (`turn_ended`) or `starting → idle`
    (`connected`);
 3. tells the parent once: one `child.settled` inbox item naming the run, the
    attempt, the settled status and the report path, guarded by `notified` on
    the attempt. An idle parent is prompted with it immediately; a working
-   parent receives it through its own idle handoff;
-4. drains the inbox with `inbox.take` into ONE new attempt (trigger
-   `followup`), prompts the run's session with the rendered items and moves it
-   `idle → working`. Items already recorded on an attempt's `inbox` list (a
-   followup that was delivered immediately to an already idle child) are
-   consumed without being prompted again.
+   parent receives it through its own idle handoff. An attempt kept open is
+   not settled, so nothing is told;
+4. drains the inbox with `inbox.take` into ONE prompt and moves the run
+   `idle → working`: a new attempt (trigger `followup`) when the last attempt
+   has ended, the same attempt when it is still open. Items already recorded
+   on an attempt's `inbox` list (a followup that was delivered immediately to
+   an already idle child) are consumed without being prompted again.
+
+**Waiting on children.** There is no `team_wait`: a parent ends its turn and a
+settling child wakes it (step 3 of the child's own pass). A turn that ends
+without a report is not the end of the attempt while the run still has an
+open child — one for which `run.occupiesSlot` holds (`starting`, `working`,
+`blocked_input`, or idle with its own attempt open, i.e. itself waiting) —
+or an undelivered settlement from one in its inbox
+(`lifecycle.waitingOnChildren`). Its attempt stays open and its parent hears
+nothing; `team_status` lists the open children in `waitingOn`; the child's
+settlement is delivered into the same attempt, and a later `team_finish`
+closes it. The attempt ends `no_report` only on a turn that ends with no open
+child and no pending child news. Every child eventually settles (report, no
+report, interrupt, stop, or a gone session through reconcile), so a wait
+always ends in a wake-up. `team_stop` on a waiting run (and `stopRun`) ends the
+open attempt `interrupted` (`lifecycle.stopIdle`) and tells the run's parent
+once, unless that parent is the run that stopped it.
 
 `InboxKind` gains `child.settled`; `partition` and `batchNotify` classify it
 with `notify` and `system`, so a batch of settlements reaches a parent as one
@@ -2586,7 +2600,6 @@ the shipped limits):
 | `team_set_checks` | Check commands (input `checks[].argv`) · Approval |
 | `team_supersede`, `team_stop` | Approval |
 | `team_status` | — |
-| `team_wait` | Wait until (value `until`) · Parameters (`ack: false`) · Limits (Longest wait 600000 ms, clamp) |
 | `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |
 | `team_list` | Parameters (`all`) |
 | `team_get_context` | Contents (team: siblings) |
@@ -2610,7 +2623,7 @@ for a commit, Plan files only, A reason, A check, Corrections by followup) ·
 Brief limits (Paths per brief 5, Checks per brief 1, shipped off);
 `team_delegate` Access (Delegate from a delegated run) before its other
 categories; Runs (Deeper descendants, Any other run, shipped off) on
-`followup`, `stop`, `supersede`, `status`, `wait`, `diff` and `list`;
+`followup`, `stop`, `supersede`, `status`, `diff` and `list`;
 `team_finish` Requirements for done gains Worktree committed before done
 (shipped off). read's Where gains `external` (a rule row on
 `external_directory`), edit gains Files it may change (listed under write and
@@ -2743,8 +2756,8 @@ and let `git push` through while the `git push` row was off.
 - **A limit caps what a call asks for, and what it leaves to the tool.** A
   clamp row lowers a supplied number, and sets an omitted field to the cap
   when the tool's own default is higher (read 2000 lines, glob and grep 100,
-  shell 120000 ms, webfetch 30 s, Tavily 5 and Exa 10 results, wait 60000 ms,
-  diff 200000 bytes).
+  shell 120000 ms, webfetch 30 s, Tavily 5 and Exa 10 results, diff 200000
+  bytes).
 
 ### Log (`log.ts`, `rpc.ts`, `index.ts`)
 

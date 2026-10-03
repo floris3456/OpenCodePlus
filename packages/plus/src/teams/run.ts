@@ -259,6 +259,27 @@ export function occupiesSlot(run: RunRecord): boolean {
   return true
 }
 
+/**
+ * The children of `runID` that can still settle: each is a slot holder
+ * (occupiesSlot), so its own settlement — a report, no report, an interrupt or
+ * a dead session — is still to come and will be announced to `runID`. A run
+ * whose turn ends while this list is non-empty is waiting on them, not done.
+ * Reads the records without the per-run lock: it is called while the caller
+ * holds its own run's lock, and a lock-free read is the order-safe one.
+ */
+export async function openChildren(root: string, runID: string): Promise<string[]> {
+  const dir = path.join(root, "runs")
+  const entries = await readdir(dir).catch(() => [] as string[])
+  const open: string[] = []
+  for (const name of entries) {
+    if (name.startsWith(".")) continue
+    const record = await readJson<RunRecord>(path.join(dir, name, "run.json")).catch(() => undefined)
+    if (record === undefined || record.parent !== runID || record.id === runID) continue
+    if (occupiesSlot(record)) open.push(record.id)
+  }
+  return open.toSorted()
+}
+
 export interface AttemptTransitionRow {
   from: AttemptState
   to: AttemptState

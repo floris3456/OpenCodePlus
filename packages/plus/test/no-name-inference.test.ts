@@ -89,7 +89,6 @@ test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, ro
     "perm:shell:commands.git-changes": "off",
     "perm:shell:commands.file-writes": "off",
     "perm:team_status:runs.others": "on",
-    "perm:team_wait:runs.descendants": "on",
     "perm:team_list:runs.others": "off",
     "perm:team_followup:runs.descendants": "off",
     "perm:team_finish:requirements.clean": "off",

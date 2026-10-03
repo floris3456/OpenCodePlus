@@ -86,7 +86,6 @@ const teamToolIds = [
   "supersede",
   "stop",
   "status",
-  "wait",
   "diff",
   "list",
   "get_context",

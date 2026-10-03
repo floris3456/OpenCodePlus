@@ -195,31 +195,6 @@ test("reconcile with one garbage run directory still processes the healthy ones"
   })
 })
 
-test("team_wait reports a gone session as settled failed with report null", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const parent = parentRun("main-0123456789abcdef", "ses_parent_alive_6")
-    const child = workingChild("w-1111111111111111", parent.id, "ses_gone_006")
-    await saveRun(root, parent)
-    await saveRun(root, child)
-    const api = createTeamApi(
-      context({ session: sessionHarness(new Set(["ses_parent_alive_6"])) }),
-      createState(),
-    )
-    const result = await api.wait({ runs: [child.id], timeoutMs: 10000 }, callerFor(parent))
-    if (!result.ok) throw new Error(`expected ok, got ${JSON.stringify(result.error)}`)
-    const value = result.value as {
-      settled: Array<{ run: string; attemptState: string; report: { status: string; summary: string; path: string } | null }>
-      timedOut: boolean
-      stillOpen: string[]
-    }
-    expect(value.timedOut).toBe(false)
-    expect(value.settled).toHaveLength(1)
-    expect(value.settled[0]?.run).toBe(child.id)
-    expect(value.settled[0]?.attemptState).toBe("failed")
-    expect(value.settled[0]?.report).toBeNull()
-  })
-}, 30000)
-
 test("the parent inbox got exactly one settled failed notify line", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = parentRun("main-0123456789abcdef", "ses_parent_alive_7")

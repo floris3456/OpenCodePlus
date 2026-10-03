@@ -759,5 +759,5 @@ test("rowState, teamLimit and teamAllows read a member's team rows, and a missin
   expect(teamAllows(shipped, agent, "team_delegate", "access.delegated")).toBe(true)
   expect(teamAllows(shipped, agent, "team_delegate", "no.such-row")).toBe(false)
   // A row is found under its own tool only.
-  expect(rowState(shipped, agent, "team_wait", "limits.inflight")).toBeUndefined()
+  expect(rowState(shipped, agent, "team_status", "limits.inflight")).toBeUndefined()
 })

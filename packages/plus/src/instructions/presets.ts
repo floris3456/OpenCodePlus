@@ -234,7 +234,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...unused,
     ...rows(off, ["tool:shell", "tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
     ...teamToolRows(off, ["integrate", "checkpoint", "set_checks", "check"]),
-    ...reach(["status", "wait", "list"]),
+    ...reach(["status", "list"]),
     ...rows(on, [
       "tool:question",
       "perm:edit:allowed.plans",
@@ -252,7 +252,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     // it writes Brief and handoff files, the plan rows.
     ...rows(off, ["tool:question", "tool:subagent", "perm:edit:allowed.*"]),
     ...teamToolRows(off, ["checkpoint"]),
-    ...reach(["status", "wait"]),
+    ...reach(["status"]),
     ...rows(on, [
       "tool:shell",
       "perm:team_get_context:bootstrap.chat",
@@ -262,24 +262,24 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   },
   implementer: {
     ...worker,
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "wait", "list"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "list"]),
     ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths"]),
   },
   reviewer: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "wait", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "list", "check"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
   },
   scout: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "wait", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "list", "check"]),
   },
   "build-seat": {
-    ...reach(["status", "wait", "list"]),
+    ...reach(["status", "list"]),
     ...rows(on, [
       "tool:shell",
       "tool:question",

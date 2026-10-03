@@ -216,7 +216,7 @@ What the Basic member presets set (on = permitted):
 | asks you before each delegation (Approval) | yes | no | no | no | no | no |
 | start a team run from a chat | yes | yes | no | no | no | yes |
 | delegate from a delegated run | no | yes | no | no | no | yes |
-| `status`/`wait` beyond its own run and children | on | on | off | off | off | on |
+| `status` beyond its own run and children | on | on | off | off | off | on |
 | `list` beyond its own run and children | on | off | off | off | off | on |
 | `done` needs a committed worktree | no | no | yes | no | no | no |
 | briefs it accepts | plan files only | need a reason | commits need scope.paths | no corrections by followup | | |
@@ -256,7 +256,7 @@ Status reports `attemptsUsed`, not a count of model calls. `turnsUsed` remains
 a compatibility alias for attempts, and the existing `turns` budget likewise
 counts attempts. `tokensUsed` is the public Session's cumulative total (input,
 output, reasoning and cache), or `null` if unavailable, not per-attempt usage.
-Status and wait use the same totals for advisory budgets; no hard interrupt is
+Status uses these totals for advisory budgets; no hard interrupt is
 implied. Replayed admissions label the original `receipt` and expose a fresh
 `current` observation without submitting the work again.
 
@@ -293,10 +293,11 @@ member of an enabled team gets a `team.*` wildcard deny, so it sees no
 
 ## Team runs
 
-Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds fourteen tools that all work —
+Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds thirteen tools that all work —
 `delegate`, `finish`, `followup`, `integrate`, `checkpoint`, `set_checks`,
-`supersede`, `stop`, `status`, `wait`, `get_context`, `diff`, `list` and
-`check`. Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
+`supersede`, `stop`, `status`, `get_context`, `diff`, `list` and
+`check`. There is no `wait`: a parent ends its turn and each child's
+settlement wakes it (below). Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
 read-only `git diff` of your own run or one of your children (further only
 when your `Runs` rows on `team_diff` allow it), truncated to `maxBytes`
 (default 200000) with `truncated: true`.
@@ -322,15 +323,23 @@ satisfied, so the resumed turn settles `idle` instead of stopping again; a stop 
 has not stopped yet is still honoured at settlement. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
 
 - A child whose model turn ends is `idle` whether or not it called
-  `team_finish`; its attempt is `no_report` when it did not.
+  `team_finish`. Without a report, its attempt is `no_report` — unless the run
+  still has an open child (one that holds a slot: `starting`, `working`,
+  `blocked_input`, or itself idle and waiting) or an undelivered settlement
+  from one. Then the run is *waiting*: the attempt stays open, nothing is
+  announced to its parent, `team_status` lists the open children in
+  `waitingOn`, and the next child settlement is delivered into the same
+  attempt. A run therefore ends an attempt without a report only when it has
+  no children left to hear from.
 - `stop` and `supersede` are the only ways to halt a child. `team_stop` on a
   working child asks it to stop after its turn (setting `stopRequested` and
   returning `state: "stopping"`), completed by `onSessionIdle`; `team_stop` on
-  an idle child stops it now; both are idempotent. Resuming a stopped or dead
+  an idle child stops it now; both are idempotent. Stopping a waiting run ends
+  its open attempt `interrupted`; its parent is told once, unless the parent is
+  the run that stopped it. Resuming a stopped or dead
   run through its session consumes the retained `stopRequested`, so the first
   successful turn after the resume stays `idle` instead of stopping again.
-- `team_wait until:"idle"` and `team_followup delivery:"now"` work
-  with no tool call from the child.
+- `team_followup delivery:"now"` works with no tool call from the child.
 - `team_get_context` on a root run returns `brief: null` rather than failing
   `E_NO_BRIEF`. The `conventions` field has been removed.
 - `team_followup` with the default `delivery:"queue"` against a working child
@@ -341,18 +350,13 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   the run, the attempt, the report status and the report path. It is sent once
   (`notified` on the attempt). An idle parent is prompted with it now; a
   working parent gets it through its own idle handoff.
-- `team_wait` acknowledges the outcomes of owned children unless `ack:false`,
-  and names them in `acknowledged`. `team_status` reports the same receipt as
-  `acked: { attempt, at }` and never acknowledges anything itself. `team_wait`
-  releases its internal race timers as soon as it returns so a caller process is
-  never held open past its result.
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
   2000 ms) carries dead-run reconciliation and worktree garbage collection (`gc`),
   forked on the plugin scope so it stops with the plugin.
 - Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
   run record, reports and receipts intact while marking `worktree: "removed"`.
 - Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission at every depth: array elements (`checks: [{ id, argv, cwd: null }]`) and fields behind optional/default wrappers (`context: { interfaces: null }`, `followup({ budget: { turns: null } })`) included; `null` on required fields strictly produces a schema validation error.
-- In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds. The bounds themselves are the member's `team_delegate` → `Limits` rows, and the refusal says to wait for a child (or run) to settle with `tools.team.wait`.
+- In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds. The bounds themselves are the member's `team_delegate` → `Limits` rows, and the refusal says to end the turn and delegate after a settling child wakes the caller.
 - Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
   Superseded worktrees are removed with `--force`; dirty stopped worktrees are skipped and

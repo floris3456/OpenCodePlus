@@ -126,8 +126,8 @@ test("the shell tool is on only for shell-capable members", () => {
 
 test("final ceilings are the team tool rows, exactly the old ceiling of every role", () => {
   const ceilings: Record<string, string[]> = {
-    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
+    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "get_context", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
     reviewer: ["finish", "status", "get_context", "diff"],
     scout: ["finish", "status", "get_context", "diff"],

@@ -28,7 +28,6 @@ import {
   StatusInput,
   StopInput,
   SupersedeInput,
-  WaitInput,
   nullTolerant,
 } from "./schema.js"
 
@@ -48,9 +47,7 @@ const SetChecksDescription = "Record the integration checks for the current task
 const SupersedeDescription = "Abandon an owned child and cancel its task.\nWorking children get a shutdown request first, then an interrupt."
 const StopDescription = "Stop an owned child.\nWorking children stop after their turn; idle children stop now."
 const StatusDescription =
-  "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; never acknowledges, but shows what wait acknowledged as acked."
-const WaitDescription =
-  "Wait for child runs to settle or go idle.\nReturns settled, acknowledged, timedOut, stillOpen and overBudget lists; acknowledges owned outcomes unless ack:false."
+  "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; waitingOn lists the open children an idle run is waiting on."
 const DiffDescription = "Show a run's worktree diff against a ref or base.\nLarge patches truncate to maxBytes with truncated:true."
 const ListDescription = "List runs in this namespace, optionally filtered.\nHidden states (superseded, reaped) need all:true. Read-only."
 const GetContextDescription = "Load your brief, checks, siblings, inbox, budget, tool surfaces and permitted delegation targets.\n" + toolGuidance
@@ -439,15 +436,6 @@ export async function registerTeamTools(
       options: teamOptions("status", true),
       origin,
       execute: (input, context) => runGated("status", input, context, ctx, state, (args, caller) => api.status(args, caller)),
-    })
-    add({
-      name: "wait",
-      description: WaitDescription,
-      input: WaitInput,
-      output: Schema.Unknown,
-      options: teamOptions("wait", true),
-      origin,
-      execute: (input, context) => runGated("wait", input, context, ctx, state, (args, caller) => api.wait(args, caller)),
     })
     add({
       name: "diff",

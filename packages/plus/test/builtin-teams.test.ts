@@ -93,8 +93,8 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     members: presets.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
   })
   const ceilings: Record<string, readonly string[]> = {
-    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
+    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "get_context", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
     reviewer: ["finish", "status", "get_context", "diff"],
     scout: ["finish", "status", "get_context", "diff"],
