@@ -17,6 +17,7 @@ import { expandedTree } from "../src/instructions/tree.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
 import { Plus } from "../src/rpc.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
+import { applyRequires } from "../src/instructions/requires.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -600,7 +601,9 @@ test("team.addAgent on a project team writes the member file and the next snapsh
   })
   const listed = await Effect.runPromise(ctx.agent.list())
   const implementer = plusTeamPresets.find((team) => team.id === "basic")?.members.find((member) => member.id === "implementer")
-  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe(implementer?.role)
+  // The member reads its role with each section that depends on a tool it
+  // lacks left out (this harness registers no team tools) and no marker lines.
+  expect(listed.data.find((entry) => String(entry.id) === "newbie")?.system).toBe(applyRequires(implementer?.role ?? "", () => undefined))
 })
 
 // DESIGN §2/§4: the Defaults teams overlay directory is no longer read, so a

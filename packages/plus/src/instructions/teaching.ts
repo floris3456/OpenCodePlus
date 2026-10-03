@@ -84,6 +84,10 @@ Permission rules are live: turning a rule \`off\` installs core deny rules \`{ a
 
 Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` spans any run (including empty and spaces), \`?\` matches exactly one character. For shell the resource is the parsed command text, so \`git *\` also matches a bare \`git\` (core rewrites a trailing " *" into an optional group). For file tools the resource is the file path (\`*.env*\`, \`**/.git/**\`); for webfetch the URL (\`*github.com*\`); for subagent/skill the exact agent/skill id. Keywords derive from the pattern (head plus subcommands, stopping at wildcards/flags: \`"git push *"\` scrubs lines mentioning "git push", not every "git" line).
 
+## Instructions that follow capabilities
+
+A section of a role or instruction text can depend on rows: put \`<!-- requires: tool:<id>, skill:<id>, !perm:<tool>:<rule> -->\` on the first line under its heading. Each agent then receives the section (and its subsections) only while every named row is on for it (\`!\`: off); a row it does not have counts as neither, and the marker line never reaches the model. Instructions that belong to a tool, skill or rule rather than a role go in the System row \`system:tools-and-rules\` ("Tools and rules"), one section per row, so turning the row on or off for an agent adds or removes its instructions. A tool or skill row's \`show\` lists its Tools and rules sections (\`guidance\`), a section's lists its \`requires\`; a section that names a tool or skill the agent has off without such a line is flagged ("mentions" in the inspector). Skills have one switch per agent: the skill row itself, listed under Tools › skill › Permissions › Skills.
+
 ## split
 
 \`split({ id, boundaries?, add? })\` — \`boundaries\` is \`[{ id, name, start }]\` with character offsets into the row text; \`add: { name, text }\` appends a new trailing section. Perm rows cannot be split.

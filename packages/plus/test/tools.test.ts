@@ -3097,3 +3097,26 @@ test("delete hides an inherited model row at this level, re-adding clears it, an
   expect(await rowOf("item:project:build:model:acme/base")).toBeUndefined()
   expect(await rowOf("item:global:build:model:acme/base")).toBeDefined()
 })
+
+// Instructions that follow capabilities reach an agent through show too: a
+// Tools and rules section says which row it depends on, and a tool row names
+// the Tools and rules sections that come with it.
+test("show reports a section's requires line and a tool's Tools and rules sections", async () => {
+  const { api, tools } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const section = nodes.find(
+    (node) => node.kind === "section" && node.address?.item === "system:tools-and-rules" && node.address.agent === "alpha" && node.label === "Questions",
+  )
+  const tool = nodes.find((node) => node.kind === "item" && node.address?.item === "tool:question" && node.address.agent === "alpha")
+  if (section === undefined || tool === undefined) throw new Error("missing rows")
+  const shownSection = (await runOk(need(tools, "instructions_show"), { id: section.id })) as { requires?: unknown }
+  // met follows alpha's own state of the question tool.
+  expect(shownSection.requires).toEqual([{ id: "tool:question", on: true, met: tool.badges.state === "on" }])
+  const shownTool = (await runOk(need(tools, "instructions_show"), { id: tool.id })) as { guidance?: unknown }
+  expect(shownTool.guidance).toEqual(["Questions"])
+})

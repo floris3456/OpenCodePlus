@@ -5,6 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../src/index.js"
 import { basicBody, builtinTeams } from "../src/instructions/builtin-teams.js"
+import { applyRequires } from "../src/instructions/requires.js"
 import { agentBody } from "../src/instructions/discover.js"
 import {
   fingerprint,
@@ -354,8 +355,13 @@ test("a project team created from the Basic preset installs each member with its
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext()))
   const listed = await Effect.runPromise(ctx.agent.list())
   const reviewer = listed.data.find((entry) => String(entry.id) === "reviewer")
-  const body = builtinTeams.find((team) => team.name === "basic")?.members.find((member) => member.id === "reviewer")?.body
-  expect(reviewer?.system).toBe(body)
+  const body = builtinTeams.find((team) => team.name === "basic")?.members.find((member) => member.id === "reviewer")?.body ?? ""
+  // What the member reads is its body with each section that depends on a
+  // tool it lacks left out: this harness registers no team tools, so the
+  // reviewer gets no Reporting section, and no marker reaches it.
+  expect(reviewer?.system).toBe(applyRequires(body, () => undefined))
+  expect(reviewer?.system).not.toContain("<!-- requires")
+  expect(reviewer?.system).not.toContain("## Reporting")
 })
 
 test("the snapshot round-trips link, entry and preset records and the basedOn fields, and a TUI save keeps them", async () => {

@@ -8,6 +8,8 @@ import { createHandlers, createState } from "../src/index.js"
 import { Schema } from "effect"
 import { basicBody, builtinTeams } from "../src/instructions/builtin-teams.js"
 import { derive } from "../src/instructions/sections.js"
+import { applyRequires, gatedSections, mentionWarnings } from "../src/instructions/requires.js"
+import { guidanceContent } from "../src/instructions/guidance.js"
 import * as TeamSchema from "../src/teams/schema.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { validateTeamName } from "../src/instructions/teams.js"
@@ -167,16 +169,20 @@ test("no built-in prompt names a tool that left the namespace", () => {
   }
 })
 
-test("built-in prompts name search tools by their MCP-served ids", () => {
+// Search tools are named in the Tools and rules row by their MCP-served ids,
+// each in a section that depends on that tool, so a member reads the line
+// exactly while it has the tool; no role text names them.
+test("search tools are named in Tools and rules, each in a section that depends on it", () => {
   const team = builtinTeams.find((entry) => entry.name === "basic")
   if (team === undefined) throw new Error("missing basic")
-  const planner = team.members.find((member) => member.id === "planner")
-  expect(planner?.body).toContain("search_tavily_search")
-  expect(planner?.body).toContain("search_tavily_extract")
-
-  for (const member of team.members) {
-    expect(member.body).toContain("search_exa_code_search")
+  for (const tool of ["search_exa_code_search", "search_tavily_search", "search_tavily_extract"]) {
+    // The innermost section that names it (the whole-row heading names every one).
+    const section = gatedSections(guidanceContent)
+      .filter((entry) => guidanceContent.slice(entry.start, entry.end).includes(tool))
+      .toSorted((left, right) => right.depth - left.depth)[0]
+    expect([tool, section?.requires]).toEqual([tool, [{ id: `tool:${tool}`, on: true }]])
   }
+  for (const member of team.members) expect([member.id, member.body.match(/search_[a-z_]+/g)]).toEqual([member.id, null])
 })
 
 // A role line that names a tool the member lacks, or a member that has a tool
@@ -190,10 +196,15 @@ test("every Basic role names only tools its member preset ships on, and forbids 
   })
   for (const member of team.members) {
     const states = resolvedStates(input, member.id)
+    // What the member reads: sections that depend on a row it lacks are out.
+    const read = applyRequires(member.body, (id) => (states[id] === undefined ? undefined : states[id] === "on"))
     // No persona names: members are addressed by role, from delegationTargets.
     expect([member.id, member.body.match(/\b(gemini|opus|muse|spark|astra|sol|fable)-[a-z]+/g)]).toEqual([member.id, null])
-    // Every team and search tool the text names is on for the member.
-    const named = [...new Set(member.body.match(/\b(team_[a-z_]+|search_[a-z_]+)\b/g) ?? [])]
+    // No section names a tool or skill the member has off without depending on it.
+    const names = new Map(Object.keys(states).filter((id) => id.startsWith("tool:") || id.startsWith("skill:")).map((id) => [id.slice(id.indexOf(":") + 1), id]))
+    expect([member.id, mentionWarnings(member.body, names, (id) => (states[id] === undefined ? undefined : states[id] === "on"))]).toEqual([member.id, []])
+    // Every team and search tool the text it reads names is on for the member.
+    const named = [...new Set(read.match(/\b(team_[a-z_]+|search_[a-z_]+)\b/g) ?? [])]
     expect([member.id, named.filter((tool) => states[`tool:${tool}`] !== "on")]).toEqual([member.id, []])
     // A member told it cannot edit has no file tool; one told it writes only
     // plan files edits nothing else.
@@ -218,8 +229,8 @@ test("every Basic role names only tools its member preset ships on, and forbids 
 // Briefs, and the role itself.
 test("every Basic body splits into Team member, Delegating and role sections", () => {
   const ids = (member: Parameters<typeof basicBody>[0]) => derive(basicBody(member), "Role/persona").sections.map((section) => section.id)
-  const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety", "team-member/sources"]
-  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks-and-commits", "implementer/outside-your-scope"])
+  const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety"]
+  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks", "implementer/commits", "implementer/outside-your-scope"])
   expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/findings"])
   expect(ids("scout")).toEqual([...shared, "scout", "scout/task", "scout/answer"])
   expect(ids("planner")).toEqual([...shared, "delegating", "delegating/briefs", "planner", "planner/the-plan", "planner/questions", "planner/limits", "planner/hand-off"])
@@ -241,6 +252,7 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "delegating/briefs",
     "build-seat",
     "build-seat/role",
+    "build-seat/subagents",
     "build-seat/choosing-a-member",
     "build-seat/following-runs",
   ])

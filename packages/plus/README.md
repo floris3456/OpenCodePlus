@@ -239,6 +239,38 @@ only their own run, which `get_context` describes. `followup`, `stop`,
 `supersede` and `diff` never reach past a member's own run and direct children
 until you turn its `Runs` rows on.
 
+**Instructions that follow capabilities.** A section of a role or instruction
+text can depend on rows, on the first line under its heading:
+
+```markdown
+## Integration checks
+<!-- requires: tool:team_set_checks -->
+```
+
+Each id is a row's item id (`tool:…`, `skill:…`, `mcp:…`, `perm:<tool>:<rule>`);
+`!id` means the row must be off. Each agent receives the section (and its
+subsections) only while every named row resolves that way for it, at
+whatever level that was decided; a row the agent does not have meets neither
+form. Marker lines never reach the model (`instructions/requires.ts`, applied
+in `apply.ts` to role text and instruction files, and in the `assembled`
+readback). Dependencies are explicit, never inferred from a mention: the
+tree flags a section that names a tool or skill the owner has off without
+such a line (`⚠`, inspector "mentions"), and its inspector says when a gated
+section is shown.
+
+Instructions that belong to a tool, skill or rule rather than a role live in
+the System row **Tools and rules** (`system:tools-and-rules`,
+`instructions/guidance.ts`), one section per row: code search, documentation
+search, pilotty, questions, subagents, and two restrictions (no shell
+commits, no push). Turning such a row on for an agent adds its section;
+off removes it; the row is planned for an agent only when a section applies.
+A tool or skill row's inspector (and `show`) lists its sections. The Basic
+role texts carry markers on sections that depend on one tool (Delegating on
+`team_delegate`, Reporting on `team_finish`, the orchestrator's Integration
+checks, the implementer's Checks and Commits, the planner's Questions, the
+build seat's Subagents), and a test keeps every Basic role free of uncovered
+mentions under its preset.
+
 **Project checks.** Checks run unattended and without approval, so what runs
 must be a command a person put in the repository. A project names its checks
 in `.opencodeplus/checks.json` in the **main checkout** (read through git's
@@ -651,4 +683,4 @@ Plus ships a built-in local MCP server providing code and web search tools (`src
 - **Keys & authentication**: Keys are read at call time from key files under the Plus data directory (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, file mode `0600` strictly enforced, value trimmed), falling back to `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment. No key is ever written to a config file, a row, a log, a report, or a commit. If a key file has insecure permissions (mode not `0600`), the tool call returns an error. A missing key returns a tool error result `{ error: "<KEY> is not set in the host environment" }` with `isError: true`.
   For `bin/opencodeplus`, place the key files in `<XDG_DATA_HOME>/opencode/opencodeplus/search/` (e.g. `$HOME/.local/share/opencode/opencodeplus/search/exa.key` and `tavily.key`, or `run/plus/data/opencode/opencodeplus/search/{exa,tavily}.key` if `XDG_DATA_HOME` is set to `run/plus/data`) and ensure permissions are restricted (`chmod 600 <file>`).
 - **Query & filtering**: `instructions.list where:"server:<name>"` (and TUI filter `server:<name>`) matches both the `mcp:<name>` server configuration row and all tool rows exposed by that server (for example, `instructions.list where:"server:search"` returns the `mcp:search` server row alongside its tool rows).
-- **Team prompts & policy**: Built-in prompts name `search_exa_code_search` in the shared team body and `search_tavily_search` / `search_tavily_extract` in the planner body. The `perm:search:team-tavily` policy row disables Tavily search for implementer, reviewer, and scout roles while keeping code search enabled; it lists under `search_tavily_search` → Permissions → `Access`, beside the search tools' own rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
+- **Team prompts & policy**: The Tools and rules row names `search_exa_code_search`, `search_tavily_search` and `search_tavily_extract`, each in a section that depends on that tool, so an agent reads the line exactly while it has the tool. The `perm:search:team-tavily` policy row disables Tavily search for implementer, reviewer, and scout roles while keeping code search enabled; it lists under `search_tavily_search` → Permissions → `Access`, beside the search tools' own rows (queries that carry keys or local paths, depths, topics, result limits, Approval).

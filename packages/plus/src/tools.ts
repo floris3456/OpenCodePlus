@@ -1414,6 +1414,11 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           textFrom: resolved.textFrom,
           ...(node.badges.fromLabel === undefined ? {} : { from: node.badges.fromLabel }),
           ...(node.badges.reviewOf === undefined ? {} : { reviewOf: node.badges.reviewOf }),
+          // Instructions that follow capabilities (requires.ts): a section's
+          // requires line and uncovered mentions, a row's Tools and rules sections.
+          ...(node.badges.requires === undefined ? {} : { requires: node.badges.requires }),
+          ...(node.badges.mentions === undefined ? {} : { mentions: node.badges.mentions }),
+          ...(node.badges.guidance === undefined ? {} : { guidance: node.badges.guidance }),
         },
       }
     }

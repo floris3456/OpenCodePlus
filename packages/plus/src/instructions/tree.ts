@@ -1,5 +1,7 @@
 import { builtinBaseIds } from "../agents/base.js"
 import { booleanControl, controlIds, controlItemFor, controlItems, isControl } from "./agent-controls.js"
+import { gatedSections, mentionWarnings, met } from "./requires.js"
+import { guidanceItemId } from "./paths.js"
 import {
   applies,
   canReset,
@@ -153,6 +155,12 @@ export interface RowOwner {
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
+  /** Section rows: the rows its `requires` line names (requires.ts) and whether this owner has each as required. */
+  readonly requires?: readonly { readonly id: string; readonly on: boolean; readonly met: boolean }[]
+  /** Section rows: tools or skills its text names that this owner has off, with no `requires` line covering them. */
+  readonly mentions?: readonly { readonly word: string; readonly id: string }[]
+  /** Tool, skill and rule rows: the Tools and rules sections that belong to this row. */
+  readonly guidance?: readonly string[]
   /** Resolved control value, shown beside its label without changing the row id. */
   readonly value?: string
   /** Hidden affects picker visibility; it is independent of enabled/off. */
@@ -2528,7 +2536,9 @@ function permBadges(
   catalogue?: Catalogue,
 ): TreeNodeBadges {
   const resolved = wholeOf(memo, level, owner, item, catalogue, teamRef)
+  const guidance = guidanceFor(memo, level, owner, item.id, teamRef, catalogue)
   return {
+    ...(guidance.length === 0 ? {} : { guidance }),
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     source: resolved.source,
@@ -2595,7 +2605,9 @@ function itemBadges(
   // shadows reaching here predate that refusal and stay deletable cleanup.
   const shadowedBuiltin = item.kind === "base" && item.userBase === true && builtinBaseIds().has(baseIdOf(item.id))
   const codemodeTool = item.kind === "tool" && item.codemode === true
+  const guidance = item.kind === "tool" || item.kind === "skill" || item.kind === "mcp" ? guidanceFor(memo, level, owner, item.id, teamRef, catalogue) : []
   return {
+    ...(guidance.length === 0 ? {} : { guidance }),
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     source: resolved.source,
@@ -2710,13 +2722,76 @@ function sectionBadges(
   catalogue?: Catalogue,
 ): TreeNodeBadges {
   const resolved = sectionResolveOf(memo, level, owner, item, section.id, catalogue, teamRef)
+  const capability = item.kind === "system" ? capabilityBadges(memo, level, owner, item, section, teamRef, catalogue) : {}
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     review: resolved.review,
     source: resolved.source,
     ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
+    ...capability,
   }
+}
+
+// Whether the owner has a row on, as apply decides it for that agent;
+// undefined for a row it does not have. Shared rows (no owner) cannot answer.
+function ownerHas(memo: Memo, level: Level, owner: string, id: string, teamRef?: RowTeam, catalogue?: Catalogue): boolean | undefined {
+  const item = memo.ctx.items.find((candidate) => candidate.id === id && applies(candidate, owner))
+  return item === undefined ? undefined : wholeOf(memo, level, owner, item, catalogue, teamRef).enabled
+}
+
+const mentionCache = new WeakMap<Memo, Map<string, ReturnType<typeof mentionWarnings>>>()
+
+// A system section's `requires` line and its uncovered mentions, for this
+// owner. Mentions are worked out once per owner and item over the whole text,
+// so a section under a gated parent counts its parent's line.
+function capabilityBadges(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  section: Section,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): Pick<TreeNodeBadges, "requires" | "mentions"> {
+  const whole = wholeOf(memo, level, owner, item, catalogue, teamRef).text
+  const gated = gatedSections(whole).find((entry) => entry.start === section.start || entry.name === section.name)
+  const requires =
+    gated === undefined || gated.requires.length === 0
+      ? undefined
+      : gated.requires.map((requirement) => ({
+          ...requirement,
+          met: owner !== null && met(requirement, (id) => ownerHas(memo, level, owner, id, teamRef, catalogue)),
+        }))
+  if (owner === null) return requires === undefined ? {} : { requires }
+  const key = `${level}\u0000${owner}\u0000${JSON.stringify(teamRef ?? null)}\u0000${catalogue ?? ""}\u0000${item.id}`
+  const cache = mentionCache.get(memo) ?? new Map<string, ReturnType<typeof mentionWarnings>>()
+  mentionCache.set(memo, cache)
+  let warnings = cache.get(key)
+  if (warnings === undefined) {
+    const names = new Map<string, string>()
+    for (const candidate of memo.ctx.items) {
+      if (candidate.kind === "tool" && candidate.execute !== true) names.set(candidate.id.slice("tool:".length), candidate.id)
+      if (candidate.kind === "skill") names.set(candidate.id.slice("skill:".length), candidate.id)
+    }
+    warnings = mentionWarnings(whole, names, (id) => ownerHas(memo, level, owner, id, teamRef, catalogue))
+    cache.set(key, warnings)
+  }
+  const mentions = warnings.filter((warning) => warning.section === section.name).map(({ word, id }) => ({ word, id }))
+  return {
+    ...(requires === undefined ? {} : { requires }),
+    ...(mentions.length === 0 ? {} : { mentions }),
+  }
+}
+
+// The Tools and rules sections that belong to a row, as this owner reads the
+// row's text (a level may have rewritten or added sections).
+function guidanceFor(memo: Memo, level: Level, owner: string | null, id: string, teamRef?: RowTeam, catalogue?: Catalogue): readonly string[] {
+  const row = memo.ctx.items.find((candidate) => candidate.id === guidanceItemId && (owner === null || applies(candidate, owner)))
+  if (row === undefined) return []
+  return gatedSections(wholeOf(memo, level, owner, row, catalogue, teamRef).text)
+    .filter((section) => section.requires.some((requirement) => requirement.id === id))
+    .map((section) => section.name)
 }
 
 // User-owned rows can be deleted outright: shared MCP servers, project-group

@@ -30,7 +30,8 @@ import {
 import { catalogItems, categoryOfRow } from "./permission-catalog.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
-import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
+import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
+import { guidanceContent, guidanceTitle } from "./guidance.js"
 import { pendingMcpTools, type KnownMcpTools } from "./mcp-tools.js"
 import { decodeHostWarming, type HostModel } from "./model-settings.js"
 
@@ -173,6 +174,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   }).assembled
   const fileRows = instructionFileItems(directory, instructions)
   const teachingRows = teachingItems(teaching, instructions.length)
+  const guidanceRows = guidanceItems(instructions.length + teachingRows.length)
   const modelRows = modelItems(modelRecords, upstream)
   const permRows = permItems({
     tools,
@@ -193,6 +195,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...roleRows,
     ...fileRows,
     ...teachingRows,
+    ...guidanceRows,
     ...mcp.items,
     ...modelRows,
     ...permRows,
@@ -966,6 +969,24 @@ function teachingItems(teaching: { path: string; text: string } | undefined, ord
       text: teaching.text,
       enabled: upstreamEnabled(),
       fingerprint: fingerprint(teaching.text),
+      order,
+    },
+  ]
+}
+
+// The Tools and rules row (guidance.ts): shipped with Plus, so every host has
+// it. Its sections depend on rows (requires.ts); it is not mined for rule
+// rows, since it only names tools it already depends on.
+function guidanceItems(order: number): Item[] {
+  return [
+    {
+      id: guidanceItemId,
+      kind: "system",
+      group: "plus",
+      title: guidanceTitle,
+      text: guidanceContent,
+      enabled: upstreamEnabled(),
+      fingerprint: fingerprint(guidanceContent),
       order,
     },
   ]

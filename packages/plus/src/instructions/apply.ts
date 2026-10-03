@@ -25,7 +25,8 @@ import {
   type EnforcementState,
   type PermissionTable,
 } from "./permission-enforce.js"
-import { teachingFilePath, teachingItemId } from "./paths.js"
+import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "./paths.js"
+import { applyRequires } from "./requires.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
 
 export interface ApplyAgent {
@@ -369,19 +370,38 @@ function parseId(id: string, prefix: string): string {
   return id
 }
 
+// The rows an agent has, resolved for it, as the `requires` markers ask
+// (requires.ts): a section depending on a row the agent has off, or does not
+// have, is left out of what it reads. One answer per row id per agent.
+export function rowGate(input: ApplyInput, agent: ApplyAgent): (text: string) => string {
+  const byId = new Map<string, Item[]>()
+  for (const item of input.items) byId.set(item.id, [...(byId.get(item.id) ?? []), item])
+  const answers = new Map<string, boolean | undefined>()
+  const isOn = (id: string): boolean | undefined => {
+    if (answers.has(id)) return answers.get(id)
+    const item = (byId.get(id) ?? []).find((candidate) => applies(candidate, agent.id))
+    const on = item === undefined ? undefined : resolvedFor(item, agent, input).enabled
+    answers.set(id, on)
+    return on
+  }
+  return (text) => applyRequires(text, isOn)
+}
+
 export function roleUpdates(input: ApplyInput): { agent: string; text: string }[] {
-  return input.agents.flatMap((agent) =>
-    input.items.flatMap((item) => {
+  return input.agents.flatMap((agent) => {
+    const gate = rowGate(input, agent)
+    return input.items.flatMap((item) => {
       if (item.kind !== "system") return []
       if (item.id !== "system:role") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (isNoop(item, resolved)) return []
+      const text = gate(resolved.assembled)
+      if (isNoop(item, resolved) && text === resolved.assembled) return []
       // A disabled role never clears the agent system text.
       if (!resolved.enabled) return []
-      return [{ agent: agent.id, text: resolved.assembled }]
-    }),
-  )
+      return [{ agent: agent.id, text }]
+    })
+  })
 }
 
 async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
@@ -800,16 +820,23 @@ function toolCandidates(input: ApplyInput): ToolCandidate[] {
 }
 
 function instructionPlans(input: ApplyInput): InstructionPlan[] {
-  return input.agents.flatMap((agent) =>
-    input.items.flatMap((item) => {
+  return input.agents.flatMap((agent) => {
+    const gate = rowGate(input, agent)
+    return input.items.flatMap((item) => {
       if (item.kind !== "system") return []
       if (item.id === "system:role") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
-      if (isNoop(item, resolved)) return []
-      return [{ agent: agent.id, path: instructionPlanPath(item.id), text: resolved.assembled, enabled: resolved.enabled }]
-    }),
-  )
+      const text = gate(resolved.assembled)
+      // The Tools and rules row has no source of its own: it reaches an agent
+      // only through this plan, so it is planned exactly when a section of it
+      // applies to that agent (and nothing is installed when none does).
+      const guidance = item.id === guidanceItemId
+      if (guidance && (!resolved.enabled || text.trim().length === 0)) return []
+      if (!guidance && isNoop(item, resolved) && text === resolved.assembled) return []
+      return [{ agent: agent.id, path: instructionPlanPath(item.id), text, enabled: resolved.enabled && text.trim().length > 0 }]
+    })
+  })
 }
 
 // The teaching row carries a stable id instead of a location-relative path,
@@ -818,6 +845,7 @@ function instructionPlans(input: ApplyInput): InstructionPlan[] {
 // absolutely; resolveInstructionId leaves the seeded path untouched.
 function instructionPlanPath(id: string): string {
   if (id === teachingItemId) return teachingFilePath()
+  if (id === guidanceItemId) return guidancePath()
   return parseId(id, "system:")
 }
 
@@ -1168,7 +1196,7 @@ function applyInstructionPlans(ctx: Context, event: SessionContext, plans: reado
 }
 
 function resolveInstructionId(directory: string, id: string): string {
-  if (id === teachingFilePath()) return id
+  if (id === teachingFilePath() || id === guidancePath()) return id
   const relative = id.replace(/^\/+/, "")
   if (relative === "") return directory
   return path.resolve(directory, relative)

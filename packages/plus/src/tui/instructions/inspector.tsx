@@ -99,6 +99,27 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     const locked = node.badges.unexcludable === true || node.badges.unsupported === true
     facts.push(["state", `${node.badges.state}${locked ? " · always live (exclude sections instead)" : ""}`])
   }
+  // Instructions that follow capabilities (requires.ts): when this section is
+  // sent, what it mentions without depending on it, and for a tool, skill or
+  // rule the Tools and rules sections that come with it.
+  const requires = node.badges.requires
+  if (requires !== undefined && requires.length > 0) {
+    const met = requires.every((requirement) => requirement.met)
+    facts.push([
+      "shown when",
+      requires.map((requirement) => `${requirement.id} is ${requirement.on ? "on" : "off"}${requirement.met ? "" : " (it is not here)"}`).join(" and "),
+      met ? undefined : "warning",
+    ])
+  }
+  const mentions = node.badges.mentions
+  if (mentions !== undefined && mentions.length > 0)
+    facts.push([
+      "mentions",
+      `${mentions.map((mention) => mention.word).join(", ")}, off here: add <!-- requires: ${mentions.map((mention) => mention.id).join(", ")} --> under the heading, or reword`,
+      "warning",
+    ])
+  const guidance = node.badges.guidance
+  if (guidance !== undefined && guidance.length > 0) facts.push(["instructions", `System › Tools and rules › ${guidance.join(", ")}`])
   const provenance = provenanceLine(node, snapshot, memo)
   if (provenance !== undefined) facts.push(["source", BASELINE.test(provenance) ? "default (nothing overrides it)" : provenance.replace(/^(state and text|value|enabled): /, "")])
   const link = linkLine(node, snapshot)

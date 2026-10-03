@@ -1800,9 +1800,14 @@ One home per kind of guidance, so no line repeats or contradicts another:
   and when. Markdown in three parts, each split into `##` sections the
   Instructions tree derives as separate rows: `# Team member` (Runs and
   messages, Working, Reporting — not for the build seat, which is never
-  delegated to —, Safety, Sources), `# Delegating` (Briefs; only for members
+  delegated to —, Safety), `# Delegating` (Briefs; only for members
   that delegate, naming exactly its targets' Brief rules from
-  `basicDelegation`) and `# <Role>`.
+  `basicDelegation`) and `# <Role>`. A section that depends on one tool
+  carries a `<!-- requires: … -->` line (`instructions/requires.ts`).
+- **Tools and rules** (`instructions/guidance.ts`, row
+  `system:tools-and-rules`): instructions that belong to a tool, skill or
+  rule, one gated section each, reaching an agent only while that row is on
+  (or, for `!`, off) for it.
 - **Tool descriptions** (`teams/tools.ts`): what the tool does and when to call
   it; each first line stands alone, since a Code Mode catalog shows only it.
   `toolGuidance` (namespace and `get_context`) only says which tools are direct
@@ -2999,8 +3004,10 @@ If a key is missing from both the key file and the host environment, the tool re
 
 ### Team prompts and per-role policy
 
-Built-in team prompts reference the search tools by their exact model-visible IDs:
-- `shared` prompt (all members): `search_exa_code_search` for external APIs.
-- `planner` prompt: `search_tavily_search` and `search_tavily_extract` for documentation.
+The search tools are named by their exact model-visible IDs in the Tools and
+rules row (`instructions/guidance.ts`), each in a section that depends on that
+tool, so an agent reads the line exactly while it has the tool: Code search
+(`search_exa_code_search`), Documentation search (`search_tavily_search`) and
+Reading web pages (`search_tavily_extract`). No role text names them.
 
 The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available. It lists under `search_tavily_search` → Permissions → Access; the three tools' own categories (Queries, Sites, depths, topics, types, limits, Approval) are in the per-tool table under Permission rules.
