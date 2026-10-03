@@ -105,7 +105,7 @@ Every tool row in `/instructions` — OpenCode, OpenCodePlus, MCP and Code Mode 
 The kinds of row:
 
 - **On/off rows.** On means permitted. Off refuses what the row names, and the model reads the row's message instead of a bare denial (`Permission denied: reading PDFs is not allowed here`). Nearly every row ships on; the ones that ship off are the tool limits, the approvals, `question` → When → In delegated team runs, `subagent` → Team members (without a team run), `team_finish` → A commit deliverable has at least one commit, and `team_followup` → Followups per child.
-- **Everything else.** The first row of some categories stands for everything the other rows do not name: `Every other command` (shell), `Every other file` (read, grep), `Every other site`, and `Outside this checkout` under read's and edit's `Where`. On leaves the agent's normal answer; off refuses everything an allow row does not let through (`Outside this checkout` only concerns paths outside the checkout). These rows are checked on each call, so switching one off can never be undone by another row or a team role.
+- **Everything else.** The first row of some categories stands for everything the other rows do not name: `Every other command` (shell), `Every other file` (read, grep), `Every other site`, and `Outside this checkout` under read's and edit's `Where`. On leaves the agent's normal answer; off refuses everything an allow row does not let through (`Outside this checkout` only concerns paths outside the checkout). These rows are checked on each call, so switching one off can never be undone by another row or a team role. `Every other command` off is also enforced on every command the shell parses out of a call, so with only the `pilotty (driving terminal apps)` allow row on, a member may drive terminals and nothing else: `pilotty … && git push` is refused. pilotty runs whatever it is told to spawn, so this narrows the shell to driving terminals; it is not a sandbox.
 - **Allow rows.** `Temporary directories` (`/tmp`, `run/plus/tmp`) under read's and edit's `Where` matters only once `Outside this checkout` is off: while on, it keeps those directories open for that check. It opens nothing any other row or a team role keeps closed.
 - **Switches.** A row with no patterns — a parameter (`Background (background: true)`), a value (a `Formats` or `Effort` row), an approval, a team setting — flips with space; enter only tells you it is a switch. An off parameter or value also leaves the schema the model is offered (direct tools; a Code Mode tool refuses it when called). An off value is refused even when the call leaves the field to the tool's default (webfetch's `Markdown`, `Medium` effort, `queue` delivery, …).
 - **Limits.** A number, such as `Lines per read` 2000, `Longest timeout (ms)` 600000 or `Tool calls per run` 50. Enter asks for the number; space switches the cap on and off and keeps the number while it is off. Tool limits ship off (no cap). While on, a larger value is lowered to the cap or the call is refused, as the row's `enforced by` line says; a call that leaves a capped field to the tool's own (higher) default is capped too. The team bounds on `team_delegate` ship on (below).
@@ -377,11 +377,16 @@ implied. Replayed admissions label the original `receipt` and expose a fresh
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
 Permissions → Delegate to`. It holds one row per member of the same team, its
 own included (another run of itself), named by its id and shipped off, plus
-`Members of other teams` (off). A member created from the shipped Basic preset
-has its rows on by role (planner → orchestrator; orchestrator → orchestrator,
-implementer, reviewer, scout); a build seat has every other teammate's row on.
-A member's own row follows its preset whatever the member is called: on for an
-orchestrator, off for every other Basic preset. Delegation depth (3, a
+`Members of other teams` (off). A member linked to a Basic member preset has
+a teammate's row on by what that teammate is linked to, never by its name
+(planner → orchestrator; orchestrator → orchestrator, implementer, reviewer,
+scout): an Orchestrator opens Flash-Implementer and Heavy-Implementer when both
+are linked to Basic › implementer, directly, through a user preset or through a
+Teams Defaults entry. A build seat has every other teammate's row on. A
+member's own row follows the same rule: on for an orchestrator, off for every
+other Basic preset. `team_delegate` lists each open member with its
+description, so give members of one kind descriptions that say when to pick
+them. Delegation depth (3, a
 `team_delegate` Limits row) bounds nested orchestrators. Space turns a row on
 or off. The member's `team_delegate` then offers exactly the members that are
 on as its `role`, and a refused delegation (`E_ROLE`) names who is open.

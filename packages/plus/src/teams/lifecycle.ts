@@ -21,6 +21,7 @@ import {
   toFinishing,
   transition,
   updateRun,
+  type AttemptError,
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
@@ -194,8 +195,16 @@ export async function onSessionEvent(
 
   const outcome = SessionOutcomes[event.type]
   if (outcome === undefined) return undefined
-  return onSessionIdle(ctx, root, run, outcome)
+  return onSessionIdle(ctx, root, run, outcome, Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error)))
 }
+
+// The host's reason for a failed execution (core's SessionError.Error): what
+// the parent needs to tell a provider that is out of quota from a broken run.
+const FailedError = Schema.Struct({
+  type: Schema.String,
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+})
 
 // Order matters: settle the attempt that just ended, move the run to idle,
 // tell the parent once, then drain the inbox. Draining last means a followup
@@ -206,6 +215,7 @@ export async function onSessionIdle(
   root: string,
   run: RunRecord,
   outcome: SessionOutcome = "idle",
+  error?: AttemptError,
 ): Promise<RunRecord> {
   // The settle, the notify bookkeeping and a pending stop transition in one
   // state-lock hold: this pass must not save a record it read before a
@@ -214,7 +224,7 @@ export async function onSessionIdle(
   const settled: { attempt?: AttemptRecord; stopped: boolean } = { stopped: false }
   const marked = await updateRun(root, run.id, async (current) => {
     if (isTerminal(current.state)) return current
-    const ended = await settleAttempt(root, current, outcome)
+    const ended = await settleAttempt(root, current, outcome, error)
     // A stop ends a waiting attempt too: nobody will continue it.
     const idle = toIdle(current.stopRequested === true ? interruptOpenAttempt(ended) : ended)
     const attempt = idle.attempts[idle.attempts.length - 1]
@@ -236,10 +246,16 @@ export async function onSessionIdle(
   return deliverInbox(ctx, root, marked)
 }
 
-async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome): Promise<RunRecord> {
+async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptError): Promise<RunRecord> {
   const last = run.attempts[run.attempts.length - 1]
   if (last === undefined || isAttemptTerminal(last.state)) return run
-  if (outcome === "failed") return attemptTransition(run, "failed", "failed")
+  if (outcome === "failed") {
+    const failed = attemptTransition(run, "failed", "failed")
+    if (error === undefined) return failed
+    const attempt = failed.attempts.at(-1)
+    if (attempt === undefined) return failed
+    return { ...failed, attempts: [...failed.attempts.slice(0, -1), { ...attempt, error }] }
+  }
   if (outcome === "interrupted") return attemptTransition(run, "interrupted", "interrupt")
   // finish wrote this attempt's report and owns its terminal state.
   const reported = await readJson<unknown>(path.join(root, "runs", run.id, `report-${last.n}.json`))
@@ -334,6 +350,16 @@ export function childSettledText(
   const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    // The host says why: a provider or quota error is the member's model being
+    // unavailable, not the Brief going wrong, so another member can take it.
+    const error = attempt.error
+    if (error !== undefined) {
+      lines.push(`Error: ${error.type}${error.status === undefined ? "" : ` (${error.status})`}: ${error.message}`)
+      lines.push(
+        "next: if the member's model is unavailable (quota, rate limit, provider down), team_supersede it and delegate the same Brief to another member; otherwise read team_status and team_diff, then team_followup or team_supersede.",
+      )
+      return lines.join("\n")
+    }
     lines.push("next: read team_status and team_diff for it, then team_followup or team_supersede.")
     return lines.join("\n")
   }

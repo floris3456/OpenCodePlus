@@ -215,7 +215,7 @@ test("every Basic role names only tools its member preset ships on, and forbids 
     expect([member.id, member.body.match(/\b(you have no|you cannot (edit|run)|cannot run (commands|checks)|no shell)\b/gi)]).toEqual([member.id, null])
     // What a role says about the shell reaches only a member that has one.
     for (const section of member.body.split(/^(?=## )/m).filter((part) => /\bshell\b/i.test(part)))
-      expect([member.id, section.includes("<!-- requires: tool:shell -->")]).toEqual([member.id, true])
+      expect([member.id, /<!-- requires: [^>]*\btool:shell\b[^>]*-->/.test(section)]).toEqual([member.id, true])
     // Only the build seat, the user's own chat, keeps the configuration, release,
     // monitor, browser and session tools and their teaching rows.
     const seatOnly = ["tool:instructions_set", "tool:release_request", "tool:monitor_query", "tool:browser_navigate", "tool:opencode_session_move", "system:opencodeplus", "skill:instructions-tools", "skill:opencodeplus-release", "skill:report", "tool:websearch"]
@@ -233,7 +233,15 @@ test("every Basic body splits into Team member, Delegating and role sections", (
   const ids = (member: Parameters<typeof basicBody>[0]) => derive(basicBody(member), "Role/persona").sections.map((section) => section.id)
   const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety"]
   const delegating = ["delegating", "delegating/briefs", "delegating/integration-checks"]
-  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks", "implementer/outside-your-scope", "implementer/worktrees"])
+  expect(ids("implementer")).toEqual([
+    ...shared,
+    "implementer",
+    "implementer/task",
+    "implementer/checks",
+    "implementer/live-testing",
+    "implementer/outside-your-scope",
+    "implementer/worktrees",
+  ])
   expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/findings"])
   expect(ids("scout")).toEqual([...shared, "scout", "scout/task", "scout/answer"])
   expect(ids("planner")).toEqual([...shared, ...delegating, "planner", "planner/the-plan", "planner/questions", "planner/hand-off", "planner/worktrees", "planner/merges"])
@@ -244,6 +252,7 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "orchestrator/ownership",
     "orchestrator/shell",
     "orchestrator/splitting-the-work",
+    "orchestrator/agent-routing",
     "orchestrator/tests",
     "orchestrator/following-children",
     "orchestrator/review-and-finish",
@@ -256,7 +265,7 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "build-seat",
     "build-seat/role",
     "build-seat/subagents",
-    "build-seat/choosing-a-member",
+    "build-seat/agent-routing",
     "build-seat/following-runs",
     "build-seat/worktrees",
     "build-seat/merges",
