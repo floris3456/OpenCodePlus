@@ -295,12 +295,14 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...unused,
     ...tavily,
     // It changes no source files (implementers do, team_integrate lands them);
-    // it writes Brief and handoff files, the plan rows.
+    // it writes Brief and handoff files (the plan rows) and the tests that
+    // judge its implementers, and commits only those, delegated or not.
     ...rows(off, ["tool:question", "tool:subagent", "perm:edit:allowed.*"]),
-    ...teamToolRows(off, ["checkpoint"]),
     ...reach(["status"]),
     ...rows(on, [
       "tool:shell",
+      "perm:edit:allowed.tests",
+      "perm:team_checkpoint:requirements.editable",
       "perm:team_get_context:bootstrap.chat",
       "perm:team_delegate:access.delegated",
       "perm:team_get_context:accepts.reason",
@@ -312,7 +314,9 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   implementer: {
     ...worker,
     ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "status", "list"]),
-    ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths"]),
+    // The files its checks run are its delegator's (an orchestrator writes the
+    // tests): it commits one only when its Brief's scope.paths names it.
+    ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths", "perm:team_checkpoint:requirements.check-files"]),
   },
   reviewer: {
     ...worker,

@@ -562,6 +562,7 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
       "Delegate a task.",
       `Members you may delegate to: ${open.join(", ")}.`,
       "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable.",
+      "implementer: files its checks run stay unchanged, unless scope.paths names them.",
       "orchestrator needs a reason: say why this member and not another.",
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
     ].join("\n"),
@@ -600,10 +601,15 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
       tools: {
         team_delegate: { description: "Delegate a task.", input: { type: "object", properties: { role: { type: "string" } } } },
         team_finish: { description: "Report.", input: { type: "object", properties: { status: { type: "string" } } } },
+        team_checkpoint: { description: "Commit.", input: { type: "object", properties: { files: { type: "array" } } } },
       },
     }
     narrowTools(event, table)
-    return { delegate: event.tools.team_delegate?.description, finish: event.tools.team_finish?.description }
+    return {
+      delegate: event.tools.team_delegate?.description,
+      finish: event.tools.team_finish?.description,
+      checkpoint: event.tools.team_checkpoint?.description,
+    }
   }
 
   const shipped = presetTable({ members })
@@ -612,6 +618,7 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
       "Delegate a task.",
       "Members you may delegate to: implementer, orchestrator, planner, reviewer, scout.",
       "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable.",
+      "implementer: files its checks run stay unchanged, unless scope.paths names them.",
       "orchestrator needs a reason: say why this member and not another.",
       "planner accepts plan files only: every scope path must match one of its patterns [docs/plans/*, docs/handoffs/*].",
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
@@ -619,6 +626,11 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
   )
   expect(described(shipped, "implementer").finish).toBe("Report.\nRequirements for done: assigned checks pass at HEAD; worktree committed before done.")
   expect(described(shipped, "reviewer").finish).toBe("Report.\nRequirements for done: assigned checks pass at HEAD.")
+  // Requirements for a commit: an implementer leaves the files its checks run
+  // alone, an orchestrator commits only what it may edit; a build seat neither.
+  expect(described(shipped, "implementer").checkpoint).toBe("Commit.\nRequirements for a commit: files its checks run stay unchanged, unless scope.paths names them.")
+  expect(described(shipped, "orchestrator").checkpoint).toBe("Commit.\nRequirements for a commit: only files it may edit (Files it may change), like a chat run.")
+  expect(described(shipped, "build-seat").checkpoint).toBe("Commit.")
 
   // Changed rows, changed descriptions: an orchestrator Brief needs no reason,
   // an implementer Brief needs a check, and the implementer's done no longer

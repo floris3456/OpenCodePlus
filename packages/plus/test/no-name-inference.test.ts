@@ -77,7 +77,8 @@ test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, ro
     "perm:edit:allowed.*": "off",
     "tool:question": "off",
     "tool:subagent": "off",
-    "tool:team_checkpoint": "off",
+    // Changed on purpose since: it commits the tests that judge its implementers.
+    "tool:team_checkpoint": "on",
     "tool:team_delegate": "on",
     "tool:team_integrate": "on",
     "tool:search_tavily_search": "off",
