@@ -178,7 +178,7 @@ test("an orchestrator-preset member keeps shell and reads outside its checkout",
   expect(tools.find((plan) => plan.tool === "shell")).toBeUndefined()
   // It leaves web search to the planner.
   expect(tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()).toEqual(
-    ["question", "subagent", "team_checkpoint", "search_tavily_search", "search_tavily_extract", "websearch", ...seatOnlyTools].toSorted(),
+    ["question", "subagent", "search_tavily_search", "search_tavily_extract", "websearch", ...seatOnlyTools].toSorted(),
   )
   expect(has(permissions, "external_directory", "*", "deny")).toBe(false)
   expect(has(permissions, "read", "*.key", "deny")).toBe(true)
@@ -299,7 +299,9 @@ test("a published member carries its preset's denies while a non-member carries 
   // An orchestrator keeps what its preset gives it.
   const orchestrator = permissionsOf("orchestrator")
   expect(has(orchestrator, "team_delegate", "*", "deny")).toBe(false)
-  expect(has(orchestrator, "team_checkpoint", "*", "deny")).toBe(true)
+  // It commits the tests that judge its implementers.
+  expect(has(orchestrator, "team_checkpoint", "*", "deny")).toBe(false)
+  expect(has(orchestrator, "team_set_checks", "*", "deny")).toBe(false)
   // A member is never hidden from the namespace it belongs to.
   expect(has(member, "team.*", "*", "deny")).toBe(false)
 

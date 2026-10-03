@@ -453,6 +453,13 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
           allow: true,
           patterns: ["*docs/plans/*", "docs/handoffs/*", "*/docs/handoffs/*"],
         },
+        {
+          id: "tests",
+          label: "Test files (*.test.*, test/)",
+          on: false,
+          allow: true,
+          patterns: ["*.test.*", "*.spec.*", "test/*", "*/test/*", "tests/*", "*/tests/*"],
+        },
       ],
     },
     parameters([{ id: "replace-all", label: "Replace all (replaceAll: true)", on: true, field: "replaceAll", value: true }]),
@@ -831,6 +838,16 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       })),
     },
     limits([{ id: "files", label: "Files per checkpoint", on: false, limit: 50, field: "files" }], "refuse", "count"),
+    {
+      id: "requirements",
+      label: "Requirements for a commit",
+      kind: "team",
+      summary: "What a delegated run's commit must meet. A check judges a run only while the run cannot rewrite what the check runs.",
+      rows: [
+        { id: "check-files", label: "Files its checks run stay unchanged, unless scope.paths names them", on: false },
+        { id: "editable", label: "Only files it may edit (Files it may change), like a chat run", on: false },
+      ],
+    },
     approval(),
   ],
   team_finish: [

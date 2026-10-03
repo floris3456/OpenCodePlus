@@ -801,9 +801,10 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => accepts(table, target))].join("\n") : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...accepts(table, target), ...checkFilesRule(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
     }
-    if (name === "team_finish") definition.description += requirements(rows)
+    if (name === "team_finish") definition.description += requirements(rows, "Requirements for done")
+    if (name === "team_checkpoint") definition.description += requirements(rows, "Requirements for a commit")
     if (narrowed || targets !== undefined) definition.input = schema as typeof definition.input
   }
 }
@@ -817,10 +818,21 @@ function accepts(table: PermissionTable, target: string): string[] {
     .map((row) => `${target} ${row.item.message ?? row.item.title}${row.item.patterns?.length ? ` [${row.item.patterns.join(", ")}]` : ""}.`)
 }
 
-// The agent's own "Requirements for done" rows that are on.
-function requirements(rows: readonly PermRow[]): string {
+// A target whose commits leave the files its checks run alone (team_checkpoint
+// "Requirements for a commit"): its delegator writes those files, and hands one
+// over only by naming it in scope.paths.
+function checkFilesRule(table: PermissionTable, target: string): string[] {
+  return table
+    .toolRows(target, "team_checkpoint")
+    .filter((row) => row.on && row.item.ruleId === "requirements.check-files")
+    .map((row) => `${target}: ${row.item.title.charAt(0).toLowerCase()}${row.item.title.slice(1)}.`)
+}
+
+// The agent's own requirement rows of one tool ("Requirements for done",
+// "Requirements for a commit") that are on.
+function requirements(rows: readonly PermRow[], heading: string): string {
   const on = rows.filter((row) => row.on && row.item.category === "requirements").map((row) => row.item.title.charAt(0).toLowerCase() + row.item.title.slice(1))
-  return on.length === 0 ? "" : `\nRequirements for done: ${on.join("; ")}.`
+  return on.length === 0 ? "" : `\n${heading}: ${on.join("; ")}.`
 }
 
 // ── the hooks ───────────────────────────────────────────────────────────────

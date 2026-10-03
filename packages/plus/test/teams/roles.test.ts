@@ -139,7 +139,9 @@ test("final ceilings are the team tool rows, exactly the old ceiling of every ro
     // run, which get_context describes (no status); a scout changes nothing (no
     // diff); the build seat, never delegated to, finishes nothing.
     planner: ["delegate", "followup", "integrate", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
+    // An orchestrator commits the tests that judge its implementers (and only
+    // what it may edit: Requirements for a commit).
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
     scout: ["finish", "get_context"],

@@ -18,6 +18,7 @@ import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
+import { checkFiles } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
 import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
@@ -706,10 +707,23 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, tabl
   // files. Protected state (.git, .opencodeplus, …) stays out either way.
   const chat = record.kind === "main"
   const scope = chat ? undefined : await runScope(root, record)
+  // Requirements for a commit (rows a Basic member preset turns on): a
+  // delegated run that must commit only what its agent may edit does so like a
+  // chat run (a Basic orchestrator: its tests and plan files), and a run whose
+  // checks judge it leaves the files they run alone unless scope.paths names
+  // the file itself (check-files.ts; a Basic implementer).
+  const editable = chat || allows(table, record.role, "checkpoint", "requirements.editable")
+  const locked = allows(table, record.role, "checkpoint", "requirements.check-files")
+    ? await checkFiles(record.directory, record.base, await readChecks(root, record.id))
+    : new Set<string>()
+  const lockRefusal = (file: string): string | undefined =>
+    locked.has(file) && !(scope?.paths.includes(file) ?? false)
+      ? `"${file}" is a file your checks run, so it is not yours to change (Requirements for a commit). If it is wrong, commit everything else, then finish blocked with needs=[{kind:"path",detail:"${file}: why it must change"}].`
+      : undefined
   const refusalOf = (file: string): string | undefined =>
-    scope !== undefined
-      ? scopeRefusal(scope, file)
-      : protectedStateRefusal(file) ?? chatEditRefusal(table, caller.agent, record.directory, file)
+    (scope !== undefined ? scopeRefusal(scope, file) : protectedStateRefusal(file)) ??
+    (editable ? chatEditRefusal(table, caller.agent, record.directory, file) : undefined) ??
+    lockRefusal(file)
   const key = await realpath(record.directory).catch(() => record.directory)
   return lock(root, "wt", key, async () => {
     const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])

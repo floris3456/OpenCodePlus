@@ -102,7 +102,9 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     // run, which get_context describes (no status); a scout changes nothing (no
     // diff); the build seat, never delegated to, finishes nothing.
     planner: ["delegate", "followup", "integrate", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
+    // An orchestrator commits the tests that judge its implementers (and only
+    // what it may edit: Requirements for a commit).
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
     scout: ["finish", "get_context"],
@@ -242,6 +244,7 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "orchestrator/ownership",
     "orchestrator/shell",
     "orchestrator/splitting-the-work",
+    "orchestrator/tests",
     "orchestrator/following-children",
     "orchestrator/review-and-finish",
     "orchestrator/worktrees",
