@@ -6,7 +6,8 @@ export * as PlusUpdate from "./plus-update"
 // Latest is read from releases/latest/download/release.json, which GitHub serves
 // from its file host instead of the rate-limited API. Test releases (prereleases)
 // are listed through the API, only for installs that opted in with
-// `update_test_releases`. Every release is then read from its own fixed-version
+// `update_test_releases`; when the API refuses (its anonymous limit is 60 requests
+// an hour per network), the site's release feed names them instead. Every release is then read from its own fixed-version
 // address, so a Latest change in between cannot mix two releases.
 //
 // Only a person starts a switch, through /update in the TUI or `opencodeplus
@@ -162,14 +163,34 @@ export const make = Effect.gen(function* () {
     return (yield* manifest(yield* body(response, url))).release.version
   })
 
-  const newestTest = Effect.fnUntraced(function* () {
+  /** Published release tags from the API; drafts are left out. */
+  const listedTags = Effect.fnUntraced(function* () {
     const url = `${api()}/releases?per_page=30`
     const listed = decodeReleases(new TextDecoder().decode(yield* download(url)))
     if (Option.isNone(listed)) return yield* Effect.fail(new UpdateError(`The release list from ${url} is not readable`))
-    const newest = listed.value
-      .filter((release) => !release.draft)
-      .flatMap((release) => {
-        const info = PlusVersion.fromTag(release.tag_name)
+    return listed.value.filter((release) => !release.draft).map((release) => release.tag_name)
+  })
+
+  /** Published release tags from the site's feed (no drafts), which the API's rate limit does not cover. */
+  const feedTags = Effect.fnUntraced(function* () {
+    const url = `${site()}/releases.atom`
+    const feed = new TextDecoder().decode(yield* download(url))
+    return Array.from(feed.matchAll(/\/releases\/tag\/([^"<>?#\s]+)/g), (match) => decodeURIComponent(match[1]))
+  })
+
+  const newestTest = Effect.fnUntraced(function* () {
+    const tags = yield* listedTags().pipe(
+      Effect.catch((listed) =>
+        feedTags().pipe(
+          Effect.mapError(
+            (feed) => new UpdateError(`Could not list releases: ${listed.message}; the release feed: ${feed.message}`),
+          ),
+        ),
+      ),
+    )
+    const newest = tags
+      .flatMap((tag) => {
+        const info = PlusVersion.fromTag(tag)
         return info ? [info] : []
       })
       .toSorted(PlusVersion.compare)

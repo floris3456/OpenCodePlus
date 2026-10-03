@@ -23,6 +23,9 @@ type Site = {
   listed: { tag_name: string; draft: boolean }[]
   latest?: string
   requests: string[]
+  /** The API answers this status instead of the list (GitHub: 403 once the rate limit is used up). */
+  apiStatus?: number
+  feed?: boolean
 }
 
 let root: string
@@ -35,7 +38,16 @@ beforeAll(() => {
     fetch(request) {
       const url = new URL(request.url)
       site.requests.push(url.pathname)
-      if (url.pathname === "/api/releases") return Response.json(site.listed)
+      if (url.pathname === "/api/releases")
+        return site.apiStatus ? new Response("rate limited", { status: site.apiStatus }) : Response.json(site.listed)
+      // The site's Atom feed names published releases (never drafts) by their tag page.
+      if (url.pathname === "/site/releases.atom" && site.feed !== false)
+        return new Response(
+          `<feed>${site.listed
+            .filter((release) => !release.draft)
+            .map((release) => `<entry><link href="https://example/site/releases/tag/${release.tag_name}"/></entry>`)
+            .join("")}</feed>`,
+        )
       const latest = /^\/site\/releases\/latest\/download\/(.+)$/.exec(url.pathname)
       const fixed = /^\/site\/releases\/download\/v([^/]+)\/(.+)$/.exec(url.pathname)
       const [version, name] = latest ? [site.latest, latest[1]] : fixed ? [fixed[1], fixed[2]] : []
@@ -189,6 +201,22 @@ describe("PlusUpdate", () => {
     site.listed.push({ tag_name: "v0.0.0-plus-r5.3", draft: false })
     site.latest = "2.0.18-plus-1.0.9"
     expect((await run((updater) => updater.newest()))?.version).toBe("2.0.18-plus-1.0.10")
+  })
+
+  test("names test releases from the release feed when the API refuses the list", async () => {
+    await fs.mkdir(path.join(root, "config"), { recursive: true })
+    await fs.writeFile(path.join(root, "config/opencode.json"), JSON.stringify({ update_test_releases: true }))
+    await publish("2.0.18-plus-1.0.9")
+    await publish("2.0.18-plus-1.0.10")
+    await publish("2.0.18-plus-1.1.0", { draft: true })
+    site.apiStatus = 403
+    expect((await run((updater) => updater.newest({ fresh: true })))?.version).toBe("2.0.18-plus-1.0.10")
+    expect(site.requests).toContain("/site/releases.atom")
+
+    site.feed = false
+    const failed = await run((updater) => updater.newest({ fresh: true }).pipe(Effect.flip))
+    expect(String(failed)).toContain("HTTP 403")
+    expect(String(failed)).toContain("releases.atom")
   })
 
   test("shares one answer for five minutes unless asked for a fresh one", async () => {
