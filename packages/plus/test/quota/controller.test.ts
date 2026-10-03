@@ -4,7 +4,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
-import { QuotaController } from "../../src/quota/controller.js"
+import { QuotaController, UNENROLLED_BACKOFF } from "../../src/quota/controller.js"
 import type { Snapshot, Stored } from "../../src/quota/protocol.js"
 import { portableMessages } from "../../src/quota/portable.js"
 
@@ -281,3 +281,57 @@ test("auxiliary enrollment still requires portable first primary context", async
   expect(off.refusal?.type).toBe("quota.context-unavailable")
   expect(off.compact).toBeUndefined()
 })
+
+test("an unenrolled chat recovers from a transient bridge failure and backs off background polls", async () => {
+  const f = fixture()
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  let clock = 1_000_000
+  const controller = new QuotaController({ routes: { proxy: f.server.url.href } }, "installation", {
+    read: async (key) => f.store.get(key),
+    write: async (key, value) => {
+      f.store.set(key, value)
+    },
+    notify: async () => {},
+    fetch: Object.assign(async (request: Parameters<typeof fetch>[0], options?: Parameters<typeof fetch>[1]) => {
+      // A plugin reload or proxy restart: the bridge is briefly unreachable.
+      if (down) return new Response(null, { status: 502 })
+      return fetch(request, options)
+    }, fetch),
+    now: () => clock,
+  })
+  let down = false
+  const first = f.event()
+  await controller.decide(first)
+  expect(first.refusal).toBeUndefined()
+  await controller.activity("ses_test", true)
+  down = true
+  clock += UNENROLLED_BACKOFF
+  await controller.tick()
+  expect((await controller.status("ses_test"))[0]?.kind).toBe("paused")
+  down = false
+  // Before the fix the unenrolled (401) path never cleared the refusal: the chat stayed paused.
+  const next = f.event()
+  await controller.decide(next)
+  expect(next.refusal).toBeUndefined()
+  expect(await controller.status("ses_test")).toEqual([])
+  await expect(controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)).resolves.toBeDefined()
+  // While CPA has no binding, background ticks do not poll every second.
+  const reads = f.state.reads
+  await controller.tick()
+  await controller.tick()
+  expect(f.state.reads).toBe(reads)
+  clock += UNENROLLED_BACKOFF
+  await controller.tick()
+  expect(f.state.reads).toBeGreaterThan(reads)
+  // Once bound, every tick polls again.
+  f.state.known = true
+  await controller.response("ses_test", "proxy", "model", ackResponse())
+  const bound = f.state.reads
+  await controller.tick()
+  expect(f.state.reads).toBeGreaterThan(bound)
+})
+
+function ackResponse() {
+  const binding = Buffer.from(JSON.stringify({ protocol: 1, generation: 1, alias: "Small" })).toString("base64url")
+  return new Response("ok", { headers: { "X-Quota-Protocol": "1", "X-Quota-Binding": binding } })
+}

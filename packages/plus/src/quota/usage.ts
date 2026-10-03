@@ -46,6 +46,8 @@ export const UsageResult = Schema.Struct({
   status: Schema.Literals(["ready", "disabled", "unenrolled", "unavailable", "unsupported"]),
   message: Schema.optional(Schema.String),
   snapshot: Schema.optional(UsageSnapshot),
+  /** Why an all-credentials view replaced the chat view: no request yet, or CPA has no binding for this chat. */
+  fallback: Schema.optional(Schema.Literals(["fresh", "untracked"])),
 })
 export type UsageResult = typeof UsageResult.Type
 export const UsageDefinition = Rpc.define({
@@ -132,5 +134,6 @@ export async function readUsage(
       status: "unsupported",
       message: "This CPA quota plugin does not support the usage view. Install quota-handoff 0.1.2 or newer on CPA.",
     }
-  return { status: "ready", snapshot: parsed.value }
+  if (!fallback) return { status: "ready", snapshot: parsed.value }
+  return { status: "ready", snapshot: parsed.value, fallback: stored === undefined ? "fresh" : "untracked" }
 }

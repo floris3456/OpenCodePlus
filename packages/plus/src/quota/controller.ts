@@ -27,7 +27,12 @@ type Route = {
   retryCode?: string
   budgetWaits?: number
   mode?: "off" | "shadow" | "enforce"
+  /** CPA has no binding for this chat yet; background ticks wait until this time. */
+  unenrolledUntil?: number
 }
+
+/** Background polling interval for a chat CPA has not bound yet. */
+export const UNENROLLED_BACKOFF = 30_000
 
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
 export class QuotaController {
@@ -117,12 +122,19 @@ export class QuotaController {
       )(data)
       if (!health.ok) throw new Error("Quota plugin is unavailable")
       route.mode = status.mode
+      // The bridge is reachable again: an earlier transient failure must not keep
+      // an unenrolled chat paused (it never reaches the snapshot path below).
+      route.refusal = undefined
+      route.notices = route.notices.filter((notice) => notice.kind !== "paused")
+      // Enrollment happens on a model request, which polls again from response().
+      route.unenrolledUntil = this.io.now() + UNENROLLED_BACKOFF
       return
     }
     if (!response.ok) throw new Error(`Quota coordination unavailable (${response.status}); generation is paused`)
     const snapshot = Schema.decodeUnknownSync(Snapshot)(await response.json())
     route.snapshot = snapshot
     route.mode = snapshot.mode
+    route.unenrolledUntil = undefined
     route.stored = { ...route.stored, generation: snapshot.generation }
     for (const event of snapshot.events) {
       // Cursor only advances after durable idempotent admission of the notice.
@@ -325,6 +337,7 @@ export class QuotaController {
     await Promise.all(
       routes
         .filter((route) => route.active || this.io.now() - route.touched < 5000)
+        .filter((route) => (route.unenrolledUntil ?? 0) <= this.io.now())
         .map((route) =>
           this.poll(route).catch((error: unknown) => {
             route.refusal = error instanceof Error ? error.message : String(error)

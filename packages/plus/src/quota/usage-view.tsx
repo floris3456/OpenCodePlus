@@ -397,7 +397,10 @@ function Note(props: { theme: Theme; text: string; warning?: boolean }) {
 function Credentials(props: { context: Plugin.Context; store: UsageStore; snapshot: UsageSnapshot; width: number }) {
   const theme = props.context.theme
   const label = () => {
-    if (props.store.scope() === "model" && props.snapshot.all) return "All credentials · no request from this chat yet"
+    if (props.store.scope() === "model" && props.snapshot.all)
+      return props.store.reading()?.result?.fallback === "untracked"
+        ? "All credentials · CPA is not tracking this chat, so the credential in use is unknown"
+        : "All credentials · no request from this chat yet"
     if (props.snapshot.all) return "All credentials"
     const input = props.store.input()
     return input ? `${input.providerID}/${input.modelID}` : props.snapshot.model
@@ -405,7 +408,9 @@ function Credentials(props: { context: Plugin.Context; store: UsageStore; snapsh
   const labelWidth = createMemo(() =>
     Math.max(
       2,
-      ...props.snapshot.credentials.flatMap((item) => item.windows.map((window) => windowShort(window).length)),
+      ...props.snapshot.credentials.flatMap((item) =>
+        limited(item.windows).map((window) => windowShort(window).length),
+      ),
     ),
   )
   const barWidth = () => Math.max(4, props.width - CREDENTIAL_INDENT - labelWidth() - ROW_FIXED)
@@ -491,8 +496,16 @@ function CredentialView(props: {
           <span style={{ fg: theme.text.base }}>Shared quota</span> with {props.credential.shared_with.join(", ")}
         </text>
       </Show>
-      <Show when={props.credential.windows.length} fallback={<Note theme={theme} text="No quota reading yet." />}>
-        <Index each={props.credential.windows}>
+      <Show
+        when={limited(props.credential.windows).length}
+        fallback={
+          <Note
+            theme={theme}
+            text={props.credential.windows.length ? "No limited quota windows." : "No quota reading yet."}
+          />
+        }
+      >
+        <Index each={limited(props.credential.windows)}>
           {(window) => (
             <WindowView
               context={props.context}
@@ -561,6 +574,14 @@ function WindowView(props: {
       </Show>
     </box>
   )
+}
+
+/**
+ * Windows the provider reports as not applicable (for example Anthropic's separate
+ * weekly Opus/Sonnet caps on accounts without them) carry no capacity; hide them.
+ */
+function limited(windows: readonly UsageWindow[]) {
+  return windows.filter((window) => !window.not_applicable)
 }
 
 const BORDER = {

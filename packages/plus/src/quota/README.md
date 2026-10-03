@@ -55,7 +55,9 @@ seconds while it is shown; nothing polls while no usage view is mounted.
   CPA provider, including general and applicable model-specific windows (five-hour,
   seven-day Sonnet, OAuth-app and other returned windows). Before the selected
   chat/model has made a request it shows all credentials, labelled
-  "no request from this chat yet".
+  "no request from this chat yet". If the chat has made requests but CPA has no
+  binding for it (for example a credential the bridge does not track served it), the
+  label says CPA is not tracking this chat and that the credential in use is unknown.
 - `/usage --all` shows every configured bridge credential and every recorded
   window, including other providers and model scopes. The section's
   **● model / ○ all** control (clickable) and the palette's _Usage: show all
@@ -83,9 +85,14 @@ seconds while it is shown; nothing polls while no usage view is mounted.
   thresholds (≤20% warning, ≤10% error), the remaining percentage (rounded down) and
   a reset countdown. Text states accompany colour: `STALE` (reading older than the
   bridge's maximum age), `reset` (reset passed; awaiting a fresh reading),
-  `dormant`, `no limit`/`n/a` and "No quota reading yet". **○ details** (or
+  `dormant` and "No quota reading yet". Windows the provider reports as not
+  applicable (for example no separate weekly Opus/Sonnet cap on the account) are
+  hidden; a credential with only such windows shows "No limited quota windows". **○ details** (or
   _Usage: show exact resets and notes_) adds exact reset dates, full window names,
   exact percentages and reading age.
+- A chat CPA has not bound yet is polled in the background at most every 30 seconds
+  (each model request still checks immediately), and a transient bridge failure no
+  longer leaves such a chat paused once the bridge answers again.
 - A failed refresh keeps the last reading for the same chat/model/scope, marks the
   header `retrying` and explains the error; readings recover automatically. A
   changed chat, model or scope starts empty and discards late responses from the

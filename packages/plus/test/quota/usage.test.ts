@@ -99,6 +99,7 @@ test("a home view, fresh chat or unused model defaults to all using the CPA key 
     expect(result.status).toBe("ready")
     expect(result.snapshot?.all).toBe(true)
     expect(result.snapshot?.current).toBe("")
+    expect(result.fallback).toBe("fresh")
     const request = f.state.requests.at(-1)!
     expect(request.authorization).toBe("Bearer fixture-api-key")
     expect(new URL(request.url).searchParams.get("auth")).toBe("api-key")
@@ -127,6 +128,8 @@ test("a missing server binding falls back without creating state", async () => {
   )
   expect(result.status).toBe("ready")
   expect(result.snapshot?.all).toBe(true)
+  // The chat has a capability but CPA has no binding: not the same as "no request yet".
+  expect(result.fallback).toBe("untracked")
   expect(f.state.requests).toHaveLength(1)
 })
 

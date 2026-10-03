@@ -265,7 +265,7 @@ test("transient failures keep the last reading with a retry note, then recover",
 })
 
 test("fresh chat falls back to all credentials without claiming any credential is in use", async () => {
-  const f = fixture()
+  const f = fixture({ interval: 40 })
   f.state.result = { status: "ready", snapshot: snapshot({ all: true, current: "", active: [] }) }
   const output = await mount(
     () => <box width={37}>{f.claim("sidebar.content").render({ sessionID: "ses_a" })}</box>,
@@ -275,10 +275,21 @@ test("fresh chat falls back to all credentials without claiming any credential i
   expect(text).toContain("All credentials · no request from")
   expect(text).not.toContain("IN USE")
   expect(text).not.toContain("LAST USED")
+  // A chat that has made requests but that CPA has not bound says so instead.
+  f.state.result = {
+    status: "ready",
+    snapshot: snapshot({ all: true, current: "", active: [] }),
+    fallback: "untracked",
+  }
+  await Bun.sleep(100)
+  const untracked = await frame(output)
+  expect(untracked).toContain("CPA is not tracking")
+  expect(untracked).not.toContain("no request from")
+  expect(untracked).not.toContain("IN USE")
   f.state.result = { status: "ready", snapshot: snapshot({ active: [] }) }
 })
 
-test("missing, dormant, reset and unlimited windows are labelled without invented capacity", async () => {
+test("missing, dormant and reset windows are labelled; not-applicable windows are hidden", async () => {
   const f = fixture()
   const window = snapshot().credentials[0]!.windows[0]!
   f.state.result = {
@@ -288,6 +299,13 @@ test("missing, dormant, reset and unlimited windows are labelled without invente
       current: "unused",
       credentials: [
         { id: "new", alias: "New", provider: "codex", shared_with: [], windows: [] },
+        {
+          id: "uncapped",
+          alias: "Uncapped",
+          provider: "claude",
+          shared_with: [],
+          windows: [{ ...window, seconds: 604800, scope: "opus", reset: 0, not_applicable: true }],
+        },
         {
           id: "unused",
           alias: "Unused",
@@ -309,8 +327,10 @@ test("missing, dormant, reset and unlimited windows are labelled without invente
   const text = await frame(output)
   expect(text).toContain("No quota reading yet.")
   expect(text).toContain("dormant")
-  expect(text).toContain("no limit")
-  expect(text).toContain("n/a")
+  // Provider-reported "not applicable" windows (e.g. no separate weekly Opus cap) carry no capacity.
+  expect(text).not.toContain("no limit")
+  expect(text).not.toContain("opus")
+  expect(text).toContain("No limited quota windows.")
   expect(text).toContain("oauth_apps")
   expect(text.split("\n").map((line) => line.trimEnd())).toContainEqual(
     expect.stringMatching(/30d █+░+  61% {3}reset$/),
