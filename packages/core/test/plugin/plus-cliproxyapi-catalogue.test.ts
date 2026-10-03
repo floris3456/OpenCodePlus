@@ -82,10 +82,12 @@ function cpa(mode: { details: boolean }) {
               slug: "gpt-6-astra",
               display_name: "gpt-6-astra",
               context_window: 272_000,
+              // Codex sends requests at context_window; max_context_window is an opt-in ceiling.
+              max_context_window: 872_000,
               supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "ultra" }],
               service_tiers: [{ id: "priority", name: "Fast" }],
             },
-            { slug: "gpt-image-2", supported_reasoning_levels: [], visibility: "hide" },
+            { slug: "gpt-image-2", context_window: 272_000, supported_reasoning_levels: [], visibility: "hide" },
           ],
         })
       // A CPA without the details catalogue ignores the parameter.
@@ -207,10 +209,13 @@ describe("opencode.plus.cliproxyapi catalogue", () => {
           )
           expect(seen.queries.slice(0, 2)).toEqual(["?details=true", "?client_version=0.300.0"])
           expect(astra?.variants.map((variant) => String(variant.id))).toEqual(["low", "high"])
+          expect(astra?.limit.context).toBe(272_000)
           expect((yield* models.get(providerID, Model.ID.make("gpt-6-astra-fast")))?.body).toEqual({
             service_tier: "priority",
           })
-          expect((yield* models.get(providerID, Model.ID.make("gpt-image-2")))?.capabilities.output).toEqual(["image"])
+          const image = yield* models.get(providerID, Model.ID.make("gpt-image-2"))
+          expect(image?.capabilities.output).toEqual(["image"])
+          expect(image?.limit.context).not.toBe(272_000)
         }),
       ({ server }) => Effect.promise(() => server.stop(true)),
     ),

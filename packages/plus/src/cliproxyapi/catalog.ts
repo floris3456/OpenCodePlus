@@ -116,7 +116,9 @@ export function parseCodexCatalogue(raw: unknown, hash: string): Catalogue | und
       id: item.slug,
       name: item.display_name?.trim() || item.slug,
       kind,
-      context: positive(item.max_context_window) ?? positive(item.context_window),
+      // Codex sends requests at context_window; max_context_window is an opt-in ceiling that
+      // CPA does not serve by default. Image models have no chat context.
+      context: kind === "image" ? undefined : (positive(item.context_window) ?? positive(item.max_context_window)),
       output: undefined,
       input: modalities(item.input_modalities, ["text"]),
       outputModalities: kind === "image" ? ["image"] : ["text"],
