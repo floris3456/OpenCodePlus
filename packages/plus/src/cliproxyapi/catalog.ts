@@ -20,7 +20,10 @@ export interface CatalogModel {
   readonly id: string
   readonly name: string
   readonly kind: "chat" | "image"
+  /** Whole window: prompt + reply. */
   readonly context?: number
+  /** Largest prompt, when smaller than `context` (Codex: 272k prompt of a 400k GPT window). */
+  readonly inputLimit?: number
   readonly output?: number
   readonly input: readonly string[]
   readonly outputModalities: readonly string[]
@@ -39,6 +42,7 @@ const DetailModel = Schema.Struct({
   display_name: Schema.optional(Schema.String),
   kind: Schema.optional(Schema.String),
   context_length: Schema.optional(Schema.NullOr(Schema.Number)),
+  input_length: Schema.optional(Schema.NullOr(Schema.Number)),
   max_completion_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
   input_modalities: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   output_modalities: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
@@ -54,6 +58,7 @@ const CodexModel = Schema.Struct({
   display_name: Schema.optional(Schema.NullOr(Schema.String)),
   context_window: Schema.optional(Schema.NullOr(Schema.Number)),
   max_context_window: Schema.optional(Schema.NullOr(Schema.Number)),
+  max_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
   visibility: Schema.optional(Schema.NullOr(Schema.String)),
   input_modalities: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   supported_reasoning_levels: Schema.optional(
@@ -89,11 +94,14 @@ export function parseDetails(raw: unknown): Catalogue | undefined {
         : mode === "levels"
           ? { mode: "levels" as const, levels: efforts(item.reasoning?.levels ?? []) }
           : { mode: "passthrough" as const, levels: [] }
+    const context = positive(item.context_length)
+    const inputLimit = positive(item.input_length)
     return {
       id: item.id,
       name: item.display_name?.trim() || item.id,
       kind,
-      context: positive(item.context_length),
+      context,
+      inputLimit: inputLimit !== undefined && (context === undefined || inputLimit < context) ? inputLimit : undefined,
       output: positive(item.max_completion_tokens),
       input: modalities(item.input_modalities, ["text"]),
       outputModalities: kind === "image" ? ["image"] : modalities(item.output_modalities, ["text"]),
@@ -112,14 +120,18 @@ export function parseCodexCatalogue(raw: unknown, hash: string): Catalogue | und
     const levels = (item.supported_reasoning_levels ?? []).map((level) =>
       typeof level === "string" ? level : level.effort,
     )
+    // Codex sends prompts up to context_window; max_context_window is an opt-in ceiling that
+    // CPA does not serve by default. The window is a prompt budget: the reply (CPA's
+    // max_tokens) comes on top. Image models have no chat context.
+    const window = kind === "image" ? undefined : (positive(item.context_window) ?? positive(item.max_context_window))
+    const output = kind === "image" ? undefined : positive(item.max_tokens)
     return {
       id: item.slug,
       name: item.display_name?.trim() || item.slug,
       kind,
-      // Codex sends requests at context_window; max_context_window is an opt-in ceiling that
-      // CPA does not serve by default. Image models have no chat context.
-      context: kind === "image" ? undefined : (positive(item.context_window) ?? positive(item.max_context_window)),
-      output: undefined,
+      context: window !== undefined && output !== undefined ? window + output : window,
+      inputLimit: window !== undefined && output !== undefined ? window : undefined,
+      output,
       input: modalities(item.input_modalities, ["text"]),
       outputModalities: kind === "image" ? ["image"] : ["text"],
       reasoning:
@@ -130,6 +142,11 @@ export function parseCodexCatalogue(raw: unknown, hash: string): Catalogue | und
     }
   })
   return { source: "codex", hash, models }
+}
+
+function withInput<T extends { input?: number }>(limit: T, input: number | undefined): T {
+  const { input: _, ...rest } = limit
+  return (input === undefined ? rest : { ...rest, input }) as T
 }
 
 type Variants = { id: string; settings?: Record<string, unknown> }[]
@@ -183,7 +200,9 @@ export function applyCatalogue(
           input: [...item.input],
           output: [...item.outputModalities],
         }
-        if (item.context !== undefined) model.limit.context = item.context
+        // CPA owns the window: its input limit is set or cleared with the context.
+        if (item.context !== undefined)
+          model.limit = withInput({ ...model.limit, context: item.context }, item.inputLimit)
         if (item.output !== undefined) model.limit.output = item.output
         model.variants = structuredClone(variants) as never
         if (fast) model.body = { ...(model.body ?? {}), service_tier: FAST_TIER } as never

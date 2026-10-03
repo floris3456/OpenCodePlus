@@ -38,7 +38,9 @@ const details = (hash: string) => ({
       id: "gpt-6-astra",
       kind: "chat",
       providers: ["codex"],
-      context_length: 272_000,
+      // Codex's 272k is the prompt budget; the 128k reply comes on top.
+      context_length: 400_000,
+      input_length: 272_000,
       max_completion_tokens: 128_000,
       input_modalities: ["text", "image"],
       output_modalities: ["text"],
@@ -84,6 +86,8 @@ function cpa(mode: { details: boolean }) {
               context_window: 272_000,
               // Codex sends requests at context_window; max_context_window is an opt-in ceiling.
               max_context_window: 872_000,
+              // CPA's max output; the window is the prompt budget, the reply comes on top.
+              max_tokens: 128_000,
               supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "ultra" }],
               service_tiers: [{ id: "priority", name: "Fast" }],
             },
@@ -169,6 +173,10 @@ describe("opencode.plus.cliproxyapi catalogue", () => {
             })
             // Exactly CPA's levels, spelled as Core spells Responses effort; not Core's generic none..xhigh.
             expect(opus?.variants as unknown).toEqual(["low", "medium", "high", "xhigh", "max"].map(responses))
+            expect(opus?.limit.input).toBeUndefined()
+
+            const astra = yield* models.get(providerID, Model.ID.make("gpt-6-astra"))
+            expect(astra?.limit).toEqual({ context: 400_000, input: 272_000, output: 128_000 })
 
             const fast = yield* models.get(providerID, Model.ID.make("gpt-6-astra-fast"))
             expect(fast).toMatchObject({
@@ -176,6 +184,8 @@ describe("opencode.plus.cliproxyapi catalogue", () => {
               body: { service_tier: "priority" },
               limit: { context: 200_000, output: 128_000 },
             })
+            // The user's smaller context cannot hold the catalogue's 272k prompt budget.
+            expect(fast?.limit.input).toBeUndefined()
             expect(fast?.variants.map((variant) => String(variant.id))).toEqual([
               "low",
               "medium",
@@ -209,7 +219,7 @@ describe("opencode.plus.cliproxyapi catalogue", () => {
           )
           expect(seen.queries.slice(0, 2)).toEqual(["?details=true", "?client_version=0.300.0"])
           expect(astra?.variants.map((variant) => String(variant.id))).toEqual(["low", "high"])
-          expect(astra?.limit.context).toBe(272_000)
+          expect(astra?.limit).toEqual({ context: 400_000, input: 272_000, output: 128_000 })
           expect((yield* models.get(providerID, Model.ID.make("gpt-6-astra-fast")))?.body).toEqual({
             service_tier: "priority",
           })
