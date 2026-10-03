@@ -206,14 +206,13 @@ test("every Basic role names only tools its member preset ships on, and forbids 
     // Every team and search tool the text it reads names is on for the member.
     const named = [...new Set(read.match(/\b(team_[a-z_]+|search_[a-z_]+)\b/g) ?? [])]
     expect([member.id, named.filter((tool) => states[`tool:${tool}`] !== "on")]).toEqual([member.id, []])
-    // A member told it cannot edit has no file tool; one told it writes only
-    // plan files edits nothing else.
-    if (/You cannot edit/.test(member.body))
-      expect([member.id, ["edit", "write", "patch"].filter((tool) => states[`tool:${tool}`] !== "off")]).toEqual([member.id, []])
-    if (/write only (plan|Brief)/i.test(member.body))
-      expect([member.id, states["perm:edit:allowed.*"], states["perm:edit:allowed.plans"]]).toEqual([member.id, "off", "on"])
-    // One told it has no shell has none.
-    if (/You have no shell|cannot run\s+commands/.test(member.body)) expect([member.id, states["tool:shell"]]).toEqual([member.id, "off"])
+    // Role text says what to do, never what the member lacks: its tool list
+    // shows what it has and a refusal says what it may not, and a claim like
+    // "you have no shell" stays wrong once someone turns that row on.
+    expect([member.id, member.body.match(/\b(you have no|you cannot (edit|run)|cannot run (commands|checks)|no shell)\b/gi)]).toEqual([member.id, null])
+    // What a role says about the shell reaches only a member that has one.
+    for (const section of member.body.split(/^(?=## )/m).filter((part) => /\bshell\b/i.test(part)))
+      expect([member.id, section.includes("<!-- requires: tool:shell -->")]).toEqual([member.id, true])
     // Only the build seat, the user's own chat, keeps the configuration, release,
     // monitor, browser and session tools and their teaching rows.
     const seatOnly = ["tool:instructions_set", "tool:release_request", "tool:monitor_query", "tool:browser_navigate", "tool:opencode_session_move", "system:opencodeplus", "skill:instructions-tools", "skill:opencodeplus-release", "skill:report", "tool:websearch"]
@@ -240,6 +239,7 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "delegating/briefs",
     "orchestrator",
     "orchestrator/ownership",
+    "orchestrator/shell",
     "orchestrator/splitting-the-work",
     "orchestrator/integration-checks",
     "orchestrator/following-children",

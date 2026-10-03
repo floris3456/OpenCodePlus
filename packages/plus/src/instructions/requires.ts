@@ -236,7 +236,7 @@ export function mentionWarnings(
 // (team_status, search_exa_code_search, opencodeplus-release) counts anywhere
 // as a whole word. A plain word that is also English (edit, shell, report,
 // question) counts only where it reads as the tool: in backticks, or as "edit
-// tool" / "pilotty skill". "You have no shell" says what is missing; it is not
+// tool" / "pilotty skill". "Use the shell to build" reads as the word, not
 // a mention to cover.
 export function mentions(text: string, word: string): boolean {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
