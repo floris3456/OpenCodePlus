@@ -269,7 +269,7 @@ export const layer = Layer.effect(
 
       // A local summary resolves the compaction agent's overrides first, and the checkpoint belongs to the
       // context those overrides produce — its model and instructions, not the trigger's.
-      return yield* localize(trigger).pipe(
+      return yield* localize(trigger, decision.compactionModel).pipe(
         Effect.catch((cause) => Effect.fail<Failure>({ error: toSessionError(cause) })),
         Effect.flatMap((owner) => summarize(owner, budget, settings.keep).pipe(settle(owner))),
         Effect.catch((failure) => publish(trigger, failure)),
@@ -289,14 +289,18 @@ export const layer = Layer.effect(
 
     /**
      * The local summary path resolves the compaction agent's model and system overrides. The maintenance
-     * `compaction` agent supplies defaults the active agent may partially override. A provider checkpoint hides
-     * the durable transcript it replaced, so local summaries always read it back from history.
+     * `compaction` agent supplies defaults the active agent may partially override. A model chosen by the
+     * compaction decision outranks both. A provider checkpoint hides the durable transcript it replaced, so
+     * local summaries always read it back from history.
      */
-    const localize = Effect.fn("SessionCompaction.localize")(function* (trigger: Trigger) {
+    const localize = Effect.fn("SessionCompaction.localize")(function* (
+      trigger: Trigger,
+      chosen?: Agent.Compaction["model"],
+    ) {
       const context = trigger.context
       const fallback = yield* agents.get(Agent.ID.make("compaction"))
       const config = context.agent.info.compaction
-      const ref = config?.model ?? fallback?.model
+      const ref = chosen ?? config?.model ?? fallback?.model
       const model = ref
         ? yield* models.resolve({ ...context.session, model: ref }, modelCatalog.available)
         : context.model

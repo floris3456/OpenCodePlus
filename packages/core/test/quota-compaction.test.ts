@@ -76,12 +76,21 @@ const resolved = SessionRunnerModel.resolved(model, {
   cost,
   limit: { context: 200_000, output: 32_000 },
 })
+// A separate, cheaper model a compaction decision can choose for the summary.
+const cheap = SessionRunnerModel.resolved(
+  LanguageModel.make({ id: "cheap-summary", provider: "cheap", route: OpenAIChat.route }),
+  {
+    capabilities: { tools: true, input: ["text"], output: ["text"] },
+    cost,
+    limit: { context: 1_000_000, output: 32_000 },
+  },
+)
 const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
 const models = Layer.mock(SessionRunnerModel.Service)({
   resolve: ({ model }) =>
     model?.providerID === "missing" && model?.id === "summary"
       ? Effect.fail(new SessionRunnerModel.ModelUnavailableError({ providerID: model.providerID, modelID: model.id }))
-      : Effect.succeed(resolved),
+      : Effect.succeed(model?.providerID === "cheap" ? cheap : resolved),
 })
 const catalog = Layer.mock(Model.Service, { available: () => Effect.succeed([]) })
 const it = testEffect(
@@ -193,6 +202,81 @@ for (const auto of [true, false])
       expect(compactionBoundary(durable).checkpoint).toBe(durable[0]?.id)
     }),
   )
+for (const chosen of [true, false])
+  it.effect(
+    `a decision's compaction model ${chosen ? "writes" : "is absent:"} the summary; the session keeps its model`,
+    () =>
+      Effect.gen(function* () {
+        const hooks = yield* PluginHooks.Service
+        const compaction = yield* SessionCompaction.Service
+        const store = yield* SessionStore.Service
+        const session = yield* insertSession(Session.ID.make(`ses_quota_summary_model_${chosen}`))
+        yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+        const messages: SessionMessage.Info[] = [
+          {
+            id: SessionMessage.ID.create(),
+            type: "user",
+            text: "Keep this task",
+            time: { created: DateTime.makeUnsafe(0) },
+          },
+        ]
+        yield* hooks.register("session", "compaction.decide", (event) =>
+          Effect.sync(() => {
+            event.compact = true
+            event.portable = true
+            if (chosen) event.compactionModel = cheap.ref
+          }),
+        )
+        requests = []
+        const context = loaded(session, messages)
+        const outcome = yield* compaction.compact({ reason: "auto", context })
+        expect(outcome.status).toBe("completed")
+        // The summary request went to the chosen model; without a choice it stays on the session model.
+        expect(requests.map((request) => String(request.model.id))).toEqual([
+          chosen ? "cheap-summary" : "summary-model",
+        ])
+        const durable = yield* store.context(session.id)
+        expect(durable[0]).toMatchObject({
+          type: "compaction",
+          status: "completed",
+          model: chosen ? { providerID: "cheap", id: "cheap-summary" } : { providerID: "test", id: "summary-model" },
+        })
+        // The trigger's context, and so the model of the next step, is untouched.
+        expect(context.model.ref).toEqual(resolved.ref)
+      }),
+  )
+it.effect("a compaction model that does not resolve fails the compaction without a checkpoint", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_quota_summary_model_missing"))
+    yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.compactionModel = Model.Ref.make({
+          providerID: Provider.ID.make("missing"),
+          id: Model.ID.make("summary"),
+        })
+      }),
+    )
+    requests = []
+    const messages: SessionMessage.Info[] = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this task",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    const outcome = yield* compaction.compact({ reason: "auto", context: loaded(session, messages) })
+    expect(outcome.status).toBe("failed")
+    expect(requests).toEqual([])
+    expect(compactionBoundary(yield* store.context(session.id)).checkpoint).toBeUndefined()
+  }),
+)
 it.effect("typed refusal and failed compaction cannot fabricate a checkpoint", () =>
   Effect.gen(function* () {
     const hooks = yield* PluginHooks.Service

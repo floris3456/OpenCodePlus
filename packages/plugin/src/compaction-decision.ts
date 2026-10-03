@@ -21,6 +21,11 @@ export interface SessionCompactionDecision {
   compact?: boolean
   /** Require a local text checkpoint without account-bound provider state. */
   portable?: boolean
+  /**
+   * Write the local summary with this model instead of the agent's compaction model. The session keeps
+   * its own model. Remote (provider-native) compaction ignores it.
+   */
+  compactionModel?: Model.Ref
   metadata?: Record<string, unknown>
   refusal?: SessionError.Error
 }
