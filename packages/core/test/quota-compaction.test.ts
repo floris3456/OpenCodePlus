@@ -50,6 +50,9 @@ const cost = [
 const client = Layer.mock(LLMClient.Service)({
   stream: (request: LLMRequest) => {
     requests.push(request)
+    // A model the provider refuses (for example an alias CPA no longer serves).
+    if (request.model.id === "broken-summary")
+      return Stream.make(LLMEvent.providerError({ message: "unknown provider for model broken-summary" }))
     return Stream.make(
       LLMEvent.textDelta({ id: "summary", text: "## Objective\n- manual summary" }),
       LLMEvent.stepFinish({
@@ -85,12 +88,20 @@ const cheap = SessionRunnerModel.resolved(
     limit: { context: 1_000_000, output: 32_000 },
   },
 )
+const broken = SessionRunnerModel.resolved(
+  LanguageModel.make({ id: "broken-summary", provider: "broken", route: OpenAIChat.route }),
+  {
+    capabilities: { tools: true, input: ["text"], output: ["text"] },
+    cost,
+    limit: { context: 1_000_000, output: 32_000 },
+  },
+)
 const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
 const models = Layer.mock(SessionRunnerModel.Service)({
   resolve: ({ model }) =>
     model?.providerID === "missing" && model?.id === "summary"
       ? Effect.fail(new SessionRunnerModel.ModelUnavailableError({ providerID: model.providerID, modelID: model.id }))
-      : Effect.succeed(model?.providerID === "cheap" ? cheap : resolved),
+      : Effect.succeed(model?.providerID === "cheap" ? cheap : model?.providerID === "broken" ? broken : resolved),
 })
 const catalog = Layer.mock(Model.Service, { available: () => Effect.succeed([]) })
 const it = testEffect(
@@ -275,6 +286,86 @@ it.effect("a compaction model that does not resolve fails the compaction without
     expect(outcome.status).toBe("failed")
     expect(requests).toEqual([])
     expect(compactionBoundary(yield* store.context(session.id)).checkpoint).toBeUndefined()
+  }),
+)
+const missingModel = Model.Ref.make({ providerID: Provider.ID.make("missing"), id: Model.ID.make("summary") })
+for (const [first, why] of [
+  [missingModel, "does not resolve"],
+  [broken.ref, "is refused by the provider"],
+] as const)
+  it.effect(`a compaction model that ${why} falls back within the same compaction`, () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const compaction = yield* SessionCompaction.Service
+      const store = yield* SessionStore.Service
+      const session = yield* insertSession(Session.ID.make(`ses_quota_fallback_${first.providerID}`))
+      yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+      yield* hooks.register("session", "compaction.decide", (event) =>
+        Effect.sync(() => {
+          event.compact = true
+          event.portable = true
+          event.compactionModel = first
+          event.compactionFallback = cheap.ref
+        }),
+      )
+      requests = []
+      const messages: SessionMessage.Info[] = [
+        {
+          id: SessionMessage.ID.create(),
+          type: "user",
+          text: "Keep this task",
+          time: { created: DateTime.makeUnsafe(0) },
+        },
+      ]
+      const outcome = yield* compaction.compact({ reason: "auto", context: loaded(session, messages) })
+      expect(outcome.status).toBe("completed")
+      // Only the fallback wrote the summary (a refused model is asked once, then the fallback).
+      expect(requests.map((request) => String(request.model.id))).toEqual(
+        first === broken.ref ? ["broken-summary", "cheap-summary"] : ["cheap-summary"],
+      )
+      const durable = yield* store.context(session.id)
+      // The failure stays visible as its own record; the checkpoint is the fallback's.
+      const records = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+      expect(records.map((record) => record.type === "compaction" && record.status)).toEqual(["failed", "completed"])
+      expect(durable[0]).toMatchObject({ type: "compaction", status: "completed", model: { id: "cheap-summary" } })
+      expect(compactionBoundary(durable).checkpoint).toBe(durable[0]?.id)
+    }),
+  )
+it.effect("the fallback stays unused when the compaction model works or there is nothing to compact", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.compactionModel = cheap.ref
+        event.compactionFallback = broken.ref
+      }),
+    )
+    requests = []
+    const working = yield* insertSession(Session.ID.make("ses_quota_fallback_unused"))
+    const messages: SessionMessage.Info[] = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this task",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    expect((yield* compaction.compact({ reason: "auto", context: loaded(working, messages) })).status).toBe("completed")
+    expect(requests.map((request) => String(request.model.id))).toEqual(["cheap-summary"])
+    expect(
+      (yield* store.messages({ sessionID: working.id, order: "asc", type: "compaction" })).map(
+        (m) => m.type === "compaction" && m.status,
+      ),
+    ).toEqual(["completed"])
+    requests = []
+    const empty = yield* insertSession(Session.ID.make("ses_quota_fallback_empty"))
+    expect((yield* compaction.compact({ reason: "auto", context: loaded(empty, []) })).status).toBe("failed")
+    expect(requests).toEqual([])
   }),
 )
 it.effect("typed refusal and failed compaction cannot fabricate a checkpoint", () =>

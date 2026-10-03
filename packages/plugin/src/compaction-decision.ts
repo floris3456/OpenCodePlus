@@ -26,6 +26,11 @@ export interface SessionCompactionDecision {
    * its own model. Remote (provider-native) compaction ignores it.
    */
   compactionModel?: Model.Ref
+  /**
+   * When the local summary fails with `compactionModel` (or the agent's compaction model), record that
+   * failure and write the summary with this model instead, within the same compaction.
+   */
+  compactionFallback?: Model.Ref
   metadata?: Record<string, unknown>
   refusal?: SessionError.Error
 }

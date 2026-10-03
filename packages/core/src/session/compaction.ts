@@ -254,14 +254,15 @@ export const layer = Layer.effect(
           },
         })
       const native = strategy === "remote" || (strategy === "auto" && context.model.compaction?.type === "native")
+      const completed = (owner: Trigger, result: Result) =>
+        publish(owner, {
+          ...result,
+          ...(decision.portable ? { providerState: undefined } : {}),
+          metadata: { ...result.metadata, ...decision.metadata },
+        })
       const settle = (owner: Trigger) =>
         Effect.matchEffect({
-          onSuccess: (result: Result) =>
-            publish(owner, {
-              ...result,
-              ...(decision.portable ? { providerState: undefined } : {}),
-              metadata: { ...result.metadata, ...decision.metadata },
-            }),
+          onSuccess: (result: Result) => completed(owner, result),
           onFailure: (failure: Failure) => publish(owner, failure),
         })
 
@@ -269,10 +270,31 @@ export const layer = Layer.effect(
 
       // A local summary resolves the compaction agent's overrides first, and the checkpoint belongs to the
       // context those overrides produce — its model and instructions, not the trigger's.
-      return yield* localize(trigger, decision.compactionModel).pipe(
-        Effect.catch((cause) => Effect.fail<Failure>({ error: toSessionError(cause) })),
-        Effect.flatMap((owner) => summarize(owner, budget, settings.keep).pipe(settle(owner))),
-        Effect.catch((failure) => publish(trigger, failure)),
+      const local = (chosen: Agent.Compaction["model"]) =>
+        localize(trigger, chosen).pipe(
+          Effect.catch((cause) => Effect.fail<Failure>({ error: toSessionError(cause) })),
+          Effect.flatMap((owner) =>
+            summarize(owner, budget, settings.keep).pipe(Effect.map((result) => ({ owner, result }))),
+          ),
+        )
+      const fallback = decision.compactionFallback
+      return yield* local(decision.compactionModel).pipe(
+        // A summary the chosen model could not write is recorded as a failed compaction, then written by the
+        // fallback model. Nothing to compact is not a model problem, so it does not fall back.
+        Effect.catch((failure) =>
+          fallback === undefined || failure.error.type === "compaction.unavailable"
+            ? Effect.fail(failure)
+            : Effect.gen(function* () {
+                // A manual compaction owns one record (its /compact item); the fallback completes that record.
+                if (trigger.reason !== "manual") yield* publish(trigger, failure)
+                spent.delete(context.session.id)
+                return yield* local(fallback)
+              }),
+        ),
+        Effect.matchEffect({
+          onSuccess: ({ owner, result }) => completed(owner, result),
+          onFailure: (failure) => publish(trigger, failure),
+        }),
       )
     })
 
