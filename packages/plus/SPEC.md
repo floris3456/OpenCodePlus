@@ -1775,7 +1775,10 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
   delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
   `supersede`, `stop`, `status`, `list` off; Worktree committed before done and
-  Scope paths for a commit on.
+  Scope paths for a commit on. Its shell's Commands list ships closed with the
+  pilotty row open (Every other command off, `commands.pilotty` on), moot while
+  `tool:shell` is off: a level that turns `tool:shell` and `skill:pilotty` on
+  gives it a shell for live tests that drives terminals and runs nothing else.
 - **reviewer** — as implementer's worker rows, with every team tool but
   `finish`, `diff`, `get_context` off, and Corrections by followup off.
 - **scout** — as reviewer without `diff` (it changes nothing), taking

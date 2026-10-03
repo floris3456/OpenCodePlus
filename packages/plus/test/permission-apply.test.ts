@@ -224,12 +224,10 @@ test("a planner-preset member's shell merges and makes worktrees, and refuses ev
 test("a closed shell allow-list runs only what its rows open, each command of a chain on its own", async () => {
   const { evaluate } = await import("../../core/src/permission.js")
   const { ShellParse } = await import("../../core/src/shell/parse.js")
+  // The implementer preset ships the list closed with pilotty open: turning
+  // its shell on is all a member needs to drive terminals and nothing else.
   const tester = linked("Flash-Implementer", "implementer")
-  const closed = [
-    change(tester, "tool:shell", { state: "on" }),
-    change(tester, "perm:shell:commands.*", { state: "off" }),
-    change(tester, "perm:shell:commands.pilotty", { state: "on" }),
-  ]
+  const closed = [change(tester, "tool:shell", { state: "on" })]
   const members = presetInput({ members: [tester], records: closed })
   const rules = await rulesAfterApply(tester.id, members)
   // What core decides for a command line: the first part it refuses, if any.
@@ -255,10 +253,13 @@ test("a closed shell allow-list runs only what its rows open, each command of a 
   expect(shell("pilotty wait-for -s t1 Ready")).toBeUndefined()
   // With the pilotty row off nothing runs; with Every other command on the
   // allow row changes nothing.
-  const none = await rulesAfterApply(tester.id, presetInput({ members: [tester], records: closed.slice(0, 2) }))
+  const none = await rulesAfterApply(tester.id, presetInput({ members: [tester], records: [...closed, change(tester, "perm:shell:commands.pilotty", { state: "off" })] }))
   expect(evaluate("shell", "pilotty list-sessions", none)).toMatchObject({ effect: "deny", message: "shell commands are not allowed here" })
-  const open = await rulesAfterApply(tester.id, presetInput({ members: [tester], records: [closed[0] as CustomizationRecord, closed[2] as CustomizationRecord] }))
+  const open = await rulesAfterApply(tester.id, presetInput({ members: [tester], records: [...closed, change(tester, "perm:shell:commands.*", { state: "on" })] }))
   expect(evaluate("shell", "git status", open).effect).not.toBe("deny")
+  // A member of any other preset keeps its own shell: the list is the implementer's.
+  const lead = linked("Orchestrator", "orchestrator")
+  expect(evaluate("shell", "git status", await rulesAfterApply(lead.id, presetInput({ members: [lead] }))).effect).not.toBe("deny")
 })
 
 test("Where and a Files fallback are checked on the call: closing them installs no core rule an allow could fight", async () => {

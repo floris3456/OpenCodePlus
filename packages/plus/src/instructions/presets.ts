@@ -317,6 +317,11 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     // The files its checks run are its delegator's (an orchestrator writes the
     // tests): it commits one only when its Brief's scope.paths names it.
     ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths", "perm:team_checkpoint:requirements.check-files"]),
+    // An implementer given a shell (tool:shell and skill:pilotty on, for live
+    // tests) drives terminals with pilotty and runs nothing else, until a level
+    // opens Every other command. Moot while the shell is off.
+    ...rows(off, ["perm:shell:commands.*"]),
+    ...rows(on, ["perm:shell:commands.pilotty"]),
   },
   reviewer: {
     ...worker,
