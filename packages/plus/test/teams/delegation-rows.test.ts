@@ -199,7 +199,9 @@ test("an orchestrator's preset turns off the shell rows that change files, commi
     "perm:shell:git-rewrite",
     "perm:shell:rm",
     "perm:shell:commands.git-changes",
+    "perm:shell:commands.git-merge",
     "perm:shell:commands.git-refs",
+    "perm:shell:commands.git-worktree-add",
     "perm:shell:commands.file-writes",
   ]
   for (const orchestrator of orchestrators) {

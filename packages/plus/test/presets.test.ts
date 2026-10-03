@@ -496,6 +496,7 @@ test("every Basic member preset override names a row that exists", async () => {
   expect(same.toSorted()).toEqual(
     [
       // Stated on purpose: the member's own team rules, whatever the catalogue ships.
+      "basic › planner: tool:shell",
       "basic › planner: tool:question",
       "basic › planner: perm:edit:allowed.plans",
       "basic › planner: perm:team_get_context:bootstrap.chat",

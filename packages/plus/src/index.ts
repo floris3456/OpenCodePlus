@@ -4004,6 +4004,15 @@ async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeo
       summary: "migrate.skills: per-skill permission rows' states moved onto the skills (one switch per skill)",
       revision: migration.revision,
     })
+  if (migration.splitsMigrated)
+    await append(globalLogPath(), {
+      ts: new Date().toISOString(),
+      actor: { type: "tui" as const },
+      op: "migrate.splits",
+      target: "root:defaults",
+      summary: "migrate.splits: git merge and git worktree add rows took the state of the shell family they were split from",
+      revision: migration.revision,
+    })
   return migration.loaded
 }
 

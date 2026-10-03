@@ -65,7 +65,9 @@ const planners = new Set(["planner"])
 // coordinators and the chat's build seat (only the build seat also keeps the
 // subagent tool; only the orchestrator and the build seat run shell commands).
 const coordinators = new Set(["orchestrator", "planner", "build-seat"])
-const shellOpen = new Set(["orchestrator", "build-seat"])
+// A planner's shell keeps a release's main line: git merge and git worktree
+// add, every family that changes files, commits or refs otherwise off.
+const shellOpen = new Set(["orchestrator", "planner", "build-seat"])
 const secretsClosed = ["planner", "orchestrator", "implementer", "reviewer", "scout"]
 
 // The host's own tools plus the team namespace as Plus registers it: direct
@@ -106,8 +108,11 @@ test("enabling basic installs all six members with mode, description, and their 
     )
     // Paths outside the checkout: open for coordinators, closed for workers.
     expect([id, has("external_directory", "*", "deny")]).toEqual([id, !coordinators.has(id)])
-    // Orchestrators change no files, commits or refs from the shell.
-    expect([id, has("shell", "git push *", "deny"), has("shell", "git stash", "deny")]).toEqual([id, orchestrators.has(id), orchestrators.has(id)])
+    // Orchestrators and planners change no files, commits or refs from the
+    // shell; only a planner merges and makes worktrees.
+    const shellClosed = orchestrators.has(id) || planners.has(id)
+    expect([id, has("shell", "git push *", "deny"), has("shell", "git stash", "deny")]).toEqual([id, shellClosed, shellClosed])
+    expect([id, has("shell", "git merge *", "deny"), has("shell", "git worktree add *", "deny")]).toEqual([id, orchestrators.has(id), orchestrators.has(id)])
     // Landing is a tool row: a planner lands what its orchestrator reports
     // done in the user's checkout; workers land nothing.
     expect([id, has("team.integrate", "*", "deny")]).toEqual([id, !coordinators.has(id)])

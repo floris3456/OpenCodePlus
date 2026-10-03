@@ -501,16 +501,22 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
           id: "git-changes",
           label: "Git working-tree changes",
           on: true,
-          patterns: ["git add *", "git stash", "git stash *", "git clean *", "git restore *", "git switch *", "git merge *", "git cherry-pick *", "git revert *", "git rm *", "git mv *", "git apply *", "git am *", "git pull", "git pull *"],
+          patterns: ["git add *", "git stash", "git stash *", "git clean *", "git restore *", "git switch *", "git cherry-pick *", "git revert *", "git rm *", "git mv *", "git apply *", "git am *", "git pull", "git pull *"],
           message: "changing the git working tree is not allowed here",
         },
+        // Merging and making a worktree are rows of their own, split from the two
+        // families above, so a member that keeps a release's main line (a Basic
+        // planner) may merge into it and make worktrees from it and nothing else.
+        // store.ts migrateSplitRows carries an earlier "off" of a family over.
+        { id: "git-merge", label: "Git merge", on: true, patterns: ["git merge *"], message: "merging is not allowed here" },
         {
           id: "git-refs",
           label: "Git branches, tags and worktrees",
           on: true,
-          patterns: ["git branch -d *", "git branch -D *", "git branch -m *", "git branch -M *", "git branch -f *", "git tag *", "git update-ref *", "git worktree add *", "git worktree remove *", "git worktree prune *", "git worktree move *"],
+          patterns: ["git branch -d *", "git branch -D *", "git branch -m *", "git branch -M *", "git branch -f *", "git tag *", "git update-ref *", "git worktree remove *", "git worktree prune *", "git worktree move *"],
           message: "changing git refs or worktrees is not allowed here",
         },
+        { id: "git-worktree-add", label: "Git worktree add", on: true, patterns: ["git worktree add *"], message: "making git worktrees is not allowed here" },
         {
           id: "file-writes",
           label: "Writing files from the shell",

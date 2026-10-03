@@ -304,7 +304,7 @@ Expand `Commands`. `Every other command`, the category's Everything else row, co
 ```
 tool: shell · rule: commands.git-refs
 enforced by: core rule on shell: off refuses what the patterns match
-patterns: git branch -d *, git branch -D *, git branch -m *, git branch -M *, git branch -f *, git tag *, git update-ref *, git worktree add *, git worktree remove *, git worktree prune *, git worktree move *
+patterns: git branch -d *, git branch -D *, git branch -m *, git branch -M *, git branch -f *, git tag *, git update-ref *, git worktree remove *, git worktree prune *, git worktree move *
 keywords: (none)
 provenance: (curated)
 message: changing git refs or worktrees is not allowed here

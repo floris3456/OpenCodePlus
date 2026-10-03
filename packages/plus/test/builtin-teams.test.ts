@@ -231,10 +231,10 @@ test("every Basic body splits into Team member, Delegating and role sections", (
   const ids = (member: Parameters<typeof basicBody>[0]) => derive(basicBody(member), "Role/persona").sections.map((section) => section.id)
   const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety"]
   const delegating = ["delegating", "delegating/briefs", "delegating/integration-checks"]
-  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks", "implementer/outside-your-scope"])
+  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks", "implementer/outside-your-scope", "implementer/worktrees"])
   expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/findings"])
   expect(ids("scout")).toEqual([...shared, "scout", "scout/task", "scout/answer"])
-  expect(ids("planner")).toEqual([...shared, ...delegating, "planner", "planner/the-plan", "planner/questions", "planner/hand-off"])
+  expect(ids("planner")).toEqual([...shared, ...delegating, "planner", "planner/the-plan", "planner/questions", "planner/hand-off", "planner/worktrees", "planner/merges"])
   expect(ids("orchestrator")).toEqual([
     ...shared,
     ...delegating,
@@ -244,6 +244,7 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "orchestrator/splitting-the-work",
     "orchestrator/following-children",
     "orchestrator/review-and-finish",
+    "orchestrator/worktrees",
   ])
   // The build seat is never delegated to: no Reporting section.
   expect(ids("build-seat")).toEqual([
@@ -254,6 +255,8 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     "build-seat/subagents",
     "build-seat/choosing-a-member",
     "build-seat/following-runs",
+    "build-seat/worktrees",
+    "build-seat/merges",
   ])
 })
 
