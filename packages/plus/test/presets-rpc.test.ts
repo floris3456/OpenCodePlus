@@ -709,7 +709,7 @@ test("a team tool row that is off installs a core team.<tool> deny for direct an
     namespace: "team",
     codemode,
   })
-  const items = [teamTool("delegate", false), teamTool("integrate", true), teamTool("status", true)]
+  const items = [teamTool("delegate", false), teamTool("integrate", true), teamTool("check", true)]
   const run = async (preset: string | undefined, member: boolean) => {
     const agents = agentHarness([agentInfo("ocp-alice", "")])
     const team = { level: "project" as const, team: "crew" }
@@ -725,17 +725,17 @@ test("a team tool row that is off installs a core team.<tool> deny for direct an
     })
     return (agents.state.get("ocp-alice")?.permissions ?? []).map((rule) => `${rule.effect} ${rule.action} ${rule.resource}`)
   }
-  // Plus implementer: team_delegate and team_integrate off, team_status on.
+  // Plus implementer: team_delegate and team_integrate off, team_check on.
   const implementer = await run("implementer", true)
   expect(implementer).toContain("deny team.delegate *")
   expect(implementer).toContain("deny team.integrate *")
-  expect(implementer).not.toContain("deny team.status *")
+  expect(implementer).not.toContain("deny team.check *")
   // No preset: every team tool falls back to off and refuses.
   const bare = await run(undefined, true)
-  expect(bare).toEqual(expect.arrayContaining(["deny team.delegate *", "deny team.integrate *", "deny team.status *"]))
+  expect(bare).toEqual(expect.arrayContaining(["deny team.delegate *", "deny team.integrate *", "deny team.check *"]))
   // A non-member has the whole namespace denied, and nothing per tool.
   const outsider = await run(undefined, false)
   expect(outsider).toContain("deny team.* *")
-  expect(outsider.some((rule) => /^deny team\.(delegate|integrate|status) /.test(rule))).toBe(false)
+  expect(outsider.some((rule) => /^deny team\.(delegate|integrate|check) /.test(rule))).toBe(false)
 })
 

@@ -225,13 +225,33 @@ What the Basic member presets set (on = permitted):
 passwords, frozen team run configs and session databases.
 ² edit → Files it may change: `docs/plans/` and `docs/handoffs/`.
 
-Team tools are tool rows: a planner lacks `checkpoint`, `integrate`,
-`set_checks` and `check`; an orchestrator lacks `checkpoint`; an implementer
-keeps only `checkpoint`, `finish`, `status`, `diff`, `get_context` and
-`check`; reviewers and scouts only `finish`, `status`, `diff` and
-`get_context`; a build seat has all fourteen. `followup`, `stop`, `supersede`
-and `diff` never reach past a member's own run and direct children until you
-turn its `Runs` rows on.
+Team tools are tool rows: a planner lacks `integrate`, `set_checks` and
+`check` (it keeps `checkpoint` to commit its plan file when delegated); an
+orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
+`finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`
+and `get_context`; a scout only `finish` and `get_context`; a build seat has
+every team tool but `finish` and `checkpoint` (nobody delegates to it, and its
+chat run has no scope to commit in). Workers have no `status`: they address
+only their own run, which `get_context` describes. `followup`, `stop`,
+`supersede` and `diff` never reach past a member's own run and direct children
+until you turn its `Runs` rows on.
+
+**Where a Basic member's instructions live.** Each kind of guidance has one
+home, so nothing is said twice or contradicts itself:
+
+- *Role/persona* (`builtin-teams.ts`): who does what and when. The body is
+  markdown in three parts — `# Team member` (every member), `# Delegating`
+  (members who delegate; it names exactly its targets' Brief rules) and
+  `# <Role>` — each split into `##` sections, so the Instructions tree shows
+  one section row per part that a level can turn off or rewrite alone.
+- *Tool descriptions*: what a tool does and when to call it; the first line
+  stands alone, because a Code Mode catalog shows only that line.
+- *Input schema field descriptions* (`teams/schema.ts`): how each value must
+  look — check commands, the HEAD `checkpoint` and `integrate` expect, commit
+  message types, summary limits, what each report status requires — so a call
+  is right the first time instead of learning from a refusal. A test keeps
+  every field of every team tool described.
+- *The rendered Brief and each settlement*: the facts of one run (below).
 
 "Briefs it accepts" and "Brief limits" (under `team_get_context`) are read for
 the member a brief **names**, not for the one delegating: A reason, A check,
@@ -346,10 +366,31 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   is delivered when that child next goes idle, as a new attempt.
   `delivery:"now"` against a working child refuses with `E_BUSY` and
   `accepted: {"delivery":"queue"}`.
-- A settled child puts one `child.settled` item in its parent's inbox naming
-  the run, the attempt, the report status and the report path. It is sent once
+- A settled child puts one `child.settled` item in its parent's inbox: the
+  run, the attempt and the status, then the whole report (summary, commits,
+  checks, uncommitted files, needs, concerns, deferred, findings) and one
+  `next:` line for what that outcome calls for (land a commit, weigh concerns,
+  answer needs, re-scope a rejection, inspect a run that ended without a
+  report). The parent needs no call to read the report file. It is sent once
   (`notified` on the attempt). An idle parent is prompted with it now; a
   working parent gets it through its own idle handoff.
+- The Brief a child receives (`brief.ts`) has no empty sections; says what
+  done means for its deliverable; marks a read-only task as such; states the
+  budget as a guide, not a limit (tokens and time; Plus never stops a run over
+  budget); and attaches a `briefFile` inline up to 40 KB — the only way an
+  uncommitted file reaches a child, whose worktree starts at the parent's last
+  commit. A `findings` Brief gains a Review section: the exact `team_diff`
+  call that shows the change (from the delegating run's base to the
+  reviewer's own start) and the delegating run's check results there, since a
+  reviewer can neither run checks nor read another run.
+- `team_integrate` that does not land returns the real state: `conflict`
+  (with `conflictFiles`) or `red` (with `redChecks`), the `reworkTask` id a
+  fresh child's Brief claims in `task`, and a `next` line; `paused` when the
+  queue waits for a clean parent.
+- `team_get_context` reports the worktree's live `head`, the value
+  `checkpoint` and `integrate` compare against.
+- A `finish` finding's severity is `error`, `warning` or `note` (a located
+  fact, how a scout answers).
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
   2000 ms) carries dead-run reconciliation and worktree garbage collection (`gc`),
   forked on the plugin scope so it stops with the plugin.

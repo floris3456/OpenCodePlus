@@ -5,7 +5,10 @@ import os from "node:os"
 import path from "node:path"
 import { validateAgentId } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
-import { builtinTeams } from "../src/instructions/builtin-teams.js"
+import { Schema } from "effect"
+import { basicBody, builtinTeams } from "../src/instructions/builtin-teams.js"
+import { derive } from "../src/instructions/sections.js"
+import * as TeamSchema from "../src/teams/schema.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { validateTeamName } from "../src/instructions/teams.js"
 import { teamTools } from "../src/teams/policy.js"
@@ -93,12 +96,15 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     members: presets.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
   })
   const ceilings: Record<string, readonly string[]> = {
-    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "get_context", "diff"],
+    // A planner commits its plan file when delegated; workers address only
+    // their own run, which get_context describes (no status); a scout changes
+    // nothing (no diff); the build seat, never delegated to, finishes nothing.
+    planner: ["delegate", "followup", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
     orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
-    implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    reviewer: ["finish", "status", "get_context", "diff"],
-    scout: ["finish", "status", "get_context", "diff"],
-    "build-seat": teamTools,
+    implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
+    reviewer: ["finish", "get_context", "diff"],
+    scout: ["finish", "get_context"],
+    "build-seat": teamTools.filter((tool) => tool !== "finish" && tool !== "checkpoint"),
   }
   for (const member of presets) {
     const states = resolvedStates(input, member.id)
@@ -203,4 +209,77 @@ test("every Basic role names only tools its member preset ships on, and forbids 
     const expected = member.id === "build-seat" ? "on" : "off"
     expect([member.id, seatOnly.filter((id) => states[id] !== expected)]).toEqual([member.id, []])
   }
+})
+
+
+// Each part of a Basic body is its own section row in the Instructions tree
+// (derived from its headings), so a level can turn off or rewrite one part
+// without copying the rest: what every member shares, how a delegator writes
+// Briefs, and the role itself.
+test("every Basic body splits into Team member, Delegating and role sections", () => {
+  const ids = (member: Parameters<typeof basicBody>[0]) => derive(basicBody(member), "Role/persona").sections.map((section) => section.id)
+  const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety", "team-member/sources"]
+  expect(ids("implementer")).toEqual([...shared, "implementer", "implementer/task", "implementer/checks-and-commits", "implementer/outside-your-scope"])
+  expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/findings"])
+  expect(ids("scout")).toEqual([...shared, "scout", "scout/task", "scout/answer"])
+  expect(ids("planner")).toEqual([...shared, "delegating", "delegating/briefs", "planner", "planner/the-plan", "planner/questions", "planner/limits", "planner/hand-off"])
+  expect(ids("orchestrator")).toEqual([
+    ...shared,
+    "delegating",
+    "delegating/briefs",
+    "orchestrator",
+    "orchestrator/ownership",
+    "orchestrator/splitting-the-work",
+    "orchestrator/integration-checks",
+    "orchestrator/following-children",
+    "orchestrator/review-and-finish",
+  ])
+  // The build seat is never delegated to: no Reporting section.
+  expect(ids("build-seat")).toEqual([
+    ...shared.filter((id) => id !== "team-member/reporting"),
+    "delegating",
+    "delegating/briefs",
+    "build-seat",
+    "build-seat/role",
+    "build-seat/choosing-a-member",
+    "build-seat/following-runs",
+  ])
+})
+
+// A Basic body names only its own delegation targets' Brief rules, so a
+// planner is not told about implementers it can never reach.
+test("a delegator's Briefs section names exactly its targets' Brief rules", () => {
+  const rules = (member: Parameters<typeof basicBody>[0]) => basicBody(member).match(/^Required: .*$/m)?.[0]
+  expect(rules("planner")).toBe("Required: an orchestrator's Brief needs a reason.")
+  expect(rules("orchestrator")).toBe("Required: an orchestrator's Brief needs a reason; an implementer's commit Brief needs scope.paths.")
+  expect(rules("build-seat")).toContain("a planner's scope.paths are its plan files only")
+  for (const worker of ["implementer", "reviewer", "scout"] as const) expect(basicBody(worker)).not.toContain("# Delegating")
+})
+
+// How a value must look rides with the tool, so a call is right the first
+// time instead of being learned from a refusal: every field a member fills
+// carries a description, on the field or on its non-null branch.
+test("every field of every team tool input carries a description", () => {
+  const inputs = {
+    team_delegate: TeamSchema.Brief,
+    team_finish: TeamSchema.Report,
+    team_followup: TeamSchema.FollowupInput,
+    team_integrate: TeamSchema.IntegrateInput,
+    team_checkpoint: TeamSchema.CheckpointInput,
+    team_set_checks: TeamSchema.SetChecksInput,
+    team_supersede: TeamSchema.SupersedeInput,
+    team_stop: TeamSchema.StopInput,
+    team_status: TeamSchema.StatusInput,
+    team_diff: TeamSchema.DiffInput,
+    team_list: TeamSchema.ListInput,
+    team_check: TeamSchema.CheckInput,
+  }
+  type Node = { description?: string; anyOf?: Node[]; properties?: Record<string, Node> }
+  const described = (node: Node) => node.description !== undefined || (node.anyOf ?? []).some((branch) => branch.description !== undefined)
+  const missing: string[] = []
+  for (const [tool, input] of Object.entries(inputs)) {
+    const schema = Schema.toJsonSchemaDocument(TeamSchema.nullTolerant(input as Schema.Top)).schema as Node
+    for (const [field, node] of Object.entries(schema.properties ?? {})) if (!described(node)) missing.push(`${tool}.${field}`)
+  }
+  expect(missing).toEqual([])
 })

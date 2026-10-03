@@ -333,7 +333,8 @@ test("a settled child puts exactly one child.settled item in a working parent's 
     expect(items[0]?.from).toBe(child.id)
     expect(items[0]?.text).toContain(child.id)
     expect(items[0]?.text).toContain("attempt 1 no_report")
-    expect(items[0]?.text).toContain("report: none")
+    expect(items[0]?.text).toContain("without team_finish")
+    expect(items[0]?.text).toContain("next: read team_status and team_diff")
     // A working parent is not prompted; its own idle drain delivers this.
     expect(sessions.prompted).toHaveLength(0)
     expect((await loadRun(root, child.id))?.attempts[0]?.notified).toBe(true)
@@ -342,7 +343,7 @@ test("a settled child puts exactly one child.settled item in a working parent's 
   })
 })
 
-test("the settlement names the report status and path when the child reported", async () => {
+test("the settlement carries the whole report and the next step, so the parent needs no read", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()
     const parent = baseRun({
@@ -365,15 +366,29 @@ test("the settlement names the report status and path when the child reported", 
     await saveRun(root, parent)
     await saveRun(root, child)
     await atomicJson(path.join(root, "runs", child.id, "report-1.json"), {
-      status: "done",
+      status: "done_with_concerns",
       summary: "Filter fixed and covered.\nmore detail",
+      concerns: ["the cache key may collide"],
+      deferred: ["docs update: out of time"],
+      findings: [{ severity: "note", path: "src/q.ts:12", detail: "filter applied here" }],
+      commits: [{ sha: "0123456789abcdef0123456789abcdef01234567", subject: "fix: filter by agent" }],
+      checks: [{ id: "q", passed: true }],
     })
     await onSessionEvent(context({ session: recordSession().domain }), root, succeededEvent("ses_child_012"))
     const items = await peek(root, parent.id)
     expect(items).toHaveLength(1)
-    expect(items[0]?.text).toContain("settled: done")
-    expect(items[0]?.text).toContain("summary: Filter fixed and covered.")
-    expect(items[0]?.text).toContain(path.join(root, "runs", child.id, "report-1.md"))
+    expect(items[0]?.text).toBe(
+      [
+        "[team] w-6666666666666666 (muse-implementer, T7) settled: done_with_concerns — attempt 1 succeeded.",
+        "Filter fixed and covered.\nmore detail",
+        "Commits: 0123456 fix: filter by agent",
+        "Checks: q pass",
+        "Concerns:\n- the cache key may collide",
+        "Deferred:\n- docs update: out of time",
+        "Findings:\n- note src/q.ts:12: filter applied here",
+        "next: weigh the concerns, then check the change with team_diff and land it with team_integrate.",
+      ].join("\n"),
+    )
   })
 })
 

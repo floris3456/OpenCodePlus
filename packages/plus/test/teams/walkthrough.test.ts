@@ -406,7 +406,7 @@ test("[20c] a non-member catalog has zero team tools; an implementer-preset memb
   expect(nonMember).toEqual({ native: [], codemode: [] })
 
   // The old implementer ceiling, which the implementer preset's tool rows reproduce.
-  const ceiling = ["checkpoint", "finish", "status", "diff", "get_context", "check"]
+  const ceiling = ["checkpoint", "finish", "diff", "get_context", "check"]
   // Direct tools whose row is off leave the member's request through its
   // tool plans (the session context hook); Code Mode ones leave the core
   // catalog through a deny on their name.

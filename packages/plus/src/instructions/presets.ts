@@ -5,7 +5,7 @@
 // Pure data and functions, no filesystem: the server, the TUI and the tools
 // all import this module and compute the same catalogue — the client from the
 // snapshot's items and records, so shipped content never crosses the wire.
-import { builtinTeams } from "./builtin-teams.js"
+import { basicDelegation, builtinTeams } from "./builtin-teams.js"
 import { controlItems, isControl } from "./agent-controls.js"
 import {
   fingerprint,
@@ -233,7 +233,10 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...secrets,
     ...unused,
     ...rows(off, ["tool:shell", "tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
-    ...teamToolRows(off, ["integrate", "checkpoint", "set_checks", "check"]),
+    // It keeps team_checkpoint: a delegated planner commits its plan file,
+    // the only way the plan reaches its parent (an uncommitted new file shows
+    // in no diff and lands nowhere).
+    ...teamToolRows(off, ["integrate", "set_checks", "check"]),
     ...reach(["status", "list"]),
     ...rows(on, [
       "tool:question",
@@ -260,25 +263,32 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
       "perm:team_get_context:accepts.reason",
     ]),
   },
+  // Workers address no run but their own, which team_get_context already
+  // describes, so team_status is off for all three; a scout changes nothing,
+  // so its own diff is always empty.
   implementer: {
     ...worker,
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "list"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "status", "list"]),
     ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths"]),
   },
   reviewer: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "status", "list", "check"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
   },
   scout: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "status", "list", "check", "diff"]),
   },
+  // The build seat is the user's chat: nobody delegates to it, so it has no
+  // report to finish, and its chat run has no scope a checkpoint could commit
+  // in (it commits with git, as the user would).
   "build-seat": {
+    ...teamToolRows(off, ["finish", "checkpoint"]),
     ...reach(["status", "list"]),
     ...rows(on, [
       "tool:shell",
@@ -301,16 +311,10 @@ function buildSeatDelegates(team: string, member: string, item: string): Shipped
   return { state: "on" }
 }
 
-// Who a Basic member delegates to, by the teammate's own member id: planners
-// hand plans to orchestrators; orchestrators split work among orchestrators,
-// implementers, reviewers and scouts and never back to a planner; the build
-// seat delegates to every member. The Basic member presets turn this into
-// their members' "Delegate to" rows below.
-const delegation: Readonly<Partial<Record<BasicMemberId, readonly BasicMemberId[]>>> = {
-  planner: ["orchestrator"],
-  orchestrator: ["orchestrator", "implementer", "reviewer", "scout"],
-  "build-seat": ["planner", "orchestrator", "implementer", "reviewer", "scout"],
-}
+// Who a Basic member delegates to lives with the bodies that describe it
+// (builtin-teams.ts basicDelegation); the member presets turn it into their
+// members' "Delegate to" rows below.
+const delegation: Readonly<Partial<Record<BasicMemberId, readonly BasicMemberId[]>>> = basicDelegation
 
 /**
  * Per team preset, per member: shipped answers of the member preset besides

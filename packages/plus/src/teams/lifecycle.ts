@@ -302,21 +302,67 @@ function markNotified(run: RunRecord): RunRecord {
   return { ...run, attempts: [...run.attempts.slice(0, -1), updated] }
 }
 
-function childSettledText(
+// The settlement is the parent's whole view of the attempt: the report in
+// full (a parent knows only the report, team_status and team_diff), and one
+// next: line for what the outcome calls for. The report file stays on disk
+// for the record; nobody needs a call to read it.
+interface SettledReport {
+  readonly status?: unknown
+  readonly summary?: unknown
+  readonly concerns?: unknown
+  readonly needs?: unknown
+  readonly findings?: unknown
+  readonly deferred?: unknown
+  readonly commits?: unknown
+  readonly checks?: unknown
+  readonly head?: unknown
+  readonly dirtyFiles?: unknown
+}
+
+function list<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+
+export function childSettledText(
   run: RunRecord,
   attempt: AttemptRecord,
-  report: Record<string, unknown> | undefined,
-  reportPath: string | undefined,
+  report: SettledReport | undefined,
+  _reportPath?: string,
 ): string {
   const task = run.task ?? "-"
   const status = typeof report?.status === "string" ? report.status : attempt.state
-  const summary = typeof report?.summary === "string" ? report.summary.split("\n")[0] ?? "" : ""
-  return (
-    `[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.\n` +
-    `summary: ${summary === "" ? `attempt ${attempt.n} ended ${attempt.state} with no report` : summary}\n` +
-    `report: ${reportPath ?? "none"}\n` +
-    `next: ${reportPath === undefined ? "read status/diff, then followup or supersede" : "read the report, then integrate or followup"}`
-  )
+  const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
+  if (report === undefined) {
+    lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    lines.push("next: read team_status and team_diff for it, then team_followup or team_supersede.")
+    return lines.join("\n")
+  }
+  if (typeof report.summary === "string" && report.summary.trim() !== "") lines.push(report.summary.trim())
+  const commits = list<{ sha?: string; subject?: string }>(report.commits)
+  if (commits.length > 0)
+    lines.push(`Commits: ${commits.map((commit) => `${String(commit.sha ?? "").slice(0, 7)} ${commit.subject ?? ""}`.trim()).join("; ")}`)
+  const checks = list<{ id?: string; passed?: boolean }>(report.checks)
+  if (checks.length > 0) lines.push(`Checks: ${checks.map((check) => `${check.id} ${check.passed ? "pass" : "FAIL"}`).join(", ")}`)
+  const dirty = list<string>(report.dirtyFiles)
+  if (dirty.length > 0) lines.push(`Uncommitted: ${dirty.join(", ")}`)
+  const block = (title: string, items: string[]) => {
+    if (items.length > 0) lines.push(`${title}:\n${items.map((item) => `- ${item}`).join("\n")}`)
+  }
+  block("Needs", list<{ kind?: string; detail?: string }>(report.needs).map((need) => `${need.kind}: ${need.detail}`))
+  block("Concerns", list<string>(report.concerns))
+  block("Deferred", list<string>(report.deferred))
+  block("Findings", list<{ severity?: string; path?: string; detail?: string }>(report.findings).map((f) => `${f.severity} ${f.path}: ${f.detail}`))
+  lines.push(`next: ${nextStep(status, commits.length > 0)}`)
+  return lines.join("\n")
+}
+
+function nextStep(status: string, committed: boolean): string {
+  if (status === "done" || status === "done_with_concerns") {
+    const weigh = status === "done_with_concerns" ? "weigh the concerns, then " : ""
+    return committed ? `${weigh}check the change with team_diff and land it with team_integrate.` : `${weigh}use the result; there is nothing to land.`
+  }
+  if (status === "rejected") return "re-scope: team_supersede it and delegate a Brief that fits."
+  return "answer the needs with team_followup, or team_supersede it and delegate afresh."
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;
@@ -327,7 +373,7 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
   const parent = await loadRun(root, parentID)
   if (parent === undefined || isTerminal(parent.state)) return
   const reportPath = path.join(root, "runs", child.id, `report-${attempt.n}.json`)
-  const report = await readJson<Record<string, unknown>>(reportPath)
+  const report = await readJson<SettledReport>(reportPath)
   const displayPath = report === undefined ? undefined : path.join(root, "runs", child.id, `report-${attempt.n}.md`)
   await Effect.runPromise(
     io(() =>

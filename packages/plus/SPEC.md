@@ -1758,7 +1758,8 @@ refused, a requirement demands nothing, a bound is absent.
 What the Basic member presets set (every other row is the catalogue's shipped value):
 
 - **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
-  `team_integrate`, `team_checkpoint`, `team_set_checks`, `team_check` off;
+  `team_integrate`, `team_set_checks`, `team_check` off (it keeps
+  `team_checkpoint` to commit its plan file when delegated);
   Runs on for status, list; Approval on for team_delegate; Access
   "Delegate from a delegated run" off; Files it may change: every other file
   off, plan files on; Briefs it accepts: Plan files only on; Start a team run
@@ -1771,12 +1772,14 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   Where, `where.external`, glob/grep roots); `tool:shell`, `tool:question`,
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
   delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
-  `supersede`, `stop`, `list` off; Worktree committed before done and
+  `supersede`, `stop`, `status`, `list` off; Worktree committed before done and
   Scope paths for a commit on.
 - **reviewer** — as implementer's worker rows, with every team tool but
-  `finish`, `status`, `diff`, `get_context` off, and Corrections by followup off.
-- **scout** — as reviewer, taking corrections.
-- **build-seat** — Runs on for status, list; `tool:shell`,
+  `finish`, `diff`, `get_context` off, and Corrections by followup off.
+- **scout** — as reviewer without `diff` (it changes nothing), taking
+  corrections.
+- **build-seat** — `team_finish` and `team_checkpoint` off (nobody delegates
+  to it; its chat run has no scope to commit in); Runs on for status, list; `tool:shell`,
   `tool:question`, `tool:subagent`, Start a team run and Delegate from a
   delegated run on; every "Delegate to" row on, whoever the teammate is (not
   Members of other teams).
@@ -1786,6 +1789,28 @@ teammates' roles (planner → orchestrator; orchestrator → implementer, review
 scout; build seat → every teammate). They name teammates by the member ids the
 Basic roster carries: a teammate renamed after the team was created gets a new,
 off "Delegate to" row, while the build seat's rows stay on dynamically.
+
+#### Where a Basic member's guidance lives
+
+One home per kind of guidance, so no line repeats or contradicts another:
+
+- **Role/persona** (`instructions/builtin-teams.ts` `basicBody`): who does what
+  and when. Markdown in three parts, each split into `##` sections the
+  Instructions tree derives as separate rows: `# Team member` (Runs and
+  messages, Working, Reporting — not for the build seat, which is never
+  delegated to —, Safety, Sources), `# Delegating` (Briefs; only for members
+  that delegate, naming exactly its targets' Brief rules from
+  `basicDelegation`) and `# <Role>`.
+- **Tool descriptions** (`teams/tools.ts`): what the tool does and when to call
+  it; each first line stands alone, since a Code Mode catalog shows only it.
+  `toolGuidance` (namespace and `get_context`) only says which tools are direct
+  and which are Code Mode.
+- **Input schema field descriptions** (`teams/schema.ts`): how each value must
+  look. Every field of every team tool input carries one (a test enforces it);
+  on a defaulted field it lands in the non-null branch, which providers receive.
+- **The rendered Brief** (`teams/brief.ts`) and **each settlement**
+  (`teams/lifecycle.ts`): the facts of one run — deliverable meaning, scope,
+  checks, advisory budget, review range, the report and the next step.
 
 #### Per-member rows (`instructions/team-policy-rows.ts`)
 
@@ -1930,7 +1955,6 @@ Error codes carrying `accepted` today:
 - `E_ROLE`: the first member open to the caller (`{"role":"<member>"}`), present only when one is. The message ends in what is open — `You may delegate to: <members>.` or `No member is open to you for delegation.` — after `<agent> may not delegate.`, `"<role>" is not a member of an enabled team.` or `<agent> may not delegate to "<role>".`. A delegated run whose Delegate from a delegated run row is off gets `<agent>: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead` with `"report blocked with needs=[{kind:\"decision\"}]"`. The depth bound keeps `Depth limit <n> reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.` with `"report blocked with needs=[{kind:\"decision\"}]"`.
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
 - `E_SUMMARY`: summary length guidance (`"a summary of ≤15 lines"`)
-- `E_TIMEOUT_MIN`: `"timeoutMs <timeoutMs> is below the 10000ms floor."`; minimum timeout object (`{"timeoutMs":10000}`)
 - `E_BRIEF`: the target's A check (`{"checks":1}`), Paths per brief (`{"paths":<n>}`) or Checks per brief (`{"checks":<n>}`) row refuses the brief: `<target> needs at least one check (Briefs it accepts → A check).`, `<target> accepts at most <n> scope paths per brief (Brief limits → Paths per brief); this brief has <m>.`, `<target> accepts at most <n> checks per brief (Brief limits → Checks per brief); this brief has <m>.`
 - `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
@@ -2031,9 +2055,10 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    a stop requested while it would wait ends that attempt `interrupted`;
 2. moves the run `working → idle` (`turn_ended`) or `starting → idle`
    (`connected`);
-3. tells the parent once: one `child.settled` inbox item naming the run, the
-   attempt, the settled status and the report path, guarded by `notified` on
-   the attempt. An idle parent is prompted with it immediately; a working
+3. tells the parent once: one `child.settled` inbox item with the run, the
+   attempt and the settled status, the whole report and one `next:` line for
+   what that outcome calls for (`lifecycle.childSettledText`), guarded by
+   `notified` on the attempt. An idle parent is prompted with it immediately; a working
    parent receives it through its own idle handoff. An attempt kept open is
    not settled, so nothing is told;
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run

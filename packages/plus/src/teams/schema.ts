@@ -227,13 +227,17 @@ function checkViolation(check: {
 }
 
 export const Check = Schema.Struct({
-  id: Schema.String,
-  argv: Schema.Array(Schema.String),
-  cwd: Schema.optional(Schema.String),
+  id: Schema.String.annotate({ description: "Short kebab-case id, e.g. \"unit\"." }),
+  argv: Schema.Array(Schema.String).annotate({
+    description: "[\"bun\",\"test\",<test file or directory>] or [\"bun\",\"run\",<package script>]; no other command runs.",
+  }),
+  cwd: Schema.optional(Schema.String).annotate({ description: "Repository-relative directory to run in; omit for the root." }),
 })
 export type Check = typeof Check.Type
 
-export const ChecksArray = Schema.Array(Check)
+export const ChecksArray = Schema.Array(Check).annotate({
+  description: "Focused checks (at most 12); each must pass at HEAD for done.",
+})
 export type ChecksArray = typeof ChecksArray.Type
 
 // Throws a ToolError-shaped object on any failure. The message is the
@@ -260,62 +264,110 @@ export function validateChecks(checks: readonly Check[] | Check[]): void {
 
 // Brief building blocks (docs/team-v2/03-tools.md §delegate).
 export const Deliverable = Schema.Struct({
-  kind: Schema.Literals(["commit", "report", "plan", "findings"]),
-  format: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  kind: Schema.Literals(["commit", "report", "plan", "findings"]).annotate({
+    description:
+      "commit: committed changes you land with team_integrate. report: an answer. plan: a committed plan file. findings: a review.",
+  }),
+  format: Schema.optional(Schema.String.check(Schema.isMaxLength(200))).annotate({
+    description: "Shape of the result, e.g. \"file:line list\".",
+  }),
 })
 export type Deliverable = typeof Deliverable.Type
 
 export const Interface = Schema.Struct({
   path: Schema.String,
   symbol: Schema.optional(Schema.String),
-  note: Schema.String.check(Schema.isMaxLength(200)),
+  note: Schema.String.check(Schema.isMaxLength(200)).annotate({ description: "Why the child must read it." }),
 })
 export type Interface = typeof Interface.Type
 
 export const Need = Schema.Struct({
-  kind: Schema.Literals(["path", "check", "info", "decision"]),
-  detail: Schema.String.check(Schema.isMaxLength(300)),
+  kind: Schema.Literals(["path", "check", "info", "decision"]).annotate({
+    description: "path: a file outside your scope. check: a failing or missing check. info: missing information. decision: a choice your parent must make.",
+  }),
+  detail: Schema.String.check(Schema.isMaxLength(300)).annotate({ description: "Exactly what you need and why." }),
 })
 export type Need = typeof Need.Type
 
+// Field descriptions reach the model with the tool's schema: they carry how a
+// value must look, so the role texts carry only when and why to delegate. A
+// description on a defaulted field lands in its non-null branch, which the
+// provider still receives.
 export const Brief = Schema.Struct({
-  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)).annotate({
+    description: "Your id for this call, e.g. \"auth-fix-1\"; reusing it with identical input returns the first result.",
+  }),
   // Any member id: who may delegate to whom is the caller's "Delegate to"
   // rows, not a fixed list, and each agent's team_delegate schema lists the
   // members open to it.
-  role: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
-  task: Schema.optional(TaskID),
-  objective: Schema.String.check(Schema.isMinLength(20), Schema.isMaxLength(600)),
-  deliverable: Deliverable,
-  scope: Schema.Struct({
-    paths: field(Schema.Array(Schema.String).check(Schema.isMaxLength(40)), () => []),
-    forbidden: field(Schema.Array(Schema.String).check(Schema.isMaxLength(20)), () => []),
+  role: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)).annotate({ description: "The member to delegate to." }),
+  task: Schema.optional(TaskID).annotate({
+    description: "Only to claim the rework task team_integrate returned after a conflict or red checks, e.g. \"T3.rework.1\". Omit otherwise.",
   }),
+  objective: Schema.String.check(Schema.isMinLength(20), Schema.isMaxLength(600)).annotate({
+    description: "The outcome to reach. The child knows only this Brief and what it reads.",
+  }),
+  deliverable: Deliverable.annotate({ description: "What the child hands back." }),
+  scope: Schema.Struct({
+    paths: field(
+      Schema.Array(Schema.String)
+        .check(Schema.isMaxLength(40))
+        .annotate({ description: "Files or dir/* the child may edit, repository-relative. Empty: it edits nothing." }),
+      () => [],
+    ),
+    forbidden: field(
+      Schema.Array(Schema.String)
+        .check(Schema.isMaxLength(20))
+        .annotate({ description: "Paths it must not touch, even inside paths." }),
+      () => [],
+    ),
+  }).annotate({ description: "What the child may edit." }),
   context: field(
     Schema.Struct({
-      interfaces: field(Schema.Array(Interface).check(Schema.isMaxLength(20)), () => []),
-      decisions: field(
-        Schema.Array(Schema.String.check(Schema.isMaxLength(300))).check(Schema.isMaxLength(20)),
+      interfaces: field(
+        Schema.Array(Interface)
+          .check(Schema.isMaxLength(20))
+          .annotate({ description: "Code the child must read before changing anything." }),
         () => [],
       ),
-    }),
+      decisions: field(
+        Schema.Array(Schema.String.check(Schema.isMaxLength(300)))
+          .check(Schema.isMaxLength(20))
+          .annotate({ description: "Choices already made, so the child does not reopen them." }),
+        () => [],
+      ),
+    }).annotate({ description: "What the child must know before it starts." }),
     () => ({ interfaces: [], decisions: [] }),
   ),
   checks: field(ChecksArray, () => []),
-  effort: field(Schema.Literals(["small", "medium", "large"]), () => "medium" as const),
-  repo: Schema.optional(Schema.String),
-  base: Schema.optional(Schema.String),
-  prompt: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))),
-  briefFile: Schema.optional(Schema.String),
-  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
+  effort: field(
+    Schema.Literals(["small", "medium", "large"]).annotate({
+      description: "small ≈ 1 file, medium ≈ 2–5 files, large ≈ a package; sets an advisory budget.",
+    }),
+    () => "medium" as const,
+  ),
+  repo: Schema.optional(Schema.String).annotate({ description: "Another configured repository; omit for yours." }),
+  base: Schema.optional(Schema.String).annotate({ description: "Commit or branch the child starts from; omit for your HEAD." }),
+  prompt: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))).annotate({
+    description: "Extra instructions appended to the Brief.",
+  }),
+  briefFile: Schema.optional(Schema.String).annotate({
+    description:
+      "A file in your checkout attached to the Brief (inline up to 40 KB): the only way an uncommitted file reaches the child.",
+  }),
+  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))).annotate({
+    description: "Why this work needs its own run; an orchestrator requires one.",
+  }),
 })
 export type Brief = typeof Brief.Type
 
 // Report building blocks (docs/team-v2/03-tools.md §finish).
 export const Finding = Schema.Struct({
-  severity: Schema.Literals(["error", "warning"]),
-  path: Schema.String,
-  detail: Schema.String,
+  severity: Schema.Literals(["error", "warning", "note"]).annotate({
+    description: "error: a demonstrated defect. warning: a risk or missing test. note: a located fact (a scout's answer).",
+  }),
+  path: Schema.String.annotate({ description: "file:line" }),
+  detail: Schema.String.annotate({ description: "Evidence and practical effect; one line for a note." }),
 })
 export type Finding = typeof Finding.Type
 
@@ -331,16 +383,28 @@ export function validateSummary(summary: string): void {
 }
 
 export const Report = Schema.Struct({
-  status: Schema.Literals(["done", "done_with_concerns", "blocked", "needs_context", "rejected"]),
-  summary: Schema.String.check(Schema.isMaxLength(1500)),
+  status: Schema.Literals(["done", "done_with_concerns", "blocked", "needs_context", "rejected"]).annotate({
+    description:
+      "done: complete, assigned checks passing at HEAD (finish runs any not yet run), commit work committed. done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
+  }),
+  summary: Schema.String.check(Schema.isMaxLength(1500)).annotate({
+    description: "What your parent must act on, at most 15 lines; it receives it in full.",
+  }),
   concerns: field(
-    Schema.Array(Schema.String.check(Schema.isMaxLength(300))).check(Schema.isMaxLength(10)),
+    Schema.Array(Schema.String.check(Schema.isMaxLength(300)))
+      .check(Schema.isMaxLength(10))
+      .annotate({ description: "Doubts about correctness, and bugs you fixed inside your scope." }),
     () => [],
   ),
-  needs: field(Schema.Array(Need).check(Schema.isMaxLength(10)), () => []),
-  findings: field(Schema.Array(Finding).check(Schema.isMaxLength(50)), () => []),
+  needs: field(Schema.Array(Need).check(Schema.isMaxLength(10)).annotate({ description: "What you need to go on." }), () => []),
+  findings: field(
+    Schema.Array(Finding).check(Schema.isMaxLength(50)).annotate({ description: "Review findings, or located items for a lookup." }),
+    () => [],
+  ),
   deferred: field(
-    Schema.Array(Schema.String.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(10)),
+    Schema.Array(Schema.String.check(Schema.isMaxLength(200)))
+      .check(Schema.isMaxLength(10))
+      .annotate({ description: "In-scope items you deliberately left undone, each with its reason." }),
     () => [],
   ),
 })
@@ -709,11 +773,19 @@ export function parseDuration(raw: string): number {
 // Tool input schemas (docs/team-v2/03-tools.md). Every tool has exactly one
 // input schema, exported from here and shared between registration and handlers.
 export const FollowupInput = Schema.Struct({
-  run: RunID,
-  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
-  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)),
-  delivery: Schema.optional(Schema.Literals(["now", "queue"])),
-  budget: Schema.optional(FollowupBudget),
+  run: RunID.annotate({ description: "Your child's run id." }),
+  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)).annotate({
+    description: "Your id for this followup; repeat it only to retry the identical call.",
+  }),
+  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)).annotate({
+    description: "The correction or answer; it is the child's next message.",
+  }),
+  delivery: Schema.optional(Schema.Literals(["now", "queue"])).annotate({
+    description: "queue (default): delivered when the child next goes idle. now: only for a child that is idle already.",
+  }),
+  budget: Schema.optional(FollowupBudget).annotate({
+    description: "Replaces the child's advisory budget; dimensions you omit are cleared.",
+  }),
 })
 export type FollowupInput = typeof FollowupInput.Type
 
@@ -727,53 +799,69 @@ export const ReviewInput = Schema.Struct({
 export type ReviewInput = typeof ReviewInput.Type
 
 export const IntegrateInput = Schema.Struct({
-  run: RunID,
-  expectedParentHead: Head,
+  run: RunID.annotate({ description: "The child run whose commits to land." }),
+  expectedParentHead: Head.annotate({
+    description: "Your own current HEAD (team_get_context head, or the head your last team_integrate returned); never the child's commit.",
+  }),
 })
 export type IntegrateInput = typeof IntegrateInput.Type
 
 export const CheckpointInput = Schema.Struct({
-  expectedHead: Head,
-  files: Schema.Array(Schema.String).check(Schema.isMinLength(1)),
-  message: Schema.String.check(Schema.isMaxLength(300)),
+  expectedHead: Head.annotate({
+    description: "Your current HEAD: team_get_context head, or the head your last team_checkpoint returned.",
+  }),
+  files: Schema.Array(Schema.String).check(Schema.isMinLength(1)).annotate({
+    description: "Repository-relative files (or directories) to commit, all inside your scope.",
+  }),
+  message: Schema.String.check(Schema.isMaxLength(300)).annotate({
+    description: "\"<type>(<scope>)?: <subject>\" with type feat, fix, docs, chore, refactor or test.",
+  }),
 })
 export type CheckpointInput = typeof CheckpointInput.Type
 
 export const SetChecksInput = Schema.Struct({
-  checks: ChecksArray,
+  checks: ChecksArray.annotate({
+    description: "Your run's integration checks (replaces the list, at most 12): each landing is verified with them.",
+  }),
 })
 export type SetChecksInput = typeof SetChecksInput.Type
 
 export const SupersedeInput = Schema.Struct({
-  run: RunID,
-  reason: Schema.String.check(Schema.isMinLength(10), Schema.isMaxLength(500)),
-  waitMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(120000))),
+  run: RunID.annotate({ description: "The child run to abandon." }),
+  reason: Schema.String.check(Schema.isMinLength(10), Schema.isMaxLength(500)).annotate({ description: "Why it is abandoned." }),
+  waitMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(120000))).annotate({
+    description: "How long a working child may take to stop before it is interrupted (default 30000).",
+  }),
 })
 export type SupersedeInput = typeof SupersedeInput.Type
 
 export const StopInput = Schema.Struct({
-  run: RunID,
+  run: RunID.annotate({ description: "The child run to stop." }),
 })
 export type StopInput = typeof StopInput.Type
 
 export const StatusInput = Schema.Struct({
-  runs: Schema.optional(Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20))),
+  runs: Schema.optional(Schema.Array(RunID).check(Schema.isMinLength(1), Schema.isMaxLength(20))).annotate({
+    description: "Runs to show; omit for your run and its direct children.",
+  }),
 })
 export type StatusInput = typeof StatusInput.Type
 
 export const DiffInput = Schema.Struct({
-  run: RunID,
-  from: Schema.optional(Schema.Union([Head, Schema.Literal("base"), Schema.Literal("parent")])),
-  paths: Schema.optional(Schema.Array(Schema.String)),
-  maxBytes: Schema.optional(Schema.Number),
+  run: RunID.annotate({ description: "Your run or a child's." }),
+  from: Schema.optional(Schema.Union([Head, Schema.Literal("base"), Schema.Literal("parent")])).annotate({
+    description: "\"base\" (default): the run's starting commit. \"parent\": its parent's HEAD. Or a full commit sha.",
+  }),
+  paths: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Only these paths." }),
+  maxBytes: Schema.optional(Schema.Number).annotate({ description: "Truncate after this many bytes (default 200000)." }),
 })
 export type DiffInput = typeof DiffInput.Type
 
 export const ListInput = Schema.Struct({
-  all: Schema.optional(Schema.Boolean),
-  role: Schema.optional(Schema.String),
-  state: Schema.optional(RunState),
-  parent: Schema.optional(RunID),
+  all: Schema.optional(Schema.Boolean).annotate({ description: "Include superseded and reaped runs." }),
+  role: Schema.optional(Schema.String).annotate({ description: "Only this member's runs." }),
+  state: Schema.optional(RunState).annotate({ description: "Only runs in this state." }),
+  parent: Schema.optional(RunID).annotate({ description: "Only this run's children." }),
 })
 export type ListInput = typeof ListInput.Type
 
@@ -781,7 +869,7 @@ export const GetContextInput = Schema.Struct({})
 export type GetContextInput = typeof GetContextInput.Type
 
 export const CheckInput = Schema.Struct({
-  id: Schema.String.check(Schema.isMinLength(1)),
+  id: Schema.String.check(Schema.isMinLength(1)).annotate({ description: "One of your assigned check ids." }),
 })
 export type CheckInput = typeof CheckInput.Type
 

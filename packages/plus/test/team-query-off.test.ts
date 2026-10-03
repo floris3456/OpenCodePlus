@@ -374,8 +374,8 @@ test("a non-member agent sees no team tool while an implementer-preset member se
   }
 
   expect(await visible("build")).toEqual([])
-  // The old implementer ceiling.
-  const ceiling = ["checkpoint", "finish", "status", "diff", "get_context", "check"]
+  // The implementer ceiling (no team_status: it addresses only its own run).
+  const ceiling = ["checkpoint", "finish", "diff", "get_context", "check"]
   expect((await visible(member)).toSorted()).toEqual(
     ceiling.filter((name) => codeTools.includes(name as (typeof codeTools)[number])).map((name) => `team.${name}`).toSorted(),
   )

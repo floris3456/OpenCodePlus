@@ -4,7 +4,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../src/index.js"
-import { builtinTeams, teamRoles } from "../src/instructions/builtin-teams.js"
+import { basicBody, builtinTeams } from "../src/instructions/builtin-teams.js"
 import { agentBody } from "../src/instructions/discover.js"
 import {
   fingerprint,
@@ -140,13 +140,14 @@ test("a Native preset ships its native agent's upstream values and prompt", () =
   )
 })
 
-test("a Basic member preset's role text is shared plus its role block, and it ships every item's value", () => {
+test("a Basic member preset's role text is its sectioned body, and it ships every item's value", () => {
   const catalog = presetCatalog({ items: inventory })
   const basic = plusTeamPresets.find((team) => team.id === "basic")
   const orchestrator = basic?.members.find((member) => member.id === "orchestrator")
-  expect(orchestrator?.role).toBe(`${teamRoles.shared}\n\n${teamRoles.orchestrator}`)
+  expect(orchestrator?.role).toBe(basicBody("orchestrator"))
+  expect(orchestrator?.role.split("\n").filter((line) => line.startsWith("# "))).toEqual(["# Team member", "# Delegating", "# Orchestrator"])
   expect(catalog.shipped({ kind: "member", team: "basic", id: "orchestrator" }, "system:role", null, roleOf("alpha", ""))).toEqual({
-    text: `${teamRoles.shared}\n\n${teamRoles.orchestrator}`,
+    text: basicBody("orchestrator"),
     state: "on",
   })
   // Self-contained: a member preset ships every item's own value, overlaid by
@@ -165,8 +166,10 @@ test("a Basic member preset's role text is shared plus its role block, and it sh
     ["build-seat", "primary"],
   ])
   const seat = basic?.members.find((member) => member.id === "build-seat")
-  expect(seat?.role.startsWith(teamRoles.shared)).toBe(true)
-  expect(seat?.role).toContain("delegate to every member")
+  expect(seat?.role.startsWith("# Team member\n")).toBe(true)
+  // The seat is never delegated to: no Reporting section, and it delegates.
+  expect(seat?.role).not.toContain("## Reporting")
+  expect(seat?.role).toContain("# Delegating")
   // The Plus agent group ships empty: its six presets are Basic members now.
   expect(presetListing().filter((entry) => entry.origin === "plus" && entry.kind === "agent")).toEqual([])
 })
@@ -242,7 +245,7 @@ test("a user preset linked to a Basic member preset expands through it", () => {
     "defaults/null",
   ])
   const role = resolveFor("system:role", "beta", "project", context)
-  expect(role.text).toBe(`${teamRoles.shared}\n\n${teamRoles.reviewer}`)
+  expect(role.text).toBe(basicBody("reviewer"))
   expect(role.textFrom).toEqual({ kind: "preset", id: "reviewer", team: "basic", shipped: true })
   // The user preset's own edits win over what it was created from.
   const edited = resolve({

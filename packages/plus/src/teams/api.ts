@@ -329,7 +329,28 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     attached = { path: briefFile, content: await readFile(realBrief, "utf8") }
   }
 
-  const rendered = briefModule.render(brief, { budget, ...(attached === undefined ? {} : { attached }) })
+  // A review starts where the delegating run started and ends at the commit
+  // the reviewer's worktree starts from; the run's own check results there
+  // travel with it, because a reviewer can neither run checks nor read them.
+  const review =
+    brief.deliverable.kind === "findings"
+      ? {
+          run: childID,
+          from: parent.base,
+          to: baseSha,
+          checks: await Promise.all(
+            (await readChecks(root, parent.id)).map(async (check) => {
+              const receipt = await lastReceipt(root, parent.id, check.id, baseSha)
+              return { id: check.id, passed: receipt !== undefined && isCleanReceipt(receipt) ? receipt.passed : null }
+            }),
+          ),
+        }
+      : undefined
+  const rendered = briefModule.render(brief, {
+    budget,
+    ...(attached === undefined ? {} : { attached }),
+    ...(review === undefined ? {} : { review }),
+  })
   const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")
 
   // The worktree is created and its starting child run registered in one
@@ -795,6 +816,9 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
       : { paths: [...brief.scope.paths], forbidden: [...brief.scope.forbidden] }
   const interfaces = brief === null ? [] : [...brief.context.interfaces]
   const decisions = brief === null ? [] : [...brief.context.decisions]
+  // The live HEAD: it is what checkpoint and integrate compare against, and the
+  // stored head lags behind a landing or a commit made outside team tools.
+  const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]).catch(() => record.head)
   return succeeded({
     run: record.id,
     role: record.role,
@@ -802,7 +826,7 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
     directory: record.directory,
     branch: record.branch,
     base: record.base,
-    head: record.head,
+    head,
     brief,
     briefPath,
     scope,

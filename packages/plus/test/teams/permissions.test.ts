@@ -154,7 +154,7 @@ test("an implementer-preset member's rows resolve to the old implementer answers
   expect(off).toEqual(
     [
       "shell", "question", "subagent", "search_tavily_search", "search_tavily_extract", "websearch",
-      "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_supersede", "team_stop", "team_list",
+      "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_supersede", "team_stop", "team_status", "team_list",
       ...seatOnlyTools,
     ].toSorted(),
   )

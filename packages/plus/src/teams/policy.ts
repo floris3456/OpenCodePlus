@@ -29,10 +29,8 @@ export const toolSurfaces = {
 }
 
 export const toolGuidance =
-  `Direct native tools: ${toolSurfaces.direct.join(", ")}. Call them directly; Code Mode search does not list them.\n` +
-  `Code Mode tools: ${toolSurfaces.codeMode.join(", ")}. Discover their signatures with search, then call them inside execute.\n` +
-  "Call get_context first. Its delegationTargets lists the current permitted member IDs for role; choose from that roster, not persona names in preset examples. An empty roster permits no delegation. Tool permissions and admission checks still apply.\n" +
-  "After delegating, end your turn: each child's settlement wakes you with its report. A delegated run that ends its turn while a child is open is waiting, not done."
+  `Direct tools (call them directly; Code Mode search does not list them): ${toolSurfaces.direct.join(", ")}.\n` +
+  `Code Mode tools (call them inside execute): ${toolSurfaces.codeMode.join(", ")}.`
 
 export const teamTools = [...directTools, ...codeTools] as const
 export type TeamTool = (typeof teamTools)[number]

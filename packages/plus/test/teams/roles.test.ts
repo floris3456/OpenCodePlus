@@ -126,12 +126,15 @@ test("the shell tool is on only for shell-capable members", () => {
 
 test("final ceilings are the team tool rows, exactly the old ceiling of every role", () => {
   const ceilings: Record<string, string[]> = {
-    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "get_context", "diff"],
+    // A planner commits its plan file when delegated; workers address only
+    // their own run, which get_context describes (no status); a scout changes
+    // nothing (no diff); the build seat, never delegated to, finishes nothing.
+    planner: ["delegate", "followup", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
     orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
-    implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    reviewer: ["finish", "status", "get_context", "diff"],
-    scout: ["finish", "status", "get_context", "diff"],
-    "build-seat": [...teamTools],
+    implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
+    reviewer: ["finish", "get_context", "diff"],
+    scout: ["finish", "get_context"],
+    "build-seat": teamTools.filter((tool) => tool !== "finish" && tool !== "checkpoint"),
   }
   for (const [id, allowed] of Object.entries(ceilings)) {
     const open: string[] = teamTools.filter((tool) => states[id]?.[`tool:team_${tool}`] === "on")

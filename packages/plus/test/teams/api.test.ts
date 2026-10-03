@@ -1422,3 +1422,78 @@ test("finish reports new untracked file under .opencodeplus as dirty", async () 
     }
   })
 }, 30000)
+
+// A reviewer can neither run checks nor read another run, and its own
+// worktree starts at the end of the change, so its own diff from base is
+// empty. Its Brief therefore carries the range (from where the delegating run
+// started) as an exact team_diff call, and that run's check results.
+test("a review brief names the change since the delegating run started and that run's check results", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.writeFile(path.join(repo.dir, "landed.txt"), "landed work\n")
+      await git(repo.dir, ["add", "landed.txt"])
+      await git(repo.dir, ["commit", "-m", "feat: landed work"])
+      const landed = await git(repo.dir, ["rev-parse", "HEAD"])
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: landed,
+        sessionID: "ses_parent_review",
+      })
+      await saveRun(root, parent)
+      await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [
+        { id: "unit", argv: ["bun", "test", "unit.test.ts"] },
+        { id: "lint", argv: ["bun", "run", "lint"] },
+      ])
+      const receipt = { argv: [], cwd: "", head: landed, exitCode: 0, at: Date.now(), durationMs: 1, outputPath: "", tree: "t", dirty: false }
+      await atomicJson(path.join(root, "runs", parent.id, "receipts", `unit-${landed.slice(0, 7)}.json`), { ...receipt, id: "unit", passed: true })
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
+      const delegated = required(
+        await api.delegate(
+          delegateInput({ requestID: "review-1", role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
+          callerFor(parent),
+        ),
+      ) as { run: string; briefPath: string }
+      const brief = await fs.readFile(delegated.briefPath, "utf8")
+      expect(brief).toContain(`See the change with team_diff {run: "${delegated.run}", from: "${repo.head}"}.`)
+      expect(brief).toContain(`Checks at ${landed.slice(0, 12)} (you cannot run checks): unit pass, lint not run.`)
+      expect(brief).toContain("May edit: nothing (read-only task)")
+      // The call the Brief names shows the change: the reviewer's worktree diffed from that commit.
+      const reviewer = await loadRun(root, delegated.run)
+      if (reviewer === undefined) throw new Error("missing reviewer run")
+      const diff = required(await api.diff({ run: reviewer.id, from: repo.head }, callerFor(reviewer))) as { patch: string }
+      expect(diff.patch).toContain("+landed work")
+      // A non-review Brief carries no Review section.
+      const implementer = required(await api.delegate(delegateInput({ requestID: "impl-1" }), callerFor(parent))) as { briefPath: string }
+      expect(await fs.readFile(implementer.briefPath, "utf8")).not.toContain("## Review")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// checkpoint and integrate compare against the live HEAD; the stored one lags
+// behind a landing or a commit made outside team tools.
+test("get_context reports the worktree's live HEAD, not the stored one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.writeFile(path.join(repo.dir, "later.txt"), "later\n")
+      await git(repo.dir, ["add", "later.txt"])
+      await git(repo.dir, ["commit", "-m", "chore: later commit"])
+      const live = await git(repo.dir, ["rev-parse", "HEAD"])
+      const parent = baseRun({ id: "main-0123456789abcdef", kind: "main", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_live_head" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(await api.get_context({}, callerFor(parent))) as { head: string }
+      expect(value.head).toBe(live)
+      expect((await loadRun(root, parent.id))?.head).toBe(repo.head)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
