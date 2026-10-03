@@ -60,6 +60,8 @@ afterEach(async () => {
 function recordSession(): SessionDomain {
   let seq = 0
   return {
+    // A followup needs the run's Session to exist (availability.ts).
+    get: (input: { sessionID: string }) => Effect.succeed({ id: Session.ID.make(String(input.sessionID)) }),
     create: () => {
       seq += 1
       return Effect.succeed({ id: Session.ID.make(`ses_former_${seq}`) })
@@ -196,11 +198,13 @@ test("Checks per brief: on (1) refuses a second check, off accepts it", async ()
 
 test("Corrections by followup: off refuses a correction with its words, on queues it", async () => {
   const parent = run({ id: "main-0123456789abcdef", role: seat.id, children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_seat" })
+  // A followup needs the run's worktree to exist (availability.ts).
   const child = run({
     id: "w-aaaaaaaaaaaaaaaa",
     kind: "w",
     role: alice.id,
     parent: parent.id,
+    directory: tmp,
     state: "working",
     attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
     sessionID: "ses_alice",
