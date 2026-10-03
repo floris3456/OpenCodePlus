@@ -1778,8 +1778,9 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   `finish`, `diff`, `get_context` off, and Corrections by followup off.
 - **scout** — as reviewer without `diff` (it changes nothing), taking
   corrections.
-- **build-seat** — `team_finish` and `team_checkpoint` off (nobody delegates
-  to it; its chat run has no scope to commit in); Runs on for status, list; `tool:shell`,
+- **build-seat** — `team_finish` off (nobody delegates to it). Its chat run
+  checkpoints what it may edit (`scope.chatEditRefusal`: the agent's edit
+  rows, including Protected files, plus `protectedStateRefusal`); Runs on for status, list; `tool:shell`,
   `tool:question`, `tool:subagent`, Start a team run and Delegate from a
   delegated run on; every "Delegate to" row on, whoever the teammate is (not
   Members of other teams).

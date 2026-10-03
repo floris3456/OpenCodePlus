@@ -811,7 +811,7 @@ export const CheckpointInput = Schema.Struct({
     description: "Your current HEAD: team_get_context head, or the head your last team_checkpoint returned.",
   }),
   files: Schema.Array(Schema.String).check(Schema.isMinLength(1)).annotate({
-    description: "Repository-relative files (or directories) to commit, all inside your scope.",
+    description: "Repository-relative files (or directories) to commit: inside your Brief's scope, or in a chat run, files you may edit.",
   }),
   message: Schema.String.check(Schema.isMaxLength(300)).annotate({
     description: "\"<type>(<scope>)?: <subject>\" with type feat, fix, docs, chore, refactor or test.",

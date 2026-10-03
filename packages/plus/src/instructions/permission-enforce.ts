@@ -46,6 +46,12 @@ export interface PermissionTable {
   readonly rows: (agent: string) => readonly PermRow[]
   /** The agent's rows listed under one tool, its own and the ones it shares. */
   readonly toolRows: (agent: string, tool: string) => readonly PermRow[]
+  /**
+   * The agent's rule rows under one tool (core enforces them as deny rules).
+   * Plus reads them only where it acts on the agent's behalf, such as a chat
+   * run's team_checkpoint committing files the agent may edit.
+   */
+  readonly ruleRows: (agent: string, tool: string) => readonly PermRow[]
   /** Ids of every member of an enabled team. */
   readonly teamMembers: ReadonlySet<string>
 }
@@ -61,6 +67,7 @@ export function permissionTable(input: {
   readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string }
 }): PermissionTable {
   const rows = input.items.filter((item) => item.kind === "perm" && item.permKind !== undefined && enforced.has(item.permKind))
+  const rules = input.items.filter((item) => item.kind === "perm" && (item.permKind === undefined || item.permKind === "rule"))
   const byAgent = new Map<string, readonly PermRow[]>()
   const byTool = new Map<string, readonly PermRow[]>()
   const agentRows = (agent: string): readonly PermRow[] => {
@@ -85,8 +92,42 @@ export function permissionTable(input: {
       byTool.set(key, found)
       return found
     },
+    ruleRows: (agent, tool) =>
+      rules
+        .filter((item) => (item.permTool === tool || (item.alsoUnder ?? []).includes(tool)) && applies(item, agent))
+        .map((item) => {
+          const state = input.resolve(item, agent)
+          return { item, on: state.enabled, text: state.text }
+        }),
     teamMembers: new Set(input.teamMembers),
   }
+}
+
+/**
+ * Why the agent may not change this file with edit, write or patch, or
+ * undefined when it may: its Plus-enforced rows (Where, Files it may change)
+ * and its Protected files rule rows. A missing table refuses nothing here;
+ * the caller's own bounds still apply.
+ */
+export function editRefusal(table: PermissionTable | undefined, agent: string, directory: string, file: string): string | undefined {
+  if (table === undefined) return undefined
+  const decision = decide(table.toolRows(agent, "edit"), {
+    tool: "edit",
+    input: { path: file },
+    sessionID: "",
+    agent,
+    directory,
+    teamMembers: table.teamMembers,
+  })
+  if (decision.refuse !== undefined) return decision.refuse
+  const absolute = path.resolve(directory, file)
+  const relative = path.relative(directory, absolute)
+  for (const row of table.ruleRows(agent, "edit")) {
+    if (row.on) continue
+    if ((row.item.patterns ?? []).some((pattern) => wildcardMatch(relative, pattern) || wildcardMatch(absolute, pattern)))
+      return messageOf(row, `${row.item.title} cannot be changed here`)
+  }
+  return undefined
 }
 
 // The row with this id for the agent; undefined when there is no table or the

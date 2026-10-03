@@ -20,7 +20,7 @@ import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
-import { isScopePath, runScope, scopeRefusal } from "./scope.js"
+import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
 import { sessionTokens } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
@@ -157,7 +157,7 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     finish: (input, caller) => guarded(() => finishHandler(input, caller, state.permissions)),
     followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
-    checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller)),
+    checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
     supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller, state.permissions)),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
@@ -690,18 +690,27 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   return succeeded(body)
 }
 
-async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   await requireWorktree(record)
-  const scope = await runScope(root, record)
+  // A delegated run commits inside its Brief's scope. A chat run has no Brief:
+  // it commits what its agent may edit (its edit rows), so a build seat
+  // commits anywhere in its checkout and a planner in the chat only its plan
+  // files. Protected state (.git, .opencodeplus, …) stays out either way.
+  const chat = record.kind === "main"
+  const scope = chat ? undefined : await runScope(root, record)
+  const refusalOf = (file: string): string | undefined =>
+    scope !== undefined
+      ? scopeRefusal(scope, file)
+      : protectedStateRefusal(file) ?? chatEditRefusal(table, caller.agent, record.directory, file)
   const key = await realpath(record.directory).catch(() => record.directory)
   return lock(root, "wt", key, async () => {
     const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
     if (head !== args.expectedHead) return fail("E_STALE_HEAD", `HEAD is ${head}, not ${args.expectedHead}.`)
     for (const file of args.files) {
-      const refusal = scopeRefusal(scope, file)
+      const refusal = refusalOf(file)
       if (refusal !== undefined) return fail("E_SCOPE", refusal)
     }
     if (args.message.length === 0 || args.message.length > 300 || !COMMIT_MESSAGE_RE.test(args.message))
@@ -719,7 +728,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
     ])
     const files = [...new Set(selected.flatMap((output) => output.split("\0").filter(Boolean)))]
     for (const file of files) {
-      const refusal = scopeRefusal(scope, file)
+      const refusal = refusalOf(file)
       if (refusal !== undefined) return fail("E_SCOPE", refusal)
     }
     const staged = (await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--name-only", "--no-renames", "-z"])).split("\0").filter(Boolean)

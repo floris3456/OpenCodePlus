@@ -134,7 +134,7 @@ test("final ceilings are the team tool rows, exactly the old ceiling of every ro
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
     scout: ["finish", "get_context"],
-    "build-seat": teamTools.filter((tool) => tool !== "finish" && tool !== "checkpoint"),
+    "build-seat": teamTools.filter((tool) => tool !== "finish"),
   }
   for (const [id, allowed] of Object.entries(ceilings)) {
     const open: string[] = teamTools.filter((tool) => states[id]?.[`tool:team_${tool}`] === "on")

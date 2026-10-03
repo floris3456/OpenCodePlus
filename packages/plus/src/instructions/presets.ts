@@ -285,10 +285,9 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "status", "list", "check", "diff"]),
   },
   // The build seat is the user's chat: nobody delegates to it, so it has no
-  // report to finish, and its chat run has no scope a checkpoint could commit
-  // in (it commits with git, as the user would).
+  // report to finish. It checkpoints what it may edit, like any chat run.
   "build-seat": {
-    ...teamToolRows(off, ["finish", "checkpoint"]),
+    ...teamToolRows(off, ["finish"]),
     ...reach(["status", "list"]),
     ...rows(on, [
       "tool:shell",

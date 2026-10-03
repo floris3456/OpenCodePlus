@@ -230,8 +230,11 @@ Team tools are tool rows: a planner lacks `integrate`, `set_checks` and
 orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
 `finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`
 and `get_context`; a scout only `finish` and `get_context`; a build seat has
-every team tool but `finish` and `checkpoint` (nobody delegates to it, and its
-chat run has no scope to commit in). Workers have no `status`: they address
+every team tool but `finish` (nobody delegates to it). A chat run (no Brief)
+checkpoints what its agent may edit: its edit rows (Where, Files it may
+change, Protected files) decide, never protected state such as `.git` or
+`.opencodeplus`; so a build seat commits anywhere in its checkout and a
+planner in the chat only its plan files. Workers have no `status`: they address
 only their own run, which `get_context` describes. `followup`, `stop`,
 `supersede` and `diff` never reach past a member's own run and direct children
 until you turn its `Runs` rows on.

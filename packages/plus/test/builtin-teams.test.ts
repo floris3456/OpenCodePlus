@@ -104,7 +104,7 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
     scout: ["finish", "get_context"],
-    "build-seat": teamTools.filter((tool) => tool !== "finish" && tool !== "checkpoint"),
+    "build-seat": teamTools.filter((tool) => tool !== "finish"),
   }
   for (const member of presets) {
     const states = resolvedStates(input, member.id)
