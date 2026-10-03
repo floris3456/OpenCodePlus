@@ -19,6 +19,11 @@ Hosts that do not use CPA see nothing from it.
   `quota` and `catalog` default to `true`. A legacy `quota-handoff.json` (routes
   only) still enables quota and usage, without the catalogue.
 
+  Optional `"compactionModel": "<provider>/<model>[#variant]"` (for example
+  `"cliproxyapi/opencode-go/deepseek-v4.1-flash"`) writes the summary when CPA moves
+  a chat to another account (see the quota README, "Account switches"). Without it
+  the agent's normal compaction model writes that summary.
+
 - **Off:** `"plugins": ["-opencode.plus.cliproxyapi"]` in `opencode.json`, or delete
   the file. Without the server half (or without configuration) the TUI half shows no
   Usage UI.

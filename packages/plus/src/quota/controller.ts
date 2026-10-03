@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import { Schema } from "effect"
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
+import { Model } from "@opencode/schema/model"
 import { Binding, endpoint, Snapshot, Stored, type Config } from "./protocol.js"
 
 export interface QuotaIO {
@@ -29,10 +30,30 @@ type Route = {
   mode?: "off" | "shadow" | "enforce"
   /** CPA has no binding for this chat yet; background ticks wait until this time. */
   unenrolledUntil?: number
+  /** CPA's explanation with its latest `quota_compact_required` refusal. */
+  switchText?: string
+  /** Immediate retries of one account switch; bounds a refusal loop. */
+  switchRetries?: number
 }
 
 /** Background polling interval for a chat CPA has not bound yet. */
 export const UNENROLLED_BACKOFF = 30_000
+/** Retries of one account switch before its refusal reaches the chat as an error. */
+const SWITCH_RETRIES = 3
+
+/**
+ * The model that writes the summary when CPA moves a chat to another account. Without one (or with a
+ * value that is not `provider/model[#variant]`) the agent's own compaction model writes it.
+ */
+function summaryModel(value: string | undefined): { ref?: Model.Ref; label: string; problem?: string } {
+  const fallback = "the agent's compaction model"
+  if (!value) return { label: fallback }
+  try {
+    return { ref: Model.Ref.parse(value), label: value }
+  } catch {
+    return { label: fallback, problem: `compactionModel "${value}" is not provider/model; ` }
+  }
+}
 
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
 export class QuotaController {
@@ -40,6 +61,7 @@ export class QuotaController {
   private readonly running = new Set<string>()
 
   private readonly identity: Promise<string>
+  private readonly summary: ReturnType<typeof summaryModel>
 
   constructor(
     readonly config: Config,
@@ -50,6 +72,7 @@ export class QuotaController {
     this.identity = Promise.resolve(installation)
     // Rejections surface at the first request that needs the identity.
     this.identity.catch(() => {})
+    this.summary = summaryModel(config.compactionModel)
   }
   enabled(provider: string) {
     return this.config.routes[provider] !== undefined
@@ -165,6 +188,19 @@ export class QuotaController {
       event.refusal = { type: "quota.unavailable", message: route.refusal }
       return
     }
+    const switching = route.stored.switching
+    if (switching !== undefined && event.reason !== "overflow") {
+      // CPA moves this chat to another account only with a checkpoint newer than the one its refused
+      // request carried. The summary uses the configured model: the old account is used up, and the new
+      // one should not receive the full history. The session keeps its own model for the next step.
+      if ((event.boundary.checkpoint ?? "") === switching) {
+        event.compact = true
+        event.portable = true
+        if (this.summary.ref) event.compactionModel = this.summary.ref
+        event.metadata = { ...event.metadata, "quota.switch": true }
+      }
+      return
+    }
     const snapshot = route.snapshot
     // Shadow enrollment observes the existing route without forcing a portable
     // checkpoint. Native context-length/manual compaction remains unchanged.
@@ -243,10 +279,12 @@ export class QuotaController {
       checkpoint: event?.boundary.checkpoint ?? "",
       generation: route.stored.generation,
       intent: route.snapshot?.intent ?? "",
+      // This client compacts when CPA refuses an account switch with quota_compact_required.
+      compact_on_switch: true,
     }
     return { "X-Quota-Handoff": Buffer.from(JSON.stringify(claim)).toString("base64url") }
   }
-  async response(session: string, provider: string, model: string, response: Response) {
+  async response(session: string, provider: string, model: string, response: Response, kind = "primary") {
     const route = await this.route(session, provider, model)
     if (!response.ok) {
       // Only CPA's own distinct pre-admission errors may authorize a native retry.
@@ -267,6 +305,7 @@ export class QuotaController {
       const detail = parsed._tag === "Some" ? parsed.value.error : undefined
       const code = detail?.code?.startsWith("quota_") ? detail.code : detail?.message?.match(/^(quota_[a-z_]+): /)?.[1]
       route.retryCode = code?.startsWith("quota_") ? code : undefined
+      if (route.retryCode === "quota_compact_required") route.switchText = detail?.message
       return
     }
     route.retryCode = undefined
@@ -280,6 +319,18 @@ export class QuotaController {
       Buffer.from(header, "base64url").toString(),
     )
     route.stored = { ...route.stored, generation: binding.generation }
+    if (kind === "primary" && route.stored.switching !== undefined) {
+      // CPA admitted the compacted chat: on the new account, or on the old one if it recovered meanwhile.
+      route.stored = { ...route.stored, switching: undefined }
+      route.switchRetries = 0
+      route.notices = [
+        {
+          sessionID: session,
+          kind: "switched",
+          text: `Continuing on ${binding.alias} after compacting with ${this.summary.label}.`,
+        },
+      ]
+    }
     await this.save(route)
     await this.poll(route)
   }
@@ -302,6 +353,34 @@ export class QuotaController {
       // Core owns the interruptible delay and rebuilds the next physical request.
       return 500
     }
+    if (code === "quota_compact_required") {
+      // CPA moves this chat off a used-up account only after a compaction. The checkpoint the refused
+      // request carried is the one a new compaction has to replace.
+      const carried = route.decision?.boundary.checkpoint ?? ""
+      const pending = route.stored.switching
+      route.switchRetries = (route.switchRetries ?? 0) + 1
+      // A checkpoint made for this switch was refused as well, or retries keep failing: stop here so the
+      // refusal reaches the chat instead of compacting in a loop.
+      if ((pending !== undefined && carried !== pending) || route.switchRetries > SWITCH_RETRIES) {
+        route.stored = { ...route.stored, switching: undefined }
+        route.switchRetries = 0
+        await this.save(route)
+        return false
+      }
+      if (pending === undefined) {
+        route.stored = { ...route.stored, switching: carried }
+        await this.save(route)
+      }
+      route.notices = [
+        {
+          sessionID: session,
+          kind: "switching",
+          text: `${route.switchText ?? "CPA is moving this chat to another account."} ${this.summary.problem ?? ""}Compacting with ${this.summary.label} first.`,
+        },
+      ]
+      // Core runs its compaction decision before rebuilding the request; decide() asks for the summary.
+      return true
+    }
     if (code !== "quota_checkpoint_required" && code !== "quota_generation_changed") return false
     await this.poll(route)
     const token = `${route.snapshot?.generation}/${route.snapshot?.intent}`
@@ -320,7 +399,10 @@ export class QuotaController {
   }
   async warming(session: string) {
     const routes = await Promise.all(this.routes.values())
-    return !routes.some((route) => route.session === session && (route.snapshot?.intent || route.refusal))
+    return !routes.some(
+      (route) =>
+        route.session === session && (route.snapshot?.intent || route.refusal || route.stored.switching !== undefined),
+    )
   }
   async status(session: string) {
     const routes = await Promise.all(this.routes.values())
@@ -335,6 +417,8 @@ export class QuotaController {
       .forEach((route) => {
         route.active = active
         if (!active) route.budgetWaits = 0
+        // The switch notice stays until the next run of this chat starts.
+        if (active) route.notices = route.notices.filter((notice) => notice.kind !== "switched")
       })
   }
   async tick() {

@@ -32,6 +32,18 @@ test("cliproxyapi.json enables quota and catalogue by default; quota-handoff.jso
       JSON.stringify({ routes: { cpa: "https://cpa.invalid" }, quota: false, catalog: false }),
     )
     expect(await cliproxyapiConfig(directory)).toMatchObject({ quota: undefined, catalog: {} })
+    // The account-switch summary model reaches the quota controller's configuration.
+    await Bun.write(
+      path.join(directory, "cliproxyapi.json"),
+      JSON.stringify({
+        routes: { cpa: "https://cpa.invalid" },
+        compactionModel: "cpa/opencode-go/deepseek-v4.1-flash",
+      }),
+    )
+    expect((await cliproxyapiConfig(directory))?.quota).toEqual({
+      routes: { cpa: "https://cpa.invalid" },
+      compactionModel: "cpa/opencode-go/deepseek-v4.1-flash",
+    })
     await Bun.write(path.join(directory, "cliproxyapi.json"), "{")
     await expect(cliproxyapiConfig(directory)).rejects.toThrow()
   } finally {

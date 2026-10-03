@@ -57,7 +57,7 @@ export function registerQuota(ctx: Context, config: Config | undefined) {
     yield* ctx.session.hook("http.response", (event) =>
       controller.enabled(event.model.providerID)
         ? Effect.promise(() =>
-            controller.response(event.sessionID, event.model.providerID, event.model.id, event.response),
+            controller.response(event.sessionID, event.model.providerID, event.model.id, event.response, event.kind),
           )
         : Effect.void,
     )

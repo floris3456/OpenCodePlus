@@ -12,7 +12,7 @@ const servers: ReturnType<typeof Bun.serve>[] = []
 afterEach(() => {
   servers.splice(0).forEach((server) => server.stop(true))
 })
-function fixture() {
+function fixture(compactionModel?: string) {
   const state = {
     known: false,
     status: 200,
@@ -46,7 +46,7 @@ function fixture() {
   const store = new Map<string, Stored>()
   const notices = new Map<string, { session: string; text: string }>()
   const controller = new QuotaController(
-    { routes: { proxy: server.url.href, other: server.url.href } },
+    { routes: { proxy: server.url.href, other: server.url.href }, ...(compactionModel ? { compactionModel } : {}) },
     "installation",
     {
       read: async (key) => store.get(key),
@@ -331,7 +331,142 @@ test("an unenrolled chat recovers from a transient bridge failure and backs off 
   expect(f.state.reads).toBeGreaterThan(bound)
 })
 
-function ackResponse() {
-  const binding = Buffer.from(JSON.stringify({ protocol: 1, generation: 1, alias: "Small" })).toString("base64url")
+function ackResponse(generation = 1, alias = "Small") {
+  const binding = Buffer.from(JSON.stringify({ protocol: 1, generation, alias })).toString("base64url")
   return new Response("ok", { headers: { "X-Quota-Protocol": "1", "X-Quota-Binding": binding } })
 }
+
+const claimOf = (headers: Record<string, string>) =>
+  JSON.parse(Buffer.from(headers["X-Quota-Handoff"]!, "base64url").toString()) as Record<string, unknown>
+// CPA's after-auth refusal when it would move a chat to another account (direct interceptor body).
+const switchRefusal = () =>
+  Response.json(
+    {
+      error: {
+        code: "quota_compact_required",
+        message: "Small is used up; this chat compacts before it continues on Large.",
+        type: "quota_handoff",
+      },
+    },
+    { status: 409, headers: { "X-Quota-Protocol": "1" } },
+  )
+
+test("an account-switch refusal compacts once with the configured model, then the step continues", async () => {
+  const f = fixture("proxy/cheap-model#high")
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  const before = f.event()
+  await f.controller.decide(before)
+  expect(before.compact).toBeUndefined()
+  const sent = claimOf(await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href))
+  expect(sent).toMatchObject({ compact_on_switch: true, checkpoint: "" })
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal(), "primary")
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  expect(await f.controller.status("ses_test")).toEqual([
+    {
+      sessionID: "ses_test",
+      kind: "switching",
+      text: "Small is used up; this chat compacts before it continues on Large. Compacting with proxy/cheap-model#high first.",
+    },
+  ])
+  expect(await f.controller.warming("ses_test")).toBe(false)
+  // Core's decision before the rebuilt request asks for a portable summary by the configured model.
+  const retried = f.event()
+  await f.controller.decide(retried)
+  expect(retried).toMatchObject({ compact: true, portable: true, metadata: { "quota.switch": true } })
+  expect(retried.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model#high"))
+  // The completed checkpoint needs no second compaction and is what CPA receives next.
+  const compacted = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new" } }
+  await f.controller.decide(compacted)
+  expect(compacted.compact).toBeUndefined()
+  expect(compacted.compactionModel).toBeUndefined()
+  const next = claimOf(await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href))
+  expect(next).toMatchObject({ checkpoint: "cmp_new", compact_on_switch: true })
+  // An auxiliary answer does not complete the switch; the admitted primary request does.
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(1, "Small"), "title")
+  expect([...f.store.values()][0]?.switching).toBe("")
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(2, "Large"), "primary")
+  expect([...f.store.values()][0]?.switching).toBeUndefined()
+  expect(await f.controller.status("ses_test")).toEqual([
+    {
+      sessionID: "ses_test",
+      kind: "switched",
+      text: "Continuing on Large after compacting with proxy/cheap-model#high.",
+    },
+  ])
+  expect(await f.controller.warming("ses_test")).toBe(true)
+  // Nothing entered the model's context; the next run clears the notice.
+  expect(f.notices.size).toBe(0)
+  await f.controller.activity("ses_test", true)
+  expect(await f.controller.status("ses_test")).toEqual([])
+  const later = f.event()
+  await f.controller.decide(later)
+  expect(later.compact).toBeUndefined()
+})
+
+test("a switch refused again after its compaction surfaces instead of compacting in a loop", async () => {
+  const f = fixture("proxy/cheap-model")
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  await f.controller.decide(f.event())
+  await f.controller.decide({ ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new" } })
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(false)
+  expect([...f.store.values()][0]?.switching).toBeUndefined()
+  // Repeated refusals without a new checkpoint (a compaction that never ran) are bounded too.
+  const g = fixture("proxy/cheap-model")
+  g.state.known = true
+  await g.controller.decide(g.event())
+  const results = []
+  for (let i = 0; i < 5; i++) {
+    await g.controller.response("ses_test", "proxy", "model", switchRefusal())
+    results.push(await g.controller.retry("ses_test", "proxy", "model"))
+  }
+  expect(results).toEqual([true, true, true, false, true])
+})
+
+test("a pending switch survives a restart and still compacts before the next request", async () => {
+  const f = fixture("proxy/cheap-model")
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  const restarted = new QuotaController(
+    { routes: { proxy: f.server.url.href }, compactionModel: "proxy/cheap-model" },
+    "installation",
+    {
+      read: async (key) => f.store.get(key),
+      write: async (key, value) => {
+        f.store.set(key, value)
+      },
+      notify: async () => {},
+      fetch,
+      now: Date.now,
+    },
+  )
+  const event = f.event()
+  await restarted.decide(event)
+  expect(event).toMatchObject({ compact: true, portable: true })
+  expect(event.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model"))
+})
+
+test("without a usable compactionModel the agent's own compaction model writes the summary", async () => {
+  for (const configured of [undefined, "not-a-model-reference"]) {
+    const f = fixture(configured)
+    f.state.known = true
+    await f.controller.decide(f.event())
+    await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+    expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+    const event = f.event()
+    await f.controller.decide(event)
+    expect(event).toMatchObject({ compact: true, portable: true })
+    expect(event.compactionModel).toBeUndefined()
+    const [notice] = await f.controller.status("ses_test")
+    expect(notice?.text).toContain("Compacting with the agent's compaction model first.")
+    if (configured) expect(notice?.text).toContain('compactionModel "not-a-model-reference" is not provider/model')
+  }
+})

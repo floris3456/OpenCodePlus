@@ -48,6 +48,31 @@ still requires a fresh chat or a newly committed portable checkpoint.
 This module is disabled unless this file or explicit `quota` options are present. Changing credentials
 never changes the model. No CPAMP API, management key, or usage queue is used.
 
+## Account switches (compact on switch)
+
+With CPA's `quota-handoff` plugin **0.1.5-local.1 or newer** and its
+`compact_on_switch: true`, CPA keeps using an account until it routes a chat elsewhere
+(for example `fill-first` moving on because the account is used up). Then:
+
+1. CPA refuses that one request before it reaches the new account
+   (`409 quota_compact_required`). Every request of this client declares that it
+   handles this (`compact_on_switch` in the claim); older clients are switched as before.
+2. The chat compacts at once, like an automatic compaction, but the summary is written
+   by `compactionModel` from `cliproxyapi.json` (else the agent's compaction model).
+   The summary is portable text, so no account-bound reasoning reaches the new account.
+3. The same step continues on the chat's own model; CPA admits it on the new account
+   because it carries the new checkpoint. No separate "continue" message is needed:
+   the step that was refused simply runs again from the checkpoint.
+
+The composer shows "… Compacting with … first." while this happens and "Continuing on …
+after compacting with …." afterwards (until the next run); nothing is added to the model's
+context. A pending switch survives a restart. If CPA refuses again after that compaction,
+or a switch is retried more than three times, the refusal reaches the chat as an error
+instead of compacting in a loop. A chat with automatic compaction off is switched without
+compaction (CPA admits it), as are brand-new chats and chats whose newest checkpoint CPA has
+not seen yet. A wrong `compactionModel` (not resolvable) fails the compaction with the
+model error rather than silently summarizing on the expensive model.
+
 ## Credential usage in the sidebar
 
 Usage is a compact **Usage** section of the session sidebar, below its other

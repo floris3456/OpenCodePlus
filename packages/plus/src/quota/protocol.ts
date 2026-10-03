@@ -35,9 +35,18 @@ export const Stored = Schema.Struct({
   cursor: Schema.Number,
   generation: Schema.Number,
   retryIntent: Schema.String,
+  /**
+   * CPA refused to move this chat to another account until it compacts. The value is the checkpoint the
+   * refused request carried ("" for none): a newer checkpoint is the compaction CPA waits for.
+   */
+  switching: Schema.optional(Schema.String),
 })
 export type Stored = typeof Stored.Type
-export const Config = Schema.Struct({ routes: Schema.Record(Schema.String, Schema.String) })
+export const Config = Schema.Struct({
+  routes: Schema.Record(Schema.String, Schema.String),
+  /** `provider/model[#variant]` that writes the summary when CPA moves a chat to another account. */
+  compactionModel: Schema.optional(Schema.String),
+})
 export type Config = typeof Config.Type
 
 export function endpoint(base: string) {
