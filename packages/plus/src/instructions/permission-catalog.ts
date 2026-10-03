@@ -738,7 +738,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       label: "Checks it may assign",
       kind: "input",
       field: "checks[].argv",
-      summary: "Commands a child may be given as checks. Checks are always explicit bun test files or bun run scripts.",
+      summary: "Explicit commands (argv) a child may be given as checks. A project check (.opencodeplus/checks.json) is not limited here.",
       rows: [
         { id: "tests", label: "Test files (bun test FILE)", on: true, patterns: ["bun test *"], message: "assigning test checks is not allowed here" },
         { id: "scripts", label: "Package scripts (bun run SCRIPT)", on: true, patterns: ["bun run *"], message: "assigning package-script checks is not allowed here" },
@@ -870,15 +870,6 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
   team_supersede: [runs("team_supersede"), approval()],
   team_stop: [runs("team_stop"), approval()],
   team_status: [runs("team_status")],
-  team_wait: [
-    runs("team_wait"),
-    values("until", "until", "Wait until", "What a wait may wait for.", [
-      { id: "settled", label: "Settled (settled)", on: true, value: "settled" },
-      { id: "idle", label: "Idle (idle)", on: true, value: "idle" },
-    ], "settled"),
-    parameters([{ id: "no-ack", label: "Unacknowledged waits (ack: false)", on: true, field: "ack", value: false }]),
-    limits([{ id: "timeout", label: "Longest wait (ms)", on: false, limit: 600_000, field: "timeoutMs", toolDefault: 60_000 }], "clamp"),
-  ],
   team_diff: [
     runs("team_diff"),
     values("from", "from", "Compare against", "What a diff may compare against.", [
@@ -1214,7 +1205,6 @@ const legacyCategories: Record<string, { readonly id: string; readonly label: st
   glob: { id: "patterns", label: "Search patterns" },
   grep: { id: "patterns", label: "Search patterns" },
   subagent: { id: "agents", label: "Agents" },
-  skill: { id: "skills", label: "Skills" },
 }
 
 export const suggestedCategory = { id: "suggested", label: "Mentioned in instructions" } as const

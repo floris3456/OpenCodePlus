@@ -144,7 +144,6 @@ test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode t
     "group:preset:build:compaction",
     "group:preset:build:tools",
     "group:preset:build:base",
-    "group:preset:build:skills",
     "group:preset:build:system",
   ])
 })
@@ -159,7 +158,6 @@ test("the Basic team preset lists its member presets with the agent groups and t
     "group:preset:basic/:planner:compaction",
     "group:preset:basic/:planner:tools",
     "group:preset:basic/:planner:base",
-    "group:preset:basic/:planner:skills",
     "group:preset:basic/:planner:system",
   ])
   const shell = row(nodes, "item:preset:basic/:planner:tool:shell")

@@ -6,7 +6,7 @@ import { setChecksHandler } from "../../src/teams/api-git-ops.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { context } from "../harness.js"
-import { teamState } from "./preset-table.js"
+import { change, presetTable, shippedMembers, teamState } from "./preset-table.js"
 import { saveRun, type RunRecord } from "../../src/teams/run.js"
 import type { Check } from "../../src/teams/schema.js"
 import { atomicJson, readJson } from "../../src/teams/store.js"
@@ -129,7 +129,7 @@ test("forbidden checkpoint refuses before file/index changes, allowed checkpoint
   })
 })
 
-test("an invalid check fails E_CHECKS with the exact validateChecks message", async () => {
+test("an invalid check fails E_CHECKS with the exact resolveChecks message", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const caller = baseRun({ id: "main-0123456789abcdef" })
     await saveRun(root, caller)
@@ -137,8 +137,9 @@ test("an invalid check fails E_CHECKS with the exact validateChecks message", as
       await setChecksHandler({ checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] }, callerFor(caller)),
     )
     expect(error.code).toBe("E_CHECKS")
-    expect(error.message).toBe("Checks need distinct short IDs.")
-    expect(error.accepted).toEqual({ id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] })
+    expect(error.message).toBe('Check id "Bad_ID!" must be short kebab-case (a-z, 0-9, -).')
+    // Without project checks the accepted example is a Bun test file.
+    expect(error.accepted).toEqual({ id: "unit", argv: ["bun", "test", "test/unit.test.ts"] })
   })
 })
 
@@ -152,7 +153,7 @@ test("more than 12 checks is refused", async () => {
     }))
     const error = rejected(await setChecksHandler({ checks }, callerFor(caller)))
     expect(error.code).toBe("E_CHECKS")
-    expect(error.message).toBe("E_CHECKS: Use at most 12 focused checks.")
+    expect(error.message).toBe("Use at most 12 focused checks.")
   })
 })
 
@@ -184,5 +185,75 @@ test("calling set_checks twice replaces rather than appends", async () => {
     expect(await readJson<Check[]>(path.join(root, "runs", caller.id, "checks.json"))).toEqual([
       { id: "lint", argv: ["bun", "run", "lint"] },
     ])
+  })
+})
+
+
+// A chat run has no Brief, so it has no scope paths: it commits what its
+// agent may edit. Before, its empty scope refused every file.
+async function chatRepo(root: string): Promise<{ directory: string; head: string }> {
+  const directory = path.join(root, "chat-checkout")
+  await fs.mkdir(path.join(directory, "src"), { recursive: true })
+  await git(directory, ["init", "-b", "main"])
+  await git(directory, ["config", "user.name", "fixture"])
+  await git(directory, ["config", "user.email", "fixture@local"])
+  await fs.writeFile(path.join(directory, "README.md"), "fixture\n")
+  await git(directory, ["add", "."])
+  await git(directory, ["commit", "-m", "test: fixture"])
+  return { directory, head: await git(directory, ["rev-parse", "HEAD"]) }
+}
+
+test("a chat run checkpoints what its agent may edit, never protected state", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { directory, head } = await chatRepo(root)
+    const seat = baseRun({ id: "main-1111111111111111", kind: "main", role: "build-seat", directory, base: head, head })
+    await saveRun(root, seat)
+    const api = createTeamApi(context(), teamState())
+    await fs.writeFile(path.join(directory, "src/feature.ts"), "export const x = 1\n")
+    const committed = required(await api.checkpoint({ files: ["src/feature.ts"], message: "feat: add feature", expectedHead: head }, callerFor(seat))) as {
+      committed: boolean
+      head: string
+    }
+    expect(committed.committed).toBe(true)
+    await fs.mkdir(path.join(directory, ".opencodeplus"), { recursive: true })
+    await fs.writeFile(path.join(directory, ".opencodeplus/state.json"), "{}\n")
+    const refused = rejected(await api.checkpoint({ files: [".opencodeplus/state.json"], message: "chore: state", expectedHead: committed.head }, callerFor(seat)))
+    expect(refused.code).toBe("E_SCOPE")
+    expect(refused.message).toContain("protected state")
+  })
+})
+
+test("a planner's chat run checkpoints only its plan files", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { directory, head } = await chatRepo(root)
+    const planner = baseRun({ id: "main-2222222222222222", kind: "main", role: "planner", directory, base: head, head })
+    await saveRun(root, planner)
+    const api = createTeamApi(context(), teamState())
+    await fs.writeFile(path.join(directory, "src/feature.ts"), "export const x = 1\n")
+    const refused = rejected(await api.checkpoint({ files: ["src/feature.ts"], message: "feat: sneak", expectedHead: head }, callerFor(planner)))
+    expect(refused.code).toBe("E_SCOPE")
+    expect(refused.message).toContain("is not a file planner may edit")
+    expect(await git(directory, ["rev-parse", "HEAD"])).toBe(head)
+    await fs.mkdir(path.join(directory, "docs/plans"), { recursive: true })
+    await fs.writeFile(path.join(directory, "docs/plans/feature.md"), "# Plan\n")
+    expect(required(await api.checkpoint({ files: ["docs/plans/feature.md"], message: "docs: plan", expectedHead: head }, callerFor(planner)))).toMatchObject({
+      committed: true,
+    })
+  })
+})
+
+test("a chat run's checkpoint honours its agent's Protected files rows", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { directory, head } = await chatRepo(root)
+    const seat = baseRun({ id: "main-3333333333333333", kind: "main", role: "build-seat", directory, base: head, head })
+    await saveRun(root, seat)
+    const member = shippedMembers().find((entry) => entry.id === "build-seat")!
+    const table = presetTable({ records: [change(member, "perm:edit:protected.tests", { state: "off" })] })
+    const api = createTeamApi(context(), teamState(table))
+    await fs.mkdir(path.join(directory, "test"), { recursive: true })
+    await fs.writeFile(path.join(directory, "test/a.test.ts"), "test\n")
+    const refused = rejected(await api.checkpoint({ files: ["test/a.test.ts"], message: "test: add", expectedHead: head }, callerFor(seat)))
+    expect(refused.code).toBe("E_SCOPE")
+    expect(refused.message).toContain("Test files")
   })
 })

@@ -89,7 +89,6 @@ test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, ro
     "perm:shell:commands.git-changes": "off",
     "perm:shell:commands.file-writes": "off",
     "perm:team_status:runs.others": "on",
-    "perm:team_wait:runs.descendants": "on",
     "perm:team_list:runs.others": "off",
     "perm:team_followup:runs.descendants": "off",
     "perm:team_finish:requirements.clean": "off",
@@ -217,7 +216,11 @@ test("(d) renaming a member changes nothing but its id", async () => {
   const renamed = shippedMembers().map((member) => (member.id === "orchestrator" ? { ...member, id: "anything-at-all" } : member))
   const before = resolvedStates(presetInput(), "orchestrator")
   const after = resolvedStates(presetInput({ members: renamed }), "anything-at-all")
-  expect(after).toEqual(before)
+  // Its own Delegate to row (another run of itself) is named by its id too.
+  const itself = (states: Record<string, string>, id: string) =>
+    Object.fromEntries(Object.entries(states).map(([key, value]) => [key === `perm:team_delegate:to.${id}` ? "perm:team_delegate:to.<itself>" : key, value]))
+  expect(itself(after, "anything-at-all")).toEqual(itself(before, "orchestrator"))
+  expect(after["perm:team_delegate:to.anything-at-all"]).toBe("on")
   // The handlers answer it the same way: past the role gates to the repository check.
   const caller = run({ id: "main-0123456789abcdef", role: "anything-at-all", sessionID: "ses_renamed" })
   await saveRun(root, caller)

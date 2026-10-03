@@ -73,7 +73,7 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
     const cleanup = await retryCleanup(ctx, root, parent, child, landed)
     return succeeded({ ...landedValue(landed, [cleanup]), alreadyLanded: true })
   }
-  if (child.state === "working") return fail("E_BUSY", "Child is working; wait first.")
+  if (child.state === "working") return fail("E_BUSY", "Child is working; integrate after its settlement wakes you.")
   // drain also processes older pending/paused entries. Establish actual Session
   // idleness for every child it can land, within one bounded wait budget.
   const queued = entries.filter((item) => item.state === "pending" || item.state === "paused")
@@ -153,7 +153,29 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
   }
   const ours = drained.result.processed.find((item) => item.id === entry.id)
   if (ours !== undefined && ours.state === "landed") return succeeded(landedValue(ours, cleanup))
-  return succeeded({ entry: entry.id, state: "pending", head: null, cleanup })
+  if (ours !== undefined && (ours.state === "conflict" || ours.state === "red")) return succeeded(reworkValue(ours, cleanup))
+  return succeeded({ entry: entry.id, state: drained.result.paused ? "paused" : "pending", head: null, cleanup })
+}
+
+// A merge that did not land says why and what to do: the rework task it
+// opened is what a fresh child's Brief claims (task), so the caller never has
+// to find the id elsewhere.
+function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
+  const task = entry.reworkTask
+  const why =
+    entry.state === "conflict"
+      ? `the child's commits conflict with your HEAD in [${(entry.conflictFiles ?? []).join(", ")}]`
+      : `your integration checks [${(entry.redChecks ?? []).join(", ")}] fail on the rebased commits`
+  return {
+    entry: entry.id,
+    state: entry.state,
+    head: null,
+    ...(entry.conflictFiles === undefined ? {} : { conflictFiles: entry.conflictFiles }),
+    ...(entry.redChecks === undefined ? {} : { redChecks: entry.redChecks }),
+    ...(task === undefined ? {} : { reworkTask: task }),
+    next: `Not landed: ${why}. Delegate a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then supersede this child.`,
+    cleanup,
+  }
 }
 
 async function waitForChild(

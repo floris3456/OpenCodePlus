@@ -108,6 +108,9 @@ test("enabling basic installs all six members with mode, description, and their 
     expect([id, has("external_directory", "*", "deny")]).toEqual([id, !coordinators.has(id)])
     // Orchestrators change no files, commits or refs from the shell.
     expect([id, has("shell", "git push *", "deny"), has("shell", "git stash", "deny")]).toEqual([id, orchestrators.has(id), orchestrators.has(id)])
+    // Landing is a tool row: a planner lands what its orchestrator reports
+    // done in the user's checkout; workers land nothing.
+    expect([id, has("team.integrate", "*", "deny")]).toEqual([id, !coordinators.has(id)])
     // A member is never hidden from the namespace it belongs to.
     expect(has("team.*", "*", "deny")).toBe(false)
   }
@@ -126,12 +129,16 @@ test("the shell tool is on only for shell-capable members", () => {
 
 test("final ceilings are the team tool rows, exactly the old ceiling of every role", () => {
   const ceilings: Record<string, string[]> = {
-    planner: ["delegate", "followup", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "diff"],
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "wait", "get_context", "check", "diff"],
-    implementer: ["checkpoint", "finish", "status", "get_context", "check", "diff"],
-    reviewer: ["finish", "status", "get_context", "diff"],
-    scout: ["finish", "status", "get_context", "diff"],
-    "build-seat": [...teamTools],
+    // A planner commits its plan file when delegated, and in the user's chat
+    // lands what its orchestrator reports done; workers address only their own
+    // run, which get_context describes (no status); a scout changes nothing (no
+    // diff); the build seat, never delegated to, finishes nothing.
+    planner: ["delegate", "followup", "integrate", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "status", "list", "get_context", "check", "diff"],
+    implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
+    reviewer: ["finish", "get_context", "diff"],
+    scout: ["finish", "get_context"],
+    "build-seat": teamTools.filter((tool) => tool !== "finish"),
   }
   for (const [id, allowed] of Object.entries(ceilings)) {
     const open: string[] = teamTools.filter((tool) => states[id]?.[`tool:team_${tool}`] === "on")

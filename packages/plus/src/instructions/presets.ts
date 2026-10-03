@@ -5,7 +5,7 @@
 // Pure data and functions, no filesystem: the server, the TUI and the tools
 // all import this module and compute the same catalogue — the client from the
 // snapshot's items and records, so shipped content never crosses the wire.
-import { builtinTeams } from "./builtin-teams.js"
+import { basicDelegation, builtinTeams } from "./builtin-teams.js"
 import { controlItems, isControl } from "./agent-controls.js"
 import {
   fingerprint,
@@ -168,10 +168,10 @@ const inside: PresetOverrides = rows(off, [
   "perm:grep:roots.outside",
 ])
 
-// An orchestrator works in its parent's checkout (a root orchestrator in the
-// human's), where a stray `git stash` or `git clean` destroys work: it changes
-// no files, commits or refs from the shell. Implementers change files and
-// team_integrate lands their commits.
+// An orchestrator's checkout is where team_integrate lands its children's
+// commits (a root orchestrator's is the user's), where a stray `git stash` or
+// `git clean` destroys work: it changes no files, commits or refs from the
+// shell. Implementers change files and team_integrate lands their commits.
 const orchestratorShell: PresetOverrides = rows(off, [
   "perm:shell:git-push",
   "perm:shell:git-commit",
@@ -233,8 +233,13 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...secrets,
     ...unused,
     ...rows(off, ["tool:shell", "tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
-    ...teamToolRows(off, ["integrate", "checkpoint", "set_checks", "check"]),
-    ...reach(["status", "wait", "list"]),
+    // It keeps team_checkpoint: a delegated planner commits its plan file,
+    // the only way the plan reaches its parent (an uncommitted new file shows
+    // in no diff and lands nowhere). It keeps team_integrate: in the user's
+    // chat it lands what the orchestrator it delegated to reports done, which
+    // that orchestrator already verified, so it records and runs no checks.
+    ...teamToolRows(off, ["set_checks", "check"]),
+    ...reach(["status", "list"]),
     ...rows(on, [
       "tool:question",
       "perm:edit:allowed.plans",
@@ -252,7 +257,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     // it writes Brief and handoff files, the plan rows.
     ...rows(off, ["tool:question", "tool:subagent", "perm:edit:allowed.*"]),
     ...teamToolRows(off, ["checkpoint"]),
-    ...reach(["status", "wait"]),
+    ...reach(["status"]),
     ...rows(on, [
       "tool:shell",
       "perm:team_get_context:bootstrap.chat",
@@ -260,26 +265,32 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
       "perm:team_get_context:accepts.reason",
     ]),
   },
+  // Workers address no run but their own, which team_get_context already
+  // describes, so team_status is off for all three; a scout changes nothing,
+  // so its own diff is always empty.
   implementer: {
     ...worker,
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "wait", "list"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "status", "list"]),
     ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths"]),
   },
   reviewer: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "wait", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "status", "list", "check"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
   },
   scout: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "wait", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop", "status", "list", "check", "diff"]),
   },
+  // The build seat is the user's chat: nobody delegates to it, so it has no
+  // report to finish. It checkpoints what it may edit, like any chat run.
   "build-seat": {
-    ...reach(["status", "wait", "list"]),
+    ...teamToolRows(off, ["finish"]),
+    ...reach(["status", "list"]),
     ...rows(on, [
       "tool:shell",
       "tool:question",
@@ -291,7 +302,8 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
 }
 
 // The build seat "may delegate to every member": every "Delegate to" row of
-// its team ships on, whoever the teammate is. Members of other teams stay off.
+// its team ships on, whoever the teammate is. Its own row and members of other
+// teams stay off.
 // The Basic member preset names its teammates explicitly; this stays as the
 // fallback for a build seat in any other team, exactly as the retired agent
 // preset behaved.
@@ -301,23 +313,17 @@ function buildSeatDelegates(team: string, member: string, item: string): Shipped
   return { state: "on" }
 }
 
-// Who a Basic member delegates to, by the teammate's own member id: planners
-// hand plans to orchestrators; orchestrators split work among orchestrators,
-// implementers, reviewers and scouts and never back to a planner; the build
-// seat delegates to every member. The Basic member presets turn this into
-// their members' "Delegate to" rows below.
-const delegation: Readonly<Partial<Record<BasicMemberId, readonly BasicMemberId[]>>> = {
-  planner: ["orchestrator"],
-  orchestrator: ["orchestrator", "implementer", "reviewer", "scout"],
-  "build-seat": ["planner", "orchestrator", "implementer", "reviewer", "scout"],
-}
+// Who a Basic member delegates to lives with the bodies that describe it
+// (builtin-teams.ts basicDelegation); the member presets turn it into their
+// members' "Delegate to" rows below.
+const delegation: Readonly<Partial<Record<BasicMemberId, readonly BasicMemberId[]>>> = basicDelegation
 
 /**
  * Per team preset, per member: shipped answers of the member preset besides
  * its role body — its former agent preset's rows merged with its "Delegate to"
- * rows for its teammates (by the teammates' member ids). A member preset is
- * self-contained: what it does not set falls through to the item's own value,
- * never to a hidden agent preset.
+ * rows for the members it delegates to (by member id, its own included). A
+ * member preset is self-contained: what it does not set falls through to the
+ * item's own value, never to a hidden agent preset.
  */
 export const plusMemberOverrides: Readonly<Record<string, Readonly<Record<string, PresetOverrides>>>> = Object.fromEntries(
   builtinTeams.map((team) => [
@@ -326,7 +332,7 @@ export const plusMemberOverrides: Readonly<Record<string, Readonly<Record<string
       team.members.map((member): [string, PresetOverrides] => {
         const targets = delegation[member.id as BasicMemberId] ?? []
         const delegates = team.members
-          .filter((peer) => peer.id !== member.id && (targets as readonly string[]).includes(peer.id))
+          .filter((peer) => (targets as readonly string[]).includes(peer.id))
           .map((peer) => `perm:team_delegate:to.${peer.id}`)
         return [member.id, { ...(memberBaseOverrides[member.id as BasicMemberId] ?? {}), ...rows(on, delegates) }]
       }),
@@ -433,9 +439,9 @@ export function presetCatalog(input: { readonly items: readonly Item[]; readonly
   )
   return {
     presets: presetListing(input.presets).map((entry) => ({ ref: entry.ref, origin: entry.origin })),
-    shipped: (ref, item, section, upstream) => {
+    shipped: (ref, item, section, upstream, agent) => {
       if (section !== null || ref.kind === "team") return undefined
-      if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream)
+      if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream, agent)
       if (isControl(item) && (nativePresetIds as readonly string[]).includes(ref.id))
         return valueOf(input.items.find((entry) => entry.id === item && entry.agents?.includes(ref.id)))
       if ((nativePresetIds as readonly string[]).includes(ref.id))
@@ -640,6 +646,7 @@ function memberShipped(
   id: string,
   item: string,
   upstream: Pick<Item, "text" | "enabled" | "pinned"> | undefined,
+  agent?: string | null,
 ): ShippedValue | undefined {
   const member = plusTeamPresets.find((entry) => entry.id === team)?.members.find((entry) => entry.id === id)
   if (member === undefined) return undefined
@@ -647,7 +654,12 @@ function memberShipped(
   if (item === "setting:mode") return { text: member.mode }
   if (item === "setting:description") return { text: member.description }
   if (isControl(item)) return undefined
+  // An agent's own "Delegate to" row (another run of itself) answers as the
+  // preset's row for its own member, whatever the agent is called: on for an
+  // orchestrator, off for everyone else, the build seat's fallback included.
+  const own = agent === undefined || agent === null ? undefined : `perm:team_delegate:to.${agent}`
   const override =
+    (item === own ? (member.overrides[`perm:team_delegate:to.${id}`] ?? off) : undefined) ??
     member.overrides[item] ??
     (member.offPrefixes.some((prefix) => item.startsWith(prefix)) ? off : undefined) ??
     buildSeatDelegates(team, id, item)

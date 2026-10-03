@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
 import { assembleWithOverrides, derive, manual, slice, type Split } from "./sections.js"
+import { markerIn, stripMarkers } from "./requires.js"
 
 // `preset` holds the human's edits of presets (DESIGN §1); its records live
 // in the global store file.
@@ -238,6 +239,7 @@ export interface ShippedValue {
   readonly text?: string
   readonly state?: "on" | "off"
   readonly pin?: boolean
+  readonly requires?: readonly string[]
 }
 
 /**
@@ -252,13 +254,15 @@ export interface PresetCatalog {
    * The shipped value of `item` (`section` null = whole item) in a
    * Native/Plus preset; undefined = the preset does not set it. `upstream` is
    * the item being resolved (several items share an id, one per agent, so the
-   * id alone cannot name its upstream value).
+   * id alone cannot name its upstream value), and `agent` the agent it is
+   * resolved for.
    */
   readonly shipped: (
     preset: PresetRef,
     item: string,
     section: string | null,
     upstream?: Pick<Item, "text" | "enabled" | "pinned">,
+    agent?: string | null,
   ) => ShippedValue | undefined
   /** The shipped active model of a Native/Plus preset; undefined = none. */
   readonly model: (preset: PresetRef) => ModelRefLike | undefined
@@ -882,6 +886,12 @@ export interface CustomizationRecord {
   readonly text?: string
   readonly state?: "on" | "off"
   readonly pin?: boolean
+  /**
+   * When this system row or section is sent (requires.ts): row ids that must
+   * be on, `!id` off. Overrides the section's `<!-- requires -->` line; an
+   * empty list means always. Nearest down the chain wins, like state.
+   */
+  readonly requires?: readonly string[]
   readonly basedOn: string
   readonly basedOnText?: string
   readonly acknowledged?: string
@@ -980,6 +990,12 @@ export interface Resolved {
   readonly review: boolean
   /** Which parts of the own override are "to review". */
   readonly reviewOf: readonly ReviewPart[]
+  /**
+   * When the row or section is sent (requires.ts): the row ids it needs
+   * (`!id` = off) and where that came from: a level's record (`requires` set
+   * there) or "text", the section's own `<!-- requires -->` line. Absent: always.
+   */
+  readonly requires?: { readonly ids: readonly string[]; readonly from: From | "text"; readonly here: boolean }
 }
 
 export interface ThreeWay {
@@ -994,6 +1010,8 @@ export interface MergeFields {
   readonly text?: string | null
   readonly state?: "on" | "off" | null
   readonly pin?: boolean | null
+  /** Set the condition (an empty list = always); null drops it, so the level above or the text decides. */
+  readonly requires?: readonly string[] | null
   readonly acknowledged?: string | null
 }
 
@@ -1003,6 +1021,13 @@ export interface ChainInput {
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
   readonly address: Address
+  /**
+   * Resolving for one agent: answers whether that agent meets a condition
+   * (requires.ts). With it, `assembled` leaves out each section whose
+   * condition fails (with its subsections), is empty when the row's own
+   * condition fails, and carries no marker lines. Without it, nothing is gated.
+   */
+  readonly gate?: (ids: readonly string[]) => boolean
 }
 
 // Content-keyed sha256 cache: tree rebuilds resolve every item per agent,
@@ -1122,7 +1147,7 @@ export function resolveResolution(
       ...(parts.includes("state") ? { state: undefined, basedOnState: undefined } : {}),
       ...(parts.includes("pin") ? { pin: undefined, basedOnPin: undefined } : {}),
     })
-    if (dropped.text === undefined && dropped.state === undefined && dropped.pin === undefined) {
+    if (dropped.text === undefined && dropped.state === undefined && dropped.pin === undefined && dropped.requires === undefined) {
       records.splice(index, 1)
       return records
     }
@@ -1192,8 +1217,9 @@ export function merge(
   const text = fields.text === undefined ? existing?.text : (fields.text ?? undefined)
   const state = fields.state === undefined ? existing?.state : (fields.state ?? undefined)
   const pin = fields.pin === undefined ? existing?.pin : (fields.pin ?? undefined)
+  const requires = fields.requires === undefined ? existing?.requires : (fields.requires ?? undefined)
   const acknowledged = fields.acknowledged === undefined ? existing?.acknowledged : (fields.acknowledged ?? undefined)
-  if (text === undefined && state === undefined && pin === undefined) return [...rest]
+  if (text === undefined && state === undefined && pin === undefined && requires === undefined) return [...rest]
   const baseline = baselineForMerge(records, address, upstream, scopes, splits)
   const setsState = fields.state !== undefined && fields.state !== null
   const setsPin = fields.pin !== undefined && fields.pin !== null
@@ -1216,6 +1242,7 @@ export function merge(
     ...(text === undefined ? {} : { text }),
     ...(state === undefined ? {} : { state }),
     ...(pin === undefined ? {} : { pin }),
+    ...(requires === undefined ? {} : { requires: [...requires] }),
     basedOn: existing?.basedOn ?? baseline.fingerprint,
     ...(existing?.basedOnText === undefined && text === undefined ? {} : { basedOnText: existing?.basedOnText ?? baseline.text }),
     ...(acknowledged === undefined ? {} : { acknowledged }),
@@ -1284,8 +1311,9 @@ function resolveWhole(input: ChainInput): Resolved {
   const textAt = values.findIndex((value) => value?.text !== undefined)
   const stateAt = values.findIndex((value) => value?.state !== undefined)
   const pinAt = values.findIndex((value) => value?.pin !== undefined)
+  const requiresAt = values.findIndex((value) => value?.requires !== undefined)
   const sourceAt = values.findIndex(
-    (value) => value?.text !== undefined || value?.state !== undefined || value?.pin !== undefined,
+    (value) => value?.text !== undefined || value?.state !== undefined || value?.pin !== undefined || value?.requires !== undefined,
   )
   const fallback = fallbackOf(input)
   const text = textAt === -1 ? input.upstream.text : (values[textAt]?.text ?? "")
@@ -1302,20 +1330,49 @@ function resolveWhole(input: ChainInput): Resolved {
   )
   const overridden = sectionOverrides(input, chain)
   const reviewOf = reviewParts(input, own, () => aboveWholeFingerprint(input, whole, chain))
+  const requires =
+    requiresAt === -1 ? undefined : { ids: values[requiresAt]?.requires ?? [], from: chain[requiresAt].from, here: own?.requires !== undefined }
+  const gate = input.gate
+  // Gated for one agent: a section whose condition it does not meet goes,
+  // with its subsections; the row's own condition failing sends nothing.
+  if (gate !== undefined)
+    for (const section of split.sections) {
+      const ids = sectionRequires(input, chain, section.id, overridden.get(section.id) ?? slice(text, section))?.ids
+      if (ids !== undefined && !gate(ids)) excluded.add(section.id)
+    }
+  const assembled = assembleWithOverrides(text, split, excluded, overridden)
   return {
     text,
-    assembled: assembleWithOverrides(text, split, excluded, overridden),
+    assembled: gate === undefined ? assembled : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
     enabled: stateAt === -1 ? fallback.enabled : values[stateAt]?.state === "on",
     pinned: pinAt === -1 ? (input.upstream.pinned ?? false) : (values[pinAt]?.pin ?? false),
     source: sourceAt === -1 ? "upstream" : chain[sourceAt].level,
     from: stateAt === -1 ? fallback.from : chain[stateAt].from,
     textFrom: textAt === -1 ? { kind: "upstream" } : chain[textAt].from,
     pinFrom: pinAt === -1 ? { kind: "upstream" } : chain[pinAt].from,
-    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined),
+    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined || own.requires !== undefined),
     modified: own?.text !== undefined,
     review: reviewOf.length > 0,
     reviewOf,
+    ...(requires === undefined ? {} : { requires }),
   }
+}
+
+// A section's condition: the nearest level that set one, else the
+// `<!-- requires -->` line under its heading in its text.
+function sectionRequires(
+  input: ChainInput,
+  chain: readonly ChainNode[],
+  id: string,
+  text: string,
+): { readonly ids: readonly string[]; readonly from: From | "text"; readonly here: boolean } | undefined {
+  const sectioned = sectionRecords(input, id)
+  const values = chain.map((node) => valueAt(input, sectioned, node, id))
+  const at = values.findIndex((value) => value?.requires !== undefined)
+  const here = sectioned.some((record) => record.requires !== undefined && sameNode(record, { ...input.address, section: id }))
+  if (at !== -1) return { ids: values[at]?.requires ?? [], from: chain[at].from, here }
+  const marker = markerIn(text)
+  return marker === undefined ? undefined : { ids: marker, from: "text", here: false }
 }
 
 function resolveSection(input: ChainInput): Resolved {
@@ -1340,6 +1397,7 @@ function resolveSection(input: ChainInput): Resolved {
   const own = at(sectioned, input.address)
   const sourceNode = textAt === -1 ? (stateAt === -1 ? undefined : chain[stateAt]) : chain[textAt]
   const reviewOf = reviewParts(input, own, () => aboveSectionFingerprint(input, id))
+  const requires = sectionRequires(input, chain, id, text)
   return {
     text,
     assembled: text,
@@ -1349,10 +1407,11 @@ function resolveSection(input: ChainInput): Resolved {
     from: stateAt === -1 ? whole.from : chain[stateAt].from,
     textFrom: textAt === -1 ? whole.textFrom : chain[textAt].from,
     pinFrom: whole.pinFrom,
-    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined),
+    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.requires !== undefined),
     modified: own?.text !== undefined,
     review: reviewOf.length > 0,
     reviewOf,
+    ...(requires === undefined ? {} : { requires }),
   }
 }
 
@@ -1382,7 +1441,7 @@ function valueAt(
   section: string | null,
 ): ShippedValue | undefined {
   if (node.shipped === undefined) return at(records, node)
-  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream)
+  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream, input.address.agent)
 }
 
 // §3.3: native agents (and a team's Special agents), items the agent owns and

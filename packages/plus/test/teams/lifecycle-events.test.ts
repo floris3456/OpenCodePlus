@@ -333,7 +333,8 @@ test("a settled child puts exactly one child.settled item in a working parent's 
     expect(items[0]?.from).toBe(child.id)
     expect(items[0]?.text).toContain(child.id)
     expect(items[0]?.text).toContain("attempt 1 no_report")
-    expect(items[0]?.text).toContain("report: none")
+    expect(items[0]?.text).toContain("without team_finish")
+    expect(items[0]?.text).toContain("next: read team_status and team_diff")
     // A working parent is not prompted; its own idle drain delivers this.
     expect(sessions.prompted).toHaveLength(0)
     expect((await loadRun(root, child.id))?.attempts[0]?.notified).toBe(true)
@@ -342,7 +343,7 @@ test("a settled child puts exactly one child.settled item in a working parent's 
   })
 })
 
-test("the settlement names the report status and path when the child reported", async () => {
+test("the settlement carries the whole report and the next step, so the parent needs no read", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()
     const parent = baseRun({
@@ -365,15 +366,29 @@ test("the settlement names the report status and path when the child reported", 
     await saveRun(root, parent)
     await saveRun(root, child)
     await atomicJson(path.join(root, "runs", child.id, "report-1.json"), {
-      status: "done",
+      status: "done_with_concerns",
       summary: "Filter fixed and covered.\nmore detail",
+      concerns: ["the cache key may collide"],
+      deferred: ["docs update: out of time"],
+      findings: [{ severity: "note", path: "src/q.ts:12", detail: "filter applied here" }],
+      commits: [{ sha: "0123456789abcdef0123456789abcdef01234567", subject: "fix: filter by agent" }],
+      checks: [{ id: "q", passed: true }],
     })
     await onSessionEvent(context({ session: recordSession().domain }), root, succeededEvent("ses_child_012"))
     const items = await peek(root, parent.id)
     expect(items).toHaveLength(1)
-    expect(items[0]?.text).toContain("settled: done")
-    expect(items[0]?.text).toContain("summary: Filter fixed and covered.")
-    expect(items[0]?.text).toContain(path.join(root, "runs", child.id, "report-1.md"))
+    expect(items[0]?.text).toBe(
+      [
+        "[team] w-6666666666666666 (muse-implementer, T7) settled: done_with_concerns — attempt 1 succeeded.",
+        "Filter fixed and covered.\nmore detail",
+        "Commits: 0123456 fix: filter by agent",
+        "Checks: q pass",
+        "Concerns:\n- the cache key may collide",
+        "Deferred:\n- docs update: out of time",
+        "Findings:\n- note src/q.ts:12: filter applied here",
+        "next: weigh the concerns, then check the change with team_diff and land it with team_integrate.",
+      ].join("\n"),
+    )
   })
 })
 
@@ -749,5 +764,169 @@ test("deliverInbox prompt error path cannot resurrect a worktree removed while i
     expect(stored?.worktree).toBe("removed")
     expect(stored?.state).toBe("idle")
     expect(stored?.attempts).toHaveLength(1)
+  })
+})
+
+// ── a delegated run waiting on its own children ───────────────────────────
+//
+// Three generations: main (the grandparent, idle) → w-orch (a delegated
+// coordinator) → w-kid. A coordinator that ends its turn without a report
+// while w-kid can still settle is waiting, not done: its attempt stays open,
+// main hears nothing, and w-kid's settlement continues the same attempt.
+
+function family(now = new Date().toISOString()) {
+  const main = baseRun({
+    id: "main-9999999999999999",
+    role: "opus-orchestrator",
+    kind: "main",
+    state: "idle",
+    attempts: [{ n: 1, state: "no_report", startedAt: now, trigger: "prepare", endedAt: now }],
+    sessionID: "ses_main_wait",
+    children: ["w-0c00000000000000"],
+  })
+  const orch = baseRun({
+    id: "w-0c00000000000000",
+    role: "opus-orchestrator",
+    state: "working",
+    attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    parent: main.id,
+    sessionID: "ses_orch_wait",
+    children: ["w-0d00000000000000"],
+  })
+  const kid = workingChild("w-0d00000000000000", orch.id, "ses_kid_wait")
+  return { main, orch, kid }
+}
+
+// What the idle grandparent was told: an idle main run is prompted with its
+// inbox at once, so the prompts to its session are the observable record.
+function toldMain(sessions: ReturnType<typeof recordSession>) {
+  return sessions.prompted.filter((entry) => entry.sessionID === "ses_main_wait")
+}
+
+async function saveFamily(root: string, runs: ReturnType<typeof family>) {
+  await saveRun(root, runs.main)
+  await saveRun(root, runs.orch)
+  await saveRun(root, runs.kid)
+}
+
+test("a delegated run that ends its turn while a child is open waits: attempt open, parent not told", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const runs = family()
+    await saveFamily(root, runs)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
+    const orch = await loadRun(root, runs.orch.id)
+    expect(orch?.state).toBe("idle")
+    expect(orch?.attempts).toHaveLength(1)
+    expect(orch?.attempts[0]?.state).toBe("streaming")
+    expect(orch?.attempts[0]?.notified).toBeUndefined()
+    expect(await peek(root, runs.main.id)).toEqual([])
+    expect(sessions.prompted).toEqual([])
+    expect((await loadRun(root, runs.main.id))?.attempts).toHaveLength(1)
+    // team_status names what it is waiting on; the open attempt still holds a slot.
+    const api = createTeamApi(ctx, teamState())
+    const status = await api.status({ runs: [runs.orch.id] }, callerFor(runs.main))
+    if (!status.ok) throw new Error(JSON.stringify(status.error))
+    expect(status.value).toMatchObject([{ run: runs.orch.id, state: "idle", attemptState: "streaming", waitingOn: [runs.kid.id] }])
+  })
+})
+
+test("the child's settlement wakes the waiting run in the same attempt; its next empty turn ends it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const runs = family()
+    await saveFamily(root, runs)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
+    // The kid ends without a report: settled, announced to the waiting coordinator.
+    await onSessionEvent(ctx, root, succeededEvent("ses_kid_wait"))
+    const woken = await loadRun(root, runs.orch.id)
+    expect(woken?.state).toBe("working")
+    expect(woken?.attempts).toHaveLength(1)
+    expect(woken?.attempts[0]?.state).toBe("streaming")
+    expect(woken?.attempts[0]?.inbox).toHaveLength(1)
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.sessionID).toBe("ses_orch_wait")
+    expect(sessions.prompted[0]?.text).toContain(`[team] ${runs.kid.id}`)
+    expect(sessions.prompted[0]?.text).toContain("settled: no_report")
+    expect(toldMain(sessions)).toEqual([])
+    // Control: with no open child and no pending child news, a turn that ends
+    // without a report ends the attempt, and the grandparent is told once.
+    await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
+    const ended = await loadRun(root, runs.orch.id)
+    expect(ended?.state).toBe("idle")
+    expect(ended?.attempts).toHaveLength(1)
+    expect(ended?.attempts[0]?.state).toBe("no_report")
+    const told = toldMain(sessions)
+    expect(told).toHaveLength(1)
+    expect(told[0]?.text).toContain(`[team] ${runs.orch.id} (opus-orchestrator, -) settled: no_report`)
+  })
+})
+
+test("a child that settled during the turn is pending news: the run continues instead of ending", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const runs = family(now)
+    const settledKid = baseRun({
+      ...runs.kid,
+      state: "idle",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now, notified: true }],
+    })
+    await saveFamily(root, { ...runs, kid: settledKid })
+    await put(root, runs.orch.id, { kind: "child.settled", from: settledKid.id, text: `[team] ${settledKid.id} (muse-implementer, T1) settled: done` })
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_orch_wait"))
+    const orch = await loadRun(root, runs.orch.id)
+    expect(orch?.state).toBe("working")
+    expect(orch?.attempts).toHaveLength(1)
+    expect(orch?.attempts[0]?.state).toBe("streaming")
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.text).toContain("settled: done")
+    expect(toldMain(sessions)).toEqual([])
+  })
+})
+
+test("team_stop on a waiting child ends its open attempt interrupted; the stopping parent is not told twice", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const runs = family()
+    await saveFamily(root, runs)
+    const sessions = recordSession()
+    const interrupted: string[] = []
+    const domain = {
+      ...sessions.domain,
+      interrupt: (input: { sessionID: unknown }) => Effect.sync(() => void interrupted.push(String(input.sessionID))),
+    } as unknown as SessionDomain
+    const ctx = context({ session: domain })
+    await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
+    const api = createTeamApi(ctx, teamState())
+    const stopped = await api.stop({ run: runs.orch.id }, callerFor(runs.main))
+    expect(stopped).toMatchObject({ ok: true, value: { run: runs.orch.id, state: "stopped" } })
+    const orch = await loadRun(root, runs.orch.id)
+    expect(orch?.state).toBe("stopped")
+    expect(orch?.attempts[0]?.state).toBe("interrupted")
+    expect(orch?.attempts[0]?.notified).toBe(true)
+    expect(interrupted).toEqual(["ses_orch_wait"])
+    expect(toldMain(sessions)).toEqual([])
+    expect(await peek(root, runs.main.id)).toEqual([])
+    // A later idle event for the stopped run announces nothing either.
+    await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
+    expect(toldMain(sessions)).toEqual([])
+    expect(await peek(root, runs.main.id)).toEqual([])
+  })
+})
+
+test("a stop requested while working ends a would-be wait interrupted and tells the parent once", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const runs = family()
+    await saveFamily(root, { ...runs, orch: { ...runs.orch, stopRequested: true } })
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_orch_wait"))
+    const orch = await loadRun(root, runs.orch.id)
+    expect(orch?.state).toBe("stopped")
+    expect(orch?.attempts[0]?.state).toBe("interrupted")
+    const told = toldMain(sessions)
+    expect(told).toHaveLength(1)
+    expect(told[0]?.text).toContain("settled: interrupted")
   })
 })

@@ -66,7 +66,7 @@ test("each catalogue owns its six inventory groups under every root's two catalo
     expect(ids).toContain(`group:${level}:agents`)
     expect(ids).toContain(`group:${level}:teams`)
   }
-  for (const category of ["models", "tools", "base", "skills", "system", "mcp"] as const) {
+  for (const category of ["models", "tools", "base", "system", "mcp"] as const) {
     expect(ids).toContain(`group:defaults::${category}`)
     expect(ids).toContain(`group:defaults:/teams:${category}`)
   }

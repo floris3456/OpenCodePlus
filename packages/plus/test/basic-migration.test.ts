@@ -79,13 +79,18 @@ function resolvedFor(agentId: string): { role: string; items: Record<string, { s
   return { role: resolvedRole.text, items }
 }
 
+// Rows of tools retired after the snapshot was taken: team_wait went when a
+// delegated run waiting on open children started keeping its attempt open.
+const retiredTools = ["team_wait"]
+const retired = (id: string): boolean => retiredTools.some((tool) => id === `tool:${tool}` || id.startsWith(`perm:${tool}:`))
+
 // The snapshot, with the rows the member preset has changed on purpose since.
 function expectedFor(agentId: string, memberId: string): { role: string; items: Record<string, { state: string; text: string }> } {
   const before = fixture.agents[agentId]
   const member = plusTeamPresets.find((team) => team.id === "basic")?.members.find((entry) => entry.id === memberId)
   if (before === undefined || member === undefined) throw new Error(`missing ${agentId} or ${memberId}`)
   const items = Object.fromEntries(
-    Object.entries(before.items).map(([id, value]) => {
+    Object.entries(before.items).filter(([id]) => !retired(id)).map(([id, value]) => {
       const state = member.overrides[id]?.state ?? (member.offPrefixes.some((prefix) => id.startsWith(prefix)) ? "off" : undefined)
       return [id, state === undefined ? value : { ...value, state }]
     }),
@@ -96,7 +101,7 @@ function expectedFor(agentId: string, memberId: string): { role: string; items: 
 // The rows the snapshot recorded; rows the test inventory gained later are not in it.
 function recorded(agentId: string): { role: string; items: Record<string, { state: string; text: string }> } {
   const now = resolvedFor(agentId)
-  const keys = Object.keys(fixture.agents[agentId]?.items ?? {})
+  const keys = Object.keys(fixture.agents[agentId]?.items ?? {}).filter((id) => !retired(id))
   expect(keys.filter((id) => now.items[id] === undefined)).toEqual([])
   return { role: now.role, items: Object.fromEntries(keys.map((id) => [id, now.items[id]])) }
 }

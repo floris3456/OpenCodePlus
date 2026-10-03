@@ -86,7 +86,6 @@ const teamToolIds = [
   "supersede",
   "stop",
   "status",
-  "wait",
   "diff",
   "list",
   "get_context",
@@ -401,7 +400,9 @@ test("categoryOfRow lists catalog, team, mined, curated and custom rows where th
   expect(categoryOfRow({ permTool: "glob", ruleId: "git" }, true)).toBe("patterns")
   expect(categoryOfRow({ permTool: "grep", ruleId: "git" }, true)).toBe("patterns")
   expect(categoryOfRow({ permTool: "subagent", ruleId: "explore" }, true)).toBe("agents")
-  expect(categoryOfRow({ permTool: "skill", ruleId: "notes" }, true)).toBe("skills")
+  // Skills are not rule rows (each skill is its own switch under the skill
+  // tool), so a user rule on the skill tool lists under Rules.
+  expect(categoryOfRow({ permTool: "skill", ruleId: "notes" }, true)).toBe("rules")
   // A tool with no legacy category lists its rows under Rules.
   expect(categoryOfRow({ permTool: "mcp_weather_forecast", custom: true, ruleId: "x" }, false)).toBe("rules")
   expect(categoryOfRow({ custom: true, ruleId: "x" }, false)).toBe("rules")

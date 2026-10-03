@@ -46,6 +46,12 @@ export interface PermissionTable {
   readonly rows: (agent: string) => readonly PermRow[]
   /** The agent's rows listed under one tool, its own and the ones it shares. */
   readonly toolRows: (agent: string, tool: string) => readonly PermRow[]
+  /**
+   * The agent's rule rows under one tool (core enforces them as deny rules).
+   * Plus reads them only where it acts on the agent's behalf, such as a chat
+   * run's team_checkpoint committing files the agent may edit.
+   */
+  readonly ruleRows: (agent: string, tool: string) => readonly PermRow[]
   /** Ids of every member of an enabled team. */
   readonly teamMembers: ReadonlySet<string>
 }
@@ -61,6 +67,7 @@ export function permissionTable(input: {
   readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string }
 }): PermissionTable {
   const rows = input.items.filter((item) => item.kind === "perm" && item.permKind !== undefined && enforced.has(item.permKind))
+  const rules = input.items.filter((item) => item.kind === "perm" && (item.permKind === undefined || item.permKind === "rule"))
   const byAgent = new Map<string, readonly PermRow[]>()
   const byTool = new Map<string, readonly PermRow[]>()
   const agentRows = (agent: string): readonly PermRow[] => {
@@ -85,8 +92,42 @@ export function permissionTable(input: {
       byTool.set(key, found)
       return found
     },
+    ruleRows: (agent, tool) =>
+      rules
+        .filter((item) => (item.permTool === tool || (item.alsoUnder ?? []).includes(tool)) && applies(item, agent))
+        .map((item) => {
+          const state = input.resolve(item, agent)
+          return { item, on: state.enabled, text: state.text }
+        }),
     teamMembers: new Set(input.teamMembers),
   }
+}
+
+/**
+ * Why the agent may not change this file with edit, write or patch, or
+ * undefined when it may: its Plus-enforced rows (Where, Files it may change)
+ * and its Protected files rule rows. A missing table refuses nothing here;
+ * the caller's own bounds still apply.
+ */
+export function editRefusal(table: PermissionTable | undefined, agent: string, directory: string, file: string): string | undefined {
+  if (table === undefined) return undefined
+  const decision = decide(table.toolRows(agent, "edit"), {
+    tool: "edit",
+    input: { path: file },
+    sessionID: "",
+    agent,
+    directory,
+    teamMembers: table.teamMembers,
+  })
+  if (decision.refuse !== undefined) return decision.refuse
+  const absolute = path.resolve(directory, file)
+  const relative = path.relative(directory, absolute)
+  for (const row of table.ruleRows(agent, "edit")) {
+    if (row.on) continue
+    if ((row.item.patterns ?? []).some((pattern) => wildcardMatch(relative, pattern) || wildcardMatch(absolute, pattern)))
+      return messageOf(row, `${row.item.title} cannot be changed here`)
+  }
+  return undefined
 }
 
 // The row with this id for the agent; undefined when there is no table or the
@@ -760,10 +801,26 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? `Members you may delegate to: ${targets.join(", ")}.` : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => accepts(table, target))].join("\n") : "No member of your team is open to you for delegation."}`
     }
+    if (name === "team_finish") definition.description += requirements(rows)
     if (narrowed || targets !== undefined) definition.input = schema as typeof definition.input
   }
+}
+
+// What a target's own "Briefs it accepts" rows hold a delegator to, in the
+// words its refusals use: each requirement while on, followups while off.
+function accepts(table: PermissionTable, target: string): string[] {
+  return table
+    .toolRows(target, "team_get_context")
+    .filter((row) => row.item.category === "accepts" && row.on !== (row.item.ruleId === "accepts.followup"))
+    .map((row) => `${target} ${row.item.message ?? row.item.title}${row.item.patterns?.length ? ` [${row.item.patterns.join(", ")}]` : ""}.`)
+}
+
+// The agent's own "Requirements for done" rows that are on.
+function requirements(rows: readonly PermRow[]): string {
+  const on = rows.filter((row) => row.on && row.item.category === "requirements").map((row) => row.item.title.charAt(0).toLowerCase() + row.item.title.slice(1))
+  return on.length === 0 ? "" : `\nRequirements for done: ${on.join("; ")}.`
 }
 
 // ── the hooks ───────────────────────────────────────────────────────────────

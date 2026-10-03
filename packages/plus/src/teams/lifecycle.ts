@@ -14,6 +14,7 @@ import {
   isAttemptTerminal,
   isTerminal,
   loadRun,
+  openChildren,
   recordInboxDelivery,
   saveRun,
   startAttempt,
@@ -213,7 +214,9 @@ export async function onSessionIdle(
   const settled: { attempt?: AttemptRecord; stopped: boolean } = { stopped: false }
   const marked = await updateRun(root, run.id, async (current) => {
     if (isTerminal(current.state)) return current
-    const idle = toIdle(await settleAttempt(root, current, outcome))
+    const ended = await settleAttempt(root, current, outcome)
+    // A stop ends a waiting attempt too: nobody will continue it.
+    const idle = toIdle(current.stopRequested === true ? interruptOpenAttempt(ended) : ended)
     const attempt = idle.attempts[idle.attempts.length - 1]
     const announce =
       idle.parent !== null &&
@@ -241,7 +244,30 @@ async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutco
   // finish wrote this attempt's report and owns its terminal state.
   const reported = await readJson<unknown>(path.join(root, "runs", run.id, `report-${last.n}.json`))
   if (reported !== undefined) return run
+  // A turn that ends without a report while a child can still settle — or
+  // while a child's settlement waits undelivered in the inbox — is a run
+  // waiting on its children, not one that stopped: the attempt stays open,
+  // the run goes idle, its parent hears nothing, and the child's settlement
+  // continues this same attempt (deliverInbox). Only a run with no open child
+  // and no pending child news ended its attempt without a report.
+  if (await waitingOnChildren(root, run)) return run
   return attemptTransition(toFinishing(run), "no_report", "validated")
+}
+
+/** True while a child of `run` can still settle or its settlement is not yet delivered. */
+export async function waitingOnChildren(root: string, run: RunRecord): Promise<boolean> {
+  if ((await openChildren(root, run.id)).length > 0) return true
+  const delivered = new Set(run.attempts.flatMap((attempt) => attempt.inbox ?? []))
+  const children = new Set(run.children)
+  const pending = await peek(root, run.id)
+  return pending.some((item) => !delivered.has(item.id) && (item.kind === "child.settled" || children.has(item.from)))
+}
+
+/** Marks a still-open last attempt interrupted; a terminal one is left as it is. */
+export function interruptOpenAttempt(run: RunRecord): RunRecord {
+  const last = run.attempts.at(-1)
+  if (last === undefined || isAttemptTerminal(last.state)) return run
+  return attemptTransition(run, "interrupted", "interrupt")
 }
 
 // 02 §1: working reaches idle on turn_ended; a still-starting run (the normal
@@ -252,6 +278,23 @@ function toIdle(run: RunRecord): RunRecord {
   return run
 }
 
+/**
+ * Stops an idle run now. A run waiting on its children is idle with its
+ * attempt still open; that attempt ends interrupted, and the run's parent is
+ * told once — unless `by`, the run that asked for the stop, is that parent.
+ */
+export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: string): Promise<RunRecord> {
+  const open = run.attempts.at(-1)
+  const waiting = open !== undefined && !isAttemptTerminal(open.state)
+  const ended = interruptOpenAttempt(run)
+  const stopped = transition(transition(ended, "stopping", "shutdown"), "stopped", "exited")
+  const attempt = stopped.attempts.at(-1)
+  await saveRun(root, waiting ? markNotified(stopped) : stopped)
+  if (waiting && attempt !== undefined && stopped.parent !== null && stopped.parent !== by)
+    await notifyParent(ctx, root, stopped, attempt)
+  return stopped
+}
+
 function markNotified(run: RunRecord): RunRecord {
   const last = run.attempts[run.attempts.length - 1]
   if (last === undefined) return run
@@ -259,21 +302,67 @@ function markNotified(run: RunRecord): RunRecord {
   return { ...run, attempts: [...run.attempts.slice(0, -1), updated] }
 }
 
-function childSettledText(
+// The settlement is the parent's whole view of the attempt: the report in
+// full (a parent knows only the report, team_status and team_diff), and one
+// next: line for what the outcome calls for. The report file stays on disk
+// for the record; nobody needs a call to read it.
+interface SettledReport {
+  readonly status?: unknown
+  readonly summary?: unknown
+  readonly concerns?: unknown
+  readonly needs?: unknown
+  readonly findings?: unknown
+  readonly deferred?: unknown
+  readonly commits?: unknown
+  readonly checks?: unknown
+  readonly head?: unknown
+  readonly dirtyFiles?: unknown
+}
+
+function list<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+
+export function childSettledText(
   run: RunRecord,
   attempt: AttemptRecord,
-  report: Record<string, unknown> | undefined,
-  reportPath: string | undefined,
+  report: SettledReport | undefined,
+  _reportPath?: string,
 ): string {
   const task = run.task ?? "-"
   const status = typeof report?.status === "string" ? report.status : attempt.state
-  const summary = typeof report?.summary === "string" ? report.summary.split("\n")[0] ?? "" : ""
-  return (
-    `[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.\n` +
-    `summary: ${summary === "" ? `attempt ${attempt.n} ended ${attempt.state} with no report` : summary}\n` +
-    `report: ${reportPath ?? "none"}\n` +
-    `next: ${reportPath === undefined ? "read status/diff, then followup or supersede" : "read the report, then integrate or followup"}`
-  )
+  const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
+  if (report === undefined) {
+    lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    lines.push("next: read team_status and team_diff for it, then team_followup or team_supersede.")
+    return lines.join("\n")
+  }
+  if (typeof report.summary === "string" && report.summary.trim() !== "") lines.push(report.summary.trim())
+  const commits = list<{ sha?: string; subject?: string }>(report.commits)
+  if (commits.length > 0)
+    lines.push(`Commits: ${commits.map((commit) => `${String(commit.sha ?? "").slice(0, 7)} ${commit.subject ?? ""}`.trim()).join("; ")}`)
+  const checks = list<{ id?: string; passed?: boolean }>(report.checks)
+  if (checks.length > 0) lines.push(`Checks: ${checks.map((check) => `${check.id} ${check.passed ? "pass" : "FAIL"}`).join(", ")}`)
+  const dirty = list<string>(report.dirtyFiles)
+  if (dirty.length > 0) lines.push(`Uncommitted: ${dirty.join(", ")}`)
+  const block = (title: string, items: string[]) => {
+    if (items.length > 0) lines.push(`${title}:\n${items.map((item) => `- ${item}`).join("\n")}`)
+  }
+  block("Needs", list<{ kind?: string; detail?: string }>(report.needs).map((need) => `${need.kind}: ${need.detail}`))
+  block("Concerns", list<string>(report.concerns))
+  block("Deferred", list<string>(report.deferred))
+  block("Findings", list<{ severity?: string; path?: string; detail?: string }>(report.findings).map((f) => `${f.severity} ${f.path}: ${f.detail}`))
+  lines.push(`next: ${nextStep(status, commits.length > 0)}`)
+  return lines.join("\n")
+}
+
+function nextStep(status: string, committed: boolean): string {
+  if (status === "done" || status === "done_with_concerns") {
+    const weigh = status === "done_with_concerns" ? "weigh the concerns, then " : ""
+    return committed ? `${weigh}check the change with team_diff and land it with team_integrate.` : `${weigh}use the result; there is nothing to land.`
+  }
+  if (status === "rejected") return "re-scope: team_supersede it and delegate a Brief that fits."
+  return "answer the needs with team_followup, or team_supersede it and delegate afresh."
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;
@@ -284,7 +373,7 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
   const parent = await loadRun(root, parentID)
   if (parent === undefined || isTerminal(parent.state)) return
   const reportPath = path.join(root, "runs", child.id, `report-${attempt.n}.json`)
-  const report = await readJson<Record<string, unknown>>(reportPath)
+  const report = await readJson<SettledReport>(reportPath)
   const displayPath = report === undefined ? undefined : path.join(root, "runs", child.id, `report-${attempt.n}.md`)
   await Effect.runPromise(
     io(() =>
@@ -294,16 +383,20 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
   await deliverInbox(ctx, root, parent)
 }
 
-// The idle handoff: everything pending becomes ONE new attempt's prompt.
-// Items already delivered as an earlier attempt's prompt are consumed without
-// being prompted again, so an immediately delivered followup is not repeated.
+// The idle handoff: everything pending becomes ONE prompt. A run whose last
+// attempt ended gets a new attempt for it; a run waiting on its children (its
+// attempt still open, see settleAttempt) continues that same attempt, so a
+// child's settlement wakes the parent mid-task instead of opening a new task.
+// Items already delivered as an earlier prompt are consumed without being
+// prompted again, so an immediately delivered followup is not repeated.
 export async function deliverInbox(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
   const sessionID = run.sessionID
   if (sessionID === null || sessionID === undefined) return run
   const delivery: { text: string; items: InboxItem[]; previous?: RunRecord } = { text: "", items: [] }
   const working = await updateRun(root, run.id, async (current) => {
     if (current.state !== "idle" || current.worktree === "removed") return current
-    if (current.attempts.some((attempt) => !isAttemptTerminal(attempt.state))) return current
+    // Only the last attempt may be open (run.ts attemptTransition).
+    if (current.attempts.slice(0, -1).some((attempt) => !isAttemptTerminal(attempt.state))) return current
     const items = await peek(root, run.id)
     const delivered = new Set(current.attempts.flatMap((attempt) => attempt.inbox ?? []))
     const fresh = items.filter((item) => !delivered.has(item.id))
@@ -312,8 +405,11 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
     if (text === "") return current
     delivery.text = text
     delivery.previous = current
-    const started = startAttempt(current, { trigger: "followup", prompt: text })
-    const admitted = attemptTransition(started, "admitted", "admit")
+    const last = current.attempts.at(-1)
+    const waiting = last !== undefined && !isAttemptTerminal(last.state)
+    const admitted = waiting
+      ? current
+      : attemptTransition(startAttempt(current, { trigger: "followup", prompt: text }), "admitted", "admit")
     return recordInboxDelivery(
       transition(admitted, "working", "prompt"),
       fresh.map((item) => item.id),

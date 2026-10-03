@@ -5,8 +5,9 @@
 // reads a role from a member's id. Two kinds of row cannot be shared, because
 // they name something only a member has:
 //
-// - "Delegate to": one row per teammate, plus "Members of other teams". They
-//   ship off; a member preset turns on the teammates it delegates to.
+// - "Delegate to": one row per member of its team (itself included), plus
+//   "Members of other teams". They ship off; a member preset turns on the
+//   members it delegates to.
 // - Per-run edit scope: one row per live delegated run, carrying the run's own
 //   `scope.paths`.
 //
@@ -21,7 +22,7 @@ import { runScope } from "../teams/scope.js"
 /** One member of an enabled team. */
 export interface PolicyMember {
   readonly id: string
-  /** The enabled team the member belongs to: its "Delegate to" rows list that team's other members. */
+  /** The enabled team the member belongs to: its "Delegate to" rows list that team's members. */
   readonly team?: string
 }
 
@@ -79,12 +80,13 @@ export function teamPolicyItems(members: readonly PolicyMember[], runs: readonly
   ]
 }
 
-// "Delegate to": one row per other member of the member's team, plus one row
-// for every member of other teams. All ship off: a member preset turns on the
-// teammates it delegates to. team_delegate reads these rows; its `role`
-// parameter lists exactly the members that are on.
+// "Delegate to": one row per member of the member's team, its own included
+// (another run of itself), plus one row for every member of other teams. All
+// ship off: a member preset turns on the members it delegates to.
+// team_delegate reads these rows; its `role` parameter lists exactly the
+// members that are on.
 function delegateRows(member: PolicyMember, members: readonly PolicyMember[]): Item[] {
-  const peers = members.filter((peer) => peer.id !== member.id && peer.team === member.team)
+  const peers = members.filter((peer) => peer.team === member.team)
   return [
     ...peers.map((peer, index) =>
       delegateRow({

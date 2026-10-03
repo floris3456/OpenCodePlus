@@ -4,8 +4,10 @@ import type { Agent } from "@opencode/schema/agent"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
 import { copyName, isSkillCopy, resolvedFor, type ApplyAgent, type ToolPlan } from "./apply.js"
-import { catalogPath, isCodeModeToolEntry, type CustomizationRecord, type Item, type Scopes, type SplitRecord } from "./model.js"
+import { applies, catalogPath, isCodeModeToolEntry, type CustomizationRecord, type Item, type Scopes, type SplitRecord } from "./model.js"
 import { scrubLines } from "./tool-permissions.js"
+import { guidanceItemId } from "./paths.js"
+import { gateOf } from "./requires.js"
 import type { Plus } from "../rpc.js"
 
 interface AssembledInput {
@@ -50,6 +52,16 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
   const scrubbed = scrubKeywords(input.items, resolved)
   const system = systemEntry?.system === undefined ? [] : [preserveScrub(systemEntry.system, scrubbed)]
+  // The Tools and rules row as this agent receives it: only the sections
+  // whose rows it has as they require (requires.ts), like apply plans it.
+  const guidance = resolved.get(guidanceItemId)
+  if (guidance !== undefined && guidance.enabled) {
+    const has = (id: string) => input.items.some((item) => item.id === id && applies(item, owner.id))
+    const row = input.items.find((item) => item.id === guidanceItemId && applies(item, owner.id))
+    const gate = gateOf((id) => (has(id) ? resolved.get(id)?.enabled : undefined))
+    const text = row === undefined ? "" : resolvedFor(row, owner, input, gate).assembled
+    if (text.trim().length > 0) system.push(preserveScrub(text, scrubbed))
+  }
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])

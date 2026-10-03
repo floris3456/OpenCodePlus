@@ -35,7 +35,6 @@ import {
   TavilyExtractInput,
   TavilySearchInput,
   ToolError,
-  WaitInput,
   WorktreeState,
   WorktreeStates,
   budgetExhaustion,
@@ -131,7 +130,6 @@ test("teams/schema exports every tool input schema as the single source", () => 
     SupersedeInput,
     StopInput,
     StatusInput,
-    WaitInput,
     DiffInput,
     ListInput,
     GetContextInput,
@@ -141,7 +139,7 @@ test("teams/schema exports every tool input schema as the single source", () => 
     TavilySearchInput,
     TavilyExtractInput,
   ]
-  expect(toolSchemas).toHaveLength(19)
+  expect(toolSchemas).toHaveLength(18)
   for (const s of toolSchemas) {
     expect(Schema.isSchema(s)).toBe(true)
   }

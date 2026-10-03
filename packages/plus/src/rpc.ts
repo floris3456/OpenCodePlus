@@ -164,6 +164,8 @@ export const SnapshotCustomizationRecord = Schema.Struct({
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(RecordState),
   pin: Schema.optionalKey(Schema.Boolean),
+  /** When the row is sent (requires.ts): row ids, `!id` = must be off; empty = always. */
+  requires: Schema.optionalKey(Schema.Array(Schema.String)),
   basedOn: Schema.String,
   basedOnText: Schema.optionalKey(Schema.String),
   acknowledged: Schema.optionalKey(Schema.String),
@@ -967,6 +969,36 @@ export const WarmingCompactInput = Schema.Struct({
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
+// Project checks (.opencodeplus/checks.json in the main checkout): what a team
+// run may be given as checks. `suggest` reads what the project's manifests
+// name; `save` writes the entries the person confirmed (teams/project-checks.ts).
+export const ProjectCheckEntry = Schema.Struct({
+  id: Schema.String,
+  argv: Schema.Array(Schema.String),
+  cwd: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+  source: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.ProjectCheckEntry" })
+
+export const ChecksSuggestion = Schema.Struct({
+  /** The main checkout the file belongs to; absent outside a git repository. */
+  root: Schema.optionalKey(Schema.String),
+  current: Schema.Array(ProjectCheckEntry),
+  setup: Schema.optionalKey(ProjectCheckEntry),
+  invalid: Schema.optionalKey(Schema.String),
+  suggested: Schema.Array(ProjectCheckEntry),
+  suggestedSetup: Schema.optionalKey(ProjectCheckEntry),
+}).annotate({ identifier: "Plus.ChecksSuggestion" })
+
+export const ChecksSaveInput = Schema.Struct({
+  checks: Schema.Array(ProjectCheckEntry),
+  setup: Schema.optionalKey(ProjectCheckEntry),
+}).annotate({ identifier: "Plus.ChecksSaveInput" })
+
+export const ChecksSaved = Schema.Struct({ path: Schema.String, checks: Schema.Array(Schema.String) }).annotate({ identifier: "Plus.ChecksSaved" })
+
+export const ChecksInvalid = Schema.Struct({ reason: Schema.String }).annotate({ identifier: "Plus.ChecksInvalid" })
+
 export const WarmingStatus = Schema.Struct({
   sessionID: Schema.String,
   chat: Schema.Literals(["on", "off", "default"]),
@@ -1549,6 +1581,10 @@ const PortableRunUnknown = Schema.toStandardSchemaV1(
 const PortableTeamsChanged = Schema.toStandardSchemaV1(
   TeamsChanged.annotate({ identifier: "Plus.TeamsChanged" }),
 )
+const PortableChecksSuggestion = Schema.toStandardSchemaV1(ChecksSuggestion)
+const PortableChecksSaveInput = Schema.toStandardSchemaV1(ChecksSaveInput)
+const PortableChecksSaved = Schema.toStandardSchemaV1(ChecksSaved)
+const PortableChecksInvalid = Schema.toStandardSchemaV1(ChecksInvalid)
 const PortableWarmingSessionInput = Schema.toStandardSchemaV1(
   WarmingSessionInput.annotate({ identifier: "Plus.WarmingSessionInput" }),
 )
@@ -1889,6 +1925,18 @@ export const Definition = Rpc.define({
       input: Empty,
       output: PortableCatalogModelsOutput,
       errors: {},
+    },
+    "checks.suggest": {
+      input: Empty,
+      output: PortableChecksSuggestion,
+      errors: {},
+    },
+    "checks.save": {
+      input: PortableChecksSaveInput,
+      output: PortableChecksSaved,
+      errors: {
+        "checks.invalid": PortableChecksInvalid,
+      },
     },
     "warming.status": {
       input: PortableWarmingSessionInput,

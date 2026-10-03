@@ -47,24 +47,54 @@ describe("brief", () => {
     const sections = out.split("\n\n")
     expect(sections[0]).toBe("# Brief — T3 — muse-implementer")
     expect(sections[1].startsWith("## Objective\n")).toBe(true)
-    expect(sections[2]).toBe("## Deliverable\ncommit")
-    expect(sections[3]).toContain("## Scope")
-    expect(sections[3]).toContain("May edit: a.ts")
-    expect(sections[4]).toBe("## Interfaces you touch\n- q.ts — parsed here")
+    expect(sections[2]).toBe("## Deliverable\ncommit: commit your changes with team_checkpoint; your parent lands them.")
+    expect(sections[3]).toBe("## Scope\nMay edit: a.ts\nMust not touch: b.ts")
+    expect(sections[4]).toBe("## Interfaces to read first\n- q.ts — parsed here")
     expect(sections[5]).toBe("## Decisions already made\n- Do not change the grammar")
-    expect(sections[6]).toBe("## Checks (run with team_check)\n- q: bun test q.test.ts")
-    expect(sections[7]).toContain("## Budget\neffort medium:")
+    expect(sections[6]).toBe("## Checks\n- q: bun test q.test.ts")
+    // The budget is advisory everywhere: the Brief says so in the same words the roles use.
+    expect(sections[7]).toBe(
+      "## Budget\neffort medium: about 1.5M tokens and 60 min. A guide, not a limit: if you need more, keep going and say why in your report.",
+    )
     expect(out).toContain("## Extra instructions\nBe quick")
     expect(out.endsWith("\n")).toBe(true)
+  })
+
+  test("a read-only brief says so and shows no empty sections", () => {
+    const out = render(
+      { ...briefBase(), scope: { paths: [], forbidden: [] }, deliverable: { kind: "report" as const, format: "file:line list" } },
+      { budget: policy.effort.small },
+    )
+    expect(out).toContain("## Deliverable\nreport (file:line list): answer in your team_finish summary.")
+    expect(out).toContain("## Scope\nMay edit: nothing (read-only task)\n\n")
+    for (const empty of ["Must not touch", "## Interfaces", "## Decisions", "## Checks", "## Review", "## Extra"]) expect(out).not.toContain(empty)
+  })
+
+  test("a review brief names the exact diff call and the delegating run's check results", () => {
+    const from = "a".repeat(40)
+    const to = "b".repeat(40)
+    const out = render(
+      { ...briefBase(), scope: { paths: [], forbidden: [] }, deliverable: { kind: "findings" as const } },
+      { budget: policy.effort.small, review: { run: "w-0123456789abcdef", from, to, checks: [{ id: "unit", passed: true }, { id: "lint", passed: false }, { id: "e2e", passed: null }] } },
+    )
+    expect(out).toContain(
+      `## Review\nYour worktree holds the change's end state (${to.slice(0, 12)}). See the change with team_diff {run: "w-0123456789abcdef", from: "${from}"}.\nChecks at ${to.slice(0, 12)}: unit pass, lint FAIL, e2e not run.`,
+    )
+    const nothing = render(
+      { ...briefBase(), deliverable: { kind: "findings" as const } },
+      { budget: policy.effort.small, review: { run: "w-0123456789abcdef", from: to, to, checks: [] } },
+    )
+    expect(nothing).toContain(`Nothing has landed since ${to.slice(0, 12)}`)
+    expect(nothing).toContain(`Checks at ${to.slice(0, 12)}: none recorded.`)
   })
 
   test("attached material over 40 KB is replaced with a pointer", () => {
     const big = "x".repeat(41 * 1024)
     const out = render(briefBase(), { budget: policy.effort.small, attached: { path: "big.md", content: big } })
-    expect(out).toContain("content exceeds 40 KB, see file")
+    expect(out).toContain("## Attached: big.md\n(41984 bytes, over 40 KB: read the file itself.)")
     expect(out).not.toContain(big.slice(0, 100))
     const small = render(briefBase(), { budget: policy.effort.small, attached: { path: "s.md", content: "hello" } })
-    expect(small).toContain("## Attached material\nhello")
+    expect(small).toContain("## Attached: s.md\nhello")
   })
 })
 

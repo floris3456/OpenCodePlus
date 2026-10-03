@@ -112,10 +112,13 @@ function has(
 
 test("the producer emits only per-member rows: Delegate to rows, and live-run edit scopes", () => {
   const items = teamPolicyItems(policyMembersOf([{ id: "implementer", team: "crew" }, { id: "orchestrator", team: "crew" }]))
+  // One row per member of the team, the member itself included.
   expect(items.map((item) => [item.id, item.agents, item.enabled])).toEqual([
+    ["perm:team_delegate:to.implementer", ["implementer"], false],
     ["perm:team_delegate:to.orchestrator", ["implementer"], false],
     ["perm:team_delegate:to.other-teams", ["implementer"], false],
     ["perm:team_delegate:to.implementer", ["orchestrator"], false],
+    ["perm:team_delegate:to.orchestrator", ["orchestrator"], false],
     ["perm:team_delegate:to.other-teams", ["orchestrator"], false],
   ])
   for (const item of items) expect([item.id, item.kind, item.permKind, item.category, item.policy]).toEqual([item.id, "perm", "team", "to", undefined])
@@ -154,7 +157,7 @@ test("an implementer-preset member's rows resolve to the old implementer answers
   expect(off).toEqual(
     [
       "shell", "question", "subagent", "search_tavily_search", "search_tavily_extract", "websearch",
-      "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_supersede", "team_stop", "team_wait", "team_list",
+      "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_supersede", "team_stop", "team_status", "team_list",
       ...seatOnlyTools,
     ].toSorted(),
   )

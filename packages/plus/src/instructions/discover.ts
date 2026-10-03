@@ -30,7 +30,8 @@ import {
 import { catalogItems, categoryOfRow } from "./permission-catalog.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
-import { globalConfigDir, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
+import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
+import { guidanceContent, guidanceTitle } from "./guidance.js"
 import { pendingMcpTools, type KnownMcpTools } from "./mcp-tools.js"
 import { decodeHostWarming, type HostModel } from "./model-settings.js"
 
@@ -173,6 +174,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   }).assembled
   const fileRows = instructionFileItems(directory, instructions)
   const teachingRows = teachingItems(teaching, instructions.length)
+  const guidanceRows = guidanceItems(instructions.length + teachingRows.length)
   const modelRows = modelItems(modelRecords, upstream)
   const permRows = permItems({
     tools,
@@ -193,6 +195,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...roleRows,
     ...fileRows,
     ...teachingRows,
+    ...guidanceRows,
     ...mcp.items,
     ...modelRows,
     ...permRows,
@@ -971,6 +974,24 @@ function teachingItems(teaching: { path: string; text: string } | undefined, ord
   ]
 }
 
+// The Tools and rules row (guidance.ts): shipped with Plus, so every host has
+// it. Its sections depend on rows (requires.ts); it is not mined for rule
+// rows, since it only names tools it already depends on.
+function guidanceItems(order: number): Item[] {
+  return [
+    {
+      id: guidanceItemId,
+      kind: "system",
+      group: "plus",
+      title: guidanceTitle,
+      text: guidanceContent,
+      enabled: upstreamEnabled(),
+      fingerprint: fingerprint(guidanceContent),
+      order,
+    },
+  ]
+}
+
 // Tool-specific permission rules as view-time perm items. Curated defaults
 // (plus subagent/skill idRules from discovered ids) merge with mined
 // candidates by pattern via mergeRules (curated label wins, most-mentioned
@@ -999,7 +1020,6 @@ function permItems(input: {
   const catalog = catalogItems(input.toolRows, (tool) => permActionForTool(input.tools, tool))
   if (eligible.size === 0 && input.ruleRecords.length === 0) return catalog
   const agentIds = [...new Set(input.agents.map((agent) => String(agent.id)))].toSorted()
-  const skillIds = [...new Set(input.skills.map((skill) => String(skill.id)).filter((id) => !id.startsWith("plus/")))].toSorted()
   const texts: { item: string; text: string }[] = [
     ...input.toolRows.map((item) => ({ item: item.id, text: item.text })),
     ...input.baseRows.map((item) => ({ item: item.id, text: item.text })),
@@ -1008,7 +1028,9 @@ function permItems(input: {
     ...input.fileRows.map((item) => ({ item: item.id, text: item.text })),
     ...input.teachingRows.map((item) => ({ item: item.id, text: item.text })),
   ]
-  const mined = mineDiscoveredRules({ texts, agents: agentIds, skills: skillIds })
+  // Skills are not rule rows: each skill item is its own on/off, listed under
+  // the skill tool's Skills category (tree.ts toolPermissions).
+  const mined = mineDiscoveredRules({ texts, agents: agentIds })
   const byId = new Map<string, Item>()
   for (const row of input.toolRows) {
     if (!eligible.has(row.id)) continue
@@ -1017,7 +1039,6 @@ function permItems(input: {
     const curated = [
       ...curatedRules.filter((rule) => rule.tool === toolId),
       ...(toolId === "subagent" ? idRules("subagent", agentIds) : []),
-      ...(toolId === "skill" ? idRules("skill", skillIds) : []),
     ]
     const discovered = mined.filter((entry) => entry.tool === toolId)
     if (curated.length === 0 && discovered.length === 0) continue

@@ -148,4 +148,13 @@ export function teachingFilePath(configDir: string = globalConfigDir()): string 
 
 export const teachingItemId = "system:opencodeplus"
 
+// The Tools and rules row (guidance.ts): instructions that belong to a tool,
+// skill or rule and reach an agent only while that row is on for it. It has
+// no file: Plus plans it per agent under this stable path.
+export const guidanceItemId = "system:tools-and-rules"
+
+export function guidancePath(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "instructions", "TOOLS-AND-RULES.md")
+}
+
 export const teachingSkillId = "instructions-tools"

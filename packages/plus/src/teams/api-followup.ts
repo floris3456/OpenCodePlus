@@ -126,7 +126,7 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
     const inflight = bound(table, caller.agent, "delegate", "limits.inflight")
     const members = bound(table, caller.agent, "delegate", "limits.members")
     if ((inflight !== undefined && live.filter((run) => run.parent === parent.id).length >= inflight) || (members !== undefined && live.length >= members))
-      return fail("E_BOUNDS", "No capacity to resume this child; wait for an active run to settle first.", "call wait first")
+      return fail("E_BOUNDS", "No capacity to resume this child; end your turn and retry after an active run settles.", "retry after a run settles")
   }
 
   const delivery = args.delivery ?? "queue"
@@ -212,7 +212,7 @@ async function followupNow(
   if (current.state !== "idle" && current.state !== "stopped")
     return fail(
       "E_BUSY",
-      `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default) or wait first.`,
+      `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`,
       { delivery: "queue" },
     )
   const admitted = await admitIdleChild(ctx, root, current, text, budget)

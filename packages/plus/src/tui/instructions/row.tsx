@@ -51,7 +51,9 @@ export function marksOf(node: TreeNode): string {
   const count = node.badges.reviewCount ?? 0
   const review = count > 0 ? `!${count}` : node.badges.review === true ? "!" : ""
   const modified = node.badges.modified === true || node.badges.fromLabel === "set here" ? "◆" : ""
-  return [modified, review].filter((mark) => mark.length > 0).join(" ")
+  // A section that names a tool or skill this owner has off, with no requires line.
+  const mentions = (node.badges.mentions?.length ?? 0) > 0 ? "⚠" : ""
+  return [modified, review, mentions].filter((mark) => mark.length > 0).join(" ")
 }
 
 export function glyphOf(node: TreeNode): string | undefined {

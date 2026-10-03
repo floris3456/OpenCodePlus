@@ -508,7 +508,7 @@ test("working child is refused with E_BUSY", async () => {
       await writeReport(root, child.id, 1, "done")
       const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_BUSY")
-      expect(error.message).toBe("Child is working; wait first.")
+      expect(error.message).toBe("Child is working; integrate after its settlement wakes you.")
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
@@ -1037,6 +1037,73 @@ test("rework attribution on red checks belongs to older child's task and plan ru
       const graph2 = await load(root, plan2)
       expect(graph2.tasks["T2"].state).not.toBe("rework")
       expect(graph2.tasks["T2.rework.1"]).toBeUndefined()
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+// The caller must learn a failed landing from its own integrate call: the
+// state, why, and the rework task id a fresh child's Brief claims. Before,
+// a conflict came back as state "pending" with nothing to act on.
+test("integrating a child that conflicts returns conflict, its files, the rework task and the next step", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const plan = "p-5555555555555555"
+      await create(root, plan, [
+        { id: "T1", title: "Task T1", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["base.txt"], checks: [] },
+      ])
+      await fs.writeFile(path.join(repo.dir, "base.txt"), "initial\n")
+      await git(repo.dir, ["add", "base.txt"])
+      await git(repo.dir, ["commit", "-m", "chore: add base"])
+      const p0 = await git(repo.dir, ["rev-parse", "HEAD"])
+      const work = await makeChild(repo.scratch, repo.dir, "conflicting", p0, { "base.txt": "child change\n" }, "feat: child edit")
+      await fs.writeFile(path.join(repo.dir, "base.txt"), "parent change\n")
+      await git(repo.dir, ["add", "base.txt"])
+      await git(repo.dir, ["commit", "-m", "feat: parent edit"])
+      const p1 = await git(repo.dir, ["rev-parse", "HEAD"])
+      const now = new Date().toISOString()
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: p0,
+        head: p1,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_parent_conflict_own",
+        children: ["w-5555555555555555"],
+      })
+      const child = baseRun({
+        id: "w-5555555555555555",
+        role: "implementer",
+        directory: work.dir,
+        branch: work.branch,
+        base: p0,
+        head: work.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_conflict_own",
+        task: "T1",
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      await writeReport(root, child.id, 1, "done")
+      const value = required(
+        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: p1 }, callerFor(parent), shippedTable()),
+      ) as { state: string; head: string | null; conflictFiles?: string[]; reworkTask?: string; next?: string }
+      expect(value.state).toBe("conflict")
+      expect(value.head).toBeNull()
+      expect(value.conflictFiles).toEqual(["base.txt"])
+      expect(value.reworkTask).toBe("T1.rework.1")
+      expect(value.next).toContain('Delegate a fresh implementer with task "T1.rework.1"')
+      expect(value.next).toContain("[base.txt]")
+      // Nothing landed: the parent's HEAD is where it was.
+      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(p1)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

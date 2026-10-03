@@ -344,6 +344,9 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
               lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1),
             )
       const walk = (node: Lazy) => {
+        // A skill row under the skill tool's Skills category is a full item
+        // (its own text and sections), not a permission row: visit it.
+        if (node.kind === "item" && node.address?.item.startsWith("skill:") === true) return visit(node)
         push({ id: node.id, kind: node.kind, label: node.label, depth: node.depth, orphan: false, lazy: node, parent: undefined, address: node.address, sectionIds: [] })
         if (node.kind === "group") for (const child of node.children()) walk(child)
       }

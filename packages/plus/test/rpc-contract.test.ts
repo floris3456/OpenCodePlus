@@ -52,6 +52,8 @@ test("every method and event is declared", () => {
     "preset.addMember",
     "preset.delete",
     "link.set",
+    "checks.suggest",
+    "checks.save",
     "warming.status",
     "warming.set",
     "warming.compact",

@@ -22,13 +22,13 @@ model row does not set them, so it is not a catalogue and owns no inventory.
 Defaults
   Agents                                    group:defaults:agents
     OpenCode / Special / Plus / User        (unchanged agent subtrees)
-    Models · Tools · Base · Skills · System · MCP     group:defaults::<category>
+    Models · Tools · Base · System · MCP     group:defaults::<category>
   Models                                    group:defaults:/models
     Every model                             item:defaults:/models:modeldefault:*
     <provider>/<model>                      item:defaults:/models:modeldefault:<provider>/<model>
   Teams                                     group:defaults:teams
     <team> > <member>                       (unchanged team subtrees)
-    Models · Tools · Base · Skills · System · MCP     group:defaults:/teams:<category>
+    Models · Tools · Base · System · MCP     group:defaults:/teams:<category>
 ```
 
 `Project` and `Global` carry the same two catalogue roots holding their own
@@ -79,6 +79,10 @@ Every agent in the three level roots, every Defaults entry and every preset has 
       <tool>
         Description            (its one section, relabelled; several sections hang under a Description group)
         Permissions            (omitted when the tool lists no row for this owner)
+          Skills               (skill tool only; group:<…>:tool:skill:permissions:skills; the one switch per skill)
+            OpenCode / OpenCodePlus / Global / Defaults / Preset / MCP > <server> / Project [a: add skill]
+              <skill>          (item:<…>:skill:<id>; off = a core `skill` deny for this agent)
+                <section>
           <category>
             <row>
       Code Mode                (only when that origin has Code Mode rows)
@@ -95,10 +99,6 @@ Every agent in the three level roots, every Defaults entry and every preset has 
   Base                     [a: add base prompt]
     <Template>.txt         (the one matching the agent's Plus-active model is marked "active")
       <section>
-  Skills
-    OpenCode / OpenCodePlus / MCP > <server> / Project [a: add skill]
-      <skill>
-        <section>
   System                   [a: add instruction]
     Role/persona           (always first)
     <instruction>
@@ -110,8 +110,9 @@ every level, each member row (`team:<level>:<team>:<member>`, kind `"team"`,
 no address, no toggle) carries `add: "agent"` and is removable when on-disk
 (project/global, invoking `team.removeAgent`) while Defaults registry members
 are refused (`actions.remove === false`). Each member
-row expands to the same five groups an Agents-group agent renders (Models,
-Tools, Base, Skills, System, in that order) with working toggle/edit/reset on
+row expands to the same groups an Agents-group agent renders (Models,
+Tools, Base, System, in that order; skills list under Tools › skill ›
+Permissions › Skills) with working toggle/edit/reset on
 their rows, whether or not the team is enabled and whether or not the host
 registered the agent. The owner for those groups is the bare member id with
 the registered agent when one exists
@@ -122,8 +123,8 @@ the same records as its Agents-catalogue rows (level + agent + item, and
 `address.agent` stays the bare agent id), so an edit made under Teams and one
 made under Agents are one record — but they resolve through different
 catalogues, so they carry their own ids under the member's owner path:
-`group:<level>:<team>/:<member>:models|tools|base|skills|system` for the five
-groups (with nested Tools/Skills subgroup ids extending those prefixes) and
+`group:<level>:<team>/:<member>:models|tools|base|system` for the four
+groups (with nested Tools subgroup ids extending those prefixes) and
 `item:<level>:<team>/:<member>:<itemId>` /
 `section:<level>:<team>/:<member>:<itemId>:<id>` for their rows, whose address
 carries `catalogue: "teams"` and `memberOf: { level, team }`. `memberOf` makes
@@ -1658,14 +1659,15 @@ In a chat, arrow-down to the `Team` composer tab shows runs in the current names
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
 The `team` namespace advertises only tools that work. It holds exactly
-fourteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
+thirteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
 `set_checks`, `supersede` and `stop` (native, `codemode: false`), and
-`status`, `wait`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
+`status`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
-Nine names are **not** in the namespace, not in any team tool row and not named
-by any built-in prompt: `review`, `shutdown_request`, `resume`, `prepare`,
+Ten names are **not** in the namespace, not in any team tool row and not named
+by any built-in prompt: `wait` (a settling child wakes its parent; see
+Waiting on children below), `review`, `shutdown_request`, `resume`, `prepare`,
 `plan_handoff`, `metrics`, `exa_code_search`, `tavily_search` and
 `tavily_extract`. Web and code search are not team tools: they are delivered by
 the `search` MCP server and narrowed per role by a policy row (below).
@@ -1757,42 +1759,86 @@ refused, a requirement demands nothing, a bound is absent.
 What the Basic member presets set (every other row is the catalogue's shipped value):
 
 - **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
-  `team_integrate`, `team_checkpoint`, `team_set_checks`, `team_check` off;
-  Runs on for status, wait, list; Approval on for team_delegate; Access
+  `team_set_checks`, `team_check` off (it keeps `team_checkpoint` to commit its
+  plan file when delegated, and `team_integrate` to land in the user's checkout
+  what the orchestrator it delegated to reports done, already verified there);
+  Runs on for status, list; Approval on for team_delegate; Access
   "Delegate from a delegated run" off; Files it may change: every other file
   off, plan files on; Briefs it accepts: Plan files only on; Start a team run
   from a chat on; `tool:question` on.
 - **orchestrator** — secrets off; `tool:question`, `tool:subagent` off;
-  `team_checkpoint` off; the seven shell change rows off; Runs on for status and
-  wait; A reason on; `tool:shell`, Start a team run and Delegate from a
+  `team_checkpoint` off; the seven shell change rows off; Runs on for status; A
+  reason on; `tool:shell`, Start a team run and Delegate from a
   delegated run on.
 - **implementer** — secrets off; outside-checkout rows off (read and edit
   Where, `where.external`, glob/grep roots); `tool:shell`, `tool:question`,
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
   delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
-  `supersede`, `stop`, `wait`, `list` off; Worktree committed before done and
+  `supersede`, `stop`, `status`, `list` off; Worktree committed before done and
   Scope paths for a commit on.
 - **reviewer** — as implementer's worker rows, with every team tool but
-  `finish`, `status`, `diff`, `get_context` off, and Corrections by followup off.
-- **scout** — as reviewer, taking corrections.
-- **build-seat** — Runs on for status, wait, list; `tool:shell`,
+  `finish`, `diff`, `get_context` off, and Corrections by followup off.
+- **scout** — as reviewer without `diff` (it changes nothing), taking
+  corrections.
+- **build-seat** — `team_finish` off (nobody delegates to it). Its chat run
+  checkpoints what it may edit (`scope.chatEditRefusal`: the agent's edit
+  rows, including Protected files, plus `protectedStateRefusal`); Runs on for status, list; `tool:shell`,
   `tool:question`, `tool:subagent`, Start a team run and Delegate from a
   delegated run on; every "Delegate to" row on, whoever the teammate is (not
-  Members of other teams).
+  its own row, nor Members of other teams).
 
 The Basic member presets add each member's "Delegate to" rows by its
-teammates' roles (planner → orchestrator; orchestrator → implementer, reviewer,
-scout; build seat → every teammate). They name teammates by the member ids the
-Basic roster carries: a teammate renamed after the team was created gets a new,
-off "Delegate to" row, while the build seat's rows stay on dynamically.
+teammates' roles (planner → orchestrator; orchestrator → orchestrator,
+implementer, reviewer, scout; build seat → every other teammate). They name
+teammates by the member ids the Basic roster carries: a teammate renamed after
+the team was created gets a new, off "Delegate to" row, while the build seat's
+rows stay on dynamically. A member's own row (another run of itself) answers
+as its preset's row for the preset's own member id, whatever the agent is
+called (`presets.ts` `memberShipped`, which `PresetCatalog.shipped` hands the
+agent it resolves for): on for an orchestrator, off for every other Basic
+preset, the build seat's fallback included. Delegation depth (3) bounds nested
+orchestrators.
+
+#### Where a Basic member's guidance lives
+
+One home per kind of guidance, so no line repeats or contradicts another:
+
+- **Role/persona** (`instructions/builtin-teams.ts` `basicBody`): who does what
+  and when, never what a row decides. Markdown in three parts, each split into
+  `##` sections the Instructions tree derives as separate rows: `# Team member`
+  (Runs and messages, Working, Reporting — not for the build seat, which is
+  never delegated to —, Safety), `# Delegating` (Briefs, Integration checks;
+  only for members that delegate) and `# <Role>`. A section that depends on
+  one tool carries a `<!-- requires: … -->` line (`instructions/requires.ts`).
+- **What a row decides** (`permission-enforce.ts` `narrowTools`, per request):
+  `team_delegate`'s description adds, after the members you may delegate to,
+  each target's binding "Briefs it accepts" rows in the words of their
+  refusals (a requirement while on, Corrections by followup while off);
+  `team_finish`'s adds the caller's Requirements for done that are on. No body,
+  Brief or schema text restates them, so a changed row needs no text edit.
+- **Tools and rules** (`instructions/guidance.ts`, row
+  `system:tools-and-rules`): instructions that belong to a tool, skill or
+  rule, one gated section each, reaching an agent only while that row is on
+  (or, for `!`, off) for it.
+- **Tool descriptions** (`teams/tools.ts`): what the tool does and when to call
+  it; each first line stands alone, since a Code Mode catalog shows only it.
+  `toolGuidance` (namespace and `get_context`) only says which tools are direct
+  and which are Code Mode.
+- **Input schema field descriptions** (`teams/schema.ts`): how each value must
+  look. Every field of every team tool input carries one (a test enforces it);
+  on a defaulted field it lands in the non-null branch, which providers receive.
+- **The rendered Brief** (`teams/brief.ts`) and **each settlement**
+  (`teams/lifecycle.ts`): the facts of one run — deliverable meaning, scope,
+  checks, advisory budget, review range, the report and the next step.
 
 #### Per-member rows (`instructions/team-policy-rows.ts`)
 
 Only rows that name something a member alone has are generated, for every
 member of an enabled team (`policyMembersOf` keeps every one):
 
-- `perm:team_delegate:to.<peer>` (Delegate to, `team`) — one per other member
-  of the same enabled team, labelled with its id (text = the id), shipped off;
+- `perm:team_delegate:to.<peer>` (Delegate to, `team`) — one per member of the
+  same enabled team, its own included (another run of itself), labelled with
+  its id (text = the id), shipped off;
   plus `perm:team_delegate:to.other-teams` "Members of other teams", shipped
   off; on, it opens every member of an enabled team that has no row of its
   own. Their fallback is their own shipped state (off).
@@ -1929,7 +1975,6 @@ Error codes carrying `accepted` today:
 - `E_ROLE`: the first member open to the caller (`{"role":"<member>"}`), present only when one is. The message ends in what is open — `You may delegate to: <members>.` or `No member is open to you for delegation.` — after `<agent> may not delegate.`, `"<role>" is not a member of an enabled team.` or `<agent> may not delegate to "<role>".`. A delegated run whose Delegate from a delegated run row is off gets `<agent>: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead` with `"report blocked with needs=[{kind:\"decision\"}]"`. The depth bound keeps `Depth limit <n> reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.` with `"report blocked with needs=[{kind:\"decision\"}]"`.
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
 - `E_SUMMARY`: summary length guidance (`"a summary of ≤15 lines"`)
-- `E_TIMEOUT_MIN`: `"timeoutMs <timeoutMs> is below the 10000ms floor."`; minimum timeout object (`{"timeoutMs":10000}`)
 - `E_BRIEF`: the target's A check (`{"checks":1}`), Paths per brief (`{"paths":<n>}`) or Checks per brief (`{"checks":<n>}`) row refuses the brief: `<target> needs at least one check (Briefs it accepts → A check).`, `<target> accepts at most <n> scope paths per brief (Brief limits → Paths per brief); this brief has <m>.`, `<target> accepts at most <n> checks per brief (Brief limits → Checks per brief); this brief has <m>.`
 - `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
@@ -1937,13 +1982,13 @@ Error codes carrying `accepted` today:
 - `E_BASE`: valid base ref (`"ocp-main"`)
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
-- `E_BOUNDS`: `"call wait first"` for both bounds: `In-flight limit <n> reached (<runs>). Wait for a child to settle (tools.team.wait) first.` and `Live team runs limit <n> reached (<runs>). Wait for a run to settle (tools.team.wait) first.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
+- `E_BOUNDS`: `"end your turn and delegate after a child settles"` for both bounds: `In-flight limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` and `Live team runs limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
 - `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
 - `E_ROUNDS`: `"supersede and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
 - `E_NO_COMMIT`: `{"status":"blocked","needs":[{"kind":"info","detail":"why nothing was committed"}]}` for `done` on a commit deliverable with no commit since the base, while its row is on
 - `E_PERMISSION` (from `team_check`): `{"status":"blocked","needs":[{"kind":"check","detail":"<check id>"}]}` when the caller's Checks it may run row for that check's family is off
-- `E_NOT_VISIBLE`: the caller's own run id when `status`, `wait` or `diff` names a run out of its reach; `"a run id from list{}"` when `wait` or `diff` names a run not in the namespace
+- `E_NOT_VISIBLE`: the caller's own run id when `status` or `diff` names a run out of its reach; `"a run id from list{}"` when `diff` names a run not in the namespace
 - `E_REQUEST_ID`: `"requestID \"<requestID>\" was used with different arguments; reuse only to retry the identical call, else pick a new requestID."`; reuse guidance (`"pick a new requestID"`)
 - `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
 - `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
@@ -1961,15 +2006,9 @@ Error codes carrying `accepted` today:
   than failing `E_NO_BRIEF`). The `conventions` field has been removed.
 
 New input and output fields:
-- `wait` input `ack?: boolean` (default `true`). Output gains
-  `acknowledged: RunID[]` — exactly the owned children whose settled attempt
-  this call wrote `runs/<run>/ack.json` for. `ack:false` reads the same
-  outcomes and acknowledges nothing, so `acknowledged` is `[]`.
-- `wait` releases its internal race and pause timers as soon as it returns so
-  a caller process is never held open past its result.
-- `status` entries gain `acked: { attempt, at } | null`, read back from
-  `runs/<run>/ack.json` (`RunAck` in `teams/schema.ts`). `status` itself never
-  acknowledges, so `wait`'s `acknowledged` and `status`'s `acked` always agree.
+- `status` entries carry `waitingOn: RunID[]`: for a run that is idle with
+  its attempt still open, the open children it is waiting on (see Waiting on
+  children); `[]` otherwise.
 - `list` and `status` entries carry `worktree: "present" | "removed" | "dirty"`,
   reporting whether the run's git worktree exists, has been removed (on landing
   via `integrate` or GC reaping), or is stopped with uncommitted/tracked modifications.
@@ -2031,18 +2070,38 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    `interrupted` on `session.execution.interrupted`, otherwise (`session.execution.succeeded`,
    the deprecated `session.idle`) `no_report`
    (walked forward through `finishing` by `run.toFinishing`). An attempt whose
-   `report-<n>.json` already exists belongs to `finish` and is left alone;
+   `report-<n>.json` already exists belongs to `finish` and is left alone. A
+   run that is *waiting on children* also keeps its attempt open (see below);
+   a stop requested while it would wait ends that attempt `interrupted`;
 2. moves the run `working → idle` (`turn_ended`) or `starting → idle`
    (`connected`);
-3. tells the parent once: one `child.settled` inbox item naming the run, the
-   attempt, the settled status and the report path, guarded by `notified` on
-   the attempt. An idle parent is prompted with it immediately; a working
-   parent receives it through its own idle handoff;
-4. drains the inbox with `inbox.take` into ONE new attempt (trigger
-   `followup`), prompts the run's session with the rendered items and moves it
-   `idle → working`. Items already recorded on an attempt's `inbox` list (a
-   followup that was delivered immediately to an already idle child) are
-   consumed without being prompted again.
+3. tells the parent once: one `child.settled` inbox item with the run, the
+   attempt and the settled status, the whole report and one `next:` line for
+   what that outcome calls for (`lifecycle.childSettledText`), guarded by
+   `notified` on the attempt. An idle parent is prompted with it immediately; a working
+   parent receives it through its own idle handoff. An attempt kept open is
+   not settled, so nothing is told;
+4. drains the inbox with `inbox.take` into ONE prompt and moves the run
+   `idle → working`: a new attempt (trigger `followup`) when the last attempt
+   has ended, the same attempt when it is still open. Items already recorded
+   on an attempt's `inbox` list (a followup that was delivered immediately to
+   an already idle child) are consumed without being prompted again.
+
+**Waiting on children.** There is no `team_wait`: a parent ends its turn and a
+settling child wakes it (step 3 of the child's own pass). A turn that ends
+without a report is not the end of the attempt while the run still has an
+open child — one for which `run.occupiesSlot` holds (`starting`, `working`,
+`blocked_input`, or idle with its own attempt open, i.e. itself waiting) —
+or an undelivered settlement from one in its inbox
+(`lifecycle.waitingOnChildren`). Its attempt stays open and its parent hears
+nothing; `team_status` lists the open children in `waitingOn`; the child's
+settlement is delivered into the same attempt, and a later `team_finish`
+closes it. The attempt ends `no_report` only on a turn that ends with no open
+child and no pending child news. Every child eventually settles (report, no
+report, interrupt, stop, or a gone session through reconcile), so a wait
+always ends in a wake-up. `team_stop` on a waiting run (and `stopRun`) ends the
+open attempt `interrupted` (`lifecycle.stopIdle`) and tells the run's parent
+once, unless that parent is the run that stopped it.
 
 `InboxKind` gains `child.settled`; `partition` and `batchNotify` classify it
 with `notify` and `system`, so a batch of settlements reaches a parent as one
@@ -2367,7 +2426,9 @@ path is skipped.
   label wins on a pattern-set collision; most-mentioned discovered first,
   then unmentioned curated generics): the curated registry (shell, edit,
   write, read, webfetch, glob, grep entries, plus one `idRules` row per
-  discovered agent/skill id for `subagent`/`skill`), and candidates mined
+  discovered agent id for `subagent`; skills are not rule rows — each skill
+  item is its own switch, listed under the skill tool's Permissions › Skills
+  category), and candidates mined
   from text Plus already holds (tool/base/skill/role/file/teaching rows,
   with `provenance` naming the mentioning item ids). The merged rank carries
   through as `Item.order` so the tree shows most-mentioned first. User
@@ -2586,7 +2647,6 @@ the shipped limits):
 | `team_set_checks` | Check commands (input `checks[].argv`) · Approval |
 | `team_supersede`, `team_stop` | Approval |
 | `team_status` | — |
-| `team_wait` | Wait until (value `until`) · Parameters (`ack: false`) · Limits (Longest wait 600000 ms, clamp) |
 | `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |
 | `team_list` | Parameters (`all`) |
 | `team_get_context` | Contents (team: siblings) |
@@ -2610,7 +2670,7 @@ for a commit, Plan files only, A reason, A check, Corrections by followup) ·
 Brief limits (Paths per brief 5, Checks per brief 1, shipped off);
 `team_delegate` Access (Delegate from a delegated run) before its other
 categories; Runs (Deeper descendants, Any other run, shipped off) on
-`followup`, `stop`, `supersede`, `status`, `wait`, `diff` and `list`;
+`followup`, `stop`, `supersede`, `status`, `diff` and `list`;
 `team_finish` Requirements for done gains Worktree committed before done
 (shipped off). read's Where gains `external` (a rule row on
 `external_directory`), edit gains Files it may change (listed under write and
@@ -2743,8 +2803,8 @@ and let `git push` through while the `git push` row was off.
 - **A limit caps what a call asks for, and what it leaves to the tool.** A
   clamp row lowers a supplied number, and sets an omitted field to the cap
   when the tool's own default is higher (read 2000 lines, glob and grep 100,
-  shell 120000 ms, webfetch 30 s, Tavily 5 and Exa 10 results, wait 60000 ms,
-  diff 200000 bytes).
+  shell 120000 ms, webfetch 30 s, Tavily 5 and Exa 10 results, diff 200000
+  bytes).
 
 ### Log (`log.ts`, `rpc.ts`, `index.ts`)
 
@@ -2957,8 +3017,10 @@ If a key is missing from both the key file and the host environment, the tool re
 
 ### Team prompts and per-role policy
 
-Built-in team prompts reference the search tools by their exact model-visible IDs:
-- `shared` prompt (all members): `search_exa_code_search` for external APIs.
-- `planner` prompt: `search_tavily_search` and `search_tavily_extract` for documentation.
+The search tools are named by their exact model-visible IDs in the Tools and
+rules row (`instructions/guidance.ts`), each in a section that depends on that
+tool, so an agent reads the line exactly while it has the tool: Code search
+(`search_exa_code_search`), Documentation search (`search_tavily_search`) and
+Reading web pages (`search_tavily_extract`). No role text names them.
 
 The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available. It lists under `search_tavily_search` → Permissions → Access; the three tools' own categories (Queries, Sites, depths, topics, types, limits, Approval) are in the per-tool table under Permission rules.

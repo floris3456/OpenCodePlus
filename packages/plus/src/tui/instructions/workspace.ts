@@ -25,7 +25,7 @@ export function isLevelId(value: unknown): value is LevelId {
   return LEVELS.some((level) => level.id === value)
 }
 
-const CATEGORY = /:(settings|models|compaction|tools|base|skills|system|mcp)$/
+const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$/
 
 export type RowRole = "catalogue" | "group" | "container" | "owner" | "every" | "item"
 
@@ -131,7 +131,7 @@ function wantedOpen(
   if (owner !== undefined && owner.role === "owner" && !open.has(owner.node.id)) wanted.push(owner.node.id)
   const category = slice.category
   if (category !== undefined && !open.has(category.id)) wanted.push(category.id)
-  // A category's own subgroups (Tools › OpenCode, Skills › Project …) open by
+  // A category's own subgroups (Tools › OpenCode, System › …) open by
   // default: they read as headings, not as another level to descend.
   for (const row of slice.list)
     if (row.depth === 0 && row.node.kind === "group" && !row.expanded && !input.listCollapsed.has(row.node.id)) wanted.push(row.node.id)

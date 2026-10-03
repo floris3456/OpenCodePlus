@@ -75,6 +75,8 @@ const items: Item[] = [
     ruleId: "run:r1",
     policy: { on: [], off: [] },
   }),
+  // Skills are listed under the skill tool, which core always registers.
+  item("tool:skill", { kind: "tool", group: "native", title: "skill", text: "Load a skill" }),
   item("skill:native-one", { kind: "skill", group: "native", title: "native-one" }),
   item("skill:plus-one", { kind: "skill", group: "plus", title: "plus-one" }),
   item("skill:proj-one", { kind: "skill", group: "project", title: "proj-one" }),
@@ -156,7 +158,7 @@ test("origin subgroups describe each population at every level and in Presets", 
 })
 
 test("every shared Defaults inventory category describes both catalogues", () => {
-  for (const category of ["settings", "models", "compaction", "tools", "base", "skills", "system", "mcp"] as const) {
+  for (const category of ["settings", "models", "compaction", "tools", "base", "system", "mcp"] as const) {
     expect(detail(`group:defaults::${category}`)).toBeDefined()
     expect(detail(`group:defaults:/teams:${category}`)).toBeDefined()
   }
@@ -169,7 +171,7 @@ test("every shared Defaults inventory category describes both catalogues", () =>
 })
 
 test("owner categories name the agent, member, preset or maintenance agent they belong to", () => {
-  for (const category of ["settings", "models", "compaction", "tools", "base", "skills", "system"] as const) {
+  for (const category of ["settings", "models", "compaction", "tools", "base", "system"] as const) {
     expect(detail(`group:project:alice:${category}`)).toBeDefined()
     expect(detail(`group:project:crew/:mate:${category}`)).toBeDefined()
     expect(detail(`group:project:crew/:special:compaction:${category}`)).toBeDefined()
@@ -210,15 +212,18 @@ test("tool subgroups describe origins, MCP servers, Code Mode and Other permissi
 })
 
 test("skill subgroups describe where each skill came from", () => {
-  expect(detail("group:project:alice:skills")).toBe("Skills this agent can load, grouped by where they came from.")
-  expect(detail("group:project:alice:skills:native")).toBe("Skills that ship with OpenCode.")
-  expect(detail("group:project:alice:skills:plus")).toBe("Skills that ship with OpenCodePlus.")
-  expect(detail("group:project:alice:skills:mcp")).toBe("Skills served by MCP servers, one group per server.")
-  expect(detail("group:project:alice:skills:mcp:sample")).toBe("Skills served by the sample MCP server.")
-  expect(detail("group:project:alice:skills:project")).toBe("Skills in this project's own skill directories (.opencode/skill*).")
-  expect(detail("group:project:alice:skills:global")).toBe("Skills under the global skills directory, available in every project.")
-  expect(detail("group:project:alice:skills:defaults")).toBe("Skills in the global skills directory's defaults folder, shared with every project.")
-  expect(detail("group:project:alice:skills:preset")).toBe("Skills kept with this preset under the global skills presets folder.")
+  // The one place skills live: the skill tool's Permissions › Skills category.
+  const skills = "group:project:alice:tool:skill:permissions:skills"
+  expect(detail(skills)).toContain("one switch per skill")
+  expect(detail(skills)).toContain("`a` adds a skill here")
+  expect(detail(`${skills}:native`)).toBe("Skills that ship with OpenCode.")
+  expect(detail(`${skills}:plus`)).toBe("Skills that ship with OpenCodePlus.")
+  expect(detail(`${skills}:mcp`)).toBe("Skills served by MCP servers, one group per server.")
+  expect(detail(`${skills}:mcp:sample`)).toBe("Skills served by the sample MCP server.")
+  expect(detail(`${skills}:project`)).toBe("Skills in this project's own skill directories (.opencode/skill*).")
+  expect(detail(`${skills}:global`)).toBe("Skills under the global skills directory, available in every project.")
+  expect(detail(`${skills}:defaults`)).toBe("Skills in the global skills directory's defaults folder, shared with every project.")
+  expect(detail(`${skills}:preset`)).toBe("Skills kept with this preset under the global skills presets folder.")
 })
 
 test("a tool's Description group, a team's Special group and permission categories", () => {

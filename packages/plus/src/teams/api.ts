@@ -14,15 +14,13 @@ import { Location } from "@opencode/schema/location"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
-import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
-import { reconcile } from "./lifecycle.js"
 import { requireWorktree } from "./availability.js"
-import { isScopePath, runScope, scopeRefusal } from "./scope.js"
+import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
 import { sessionTokens } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
@@ -42,6 +40,7 @@ import {
   loadRun,
   newRunID,
   occupiesSlot,
+  openChildren,
   saveRun,
   startAttempt,
   toFinishing,
@@ -62,19 +61,18 @@ import {
   ModelIdentity,
   Policy,
   Report,
-  RunAck,
   RunID,
   SetChecksInput,
   StatusInput,
   StopInput,
   SupersedeInput,
-  WaitInput,
   budgetExhaustion,
   toolError,
-  validateChecks,
   validateSummary,
   type Check,
+  type ResolvedBrief,
 } from "./schema.js"
+import { checksNote, readProjectChecks, resolveChecks } from "./project-checks.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
 import { provision, slug, NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -107,7 +105,6 @@ export interface TeamApi {
   readonly supersede: (input: SupersedeInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly stop: (input: StopInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly status: (input: StatusInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly wait: (input: WaitInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly diff: (input: DiffInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly list: (input: ListInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly get_context: (input: GetContextInput, caller: TeamCaller) => Promise<TeamApiResult>
@@ -133,7 +130,7 @@ function fail(code: string, message: string, accepted?: unknown): TeamApiResult 
   return { ok: false, error: { code, message, accepted } }
 }
 
-// Throwing helpers (validateChecks, tasks.claim, checks.run, git) surface as
+// Throwing helpers (resolveChecks, tasks.claim, checks.run, git) surface as
 // toolError-shaped plain objects; anything else is an internal failure.
 function thrownError(error: unknown): TeamApiError {
   if (typeof error === "object" && error !== null) {
@@ -161,12 +158,11 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     finish: (input, caller) => guarded(() => finishHandler(input, caller, state.permissions)),
     followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
-    checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller)),
+    checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
     supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller, state.permissions)),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
     status: (input, caller) => guarded(() => statusHandler(ctx, input, caller, state.permissions)),
-    wait: (input, caller) => guarded(() => waitHandler(ctx, input, caller, state.permissions)),
     diff: (input, caller) => guarded(() => diffHandler(input, caller, state.permissions)),
     list: (input, caller) => guarded(() => listHandler(input, caller, state.permissions)),
     get_context: (input, caller) => guarded(() => getContextHandler(ctx, input, caller, state.permissions)),
@@ -244,11 +240,15 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       "ocp-main",
     )
 
+  // The checks a run stores are the commands they run: a project check by
+  // name (the main checkout's .opencodeplus/checks.json) or a Bun command.
+  let checks: Check[]
   try {
-    validateChecks([...brief.checks])
+    checks = resolveChecks(brief.checks, await readProjectChecks(repo.root))
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }
+  const resolved: ResolvedBrief = { ...brief, checks }
 
   const paths = brief.scope.paths
   for (const candidate of [...paths, ...brief.scope.forbidden]) {
@@ -279,16 +279,16 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (inFlightLimit !== undefined && inFlight.length >= inFlightLimit)
     return fail(
       "E_BOUNDS",
-      `In-flight limit ${inFlightLimit} reached (${inFlight.join(", ")}). Wait for a child to settle (tools.team.wait) first.`,
-      "call wait first",
+      `In-flight limit ${inFlightLimit} reached (${inFlight.join(", ")}). End your turn; a settling child wakes you, then delegate.`,
+      "end your turn and delegate after a child settles",
     )
   const membersLimit = bound(table, agent, "delegate", "limits.members")
   if (membersLimit !== undefined && live.length >= membersLimit) {
     const all = live.map((record) => record.id).toSorted()
     return fail(
       "E_BOUNDS",
-      `Live team runs limit ${membersLimit} reached (${all.join(", ")}). Wait for a run to settle (tools.team.wait) first.`,
-      "call wait first",
+      `Live team runs limit ${membersLimit} reached (${all.join(", ")}). End your turn; a settling child wakes you, then delegate.`,
+      "end your turn and delegate after a child settles",
     )
   }
 
@@ -310,7 +310,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       role: brief.role,
       effort: brief.effort,
       paths: [...paths],
-      checks: [...brief.checks],
+      checks: [...checks],
       deliverable: { ...brief.deliverable },
     })
   }
@@ -334,7 +334,28 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     attached = { path: briefFile, content: await readFile(realBrief, "utf8") }
   }
 
-  const rendered = briefModule.render(brief, { budget, ...(attached === undefined ? {} : { attached }) })
+  // A review starts where the delegating run started and ends at the commit
+  // the reviewer's worktree starts from; the run's own check results there
+  // travel with it, because a reviewer can neither run checks nor read them.
+  const review =
+    brief.deliverable.kind === "findings"
+      ? {
+          run: childID,
+          from: parent.base,
+          to: baseSha,
+          checks: await Promise.all(
+            (await readChecks(root, parent.id)).map(async (check) => {
+              const receipt = await lastReceipt(root, parent.id, check.id, baseSha)
+              return { id: check.id, passed: receipt !== undefined && isCleanReceipt(receipt) ? receipt.passed : null }
+            }),
+          ),
+        }
+      : undefined
+  const rendered = briefModule.render(resolved, {
+    budget,
+    ...(attached === undefined ? {} : { attached }),
+    ...(review === undefined ? {} : { review }),
+  })
   const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")
 
   // The worktree is created and its starting child run registered in one
@@ -434,8 +455,8 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const runDir = path.join(root, "runs", childID)
   await mkdir(runDir, { recursive: true })
   await writeFile(path.join(runDir, "brief.md"), rendered, "utf8")
-  await atomicJson(path.join(runDir, "brief.json"), brief)
-  await atomicJson(path.join(runDir, "checks.json"), [...brief.checks])
+  await atomicJson(path.join(runDir, "brief.json"), resolved)
+  await atomicJson(path.join(runDir, "checks.json"), [...checks])
 
   const wanted = state.activeModels.get(brief.role)
   if (wanted !== undefined) {
@@ -506,7 +527,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const configDigest = Release.digest({
     role: brief.role,
     scope: brief.scope,
-    checks: brief.checks,
+    checks,
     budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
   })
 
@@ -674,18 +695,27 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   return succeeded(body)
 }
 
-async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Promise<TeamApiResult> {
+async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const record = stored ?? caller.run
   await requireWorktree(record)
-  const scope = await runScope(root, record)
+  // A delegated run commits inside its Brief's scope. A chat run has no Brief:
+  // it commits what its agent may edit (its edit rows), so a build seat
+  // commits anywhere in its checkout and a planner in the chat only its plan
+  // files. Protected state (.git, .opencodeplus, …) stays out either way.
+  const chat = record.kind === "main"
+  const scope = chat ? undefined : await runScope(root, record)
+  const refusalOf = (file: string): string | undefined =>
+    scope !== undefined
+      ? scopeRefusal(scope, file)
+      : protectedStateRefusal(file) ?? chatEditRefusal(table, caller.agent, record.directory, file)
   const key = await realpath(record.directory).catch(() => record.directory)
   return lock(root, "wt", key, async () => {
     const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
     if (head !== args.expectedHead) return fail("E_STALE_HEAD", `HEAD is ${head}, not ${args.expectedHead}.`)
     for (const file of args.files) {
-      const refusal = scopeRefusal(scope, file)
+      const refusal = refusalOf(file)
       if (refusal !== undefined) return fail("E_SCOPE", refusal)
     }
     if (args.message.length === 0 || args.message.length > 300 || !COMMIT_MESSAGE_RE.test(args.message))
@@ -703,7 +733,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller): Pro
     ])
     const files = [...new Set(selected.flatMap((output) => output.split("\0").filter(Boolean)))]
     for (const file of files) {
-      const refusal = scopeRefusal(scope, file)
+      const refusal = refusalOf(file)
       if (refusal !== undefined) return fail("E_SCOPE", refusal)
     }
     const staged = (await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--cached", "--name-only", "--no-renames", "-z"])).split("\0").filter(Boolean)
@@ -758,89 +788,6 @@ async function statusHandler(ctx: Context, args: StatusInput, caller: TeamCaller
   return succeeded(entries)
 }
 
-async function waitHandler(ctx: Context, args: WaitInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
-  const root = teamsDataDir()
-  const timeoutMs = args.timeoutMs ?? 60000
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 10000)
-    return fail("E_TIMEOUT_MIN", `timeoutMs ${String(args.timeoutMs)} is below the 10000ms floor.`, { timeoutMs: 10000 })
-  const until = args.until ?? "settled"
-  const ack = args.ack ?? true
-  const self = (await loadRun(root, caller.run.id)) ?? caller.run
-  for (const id of args.runs) {
-    const target = await loadRun(root, id)
-    if (target === undefined)
-      return fail("E_NOT_VISIBLE", `Run ${id} is not in this namespace.`, "a run id from list{}")
-    if (!mayReach(table, caller.agent, "wait", await relationOf(root, self, target)))
-      return fail("E_NOT_VISIBLE", `Run ${id} is outside what team_wait may wait on for ${caller.agent} (Permissions → Runs).`, self.id)
-  }
-  const settledNow = await settledIds(root, args.runs, until)
-  if (settledNow.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, settledNow, until, ack))
-  // Race the host's session.wait per listed run against the timeout; no
-  // polling loop by the model.
-  const sessions = ctx.session
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const remaining = deadline - Date.now()
-    if (remaining <= 0) break
-    const racers: Array<Promise<unknown>> = []
-    for (const id of args.runs) {
-      const record = await loadRun(root, id)
-      if (record === undefined || record.sessionID === null) continue
-      const sid = record.sessionID
-      racers.push(
-        Effect.runPromise(sessions.wait({ sessionID: Session.ID.make(sid) })).then(
-          () => null,
-          () => null,
-        ),
-      )
-    }
-    if (racers.length === 0) {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        await new Promise((resolve) => {
-          timer = setTimeout(resolve, Math.min(150, remaining))
-        })
-      } finally {
-        if (timer !== undefined) clearTimeout(timer)
-      }
-    } else {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        await Promise.race([
-          ...racers,
-          new Promise((resolve) => {
-            timer = setTimeout(resolve, remaining)
-          }),
-        ])
-      } finally {
-        if (timer !== undefined) clearTimeout(timer)
-      }
-    }
-    const settled = await settledIds(root, args.runs, until)
-    if (settled.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, settled, until, ack))
-    let pauseTimer: ReturnType<typeof setTimeout> | undefined
-    try {
-      await new Promise((resolve) => {
-        pauseTimer = setTimeout(resolve, Math.min(150, Math.max(deadline - Date.now(), 0)))
-      })
-    } finally {
-      if (pauseTimer !== undefined) clearTimeout(pauseTimer)
-    }
-  }
-  const settled = await settledIds(root, args.runs, until)
-  if (settled.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, settled, until, ack))
-  await Effect.runPromise(Effect.promise(() => reconcile(ctx, root)).pipe(Effect.ignore))
-  const resettled = await settledIds(root, args.runs, until)
-  if (resettled.length > 0) return succeeded(await waitResult(ctx, root, caller.run.id, args.runs, resettled, until, ack))
-  return succeeded({
-    settled: [],
-    acknowledged: [],
-    timedOut: true,
-    stillOpen: [...args.runs],
-    overBudget: await overBudgetIds(ctx, root, args.runs),
-  })
-}
-
 async function getContextHandler(ctx: Context, _args: GetContextInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
@@ -883,6 +830,9 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
       : { paths: [...brief.scope.paths], forbidden: [...brief.scope.forbidden] }
   const interfaces = brief === null ? [] : [...brief.context.interfaces]
   const decisions = brief === null ? [] : [...brief.context.decisions]
+  // The live HEAD: it is what checkpoint and integrate compare against, and the
+  // stored head lags behind a landing or a commit made outside team tools.
+  const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]).catch(() => record.head)
   return succeeded({
     run: record.id,
     role: record.role,
@@ -890,11 +840,13 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
     directory: record.directory,
     branch: record.branch,
     base: record.base,
-    head: record.head,
+    head,
     brief,
     briefPath,
     scope,
     checks,
+    // What a run may be given as checks in this project (a delegator's view).
+    projectChecks: checksNote(await readProjectChecks(record.directory).catch(() => undefined)),
     interfaces,
     decisions,
     siblings,
@@ -1255,7 +1207,9 @@ async function statusOf(ctx: Context, root: string, id: string) {
           },
     children: [...record.children],
     parent: record.parent,
-    acked: await ackedAt(root, id),
+    // A run idle with its attempt still open is waiting on these children;
+    // their settlements wake it and continue the same attempt.
+    waitingOn: record.state === "idle" && last !== undefined && !isAttemptTerminal(last.state) ? await openChildren(root, id) : [],
     budget: {
       attemptsUsed: record.attempts.length,
       turnsUsed: record.attempts.length, // compatibility alias: attempts, never model calls
@@ -1269,83 +1223,3 @@ async function statusOf(ctx: Context, root: string, id: string) {
   }
 }
 
-function isSettled(record: RunRecord, until: "settled" | "idle"): boolean {
-  if (until === "idle") return record.state === "idle"
-  const last = record.attempts[record.attempts.length - 1]
-  if (last === undefined) return false
-  return isAttemptTerminal(last.state)
-}
-
-async function settledIds(root: string, ids: readonly string[], until: "settled" | "idle"): Promise<string[]> {
-  const out: string[] = []
-  for (const id of ids) {
-    const record = await loadRun(root, id)
-    if (record !== undefined && isSettled(record, until)) out.push(id)
-  }
-  return out
-}
-
-async function waitReport(root: string, runID: string, attempt: number): Promise<{ status: string; summary: string; path: string } | null> {
-  const jsonPath = path.join(root, "runs", runID, `report-${attempt}.json`)
-  const data = await readJson<Record<string, unknown>>(jsonPath)
-  if (data === undefined) return null
-  if (typeof data.status !== "string" || typeof data.summary !== "string") return null
-  return { status: data.status, summary: data.summary, path: jsonPath }
-}
-
-async function overBudgetIds(ctx: Context, root: string, ids: readonly string[]): Promise<string[]> {
-  const out: string[] = []
-  for (const id of ids) {
-    const record = await loadRun(root, id)
-    if (record !== undefined && budgetExhaustion(record, { tokensUsed: await sessionTokens(ctx, record) }).exhausted) out.push(id)
-  }
-  return out
-}
-
-async function waitResult(
-  ctx: Context,
-  root: string,
-  callerID: string,
-  runs: readonly string[],
-  settled: readonly string[],
-  until: "settled" | "idle",
-  ack: boolean,
-) {
-  const entries: Array<{ run: string; attemptState: string; report: { status: string; summary: string; path: string } | null }> = []
-  const acknowledged: string[] = []
-  for (const id of settled) {
-    const record = await loadRun(root, id)
-    const last = record?.attempts[record.attempts.length - 1]
-    entries.push({ run: id, attemptState: last?.state ?? "queued", report: last === undefined ? null : await waitReport(root, id, last.n) })
-    // Waiting acknowledges owned outcomes so the sweeper stops re-nudging.
-    // ack:false reads the same outcomes without taking responsibility for them.
-    if (ack && record !== undefined && record.parent === callerID) {
-      await atomicJson(path.join(root, "runs", id, "ack.json"), {
-        by: callerID,
-        attempt: last?.n ?? 0,
-        attemptState: last?.state ?? "queued",
-        at: new Date().toISOString(),
-        until,
-      })
-      acknowledged.push(id)
-    }
-  }
-  const done = new Set(settled)
-  return {
-    settled: entries,
-    acknowledged,
-    timedOut: false,
-    stillOpen: runs.filter((id) => !done.has(id)),
-    overBudget: await overBudgetIds(ctx, root, runs),
-  }
-}
-
-// status never acknowledges; it reports what wait already acknowledged, so
-// the two agree on which outcomes the parent has taken responsibility for.
-async function ackedAt(root: string, runID: string): Promise<{ attempt: number; at: string } | null> {
-  const raw = await readJson<unknown>(path.join(root, "runs", runID, "ack.json"))
-  if (raw === undefined) return null
-  const parsed = Schema.decodeUnknownOption(RunAck)(raw)
-  if (Option.isNone(parsed)) return null
-  return { attempt: parsed.value.attempt, at: parsed.value.at }
-}

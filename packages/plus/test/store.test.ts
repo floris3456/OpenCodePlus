@@ -12,7 +12,10 @@ const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
 afterEach(async () => {
-  process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  // Assigning undefined would store the string "undefined": a relative
+  // config dir that later tests in this process write into.
+  if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -51,6 +54,7 @@ test("load returns empty when both stores are absent", async () => {
     migrated: false,
     cataloguesMigrated: false,
     presetsMigrated: false,
+    skillsMigrated: false,
   })
 })
 
@@ -64,6 +68,8 @@ test("save then load round-trips project and global records", async () => {
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
     customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
+    // "Shown when" is stored on its own field and survives the round trip.
+    customization({ agent: "alpha", item: "system:tools-and-rules", section: "tools-and-rules/questions", requires: ["tool:question", "!perm:shell:git-push"] }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   expect(saved).toEqual({ ok: true, projectRevision: 1, globalRevision: 1, changed: { project: true, global: true } })

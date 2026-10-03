@@ -18,6 +18,7 @@ import { gc, onSessionEvent } from "../../src/teams/lifecycle.js"
 import { byDirectory, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { writeProjectChecks } from "../../src/teams/project-checks.js"
 import { read } from "../../src/project.js"
 
 // Real temp git repositories plus a real temp state root (scoped
@@ -1047,137 +1048,6 @@ test("status shows the child head and the check receipt", async () => {
   })
 }, 30000)
 
-test("wait returns the settled report for an already-terminal attempt", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const parent = baseRun({
-        id: "main-0123456789abcdef",
-        role: "orchestrator",
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        sessionID: "ses_parent_008",
-      })
-      await saveRun(root, parent)
-      const child = await finishChild(root, repo, PASSING_TEST)
-      await saveRun(root, { ...parent, children: [child.id] })
-      const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), teamState())
-      const finished = required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
-      expect(finished).toBeDefined()
-      const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000 }, callerFor(parent))) as {
-        settled: Array<{ run: string; attemptState: string; report: { status: string; summary: string; path: string } | null }>
-        timedOut: boolean
-        stillOpen: string[]
-      }
-      expect(value.timedOut).toBe(false)
-      expect(value.stillOpen).toEqual([])
-      expect(value.settled).toHaveLength(1)
-      expect(value.settled[0]?.run).toBe(child.id)
-      expect(value.settled[0]?.attemptState).toBe("succeeded")
-      expect(value.settled[0]?.report?.status).toBe("done")
-      expect(sessions.waited).toEqual([])
-      expect(await Bun.file(path.join(root, "runs", child.id, "ack.json")).exists()).toBe(true)
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-}, 30000)
-
-test("wait names what it acknowledged and status reports the same acked entry", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const parent = baseRun({
-        id: "main-0123456789abcdef",
-        role: "orchestrator",
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        sessionID: "ses_parent_ack",
-      })
-      await saveRun(root, parent)
-      const child = await finishChild(root, repo, PASSING_TEST)
-      await saveRun(root, { ...parent, children: [child.id] })
-      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
-      required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
-      const before = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{
-        acked: { attempt: number; at: string } | null
-      }>
-      expect(before[0]?.acked).toBeNull()
-      const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000 }, callerFor(parent))) as {
-        acknowledged: string[]
-        settled: Array<{ run: string }>
-      }
-      expect(value.acknowledged).toEqual([child.id])
-      const after = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{
-        attempt: number
-        acked: { attempt: number; at: string } | null
-      }>
-      expect(after[0]?.acked?.attempt).toBe(after[0]?.attempt ?? -1)
-      expect(typeof after[0]?.acked?.at).toBe("string")
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-}, 30000)
-
-test("wait with ack:false reads the outcome without acknowledging it", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const parent = baseRun({
-        id: "main-0123456789abcdef",
-        role: "orchestrator",
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        sessionID: "ses_parent_noack",
-      })
-      await saveRun(root, parent)
-      const child = await finishChild(root, repo, PASSING_TEST)
-      await saveRun(root, { ...parent, children: [child.id] })
-      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
-      required(await api.finish(finishInput({ status: "done", summary: "Filter fixed and covered." }), callerFor(child)))
-      const value = required(await api.wait({ runs: [child.id], timeoutMs: 10000, ack: false }, callerFor(parent))) as {
-        acknowledged: string[]
-        settled: Array<{ run: string; attemptState: string }>
-      }
-      expect(value.settled[0]?.attemptState).toBe("succeeded")
-      expect(value.acknowledged).toEqual([])
-      expect(await Bun.file(path.join(root, "runs", child.id, "ack.json")).exists()).toBe(false)
-      const entries = required(await api.status({ runs: [child.id] }, callerFor(parent))) as Array<{ acked: unknown }>
-      expect(entries[0]?.acked).toBeNull()
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-}, 30000)
-
-test("wait rejects an unknown run with E_NOT_VISIBLE", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const parent = baseRun({
-        id: "main-0123456789abcdef",
-        role: "orchestrator",
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        sessionID: "ses_parent_009",
-      })
-      await saveRun(root, parent)
-      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
-      const error = rejected(await api.wait({ runs: ["w-ffffffffffffffff"], timeoutMs: 10000 }, callerFor(parent)))
-      expect(error.code).toBe("E_NOT_VISIBLE")
-      expect(error.message).toBe("Run w-ffffffffffffffff is not in this namespace.")
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-})
-
 async function dirtyChild(root: string, repo: { dir: string; head: string }, id: string): Promise<RunRecord> {
   await fs.mkdir(path.join(repo.dir, "src"), { recursive: true })
   await fs.writeFile(path.join(repo.dir, "src", "greeting.ts"), "export const greeting = 'hi'\n")
@@ -1332,7 +1202,7 @@ test("delegate refuses a fifth working child with E_BOUNDS", async () => {
       // The bound is the member's "Children working at once" row; the old
       // text pointed at a policy file that is never loaded.
       expect(error.message).toBe(
-        "In-flight limit 4 reached (w-aaaaaaaaaaaaaaaa, w-bbbbbbbbbbbbbbbb, w-cccccccccccccccc, w-dddddddddddddddd). Wait for a child to settle (tools.team.wait) first.",
+        "In-flight limit 4 reached (w-aaaaaaaaaaaaaaaa, w-bbbbbbbbbbbbbbbb, w-cccccccccccccccc, w-dddddddddddddddd). End your turn; a settling child wakes you, then delegate.",
       )
     } finally {
       await removeRepo(repo.dir)
@@ -1553,3 +1423,109 @@ test("finish reports new untracked file under .opencodeplus as dirty", async () 
     }
   })
 }, 30000)
+
+// A reviewer can neither run checks nor read another run, and its own
+// worktree starts at the end of the change, so its own diff from base is
+// empty. Its Brief therefore carries the range (from where the delegating run
+// started) as an exact team_diff call, and that run's check results.
+test("a review brief names the change since the delegating run started and that run's check results", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.writeFile(path.join(repo.dir, "landed.txt"), "landed work\n")
+      await git(repo.dir, ["add", "landed.txt"])
+      await git(repo.dir, ["commit", "-m", "feat: landed work"])
+      const landed = await git(repo.dir, ["rev-parse", "HEAD"])
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: landed,
+        sessionID: "ses_parent_review",
+      })
+      await saveRun(root, parent)
+      await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [
+        { id: "unit", argv: ["bun", "test", "unit.test.ts"] },
+        { id: "lint", argv: ["bun", "run", "lint"] },
+      ])
+      const receipt = { argv: [], cwd: "", head: landed, exitCode: 0, at: Date.now(), durationMs: 1, outputPath: "", tree: "t", dirty: false }
+      await atomicJson(path.join(root, "runs", parent.id, "receipts", `unit-${landed.slice(0, 7)}.json`), { ...receipt, id: "unit", passed: true })
+      const sessions = recordSession()
+      const api = createTeamApi(context({ session: sessions.domain }), teamState())
+      const delegated = required(
+        await api.delegate(
+          delegateInput({ requestID: "review-1", role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
+          callerFor(parent),
+        ),
+      ) as { run: string; briefPath: string }
+      const brief = await fs.readFile(delegated.briefPath, "utf8")
+      expect(brief).toContain(`See the change with team_diff {run: "${delegated.run}", from: "${repo.head}"}.`)
+      expect(brief).toContain(`Checks at ${landed.slice(0, 12)}: unit pass, lint not run.`)
+      expect(brief).toContain("May edit: nothing (read-only task)")
+      // The call the Brief names shows the change: the reviewer's worktree diffed from that commit.
+      const reviewer = await loadRun(root, delegated.run)
+      if (reviewer === undefined) throw new Error("missing reviewer run")
+      const diff = required(await api.diff({ run: reviewer.id, from: repo.head }, callerFor(reviewer))) as { patch: string }
+      expect(diff.patch).toContain("+landed work")
+      // A non-review Brief carries no Review section.
+      const implementer = required(await api.delegate(delegateInput({ requestID: "impl-1" }), callerFor(parent))) as { briefPath: string }
+      expect(await fs.readFile(implementer.briefPath, "utf8")).not.toContain("## Review")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// checkpoint and integrate compare against the live HEAD; the stored one lags
+// behind a landing or a commit made outside team tools.
+test("get_context reports the worktree's live HEAD, not the stored one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.writeFile(path.join(repo.dir, "later.txt"), "later\n")
+      await git(repo.dir, ["add", "later.txt"])
+      await git(repo.dir, ["commit", "-m", "chore: later commit"])
+      const live = await git(repo.dir, ["rev-parse", "HEAD"])
+      const parent = baseRun({ id: "main-0123456789abcdef", kind: "main", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_live_head" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(await api.get_context({}, callerFor(parent))) as { head: string }
+      expect(value.head).toBe(live)
+      expect((await loadRun(root, parent.id))?.head).toBe(repo.head)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// A delegator names a project check; the run stores and renders the command
+// the project wrote (.opencodeplus/checks.json in the main checkout), and a
+// command nobody named is refused with the project's list.
+test("delegate resolves a project check to the project's command and refuses a made-up one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await writeProjectChecks(repo.dir, { version: 1, checks: { unit: { argv: ["pytest", "tests"], description: "all tests" } } })
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_checks" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const delegated = required(await api.delegate(delegateInput({ requestID: "checks-1", checks: [{ id: "unit" }] }), callerFor(parent))) as {
+        run: string
+        briefPath: string
+      }
+      expect(await atomicRead(path.join(root, "runs", delegated.run, "checks.json"))).toEqual([{ id: "unit", argv: ["pytest", "tests"] }])
+      expect(await fs.readFile(delegated.briefPath, "utf8")).toContain("- unit: pytest tests")
+      const refused = await api.delegate(delegateInput({ requestID: "checks-2", checks: [{ id: "x", argv: ["sh", "-c", "id"] }] }), callerFor(parent))
+      if (refused.ok) throw new Error("expected a refusal")
+      expect((refused.error as { code: string }).code).toBe("E_CHECKS")
+      expect((refused.error as { message: string }).message).toContain("Project checks: unit (all tests)")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+async function atomicRead(file: string): Promise<unknown> {
+  return JSON.parse(await fs.readFile(file, "utf8"))
+}

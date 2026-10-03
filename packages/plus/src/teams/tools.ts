@@ -28,33 +28,31 @@ import {
   StatusInput,
   StopInput,
   SupersedeInput,
-  WaitInput,
   nullTolerant,
 } from "./schema.js"
 
 const namespace = "team"
 const origin = { type: "plugin", name: "opencode.plus" } as const
 
-// The team surface guidance rides get_context and the Code Mode namespace; a
-// direct tool's description is sent with every request, so delegate's stays short.
+// Descriptions say what a tool does and when to use it; how each value must
+// look is the input schema's field descriptions. A direct tool's description
+// is sent with every request, and a Code Mode catalog shows only the first
+// line, so each first line stands on its own and stays short.
 const DelegateDescription =
-  "Start a bounded task in a new isolated worktree. One call = one run.\nThe member must be in team_get_context's delegationTargets."
-const FinishDescription = "Declare an outcome for the current attempt.\nDone, blocked, or needs-context with evidence the parent verifies."
-const FollowupDescription =
-  "Send a correction to an owned child.\nThe default queue delivers it as a new attempt when the child next goes idle; delivery:\"now\" needs an already idle child and fails E_BUSY otherwise."
-const IntegrateDescription = "Enqueue a child's completed commit into the merge queue.\nLands synchronously when the queue is empty and the parent is clean."
-const CheckpointDescription = "Commit only intended files in your own worktree after checking expected HEAD."
-const SetChecksDescription = "Record the integration checks for the current task.\nOutput is the check ids."
-const SupersedeDescription = "Abandon an owned child and cancel its task.\nWorking children get a shutdown request first, then an interrupt."
-const StopDescription = "Stop an owned child.\nWorking children stop after their turn; idle children stop now."
-const StatusDescription =
-  "Show status of your run and children in this namespace.\nDefaults to self plus direct children. Read-only; never acknowledges, but shows what wait acknowledged as acked."
-const WaitDescription =
-  "Wait for child runs to settle or go idle.\nReturns settled, acknowledged, timedOut, stillOpen and overBudget lists; acknowledges owned outcomes unless ack:false."
-const DiffDescription = "Show a run's worktree diff against a ref or base.\nLarge patches truncate to maxBytes with truncated:true."
-const ListDescription = "List runs in this namespace, optionally filtered.\nHidden states (superseded, reaped) need all:true. Read-only."
-const GetContextDescription = "Load your brief, checks, siblings, inbox, budget, tool surfaces and permitted delegation targets.\n" + toolGuidance
-const CheckDescription = "Run one assigned focused check in your worktree.\nUnknown ids fail with E_UNKNOWN_CHECK."
+  "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run; its settlement wakes you with the report."
+const FinishDescription = "Report your task's outcome to your parent. Once per attempt; a correction arrives as a new message."
+const FollowupDescription = "Send a correction or answer to your child; it becomes the child's next message."
+const IntegrateDescription =
+  "Land a done child's commits on your branch: rebased onto your HEAD, verified with your integration checks, then fast-forwarded."
+const CheckpointDescription = "Commit chosen files in your own worktree."
+const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
+const SupersedeDescription = "Abandon a child run and cancel its task, e.g. to replace a child that is off course."
+const StopDescription = "Stop a child run now (a working child after its turn); a followup resumes it."
+const StatusDescription = "State, latest report, checks and HEAD of your run and your children."
+const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
+const ListDescription = "List the runs in this namespace."
+const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again.\n" + toolGuidance
+const CheckDescription = "Run one of your assigned checks in your worktree."
 
 // One team tool call in flight, remembered at `tool.execute.before` so a refusal
 // seen on the event stream can be audited with the same actor, session and
@@ -352,7 +350,7 @@ export async function registerTeamTools(
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
-    editor.namespace({ name: namespace, description: "Team runs: delegate work, report outcomes, and read run state.\n" + toolGuidance })
+    editor.namespace({ name: namespace, description: "Team runs: read run state and run checks.\n" + toolGuidance })
     const add = (tool: Tool.Info) => {
       editor.add({
         ...tool,
@@ -439,15 +437,6 @@ export async function registerTeamTools(
       options: teamOptions("status", true),
       origin,
       execute: (input, context) => runGated("status", input, context, ctx, state, (args, caller) => api.status(args, caller)),
-    })
-    add({
-      name: "wait",
-      description: WaitDescription,
-      input: WaitInput,
-      output: Schema.Unknown,
-      options: teamOptions("wait", true),
-      origin,
-      execute: (input, context) => runGated("wait", input, context, ctx, state, (args, caller) => api.wait(args, caller)),
     })
     add({
       name: "diff",

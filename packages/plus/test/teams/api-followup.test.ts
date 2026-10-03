@@ -220,7 +220,7 @@ test("delivery now on a working child fails E_BUSY with the exact message", asyn
     const result = await api.followup(followupInput({ run: child.id, requestID: "busy-1", delivery: "now" }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_BUSY")
-    expect(error.message).toBe(`Child is working (attempt 1). Use delivery:"queue" (default) or wait first.`)
+    expect(error.message).toBe(`Child is working (attempt 1). Use delivery:"queue" (default); it is delivered when the child goes idle.`)
     if (!result.ok) expect(result.error.accepted).toEqual({ delivery: "queue" })
     else throw new Error("expected E_BUSY")
     expect(await peek(root, child.id)).toEqual([])

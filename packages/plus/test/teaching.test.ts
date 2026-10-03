@@ -209,8 +209,11 @@ test("the release workflow is listed under Plus skills without relabeling unrela
     ["skill:opencodeplus-unrelated", "native"],
     ["skill:project-workflow", "project"],
   ])
+  // Skills are listed under the skill tool, which core always registers.
+  const skillTool = { id: "tool:skill", kind: "tool" as const, group: "native" as const, title: "skill", text: "Load a skill", enabled: true, fingerprint: "fp-skill" }
   const snapshot = {
     ...discovered,
+    items: [...discovered.items, skillTool],
     records: [],
     agents: [{ id: "release", scope: "global" as const, origin: "user" as const }],
   }

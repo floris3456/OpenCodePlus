@@ -7,6 +7,7 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { gitRaw } from "./git.js"
 import { put } from "./inbox.js"
 import { io } from "./io.js"
+import { stopIdle } from "./lifecycle.js"
 import { attemptTransition, isAttemptTerminal, isTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
 import { StopInput, SupersedeInput } from "./schema.js"
 import { readJson } from "./store.js"
@@ -100,9 +101,7 @@ export async function stopRun(ctx: Context, runID: string): Promise<TeamApiResul
   if (isTerminal(run.state)) return succeeded({ run: run.id, state: run.state })
   if (run.state === "idle") {
     await interruptSession(ctx, run.sessionID)
-    const stopping = transition(run, "stopping", "shutdown")
-    const stopped = transition(stopping, "stopped", "exited")
-    await saveRun(root, stopped)
+    await stopIdle(ctx, root, run)
     return succeeded({ run: run.id, state: "stopped" })
   }
   if (run.state === "dead") {
@@ -125,9 +124,7 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
   if (child.state === "stopping") return succeeded({ run: child.id, state: "stopping" })
   if (child.state === "idle") {
     await interruptSession(ctx, child.sessionID)
-    const stopping = transition(child, "stopping", "shutdown")
-    const stopped = transition(stopping, "stopped", "exited")
-    await saveRun(root, stopped)
+    await stopIdle(ctx, root, child, parent.id)
     return succeeded({ run: child.id, state: "stopped" })
   }
   if (child.state === "dead") {

@@ -9,6 +9,7 @@ import { toolError } from "./schema.js"
 import type { Check } from "./schema.js"
 import { git, parsePorcelain, PLUS_PROJECT_FILE, systemPath } from "./git.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
+import { readProjectChecks } from "./project-checks.js"
 import { errCode, io } from "./io.js"
 import { Release } from "../release/identity.js"
 
@@ -245,6 +246,34 @@ async function provisionDependencies(
   return { log: header }
 }
 
+// A project that names a setup command (.opencodeplus/checks.json `setup`,
+// e.g. `uv sync --frozen` or `npm ci`) prepares each fresh worktree with it
+// instead of the built-in Bun install: once per worktree (a marker in the
+// run's own state directory records the command that succeeded), before its
+// first check. Like the Bun install, a setup that changes the tracked tree is
+// reported, never hidden.
+async function provisionWithSetup(
+  root: string,
+  runID: string,
+  worktree: string,
+  setup: { readonly argv: readonly string[]; readonly cwd?: string },
+  env: Record<string, string>,
+  timeoutMs: number,
+): Promise<Provisioned> {
+  const marker = join(root, "runs", runID, "setup.json")
+  const done = await readJson<{ argv?: readonly string[] }>(marker)
+  if (done !== undefined && JSON.stringify(done.argv) === JSON.stringify(setup.argv)) return { log: "" }
+  const before = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
+  const result = await spawnAndWait(setup.argv, setup.cwd === undefined ? worktree : join(worktree, setup.cwd), env, timeoutMs)
+  const log = `$ ${setup.argv.join(" ")}\n${combineOutput(result.stdout, result.stderr)}`
+  const header = log.endsWith("\n") ? log : `${log}\n`
+  if (result.exitCode !== 0 || result.timedOut) return { log: header, failure: result }
+  await atomicJson(marker, { argv: [...setup.argv], at: Date.now() })
+  const after = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
+  if (after !== before) return { log: header, mutated: `git status was "${before}", now "${after}"` }
+  return { log: header }
+}
+
 function resolveWorktreeKey(worktree: string): Promise<string> {
   return Effect.runPromise(
     io(() => realpath(worktree)).pipe(Effect.catchIf((error) => errCode(error) === "ENOENT", () => Effect.succeed(worktree))),
@@ -265,7 +294,11 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
       const env: Record<string, string> = { PATH: systemPath() }
       if (process.env.HOME !== undefined) env.HOME = process.env.HOME
       if (process.env.BUN_INSTALL_CACHE_DIR !== undefined) env.BUN_INSTALL_CACHE_DIR = process.env.BUN_INSTALL_CACHE_DIR
-      const provisioned = await provisionDependencies(opts.worktree, env, timeoutMs)
+      const project = await readProjectChecks(opts.worktree)
+      const provisioned =
+        project?.setup === undefined
+          ? await provisionDependencies(opts.worktree, env, timeoutMs)
+          : await provisionWithSetup(root, opts.runID, opts.worktree, project.setup, env, timeoutMs)
       const headBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       const statusBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
       // Provenance for the measured tree: the committed HEAD tree plus

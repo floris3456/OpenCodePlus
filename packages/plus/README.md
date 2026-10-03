@@ -22,11 +22,11 @@ The scope trees are `Project`, `Global`, and `Defaults`, followed by the `Preset
 Defaults
   Agents                                             group:defaults:agents
     OpenCode / Special / Plus / User                 (unchanged agent subtrees)
-    Settings · Models · Compaction · Tools · Base · Skills · System · MCP
+    Settings · Models · Compaction · Tools · Base · System · MCP
                                                      group:defaults::<category>
   Teams                                              group:defaults:teams
     <team> > <member>                                (unchanged team subtrees)
-    Settings · Models · Compaction · Tools · Base · Skills · System · MCP
+    Settings · Models · Compaction · Tools · Base · System · MCP
                                                      group:defaults:/teams:<category>
 ```
 
@@ -36,7 +36,7 @@ Absent always means `agents`, so every row id and record written before the spli
 
 Each scope's `Agents` group has origin subgroups (`OpenCode`, `Plus`, `User`, with `Special` nested under `OpenCode`: `group:<level>:agents:native`, `group:<level>:agents:native:special`, `group:<level>:agents:plus`, `group:<level>:agents:user`, all always emitted even when empty). Agent rows keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the `User` subgroup.
 
-The `Teams` group (`[a: add team]`) holds team rows (`team:<level>:<team>`) and member rows (`team:<level>:<team>:<member>`). Each member expands to Settings, Models, Compaction, Tools, Base, Skills, and System with working toggle/edit/reset, whether or not the team is enabled or the host registered the agent. A team's `Special` group (`team:<level>:<team>:special`) contains only the maintenance agents `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`). Their groups persist overrides carrying `team: { level, team }`. Group ids carry the team prefix (`group:<level>:<team>/:<member>:<group>`, or `group:<level>:<team>/:special:<id>:<group>`) so they never collide with stand-alone agent groups.
+The `Teams` group (`[a: add team]`) holds team rows (`team:<level>:<team>`) and member rows (`team:<level>:<team>:<member>`). Each member expands to Settings, Models, Compaction, Tools, Base and System with working toggle/edit/reset, whether or not the team is enabled or the host registered the agent. A team's `Special` group (`team:<level>:<team>:special`) contains only the maintenance agents `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`). Their groups persist overrides carrying `team: { level, team }`. Group ids carry the team prefix (`group:<level>:<team>/:<member>:<group>`, or `group:<level>:<team>/:special:<id>:<group>`) so they never collide with stand-alone agent groups.
 
 Origin is computed server-side (`special` for `title|summary|compaction`, `native` for `build|plan|general|explore`, else `user`; file-backed is always `user`, team output upgrades to `plus`) and crosses the RPC boundary on `AgentEntry.origin`. Ancestor-backed project agents are discovered through core's upward `.opencode` walk and carry `AgentEntry.ancestor: true` to suppress deletion (`actions.remove === false`, because deletion is confined to the local project). Built-in OpenCode and Special agents project under every root with row id `agent:<level>:<id>` and are not removable.
 
@@ -54,14 +54,14 @@ Hidden is a visibility setting, not an origin: `general` and `explore` stay ordi
     <tool>
       Description              (the tool's text: one section, or a group of its sections)
       Permissions              (one group per category, each holding on/off rows; see Permissions below)
+        Skills                 (skill tool only: OpenCode / OpenCodePlus / Global / Defaults / Preset / MCP > <server> / Project [a: add skill])
+          <skill>              (on/off = whether this agent may load it; the one switch per skill)
+            <section>
         <category>
           <row>
     Other permissions        (team members only: role rows whose tool is not in this inventory)
   Base                       [a: add base prompt]
     <template>.txt           (the one matching the agent's Plus-active model is marked "active")
-      <section>
-  Skills                     OpenCode / OpenCodePlus / MCP > <server> / Project [a: add skill]
-    <skill>
       <section>
   System                     [a: add instruction]
     Role/persona             (always first)
@@ -69,7 +69,7 @@ Hidden is a visibility setting, not an origin: `general` and `explore` stay ordi
       <section>
 ```
 
-`Defaults` holds `Agents` (template agents in the same origin subgroups, then that catalogue's shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `Skills`, `System` `[a]`, `MCP` `[a: add MCP server]`) and `Teams` (built-in shipped teams with working toggles, whose team rows carry `add: "agent"` and whose member rows carry `add: "agent"` and expand to full agent subtrees — `add` creates at project or global scope — then the Teams catalogue's own six inventories under `group:defaults:/teams:<category>`). `a` on an Agents group or User subgroup adds an agent at that level; `a` on a team row or team member row adds an agent to that team (opening the Defaults agent template picker). `d` delete is offered only on rows whose `actions.remove === true`: project/global agents (`agent.delete`, excluding ancestor-backed agents), on-disk teams (`team.delete`, unlinking project/global team directories and removing their records, while built-in Defaults teams cannot be deleted), on-disk team members (`team.removeAgent`, unlinking project/global team member files or Defaults overlay files, while shipped Defaults members refuse deletion), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), project instruction files (`instruction.delete`), model candidates (`removeModelRecord` or, for an inherited or upstream row, a local tombstone), and user-created permission rules (`rule.remove`); rows without remove actions (such as tool rows, built-in agents, and ancestor-backed agents) do not bind `d` or offer it in footer hints.
+`Defaults` holds `Agents` (template agents in the same origin subgroups, then that catalogue's shared inventories: `Models` `[a]`, `Tools`, `Base` `[a]`, `System` `[a]`, `MCP` `[a: add MCP server]`) and `Teams` (built-in shipped teams with working toggles, whose team rows carry `add: "agent"` and whose member rows carry `add: "agent"` and expand to full agent subtrees — `add` creates at project or global scope — then the Teams catalogue's own six inventories under `group:defaults:/teams:<category>`). `a` on an Agents group or User subgroup adds an agent at that level; `a` on a team row or team member row adds an agent to that team (opening the Defaults agent template picker). `d` delete is offered only on rows whose `actions.remove === true`: project/global agents (`agent.delete`, excluding ancestor-backed agents), on-disk teams (`team.delete`, unlinking project/global team directories and removing their records, while built-in Defaults teams cannot be deleted), on-disk team members (`team.removeAgent`, unlinking project/global team member files or Defaults overlay files, while shipped Defaults members refuse deletion), shared MCP servers (`mcp.remove`), project-owned skills (`skill.delete`), user base templates (`base.delete`), project instruction files (`instruction.delete`), model candidates (`removeModelRecord` or, for an inherited or upstream row, a local tombstone), and user-created permission rules (`rule.remove`); rows without remove actions (such as tool rows, built-in agents, and ancestor-backed agents) do not bind `d` or offer it in footer hints.
 
 Code Mode tool rows support toggle, edit, split, reset and a new **pin** (`p` toggles it, the `pinned` badge reads the resolved pin); pinning keeps a tool's full listing inline in the catalog even when the inline budget is tight. The synthetic `execute` row is an OpenCode toggle-only row whose only child is its Permissions (Limits → Tool calls per run). Code Mode and MCP tools list Permissions like any tool, but you cannot add your own rules to them: their core deny is whole-tool (Code Mode) or their resource is always `"*"` (MCP), so a rule could never match.
 
@@ -114,7 +114,7 @@ The kinds of row:
 
 Rows come from the per-tool catalog (every tool's categories), the curated rules, rules mined from instruction text (listed apart, under `Mentioned in instructions`), your own rules, and a team member's own rows (see **Team rules are rows**). `edit`'s `Protected files` and `Where` also list under `write` and `patch`, which change files through the same permission; it is one row and one record whichever tool you change it under, and it keeps edit's label there. `SPEC.md` (Permission rules) lists every tool's categories.
 
-`a` on an OpenCode or OpenCodePlus tool row that is neither Code Mode nor `execute` offers Section or Permission rule (other rows keep their direct add); a new rule lists in its tool's category (`Commands`, `Files`, `Sites`, `Search patterns`, `Agents`, `Skills`), else under `Rules`, and scope and tool derive from the tool or rule row address. `enter` on a rule row opens the rule editor (label → patterns → keywords → message, each prefilled; blank keywords derive server-side via `keywordsForPattern`, blank message clears it); saving upserts a `RuleRecord` by tool+id through `rule.update`, so editing a curated, mined or catalog row materialises a custom override of the same identity (a catalog row keeps what it is — its category, how it is enforced, its Everything else or allow role — and takes your label, patterns, keywords and message): a first write lands in the addressed row's catalogue (a Teams row makes a Teams rule; an agent-qualified row stays keyless), while a matched record keeps its stored catalogue and team, so editing a Teams rule's message never moves it into the Agents catalogue. Curated-identity policy: a stored `RuleRecord` whose `tool` + `id` matches a curated rule is treated as an override of that curated rule. This is accepted reserved-identity semantics, not an unconditional compatibility guarantee. Turning a rule OFF installs one core deny per pattern (`{ action, resource, effect: "deny" }`) for that agent and scrubs lines matching its keywords from tool descriptions, system parts, and catalog descriptions (catalog rows ship no keywords, so turning one off scrubs nothing; saving one in the rule editor derives keywords like any rule's). Every Plus rule lands in one order — a team role's defaults, then what the role lets through, then the role's refusals, and last every row that is off (even one whose pattern is `*`) — and core evaluates last-match-wins, so an off row always refuses what it matches: a team role's `allow shell *` can no longer undo a `git push` row that is off, as it could before. Rows that are not core rules (tool-input checks, limits, approvals, environment, team rows) are applied by Plus's tool hooks instead; their `enforced by` line says which. Every curated rule ships a short one-line refusal message, and a user `RuleRecord` may carry its own `message`; the deny installs it as core's `Permission.Rule.message`, so the model reads that text instead of `Permission denied: <action>`. A user rule's message wins for a custom row, a curated or catalog row falls back to the shipped one, and a mined row with no message keeps the generic refusal. `show` on a perm row returns the message and the TUI inspector prints it as `message` under `provenance`. A state-only write (`set` with `state` alone) resubmits the whole record set through the tool serializer, and every TUI write resubmits it through `toRpcRecords` (`tui/instructions/state.ts`); both preserve every rule's `message` and the `catalogue` of shared Defaults records, so toggling one row leaves unrelated rules and their catalogue identity intact. Patterns are CORE RESOURCE WILDCARDS, not regex (`*` spans any run, `?` one character); for shell the resource is the parsed command text, so `git *` also matches a bare `git`. The action comes from the per-rule `permAction` carried on the perm item by discovery (the tool's own `options.permission`), falling back to the tool id map (`edit`/`write`/`patch` share core's `edit` action, everything else uses its own id). `patch` gets no operation-scoped core rules: core's permission resource for patch is the file path only (core/src/tool/plugin/patch.ts asserts `action: "edit"`), and the hunk type never reaches the permission layer. Carrying it as an extra resource or an extra action both change decisions for existing configurations that never enabled Plus, and a targeted opt-in cannot be defined reliably against the wildcard matcher. The `edit`-action path rules still apply to patch, and patch's `Operations` rows (add, delete, move) read the patch text at the tool hook instead. Scrub keywords come only from the single `keywordsForPattern` (head plus subcommands, stopping at wildcards/flags, so `git push *` scrubs `git push` lines, not every `git` line). Generic-path mining only keeps a token that is a glob containing `/` or an extension, or a path whose last segment carries a file extension, stripping trailing sentence punctuation and source-location references. Mined candidates and catalog rows are view-time only: never persisted and never part of the publish fingerprint (only a stored state, a number or a `RuleRecord` enters it via `records`).
+`a` on an OpenCode or OpenCodePlus tool row that is neither Code Mode nor `execute` offers Section or Permission rule (other rows keep their direct add); a new rule lists in its tool's category (`Commands`, `Files`, `Sites`, `Search patterns`, `Agents`), else under `Rules`, and scope and tool derive from the tool or rule row address. `enter` on a rule row opens the rule editor (label → patterns → keywords → message, each prefilled; blank keywords derive server-side via `keywordsForPattern`, blank message clears it); saving upserts a `RuleRecord` by tool+id through `rule.update`, so editing a curated, mined or catalog row materialises a custom override of the same identity (a catalog row keeps what it is — its category, how it is enforced, its Everything else or allow role — and takes your label, patterns, keywords and message): a first write lands in the addressed row's catalogue (a Teams row makes a Teams rule; an agent-qualified row stays keyless), while a matched record keeps its stored catalogue and team, so editing a Teams rule's message never moves it into the Agents catalogue. Curated-identity policy: a stored `RuleRecord` whose `tool` + `id` matches a curated rule is treated as an override of that curated rule. This is accepted reserved-identity semantics, not an unconditional compatibility guarantee. Turning a rule OFF installs one core deny per pattern (`{ action, resource, effect: "deny" }`) for that agent and scrubs lines matching its keywords from tool descriptions, system parts, and catalog descriptions (catalog rows ship no keywords, so turning one off scrubs nothing; saving one in the rule editor derives keywords like any rule's). Every Plus rule lands in one order — a team role's defaults, then what the role lets through, then the role's refusals, and last every row that is off (even one whose pattern is `*`) — and core evaluates last-match-wins, so an off row always refuses what it matches: a team role's `allow shell *` can no longer undo a `git push` row that is off, as it could before. Rows that are not core rules (tool-input checks, limits, approvals, environment, team rows) are applied by Plus's tool hooks instead; their `enforced by` line says which. Every curated rule ships a short one-line refusal message, and a user `RuleRecord` may carry its own `message`; the deny installs it as core's `Permission.Rule.message`, so the model reads that text instead of `Permission denied: <action>`. A user rule's message wins for a custom row, a curated or catalog row falls back to the shipped one, and a mined row with no message keeps the generic refusal. `show` on a perm row returns the message and the TUI inspector prints it as `message` under `provenance`. A state-only write (`set` with `state` alone) resubmits the whole record set through the tool serializer, and every TUI write resubmits it through `toRpcRecords` (`tui/instructions/state.ts`); both preserve every rule's `message` and the `catalogue` of shared Defaults records, so toggling one row leaves unrelated rules and their catalogue identity intact. Patterns are CORE RESOURCE WILDCARDS, not regex (`*` spans any run, `?` one character); for shell the resource is the parsed command text, so `git *` also matches a bare `git`. The action comes from the per-rule `permAction` carried on the perm item by discovery (the tool's own `options.permission`), falling back to the tool id map (`edit`/`write`/`patch` share core's `edit` action, everything else uses its own id). `patch` gets no operation-scoped core rules: core's permission resource for patch is the file path only (core/src/tool/plugin/patch.ts asserts `action: "edit"`), and the hunk type never reaches the permission layer. Carrying it as an extra resource or an extra action both change decisions for existing configurations that never enabled Plus, and a targeted opt-in cannot be defined reliably against the wildcard matcher. The `edit`-action path rules still apply to patch, and patch's `Operations` rows (add, delete, move) read the patch text at the tool hook instead. Scrub keywords come only from the single `keywordsForPattern` (head plus subcommands, stopping at wildcards/flags, so `git push *` scrubs `git push` lines, not every `git` line). Generic-path mining only keeps a token that is a glob containing `/` or an extension, or a path whose last segment carries a file extension, stripping trailing sentence punctuation and source-location references. Mined candidates and catalog rows are view-time only: never persisted and never part of the publish fingerprint (only a stored state, a number or a `RuleRecord` enters it via `records`).
 
 A host built-in agent (`build`, `plan`, `explore`, …) has Defaults scope but shows its rows under Project, Global and Defaults alike, and turning a rule off writes at the row you pressed — so the saved record carries that row's level. Every row of such an agent — tools, skills, base, system, permissions — and its active model therefore resolve at runtime the way its Project row shows them, `project → global → preset link → Defaults entries → defaults → shared`, rather than from Defaults alone: a rule turned off from the Project view installs a real host deny and its refusal message, and a Defaults entry `*` that turns shell off shows off and removes shell alike. A host agent listed under Defaults only resolves at Defaults, and an agent launched as a team member keeps its own chain and the Teams catalogue.
 
@@ -211,12 +211,13 @@ What the Basic member presets set (on = permitted):
 | paths outside the checkout (read/edit Where, `external_directory`) | on | on | off | off | off | on |
 | `subagent` tool | off | off | off | off | off | on |
 | read or grep secret files ¹ | off | off | off | off | off | on |
-| Tavily search and extract tools | on | on | off | off | off | on |
-| edit files | plan files only ² | yes | yes | yes | yes | yes |
+| Tavily search and extract tools | on | off | off | off | off | on |
+| edit files | plan files only ² | plan files only ² | yes | no | no | yes |
+| delegates to | orchestrator | orchestrator, implementer, reviewer, scout | — | — | — | every other member |
 | asks you before each delegation (Approval) | yes | no | no | no | no | no |
 | start a team run from a chat | yes | yes | no | no | no | yes |
 | delegate from a delegated run | no | yes | no | no | no | yes |
-| `status`/`wait` beyond its own run and children | on | on | off | off | off | on |
+| `status` beyond its own run and children | on | on | off | off | off | on |
 | `list` beyond its own run and children | on | off | off | off | off | on |
 | `done` needs a committed worktree | no | no | yes | no | no | no |
 | briefs it accepts | plan files only | need a reason | commits need scope.paths | no corrections by followup | | |
@@ -225,13 +226,125 @@ What the Basic member presets set (on = permitted):
 passwords, frozen team run configs and session databases.
 ² edit → Files it may change: `docs/plans/` and `docs/handoffs/`.
 
-Team tools are tool rows: a planner lacks `checkpoint`, `integrate`,
-`set_checks` and `check`; an orchestrator lacks `checkpoint`; an implementer
-keeps only `checkpoint`, `finish`, `status`, `diff`, `get_context` and
-`check`; reviewers and scouts only `finish`, `status`, `diff` and
-`get_context`; a build seat has all fourteen. `followup`, `stop`, `supersede`
-and `diff` never reach past a member's own run and direct children until you
-turn its `Runs` rows on.
+Team tools are tool rows: a planner lacks `set_checks` and `check` (it keeps
+`checkpoint` to commit its plan file when delegated, and `integrate` to land in
+your checkout what the orchestrator it delegated to reports done); an
+orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
+`finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`
+and `get_context`; a scout only `finish` and `get_context`; a build seat has
+every team tool but `finish` (nobody delegates to it). A chat run (no Brief)
+checkpoints what its agent may edit: its edit rows (Where, Files it may
+change, Protected files) decide, never protected state such as `.git` or
+`.opencodeplus`; so a build seat commits anywhere in its checkout and a
+planner in the chat only its plan files. Workers have no `status`: they address
+only their own run, which `get_context` describes. `followup`, `stop`,
+`supersede` and `diff` never reach past a member's own run and direct children
+until you turn its `Runs` rows on.
+
+**Instructions that follow capabilities.** A section of a role or instruction
+text can depend on rows, on the first line under its heading:
+
+```markdown
+## Integration checks
+<!-- requires: tool:team_set_checks -->
+```
+
+Each id is a row's item id (`tool:…`, `skill:…`, `mcp:…`, `perm:<tool>:<rule>`);
+`!id` means the row must be off. That line is the section's default. A level
+can set its own condition without touching the text ("shown when": TUI `w`
+on the row, or `instructions.set({ id, requires: [...] })`; `[]` = always,
+`null` drops it): it is stored as `requires` on the customization record,
+resolves down the chain like on/off (nearest level wins), and works on whole
+system rows too (not Role/persona as a whole). Every id must name an
+existing row; a typo is refused with the nearest ids. The inspector shows
+"shown when … · its text / set here / from <level>". Each agent receives the section (and its
+subsections) only while every named row resolves that way for it, at
+whatever level that was decided; a row the agent does not have meets neither
+form. Marker lines never reach the model (`instructions/requires.ts`, applied
+in `apply.ts` to role text and instruction files, and in the `assembled`
+readback). Dependencies are explicit, never inferred from a mention: the
+tree flags a section that names a tool or skill the owner has off without
+such a line (`⚠`, inspector "mentions"), and its inspector says when a gated
+section is shown.
+
+Instructions that belong to a tool, skill or rule rather than a role live in
+the System row **Tools and rules** (`system:tools-and-rules`,
+`instructions/guidance.ts`), one section per row: code search, documentation
+search, pilotty, questions, subagents, and two restrictions (no shell
+commits, no push). Turning such a row on for an agent adds its section;
+off removes it; the row is planned for an agent only when a section applies.
+A tool or skill row's inspector (and `show`) lists its sections. The Basic
+role texts carry markers on sections that depend on one tool (Delegating on
+`team_delegate`, Reporting on `team_finish`, the orchestrator's Integration
+checks, the implementer's Checks and Commits, the planner's Questions, the
+build seat's Subagents), and a test keeps every Basic role free of uncovered
+mentions under its preset.
+
+**Project checks.** Checks run unattended and without approval, so what runs
+must be a command a person put in the repository. A project names its checks
+in `.opencodeplus/checks.json` in the **main checkout** (read through git's
+common directory, so a run's worktree can never add one; `.opencodeplus` is
+protected state no run may checkpoint):
+
+```json
+{ "version": 1,
+  "setup": { "argv": ["uv", "sync", "--frozen"] },
+  "checks": {
+    "unit": { "argv": ["uv", "run", "pytest"], "description": "all tests" },
+    "test-file": { "argv": ["uv", "run", "pytest", "{path}"], "description": "one file" } } }
+```
+
+A delegator gives a check by name (`{id:"unit"}`), with `path` when the
+check takes `{path}` (`{id:"auth", use:"test-file", path:"tests/test_auth.py"}`;
+the path must be repository-relative, no globs, no leading `-`). The run stores
+and runs the resolved command. `bun test FILE` / `bun run SCRIPT` as `argv`
+keep working for Bun projects. Anything else is refused with `E_CHECKS`
+naming the project's checks. Every request a team member makes lists the
+project's checks on the `checks` field of `team_delegate` and
+`team_set_checks` (and `team_get_context` reports them as `projectChecks`), so
+the first call names a real check. `setup` prepares each fresh worktree once,
+before its first check, in place of the built-in Bun install.
+
+The TUI command **Project checks** (`/checks`) suggests entries from what the
+project's manifests already name (package.json scripts with the package
+manager its lockfile shows, Makefile/justfile targets, pytest with uv or
+poetry, cargo, go) plus a matching setup; you pick and save. Nothing is
+written before you save.
+
+**One switch per skill.** Skills are listed in one place: Tools › `skill` ›
+Permissions › Skills, grouped by origin, each row the skill itself (on/off is
+whether this agent may load it, enforced as a core `skill` deny for exactly
+that agent, which also drops it from `<available_skills>`; it opens into the
+skill's text and sections; `a` adds a skill with the Skills group's scope).
+There is no Skills category beside Tools and no per-skill `perm:skill:<id>`
+row any more: they were a second switch that could disagree with the first.
+A store written before this moves each stored per-skill permission state
+onto the skill at the same address on its first load (`store.ts`
+`migrateSkillPermissions`, logged once as `migrate.skills`); where both were
+stored and disagree, off wins. The skill tool's own Approval row and user
+rules on the skill tool stay permissions.
+
+**Where a Basic member's instructions live.** Each kind of guidance has one
+home, so nothing is said twice or contradicts itself:
+
+- *Role/persona* (`builtin-teams.ts`): who does what and when, never what a
+  row decides. The body is markdown in three parts — `# Team member` (every
+  member), `# Delegating` (members who delegate: Briefs, Integration checks)
+  and `# <Role>` — each split into `##` sections, so the Instructions tree
+  shows one section row per part that a level can turn off or rewrite alone.
+- *Tool descriptions*: what a tool does and when to call it; the first line
+  stands alone, because a Code Mode catalog shows only that line. What a row
+  decides is added per request from the rows themselves: `team_delegate`
+  lists the members you may delegate to and what each one's "Briefs it
+  accepts" rows require (in the words of their refusals), `team_finish` the
+  caller's Requirements for done. Change a row and the description follows;
+  no text has to.
+- *Input schema field descriptions* (`teams/schema.ts`): how each value must
+  look — check commands, the HEAD `checkpoint` and `integrate` expect, commit
+  message types, summary limits, what each report status means — so a call
+  is right the first time instead of learning from a refusal. A test keeps
+  every field of every team tool described.
+- *The rendered Brief and each settlement*: the facts of one run (below).
 
 "Briefs it accepts" and "Brief limits" (under `team_get_context`) are read for
 the member a brief **names**, not for the one delegating: A reason, A check,
@@ -256,19 +369,22 @@ Status reports `attemptsUsed`, not a count of model calls. `turnsUsed` remains
 a compatibility alias for attempts, and the existing `turns` budget likewise
 counts attempts. `tokensUsed` is the public Session's cumulative total (input,
 output, reasoning and cache), or `null` if unavailable, not per-attempt usage.
-Status and wait use the same totals for advisory budgets; no hard interrupt is
+Status uses these totals for advisory budgets; no hard interrupt is
 implied. Replayed admissions label the original `receipt` and expose a fresh
 `current` observation without submitting the work again.
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
-Permissions → Delegate to`. It holds one row per other member of the same
-team, named by its id and shipped off, plus `Members of other teams` (off). A
-member created from the shipped Basic preset has its teammate rows on by role
-(planner → orchestrator; orchestrator → implementer, reviewer, scout); a build
-seat has every teammate's row on. Space turns a row on
-or off. The member's `team_delegate` then offers exactly the teammates that
-are on as its `role`, and a refused delegation (`E_ROLE`) names who is open.
+Permissions → Delegate to`. It holds one row per member of the same team, its
+own included (another run of itself), named by its id and shipped off, plus
+`Members of other teams` (off). A member created from the shipped Basic preset
+has its rows on by role (planner → orchestrator; orchestrator → orchestrator,
+implementer, reviewer, scout); a build seat has every other teammate's row on.
+A member's own row follows its preset whatever the member is called: on for an
+orchestrator, off for every other Basic preset. Delegation depth (3, a
+`team_delegate` Limits row) bounds nested orchestrators. Space turns a row on
+or off. The member's `team_delegate` then offers exactly the members that are
+on as its `role`, and a refused delegation (`E_ROLE`) names who is open.
 Like any row, the change can be made at Project, Global or Defaults level.
 
 A rule may carry a **message**, and a refused agent reads it instead of the
@@ -293,10 +409,11 @@ member of an enabled team gets a `team.*` wildcard deny, so it sees no
 
 ## Team runs
 
-Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds fourteen tools that all work —
+Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds thirteen tools that all work —
 `delegate`, `finish`, `followup`, `integrate`, `checkpoint`, `set_checks`,
-`supersede`, `stop`, `status`, `wait`, `get_context`, `diff`, `list` and
-`check`. Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
+`supersede`, `stop`, `status`, `get_context`, `diff`, `list` and
+`check`. There is no `wait`: a parent ends its turn and each child's
+settlement wakes it (below). Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
 read-only `git diff` of your own run or one of your children (further only
 when your `Runs` rows on `team_diff` allow it), truncated to `maxBytes`
 (default 200000) with `truncated: true`.
@@ -322,37 +439,61 @@ satisfied, so the resumed turn settles `idle` instead of stopping again; a stop 
 has not stopped yet is still honoured at settlement. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
 
 - A child whose model turn ends is `idle` whether or not it called
-  `team_finish`; its attempt is `no_report` when it did not.
+  `team_finish`. Without a report, its attempt is `no_report` — unless the run
+  still has an open child (one that holds a slot: `starting`, `working`,
+  `blocked_input`, or itself idle and waiting) or an undelivered settlement
+  from one. Then the run is *waiting*: the attempt stays open, nothing is
+  announced to its parent, `team_status` lists the open children in
+  `waitingOn`, and the next child settlement is delivered into the same
+  attempt. A run therefore ends an attempt without a report only when it has
+  no children left to hear from.
 - `stop` and `supersede` are the only ways to halt a child. `team_stop` on a
   working child asks it to stop after its turn (setting `stopRequested` and
   returning `state: "stopping"`), completed by `onSessionIdle`; `team_stop` on
-  an idle child stops it now; both are idempotent. Resuming a stopped or dead
+  an idle child stops it now; both are idempotent. Stopping a waiting run ends
+  its open attempt `interrupted`; its parent is told once, unless the parent is
+  the run that stopped it. Resuming a stopped or dead
   run through its session consumes the retained `stopRequested`, so the first
   successful turn after the resume stays `idle` instead of stopping again.
-- `team_wait until:"idle"` and `team_followup delivery:"now"` work
-  with no tool call from the child.
+- `team_followup delivery:"now"` works with no tool call from the child.
 - `team_get_context` on a root run returns `brief: null` rather than failing
   `E_NO_BRIEF`. The `conventions` field has been removed.
 - `team_followup` with the default `delivery:"queue"` against a working child
   is delivered when that child next goes idle, as a new attempt.
   `delivery:"now"` against a working child refuses with `E_BUSY` and
   `accepted: {"delivery":"queue"}`.
-- A settled child puts one `child.settled` item in its parent's inbox naming
-  the run, the attempt, the report status and the report path. It is sent once
+- A settled child puts one `child.settled` item in its parent's inbox: the
+  run, the attempt and the status, then the whole report (summary, commits,
+  checks, uncommitted files, needs, concerns, deferred, findings) and one
+  `next:` line for what that outcome calls for (land a commit, weigh concerns,
+  answer needs, re-scope a rejection, inspect a run that ended without a
+  report). The parent needs no call to read the report file. It is sent once
   (`notified` on the attempt). An idle parent is prompted with it now; a
   working parent gets it through its own idle handoff.
-- `team_wait` acknowledges the outcomes of owned children unless `ack:false`,
-  and names them in `acknowledged`. `team_status` reports the same receipt as
-  `acked: { attempt, at }` and never acknowledges anything itself. `team_wait`
-  releases its internal race timers as soon as it returns so a caller process is
-  never held open past its result.
+- The Brief a child receives (`brief.ts`) has no empty sections; says what
+  done means for its deliverable; marks a read-only task as such; states the
+  budget as a guide, not a limit (tokens and time; Plus never stops a run over
+  budget); and attaches a `briefFile` inline up to 40 KB — the only way an
+  uncommitted file reaches a child, whose worktree starts at the parent's last
+  commit. A `findings` Brief gains a Review section: the exact `team_diff`
+  call that shows the change (from the delegating run's base to the
+  reviewer's own start) and the delegating run's check results there, since a
+  reviewer can neither run checks nor read another run.
+- `team_integrate` that does not land returns the real state: `conflict`
+  (with `conflictFiles`) or `red` (with `redChecks`), the `reworkTask` id a
+  fresh child's Brief claims in `task`, and a `next` line; `paused` when the
+  queue waits for a clean parent.
+- `team_get_context` reports the worktree's live `head`, the value
+  `checkpoint` and `integrate` compare against.
+- A `finish` finding's severity is `error`, `warning` or `note` (a located
+  fact, how a scout answers).
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
   2000 ms) carries dead-run reconciliation and worktree garbage collection (`gc`),
   forked on the plugin scope so it stops with the plugin.
 - Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
   run record, reports and receipts intact while marking `worktree: "removed"`.
 - Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission at every depth: array elements (`checks: [{ id, argv, cwd: null }]`) and fields behind optional/default wrappers (`context: { interfaces: null }`, `followup({ budget: { turns: null } })`) included; `null` on required fields strictly produces a schema validation error.
-- In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds. The bounds themselves are the member's `team_delegate` → `Limits` rows, and the refusal says to wait for a child (or run) to settle with `tools.team.wait`.
+- In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds. The bounds themselves are the member's `team_delegate` → `Limits` rows, and the refusal says to end the turn and delegate after a settling child wakes the caller.
 - Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
   Superseded worktrees are removed with `--force`; dirty stopped worktrees are skipped and
@@ -559,4 +700,4 @@ Plus ships a built-in local MCP server providing code and web search tools (`src
 - **Keys & authentication**: Keys are read at call time from key files under the Plus data directory (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, file mode `0600` strictly enforced, value trimmed), falling back to `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment. No key is ever written to a config file, a row, a log, a report, or a commit. If a key file has insecure permissions (mode not `0600`), the tool call returns an error. A missing key returns a tool error result `{ error: "<KEY> is not set in the host environment" }` with `isError: true`.
   For `bin/opencodeplus`, place the key files in `<XDG_DATA_HOME>/opencode/opencodeplus/search/` (e.g. `$HOME/.local/share/opencode/opencodeplus/search/exa.key` and `tavily.key`, or `run/plus/data/opencode/opencodeplus/search/{exa,tavily}.key` if `XDG_DATA_HOME` is set to `run/plus/data`) and ensure permissions are restricted (`chmod 600 <file>`).
 - **Query & filtering**: `instructions.list where:"server:<name>"` (and TUI filter `server:<name>`) matches both the `mcp:<name>` server configuration row and all tool rows exposed by that server (for example, `instructions.list where:"server:search"` returns the `mcp:search` server row alongside its tool rows).
-- **Team prompts & policy**: Built-in prompts name `search_exa_code_search` in the shared team body and `search_tavily_search` / `search_tavily_extract` in the planner body. The `perm:search:team-tavily` policy row disables Tavily search for implementer, reviewer, and scout roles while keeping code search enabled; it lists under `search_tavily_search` → Permissions → `Access`, beside the search tools' own rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
+- **Team prompts & policy**: The Tools and rules row names `search_exa_code_search`, `search_tavily_search` and `search_tavily_extract`, each in a section that depends on that tool, so an agent reads the line exactly while it has the tool. The `perm:search:team-tavily` policy row disables Tavily search for implementer, reviewer, and scout roles while keeping code search enabled; it lists under `search_tavily_search` → Permissions → `Access`, beside the search tools' own rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
