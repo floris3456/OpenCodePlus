@@ -53,10 +53,10 @@ export interface PlusMemberPreset {
   readonly description: string
   readonly mode: string
   /**
-   * Everything the member preset sets besides role, mode and description: the
-   * rows the former Plus agent preset of the same name set, merged with the
-   * member's in-team "Delegate to" rows. A member preset is self-contained and
-   * links to nothing.
+   * Everything the member preset sets besides role, mode, description and its
+   * "Delegate to" rows (answered from what each teammate is linked to): the
+   * rows the former Plus agent preset of the same name set. A member preset is
+   * self-contained and links to nothing.
    */
   readonly overrides: PresetOverrides
   /** Item id prefixes the member preset ships off (tools a namespace may add to later). */
@@ -346,42 +346,24 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   },
 }
 
-// The build seat "may delegate to every member": every "Delegate to" row of
-// its team ships on, whoever the teammate is. Its own row and members of other
-// teams stay off.
-// The Basic member preset names its teammates explicitly; this stays as the
-// fallback for a build seat in any other team, exactly as the retired agent
-// preset behaved.
-function buildSeatDelegates(team: string, member: string, item: string): ShippedValue | undefined {
-  if (team !== basicTeamId || member !== "build-seat") return undefined
-  if (!item.startsWith("perm:team_delegate:to.") || item === "perm:team_delegate:to.other-teams") return undefined
-  return { state: "on" }
-}
-
 // Who a Basic member delegates to lives with the bodies that describe it
-// (builtin-teams.ts basicDelegation); the member presets turn it into their
-// members' "Delegate to" rows below.
+// (builtin-teams.ts basicDelegation), by member preset. A "Delegate to" row
+// names a teammate, so the member preset answers it from what that teammate
+// is linked to (delegateShipped), never from the teammate's id.
 const delegation: Readonly<Partial<Record<BasicMemberId, readonly BasicMemberId[]>>> = basicDelegation
+
+const delegateRow = "perm:team_delegate:to."
 
 /**
  * Per team preset, per member: shipped answers of the member preset besides
- * its role body — its former agent preset's rows merged with its "Delegate to"
- * rows for the members it delegates to (by member id, its own included). A
- * member preset is self-contained: what it does not set falls through to the
- * item's own value, never to a hidden agent preset.
+ * its role body and its "Delegate to" rows — the rows its former agent preset
+ * set. A member preset is self-contained: what it does not set falls through
+ * to the item's own value, never to a hidden agent preset.
  */
 export const plusMemberOverrides: Readonly<Record<string, Readonly<Record<string, PresetOverrides>>>> = Object.fromEntries(
   builtinTeams.map((team) => [
     team.name,
-    Object.fromEntries(
-      team.members.map((member): [string, PresetOverrides] => {
-        const targets = delegation[member.id as BasicMemberId] ?? []
-        const delegates = team.members
-          .filter((peer) => (targets as readonly string[]).includes(peer.id))
-          .map((peer) => `perm:team_delegate:to.${peer.id}`)
-        return [member.id, { ...(memberBaseOverrides[member.id as BasicMemberId] ?? {}), ...rows(on, delegates) }]
-      }),
-    ),
+    Object.fromEntries(team.members.map((member): [string, PresetOverrides] => [member.id, memberBaseOverrides[member.id as BasicMemberId] ?? {}])),
   ]),
 )
 
@@ -484,9 +466,9 @@ export function presetCatalog(input: { readonly items: readonly Item[]; readonly
   )
   return {
     presets: presetListing(input.presets).map((entry) => ({ ref: entry.ref, origin: entry.origin })),
-    shipped: (ref, item, section, upstream, agent) => {
+    shipped: (ref, item, section, upstream, agent, linked) => {
       if (section !== null || ref.kind === "team") return undefined
-      if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream, agent)
+      if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream, agent, linked)
       if (isControl(item) && (nativePresetIds as readonly string[]).includes(ref.id))
         return valueOf(input.items.find((entry) => entry.id === item && entry.agents?.includes(ref.id)))
       if ((nativePresetIds as readonly string[]).includes(ref.id))
@@ -692,6 +674,7 @@ function memberShipped(
   item: string,
   upstream: Pick<Item, "text" | "enabled" | "pinned"> | undefined,
   agent?: string | null,
+  linked?: (agent: string) => readonly PresetRef[],
 ): ShippedValue | undefined {
   const member = plusTeamPresets.find((entry) => entry.id === team)?.members.find((entry) => entry.id === id)
   if (member === undefined) return undefined
@@ -699,18 +682,34 @@ function memberShipped(
   if (item === "setting:mode") return { text: member.mode }
   if (item === "setting:description") return { text: member.description }
   if (isControl(item)) return undefined
-  // An agent's own "Delegate to" row (another run of itself) answers as the
-  // preset's row for its own member, whatever the agent is called: on for an
-  // orchestrator, off for everyone else, the build seat's fallback included.
-  const own = agent === undefined || agent === null ? undefined : `perm:team_delegate:to.${agent}`
   const override =
-    (item === own ? (member.overrides[`perm:team_delegate:to.${id}`] ?? off) : undefined) ??
+    (item.startsWith(delegateRow) && item !== `${delegateRow}other-teams`
+      ? delegateShipped(team, member.id, item.slice(delegateRow.length), agent, linked)
+      : undefined) ??
     member.overrides[item] ??
-    (member.offPrefixes.some((prefix) => item.startsWith(prefix)) ? off : undefined) ??
-    buildSeatDelegates(team, id, item)
+    (member.offPrefixes.some((prefix) => item.startsWith(prefix)) ? off : undefined)
   const shipped = valueOf(upstream)
   if (override === undefined) return shipped
   return { ...shipped, ...override }
+}
+
+// "Delegate to <teammate>": a build seat opens every teammate but itself; any
+// other member opens a teammate linked (directly, through a user preset or
+// through a Defaults entry) to a member preset of its own team preset that it
+// delegates to. Its own row is another run of itself, answered the same way.
+// Ids decide nothing: a teammate called "implementer" that is linked to the
+// reviewer preset is a reviewer.
+function delegateShipped(
+  team: string,
+  member: BasicMemberId,
+  teammate: string,
+  agent: string | null | undefined,
+  linked: ((agent: string) => readonly PresetRef[]) | undefined,
+): ShippedValue {
+  if (member === "build-seat") return teammate === agent ? off : on
+  const targets: readonly string[] = delegation[member] ?? []
+  if (targets.length === 0 || linked === undefined) return off
+  return linked(teammate).some((ref) => ref.kind === "member" && ref.team === team && targets.includes(ref.id)) ? on : off
 }
 
 function valueOf(item: Pick<Item, "text" | "enabled" | "pinned"> | undefined): ShippedValue | undefined {

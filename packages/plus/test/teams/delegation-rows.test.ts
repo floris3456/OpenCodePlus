@@ -108,6 +108,57 @@ test("an agent's own Delegate to row follows its member preset, whatever the age
   expect(resolvedStates(resolved, "acme-build")["perm:team_delegate:to.acme-orchestrator"]).toBe("on")
 })
 
+// The roster a user builds from the Basic presets under names of their own:
+// what each teammate is linked to opens its row, not what it is called.
+test("Delegate to rows open by the teammate's link when every member is renamed", () => {
+  const team = "Basic"
+  const roster = [
+    linked("Build", "build-seat", team),
+    linked("Planner", "planner", team),
+    linked("Orchestrator", "orchestrator", team),
+    linked("Flash-Implementer", "implementer", team),
+    linked("Flash-B-Implementer", "implementer", team),
+    linked("Heavy-Implementer", "implementer", team),
+    linked("Reviewer", "reviewer", team),
+    // Called like a preset, linked to another: the link decides.
+    linked("implementer", "reviewer", team),
+  ]
+  const resolved = presetInput({ members: roster })
+  const open = (member: string) =>
+    Object.entries(resolvedStates(resolved, member))
+      .filter(([id, state]) => id.startsWith("perm:team_delegate:to.") && state === "on")
+      .map(([id]) => id.slice("perm:team_delegate:to.".length))
+      .toSorted()
+  expect(open("Orchestrator")).toEqual(["Flash-B-Implementer", "Flash-Implementer", "Heavy-Implementer", "Orchestrator", "Reviewer", "implementer"].toSorted())
+  expect(open("Planner")).toEqual(["Orchestrator"])
+  expect(open("Build")).toEqual(roster.map((member) => member.id).filter((id) => id !== "Build").toSorted())
+  for (const worker of ["Flash-Implementer", "Heavy-Implementer", "Reviewer", "implementer"]) expect([worker, open(worker)]).toEqual([worker, []])
+})
+
+test("a teammate linked through a Teams Defaults entry is opened by that entry's preset", () => {
+  const team = "Basic"
+  const roster: TeamMember[] = [linked("Lead", "orchestrator", team), { id: "Coder-1", team }]
+  const base = presetInput({ members: roster })
+  const entryScopes = {
+    ...base.scopes,
+    entries: [{ type: "entry" as const, level: "defaults" as const, catalogue: "teams" as const, team: "*", name: "coder-*", updated: "" }],
+    links: [
+      ...(base.scopes.links ?? []),
+      {
+        type: "link" as const,
+        level: "defaults" as const,
+        agent: "coder-*",
+        team: { level: "defaults" as const, team: "*" },
+        catalogue: "teams" as const,
+        preset: { kind: "member" as const, team: "basic", id: "implementer" },
+        updated: "",
+      },
+    ],
+  }
+  expect(resolvedStates(base, "Lead")["perm:team_delegate:to.Coder-1"]).toBe("off")
+  expect(resolvedStates({ ...base, scopes: entryScopes }, "Lead")["perm:team_delegate:to.Coder-1"]).toBe("on")
+})
+
 test("Runs rows follow the preset: coordinators read status everywhere, planners and build seats also list", () => {
   const reach = (member: string): Record<string, string | undefined> =>
     Object.fromEntries(reachTools.flatMap((tool) => ["descendants", "others"].map((relation) => {
@@ -272,6 +323,8 @@ function recordSession(): SessionDomain {
   // The handlers read child.id and pass plain inputs through, so minimal
   // shapes behind one boundary cast are enough.
   return {
+    // A followup needs the run's Session to exist (availability.ts).
+    get: (input: { sessionID: string }) => Effect.succeed({ id: Session.ID.make(String(input.sessionID)) }),
     create: () => {
       seq += 1
       return Effect.succeed({ id: Session.ID.make(`ses_delegated_${seq}`) })
@@ -476,8 +529,9 @@ test("list shows deeper descendants and other runs by the caller's team_list Run
 
 test("followup reaches a grandchild only while the caller's Deeper descendants row for team_followup is on", async () => {
   const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_orchestrator" })
-  const child = working({ id: "w-aaaaaaaaaaaaaaaa", role: "orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"] })
-  const grandchild = working({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: child.id })
+  // A followup needs the run's worktree to exist (availability.ts).
+  const child = working({ id: "w-aaaaaaaaaaaaaaaa", role: "orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"], directory: tmp })
+  const grandchild = working({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: child.id, directory: tmp })
   for (const run of [parent, child, grandchild]) await saveRun(root, run)
   const prompt = "Scope now includes docs/*, continue in place."
 

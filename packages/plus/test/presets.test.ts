@@ -512,19 +512,29 @@ test("every Basic member preset override names a row that exists", async () => {
   )
 })
 
-test("the Basic member presets open Delegate to rows for their teammates' roles", async () => {
+// A "Delegate to" row names a teammate; the member preset answers it from the
+// presets that teammate is linked to, so no member preset names a teammate's id.
+test("the Basic member presets answer Delegate to rows from the teammate's link, never its id", async () => {
   const { plusMemberOverrides } = await import("../src/instructions/presets.js")
-  const team = plusMemberOverrides["basic"] ?? {}
-  const opened = (member: string) =>
-    Object.entries(team[member] ?? {})
-      .filter(([id, row]) => id.startsWith("perm:team_delegate:to.") && row.state === "on")
-      .map(([id]) => id.slice("perm:team_delegate:to.".length))
-      .toSorted()
-  expect(opened("planner")).toEqual(["orchestrator"])
-  // An orchestrator also hands a sub-project to another orchestrator run.
-  expect(opened("orchestrator")).toEqual(["implementer", "orchestrator", "reviewer", "scout"])
-  expect(opened("build-seat")).toEqual(["implementer", "orchestrator", "planner", "reviewer", "scout"].toSorted())
-  for (const member of ["implementer", "reviewer", "scout"]) expect([member, opened(member)]).toEqual([member, []])
-  // Members of other teams are not named: only the teammate's own row is on.
-  expect(opened("planner")).not.toContain("other-teams")
+  const named = Object.values(plusMemberOverrides["basic"] ?? {}).flatMap((rows) => Object.keys(rows).filter((id) => id.startsWith("perm:team_delegate:to.")))
+  expect(named).toEqual([])
+  const catalog = presetCatalog({ items: [] })
+  const orchestrator = { kind: "member", team: "basic", id: "orchestrator" } as const
+  const row = { text: "x", enabled: false }
+  const linkedTo = (id: string) => () => [{ kind: "member", team: "basic", id } as const]
+  // Opened by the teammate's member preset, whatever the teammate is called.
+  expect(catalog.shipped(orchestrator, "perm:team_delegate:to.Flash-Implementer", null, row, "Orchestrator", linkedTo("implementer"))?.state).toBe("on")
+  expect(catalog.shipped(orchestrator, "perm:team_delegate:to.implementer", null, row, "Orchestrator", linkedTo("planner"))?.state).toBe("off")
+  // A teammate linked to nothing, or no link information at all, stays closed.
+  expect(catalog.shipped(orchestrator, "perm:team_delegate:to.implementer", null, row, "Orchestrator", () => [])?.state).toBe("off")
+  expect(catalog.shipped(orchestrator, "perm:team_delegate:to.implementer", null, row, "Orchestrator")?.state).toBe("off")
+  // A member preset of another team preset is not this team preset's implementer.
+  expect(
+    catalog.shipped(orchestrator, "perm:team_delegate:to.x", null, row, "Orchestrator", () => [{ kind: "member", team: "mine", id: "implementer" }])?.state,
+  ).toBe("off")
+  // The build seat opens every teammate but itself; nobody opens other teams.
+  const seat = { kind: "member", team: "basic", id: "build-seat" } as const
+  expect(catalog.shipped(seat, "perm:team_delegate:to.anyone", null, row, "Build", () => [])?.state).toBe("on")
+  expect(catalog.shipped(seat, "perm:team_delegate:to.Build", null, row, "Build", linkedTo("build-seat"))?.state).toBe("off")
+  expect(catalog.shipped(seat, "perm:team_delegate:to.other-teams", null, row, "Build")?.state).toBe("off")
 })

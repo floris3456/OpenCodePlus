@@ -254,8 +254,10 @@ export interface PresetCatalog {
    * The shipped value of `item` (`section` null = whole item) in a
    * Native/Plus preset; undefined = the preset does not set it. `upstream` is
    * the item being resolved (several items share an id, one per agent, so the
-   * id alone cannot name its upstream value), and `agent` the agent it is
-   * resolved for.
+   * id alone cannot name its upstream value), `agent` the agent it is
+   * resolved for, and `linked` the presets another agent at the same address
+   * (a teammate) is linked to: its own links and its Defaults entries' links,
+   * never its id.
    */
   readonly shipped: (
     preset: PresetRef,
@@ -263,6 +265,7 @@ export interface PresetCatalog {
     section: string | null,
     upstream?: Pick<Item, "text" | "enabled" | "pinned">,
     agent?: string | null,
+    linked?: (agent: string) => readonly PresetRef[],
   ) => ShippedValue | undefined
   /** The shipped active model of a Native/Plus preset; undefined = none. */
   readonly model: (preset: PresetRef) => ModelRefLike | undefined
@@ -1441,7 +1444,23 @@ function valueAt(
   section: string | null,
 ): ShippedValue | undefined {
   if (node.shipped === undefined) return at(records, node)
-  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream, input.address.agent)
+  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream, input.address.agent, (agent) =>
+    linkedPresets({ ...input.address, agent }, input.scopes),
+  )
+}
+
+/**
+ * Every preset an address's chain reaches, nearest first: the agent's own
+ * link, the presets that preset links to, then its Defaults entries' links.
+ * What a teammate is linked to is read here, never from its id.
+ */
+export function linkedPresets(address: Address, scopes: Scopes): PresetRef[] {
+  const refs = resolutionChain(address, scopes).flatMap((node): PresetRef[] => {
+    if (node.from.kind !== "preset") return []
+    if (node.from.team === undefined) return [{ kind: "agent", id: node.from.id }]
+    return [{ kind: "member", team: node.from.team, id: node.from.id }]
+  })
+  return refs.filter((ref, index) => refs.findIndex((other) => presetKey(other) === presetKey(ref)) === index)
 }
 
 // §3.3: native agents (and a team's Special agents), items the agent owns and
