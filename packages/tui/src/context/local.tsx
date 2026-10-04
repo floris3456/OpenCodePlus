@@ -1,7 +1,7 @@
 import { createStore } from "solid-js/store"
 import { dedupeWith } from "effect/Array"
 import { createSimpleContext } from "./helper"
-import { batch, createMemo, createSignal, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import type { AgentInfo } from "@opencode/client"
 import { useEvent } from "./event"
 import path from "path"
@@ -368,6 +368,43 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             : selection,
         )
       }
+
+      function agentModelKey(model: { providerID: string; id: string; variant?: string } | undefined) {
+        if (!model) return ""
+        return `${model.providerID}/${model.id}${model.variant === undefined ? "" : `:${model.variant}`}`
+      }
+
+      // T4: an agent's configured model can change while the TUI runs (an
+      // Instructions activation or a tool). `agent.updated` carries no payload,
+      // so compare the re-listed agent's model. When it moves, remembered picks
+      // for that agent are stale: clear the new-session pick and reseed every
+      // session's draft from the new model. Reseeding, not deleting, also
+      // overrides a session's durable model so an open chat shows — and its next
+      // message sends — the activation. A later manual pick overwrites the draft
+      // and wins until that agent's model changes again.
+      const configuredAgentModels = new Map<string, string>()
+      createEffect(() => {
+        const listed = data.location.agent.list(location.ref) ?? []
+        const changed: string[] = []
+        for (const item of listed) {
+          const key = agentModelKey(item.model)
+          if (configuredAgentModels.has(item.id) && configuredAgentModels.get(item.id) !== key) changed.push(item.id)
+          configuredAgentModels.set(item.id, key)
+        }
+        if (changed.length === 0) return
+        batch(() => {
+          for (const agentID of changed) {
+            const configured = listed.find((item) => item.id === agentID)?.model
+            setSelectionState("newSessionModelByLocationAgent", locationAgentKey(agentID), undefined)
+            const selection = configured && {
+              providerID: configured.providerID,
+              modelID: configured.id,
+              variant: normalizeModelVariant(configured.variant),
+            }
+            for (const item of data.session.list()) setSessionSelection(item.id, agentID, selection)
+          }
+        })
+      })
 
       function selectModel(model: ModelPreferenceModel) {
         if (route.data.type === "session") {
