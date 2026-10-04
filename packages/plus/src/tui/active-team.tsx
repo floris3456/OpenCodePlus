@@ -67,6 +67,17 @@ export function createActiveTeam(context: Plugin.Context) {
       }
     })
 
+    // T4: an Instructions model activation changes a host agent's model, but
+    // the host's agent.updated refresh does not reach this TUI's core agent
+    // list, so the composer keeps a stale remembered model. Re-sync the agent
+    // list on every Instructions store change; the local model context then
+    // drops the stale picks and follows the new configured model.
+    const unsubscribeInstructions = plus.events.on("instructions.changed", () => {
+      if (disposed) return
+      context.data.location.agent?.invalidate?.(context.location)
+      void context.data.location.agent?.sync?.(context.location)
+    })
+
     const [storage, setStorage] = context.storage.store<{
       activeTeamByProject: Record<string, string | undefined>
     }>("active-team", {
@@ -237,6 +248,7 @@ export function createActiveTeam(context: Plugin.Context) {
     function dispose() {
       disposed = true
       unsubscribe()
+      unsubscribeInstructions()
       unregisterGroups()
       disposeSlot()
       disposeComposerTab()

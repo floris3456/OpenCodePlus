@@ -210,6 +210,65 @@ test("createActiveTeam registers provider with enabled teams, tracks active team
   manager.dispose()
 })
 
+test("an instructions change re-syncs the core agent list so the composer can follow a new model", async () => {
+  const instructionListeners = new Set<() => void>()
+  const invalidated: string[] = []
+  const synced: string[] = []
+  const [activeGroupSignal] = createSignal<string | undefined>(undefined)
+  let rawStorage: Record<string, any> = { activeTeamByProject: {} }
+  const [storageState] = createStore<Record<string, any>>(rawStorage)
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    data: {
+      location: {
+        default: () => ({ directory: "/my/project" }),
+        agent: {
+          list: () => [],
+          invalidate: (location: { directory: string }) => invalidated.push(location.directory),
+          sync: (location: { directory: string }) => {
+            synced.push(location.directory)
+            return Promise.resolve()
+          },
+        },
+      },
+    },
+    client: {
+      rpc: () => ({
+        "team.list": async () => ({ teams: [] }),
+        events: {
+          on: (event: string, handler: () => void) => {
+            if (event === "instructions.changed") instructionListeners.add(handler)
+            return () => instructionListeners.delete(handler)
+          },
+        },
+      }),
+    },
+    storage: { store: () => [storageState, () => Promise.resolve()] },
+    theme: { text: { subdued: "gray" } },
+    ui: {
+      toast: { show: () => {} },
+      slot: () => () => {},
+      agents: {
+        groups: () => () => {},
+        activeGroup: { current: () => activeGroupSignal(), set: () => {} },
+      },
+    },
+  }
+
+  const manager = createActiveTeam(context)
+  await new Promise((r) => setTimeout(r, 10))
+  expect(instructionListeners.size).toBe(1)
+
+  for (const listener of instructionListeners) listener()
+  expect(invalidated).toEqual(["/my/project"])
+  await new Promise((r) => setTimeout(r, 10))
+  expect(synced).toEqual(["/my/project"])
+
+  manager.dispose()
+  expect(instructionListeners.size).toBe(0)
+})
+
 test("enabling a team from the server side activates it and selects its first installed member; a later normal-agent pick sticks", async () => {
   const teamListeners = new Set<() => void>()
   const [activeGroupSignal, setActiveGroupSignal] = createSignal<string | undefined>(undefined)
