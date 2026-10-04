@@ -194,7 +194,8 @@ export default Plugin.define({
       yield* watchMonitor(ctx, () => configIdentity(state))
       yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // One tick, one place: dead-run reconciliation (and later GC) runs here
-      // and nowhere else, cancelled with the plugin scope.
+      // and nowhere else, cancelled with the plugin scope. One pass per process
+      // at a time, whichever workspace's loop wins the sweep permit.
       yield* startSweep(ctx, teamsDataDir())
     }),
 })

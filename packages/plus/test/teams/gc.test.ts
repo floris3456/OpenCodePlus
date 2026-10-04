@@ -1,7 +1,7 @@
-import { expect, test } from "bun:test"
+import { beforeEach, expect, test } from "bun:test"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
 import { Session } from "@opencode/schema/session"
-import { Effect, Schema } from "effect"
+import { Duration, Effect, Exit, Schema, Scope } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -10,13 +10,16 @@ import { shippedTable, teamState } from "./preset-table.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
-import { gc, sweep, type GcResult } from "../../src/teams/lifecycle.js"
+import { gc, resetSweepState, startSweep, sweep, type GcResult } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, transition, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Policy } from "../../src/teams/schema.js"
-import { atomicJson, lock } from "../../src/teams/store.js"
+import { atomicJson, lock, sanitizeLockKey } from "../../src/teams/store.js"
 import { create, mergeArea, ownedRoot, provision, slug } from "../../src/teams/worktree.js"
 
 const defaultPolicy = Schema.decodeUnknownSync(Policy)({})
+
+// The sweep pacing is process-wide by design; each isolated root starts fresh.
+beforeEach(resetSweepState)
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
@@ -1348,3 +1351,133 @@ test("sweep tick runs both reconcile and gc", async () => {
     }
   })
 })
+
+// Three workspaces loaded at once each fork their own sweep loop. The permit
+// must let only one run a pass at a time; a second pass overlapping the first
+// shows as a second concurrent session.get from reconcile. Without the permit
+// all three loops would run reconcile on the same run in the same window.
+test("three concurrent startSweep loops never overlap a pass", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const tracked = { active: 0, max: 0, calls: 0 }
+    const domain = {
+      get: () =>
+        Effect.gen(function* () {
+          tracked.calls++
+          tracked.active++
+          tracked.max = Math.max(tracked.max, tracked.active)
+          yield* Effect.sleep(Duration.millis(25))
+          tracked.active--
+          return { id: Session.ID.make("ses_sweep_overlap") }
+        }),
+      wait: () => Effect.succeed(undefined),
+    } as unknown as SessionDomain
+    const ctx = context({ session: domain })
+    await saveRun(
+      root,
+      baseRun({ id: "main-0123456789abcdef", state: "working", sessionID: "ses_sweep_overlap" }),
+    )
+
+    const scope = await Effect.runPromise(Scope.make())
+    try {
+      for (let i = 0; i < 3; i++) {
+        await Effect.runPromise(
+          startSweep(ctx, root, 5).pipe(Effect.provideService(Scope.Scope, scope)),
+        )
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+    }
+    // A pass ran (reconcile reached the session) and no two ever overlapped.
+    expect(tracked.calls).toBeGreaterThan(0)
+    expect(tracked.max).toBe(1)
+  })
+}, 30000)
+
+// A pass with nothing to orphan must not touch the repository lock at all:
+// taking it on every idle tick is what starved the real operations. The lock
+// path's parent directory only exists once `lock` has run.
+test("gc with no candidates never creates the repository lock", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+      })
+      await saveRun(root, parent)
+
+      const res = await gc(root, defaultPolicy, { background: true })
+      expect(res.orphansRemoved).toEqual([])
+      expect(await dirExists(path.join(root, "locks", "repo"))).toBe(false)
+      expect(await dirExists(path.join(root, "locks", "repo", `${sanitizeLockKey(parent.repoKey)}.lock`))).toBe(false)
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
+
+// The background pass tries the lock once. With the repository lock held by a
+// provisioning operation elsewhere, it must return immediately rather than
+// waiting out the lock, leaving the candidate for the next pass.
+test("a background gc returns at once when the repository lock is held", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    let releaseLock: (() => void) | undefined
+    let holding: Promise<void> | undefined
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: repo.head,
+        head: repo.head,
+        state: "working",
+      })
+      await saveRun(root, parent)
+
+      const orphanDir = path.join(ownedRoot(root, parent.repoKey), "implementer", "busy-lock-orphan")
+      await git(repo.dir, ["worktree", "add", "-b", "team/orphan/busy-lock", orphanDir, repo.head])
+      await agePastStartMs(orphanDir)
+
+      let acquired = false
+      const held = new Promise<void>((resolve) => {
+        releaseLock = resolve
+      })
+      holding = lock(root, "repo", parent.repoKey, async () => {
+        acquired = true
+        await held
+      })
+      for (let i = 0; i < 3000 && !acquired; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(acquired).toBe(true)
+
+      const started = Date.now()
+      // The periodic path: sweep must pass the background flag through to gc,
+      // so a busy repository lock skips the orphan sweep instead of waiting.
+      const res = await sweep(dummyContext(), root)
+      const elapsed = Date.now() - started
+      expect(res.gc.orphansRemoved).toEqual([])
+      expect(elapsed).toBeLessThan(1000)
+      expect(await dirExists(orphanDir)).toBe(true)
+
+      releaseLock?.()
+      await holding
+      // The lock free, the next pass removes the orphan.
+      const next = await gc(root, defaultPolicy, { background: true })
+      expect(next.orphansRemoved).toContain(orphanDir)
+      expect(await dirExists(orphanDir)).toBe(false)
+    } finally {
+      releaseLock?.()
+      await holding?.catch(() => undefined)
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)

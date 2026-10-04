@@ -2,9 +2,9 @@ import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
-import { Duration, Effect, Option, Schedule, Schema, type Scope } from "effect"
+import { Duration, Effect, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
 import { batchNotify, partition, peek, put, take, type InboxItem } from "./inbox.js"
-import { io } from "./io.js"
+import { io, errCode } from "./io.js"
 import { gitRaw, parsePorcelain } from "./git.js"
 import type { MergeEntry } from "./merge.js"
 import {
@@ -33,6 +33,22 @@ import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
 const policy = Schema.decodeUnknownSync(Policy)({})
+
+// One sweep pass at a time per process. The module is imported once, so this
+// state is process-wide; each loaded workspace forks its own loop, and
+// whichever loop gets the permit runs the pass while the others skip. Passes
+// are spaced at least one tick apart, and gc runs at most once per reconcile
+// interval. Without the pacing, loops for workspaces loaded at different times
+// interleave passes arbitrarily close together.
+const sweepPermit = Semaphore.makeUnsafe(1)
+let lastPassAt = 0
+let lastGcAt = 0
+
+/** Test-only: reset the process-wide sweep pacing between isolated roots. */
+export function resetSweepState(): void {
+  lastPassAt = 0
+  lastGcAt = 0
+}
 
 function settledText(run: RunRecord, previous: string, attemptN: number): string {
   const task = run.task ?? "-"
@@ -556,10 +572,16 @@ function renderInbox(items: readonly InboxItem[]): string {
 
 // The one periodic tick of the team runtime: everything that must happen
 // without a tool call runs from here. T6 adds gc(root, policy) to this
-// function; nothing else schedules periodic team work.
+// function; nothing else schedules periodic team work. gc is expensive and
+// mostly unnecessary, so it runs at most every policy.sweep.reconcileMs even
+// though a pass runs every tick.
 export async function sweep(ctx: Context, root: string): Promise<SweepResult> {
   const dead = await reconcile(ctx, root)
-  return { dead, gc: await gc(root, policy) }
+  const now = Date.now()
+  if (now - lastGcAt < policy.sweep.reconcileMs)
+    return { dead, gc: { reaped: [], skippedDirty: [], orphansRemoved: [], removeFailed: [] } }
+  lastGcAt = now
+  return { dead, gc: await gc(root, policy, { background: true }) }
 }
 
 export interface SweepResult {
@@ -575,7 +597,13 @@ export interface GcResult {
   removeFailed: string[]
 }
 
-export async function gc(root: string, customPolicy?: Policy): Promise<GcResult> {
+export interface GcOptions {
+  /** The periodic sweep's background pass: try the repository lock once and
+   * skip the orphan sweep when it is busy, instead of waiting for it. */
+  background?: boolean
+}
+
+export async function gc(root: string, customPolicy?: Policy, opts?: GcOptions): Promise<GcResult> {
   const pol = customPolicy ?? policy
   const reapAfterMs = parseDuration(pol.gc.reapAfter)
   const now = Date.now()
@@ -707,34 +735,63 @@ export async function gc(root: string, customPolicy?: Policy): Promise<GcResult>
   // covers a worktree created outside that path — `create` finished, nothing
   // registered it yet — which is exactly what `policy.timeouts.startMs` is a
   // generous bound for.
+  //
+  // The lock is only worth taking when the cheap unlocked scan already found a
+  // candidate: most passes have none, and taking the repository lock on every
+  // one of them starved the rare real operation. The unlocked scan is advisory
+  // — the in-lock re-list is what decides — so a candidate that is really a
+  // worktree registered after the opening snapshot is kept. A background pass
+  // (`opts.background`) tries the lock once: a busy lock means another
+  // operation is mid-flight, and the next pass re-scans rather than waiting
+  // behind it, quietly and without a "sweep failed" log. An explicit call
+  // waits for the lock, as it always has.
   const orphansRemoved: string[] = []
   for (const [repoKey, repoRoot] of repoRoots.entries()) {
-    await lock(root, "repo", repoKey, async () => {
-      const knownDirs: string[] = []
-      const entries = await Effect.runPromise(
-        io(() => readdir(path.join(root, "runs"))).pipe(
-          Effect.map((names) => [...names]),
-          Effect.catchCause(() => Effect.succeed([] as string[])),
-        ),
-      )
-      for (const entry of entries) {
-        if (entry.startsWith(".")) continue
-        const record = await loadRecordSafe(root, entry)
-        if (record === undefined || record.repoKey !== repoKey) continue
-        if (record.worktree !== "removed") knownDirs.push(record.directory)
-      }
-      const orphanList = await orphans(repoRoot, ownedRoot(root, repoKey), knownDirs, {
-        minAgeMs: pol.timeouts.startMs,
-      }).catch(() => [] as string[])
-      for (const orphanPath of orphanList) {
-        try {
-          await removeLocked(orphanPath, { repoRoot, repoKey, force: true })
-          orphansRemoved.push(orphanPath)
-        } catch {
-          // ignore
+    const snapshotKnownDirs = allRuns
+      .filter((record) => record.repoKey === repoKey && record.worktree !== "removed")
+      .map((record) => record.directory)
+    const candidates = await orphans(repoRoot, ownedRoot(root, repoKey), snapshotKnownDirs, {
+      minAgeMs: pol.timeouts.startMs,
+    }).catch(() => [] as string[])
+    if (candidates.length === 0) continue
+    const removed = await lock(
+      root,
+      "repo",
+      repoKey,
+      async () => {
+        const knownDirs: string[] = []
+        const entries = await Effect.runPromise(
+          io(() => readdir(path.join(root, "runs"))).pipe(
+            Effect.map((names) => [...names]),
+            Effect.catchCause(() => Effect.succeed([] as string[])),
+          ),
+        )
+        for (const entry of entries) {
+          if (entry.startsWith(".")) continue
+          const record = await loadRecordSafe(root, entry)
+          if (record === undefined || record.repoKey !== repoKey) continue
+          if (record.worktree !== "removed") knownDirs.push(record.directory)
         }
-      }
+        const orphanList = await orphans(repoRoot, ownedRoot(root, repoKey), knownDirs, {
+          minAgeMs: pol.timeouts.startMs,
+        }).catch(() => [] as string[])
+        const done: string[] = []
+        for (const orphanPath of orphanList) {
+          try {
+            await removeLocked(orphanPath, { repoRoot, repoKey, force: true })
+            done.push(orphanPath)
+          } catch {
+            // ignore
+          }
+        }
+        return done
+      },
+      { timeoutMs: opts?.background === true ? 0 : undefined, op: "gc-orphans" },
+    ).catch((error: unknown) => {
+      if (opts?.background === true && errCode(error) === "E_LOCKED") return [] as string[]
+      throw error
     })
+    orphansRemoved.push(...removed)
   }
 
   return { reaped, skippedDirty, orphansRemoved, removeFailed }
@@ -766,10 +823,26 @@ function onDisk(dir: string): Promise<boolean> {
   )
 }
 
-/** Runs sweep now and then every tickMs until the plugin scope closes. */
+/**
+ * Runs one sweep pass at a time per process, then every tickMs until the
+ * plugin scope closes. Each loaded workspace forks its own loop, but the
+ * module-level permit lets only one of them run a pass; the rest skip this
+ * tick and try again. `lastPassAt` keeps the winning loop from running passes
+ * back to back when its own tick fires while another workspace's pass is still
+ * in flight.
+ */
 export function startSweep(ctx: Context, root: string, tickMs = policy.sweep.tickMs): Effect.Effect<void, never, Scope.Scope> {
-  return Effect.promise(() => sweep(ctx, root)).pipe(
-    Effect.catchCause((cause) => Effect.logWarning("plus team sweep failed", { cause })),
+  const pass = Effect.suspend(() => {
+    const now = Date.now()
+    if (now - lastPassAt < tickMs) return Effect.void
+    return sweepPermit.withPermitsIfAvailable(1)(
+      Effect.suspend(() => {
+        lastPassAt = Date.now()
+        return Effect.promise(() => sweep(ctx, root))
+      }).pipe(Effect.catchCause((cause) => Effect.logWarning("plus team sweep failed", { cause }))),
+    ).pipe(Effect.asVoid)
+  })
+  return pass.pipe(
     Effect.repeat(Schedule.spaced(Duration.millis(tickMs))),
     Effect.forkScoped,
     Effect.asVoid,
