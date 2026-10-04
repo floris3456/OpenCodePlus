@@ -130,6 +130,34 @@ for (const [name, stream, message] of [
   }))
 }
 
+// A completed call is billable even when its response cannot be used, and Core must be able to tell a
+// normal answer (Anthropic did not trigger) from a compaction that produced no usable summary.
+const usageError = () =>
+  Effect.gen(function* () {
+    const request = LLM.request({ model: Anthropic.configure({ apiKey: "fixture" }).model("claude-opus-4-6"), prompt: "History" })
+    const error = yield* LLMClient.compact(request, { mechanism: "trigger" }).pipe(Effect.flip)
+    if (error.reason._tag !== "InvalidProviderOutput") return yield* Effect.die("Expected InvalidProviderOutput")
+    return error.reason
+  })
+
+for (const [name, stream, compaction] of [
+  ["null summary", fixture(null), "unusable"],
+  ["ordinary answer", fixture("Summary", "end_turn"), "not-triggered"],
+] as const) {
+  testEffect(fixedResponse(stream)).effect(`trigger compaction reports the completed call's usage for ${name}`, () =>
+    Effect.gen(function* () {
+      const reason = yield* usageError()
+      expect(reason.compaction).toBe(compaction)
+      expect(reason.usage).toMatchObject({
+        inputTokens: 53000,
+        nonCachedInputTokens: 51000,
+        cacheReadInputTokens: 2000,
+        outputTokens: 400,
+      })
+    }),
+  )
+}
+
 for (const body of [{ messages: [] }, { context_management: {} }, { stream: false }]) {
   testEffect(dynamicResponse(() => Effect.die("Invalid compaction must not reach HTTP"))).effect(
     `trigger compaction refuses raw ${Object.keys(body)[0]} overrides before HTTP`,

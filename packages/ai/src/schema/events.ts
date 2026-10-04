@@ -12,84 +12,11 @@ import {
 } from "./messages.js"
 import { ProviderMetadata } from "./options.js"
 import { ProviderFailureClassification } from "./errors.js"
+import { Usage, type UsageInput } from "./usage.js"
 import { Media } from "../media.js"
 
 export const FinishReason = LLM.FinishReason
 export type FinishReason = Schema.Schema.Type<typeof FinishReason>
-
-/**
- * Token usage reported by an LLM provider.
- *
- * **Inclusive totals** (match AI SDK / OpenAI / LangChain convention — a
- * reader from any of those ecosystems sees the number they expect):
- *
- * - `inputTokens` — total prompt tokens, *including* cached reads/writes.
- * - `outputTokens` — total output tokens, *including* reasoning.
- * - `totalTokens` — provider-supplied total, or `inputTokens + outputTokens`.
- *
- * **Non-overlapping breakdown** (every field is independently meaningful;
- * consumers never have to subtract):
- *
- * - `nonCachedInputTokens` — the "fresh" portion of the prompt.
- * - `cacheReadInputTokens` — input tokens served from cache.
- * - `cacheWriteInputTokens` — input tokens written to cache.
- * - `reasoningTokens` — subset of `outputTokens` spent on hidden reasoning.
- *
- * **Invariant**: `nonCachedInputTokens + cacheReadInputTokens +
- * cacheWriteInputTokens = inputTokens`, and `reasoningTokens ≤ outputTokens`.
- * Each protocol mapper computes whichever side it doesn't get natively,
- * with `Math.max(0, …)` clamping for defense against provider bugs. Because
- * every breakdown field is stored independently, downstream consumers can
- * read whatever they need (cost-by-category, context-pressure, AI-SDK-style
- * inclusive total) without ever subtracting — eliminating the underflow
- * class of bug where a clamped difference would silently store the wrong
- * value.
- *
- * **Semantics by provider**:
- *
- * - OpenAI Chat / Responses / Gemini: provider reports inclusive
- *   `inputTokens` and an inclusive `outputTokens`; mapper subtracts to
- *   derive the breakdown.
- * - Anthropic and Bedrock report the input breakdown natively: Anthropic's
- *   `input_tokens` and Bedrock's `inputTokens` are non-cached only. Their
- *   mappers sum the breakdown to derive the inclusive `inputTokens`.
- *   Anthropic's `outputTokens` includes extended thinking. Newer responses
- *   expose that subset as `output_tokens_details.thinking_tokens`, which maps
- *   to `reasoningTokens`; older responses leave it undefined.
- *
- * `providerMetadata` always carries the provider's raw usage payload —
- * keyed by provider name (`{ openai: ... }`, `{ anthropic: ... }`, etc.)
- * — for fields we don't normalize and for billing-level audit trails.
- * Matches the same escape-hatch field on `LLMEvent`.
- */
-export class Usage extends Schema.Class<Usage>("AI.Usage")({
-  /** Effective input size of the final message iteration, when reported; not billed totals. */
-  contextTokens: Schema.optional(Schema.Number),
-  inputTokens: Schema.optional(Schema.Number),
-  outputTokens: Schema.optional(Schema.Number),
-  nonCachedInputTokens: Schema.optional(Schema.Number),
-  cacheReadInputTokens: Schema.optional(Schema.Number),
-  cacheWriteInputTokens: Schema.optional(Schema.Number),
-  reasoningTokens: Schema.optional(Schema.Number),
-  totalTokens: Schema.optional(Schema.Number),
-  providerMetadata: Schema.optional(ProviderMetadata),
-}) {
-  /**
-   * Non-reasoning output tokens (including compaction summaries) — `outputTokens` minus `reasoningTokens`, clamped
-   * to zero. The one place subtraction happens in this contract; the clamp
-   * means a provider reporting `reasoningTokens > outputTokens` produces a
-   * harmless zero rather than a negative that crashes downstream schemas.
-   */
-  get visibleOutputTokens() {
-    return Math.max(0, (this.outputTokens ?? 0) - (this.reasoningTokens ?? 0))
-  }
-
-  static from(input: UsageInput) {
-    return input instanceof Usage ? input : new Usage(input)
-  }
-}
-
-export type UsageInput = Usage | ConstructorParameters<typeof Usage>[0]
 
 /**
  * Usage reported by media routes. Providers bill images, video, speech, and transcription in different units, so

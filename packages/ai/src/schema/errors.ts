@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { ModelID, ProviderID, RouteID } from "./ids.js"
+import { Usage } from "./usage.js"
 
 export const ProviderFailureClassification = Schema.Literals(["context-overflow", "payload-too-large"])
 export type ProviderFailureClassification = typeof ProviderFailureClassification.Type
@@ -126,6 +127,14 @@ export class InvalidProviderOutputError extends Schema.TaggedError<InvalidProvid
   ...ReasonFields,
   classification: Schema.optional(Schema.Literals(["incomplete-stream"])),
   route: Schema.optional(Schema.String),
+  /**
+   * A completed compaction call whose response was not a usable checkpoint, so the failure can carry the
+   * call's billable usage. `not-triggered` means the provider answered normally instead of compacting
+   * (for example a request below Anthropic's input-token threshold); `unusable` means it paused for
+   * compaction but produced no summary text.
+   */
+  compaction: Schema.optional(Schema.Literals(["not-triggered", "unusable"])),
+  usage: Schema.optional(Usage),
 }) {}
 
 export class UnknownProviderError extends Schema.TaggedError<UnknownProviderError>("AI.Error.UnknownProvider")(

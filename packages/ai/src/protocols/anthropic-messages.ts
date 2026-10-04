@@ -12,6 +12,7 @@ import {
   AIError,
   CompactionCheckpointResponse,
   HttpOptions,
+  InvalidProviderOutputError,
   LLMRequest,
   LLMResponse,
   LLMEvent,
@@ -1727,13 +1728,30 @@ const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(
     .streamPrepared(prepared, continuation, { http: executor }, options)
     .pipe(Stream.runFold(LLMResponse.empty, LLMResponse.reduce))
   const response = LLMResponse.complete(state)
-  const checkpoint = response?.message.content[0]
-  if (response?.finishReason.raw !== "compaction")
-    return yield* ProviderShared.eventError(ADAPTER, "Anthropic compaction did not pause with stop_reason compaction")
+  if (!response)
+    return yield* ProviderShared.eventError(ADAPTER, "Anthropic compaction response ended without a result")
+  const checkpoint = response.message.content[0]
+  // A normal answer means Anthropic did not reach its compaction threshold; the caller decides whether to
+  // fall back locally. The completed call is still billable, so both failures carry its usage.
+  if (response.finishReason.raw !== "compaction")
+    return yield* compactionFailure(
+      response.usage,
+      "not-triggered",
+      "Anthropic compaction did not pause with stop_reason compaction",
+    )
   if (response.message.content.length !== 1 || checkpoint?.type !== "compaction" || !checkpoint.text?.trim())
-    return yield* ProviderShared.eventError(ADAPTER, "Anthropic compaction returned no usable summary checkpoint")
+    return yield* compactionFailure(
+      response.usage,
+      "unusable",
+      "Anthropic compaction returned no usable summary checkpoint",
+    )
   return new CompactionCheckpointResponse({ checkpoint, usage: response.usage })
 })
+
+const compactionFailure = (usage: Usage | undefined, compaction: "not-triggered" | "unusable", message: string) =>
+  new AIError({
+    reason: new InvalidProviderOutputError({ route: ADAPTER, message, compaction, usage }),
+  })
 
 export const route = Route.make({
   compact: { trigger: compact },
