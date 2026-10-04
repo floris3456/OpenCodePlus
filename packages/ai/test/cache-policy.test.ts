@@ -398,7 +398,8 @@ describe("applyCachePolicy", () => {
     }),
   )
 
-  it.effect("'latest-assistant' marks the last assistant message", () =>    Effect.gen(function* () {
+  it.effect("'latest-assistant' marks the last assistant message", () =>
+    Effect.gen(function* () {
       const prepared = yield* compileRequest(
         LLM.request({
           model: anthropicModel,
