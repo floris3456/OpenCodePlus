@@ -70,7 +70,16 @@ const setup = Effect.fnUntraced(function* (options: {
   const hooks = yield* PluginHooks.Service
   const blocked = Deferred.makeUnsafe<void>()
   const hanging = Promise.withResolvers<Response>()
-const state = { failure: false, flaky: false, hang: false, overflow: false, calls: 0, config: options.config }
+  const state = {
+    failure: false,
+    flaky: false,
+    hang: false,
+    overflow: false,
+    unusable: false,
+    notTriggered: false,
+    calls: 0,
+    config: options.config,
+  }
   const bodies: Record<string, unknown>[] = []
   const headers: Headers[] = []
   const server = yield* Effect.acquireRelease(
@@ -101,12 +110,33 @@ const state = { failure: false, flaky: false, hang: false, overflow: false, call
           }
           if (options.anthropic) {
             const native = bodies.at(-1)?.context_management !== undefined
+            // A not-triggered request is a native attempt that Anthropic answered normally, so it returns
+            // ordinary text even though the body carried the compaction trigger.
+            const compacting = native && !state.notTriggered
             const events = [
               { type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } },
-              { type: "content_block_start", index: 0, content_block: native ? { type: "compaction", content: null } : { type: "text", text: "" } },
-              { type: "content_block_delta", index: 0, delta: native ? { type: "compaction_delta", content: "Native summary" } : { type: "text_delta", text: "## Objective\n- Local summary" } },
+              { type: "content_block_start", index: 0, content_block: compacting ? { type: "compaction", content: null } : { type: "text", text: "" } },
+              { type: "content_block_delta", index: 0, delta: compacting ? { type: "compaction_delta", content: state.unusable ? null : "Native summary" } : { type: "text_delta", text: "## Objective\n- Local summary" } },
               { type: "content_block_stop", index: 0 },
-              { type: "message_delta", delta: { stop_reason: native ? "compaction" : "end_turn" }, usage: native ? { input_tokens: 0, output_tokens: 0, iterations: [{ type: "compaction", input_tokens: 55000, output_tokens: 400 }] } : { input_tokens: 200, output_tokens: 40 } },
+              {
+                type: "message_delta",
+                delta: { stop_reason: compacting ? "compaction" : "end_turn" },
+                // A completed-but-unusable compaction reports iteration usage the failed record must keep.
+                usage: compacting
+                  ? {
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      iterations: [
+                        {
+                          type: "compaction",
+                          input_tokens: state.unusable ? 51000 : 55000,
+                          output_tokens: 400,
+                          ...(state.unusable ? { cache_read_input_tokens: 2000 } : {}),
+                        },
+                      ],
+                    }
+                  : { input_tokens: 200, output_tokens: 40 },
+              },
               { type: "message_stop" },
             ]
             return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
@@ -340,6 +370,58 @@ for (const anthropic of ["direct", "compatible"] as const) {
     }),
   )
 }
+
+it.live("Anthropic records a completed but unusable compaction's usage on the failed record", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ anthropic: "direct" })
+    fixture.state.unusable = true
+    yield* fixture.prompt("Conversation ".repeat(20_000))
+    expect(yield* fixture.compact).toMatchObject({
+      status: "failed",
+      error: { type: "provider.invalid-output", message: expect.stringContaining("no usable summary checkpoint") },
+    })
+    expect(fixture.state.calls).toBe(1)
+    expect((yield* fixture.load).messages.at(-1)).toMatchObject({
+      type: "compaction",
+      status: "failed",
+      tokens: { input: 51000, output: 400, cache: { read: 2000 } },
+    })
+  }),
+)
+
+it.live("Anthropic Auto falls back to a local summary when it does not trigger compaction", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ anthropic: "direct" })
+    fixture.state.notTriggered = true
+    yield* fixture.prompt("Conversation ".repeat(20_000))
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    // The native attempt is billed, then the local fallback summarizes in a second, non-trigger request.
+    expect(fixture.state.calls).toBe(2)
+    expect(fixture.bodies[0]).toHaveProperty("context_management")
+    expect(fixture.bodies[1]).not.toHaveProperty("context_management")
+    const last = (yield* fixture.load).messages.at(-1)
+    expect(last).toMatchObject({ status: "completed", summary: "## Objective\n- Local summary" })
+    expect(last).not.toHaveProperty("providerContext", expect.anything())
+  }),
+)
+
+it.live("Anthropic Remote fails with the minimum message when it does not trigger compaction", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ anthropic: "direct", config: { strategy: "remote" } })
+    fixture.state.notTriggered = true
+    yield* fixture.prompt("Conversation ".repeat(20_000))
+    expect(yield* fixture.compact).toMatchObject({
+      status: "failed",
+      error: { type: "compaction.unavailable", message: expect.stringContaining("at least 50 000 input tokens") },
+    })
+    expect(fixture.state.calls).toBe(1)
+    expect((yield* fixture.load).messages.at(-1)).toMatchObject({
+      type: "compaction",
+      status: "failed",
+      tokens: { input: 200, output: 40 },
+    })
+  }),
+)
 
 for (const endpoint of [false, true]) {
   it.live(

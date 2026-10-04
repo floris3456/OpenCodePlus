@@ -104,6 +104,14 @@ const UNKNOWN_WINDOW = 200_000
 const TOOL_OUTPUT_MAX_CHARS = 1_250
 const IMAGE_TOKEN_ESTIMATE = 1_500
 const PDF_TOKEN_ESTIMATE = 2_000
+/** Anthropic answered normally because the request sat below its compaction trigger. */
+const NATIVE_NOT_TRIGGERED = "compaction.not-triggered"
+
+const compactionUsageKind = (cause: unknown) =>
+  cause instanceof AIError && cause.reason._tag === "InvalidProviderOutput" ? cause.reason.compaction : undefined
+
+const compactionUsage = (cause: unknown) =>
+  cause instanceof AIError && cause.reason._tag === "InvalidProviderOutput" ? cause.reason.usage : undefined
 
 const SUMMARY_TEMPLATE = `You MUST use this format for your response (you may omit sections that aren't applicable). Do not include the <template> tags in your response.
 <template>
@@ -254,9 +262,11 @@ export const layer = Layer.effect(
             message: "Remote compaction cannot recover an overflowing context; select auto or local compaction",
           },
         })
+      // Native compaction cannot run below Anthropic's input-token trigger. The request is shrunk to `budget`
+      // when the context exceeds it, so the effective size is the smaller of the estimate and that target.
       const belowMinimum =
         context.model.model.route.protocol === AnthropicMessages.protocol.id &&
-        estimateContext(context) < AnthropicMessages.MIN_COMPACTION_TOKENS
+        Math.min(estimateContext(context), budget) < AnthropicMessages.MIN_COMPACTION_TOKENS
       if (strategy === "remote" && belowMinimum)
         return yield* publish(trigger, {
           error: {
@@ -272,13 +282,24 @@ export const layer = Layer.effect(
           ...(decision.portable ? { providerState: undefined } : {}),
           metadata: { ...result.metadata, ...decision.metadata },
         })
-      const settle = (owner: Trigger) =>
-        Effect.matchEffect({
-          onSuccess: (result: Result) => completed(owner, result),
-          onFailure: (failure: Failure) => publish(owner, failure),
-        })
-
-      if (native) return yield* compactNatively(trigger, budget, settings.keep).pipe(settle(trigger))
+      if (native) {
+        const attempt = yield* Effect.result(compactNatively(trigger, budget, settings.keep))
+        if (Result.isSuccess(attempt)) return yield* completed(trigger, attempt.success)
+        const failure = attempt.failure
+        if (failure.error.type !== NATIVE_NOT_TRIGGERED) return yield* publish(trigger, failure)
+        // Anthropic answered normally because the request sat below its compaction trigger. An explicit
+        // remote strategy fails honestly; Auto falls through to the local summary below.
+        if (strategy === "remote")
+          return yield* publish(trigger, {
+            error: {
+              type: "compaction.unavailable",
+              message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
+            },
+          })
+        // Close the automatic record first so the local fallback's own record is the one it completes. A
+        // manual record is completed by the fallback itself.
+        if (trigger.reason !== "manual") yield* publish(trigger, failure)
+      }
 
       // A local summary resolves the compaction agent's overrides first, and the checkpoint belongs to the
       // context those overrides produce — its model and instructions, not the trigger's.
@@ -484,7 +505,23 @@ export const layer = Layer.effect(
           return Effect.gen(function* () {
             const history = yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
             const retained = recentUserMessages(history, context.model, keep)
-            const response = yield* llm.compact(request, { ...prepared.options, mechanism: "trigger" })
+            const response = yield* llm.compact(request, { ...prepared.options, mechanism: "trigger" }).pipe(
+              // A completed compaction call is billed even when its response cannot be used, so record the
+              // usage it reported before the failure settles.
+              Effect.tapError((cause) => {
+                const usage = compactionUsage(cause)
+                return usage
+                  ? spend(context.session.id, SessionUsage.record(usage, context.model.cost))
+                  : Effect.void
+              }),
+              // A normal answer means Anthropic did not compact; the outer strategy decides what happens.
+              Effect.catch(
+                (cause): Effect.Effect<never, AIError | Failure> =>
+                  compactionUsageKind(cause) === "not-triggered"
+                    ? Effect.fail<Failure>({ error: { type: NATIVE_NOT_TRIGGERED, message: cause.message } })
+                    : Effect.fail(cause),
+              ),
+            )
             return yield* toResult([...retained, Message.assistant(response.checkpoint)], response.usage)
           })
         }
