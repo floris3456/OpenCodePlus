@@ -27,7 +27,7 @@ import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
-import { byDirectory, bySession } from "./teams/run.js"
+import { buildRunTree, byDirectory, bySession } from "./teams/run.js"
 import { onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
@@ -3029,6 +3029,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
     "team.runs.list": (input, context) =>
       Effect.gen(function* () {
         const root = teamsDataDir()
+        if (input.tree !== false && input.sessionID) {
+          const allRuns = yield* Effect.promise(() => listRunsForNamespace(root, { all: true }))
+          const runs = buildRunTree(allRuns, input.sessionID, { all: input.all })
+          return { runs }
+        }
         const runs = yield* Effect.promise(() => listRunsForNamespace(root, input))
         return { runs }
       }),
