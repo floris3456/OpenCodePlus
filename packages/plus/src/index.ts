@@ -5229,21 +5229,6 @@ function filteredPublishAgents(agents: readonly AgentSource[], outputIds: Readon
   return agents.filter((agent) => !(outputIds.has(agent.id) && agent.scope === "defaults" && agent.path === undefined))
 }
 
-// Snapshot agents keep Defaults-tier team members (their home is Defaults) but
-// drop the host echo of a Global/Project team member: it is unbacked and would
-// otherwise list under Defaults › Agents as well as under its own team (T5).
-function filteredSnapshotAgents(agents: readonly AgentSource[], outputIds: ReadonlyMap<string, TeamLevel>): AgentSource[] {
-  return agents.filter(
-    (agent) =>
-      !(
-        outputIds.has(agent.id) &&
-        outputIds.get(agent.id) !== "defaults" &&
-        agent.scope === "defaults" &&
-        agent.path === undefined
-      ),
-  )
-}
-
 function filteredPublishItems(items: readonly Item[], outputIds: ReadonlyMap<string, TeamLevel>): Item[] {
   return items.flatMap((item): Item[] => {
     if (item.id === "system:role") {
@@ -5662,15 +5647,10 @@ function toSnapshot(
   outputIds: ReadonlyMap<string, TeamLevel> | undefined,
   listing: readonly PresetEntry[],
 ): Plus.Snapshot {
-  // Team output is not a regular agent: the host echoes an installed member as
-  // an unbacked defaults agent, so without this filter it would also list under
-  // Defaults › Agents beside its own team. Defaults-tier members keep their
-  // row; Global/Project members must not leak into Defaults (T5).
-  const agents = outputIds === undefined ? discovered.agents : filteredSnapshotAgents(discovered.agents, outputIds)
   return {
     revision: loaded.projectRevision,
     globalRevision: loaded.globalRevision,
-    agents: agents.map((agent) => {
+    agents: discovered.agents.map((agent) => {
       // Server-side origin crosses the RPC boundary. Plus team output (an id
       // in plusTeamOutputIds, or an AgentSource carrying team) upgrades to
       // origin plus; otherwise the discovery classification rides through.

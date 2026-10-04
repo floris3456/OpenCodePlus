@@ -1120,8 +1120,19 @@ function lazyPlusAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     depth: 2,
     actions: noActions(),
     children: () =>
-      ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "plus").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "plus" && !isTeamMemberEcho(ctx, level, agent))
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
   })
+}
+
+// An installed team member is not a Defaults agent: the host echoes it as an
+// unbacked defaults agent. Keep the echo in ctx.agents (a team member's Models
+// resolve through it) but do not list it under Defaults › Agents (T5); it
+// already renders under its own team.
+function isTeamMemberEcho(ctx: BuildContext, level: Level, agent: AgentSource): boolean {
+  if (level !== "defaults" || agent.path !== undefined) return false
+  return ctx.teams.some((team) => team.enabled && team.agents.includes(agent.id))
 }
 
 function lazyUserAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
@@ -1133,7 +1144,9 @@ function lazyUserAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     add: "agent",
     actions: noActions(),
     children: () => [
-      ...ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "user").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      ...ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "user" && !isTeamMemberEcho(ctx, level, agent))
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
       ...(level === "defaults" ? agentEntries(ctx).map((entry) => lazyEntryAgent(ctx, memo, entry)) : []),
     ],
   })
