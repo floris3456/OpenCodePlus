@@ -100,12 +100,15 @@ member, and delegators route work by them:
    (Instructions › Global › Teams).
 7. Delegate-to rows, now that they exist:
    - `Simple-Orchestrator`: turn `perm:team_delegate:to.Simple-Orchestrator`
-     off (no sub-orchestrators).
+     off (no sub-orchestrators), and `perm:team_delegate:to.Simple-Planner`
+     off. The preset already leaves it off; set it anyway. Only
+     `Simple-Build` may delegate to the planner.
    - Read back: `list({ where: "level:global team:Simple item:perm team_delegate", fields: ["id", "state"], limit: 200 })`,
      then look at the rows whose id contains `perm:team_delegate:to.`. They
      must show:
      - `Simple-Build`: on for the other five members;
-     - `Simple-Orchestrator`: on for the three workers only;
+     - `Simple-Orchestrator`: on for the three workers only (off for
+       `Simple-Planner` and itself);
      - `Simple-Planner`: whatever the rows say, because its `team_delegate`
        tool is off.
 8. Verify (§6), then tell the user to restart the TUI. In this release an
