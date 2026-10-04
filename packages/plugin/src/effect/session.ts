@@ -153,13 +153,15 @@ export interface SessionWarming {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
-  readonly phase: "activity" | "warm"
+  readonly phase: "activity" | "warm" | "warmed"
   /** At `activity`, the request that (re)started the window: an agent step, a compaction or a generate call. */
   readonly kind?: "primary" | "compaction" | "generate"
   /** Epoch ms of the latest non-warming request: the start of the warming window. */
   readonly since: number
   /** Epoch ms of this decision. */
   readonly now: number
+  readonly usage?: TokenUsage.Info
+  readonly error?: string
   settings: SessionWarmingSettings | undefined
 }
 

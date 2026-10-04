@@ -4,11 +4,13 @@ import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import type { Session } from "@opencode/schema/session"
-import { Clock, Duration, Effect, Fiber, Scope } from "effect"
+import type { TokenUsage } from "@opencode/schema/token-usage"
+import { Cause, Clock, Duration, Effect, Fiber, Scope } from "effect"
 import { Config } from "../config.js"
 import { ConfigWarming } from "../config/warming.js"
 import { Model } from "../model.js"
 import { Provider } from "../provider.js"
+import { SessionGenerate } from "../session/generate.js"
 import { PluginHooks } from "./hooks.js"
 
 type ActiveSession = {
@@ -106,9 +108,30 @@ export const Plugin = define({
 
         const last = current.last
         yield* Effect.logInfo("warming session", { sessionID, last })
+        SessionGenerate.clearLastUsage(sessionID)
+        let pingError: string | undefined
         yield* ctx.session
           .generate({ sessionID, prompt: settings.prompt })
-          .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
+          .pipe(
+            Effect.catchCause((cause) => {
+              pingError = Cause.pretty(cause)
+              return Effect.logWarning("failed to warm session", { sessionID, cause })
+            }),
+          )
+        const pingUsage = SessionGenerate.lastUsage(sessionID)
+        yield* hooks
+          .trigger("session", "warming", {
+            sessionID,
+            agent: current.agent,
+            model: current.model,
+            phase: "warmed",
+            since: current.since,
+            now: yield* Clock.currentTimeMillis,
+            usage: pingUsage,
+            error: pingError,
+            settings: undefined,
+          })
+          .pipe(Effect.orDie)
         const latest = sessions.get(sessionID)
         if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
         return yield* loop(sessionID, epoch)

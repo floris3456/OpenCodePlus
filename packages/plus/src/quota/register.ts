@@ -10,6 +10,7 @@ import { QuotaController } from "./controller.js"
 import { Definition } from "./rpc.js"
 import { installationIdentity } from "./identity.js"
 import { portableMessages } from "./portable.js"
+import { ledgerAt } from "../monitor/ledger.js"
 
 export function registerQuota(ctx: Context, config: Config | undefined) {
   return Effect.gen(function* () {
@@ -36,6 +37,13 @@ export function registerQuota(ctx: Context, config: Config | undefined) {
       },
       fetch,
       now: Date.now,
+      fact: (session, kind, detail) => {
+        try {
+          ledgerAt().contextFact({ sessionID: session, kind, detail, at: Date.now() })
+        } catch {
+          // ignore ledger errors
+        }
+      },
     })
     yield* ctx.rpc
       .register(Definition, {

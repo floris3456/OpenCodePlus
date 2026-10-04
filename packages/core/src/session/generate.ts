@@ -1,6 +1,7 @@
 export * as SessionGenerate from "./generate.js"
 
 import { LLMClient, Message, type AIError } from "@opencode/ai"
+import type { TokenUsage } from "@opencode/schema/token-usage"
 import { Effect } from "effect"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
@@ -11,10 +12,18 @@ import type { AgentNotFoundError } from "./error.js"
 import { SessionHistory } from "./history.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionModelRequest } from "./model-request.js"
+import { SessionUsage } from "./usage.js"
 import type { SessionRunnerModel } from "./runner/model.js"
 import type { SessionSchema } from "./schema.js"
 
 export type Error = AgentNotFoundError | Instructions.InitializationBlocked | SessionRunnerModel.Error | AIError
+
+const usages = new Map<string, TokenUsage.Info | undefined>()
+
+export const lastUsage = (sessionID: string): TokenUsage.Info | undefined => usages.get(sessionID)
+export const clearLastUsage = (sessionID: string): void => {
+  usages.delete(sessionID)
+}
 
 /** Generates text from current Session context without mutating the Session. */
 export const generate = Effect.fn("SessionGenerate.generate")(function* (input: {
@@ -61,6 +70,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       modelID: model.ref.id,
     })
     const response = yield* llm.generate(prepared.request, prepared.options)
+    usages.set(input.session.id, response.usage ? SessionUsage.tokens(response.usage) : undefined)
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))

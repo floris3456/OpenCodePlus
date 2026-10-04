@@ -25,6 +25,9 @@ export const MonitorEvents: ReadonlySet<string> = new Set([
   "session.inbox.delivered",
   "session.synthetic",
   "session.instructions.updated",
+  "session.revert.committed",
+  "session.revert.staged",
+  "session.usage.recorded",
   "session.deleted",
 ])
 
@@ -43,6 +46,8 @@ export interface Collector {
   observe(event: { readonly type: string; readonly data?: unknown; readonly created?: number }): void
   /** Waits for pending session lookups (tests and shutdown). */
   settle(): Promise<void>
+  setActiveRequest(sessionID: string, requestID: string): void
+  getActiveRequest(sessionID: string): string | undefined
 }
 
 interface CallState {
@@ -80,6 +85,9 @@ interface Track {
   readonly steps: Map<string, OpenStep>
   /** Tool name by call id, from `tool.input.started`, until the call is recorded. */
   readonly names: Map<string, string>
+  lastAgent?: string
+  lastModel?: string
+  activeRequestId?: string
 }
 
 type Data = Readonly<Record<string, unknown>>
@@ -135,6 +143,27 @@ export function createCollector(options: CollectorOptions): Collector {
     if (state.steps.has(messageID)) return
     const model = data.model as { id?: string; providerID?: string; variant?: string } | undefined
     const agent = typeof data.agent === "string" ? data.agent : undefined
+    const modelStr = model?.id ? `${model.providerID ?? ""}/${model.id}` : undefined
+
+    if (state.lastAgent !== undefined && agent !== undefined && state.lastAgent !== agent) {
+      ledger.contextFact({
+        sessionID,
+        at: now(),
+        kind: "agent_switch",
+        detail: { from: state.lastAgent, to: agent },
+      })
+    }
+    if (state.lastModel !== undefined && modelStr !== undefined && state.lastModel !== modelStr) {
+      ledger.contextFact({
+        sessionID,
+        at: now(),
+        kind: "model_switch",
+        detail: { from: state.lastModel, to: modelStr },
+      })
+    }
+    if (agent !== undefined) state.lastAgent = agent
+    if (modelStr !== undefined) state.lastModel = modelStr
+
     state.idx += 1
     const step: OpenStep = {
       messageID,
@@ -147,6 +176,7 @@ export function createCollector(options: CollectorOptions): Collector {
       calls: new Map(),
     }
     state.steps.set(messageID, step)
+    const started = typeof data.started === "number" ? data.started : now()
     ledger.stepStarted({
       sessionID,
       messageID,
@@ -158,7 +188,20 @@ export function createCollector(options: CollectorOptions): Collector {
       ...(model?.id === undefined ? {} : { model: model.id }),
       ...(model?.variant === undefined ? {} : { variant: model.variant }),
       ...(step.config === undefined ? {} : { config: step.config }),
-      started: typeof data.started === "number" ? data.started : now(),
+      started,
+    })
+    const reqId = state.activeRequestId ?? `req_${sessionID}_${messageID}`
+    state.activeRequestId = reqId
+    ledger.requestStarted({
+      id: reqId,
+      sessionID,
+      kind: "step",
+      agent,
+      provider: model?.providerID,
+      model: model?.id,
+      variant: model?.variant,
+      started,
+      messageID,
     })
   }
 
@@ -285,6 +328,15 @@ export function createCollector(options: CollectorOptions): Collector {
     }
     const finish = failed ? "error" : String(data.finish ?? "unknown")
     ledger.stepEnded(sessionID, messageID, now(), finish, usage)
+    const reqId = state.activeRequestId ?? `req_${sessionID}_${messageID}`
+    state.activeRequestId = undefined
+    ledger.requestEnded(reqId, {
+      ended: now(),
+      status: failed ? "error" : "completed",
+      error: failed ? "step failed" : undefined,
+      usage,
+      messageID,
+    })
     if (step === undefined) return
     const calls = [...step.calls.values()]
     // Visible output is split between the text the step wrote and its calls' inputs.
@@ -330,6 +382,14 @@ export function createCollector(options: CollectorOptions): Collector {
     state.epoch += 1
     const at = now()
     const messageID = `compaction:${at}:${state.idx}`
+    ledger.contextFact({
+      sessionID,
+      at,
+      kind: "compaction",
+      detail: { epoch: state.epoch, tokens, model },
+    })
+    const reqId = state.activeRequestId ?? `req_${sessionID}_${messageID}`
+    state.activeRequestId = undefined
     ledger.stepStarted({
       sessionID,
       messageID,
@@ -342,6 +402,16 @@ export function createCollector(options: CollectorOptions): Collector {
       ...configOf(),
       started: at,
     })
+    ledger.requestStarted({
+      id: reqId,
+      sessionID,
+      kind: "compaction",
+      provider: model?.providerID,
+      model: model?.id,
+      variant: model?.variant,
+      started: at,
+      messageID,
+    })
     ledger.stepEnded(sessionID, messageID, at, "compaction", {
       input: tokens?.input ?? 0,
       output: tokens?.output ?? 0,
@@ -349,6 +419,19 @@ export function createCollector(options: CollectorOptions): Collector {
       cacheRead: tokens?.cache.read ?? 0,
       cacheWrite: tokens?.cache.write ?? 0,
       cost: typeof data.cost === "number" ? data.cost : 0,
+    })
+    ledger.requestEnded(reqId, {
+      ended: at,
+      status: "completed",
+      usage: {
+        input: tokens?.input ?? 0,
+        output: tokens?.output ?? 0,
+        reasoning: tokens?.reasoning ?? 0,
+        cacheRead: tokens?.cache.read ?? 0,
+        cacheWrite: tokens?.cache.write ?? 0,
+        cost: typeof data.cost === "number" ? data.cost : 0,
+      },
+      messageID,
     })
     state.previous = undefined
     state.dirty = true
@@ -397,11 +480,73 @@ export function createCollector(options: CollectorOptions): Collector {
       if (event.type === "session.tool.success") return settled(sessionID, data, "completed")
       if (event.type === "session.tool.failed") return settled(sessionID, data, "error")
       if (event.type === "session.compaction.ended") return compacted(sessionID, data)
+      if (event.type === "session.instructions.updated") {
+        const delta = data.delta as Record<string, unknown> | undefined
+        const keys = delta
+          ? Object.keys(delta)
+          : Array.isArray(data.keys)
+            ? (data.keys as string[])
+            : Array.isArray(data.instructionSources)
+              ? (data.instructionSources as string[])
+              : []
+        ledger.contextFact({
+          sessionID,
+          at: now(),
+          kind: "instruction_update",
+          detail: { keys },
+        })
+        track(sessionID).dirty = true
+        return
+      }
+      if (event.type === "session.revert.committed") {
+        ledger.contextFact({
+          sessionID,
+          at: now(),
+          kind: "revert",
+          detail: { to: data.to },
+        })
+        track(sessionID).dirty = true
+        return
+      }
+      if (event.type === "session.usage.recorded" && data.source === "title") {
+        const tokens = data.tokens as
+          | { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+          | undefined
+        const cost = typeof data.cost === "number" ? data.cost : 0
+        const reqId = track(sessionID).activeRequestId ?? `title:${now()}`
+        track(sessionID).activeRequestId = undefined
+        ledger.requestStarted({
+          id: reqId,
+          sessionID,
+          kind: "title",
+          isTitle: true,
+          started: now(),
+        })
+        ledger.requestEnded(reqId, {
+          ended: now(),
+          status: "completed",
+          usage: {
+            input: tokens?.input ?? 0,
+            output: tokens?.output ?? 0,
+            reasoning: tokens?.reasoning ?? 0,
+            cacheRead: tokens?.cache?.read ?? 0,
+            cacheWrite: tokens?.cache?.write ?? 0,
+            cost,
+          },
+        })
+        return
+      }
       // A user prompt, a synthetic message or an instructions update entered the prompt.
       track(sessionID).dirty = true
     },
     settle: async () => {
       while (pending.size > 0) await Promise.all([...pending])
+    },
+    setActiveRequest: (sessionID: string, requestID: string) => {
+      track(sessionID).activeRequestId = requestID
+    },
+    getActiveRequest: (sessionID: string) => {
+      return track(sessionID).activeRequestId
     },
   }
 }
