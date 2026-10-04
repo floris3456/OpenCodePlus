@@ -16,7 +16,7 @@ import { cliproxyapiConfig } from "./config.js"
 import { imageToolRegistration, type ImageTarget } from "./image.js"
 import { migratingStorage } from "./legacy.js"
 
-export { applyRelayToModels } from "./catalog.js"
+export { applyCatalogue, applyRelayToExistingModels, applyRelayToModels } from "./catalog.js"
 
 export const ID = "opencode.plus.cliproxyapi"
 const REFRESH = "5 minutes"

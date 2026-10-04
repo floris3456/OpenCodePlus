@@ -4,9 +4,12 @@ import { Model } from "@opencode/core/model"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { Provider } from "@opencode/core/provider"
-import { applyRelayToModels } from "@opencode/plus/cliproxyapi"
+import type { ProviderEditor } from "@opencode/plugin/effect/provider"
+import { applyCatalogue, applyRelayToExistingModels, applyRelayToModels } from "@opencode/plus/cliproxyapi"
 import { Document, Info, type Entry } from "@opencode/schema/config"
-import { describe, expect } from "bun:test"
+import { Model as ModelSchema } from "@opencode/schema/model"
+import { Provider as ProviderSchema } from "@opencode/schema/provider"
+import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
@@ -85,4 +88,92 @@ describe("opencode.plus.cliproxyapi legacy relay", () => {
       ])
     }),
   )
+})
+
+// Minimal ProviderEditor over one provider, for the relay's provider-level entry points.
+function providerEditor(provider: ProviderSchema.Info, models: Model.Info[]) {
+  const store = { provider, models: new Map(models.map((model) => [String(model.id), structuredClone(model)])) }
+  const editor: ProviderEditor = {
+    list: () => [{ provider: store.provider, models: store.models }],
+    get: () => ({ provider: store.provider, models: store.models }),
+    add: () => {},
+    update: (_id, update) => update(store.provider as never),
+    remove: () => {},
+    models: {
+      set: (_id, values) => {
+        store.models = new Map(values.map((model) => [String(model.id), structuredClone(model)]))
+      },
+      update: (_id, modelID, update) => {
+        const current = store.models.get(String(modelID))
+        const model =
+          current ?? Model.Info.default(Provider.ID.make("cpa"), Model.ID.make(String(modelID)))
+        store.models.set(String(modelID), model)
+        update(model as never)
+      },
+      remove: (_id, modelID) => {
+        store.models.delete(String(modelID))
+      },
+    },
+  }
+  return { editor, get: (id: string) => store.models.get(id) }
+}
+
+describe("opencode.plus.cliproxyapi relay entry points", () => {
+  test("legacy relay never invents variants for a Claude model that had none", () => {
+    const provider = {
+      ...ProviderSchema.Info.empty(ProviderSchema.ID.make("cpa")),
+      package: "@opencode/ai/providers/openai-compatible",
+    }
+    const claude = ModelSchema.Info.default(ProviderSchema.ID.make("cpa"), ModelSchema.ID.make("claude-3-7-sonnet"))
+    const { editor, get } = providerEditor(provider, [claude])
+
+    applyRelayToExistingModels(editor, { cpa: "https://cpa.invalid" })
+
+    const updated = get("claude-3-7-sonnet")!
+    expect(updated.package).toBe("@opencode/ai/providers/anthropic-compatible")
+    expect(updated.settings?.compaction).toEqual({ type: "native" })
+    // Core fills the spelling later from the package; the relay does not invent ids.
+    expect(updated.variants).toEqual([])
+  })
+
+  test("catalogue relay keeps a user's own package, variants and compaction", () => {
+    const provider = {
+      ...ProviderSchema.Info.empty(ProviderSchema.ID.make("cpa")),
+      package: "@opencode/ai/providers/openai-compatible",
+    }
+    const userModel: Model.Info = {
+      ...Model.Info.default(Provider.ID.make("cpa"), Model.ID.make("claude-opus-4-5")),
+      package: "custom-anthropic-package",
+      settings: { compaction: { type: "summary" } },
+      variants: [{ id: Model.VariantID.make("high"), settings: { effort: "high" } }],
+    }
+    const { editor, get } = providerEditor(provider, [userModel])
+
+    applyCatalogue(
+      editor,
+      "cpa",
+      {
+        source: "details",
+        hash: "h",
+        models: [
+          {
+            id: "claude-opus-4-5",
+            name: "Claude Opus 4.5",
+            kind: "chat",
+            ownedBy: "anthropic",
+            input: ["text"],
+            outputModalities: ["text"],
+            reasoning: { mode: "levels", levels: ["low", "high"] },
+            tiers: [],
+          },
+        ],
+      },
+      "@opencode/ai/providers/openai-compatible",
+    )
+
+    const updated = get("claude-opus-4-5")!
+    expect(updated.package).toBe("custom-anthropic-package")
+    expect(updated.settings?.compaction).toEqual({ type: "summary" })
+    expect(updated.variants).toEqual([{ id: Model.VariantID.make("high"), settings: { effort: "high" } }])
+  })
 })
