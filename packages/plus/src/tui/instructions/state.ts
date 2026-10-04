@@ -595,8 +595,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   // T6: rename a renamable row through the same RPC path the palette and the
   // tools use. Agents and team members both go through agent.rename (a member
-  // names its team); teams through team.rename. Returns the new tree row id so
-  // the caller can keep the selection on the renamed row.
+  // names its team); teams through team.rename. Returns the renamed row's new
+  // tree id; the caller reveals it.
+  //
+  // The write emits a store-change event, whose reload bumps the generation
+  // while the RPC is in flight. The id is still valid, so the return is not
+  // gated on the generation: only an explicit refresh is skipped when another
+  // reload already owns the snapshot.
   async function renameRow(
     input:
       | { readonly kind: "agent"; readonly level: "project" | "global"; readonly from: string; readonly to: string }
@@ -608,23 +613,25 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     try {
       if (input.kind === "team") {
         const result = await plus["team.rename"]({ level: input.level, from: input.from, to: input.to }, { location: context.location })
-        if (disposed || requestGen !== generation) return undefined
-        await refresh()
+        if (disposed) return undefined
+        const row = `team:${input.level}:${result.to}`
+        if (requestGen === generation) await refresh()
         if (disposed) return undefined
         setStatus(`Renamed team ${input.from} to ${result.to}`)
-        return `team:${input.level}:${result.to}`
+        return row
       }
       const result =
         input.kind === "member"
           ? await plus["agent.rename"]({ scope: input.level, team: input.team, from: input.from, to: input.to }, { location: context.location })
           : await plus["agent.rename"]({ scope: input.level, from: input.from, to: input.to }, { location: context.location })
-      if (disposed || requestGen !== generation) return undefined
-      await refresh()
+      if (disposed) return undefined
+      const row = input.kind === "member" ? `team:${input.level}:${input.team}:${result.to}` : `agent:${input.level}:${result.to}`
+      if (requestGen === generation) await refresh()
       if (disposed) return undefined
       setStatus(input.kind === "member" ? `Renamed member ${input.from} to ${result.to}` : `Renamed agent ${input.from} to ${result.to}`)
-      return input.kind === "member" ? `team:${input.level}:${input.team}:${result.to}` : `agent:${input.level}:${result.to}`
+      return row
     } catch (error: unknown) {
-      if (disposed || requestGen !== generation) return undefined
+      if (disposed) return undefined
       setStatus(errorMessage(error))
       return undefined
     } finally {

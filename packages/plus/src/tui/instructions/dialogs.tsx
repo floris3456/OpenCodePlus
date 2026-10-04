@@ -12,7 +12,7 @@ import {
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { homeCategoryLabel, orderedCategories } from "../../instructions/categories.js"
-import { renameTargetOf, validateRenameName } from "./rename.js"
+import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { displayLevel } from "./detail-pane.js"
@@ -1237,26 +1237,31 @@ async function editModel(node: TreeNode): Promise<void> {
 
   // R on an agent, member or team row: rename it (prefilled, validated like
   // creation). Everything that names it follows in one store revision; the
-  // tree selection moves to the renamed row.
-  async function renameRow(node: TreeNode | undefined): Promise<void> {
-    if (disposed || node === undefined) return
-    const target = renameTargetOf(node, state.snapshot())
-    if (target === undefined) {
-      context.ui.toast.show({ variant: "error", message: `"${node.label}" cannot be renamed` })
-      return
+  // caller puts the tree selection on the renamed row.
+  async function renameRow(node: TreeNode | undefined): Promise<{ readonly row: string; readonly expand: readonly string[] } | undefined> {
+    if (disposed || node === undefined) return undefined
+    const candidate = renameCandidateOf(node, state.snapshot())
+    if (candidate === undefined) {
+      context.ui.toast.show({ variant: "error", message: `"${node.label}" is not a renamable row` })
+      return undefined
     }
+    if (candidate.target === undefined) {
+      context.ui.toast.show({ variant: "error", message: candidate.refusal ?? `"${node.label}" cannot be renamed` })
+      return undefined
+    }
+    const target = candidate.target
     const raw = await context.ui.dialog.prompt({
       title: `Rename ${node.label}`,
       description: target.kind === "team" ? "New team name; members and records follow." : "New id; use / for nesting. .. is not allowed.",
       value: node.label,
     })
-    if (disposed || raw === undefined) return
+    if (disposed || raw === undefined) return undefined
     const validated = validateRenameName(target, raw)
     if (!validated.ok) {
       context.ui.toast.show({ variant: "error", message: validated.reason })
-      return
+      return undefined
     }
-    if (validated.name === target.from) return
+    if (validated.name === target.from) return undefined
     const row = await state.renameRow(
       target.kind === "member"
         ? { kind: "member", level: target.level, team: target.team, from: target.from, to: validated.name }
@@ -1264,14 +1269,14 @@ async function editModel(node: TreeNode): Promise<void> {
           ? { kind: "team", level: target.level, from: target.from, to: validated.name }
           : { kind: "agent", level: target.level, from: target.from, to: validated.name },
     )
-    if (disposed || row === undefined) return
+    if (disposed || row === undefined) return undefined
     const expand =
       target.kind === "agent"
         ? [`root:${target.level}`, `group:${target.level}:agents`, `group:${target.level}:agents:user`]
         : target.kind === "member"
           ? [`root:${target.level}`, `group:${target.level}:teams`, `team:${target.level}:${target.team}`]
           : [`root:${target.level}`, `group:${target.level}:teams`]
-    state.reveal(expand, row)
+    return { row, expand }
   }
 
   // d on a user category: delete it after confirmation; its rows go home.

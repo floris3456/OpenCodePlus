@@ -25,7 +25,7 @@ import {
 import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
-import { renameTargetOf } from "./rename.js"
+import { renameCandidateOf } from "./rename.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, userCategoryName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
@@ -622,6 +622,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   })
   createEffect(() => {
     const nav = workspace().nav
+    // Track the reveal request itself, not only the nav it waits for: a rename
+    // may reveal a row the current snapshot already carries.
+    state.revealed()
     const wanted = wantedReveal
     if (wanted === undefined) return
     const row = nav.find((entry) => entry.key === wanted)
@@ -1048,13 +1051,22 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   // R on an agent, member or team row renames that row; otherwise R keeps the
   // category rename. Dispatch by row kind so both keep working.
-  function renameCurrent() {
+  async function renameCurrent(): Promise<void> {
     const node = current()
-    if (renameTargetOf(node, state.snapshot()) !== undefined) {
-      void dialogs.renameRow(node)
+    if (renameCandidateOf(node, state.snapshot()) !== undefined) {
+      const renamed = await dialogs.renameRow(node)
+      if (renamed !== undefined) selectRenamed(renamed.row, renamed.expand)
       return
     }
     renameCategory()
+  }
+
+  // Ask the reveal path for the renamed row: it switches to the row's level,
+// opens the rows above it and selects it as soon as a snapshot carries it
+// (the change event's reload may land after this call). Same mechanism the
+// create flows use.
+  function selectRenamed(row: string, expand: readonly string[]): void {
+    state.reveal(expand, row)
   }
 
   function resetRow() {
@@ -1414,7 +1426,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
     if (node?.kind === "item" && node.address !== undefined && node.address.section === null) hints.push(["m", "move"])
-    if (renameTargetOf(node, state.snapshot()) !== undefined || userCategoryName(workspace().category) !== undefined) hints.push(["R", "rename"])
+    if (renameCandidateOf(node, state.snapshot())?.target !== undefined || userCategoryName(workspace().category) !== undefined) hints.push(["R", "rename"])
     if (node?.actions?.remove === true || userCategoryName(node) !== undefined) hints.push(["d", "delete"])
     if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
     if (node?.actions?.split === true) hints.push(["s", "split"])
@@ -1506,7 +1518,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           bind: "shift+r,R",
           title: "Rename",
           group: "Instructions",
-          run: renameCurrent,
+          run: () => void renameCurrent(),
         },
         ...(canReset(node) ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }] : []),
         ...(node?.actions?.split === true ? [{ bind: "s", title: "Split", group: "Instructions", run: split }] : []),
