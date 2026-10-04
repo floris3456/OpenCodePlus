@@ -621,10 +621,21 @@ member's stored role record contains a `<!-- requires: … -->` line.
     snapshot.
 - **`team_stop` on a working child does not interrupt it** (question 5).
   Combined with question 1, stopping a hung child took until eviction.
-- **Not established: why this chat switched to `Flash-B-Worker`.**
+- **Why this chat switched to `Flash-B-Worker`** (found after the first
+  version of this section; source established, the TUI state itself is not
+  logged).
   - The monitor shows `ses_ef90203d4ffe…` running as `build` until 13:35, as
     `Flash-B-Worker` from 13:35:39 to 13:44:48, and as `build` again after the
     user's revert.
-  - The switch came with the next prompt after an unanswered `question`, while
-    the storm made the client re-fetch the agent list about 37 times a second.
-  - No log line records the agent a prompt was sent with.
+  - When the enabled team changes, every open TUI makes that team the active
+    ring and calls `agents.set(first)` with its first installed member
+    (`packages/plus/src/tui/active-team.tsx:157-180`).
+  - Members are sorted by id, so for Simple that is `Flash-B-Worker`. `set`
+    also stores it as the agent of the chat on screen
+    (`packages/tui/src/context/local.tsx:175`).
+  - `current()` additionally falls back to the ring's first entry when a chat's
+    agent is outside the ring (`local.tsx:149`).
+  - A tool call enabled Simple at 13:08:23. The chat's next message, at
+    13:35:39 after the unanswered `question`, therefore went out as
+    `Flash-B-Worker`.
+  - Fix: `plus-1.1.12-team-fixes.md` F10.

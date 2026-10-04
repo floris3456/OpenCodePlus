@@ -6,7 +6,9 @@ warming recognises every compaction (`compacted`, no pings, one Enter sends);
 keep-alive pings follow the agent/model of the last real request; and Claude
 models reached through CLIProxyAPI compact remotely when the strategy is Auto.
 
-Release: `plus-1.1.12`. This is one of three plans run in parallel:
+Release: `plus-1.1.12`, together with `plus-1.1.12-team-fixes.md` (decided
+2026-10-04). The Instructions and Monitor plans moved to `plus-1.1.13`. This
+was one of three plans run in parallel:
 `plus-1.1.12-session-runtime.md` (this), `plus-1.1.12-instructions.md`,
 `plus-1.1.12-monitor.md`. Overlap zones are named under each task.
 

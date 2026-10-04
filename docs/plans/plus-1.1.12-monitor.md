@@ -9,7 +9,9 @@ from the data. The page opens on the current session and is one key away from
 the whole team tree, a team, the project or everything. The composer `Team` and
 `Tools` tabs default to the current team tree.
 
-Release: `plus-1.1.12`. This is one of three plans run in parallel:
+Release: `plus-1.1.13` (moved from `plus-1.1.12` on 2026-10-04; how to
+resume it: `plus-1.1.13-team-fixes.md`). This was one of three plans run in
+parallel:
 `plus-1.1.12-session-runtime.md`, `plus-1.1.12-instructions.md`,
 `plus-1.1.12-monitor.md` (this). Overlap zones are named under each task.
 

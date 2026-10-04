@@ -8,7 +8,9 @@ teams never leak into Defaults. Agents, members and teams can be renamed. Models
 lists load fast and agents' Models use the Defaults › Models field layout. You
 can create your own categories and move any row into them.
 
-Release: `plus-1.1.12`. This is one of three plans run in parallel:
+Release: `plus-1.1.13` (moved from `plus-1.1.12` on 2026-10-04; how to
+resume it: `plus-1.1.13-team-fixes.md`). This was one of three plans run in
+parallel:
 `plus-1.1.12-session-runtime.md`, `plus-1.1.12-instructions.md` (this),
 `plus-1.1.12-monitor.md`. Overlap zones are named under each task.
 

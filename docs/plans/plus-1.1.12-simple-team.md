@@ -67,7 +67,7 @@ model and rows.
 | `Simple-Build` | `basic/build-seat` | `cliproxyapi` / `claude-opus-5-5` / `xhigh` | inherit |
 | `Simple-Orchestrator` | `basic/orchestrator` | `cliproxyapi` / `claude-opus-5-5` / `xhigh` | inherit |
 | `Flash-B-Worker` | `basic/implementer` | `cliproxyapi` / `gemini-3.8-flash-high` / `high` | `off` |
-| `Flash-Worker` | `basic/implementer` | `lithosai` / `deepseek-ai/DeepSeek-V4.1-Flash` / `high` | `off` |
+| `Flash-Worker` | `basic/implementer` | `cliproxyapi` / `deepseek-v4.1-flash-cheap` / `high` | `off` |
 | `Heavy-Worker` | `basic/implementer` | `cliproxyapi` / `gpt-6-astra` / `medium` | `off` |
 
 Descriptions (`setting:description`, text). `team_delegate` lists them beside each
@@ -76,8 +76,8 @@ member, and delegators route work by them:
 - `Simple-Planner`: `Turns goals into exact plans with paths and checks; never delegates`
 - `Simple-Build`: `The Simple team's seat in your chat: hands work to the orchestrator, the planner or a worker and lands the result`
 - `Simple-Orchestrator`: `Owns a piece of work end to end: splits it among workers, reviews and lands their commits, stops every run it is done with`
-- `Flash-B-Worker`: `Fast coder and live tester on Gemini, free but quota-limited (5-hour and 7-day windows): the first choice for implementing and live testing`
-- `Flash-Worker`: `Fast coder and live tester on DeepSeek, paid per token: for parallel work beyond the free worker, and whenever it is out of quota`
+- `Flash-B-Worker`: `Fastest coder and live tester, on Gemini; free but quota-limited (5-hour and 7-day windows): spend it on tasks others wait on, quick fixes and live tests, not on bulk background work`
+- `Flash-Worker`: `Cheap coder and live tester on DeepSeek through CLIProxyAPI, no quota but much slower: the default for bulk and parallel work nothing waits on, and whenever the Gemini worker is out of quota`
 - `Heavy-Worker`: `Slow, careful coder on GPT-6 Astra with deep knowledge: for intricate logic, unfamiliar libraries or protocols, and tasks the fast workers got wrong twice; tests its own change`
 
 ## 3. Steps
@@ -219,6 +219,14 @@ Set each member's `system:role` to the full text below. Each body replaces the
 preset's role text completely. `<!-- requires: … -->` lines work as in the
 shipped bodies.
 
+> **Stored without the `requires` lines until `plus-1.1.12` is active.** In
+> the running release, a team role record containing those lines republishes
+> forever (`plus-1.1.12-team-bottlenecks.md`, follow-up question 8). On
+> 2026-10-04 the five bodies were stored with only those lines removed. Every
+> condition they name is on for the members concerned, so the prompts the
+> models see are the same. Put them back after the release, as step 1 of
+> "After both purpose branches are merged" in `plus-1.1.12-team-fixes.md`.
+
 ### 5.1 Shared opening: every member except `Simple-Build`
 
 ```markdown
@@ -328,10 +336,12 @@ briefFile. Every Brief carries:
 Delegate a task only after the work it depends on has landed in your branch.
 
 ## Choosing a worker
-team_delegate lists the workers with their descriptions; route by them. Run
-several runs of the free worker side by side before moving parallel work to the
-paid one. Give the slow worker, early, the tasks where knowledge matters more
-than speed. When a settlement names a quota, rate limit or provider error,
+team_delegate lists the workers with their descriptions; route by them. The
+Gemini worker is the fastest, but its quota is limited: give it the tasks other
+tasks wait on, quick fixes and live tests. Give bulk and parallel work that
+nothing waits on to the DeepSeek worker: it is cheap and has no quota, but it is
+much slower, so start it early. Give the slow, careful worker, early, the tasks
+where knowledge matters more than speed. When a settlement names a quota, rate limit or provider error,
 supersede that run, delegate the same Brief to another worker and leave the
 failing one out for the rest of the work.
 
@@ -587,8 +597,19 @@ visible from every worktree. Team cleanup removes stopped runs' worktrees after
 - **Still to do for the release:** a live check of the whole batch (the 16
   items in the three plans). Building and activating the release is the
   user's job (skill `opencodeplus-release`).
-- **Team bottleneck fixes:** `docs/plans/plus-1.1.12-team-bottlenecks.md`,
-  Proposed fixes 1–5. Two more:
-  - `team_stop` / `team_supersede` turn off cache warming for the run's session
-    and let its workspace be unloaded;
-  - `team_followup` refuses a run that its parent stopped.
+- **Team bottleneck fixes:** researched in
+  `docs/plans/plus-1.1.12-team-bottlenecks.md` (follow-up research). They are
+  planned in `plus-1.1.12-team-fixes.md` (F1–F10, in this release) and
+  `plus-1.1.13-team-fixes.md` (F11–F15).
+- **Release split (decided 2026-10-04):**
+  - `plus-1.1.12` = session runtime T1–T6 plus F1–F10;
+  - the Instructions and Monitor branches above move to `plus-1.1.13`, which
+    lists how to merge them.
+- **Flash-Worker model (changed 2026-10-04):**
+  - `cliproxyapi/deepseek-v4.1-flash-cheap` (DeepSeek V4.1 Flash from OpenCode
+    Go, through CLIProxyAPI), cheaper and slower than LithosAI. The LithosAI
+    row stays as an inactive candidate.
+  - The model was added to the release's provider list by hand on request. It
+    is not in the source config `~/.config/opencode/opencode.json`, so the next
+    `bin/opencodeplus-sync-config` run would drop it unless it is added there
+    too.
