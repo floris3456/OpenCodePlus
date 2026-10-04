@@ -52,6 +52,8 @@ export interface Discovered {
   readonly hostModels: readonly HostModel[]
 }
 
+
+
 export interface BaseTemplate {
   readonly id: string
   readonly title: string
@@ -80,6 +82,12 @@ export interface DiscoverInput {
   readonly splits?: readonly SplitRecord[]
   /** The tools each MCP server registered when last connected: rows for a server that has not registered yet. */
   readonly knownMcpTools?: KnownMcpTools
+  /**
+   * The provider catalogue to use instead of reading `ctx.model.list()` here:
+   * the caller caches it so navigation and snapshots never refetch. Absent
+   * means read it (tests and standalone callers).
+   */
+  readonly hostModels?: readonly HostModel[]
 }
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
@@ -202,7 +210,15 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent, inheritedInstructions)),
     ...controlItems(undefined, {}, inheritedInstructions),
   ]
-  return { items, agents: withBase, servers: mcp.servers, bodies, modelUpstream: upstream, hosts: agents, hostModels: await hostModelsOf(input.ctx) }
+  return {
+    items,
+    agents: withBase,
+    servers: mcp.servers,
+    bodies,
+    modelUpstream: upstream,
+    hosts: agents,
+    hostModels: input.hostModels ?? (await hostModelsOf(input.ctx)),
+  }
 }
 
 /** The catalog's models with their variants and host warming; a catalog that cannot be read contributes nothing. */
@@ -220,6 +236,7 @@ export async function hostModelsOf(ctx: Context): Promise<HostModel[]> {
     return {
       providerID: String(entry.providerID),
       modelID: String(entry.id),
+      name: String(entry.name ?? entry.id),
       variants: (entry.variants ?? []).map((variant) => String(variant.id)),
       ...(warming === undefined ? {} : { warming }),
     }

@@ -1,6 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { badgeLabels } from "../../instructions/from-label.js"
 import { controlKind, type TreeNode } from "../../instructions/tree.js"
+import { isModelFieldRowId, isModelSettingRowId } from "../../instructions/model-settings.js"
 
 // The badge words are shared with `instructions_list` (from-label.ts).
 export { badgeLabels }
@@ -13,14 +14,15 @@ export function hasVisibleChildren(nodes: readonly TreeNode[], index: number): b
   return next.depth > node.depth
 }
 
-// Sections, model rows, and perm rule rows are always leaves. Every other row
-// owns logical children (an item always has its split sections), so a
-// collapsed non-section row keeps its "+" marker even though the children are
-// hidden from the flat list.
+// Sections, model field rows, permission rule rows and control rows are
+// always leaves. A model row opens into its field rows; every other row owns
+// logical children (an item always has its split sections), so a collapsed
+// non-section row keeps its "+" marker even though the children are hidden
+// from the flat list.
 export function isExpandableRow(node: TreeNode, visibleChildren: boolean, expanded: ReadonlySet<string>): boolean {
   if (node.kind === "section") return false
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
-  if (node.address?.item.startsWith("model:")) return false
+  if (isModelFieldRowId(node.id) || isModelSettingRowId(node.id)) return false
   if (node.address?.item.startsWith("perm:")) return false
   if (visibleChildren) return true
   if (expanded.has(node.id)) return false

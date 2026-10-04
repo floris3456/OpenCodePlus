@@ -18,6 +18,7 @@ import { buildTreeMemo, controlChoices, treeOf, withControlItems, type Memo, typ
 import {
   isEvery,
   isModelDefaultRowId,
+  isModelFieldRowId,
   modelDefaultItemId,
   parseModelDefaultItemId,
   parseModelSettingItemId,
@@ -28,7 +29,6 @@ import { agentOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, m
 import {
   activateModelRow,
   addSection,
-  editModelRow,
   findRow,
   isModelRowId,
   isPermRowId,
@@ -36,19 +36,20 @@ import {
   removalPlan,
   removeModelRow,
   reset,
+  resetModelFieldRow,
   resetModelRow,
   resolveModelReview,
   resolveReview,
   saveSplit,
   saveText,
   setEnabled,
+  setModelFieldRow,
   setPin,
   setRequires,
   conditionChoices,
   stateReviewChoice,
   teamPlan,
   toggle,
-  type ModelEditFields,
   type ModelReviewChoice,
   type StateReviewChoice,
 } from "../../instructions/ops.js"
@@ -587,6 +588,14 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
     const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
     if (setting !== undefined) return editModelSettings(node, { [setting.field]: null })
+    if (isModelFieldRowId(node.id)) {
+      const result = resetModelFieldRow(memoInput(), node.id, treeMemo())
+      if ("refusal" in result) {
+        setStatus(result.refusal)
+        return false
+      }
+      return persistModels(result.models, result.status, result.retryHint)
+    }
     if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = resetModelRow(memoInput(), node.id, treeMemo())
@@ -702,11 +711,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persistModels(result.models, result.status, result.retryHint)
   }
 
-  // Enter on a model row: replace the candidate at this level and set or clear
-  // its warming in one save. Inherited and upstream rows plant a local record,
-  // as activation does.
-  async function editModel(node: TreeNode, fields: ModelEditFields): Promise<boolean> {
-    const result = editModelRow(memoInput(), node.id, fields, treeMemo())
+  // Enter on a model field row under an agent/member/preset: set that one
+  // field at the row's level. Inherited rows plant a local record; empty text
+  // clears the field.
+  async function editModelField(node: TreeNode, text: string): Promise<boolean> {
+    const result = setModelFieldRow(memoInput(), node.id, text, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
@@ -1017,7 +1026,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     reviewChoice,
     modelReview,
     resolveModel,
-    editModel,
+    editModelField,
     editModelSettings,
     modelDefaultsView,
     reveal,

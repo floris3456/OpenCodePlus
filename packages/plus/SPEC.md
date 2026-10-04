@@ -200,8 +200,10 @@ title `Preset`) groups its options by `category`: `Agent presets · OpenCode`,
 | Presets → Agents → `User` | prompt `Preset name` → `Base preset` (the agent picker, incl. None) | `preset.create {kind: "agent", id, from?}` |
 | Presets → Teams → `User` | prompt `Team preset name` → `Team preset` (incl. `Empty team`) | `preset.create {kind: "team", id, from?}` |
 | a User team preset row | prompt `Member name` → `Preset` | `preset.addMember {team, id, from?}` |
-| any Models group (agent, member, entry, preset, member preset) | `Model provider` → `Model` (→ `Variant`) | `model.add` at the group's owner, team-scoped where its rows are |
-| enter on a model row | `Model` (`provider/model`, prefilled, validated against `catalog.models`) → `Variant` (prefilled, empty = none) → `Cache warming` (prefilled with the local value, placeholder the inherited one) | `ops.ts` `editModelRow` content saved through `instructions.mutate`; an inherited/upstream row plants a local record, the effective model stays effective |
+| any Models group (agent, member, entry, preset, member preset) | `Model provider` → `Model` (→ `Variant`) | `model.add` at the group's owner, team-scoped where its rows are; the added model becomes the exclusive active one at that level for that owner |
+| enter or `→` on a model row | opens the field rows (Model, Effort, Warming, Ping every, Keep-alive prompt); no whole-row editor |
+| enter on a model field row | for `Model`: `Model provider` → `Model` from `catalog.models`; for `Effort`: its variants; else the field value prefilled; empty clears | `ops.ts` `editModelRow` on the parent model row content saved through `instructions.mutate`; an inherited/upstream row plants a local record, the effective model stays effective |
+| `r` on a model field row | clears that field at that level | `editModelRow` with the field empty |
 | enter on a Defaults › Models row | `Warming` → `Ping every` → `Keep-alive prompt` → `Effort`, each prefilled with the row's own value and the effective one as placeholder; empty clears | `modelSettings.set` (`{ providerID?, modelID?, warming?, interval?, prompt?, effort? }`, strings set, `null` clears, absent leaves); a row left with no field is removed |
 | outside Project/Global (generic `Add` → Agent/Team) | … then `Agent scope` / `Team scope` last | as above |
 
@@ -1250,10 +1252,12 @@ carries every preset (`PresetListEntry`: ref, origin, kind, label,
 description?, mode?, members?).
 
 `ModelRef` is `{ level, agent, providerID, modelID, variant?, active? }`;
-`RuleRef` is `{ level, agent, tool, id, label }`. `model.add` stores an
-inactive candidate and requires it to exist in the host model catalog
-(unknown models fail with `model.invalid`); shared rows (`agent: null`)
-live at `defaults` only. `rule.add` derives `keywords` through
+`RuleRef` is `{ level, agent, tool, id, label }`. `model.add` requires the
+model to exist in the host model catalog (unknown models fail with
+`model.invalid`); shared rows (`agent: null`) live at `defaults` only. It
+stores the candidate AND makes it the active model at that level for that
+owner, exclusively (the previously active row at the same level/agent stops
+being active) in one revision and one log line. `rule.add` derives `keywords` through
 `keywordsForPattern` when omitted and matches existing rules by `(tool, id)`
 globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
 `level`/`agent` are carried but not part of the lookup. `rule.update`
@@ -2321,7 +2325,11 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   tight. `set` with `active: true` activates a model row exclusively at that
   level (a bare `set` on a model row activates too; model rows refuse text,
   state, pin, and resolve; `warming` sets the row's cache warming, see "Cache
-  warming", and is refused on other rows); on a perm row `state` applies, or `label` +
+  warming", and is refused on other rows); a model field row
+  (`item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`)
+  takes `text` as that one field's value (Model `provider/model[#variant]`,
+  Effort the variant, Warming/Ping every/Keep-alive prompt their stored form;
+  empty inherits); on a perm row `state` applies, or `label` +
   `patterns` (`keywords` optional) to update the rule through `rule.update`,
   or `message` alone to set the refusal text (a message-only edit derives
   label and patterns from the rule it edits), or `text` on a limit or bound
@@ -2331,7 +2339,8 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   refused (no pin, active, or resolve). `set` with `resolve: "keep"`
   acks upstream keeping text, `"take"` drops stored text and follows upstream,
   `"edit"` stores `text` against current upstream. `reset` deletes the
-  override at that row (on a model row clears only that level's active flag).
+  override at that row (on a model row clears only that level's active flag;
+  on a model field row clears that field at that level).
   `split` boundaries are `{ id, name, start }` with
   character offsets into the row text; `add: { name, text }` appends a new
   trailing section; perm and model rows cannot be split. `create` writes one row per call and returns `CreatedRow` fields: `id` is the
@@ -2358,7 +2367,7 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `providerID` + `modelID` (`variant`/`level`/`agent` optional); `level`
   defaults to `project` and project/global levels require an `agent`, so a
   model with no `agent` is only the shared Defaults row when `level` is
-  explicitly `defaults`. `create` with `kind: "rule"` needs `tool` + `id` +
+  explicitly `defaults`. The created model becomes the exclusive active model at that level for that owner in the same revision and log line. `create` with `kind: "rule"` needs `tool` + `id` +
   `label` + `patterns` (patterns are core wildcards, not regex); `message` is
   the optional refusal text the model reads; `level` defaults to `project` and
   a rule with no `agent` is stored at that requested level. The returned row is

@@ -51,12 +51,18 @@ import {
   modelSettingValue,
   everySettings,
   settingsFor,
+  defaultEffort,
+  modelSettingEffective,
+  modelFieldItemId,
+  MODEL_FIELD_LABELS,
+  MODEL_FIELD_NAMES,
   MODEL_SETTING_LABELS,
   MODEL_SETTINGS_FIELDS,
   MODELS_GROUP_ID,
   MODELS_OWNER,
   type HostWarming,
   type ModelDefaultView,
+  type ModelFieldName,
   type ModelSettingsKey,
   type ModelSettingsRecord,
 } from "./model-settings.js"
@@ -1758,8 +1764,87 @@ function lazyModelItem(
       }
     },
     reviewCount: () => 0,
+    // The row opens into one field per model field, the same layout as
+    // Defaults › Models: Model, Effort, Warming, Ping every, Keep-alive prompt.
+    children: () =>
+      MODEL_FIELD_NAMES.map((field) =>
+        lazyModelField(memo, ctx, level, owner, candidate, field, depth + 1, teamRef, catalogue, ownerPath),
+      ),
+  }
+}
+
+interface ModelFieldInfo {
+  readonly value: string
+  readonly own: boolean
+}
+
+// One field row under an agent/member/preset model row. The effective value
+// and, when inherited, its source; editing writes only this field at this
+// level, resetting clears it so the level below (or Defaults › Models) decides.
+function lazyModelField(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  field: ModelFieldName,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
+  const itemId = modelFieldItemId(target, field)
+  const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
+  const rowScope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }
+  const info = (): ModelFieldInfo => {
+    const host = hostModelOf(ctx.hostModels, { providerID: candidate.providerID, modelID: candidate.modelID })
+    const modelSetting = settingsFor(ctx.modelSettings, { providerID: candidate.providerID, modelID: candidate.modelID })
+    const view = modelDefaultViewOf(modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+    const fields = resolveModelFields({ models: ctx.models, scopes: ctx.scopes, ...rowScope }, target)
+    if (field === "model") {
+      // The row always names its candidate; the source is the level that
+      // supplied it, so an inherited row says where the model comes from.
+      const inherited = candidate.source !== level
+      return { value: inherited ? `${modelLabel(candidate)} · ${levelWord(candidate.source)}` : modelLabel(candidate), own: !inherited }
+    }
+    if (field === "effort") {
+      if (target.variant !== undefined) return { value: target.variant, own: true }
+      const inherited = defaultEffort({ ...(modelSetting === undefined ? {} : { model: modelSetting }), ...(everySettings(ctx.modelSettings) === undefined ? {} : { every: everySettings(ctx.modelSettings) }), ...(host?.variants === undefined ? {} : { variants: host.variants }) })
+      return inherited === undefined ? { value: "none", own: false } : { value: `${inherited.value} · ${defaultsSource(inherited.from)}`, own: false }
+    }
+    const own = fields[field] !== undefined && fields[field]!.level === level
+    if (own) return { value: fields[field]!.value, own: true }
+    const effective = modelSettingEffective(view, field)
+    if (effective === undefined) return { value: "none", own: false }
+    return { value: `${effective.text} · ${defaultsSource(effective.from)}`, own: false }
+  }
+  const current = info()
+  return {
+    id: rowIdOf("item", level, owner, itemId, catalogue, ownerPath),
+    kind: "item",
+    label: MODEL_FIELD_LABELS[field],
+    depth,
+    address,
+    actions: { toggle: false, edit: true, reset: current.own, remove: false, split: false, pin: false },
+    selfReview: () => false,
+    partial: () => ({ value: info().value, ...(info().own ? { modified: true as const } : {}) }),
+    reviewCount: () => 0,
     children: () => [],
   }
+}
+
+// Where an inherited Defaults › Models value came from, in the words the
+// field rows use. Levels keep their own name; the rest name the settings
+// surface (mirroring model-settings.ts sourceWord).
+function defaultsSource(from: "model" | "every" | "config" | "host" | "built-in" | "chat" | Level): string {
+  if (from === "model") return "defaults"
+  if (from === "every") return "every model"
+  if (from === "config") return "opencode.json"
+  if (from === "host") return "host"
+  if (from === "built-in") return "built-in"
+  if (from === "chat") return "chat"
+  return from
 }
 
 function modelLabel(candidate: { providerID: string; modelID: string; variant?: string }): string {

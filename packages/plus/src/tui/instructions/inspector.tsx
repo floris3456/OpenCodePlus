@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { fromWords, modelSettingEffective, MODEL_SETTING_LABELS, MODELS_GROUP_ID, parseModelSettingItemId } from "../../instructions/model-settings.js"
+import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LABELS, MODELS_GROUP_ID, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
 import { formatDuration } from "../../instructions/model.js"
 import { modelDefaultsViewOf } from "../../instructions/snapshot.js"
 import type { Snapshot } from "../../rpc.js"
@@ -63,6 +63,7 @@ export function kindWord(node: TreeNode): string {
   if (item?.startsWith("perm:") === true) return "permission"
   if (item?.startsWith("modeldefault:") === true) return "model defaults"
   if (item?.startsWith("modelsetting:") === true) return "model setting"
+  if (item?.startsWith("modelfield:") === true) return "model field"
   if (item?.startsWith("model:") === true) return "model"
   if (item?.startsWith("tool:") === true) return "tool"
   if (item?.startsWith("skill:") === true) return "skill"
@@ -73,6 +74,12 @@ export function kindWord(node: TreeNode): string {
 
 export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly Row[], memo?: Memo): Fact[] {
   const facts: Fact[] = []
+  const modelField = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
+  if (modelField !== undefined) {
+    facts.push(["field", MODEL_FIELD_LABELS[modelField.field].toLowerCase(), "value"] as Fact)
+    facts.push(["value", node.badges.value ?? "none"] as Fact)
+    return facts
+  }
   const defaults = modelDefaultsView(node, snapshot)
   const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
   if (defaults !== undefined && setting !== undefined) {

@@ -4,6 +4,7 @@ import {
   formatDuration,
   formatWarming,
   parseInterval,
+  parseModelItemId,
   parsePrompt,
   parseWarming,
   WARMING_MAX_MS,
@@ -65,6 +66,8 @@ export interface HostWarming {
 export interface HostModel {
   readonly providerID: string
   readonly modelID: string
+  /** Display name from the host catalog when it has one. */
+  readonly name?: string
   readonly variants: readonly string[]
   readonly warming?: HostWarming
 }
@@ -552,6 +555,52 @@ export const MODEL_SETTING_LABELS: Record<ModelSettingsField, string> = {
   interval: "Ping every",
   prompt: "Keep-alive prompt",
   effort: "Effort",
+}
+
+// An agent/member/preset model row opens into the same field rows as a
+// Defaults › Models row: Model, Effort, Warming, Ping every, Keep-alive
+// prompt. The item id carries the field and the candidate, so
+// `item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`
+// never collides with a `model:` row or a Defaults `modelsetting:` row.
+export type ModelFieldName = "model" | "effort" | "warming" | "interval" | "prompt"
+export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = ["model", "effort", "warming", "interval", "prompt"]
+export const MODEL_FIELD_PREFIX = "modelfield:"
+
+export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
+  model: "Model",
+  effort: "Effort",
+  warming: "Warming",
+  interval: "Ping every",
+  prompt: "Keep-alive prompt",
+}
+
+export function modelFieldItemId(
+  target: { readonly providerID: string; readonly modelID: string; readonly variant?: string },
+  field: ModelFieldName,
+): string {
+  const base = `${target.providerID}/${target.modelID}`
+  return `${MODEL_FIELD_PREFIX}${field}:${target.variant === undefined ? base : `${base}@${target.variant}`}`
+}
+
+export function parseModelFieldItemId(
+  item: string,
+): { readonly target: { readonly providerID: string; readonly modelID: string; readonly variant?: string }; readonly field: ModelFieldName } | undefined {
+  if (!item.startsWith(MODEL_FIELD_PREFIX)) return undefined
+  const rest = item.slice(MODEL_FIELD_PREFIX.length)
+  const colon = rest.indexOf(":")
+  if (colon <= 0) return undefined
+  const field = MODEL_FIELD_NAMES.find((entry) => entry === rest.slice(0, colon))
+  if (field === undefined) return undefined
+  const target = parseModelItemId(`model:${rest.slice(colon + 1)}`)
+  return target === undefined ? undefined : { target, field }
+}
+
+export function isModelFieldItemId(item: string): boolean {
+  return item.startsWith(MODEL_FIELD_PREFIX)
+}
+
+export function isModelFieldRowId(rowId: string): boolean {
+  return rowId.includes(`:${MODEL_FIELD_PREFIX}`)
 }
 
 /** One field row's value as the list shows it: the effective value and, when inherited, where from. */
