@@ -52,7 +52,11 @@ export interface Loaded {
  */
 export interface Interface {
   /** Selects the Session, agent, instructions, and tools used by subsequent work. */
-  readonly select: (sessionID: SessionSchema.ID) => Effect.Effect<Selection, AgentNotFoundError>
+  readonly select: (
+    sessionID: SessionSchema.ID,
+    /** Pins selection to an earlier request's agent; used by warming. */
+    agent?: Agent.ID,
+  ) => Effect.Effect<Selection, AgentNotFoundError>
   /** Resolves the model and active history for that selection. */
   readonly load: (selection: Selection) => Effect.Effect<Loaded, SessionRunnerModel.Error>
   readonly resolveModel: (
@@ -121,16 +125,20 @@ const layer = Layer.effect(
       return { agent, primary, selected }
     })
 
-    const select = Effect.fn("SessionContext.select")(function* (sessionID: SessionSchema.ID) {
+    const select = Effect.fn("SessionContext.select")(function* (
+      sessionID: SessionSchema.ID,
+      pinned?: Agent.ID,
+    ) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(new Error(`Session not found: ${sessionID}`))
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
 
       yield* mcpTools.flush
-      const agent = yield* agents.select(session.agent)
-      if (!agent.info) return yield* new AgentNotFoundError({ sessionID: session.id, agent: session.agent ?? agent.id })
-const info = agent.info
+      const agent = yield* agents.select(pinned ?? session.agent)
+      if (!agent.info)
+        return yield* new AgentNotFoundError({ sessionID: session.id, agent: pinned ?? session.agent ?? agent.id })
+      const info = agent.info
       // Session permissions narrow discovery the same way they narrow the tool snapshot.
       const permissions = Permission.merge(info.permissions, session.permissions ?? [])
       const loaded = yield* Effect.all(

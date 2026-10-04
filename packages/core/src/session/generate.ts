@@ -34,8 +34,8 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
   return yield* Effect.gen(function* () {
     yield* Plugin.awaitActivation
     const context = yield* SessionContext.Service
-    const selection = yield* context.select(input.session.id)
-    const agent = yield* selectAgent(input.session.id, selection.agent, input.agent)
+    const selection = yield* context.select(input.session.id, input.agent)
+    const agent = selection.agent
     const model = yield* context.resolveModel(
       input.model === undefined ? selection.session : { ...selection.session, model: input.model },
     )
@@ -73,17 +73,4 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))
-})
-
-/** Resolves the pinned agent for a warming request, or keeps the stored Session selection. */
-const selectAgent = Effect.fn("SessionGenerate.selectAgent")(function* (
-  sessionID: SessionSchema.ID,
-  stored: SessionContext.Selection["agent"],
-  override: Agent.ID | undefined,
-) {
-  if (override === undefined) return stored
-  const agents = yield* Agent.Service
-  const selected = yield* agents.select(override)
-  if (selected.info === undefined) return yield* new AgentNotFoundError({ sessionID, agent: override })
-  return { id: selected.id, info: selected.info }
 })

@@ -30,6 +30,7 @@ import { Provider } from "@opencode/core/provider"
 import { ReferenceInstructions } from "@opencode/core/reference/instructions"
 import { AbsolutePath } from "@opencode/core/schema"
 import { SessionEvent } from "@opencode/core/session/event"
+import { AgentNotFoundError } from "@opencode/core/session/error"
 import { SessionContext } from "@opencode/core/session/context"
 import { SessionGenerate } from "@opencode/core/session/generate"
 import { InstructionState } from "@opencode/core/session/instruction-state"
@@ -116,8 +117,10 @@ const skills = Layer.mock(SkillInstructions.Service, { load: () => Effect.succee
 const references = Layer.mock(ReferenceInstructions.Service, { load: () => Effect.succeed(Instructions.empty) })
 const mcp = Layer.mock(McpInstructions.Service, { load: () => Effect.succeed(Instructions.empty) })
 const tools = Layer.mock(Tool.Service, {
-  snapshot: () =>
-    Effect.succeed({
+  // Mirrors the real snapshot: the agent's merged permissions determine which tools exist.
+  snapshot: (permissions) => {
+    const plan = permissions?.some((rule) => rule.resource === "plan-only") ?? false
+    return Effect.succeed({
       codeModeCatalog: {
         tools: [
           {
@@ -128,9 +131,14 @@ const tools = Layer.mock(Tool.Service, {
           },
         ],
       },
-      definitions: [ToolDefinition.make({ name: "lookup", description: "Lookup", inputSchema: { type: "object" } })],
+      definitions: [
+        plan
+          ? ToolDefinition.make({ name: "plan-tool", description: "Plan tool", inputSchema: { type: "object" } })
+          : ToolDefinition.make({ name: "lookup", description: "Lookup", inputSchema: { type: "object" } }),
+      ],
       execute: () => Effect.die(new Error("unused")),
-    }),
+    })
+  },
   transform: () => Effect.die(new Error("unused")),
 })
 
@@ -220,6 +228,8 @@ const setup = Effect.gen(function* () {
     editor.update(Agent.ID.make("plan"), (agent) => {
       agent.mode = "primary"
       agent.system = "Plan system prompt"
+      // A distinct permission proves the pinned agent's whole selection drives tools and instructions.
+      agent.permissions = [{ action: "read", resource: "plan-only", effect: "allow" }]
     })
   })
   yield* db
@@ -426,6 +436,8 @@ it.effect(
       expect(requests).toHaveLength(1)
       expect(requests[0]?.model).toBe(overrideModel)
       expect(requests[0]?.system.map((part) => part.text)).toContain("Plan system prompt")
+      // The pinned agent's permissions shape the tool snapshot, not the stored agent's.
+      expect(requests[0]?.tools).toMatchObject([{ name: "plan-tool" }])
       expect(seen).toEqual([{ agent: Agent.ID.make("plan"), model: ID.make("override-model") }])
 
       // Control: without overrides the request follows the stored Session selection.
@@ -435,7 +447,44 @@ it.effect(
         Effect.provideService(Instance.Service, instances),
       )
       expect(requests[0]?.model).toBe(model)
+      expect(requests[0]?.tools).toMatchObject([{ name: "lookup" }])
       expect(seen).toEqual([{ agent: Agent.ID.make("build"), model: ID.make("generate-model") }])
+    }),
+  { timeout: 15_000 },
+)
+
+it.effect(
+  "keeps a pinned request working when the stored Session agent is missing",
+  () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      instruction = "Initial context"
+      const { db, bus, instructions, session, instances } = yield* setup
+      yield* InstructionState.prepare(db, bus, instructions, sessionID)
+      yield* bus.publish(SessionEvent.AgentSelected, {
+        sessionID,
+        agent: Agent.ID.make("ghost"),
+        previous: session.agent,
+      })
+
+      const result = yield* SessionGenerate.generate({
+        session,
+        prompt: "Pinned despite missing stored agent",
+        agent: Agent.ID.make("plan"),
+      }).pipe(Effect.provideService(Instance.Service, instances))
+
+      expect(result).toBe("Transient answer")
+      expect(requests[0]?.system.map((part) => part.text)).toContain("Plan system prompt")
+      expect(requests[0]?.tools).toMatchObject([{ name: "plan-tool" }])
+
+      // Control: without an override the missing stored agent still fails.
+      requests.length = 0
+      const error = yield* SessionGenerate.generate({ session, prompt: "Stored" }).pipe(
+        Effect.provideService(Instance.Service, instances),
+        Effect.flip,
+      )
+      expect(error).toBeInstanceOf(AgentNotFoundError)
+      expect(requests).toEqual([])
     }),
   { timeout: 15_000 },
 )
