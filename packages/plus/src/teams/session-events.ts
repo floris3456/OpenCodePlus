@@ -4,6 +4,8 @@
 
 export type SessionOutcome = "idle" | "failed" | "interrupted"
 
+export const RETRY_SCHEDULED = "session.retry.scheduled"
+
 // The host's session lifecycle is the only authority on whether a run's model
 // turn is over. A child that never called finish still ends its turn, so no
 // tool call from the child is needed for its parent to see it idle.

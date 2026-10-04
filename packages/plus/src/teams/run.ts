@@ -23,6 +23,8 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  /** Error types already notified to the parent during this attempt. */
+  notifiedErrors?: string[]
   /** Why the host ended this attempt failed (a provider or quota error, say), as the host reported it. */
   error?: AttemptError
   requestedModel?: ModelIdentity | null
@@ -85,6 +87,14 @@ export interface RunRecord {
   stopRequested?: boolean
   stopRequestedBy?: string
   stoppedBy?: string
+  retrying?: {
+    until: string
+    attempt: number
+    error: {
+      type: string
+      message: string
+    }
+  }
   worktree?: WorktreeState
   promotedFrom?: string
   history: HistoryEntry[]

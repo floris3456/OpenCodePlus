@@ -1100,6 +1100,55 @@ test("status shows the child head and the check receipt", async () => {
   })
 }, 30000)
 
+test("team_status shows retrying for a future until and null for a past one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main" })
+    const futureUntil = new Date(Date.now() + 60000).toISOString()
+    const pastUntil = new Date(Date.now() - 60000).toISOString()
+    const retryingRun = baseRun({
+      id: "w-future0000000000",
+      parent: parent.id,
+      retrying: {
+        until: futureUntil,
+        attempt: 1,
+        error: { type: "rate_limit", message: "too many requests" },
+      },
+    })
+    const expiredRun = baseRun({
+      id: "w-past000000000000",
+      parent: parent.id,
+      retrying: {
+        until: pastUntil,
+        attempt: 2,
+        error: { type: "overloaded", message: "server busy" },
+      },
+    })
+    const normalRun = baseRun({
+      id: "w-normal0000000000",
+      parent: parent.id,
+    })
+    await saveRun(root, parent)
+    await saveRun(root, retryingRun)
+    await saveRun(root, expiredRun)
+    await saveRun(root, normalRun)
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+    const entries = required(
+      await api.status({ runs: [retryingRun.id, expiredRun.id, normalRun.id] }, callerFor(parent)),
+    ) as Array<{ run: string; retrying: unknown }>
+    expect(entries).toHaveLength(3)
+    const retryingEntry = entries.find((e) => e.run === retryingRun.id)
+    const expiredEntry = entries.find((e) => e.run === expiredRun.id)
+    const normalEntry = entries.find((e) => e.run === normalRun.id)
+    expect(retryingEntry?.retrying).toEqual({
+      until: futureUntil,
+      attempt: 1,
+      error: { type: "rate_limit", message: "too many requests" },
+    })
+    expect(expiredEntry?.retrying).toBeNull()
+    expect(normalEntry?.retrying).toBeNull()
+  })
+})
+
 async function dirtyChild(root: string, repo: { dir: string; head: string }, id: string): Promise<RunRecord> {
   await fs.mkdir(path.join(repo.dir, "src"), { recursive: true })
   await fs.writeFile(path.join(repo.dir, "src", "greeting.ts"), "export const greeting = 'hi'\n")

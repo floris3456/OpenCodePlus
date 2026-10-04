@@ -1242,6 +1242,14 @@ async function statusOf(ctx: Context, root: string, id: string) {
       overBy: exhaustion.overBy,
       exhausted: exhaustion.exhausted,
     },
+    retrying: activeRetrying(record.retrying),
   }
+}
+
+function activeRetrying(retrying?: RunRecord["retrying"]): RunRecord["retrying"] | null {
+  if (retrying === undefined) return null
+  const until = Date.parse(retrying.until)
+  if (Number.isNaN(until) || until <= Date.now()) return null
+  return retrying
 }
 

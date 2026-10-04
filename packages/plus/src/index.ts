@@ -29,7 +29,7 @@ import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
 import { byDirectory, bySession } from "./teams/run.js"
 import { onSessionEvent, startSweep } from "./teams/lifecycle.js"
-import { SessionRunEvents } from "./teams/session-events.js"
+import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
 import { enforcementState, type EnforcementState, type PermissionTable } from "./instructions/permission-enforce.js"
@@ -5467,7 +5467,7 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
   // turns settle the attempt and hand the inbox over without any tool call.
   // Compact before cold reads the same events: a running chat never compacts.
   const runs = ctx.event.subscribe().pipe(
-    Stream.filter((event) => SessionRunEvents.has(event.type)),
+    Stream.filter((event) => SessionRunEvents.has(event.type) || event.type === RETRY_SCHEDULED),
     Stream.runForEach((event) =>
       Effect.promise(() => {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID

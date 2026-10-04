@@ -10,7 +10,7 @@ import { teamState } from "./preset-table.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek, put } from "../../src/teams/inbox.js"
 import { deliverInbox, onSessionEvent, onSessionIdle } from "../../src/teams/lifecycle.js"
-import { SessionRunEvents } from "../../src/teams/session-events.js"
+import { RETRY_SCHEDULED, SessionRunEvents } from "../../src/teams/session-events.js"
 import { loadRun, saveRun, updateRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
 
@@ -966,5 +966,234 @@ test("a stop requested while working ends a would-be wait interrupted and tells 
     const told = toldMain(sessions)
     expect(told).toHaveLength(1)
     expect(told[0]?.text).toContain("settled: interrupted")
+  })
+})
+
+function retryScheduledEvent(
+  sessionID: string,
+  opts: {
+    attempt?: number
+    at?: number
+    error?: { type: string; message: string; status?: number }
+  } = {},
+) {
+  return {
+    type: RETRY_SCHEDULED,
+    data: {
+      sessionID,
+      assistantMessageID: "msg_001",
+      attempt: opts.attempt ?? 1,
+      at: opts.at ?? Date.now() + 90_000,
+      error: opts.error ?? { type: "rate_limit", message: "quota reached" },
+    },
+  }
+}
+
+test("a 90 s retry notifies the parent once", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({
+      id: "main-parent0000001",
+      role: "opus-orchestrator",
+      state: "working",
+      sessionID: "ses_parent_001",
+    })
+    const child = workingChild("w-child0000000001", parent.id, "ses_child_001")
+    child.role = "Flash-Worker"
+    child.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    child.attempts[0]!.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const at = Date.now() + 90_000
+    const err = { type: "rate_limit", message: "Rate limit exceeded on provider endpoint" }
+
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_001", { attempt: 1, at, error: err }))
+
+    const updatedChild = await loadRun(root, child.id)
+    expect(updatedChild?.retrying).toEqual({
+      until: new Date(at).toISOString(),
+      attempt: 1,
+      error: { type: "rate_limit", message: "Rate limit exceeded on provider endpoint" },
+    })
+    expect(updatedChild?.attempts[0]?.notifiedErrors).toEqual(["rate_limit"])
+
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.kind).toBe("notify")
+    expect(items[0]?.from).toBe(child.id)
+
+    const date = new Date(at)
+    const hh = String(date.getUTCHours()).padStart(2, "0")
+    const mm = String(date.getUTCMinutes()).padStart(2, "0")
+    expect(items[0]?.text).toBe(
+      `Run ${child.id} (Flash-Worker, openai/gpt-4) got rate_limit: Rate limit exceeded on provider endpoint. It retries at ${hh}:${mm} UTC, attempt 1. Wait, or stop it with team_stop force and delegate the Brief to another worker.`,
+    )
+  })
+})
+
+test("a second retry with the same error type does not notify again", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({
+      id: "main-parent0000002",
+      role: "opus-orchestrator",
+      state: "working",
+      sessionID: "ses_parent_002",
+    })
+    const child = workingChild("w-child0000000002", parent.id, "ses_child_002")
+    child.role = "Flash-Worker"
+    child.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    child.attempts[0]!.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const at1 = Date.now() + 90_000
+    const err = { type: "rate_limit", message: "quota exceeded" }
+
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_002", { attempt: 1, at: at1, error: err }))
+    expect(await peek(root, parent.id)).toHaveLength(1)
+
+    const at2 = Date.now() + 120_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_002", { attempt: 2, at: at2, error: err }))
+
+    const updatedChild = await loadRun(root, child.id)
+    expect(updatedChild?.retrying).toEqual({
+      until: new Date(at2).toISOString(),
+      attempt: 2,
+      error: { type: "rate_limit", message: "quota exceeded" },
+    })
+    expect(await peek(root, parent.id)).toHaveLength(1)
+  })
+})
+
+test("a different error type notifies again", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({
+      id: "main-parent0000003",
+      role: "opus-orchestrator",
+      state: "working",
+      sessionID: "ses_parent_003",
+    })
+    const child = workingChild("w-child0000000003", parent.id, "ses_child_003")
+    child.role = "Flash-Worker"
+    child.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    child.attempts[0]!.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+
+    const at1 = Date.now() + 90_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_003", {
+      attempt: 1,
+      at: at1,
+      error: { type: "rate_limit", message: "quota exceeded" },
+    }))
+    expect(await peek(root, parent.id)).toHaveLength(1)
+
+    const at2 = Date.now() + 90_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_003", {
+      attempt: 2,
+      at: at2,
+      error: { type: "overloaded", message: "service unavailable" },
+    }))
+
+    const updatedChild = await loadRun(root, child.id)
+    expect(updatedChild?.retrying?.error.type).toBe("overloaded")
+    expect(updatedChild?.attempts[0]?.notifiedErrors).toEqual(["rate_limit", "overloaded"])
+
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(2)
+    expect(items[1]?.text).toContain("got overloaded: service unavailable")
+  })
+})
+
+test("a 5 s retry does not notify until the third in a row", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({
+      id: "main-parent0000004",
+      role: "opus-orchestrator",
+      state: "working",
+      sessionID: "ses_parent_004",
+    })
+    const child = workingChild("w-child0000000004", parent.id, "ses_child_004")
+    child.role = "Flash-Worker"
+    child.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    child.attempts[0]!.resolvedModel = { providerID: "openai", modelID: "gpt-4" }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const err = { type: "transient", message: "short glitch" }
+
+    // 1st retry: 5 s wait -> no notify
+    const at1 = Date.now() + 5_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 1, at: at1, error: err }))
+    expect(await peek(root, parent.id)).toHaveLength(0)
+    let updated = await loadRun(root, child.id)
+    expect(updated?.retrying?.attempt).toBe(1)
+    expect(updated?.attempts[0]?.notifiedErrors ?? []).toHaveLength(0)
+
+    // 2nd retry: 5 s wait -> no notify
+    const at2 = Date.now() + 5_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 2, at: at2, error: err }))
+    expect(await peek(root, parent.id)).toHaveLength(0)
+    updated = await loadRun(root, child.id)
+    expect(updated?.retrying?.attempt).toBe(2)
+    expect(updated?.attempts[0]?.notifiedErrors ?? []).toHaveLength(0)
+
+    // 3rd retry: 5 s wait, attempt 3 (third in a row) -> notifies!
+    const at3 = Date.now() + 5_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 3, at: at3, error: err }))
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(1)
+    expect(items[0]?.text).toContain("attempt 3")
+    updated = await loadRun(root, child.id)
+    expect(updated?.retrying?.attempt).toBe(3)
+    expect(updated?.attempts[0]?.notifiedErrors).toEqual(["transient"])
+  })
+})
+
+test("session.execution.succeeded clears retrying", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-child0000000005", null, "ses_child_005")
+    child.retrying = {
+      until: new Date(Date.now() + 60_000).toISOString(),
+      attempt: 1,
+      error: { type: "rate_limit", message: "wait" },
+    }
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, succeededEvent("ses_child_005"))
+
+    const updated = await loadRun(root, child.id)
+    expect(updated?.state).toBe("idle")
+    expect(updated?.retrying).toBeUndefined()
+  })
+})
+
+test("session.execution.started clears retrying", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const child = workingChild("w-child0000000006", null, "ses_child_006")
+    child.retrying = {
+      until: new Date(Date.now() + 60_000).toISOString(),
+      attempt: 1,
+      error: { type: "rate_limit", message: "wait" },
+    }
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, startedEvent("ses_child_006"))
+
+    const updated = await loadRun(root, child.id)
+    expect(updated?.retrying).toBeUndefined()
   })
 })

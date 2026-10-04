@@ -26,7 +26,7 @@ import {
   type RunRecord,
 } from "./run.js"
 import { Policy, parseDuration } from "./schema.js"
-import { SessionOutcomes, type SessionOutcome } from "./session-events.js"
+import { RETRY_SCHEDULED, SessionOutcomes, type SessionOutcome } from "./session-events.js"
 import { lock, readJson } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
 
@@ -181,17 +181,98 @@ export async function onSessionEvent(
     const applied = { changed: false }
     const working = await updateRun(root, run.id, (record) => {
       const resuming = record.state === "stopped" || record.state === "dead"
-      if (record.state !== "idle" && record.state !== "starting" && !resuming) return record
+      if (record.state !== "idle" && record.state !== "starting" && !resuming) {
+        if (record.retrying !== undefined) {
+          applied.changed = true
+          const next = { ...record }
+          delete next.retrying
+          return next
+        }
+        return record
+      }
       const trigger = record.state === "idle" ? "prompt" : "resume"
       applied.changed = true
       const last = record.attempts.at(-1)
       const admitted = last === undefined || isAttemptTerminal(last.state)
         ? attemptTransition(startAttempt(record, { trigger }), "admitted", "admit")
         : record
-      return transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger)
+      const transitioned = transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger)
+      if (transitioned.retrying !== undefined) {
+        const next = { ...transitioned }
+        delete next.retrying
+        return next
+      }
+      return transitioned
     })
     if (working === undefined || !applied.changed) return undefined
     return working
+  }
+
+  if (event.type === RETRY_SCHEDULED) {
+    const at = typeof payload.at === "number" ? payload.at : Date.now()
+    const attemptNum = typeof payload.attempt === "number" ? payload.attempt : 1
+    const parsedError = Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error))
+    const errorObj = {
+      type: parsedError?.type ?? (typeof (payload.error as any)?.type === "string" ? (payload.error as any).type : "error"),
+      message: parsedError?.message ?? (typeof (payload.error as any)?.message === "string" ? (payload.error as any).message : ""),
+    }
+    const retrying = {
+      until: new Date(at).toISOString(),
+      attempt: attemptNum,
+      error: {
+        type: errorObj.type,
+        message: errorObj.message,
+      },
+    }
+
+    const notify: { action?: { text: string; parentID: string } } = {}
+
+    const updated = await updateRun(root, run.id, (record) => {
+      const lastIndex = record.attempts.length - 1
+      const lastAttempt = lastIndex >= 0 ? record.attempts[lastIndex] : undefined
+
+      const alreadyNotified = (lastAttempt?.notifiedErrors ?? []).includes(errorObj.type)
+      const waitMs = at - Date.now()
+      const waitGe60s = waitMs >= 60_000
+      const thirdRetry = attemptNum >= 3
+      const shouldNotify = !alreadyNotified && (waitGe60s || thirdRetry)
+
+      let nextAttempts = record.attempts
+      if (shouldNotify && lastAttempt !== undefined) {
+        const updatedAttempt: AttemptRecord = {
+          ...lastAttempt,
+          notifiedErrors: [...(lastAttempt.notifiedErrors ?? []), errorObj.type],
+        }
+        nextAttempts = [...record.attempts.slice(0, lastIndex), updatedAttempt]
+
+        if (record.parent !== null && record.parent !== undefined) {
+          const modelObj = lastAttempt.resolvedModel ?? record.resolvedModel
+          const providerModel = modelObj ? `${modelObj.providerID}/${modelObj.modelID}` : "unknown"
+          const date = new Date(at)
+          const hh = String(date.getUTCHours()).padStart(2, "0")
+          const mm = String(date.getUTCMinutes()).padStart(2, "0")
+          const first200 = errorObj.message.slice(0, 200)
+          const text = `Run ${record.id} (${record.role}, ${providerModel}) got ${errorObj.type}: ${first200}. It retries at ${hh}:${mm} UTC, attempt ${attemptNum}. Wait, or stop it with team_stop force and delegate the Brief to another worker.`
+          notify.action = { text, parentID: record.parent }
+        }
+      }
+
+      return {
+        ...record,
+        retrying,
+        attempts: nextAttempts,
+      }
+    })
+
+    if (notify.action !== undefined) {
+      const parentRecord = await loadRun(root, notify.action.parentID)
+      if (parentRecord !== undefined && !isTerminal(parentRecord.state)) {
+        await notifySafe(root, notify.action.parentID, run.id, notify.action.text)
+        await deliverInbox(ctx, root, parentRecord)
+      }
+    }
+
+    return updated
   }
 
   const outcome = SessionOutcomes[event.type]
@@ -249,27 +330,35 @@ export async function onSessionIdle(
 }
 
 async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptError): Promise<RunRecord> {
-  const last = run.attempts[run.attempts.length - 1]
-  if (last === undefined || isAttemptTerminal(last.state)) return run
+  const current =
+    run.retrying !== undefined
+      ? (() => {
+          const next = { ...run }
+          delete next.retrying
+          return next
+        })()
+      : run
+  const last = current.attempts[current.attempts.length - 1]
+  if (last === undefined || isAttemptTerminal(last.state)) return current
   if (outcome === "failed") {
-    const failed = attemptTransition(run, "failed", "failed")
+    const failed = attemptTransition(current, "failed", "failed")
     if (error === undefined) return failed
     const attempt = failed.attempts.at(-1)
     if (attempt === undefined) return failed
     return { ...failed, attempts: [...failed.attempts.slice(0, -1), { ...attempt, error }] }
   }
-  if (outcome === "interrupted") return attemptTransition(run, "interrupted", "interrupt")
+  if (outcome === "interrupted") return attemptTransition(current, "interrupted", "interrupt")
   // finish wrote this attempt's report and owns its terminal state.
-  const reported = await readJson<unknown>(path.join(root, "runs", run.id, `report-${last.n}.json`))
-  if (reported !== undefined) return run
+  const reported = await readJson<unknown>(path.join(root, "runs", current.id, `report-${last.n}.json`))
+  if (reported !== undefined) return current
   // A turn that ends without a report while a child can still settle — or
   // while a child's settlement waits undelivered in the inbox — is a run
   // waiting on its children, not one that stopped: the attempt stays open,
   // the run goes idle, its parent hears nothing, and the child's settlement
   // continues this same attempt (deliverInbox). Only a run with no open child
   // and no pending child news ended its attempt without a report.
-  if (await waitingOnChildren(root, run)) return run
-  return attemptTransition(toFinishing(run), "no_report", "validated")
+  if (await waitingOnChildren(root, current)) return current
+  return attemptTransition(toFinishing(current), "no_report", "validated")
 }
 
 /** True while a child of `run` can still settle or its settlement is not yet delivered. */
