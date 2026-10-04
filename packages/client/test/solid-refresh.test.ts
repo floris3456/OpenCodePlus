@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createRoot } from "solid-js"
-import { createData, settleMs, type CreateDataInput } from "../src/solid"
+import { createData, settleMs, type CreateDataInput, type Data } from "../src/solid"
 import { OpenCode, type OpenCodeEvent, type SessionInfo } from "../src/promise"
 
 test("config reads and update refreshes are opt-in", async () => {
@@ -92,6 +92,180 @@ test.each(["agent", "command"] as const)("%s.updated refreshes only a location t
     listeners.forEach((listener) => listener({ name: event.type, details: event }))
     for (let i = 0; i < 200 && requests.filter((path) => path === catalog).length < 2; i++) await Bun.sleep(5)
     expect(requests.filter((path) => path === catalog)).toHaveLength(2)
+  } finally {
+    setup.dispose()
+  }
+})
+
+function createTestSetup(location = { directory: "/project" }) {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const requests: string[] = []
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      const url = new URL(request.url)
+      requests.push(url.pathname)
+      if (url.pathname === "/api/location") return Response.json(location)
+      if (url.pathname === "/api/mcp/resource")
+        return Response.json({ location, data: { resources: [], templates: [] } })
+      return Response.json({ location, data: [] })
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: location.directory,
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    dispose,
+  }))
+  const emit = (event: OpenCodeEvent) => listeners.forEach((listener) => listener({ name: event.type, details: event }))
+  return { setup, requests, location, emit }
+}
+
+type GuardedTestCase = {
+  type: OpenCodeEvent["type"]
+  catalog: string
+  load: (data: Data) => Promise<unknown>
+  list: (data: Data) => unknown
+  eventData?: Record<string, unknown>
+  settled?: boolean
+}
+
+const guardedLocationEvents: GuardedTestCase[] = [
+  {
+    type: "skill.updated",
+    catalog: "/api/skill",
+    load: (data) => data.location.skill.sync(),
+    list: (data) => data.location.skill.list(),
+  },
+  {
+    type: "reference.updated",
+    catalog: "/api/reference",
+    load: (data) => data.location.reference.sync(),
+    list: (data) => data.location.reference.list(),
+  },
+  {
+    type: "integration.updated",
+    catalog: "/api/integration",
+    load: (data) => data.location.integration.sync(),
+    list: (data) => data.location.integration.list(),
+  },
+  {
+    type: "websearch.updated",
+    catalog: "/api/websearch/provider",
+    load: (data) => data.location.websearch.refresh(),
+    list: (data) => data.location.websearch.list(),
+  },
+  {
+    type: "mcp.status.changed",
+    catalog: "/api/mcp",
+    load: (data) => data.location.mcp.server.sync(),
+    list: (data) => data.location.mcp.server.list(),
+    eventData: { server: "test" },
+    settled: true,
+  },
+  {
+    type: "mcp.resources.changed",
+    catalog: "/api/mcp/resource",
+    load: (data) => data.location.mcp.resource.sync(),
+    list: (data) => data.location.mcp.resource.list(),
+  },
+]
+
+test.each(guardedLocationEvents)("$type never-loaded location sends no request", async (c) => {
+  const { setup, requests, location, emit } = createTestSetup()
+  try {
+    const event = { id: `evt_${c.type}`, created: 1, type: c.type, location, data: c.eventData ?? {} } as OpenCodeEvent
+    emit(event)
+    if (c.settled) {
+      await Bun.sleep(settleMs * 2)
+    } else {
+      await Bun.sleep(20)
+    }
+    expect(requests).not.toContain(c.catalog)
+  } finally {
+    setup.dispose()
+  }
+})
+
+test.each(guardedLocationEvents)("$type loaded location refetches from the event itself", async (c) => {
+  const { setup, requests, location, emit } = createTestSetup()
+  try {
+    await c.load(setup.data)
+    expect(requests.filter((path) => path === c.catalog)).toHaveLength(1)
+    expect(c.list(setup.data)).toBeDefined()
+
+    const event = { id: `evt_${c.type}`, created: 1, type: c.type, location, data: c.eventData ?? {} } as OpenCodeEvent
+    emit(event)
+    for (let i = 0; i < 200 && requests.filter((path) => path === c.catalog).length < 2; i++) await Bun.sleep(5)
+    expect(requests.filter((path) => path === c.catalog)).toHaveLength(2)
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("config.updated never-loaded websearch sends no request", async () => {
+  const { setup, requests, location, emit } = createTestSetup()
+  try {
+    const event: OpenCodeEvent = { id: "evt_config", created: 1, type: "config.updated", location, data: {} }
+    emit(event)
+    await Bun.sleep(20)
+    expect(requests).not.toContain("/api/websearch/provider")
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("config.updated loaded websearch refetches from the event itself", async () => {
+  const { setup, requests, location, emit } = createTestSetup()
+  try {
+    await setup.data.location.websearch.refresh()
+    expect(requests.filter((path) => path === "/api/websearch/provider")).toHaveLength(1)
+    expect(setup.data.location.websearch.list()).toBeDefined()
+
+    const event: OpenCodeEvent = { id: "evt_config", created: 1, type: "config.updated", location, data: {} }
+    emit(event)
+    for (let i = 0; i < 200 && requests.filter((path) => path === "/api/websearch/provider").length < 2; i++)
+      await Bun.sleep(5)
+    expect(requests.filter((path) => path === "/api/websearch/provider")).toHaveLength(2)
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("integration.updated refetches model and provider only when their catalogs are already loaded", async () => {
+  const { setup, requests, location, emit } = createTestSetup()
+  const event: OpenCodeEvent = { id: "evt_integration", created: 1, type: "integration.updated", location, data: {} }
+  try {
+    emit(event)
+    await Bun.sleep(20)
+    expect(requests).not.toContain("/api/integration")
+    expect(requests).not.toContain("/api/model")
+    expect(requests).not.toContain("/api/provider")
+
+    await setup.data.location.model.sync()
+    expect(requests.filter((path) => path === "/api/model")).toHaveLength(1)
+    emit(event)
+    for (let i = 0; i < 200 && requests.filter((path) => path === "/api/model").length < 2; i++) await Bun.sleep(5)
+    expect(requests.filter((path) => path === "/api/model")).toHaveLength(2)
+    expect(requests).not.toContain("/api/integration")
+    expect(requests).not.toContain("/api/provider")
+
+    await setup.data.location.provider.sync()
+    expect(requests.filter((path) => path === "/api/provider")).toHaveLength(1)
+    emit(event)
+    for (let i = 0; i < 200 && requests.filter((path) => path === "/api/provider").length < 2; i++) await Bun.sleep(5)
+    expect(requests.filter((path) => path === "/api/provider")).toHaveLength(2)
+    expect(requests.filter((path) => path === "/api/model")).toHaveLength(3)
+    expect(requests).not.toContain("/api/integration")
   } finally {
     setup.dispose()
   }

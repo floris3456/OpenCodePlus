@@ -1233,7 +1233,8 @@ export function createData(config: CreateDataInput) {
         break
       case "skill.updated":
         result.location.skill.invalidate(location)
-        refresh(() => result.location.skill.sync(location))
+        if (result.location.skill.list(location) !== undefined || sync.has(`location.skill:${locationKey(location)}`))
+          refresh(() => result.location.skill.sync(location))
         break
       case "vcs.branch.updated":
         setStore("location", locationKey(location), (data) => ({
@@ -1268,39 +1269,58 @@ export function createData(config: CreateDataInput) {
         break
       case "reference.updated":
         result.location.reference.invalidate(location)
-        refresh(() => result.location.reference.sync(location))
+        if (
+          result.location.reference.list(location) !== undefined ||
+          sync.has(`location.reference:${locationKey(location)}`)
+        )
+          refresh(() => result.location.reference.sync(location))
         break
       case "integration.updated":
         result.location.integration.invalidate(location)
         result.location.model.invalidate(location)
         result.location.provider.invalidate(location)
-        refresh(() =>
-          Promise.all([
-            result.location.integration.sync(location),
-            result.location.model.sync(location),
-            result.location.provider.sync(location),
-          ]),
+        if (
+          result.location.integration.list(location) !== undefined ||
+          sync.has(`location.integration:${locationKey(location)}`)
         )
+          refresh(() => result.location.integration.sync(location))
+        if (result.location.model.list(location) !== undefined || sync.has(`location.model:${locationKey(location)}`))
+          refresh(() => result.location.model.sync(location))
+        if (
+          result.location.provider.list(location) !== undefined ||
+          sync.has(`location.provider:${locationKey(location)}`)
+        )
+          refresh(() => result.location.provider.sync(location))
         break
       case "config.updated":
         result.location.config.invalidate(location)
         if (result.location.config.list(location) !== undefined || sync.has(`location.config:${locationKey(location)}`))
           refresh(() => result.location.config.sync(location))
-        refresh(() => result.location.websearch.refresh(location))
+        if (result.location.websearch.list(location) !== undefined)
+          refresh(() => result.location.websearch.refresh(location))
         break
       case "websearch.updated":
-        refresh(() => result.location.websearch.refresh(location))
+        if (result.location.websearch.list(location) !== undefined)
+          refresh(() => result.location.websearch.refresh(location))
         break
       // Authenticating an MCP integration reconnects its server, which emits mcp.status.changed,
       // so the mcp list syncs here rather than off integration.updated. The server emits one event
       // per MCP server as each settles, so a location booting nine servers emitted nine refetches.
       case "mcp.status.changed":
         result.location.mcp.server.invalidate(location)
-        settle(`mcp.status:${locationKey(location)}`, () => result.location.mcp.server.sync(location))
+        if (
+          result.location.mcp.server.list(location) !== undefined ||
+          sync.has(`location.mcpServer:${locationKey(location)}`)
+        )
+          settle(`mcp.status:${locationKey(location)}`, () => result.location.mcp.server.sync(location))
         break
       case "mcp.resources.changed":
         result.location.mcp.resource.invalidate(location)
-        refresh(() => result.location.mcp.resource.sync(location))
+        if (
+          result.location.mcp.resource.list(location) !== undefined ||
+          sync.has(`location.mcpResource:${locationKey(location)}`)
+        )
+          refresh(() => result.location.mcp.resource.sync(location))
         break
     }
   }
