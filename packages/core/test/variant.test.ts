@@ -38,6 +38,13 @@ test("spells Messages variants for each provider", () => {
     { id: "max", settings: { effort: "max", thinking: { type: "adaptive", display: "summarized" } } },
   ])
 
+  expect(
+    resolve(model("@opencode/ai/providers/anthropic-compatible", "claude-opus-4-8"), [{ type: "effort", values: ["low", "max"] }]),
+  ).toEqual([
+    { id: "low", settings: { effort: "low", thinking: { type: "adaptive", display: "summarized" } } },
+    { id: "max", settings: { effort: "max", thinking: { type: "adaptive", display: "summarized" } } },
+  ])
+
   expect(resolve(model("@opencode/ai/providers/minimax/messages", "MiniMax-M3"), [{ type: "toggle" }])).toEqual([
     { id: "none", settings: { thinking: { type: "disabled" } } },
     { id: "thinking", settings: { thinking: { type: "adaptive" } } },

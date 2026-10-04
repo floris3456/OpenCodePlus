@@ -165,13 +165,7 @@ export interface Dependencies {
   readonly loadAISDK?: (model: RuntimeInfo) => Effect.Effect<LanguageModel, AISDK.InitError>
 }
 
-const defaultPackageLoader = (specifier: string): Effect.Effect<Provider.ProviderPackage, Provider.LoadError> =>
-  specifier === "@opencode/ai/providers/anthropic-compatible"
-    ? Effect.tryPromise({
-        try: async () => (await import("@opencode/ai/providers/anthropic-compatible")) as Provider.ProviderPackage,
-        catch: (cause) => new Provider.LoadError({ package: specifier, cause }),
-      })
-    : Provider.loadPackage(specifier)
+const defaultPackageLoader = Provider.loadPackage
 
 export const fromCatalogModel = (
   model: RuntimeInfo,
@@ -376,10 +370,7 @@ export const layer = Layer.effect(
         settings: Provider.mergeOverlay(provider?.settings, Provider.modelSettings(selectedVariant.settings)),
       }
       const model = yield* fromCatalogModel(runtimeInfo, credential, {
-        loadPackage: (specifier) =>
-          specifier === "@opencode/ai/providers/anthropic-compatible"
-            ? defaultPackageLoader(specifier)
-            : Provider.loadPackage(specifier, npm),
+        loadPackage: (specifier) => Provider.loadPackage(specifier, npm),
         loadAISDK: (model) => aisdk.model(model),
       })
       const runtime =
