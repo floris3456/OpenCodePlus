@@ -202,7 +202,13 @@ const ANTHROPIC_COMPATIBLE = "@opencode/ai/providers/anthropic-compatible"
 export function relayClaudeModel(model: Types.DeepMutable<Model.Info>): void {
   if (!isClaude(model)) return
   const userPackage = model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE
-  if (userPackage) return
+  if (userPackage) {
+    // The relay owns a model only while it keeps the relay package. Config applies a
+    // user's per-model package after an earlier relay pass, which would otherwise leave
+    // the relay's native compaction on a route that cannot honor it.
+    if (model.settings?.compaction?.type === "native") delete model.settings.compaction
+    return
+  }
   model.package = ANTHROPIC_COMPATIBLE
   const ids = (model.variants ?? []).map((variant) => String(variant.id))
   if (ids.length > 0) model.variants = spellVariants(ANTHROPIC_COMPATIBLE, ids) as never

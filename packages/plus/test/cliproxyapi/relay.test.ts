@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import type { ProviderEditor } from "@opencode/plugin/effect/provider"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
+import type { Types } from "effect"
 import { applyCatalogue, applyRelayToExistingModels, isClaude, spellVariants, type Catalogue } from "../../src/cliproxyapi/catalog.js"
 
 function createTestEditor(initial: { provider: Provider.Info; models?: Model.Info[] }[]) {
@@ -188,6 +189,76 @@ test("catalogue mode gives Claude models anthropic-compatible package, Anthropic
     { id: Model.VariantID.make("low"), settings: { reasoningEffort: "low" } },
     { id: Model.VariantID.make("high"), settings: { reasoningEffort: "high" } },
   ])
+})
+
+test("catalogue mode drops relay native compaction when config repackages the model", () => {
+  const provider = {
+    ...Provider.Info.empty(Provider.ID.make("cpa")),
+    package: "@opencode/ai/providers/openai-compatible",
+  }
+  const catalogue: Catalogue = {
+    source: "details",
+    hash: "h",
+    models: [
+      {
+        id: "claude-opus-4-5",
+        name: "Claude Opus 4.5",
+        kind: "chat",
+        ownedBy: "anthropic",
+        input: ["text"],
+        outputModalities: ["text"],
+        reasoning: { mode: "levels", levels: ["low", "high"] },
+        tiers: [],
+      },
+    ],
+  }
+
+  const { editor, getModel } = createTestEditor([{ provider }])
+  // The catalogue's provider transform runs before config's model transform.
+  applyCatalogue(editor, "cpa", catalogue, "@opencode/ai/providers/openai-compatible")
+  expect(getModel("cpa", "claude-opus-4-5")!.settings?.compaction).toEqual({ type: "native" })
+
+  // Config then applies the user's own per-model package; the relay pass runs after it.
+  ;(getModel("cpa", "claude-opus-4-5") as Types.DeepMutable<Model.Info>).package = "custom-anthropic-package"
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+
+  const updated = getModel("cpa", "claude-opus-4-5")!
+  expect(updated.package).toBe("custom-anthropic-package")
+  expect(updated.settings?.compaction).toBeUndefined()
+})
+
+test("user settings.compaction still wins when config repackages the model", () => {
+  const provider = {
+    ...Provider.Info.empty(Provider.ID.make("cpa")),
+    package: "@opencode/ai/providers/openai-compatible",
+  }
+  const catalogue: Catalogue = {
+    source: "details",
+    hash: "h",
+    models: [
+      {
+        id: "claude-opus-4-5",
+        name: "Claude Opus 4.5",
+        kind: "chat",
+        ownedBy: "anthropic",
+        input: ["text"],
+        outputModalities: ["text"],
+        reasoning: { mode: "levels", levels: ["low", "high"] },
+        tiers: [],
+      },
+    ],
+  }
+
+  const { editor, getModel } = createTestEditor([{ provider }])
+  applyCatalogue(editor, "cpa", catalogue, "@opencode/ai/providers/openai-compatible")
+  const model = getModel("cpa", "claude-opus-4-5") as Types.DeepMutable<Model.Info>
+  model.package = "custom-anthropic-package"
+  model.settings = { ...model.settings, compaction: { type: "summary" } }
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+
+  const updated = getModel("cpa", "claude-opus-4-5")!
+  expect(updated.package).toBe("custom-anthropic-package")
+  expect(updated.settings?.compaction).toEqual({ type: "summary" })
 })
 
 test("user package and compaction win over relay defaults", () => {
