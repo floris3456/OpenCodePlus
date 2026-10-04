@@ -57,6 +57,64 @@ for (const model of [
   )
 }
 
+// Anthropic rejects assistant-message prefill; the trigger request must end with a user message.
+for (const model of [
+  Anthropic.configure({ apiKey: "fixture" }).model("claude-opus-4-6"),
+  AnthropicCompatible.configure({ baseURL: "https://relay.example/v1", provider: "relay" }).model("claude-opus-4-6"),
+]) {
+  const it = testEffect(dynamicResponse((input) => Effect.sync(() => {
+    const body = JSON.parse(input.text)
+    const last = body.messages.at(-1)
+    expect(last.role).toBe("user")
+    expect(last.content.at(-1).text).toContain("Summarize the conversation so far.")
+    return input.respond(fixture(), { headers: { "content-type": "text/event-stream" } })
+  })))
+  it.effect(`${model.provider}: trigger compaction on an assistant-ending history appends a user turn`, () =>
+    Effect.gen(function* () {
+      const request = LLM.request({
+        model,
+        messages: [Message.user("History"), Message.assistant("Reply")],
+      })
+      const response = yield* LLMClient.compact(request, { mechanism: "trigger" })
+      expect(response.checkpoint).toEqual({ type: "compaction", provider: model.provider, text: "Keep building the website." })
+    }),
+  )
+}
+
+// The next normal request replays the checkpoint on the Anthropic path: beta header + compaction block first.
+const textFixture = (text: string) =>
+  [
+    { type: "message_start", message: { id: "msg_continue", usage: { input_tokens: 10, output_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 0, output_tokens: 5 } },
+    { type: "message_stop" },
+  ].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")
+
+for (const model of [
+  Anthropic.configure({ apiKey: "fixture" }).model("claude-opus-4-6"),
+  AnthropicCompatible.configure({ baseURL: "https://relay.example/v1", provider: "relay" }).model("claude-opus-4-6"),
+]) {
+  const it = testEffect(dynamicResponse((input) => Effect.sync(() => {
+    const body = JSON.parse(input.text)
+    expect(input.request.headers["anthropic-beta"]).toContain("compact-2026-01-12")
+    expect(body.messages[0]).toEqual({ role: "assistant", content: [{ type: "compaction", content: "Keep building the website." }] })
+    expect(body.messages[1]).toMatchObject({ role: "user", content: [{ type: "text", text: "Continue" }] })
+    expect(body.context_management).toEqual({ edits: [{ type: "compact_20260112" }] })
+    return input.respond(textFixture("Continuing."), { headers: { "content-type": "text/event-stream" } })
+  })))
+  it.effect(`${model.provider}: a request after a native checkpoint replays the compaction block`, () =>
+    Effect.gen(function* () {
+      const checkpoint = { type: "compaction" as const, provider: model.provider, text: "Keep building the website." }
+      const response = yield* LLMClient.generate(
+        LLM.request({ model, messages: [Message.assistant(checkpoint), Message.user("Continue")] }),
+      )
+      expect(response.message.content).toEqual([{ type: "text", text: "Continuing." }])
+    }),
+  )
+}
+
 for (const [name, stream, message] of [
   ["null summary", fixture(null), "no usable summary checkpoint"],
   ["ordinary answer", fixture("Summary", "end_turn"), "did not pause"],

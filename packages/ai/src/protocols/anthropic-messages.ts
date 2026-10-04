@@ -15,6 +15,7 @@ import {
   LLMRequest,
   LLMResponse,
   LLMEvent,
+  Message,
   mergeJsonRecords,
   Usage,
   type CacheHint,
@@ -1092,7 +1093,14 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
     metadata: options.metadata,
     service_tier: options.service_tier ?? options.serviceTier,
   }
-  if (!management) return body
+  if (!management) {
+    // A replayed compaction block is only accepted alongside the strategy that
+    // produced it; a normal request after a native checkpoint carries no
+    // context-management option of its own, so add the strategy bare.
+    const replays = messages.some((message) => message.content.some((block) => block.type === "compaction"))
+    if (!replays) return body
+    return { ...body, context_management: { edits: [{ type: "compact_20260112" as const }] } }
+  }
   return {
     ...body,
     context_management: {
@@ -1686,10 +1694,19 @@ const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(
       },
     },
   })
-  const body = yield* fromRequest(compacting)
-  const prepared = yield* source.prepareTransport(body, compacting, options)
+  // Anthropic rejects assistant-message prefill: the conversation must end with a
+  // user message. A trigger request carries canonical history as-is, which often
+  // ends with the assistant reply being compacted, so append a short user turn.
+  const continuation =
+    (yield* fromRequest(compacting)).messages.at(-1)?.role === "user"
+      ? compacting
+      : LLMRequest.update(compacting, {
+          messages: [...compacting.messages, Message.user("Summarize the conversation so far.")],
+        })
+  const body = yield* fromRequest(continuation)
+  const prepared = yield* source.prepareTransport(body, continuation, options)
   const state = yield* source
-    .streamPrepared(prepared, compacting, { http: executor }, options)
+    .streamPrepared(prepared, continuation, { http: executor }, options)
     .pipe(Stream.runFold(LLMResponse.empty, LLMResponse.reduce))
   const response = LLMResponse.complete(state)
   const checkpoint = response?.message.content[0]
