@@ -2,7 +2,10 @@
 // and the words and numbers the table prints.
 import type { Plus } from "../../rpc.js"
 
-export const WINDOWS = ["all", "15m", "1h", "24h", "7d", "30d"] as const
+export const TABS = ["overview", "cache", "tools", "sessions", "steps"] as const
+export type TabName = (typeof TABS)[number]
+
+export const WINDOWS = ["all", "compaction", "15m", "1h", "24h", "7d", "30d"] as const
 export type WindowName = (typeof WINDOWS)[number]
 
 export const GROUPS = [
@@ -13,13 +16,16 @@ export const GROUPS = [
   "session",
   "config",
 ] as const satisfies readonly Plus.MonitorGroupBy[]
-export const SCOPES = ["session", "project", "all"] as const satisfies readonly Plus.MonitorScope[]
+
+export const SCOPES = ["session", "tree", "team", "project", "all"] as const satisfies readonly Plus.MonitorScope[]
+
 export const SORTS = ["tokens", "carried", "calls", "errors", "time"] as const
 export type SortName = (typeof SORTS)[number]
+
 export const COMPARES = ["off", "previous", "mark"] as const
 export type CompareName = (typeof COMPARES)[number]
 
-const SPAN: Readonly<Record<Exclude<WindowName, "all">, number>> = {
+const SPAN: Readonly<Record<Exclude<WindowName, "all" | "compaction">, number>> = {
   "15m": 15 * 60_000,
   "1h": 3_600_000,
   "24h": 86_400_000,
@@ -28,30 +34,38 @@ const SPAN: Readonly<Record<Exclude<WindowName, "all">, number>> = {
 }
 
 export interface MonitorSettings {
+  readonly tab: TabName
   readonly scope: Plus.MonitorScope
   readonly window: WindowName
   readonly group: Plus.MonitorGroupBy
   readonly sort: SortName
+  readonly team?: string
   readonly agent?: string
   readonly tool?: string
   readonly model?: string
   readonly errors: boolean
+  readonly missesOnly: boolean
+  readonly filterText?: string
   readonly compare: CompareName
 }
 
 export const defaultSettings: MonitorSettings = {
+  tab: "overview",
   scope: "session",
   window: "all",
   group: "tool",
   sort: "tokens",
   errors: false,
+  missesOnly: false,
   compare: "off",
 }
 
-/** A drill-down step: a group row turned into a filter, remembered so it can be undone. */
+/** A drill-down step: a group row or detail view turned into a filter, remembered so it can be undone. */
 export interface Drill {
+  readonly kind?: "tools" | "cache" | "steps"
   readonly settings: MonitorSettings
   readonly sessionID?: string
+  readonly requestID?: string
 }
 
 export function cycle<T>(values: readonly T[], current: T, direction = 1): T {
@@ -72,15 +86,26 @@ export function queryOf(
     readonly marks: readonly Plus.MonitorMark[]
     readonly top: number
     readonly feed: number
+    readonly id?: string
   },
 ): Plus.MonitorQueryInput {
-  const scope = settings.scope === "session" && context.sessionID === undefined ? "project" : settings.scope
+  const scope =
+    (settings.scope === "session" || settings.scope === "tree") && context.sessionID === undefined
+      ? "project"
+      : settings.scope
   const window = windowOf(settings, context.now, context.marks)
   return {
     scope,
-    ...(scope === "session" && context.sessionID !== undefined ? { sessionID: context.sessionID } : {}),
+    ...((scope === "session" || scope === "tree") && context.sessionID !== undefined
+      ? { sessionID: context.sessionID }
+      : {}),
+    ...(settings.team !== undefined ? { team: settings.team } : {}),
+    ...(settings.window === "compaction" ? { sinceCompaction: true } : {}),
     ...(window.since === undefined ? {} : { since: window.since }),
     ...(window.until === undefined ? {} : { until: window.until }),
+    view: settings.tab,
+    ...(context.id !== undefined ? { id: context.id } : {}),
+    ...(settings.missesOnly ? { missesOnly: true } : {}),
     ...(settings.agent === undefined ? {} : { agents: [settings.agent] }),
     ...(settings.tool === undefined ? {} : { tools: [settings.tool] }),
     ...(settings.model === undefined ? {} : { models: [settings.model] }),
@@ -98,14 +123,16 @@ function windowOf(
   now: number,
   marks: readonly Plus.MonitorMark[],
 ): { since?: number; until?: number; compare?: Plus.MonitorWindow } {
+  if (settings.window === "compaction") return {}
   const mark = marks[0]
   // Compare against a mark: after it is the main window, before it the comparison.
   if (settings.compare === "mark" && mark !== undefined) {
-    const span = settings.window === "all" ? undefined : SPAN[settings.window]
+    const span = settings.window === "all" ? undefined : SPAN[settings.window as Exclude<WindowName, "all" | "compaction">]
     return { since: mark.at, compare: { ...(span === undefined ? {} : { since: mark.at - span }), until: mark.at } }
   }
   if (settings.window === "all") return {}
-  const span = SPAN[settings.window]
+  const span = SPAN[settings.window as Exclude<WindowName, "all" | "compaction">]
+  if (span === undefined) return {}
   const since = now - span
   if (settings.compare === "previous") return { since, compare: { since: since - span, until: since } }
   return { since }
@@ -116,7 +143,9 @@ export function compareLabel(settings: MonitorSettings, marks: readonly Plus.Mon
   if (settings.compare === "off") return undefined
   if (settings.compare === "mark")
     return marks[0] === undefined ? "no mark yet (m sets one)" : `before/after “${marks[0].label}”`
-  return settings.window === "all" ? "pick a window (t) to compare" : `previous ${settings.window}`
+  return settings.window === "all" || settings.window === "compaction"
+    ? "pick a window (t) to compare"
+    : `previous ${settings.window}`
 }
 
 /** Enter on a group row: filter to it and look one level deeper. */
@@ -171,21 +200,52 @@ export function pad(text: string, width: number, align: "left" | "right" = "left
 }
 
 export const scopeWords: Readonly<Record<Plus.MonitorScope, string>> = {
-  session: "this chat + delegated",
-  project: "this project",
-  all: "everywhere",
+  session: "This session",
+  tree: "Team tree",
+  team: "Team",
+  project: "Project",
+  all: "Everything",
 }
 
-/** The totals line: what the model read and wrote, then what tools cost. */
-export function totalsLine(totals: Plus.MonitorTotals): string {
-  const cost = formatCost(totals.cost)
+export const windowLabels: Readonly<Record<WindowName, string>> = {
+  all: "All",
+  compaction: "Since last compaction",
+  "15m": "15m",
+  "1h": "1h",
+  "24h": "24h",
+  "7d": "7d",
+  "30d": "30d",
+}
+
+/** The totals line: always-visible labelled totals. */
+export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
+  const hr = `${Math.round(totals.hitRate * 100)}%`
+  const cost = formatCost(totals.cost) ?? "$0.00"
+  const missCost = totals.missCost > 0 ? ` (${formatCost(totals.missCost)})` : ""
+
+  if (width < 90) {
+    return [
+      `reqs: ${totals.requests}`,
+      `steps: ${totals.steps}`,
+      `read: ${formatTokens(totals.cacheRead)}`,
+      `hit rate: ${hr}`,
+      `misses: ${totals.misses}`,
+      `cost: ${cost}`,
+    ].join(" · ")
+  }
+
   return [
-    `${totals.steps} steps`,
-    `${totals.calls} calls${totals.errors > 0 ? ` (${totals.errors} failed)` : ""}${totals.running > 0 ? ` · ${totals.running} running` : ""}`,
-    `in ${formatTokens(totals.input)}`,
-    `cache ${formatTokens(totals.cacheRead)}`,
-    `out ${formatTokens(totals.output + totals.reasoning)}`,
-    ...(cost === undefined ? [] : [cost]),
+    `reqs: ${totals.requests}`,
+    `steps: ${totals.steps}`,
+    `in: ${formatTokens(totals.input)}`,
+    `read: ${formatTokens(totals.cacheRead)}`,
+    `write: ${formatTokens(totals.cacheWrite)}`,
+    `out: ${formatTokens(totals.output)}`,
+    ...(totals.reasoning > 0 ? [`reason: ${formatTokens(totals.reasoning)}`] : []),
+    `hit rate: ${hr}`,
+    `misses: ${totals.misses}${missCost}`,
+    ...(totals.pings > 0 ? [`pings: ${totals.pings}`] : []),
+    `cost: ${cost}`,
   ].join(" · ")
 }
 

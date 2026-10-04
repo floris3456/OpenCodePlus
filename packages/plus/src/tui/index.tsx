@@ -51,10 +51,10 @@ export default Plugin.define({
             },
             {
               id: "plus.monitor.open",
-              title: "Tools: calls and tokens",
+              title: "Monitor: tokens, cache and tools",
               group: "OpenCodePlus",
               palette: true,
-              slash: { name: "tools" },
+              slash: { name: "monitor", aliases: ["tools"] },
               run: () => monitor.open(),
             },
             {
@@ -146,3 +146,5 @@ export default Plugin.define({
     }
   },
 })
+
+export { MonitorView } from "./monitor/view.js"
