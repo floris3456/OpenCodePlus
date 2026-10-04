@@ -25,6 +25,7 @@ import {
 import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
+import { renameTargetOf } from "./rename.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, userCategoryName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
@@ -1045,6 +1046,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (target) void dialogs.renameCategory(target)
   }
 
+  // R on an agent, member or team row renames that row; otherwise R keeps the
+  // category rename. Dispatch by row kind so both keep working.
+  function renameCurrent() {
+    const node = current()
+    if (renameTargetOf(node, state.snapshot()) !== undefined) {
+      void dialogs.renameRow(node)
+      return
+    }
+    renameCategory()
+  }
+
   function resetRow() {
     const node = current()
     if (node) void state.reset(node)
@@ -1402,7 +1414,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
     if (node?.kind === "item" && node.address !== undefined && node.address.section === null) hints.push(["m", "move"])
-    if (userCategoryName(workspace().category) !== undefined) hints.push(["R", "rename"])
+    if (renameTargetOf(node, state.snapshot()) !== undefined || userCategoryName(workspace().category) !== undefined) hints.push(["R", "rename"])
     if (node?.actions?.remove === true || userCategoryName(node) !== undefined) hints.push(["d", "delete"])
     if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
     if (node?.actions?.split === true) hints.push(["s", "split"])
@@ -1490,9 +1502,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(node?.kind === "item" && node.address !== undefined && node.address.section === null
           ? [{ bind: "m", title: "Move to a category", group: "Instructions", run: moveToCategory }]
           : []),
-        ...(userCategoryName(workspace().category) !== undefined
-          ? [{ bind: "shift+r,R", title: "Rename category", group: "Instructions", run: renameCategory }]
-          : []),
+        {
+          bind: "shift+r,R",
+          title: "Rename",
+          group: "Instructions",
+          run: renameCurrent,
+        },
         ...(canReset(node) ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }] : []),
         ...(node?.actions?.split === true ? [{ bind: "s", title: "Split", group: "Instructions", run: split }] : []),
         { bind: "n", title: "Next to review", group: "Instructions", run: () => nextReview(1) },

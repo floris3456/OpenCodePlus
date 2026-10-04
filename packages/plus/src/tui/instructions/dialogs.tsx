@@ -12,6 +12,7 @@ import {
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { homeCategoryLabel, orderedCategories } from "../../instructions/categories.js"
+import { renameTargetOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { displayLevel } from "./detail-pane.js"
@@ -1234,6 +1235,45 @@ async function editModel(node: TreeNode): Promise<void> {
     await state.renameCategory(node, name)
   }
 
+  // R on an agent, member or team row: rename it (prefilled, validated like
+  // creation). Everything that names it follows in one store revision; the
+  // tree selection moves to the renamed row.
+  async function renameRow(node: TreeNode | undefined): Promise<void> {
+    if (disposed || node === undefined) return
+    const target = renameTargetOf(node, state.snapshot())
+    if (target === undefined) {
+      context.ui.toast.show({ variant: "error", message: `"${node.label}" cannot be renamed` })
+      return
+    }
+    const raw = await context.ui.dialog.prompt({
+      title: `Rename ${node.label}`,
+      description: target.kind === "team" ? "New team name; members and records follow." : "New id; use / for nesting. .. is not allowed.",
+      value: node.label,
+    })
+    if (disposed || raw === undefined) return
+    const validated = validateRenameName(target, raw)
+    if (!validated.ok) {
+      context.ui.toast.show({ variant: "error", message: validated.reason })
+      return
+    }
+    if (validated.name === target.from) return
+    const row = await state.renameRow(
+      target.kind === "member"
+        ? { kind: "member", level: target.level, team: target.team, from: target.from, to: validated.name }
+        : target.kind === "team"
+          ? { kind: "team", level: target.level, from: target.from, to: validated.name }
+          : { kind: "agent", level: target.level, from: target.from, to: validated.name },
+    )
+    if (disposed || row === undefined) return
+    const expand =
+      target.kind === "agent"
+        ? [`root:${target.level}`, `group:${target.level}:agents`, `group:${target.level}:agents:user`]
+        : target.kind === "member"
+          ? [`root:${target.level}`, `group:${target.level}:teams`, `team:${target.level}:${target.team}`]
+          : [`root:${target.level}`, `group:${target.level}:teams`]
+    state.reveal(expand, row)
+  }
+
   // d on a user category: delete it after confirmation; its rows go home.
   async function deleteCategory(node: TreeNode | undefined): Promise<void> {
     if (disposed || node === undefined) return
@@ -1248,7 +1288,7 @@ async function editModel(node: TreeNode): Promise<void> {
     await state.deleteCategory(node)
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, when, move, renameCategory, deleteCategory, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, when, move, renameCategory, renameRow, deleteCategory, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

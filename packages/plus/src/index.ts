@@ -281,6 +281,8 @@ export type RenameAgentResult =
         | { code: "agent.exists"; message: string; data: Plus.AgentExists }
         | { code: "agent.invalid"; message: string; data: Plus.AgentInvalid }
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
     }
 
 export type DeleteAgentResult =
@@ -442,6 +444,17 @@ export type DeleteTeamResult =
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
+export type RenameTeamResult =
+  | { ok: true; value: Plus.RenameTeamResult }
+  | {
+      ok: false
+      error:
+        | { code: "team.unknown"; message: string; data: Plus.TeamUnknown }
+        | { code: "team.exists"; message: string; data: Plus.TeamExists }
+        | { code: "team.invalid"; message: string; data: Plus.TeamInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+    }
+
 export type ListTeamsResult =
   | { ok: true; value: Plus.TeamListOutput }
 
@@ -523,6 +536,7 @@ export interface PlusApi {
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
+  readonly renameTeam: (input: Plus.RenameTeamInput & { readonly actor?: Plus.Actor }) => Promise<RenameTeamResult>
   readonly listTeams: () => Promise<ListTeamsResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
@@ -760,6 +774,39 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if (fromRefusal !== undefined) return { ok: false as const, error: fromRefusal }
       const toRefusal = refuseProtectedForTool(input.actor, to.id, config)
       if (toRefusal !== undefined) return { ok: false as const, error: toRefusal }
+      // T6: a team in the id makes the row an on-disk team member; its file
+      // lives in the team directory and its records are team-scoped.
+      if (input.team !== undefined)
+        return renameTeamMember(ctx, state, builtins, directory, config, {
+          scope: input.scope,
+          team: input.team,
+          from: from.id,
+          to: to.id,
+          ...(input.actor === undefined ? {} : { actor: input.actor }),
+        })
+      const discovered = await discoverAll(ctx, await loadCurrent(directory), state, builtins, directory)
+      const scoped = discovered.agents.find((agent) => agent.id === from.id && agent.scope === input.scope && agent.team === undefined)
+      // Built-ins (OpenCode/Special/Plus) ship no file; a Defaults row served
+      // at this level is one of them. Rename addresses files only.
+      const hostBuiltin = scoped === undefined && discovered.agents.some((agent) => agent.id === from.id && agent.team === undefined && agent.path === undefined)
+      if ((scoped !== undefined && scoped.path === undefined) || hostBuiltin)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.invalid" as const,
+            message: `Agent ${from.id} is built in and cannot be renamed`,
+            data: { id: from.id, reason: `Agent ${from.id} is built in and cannot be renamed` },
+          },
+        }
+      if (scoped?.ancestor === true)
+        return {
+          ok: false as const,
+          error: {
+            code: "agent.invalid" as const,
+            message: `Agent ${from.id} is inherited from an ancestor directory and cannot be renamed`,
+            data: { id: from.id, reason: `Agent ${from.id} is inherited from an ancestor directory and cannot be renamed` },
+          },
+        }
       const renamed = await rename({ scope: input.scope, projectDirectory: directory, from: from.id, to: to.id })
       if (!renamed.ok && renamed.reason === "missing-source")
         return {
@@ -1729,6 +1776,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           removedMembers: found.agents.length,
         },
       }
+    },
+    renameTeam: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      return renameTeamAt(ctx, state, builtins, directory, config, input)
     },
     listTeams: async () => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -2879,6 +2931,10 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("agent.exists", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
             return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+          if (result.error.code === "team.unknown")
+            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "team.invalid")
+            return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("agent.invalid", result.error.message, result.error.data))
         }
         return result.value
@@ -3144,6 +3200,20 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!result.ok) {
           if (result.error.code === "team.unknown")
             return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "agent.protected")
+            return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "team.rename": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.renameTeam(input))
+        if (!result.ok) {
+          if (result.error.code === "team.unknown")
+            return yield* Effect.fail(context.error("team.unknown", result.error.message, result.error.data))
+          if (result.error.code === "team.exists")
+            return yield* Effect.fail(context.error("team.exists", result.error.message, result.error.data))
           if (result.error.code === "agent.protected")
             return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("team.invalid", result.error.message, result.error.data))
@@ -3598,6 +3668,171 @@ async function removeAgentRecords(
       return record.agent === agent && record.level === level && record.team === undefined
     return record.type === "link" && record.agent === agent && record.level === level && record.team === undefined
   })
+}
+
+function teamDirFor(level: "project" | "global", directory: string, team: string): string {
+  return level === "project" ? path.join(projectTeamsPath(directory), team) : path.join(globalTeamsPath(), team)
+}
+
+// T6: rename an on-disk team member. The member file moves inside its team
+// directory and every row the member owns — its team-scoped link, row edits,
+// splits, models, rules and warming rows — plus every "Delegate to" row that
+// names it moves to the new id in one store revision. Session history keeps
+// the old name: nothing here touches session storage.
+async function renameTeamMember(
+  ctx: Context,
+  state: PlusState,
+  builtins: readonly BuiltinTeam[],
+  directory: string,
+  config: { readonly protectedAgents: readonly string[] },
+  input: { readonly scope: "project" | "global"; readonly team: string; readonly from: string; readonly to: string; readonly actor?: Plus.Actor },
+): Promise<RenameAgentResult> {
+  const validatedTeam = validateTeamName(input.team)
+  if (!validatedTeam.ok)
+    return {
+      ok: false,
+      error: { code: "team.invalid", message: validatedTeam.reason, data: { team: input.team, reason: validatedTeam.reason } },
+    }
+  const known = (await discoverTeams(input.scope, directory, builtins)).find((team) => team.team === validatedTeam.team)
+  if (known === undefined)
+    return {
+      ok: false,
+      error: { code: "team.unknown", message: `Unknown team ${validatedTeam.team}`, data: { level: input.scope, team: validatedTeam.team } },
+    }
+  const teamDir = teamDirFor(input.scope, directory, validatedTeam.team)
+  const existing = known.agents.find((agent) => agent.id === input.from)
+  const sourcePath = existing?.path ?? teamMemberPath(teamDir, input.from)
+  if (existing === undefined || sourcePath === undefined)
+    return {
+      ok: false,
+      error: { code: "agent.missing", message: `Agent ${input.from} does not exist in team ${validatedTeam.team}`, data: { path: teamMemberPath(teamDir, input.from) ?? teamDir } },
+    }
+  const refusal = refuseProtectedForTool(input.actor, input.from, config) ?? refuseProtectedForTool(input.actor, input.to, config)
+  if (refusal !== undefined) return { ok: false, error: refusal }
+  const targetPath = teamMemberPath(teamDir, input.to)
+  if (targetPath === undefined)
+    return {
+      ok: false,
+      error: { code: "agent.invalid", message: `Invalid agent id "${input.to}"`, data: { id: input.to, reason: `Invalid agent id "${input.to}"` } },
+    }
+  if (await Bun.file(targetPath).exists())
+    return { ok: false, error: { code: "agent.exists", message: `Agent ${input.to} already exists at ${targetPath}`, data: { path: targetPath } } }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true })
+  try {
+    await fs.rename(sourcePath, targetPath)
+  } catch (error) {
+    const reason = messageOf(error)
+    return { ok: false, error: { code: "agent.missing", message: `Agent ${input.from} does not exist at ${sourcePath}: ${reason}`, data: { path: sourcePath } } }
+  }
+  const source = { level: input.scope, agent: input.from, team: { level: input.scope, team: validatedTeam.team } }
+  const target = { level: input.scope, agent: input.to, team: { level: input.scope, team: validatedTeam.team } }
+  const delegateFrom = `perm:team_delegate:to.${input.from}`
+  const delegateTo = `perm:team_delegate:to.${input.to}`
+  const moved = await updateRecords(directory, (current) =>
+    current.map((record): StoredRecord => {
+      if (!isScopedRow(record)) return record
+      if (!sameTeam(record.team, { level: input.scope, team: validatedTeam.team })) return record
+      // A "Delegate to" row naming the member (owned by a peer in the same
+      // team) follows the member id; the file name and the target both move.
+      if (record.type === "customization" && record.item === delegateFrom) {
+        const renamed = { ...record, item: delegateTo }
+        return scopedTo(renamed, source) ? { ...renamed, agent: input.to } : renamed
+      }
+      return scopedTo(record, source) ? { ...record, agent: input.to } : record
+    }),
+  )
+  if (!moved.ok) {
+    await fs.rename(targetPath, sourcePath).catch(() => undefined)
+    const reason = "the store changed concurrently; retry"
+    return { ok: false, error: { code: "agent.invalid", message: `Could not rename ${input.from}: ${reason}`, data: { id: input.from, reason } } }
+  }
+  await Effect.runPromise(ctx.agent.reload())
+  await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+  await Effect.runPromise(emitTeamsChanged(state))
+  await logFileOp({
+    directory,
+    actor: normalizeActor(input.actor),
+    scope: input.scope === "project" ? "project" : "global",
+    op: "agent.rename",
+    target: targetPath,
+    summary: `agent.rename ${input.from} to ${input.to} (${input.scope} team ${validatedTeam.team})`,
+  })
+  return { ok: true, value: { from: input.from, to: input.to, path: targetPath } }
+}
+
+// T6: rename an on-disk team. The team directory moves and every stored record
+// that names the team — its enablement row, links and every team-scoped row of
+// its members — moves with it in one revision. Defaults (shipped) teams are
+// refused; only Project and Global teams have directories.
+async function renameTeamAt(
+  ctx: Context,
+  state: PlusState,
+  builtins: readonly BuiltinTeam[],
+  directory: string,
+  config: { readonly protectedAgents: readonly string[] },
+  input: { readonly level: "project" | "global"; readonly from: string; readonly to: string; readonly actor?: Plus.Actor },
+): Promise<RenameTeamResult> {
+  const from = validateTeamName(input.from)
+  if (!from.ok)
+    return { ok: false, error: { code: "team.invalid", message: from.reason, data: { team: input.from, reason: from.reason } } }
+  const to = validateTeamName(input.to)
+  if (!to.ok)
+    return { ok: false, error: { code: "team.invalid", message: to.reason, data: { team: input.to, reason: to.reason } } }
+  const known = (await discoverTeams(input.level, directory, builtins)).find((team) => team.team === from.team)
+  if (known === undefined)
+    return { ok: false, error: { code: "team.unknown", message: `Unknown team ${from.team}`, data: { level: input.level, team: from.team } } }
+  const refusal = refuseProtectedForTool(input.actor, known.agents.find((member) => config.protectedAgents.includes(member.id))?.id, config)
+  if (refusal !== undefined) return { ok: false, error: refusal }
+  const teamsRoot = input.level === "project" ? projectTeamsPath(directory) : globalTeamsPath()
+  const sourceDir = path.join(teamsRoot, from.team)
+  const targetDir = path.join(teamsRoot, to.team)
+  let realSource: string
+  let realRoot: string
+  try {
+    realSource = await fs.realpath(sourceDir)
+    realRoot = await fs.realpath(teamsRoot)
+  } catch {
+    return { ok: false, error: { code: "team.unknown", message: `Team directory "${from.team}" not found`, data: { level: input.level, team: from.team } } }
+  }
+  const rel = path.relative(realRoot, realSource)
+  if (rel.startsWith("..") || path.isAbsolute(rel) || rel === "")
+    return {
+      ok: false,
+      error: { code: "team.invalid", message: `Team directory "${from.team}" is outside teams root`, data: { team: from.team, reason: `Team directory "${from.team}" is outside teams root` } },
+    }
+  if (await fs.stat(targetDir).then(() => true, () => false))
+    return { ok: false, error: { code: "team.exists", message: `Team ${to.team} already exists`, data: { level: input.level, team: to.team } } }
+  try {
+    await fs.rename(sourceDir, targetDir)
+  } catch (error) {
+    const reason = messageOf(error)
+    return { ok: false, error: { code: "team.invalid", message: `Could not rename team ${from.team}: ${reason}`, data: { team: from.team, reason } } }
+  }
+  const moved = await updateRecords(directory, (current) =>
+    current.map((record): StoredRecord => {
+      if (record.type === "team") return record.level === input.level && record.team === from.team ? { ...record, team: to.team } : record
+      if (isScopedRow(record) && record.team !== undefined && record.team.level === input.level && record.team.team === from.team)
+        return { ...record, team: { level: input.level, team: to.team } }
+      return record
+    }),
+  )
+  if (!moved.ok) {
+    await fs.rename(targetDir, sourceDir).catch(() => undefined)
+    const reason = "the store changed concurrently; retry"
+    return { ok: false, error: { code: "team.invalid", message: `Could not rename team ${from.team}: ${reason}`, data: { team: from.team, reason } } }
+  }
+  await Effect.runPromise(ctx.agent.reload())
+  await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
+  await Effect.runPromise(emitTeamsChanged(state))
+  await logFileOp({
+    directory,
+    actor: normalizeActor(input.actor),
+    scope: input.level,
+    op: "team.rename",
+    target: `team:${input.level}:${to.team}`,
+    summary: `team.rename ${from.team} to ${to.team} (${input.level})`,
+  })
+  return { ok: true, value: { level: input.level, from: from.team, to: to.team, path: targetDir } }
 }
 
 function isTeamRecord(record: StoredRecord): record is TeamRecord {
