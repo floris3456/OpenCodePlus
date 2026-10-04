@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { COMPACT_MARKER, CONFIRM_MS, confirmText, createWarming } from "../src/tui/warming.js"
+import { CONFIRM_MS, confirmText, createWarming, warmingLabel } from "../src/tui/warming.js"
 import { createTestTheme, renderPlusFixture } from "./tui.js"
 
 const MINUTE = 60_000
@@ -120,12 +120,13 @@ test("a send into a cold cache is held until a second submit, and the footer ask
   }
 }, 15_000)
 
-test("a warm cache, a chat with warming off and a running chat send at once", async () => {
+test("a warm cache, a chat with warming off, a running chat and a compacted chat send at once", async () => {
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
   const statuses: Record<string, unknown> = {
     ses_warm: { sessionID: "ses_warm", chat: "default", active: true, since: Date.now(), expires: Date.now() + 30 * MINUTE, interval: 4 * MINUTE, now: Date.now() },
     ses_off: { sessionID: "ses_off", chat: "off", active: false, since: Date.now(), expires: Date.now() - MINUTE, interval: 4 * MINUTE, now: Date.now() },
     ses_running: { sessionID: "ses_running", chat: "default", active: false, since: Date.now() - 40 * MINUTE, expires: Date.now() - MINUTE, interval: 4 * MINUTE, now: Date.now() },
+    ses_compacted: { sessionID: "ses_compacted", chat: "default", compacted: true, active: false, now: Date.now() },
   }
   const [session, setSession] = createSignal("ses_warm")
   await using fixture = await renderPlusFixture({
@@ -140,7 +141,7 @@ test("a warm cache, a chat with warming off and a running chat send at once", as
     },
   })
   try {
-    for (const [sessionID, shown] of [["ses_warm", "cache warm"], ["ses_off", "cache warming off"], ["ses_running", "cache cold"]] as const) {
+    for (const [sessionID, shown] of [["ses_warm", "cache warm"], ["ses_off", "cache warming off"], ["ses_running", "cache cold"], ["ses_compacted", "compacted"]] as const) {
       setSession(sessionID)
       await fixture.waitForFrame((next) => next.includes(shown))
       expect([sessionID, fixture.send({ sessionID, mode: "normal", delivery: "steer" })]).toEqual([sessionID, true])
@@ -150,11 +151,55 @@ test("a warm cache, a chat with warming off and a running chat send at once", as
   }
 })
 
-test("compact before cold switches per chat and marks the footer's left edge while on", async () => {
+test("a compacted chat shows compacted in muted text and sends on the first submit", async () => {
+  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
+  const status = {
+    sessionID: "ses_compacted",
+    chat: "default" as const,
+    compacted: true,
+    active: false,
+    now: Date.now(),
+  }
+  await using fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 80,
+    height: 4,
+    rpc: { "warming.status": async () => status },
+    render: (context) => {
+      warming.current = createWarming(context)
+      return <warming.current.Footer sessionID="ses_compacted" />
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("compacted"))
+    expect(fixture.captureCharFrame()).toContain("compacted")
+    const span = fixture
+      .captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((item) => item.text.startsWith("compacted"))
+    expect(span?.fg.equals(createTestTheme().text.muted)).toBe(true)
+
+    // The guard lets the first submit through without holding for a second enter.
+    expect(fixture.send({ sessionID: "ses_compacted", mode: "normal", delivery: "steer" })).toBe(true)
+  } finally {
+    warming.current?.dispose()
+  }
+})
+
+test("compact before cold switches per chat to a single compact label with no separate marker", async () => {
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
   const state = { compact: false }
   const calls: unknown[] = []
-  const status = () => ({ sessionID: "ses_chat", chat: "default", compact: state.compact, active: false, now: Date.now() })
+  const expires = Date.now() + 23 * MINUTE + 41_000
+  const status = () => ({
+    sessionID: "ses_chat",
+    chat: "default" as const,
+    compact: state.compact,
+    active: true,
+    expires,
+    interval: 4 * MINUTE,
+    now: Date.now(),
+  })
   await using fixture = await renderPlusFixture({
     snapshots: [],
     width: 80,
@@ -172,29 +217,37 @@ test("compact before cold switches per chat and marks the footer's left edge whi
       warming.current = createWarming(context)
       return (
         <box flexDirection="row" gap={2}>
-          <warming.current.CompactMarker sessionID="ses_chat" />
+          <warming.current.Footer sessionID="ses_chat" />
           <text>~/project</text>
         </box>
       )
     },
   })
   try {
-    // Off in a new chat: nothing in front of the location.
-    await fixture.waitForFrame((frame) => frame.includes("~/project"))
-    expect(fixture.captureCharFrame()).not.toContain(COMPACT_MARKER)
+    // Off in a new chat: standard cache warm countdown, no separate marker.
+    await fixture.waitForFrame((frame) => frame.includes("cache warm ·"))
+    expect(fixture.captureCharFrame()).not.toContain("compact before cold")
+    expect(fixture.captureCharFrame()).toContain("cache warm ·")
+    expect(fixture.captureCharFrame()).not.toContain("compact cache warm")
+
+    // Switch on: turns into single label "compact cache warm · ...", no separate marker.
     await warming.current!.toggleCompact()
-    await fixture.waitForFrame((frame) => frame.includes(COMPACT_MARKER))
-    const line = fixture.captureCharFrame().split("\n").find((entry) => entry.includes(COMPACT_MARKER)) ?? ""
-    expect(line.trimEnd()).toBe(`${COMPACT_MARKER}  ~/project`)
+    await fixture.waitForFrame((frame) => frame.includes("compact cache warm ·"))
+    expect(fixture.captureCharFrame()).not.toContain("compact before cold")
+    const line = fixture.captureCharFrame().split("\n").find((entry) => entry.includes("compact cache warm")) ?? ""
+    expect(line).toContain("compact cache warm ·")
+    expect(line).toContain("~/project")
+
     const span = fixture
       .captureSpans()
       .lines.flatMap((entry) => entry.spans)
-      .find((item) => item.text.startsWith(COMPACT_MARKER))
+      .find((item) => item.text.startsWith("compact cache warm"))
     expect(span?.fg.equals(createTestTheme().text.muted)).toBe(true)
     expect(fixture.fake.toasts.at(-1)?.message).toContain("Compact before cold on")
+
     // The same switch turns it off again.
     await warming.current!.toggleCompact()
-    await fixture.waitForFrame((frame) => !frame.includes(COMPACT_MARKER))
+    await fixture.waitForFrame((frame) => frame.includes("cache warm ·") && !frame.includes("compact cache warm"))
     expect(calls).toEqual([
       { sessionID: "ses_chat", on: true },
       { sessionID: "ses_chat", on: false },
@@ -203,4 +256,50 @@ test("compact before cold switches per chat and marks the footer's left edge whi
   } finally {
     warming.current?.dispose()
   }
+})
+
+test("warmingLabel formats the compact before cold single label and compacted state correctly", () => {
+  const now = 1_000_000
+  // 1. compactAt countdown
+  expect(
+    warmingLabel({ sessionID: "s", chat: "default", compact: true, compactAt: now + 5_000, active: true, now }, now),
+  ).toEqual({ text: "compact cache warm · 0:05 left", tone: "muted" })
+
+  // 2. window-end countdown
+  expect(
+    warmingLabel({ sessionID: "s", chat: "default", compact: true, active: true, expires: now + 5_000, now }, now),
+  ).toEqual({ text: "compact cache warm · 0:05 left", tone: "muted" })
+
+  // 3. warming off + compactAt
+  expect(
+    warmingLabel(
+      { sessionID: "s", chat: "off", compact: true, compactAt: now + 5_000, active: false, expires: now - 1000, now },
+      now,
+    ),
+  ).toEqual({ text: "compact cache warm · 0:05 left", tone: "muted" })
+
+  // 4. compact cache cold
+  expect(
+    warmingLabel({ sessionID: "s", chat: "default", compact: true, active: false, expires: now - 5_000, now }, now),
+  ).toEqual({ text: "compact cache cold", tone: "warning" })
+
+  expect(
+    warmingLabel(
+      { sessionID: "s", chat: "default", compact: true, compactAt: now - 1_000, active: false, now },
+      now,
+    ),
+  ).toEqual({ text: "compact cache cold", tone: "warning" })
+
+  // 5. compacted muted (compact on or off, chat on/off/default)
+  expect(
+    warmingLabel({ sessionID: "s", chat: "default", compact: true, compacted: true, active: false, now }, now),
+  ).toEqual({ text: "compacted", tone: "muted" })
+
+  expect(
+    warmingLabel({ sessionID: "s", chat: "default", compact: false, compacted: true, active: false, now }, now),
+  ).toEqual({ text: "compacted", tone: "muted" })
+
+  expect(
+    warmingLabel({ sessionID: "s", chat: "off", compact: false, compacted: true, active: false, now }, now),
+  ).toEqual({ text: "compacted", tone: "muted" })
 })

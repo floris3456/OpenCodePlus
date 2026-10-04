@@ -445,11 +445,11 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   await clock.fire()
   expect(compacted).toEqual([])
   store.running("ses_warm", false)
-  // A manual compaction's request schedules nothing and keeps the chat's warming decision.
+  // A manual compaction's request schedules nothing and never opens a warming window.
   await store.setChat("ses_warm", "default")
   const manual = event({ kind: "compaction", since: clock.now, now: clock.now })
   await store.decide(manual, {}, compact)
-  expect(manual.settings).toEqual(configured)
+  expect(manual.settings).toBeUndefined()
   expect(clock.pending()).toEqual([])
   // Switching on after the window ended leaves the cold cache alone.
   await store.setCompact("ses_warm", false)
@@ -462,7 +462,7 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   expect(clock.pending()).toHaveLength(1)
   expect((await store.setCompact("ses_warm", false)).compact).toBe(false)
   expect(clock.pending()).toEqual([])
-  // A refused compaction does not stop warming after the next compaction request.
+  // A refused compaction does not schedule and the next compaction request still opens no window.
   await store.setCompact("ses_warm", true)
   await store.decide(event({ since: clock.now, now: clock.now }), {}, async () => {
     throw new Error("refused")
@@ -470,6 +470,69 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   await clock.fire()
   const later = event({ kind: "compaction", since: clock.now, now: clock.now })
   await store.decide(later, {}, compact)
-  expect(later.settings).toEqual(configured)
+  expect(later.settings).toBeUndefined()
+  store.dispose()
+})
+
+test("warming recognises every compaction: external compaction, restart, primary activity restores window, and guard lets first Enter send", async () => {
+  const clock = fakeClock(1_000_000)
+  const history = new Map<string, { completedAt: number; hasSubsequentRealRequest?: boolean }>()
+  const options = {
+    ...clock.options,
+    compactionHistory: async (sessionID: string) => history.get(sessionID),
+  }
+  const file = await tempFile()
+  const store = createWarmingStore(file, options)
+
+  // 1. Initial primary request opens a normal window
+  const initial = event({ phase: "activity", kind: "primary", since: 1_000_000, now: 1_000_000 })
+  await store.decide(initial, {})
+  expect(initial.settings).toEqual(configured)
+  const initialStatus = await store.status("ses_warm")
+  expect(initialStatus.active).toBe(true)
+  expect(initialStatus.compacted).toBeUndefined()
+
+  // 2. A compaction the store did not start completes (e.g. manual /compact or auto-compaction)
+  history.set("ses_warm", { completedAt: 1_000_000 + 5 * MINUTE })
+  store.invalidateCompaction("ses_warm")
+
+  // The chat is compacted and the warm decision returns no settings (stops keep-alive loop)
+  const statusAfterCompaction = await store.status("ses_warm")
+  expect(statusAfterCompaction.compacted).toBe(true)
+  expect(statusAfterCompaction.active).toBe(false)
+
+  const warm = event({ phase: "warm", since: 1_000_000, now: 1_000_000 + 6 * MINUTE })
+  await store.decide(warm, {})
+  expect(warm.settings).toBeUndefined()
+
+  // Guard lets the first Enter through while compacted
+  const label = warmingLabel(statusAfterCompaction, 1_000_000 + 6 * MINUTE)
+  expect(label).toEqual({ text: "compacted", tone: "muted" })
+  expect(label?.tone).not.toBe("warning")
+
+  // 3. A fresh store instance (restart) whose history shows a compaction after the window started -> compacted
+  const freshStore = createWarmingStore(file, options)
+  // Querying status or evaluating a warm decision on a fresh store sees compacted: true
+  const warmOnRestart = event({ phase: "warm", since: 1_000_000, now: 1_000_000 + 7 * MINUTE })
+  await freshStore.decide(warmOnRestart, {})
+  expect(warmOnRestart.settings).toBeUndefined()
+  const freshStatus = await freshStore.status("ses_warm", 1_000_000 + 7 * MINUTE)
+  expect(freshStatus.compacted).toBe(true)
+  expect(freshStatus.active).toBe(false)
+
+  // 4. Next primary activity -> normal window
+  clock.now = 1_000_000 + 10 * MINUTE
+  const nextPrimary = event({ phase: "activity", kind: "primary", since: clock.now, now: clock.now })
+  await freshStore.decide(nextPrimary, {})
+  expect(nextPrimary.settings).toEqual(configured)
+  const restoredStatus = await freshStore.status("ses_warm", clock.now + MINUTE)
+  expect(restoredStatus.active).toBe(true)
+  expect(restoredStatus.compacted).toBeUndefined()
+  expect(warmingLabel(restoredStatus, clock.now + MINUTE)).toEqual({
+    text: `cache warm · ${formatRemaining(30 * MINUTE - MINUTE)} left`,
+    tone: "muted",
+  })
+
+  freshStore.dispose()
   store.dispose()
 })
