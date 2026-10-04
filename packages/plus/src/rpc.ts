@@ -1006,6 +1006,8 @@ export const WarmingStatus = Schema.Struct({
   compact: Schema.optionalKey(Schema.Boolean),
   /** When it compacts this chat, while a compaction is scheduled. */
   compactAt: Schema.optionalKey(Schema.Number),
+  /** Latest compaction completed after the last real request; absent otherwise. */
+  compacted: Schema.optionalKey(Schema.Boolean),
   active: Schema.Boolean,
   source: Schema.optionalKey(Schema.Literals(["chat", "model", "config"])),
   level: Schema.optionalKey(Level),

@@ -129,15 +129,10 @@ export default Plugin.define({
       append: "prompt.footer",
       render: (props) => <warming.Footer sessionID={props.sessionID} />,
     })
-    const disposeCompactMarker = context.ui.slot({
-      prepend: "prompt.footer.status",
-      render: (props) => <warming.CompactMarker sessionID={props.sessionID} />,
-    })
     return () => {
       disposeRoute()
       disposeSlot()
       disposeFooter()
-      disposeCompactMarker()
       warming.dispose()
       monitor.dispose()
       agents.dispose()

@@ -10,7 +10,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
+import { DateTime, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -161,6 +161,32 @@ export default Plugin.define({
       yield* ensureTeamTooling(ctx, state)
       yield* activate(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
+      )
+      warmingStore.setCompactionReader((sessionID) =>
+        Effect.runPromise(
+          ctx.session.context({ sessionID: Session.ID.make(sessionID) }).pipe(
+            Effect.map((messages) => {
+              const compactionIdx = messages.findLastIndex(
+                (m) => m.type === "compaction" && m.status === "completed",
+              )
+              if (compactionIdx === -1) return undefined
+              const comp = messages[compactionIdx]
+              const created = comp.time?.created
+              const completedAt =
+                typeof created === "number"
+                  ? created
+                  : created
+                    ? DateTime.toEpochMillis(created)
+                    : Date.now()
+              const afterCompaction = messages.slice(compactionIdx + 1)
+              const hasSubsequentRealRequest = afterCompaction.some(
+                (m) => m.type === "user" || m.type === "assistant",
+              )
+              return { completedAt, hasSubsequentRealRequest }
+            }),
+            Effect.catchCause(() => Effect.succeed(undefined)),
+          ),
+        ),
       )
       yield* watchHostEvents(ctx, state)
       // The monitor records every step and tool call this Location sees; a
@@ -5392,6 +5418,8 @@ const RefreshEvents: Set<string> = new Set([
 
 const SessionModelEvents: Set<string> = new Set(["session.created", "session.agent.selected"])
 
+const SessionCompactionEvents: Set<string> = new Set(["session.compaction.ended", "session.compacted"])
+
 function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
   const refresh = ctx.event.subscribe().pipe(
     Stream.filter((event) => RefreshEvents.has(event.type)),
@@ -5431,10 +5459,30 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )
+  const compactions = ctx.event.subscribe().pipe(
+    Stream.filter((event) => SessionCompactionEvents.has(event.type)),
+    Stream.runForEach((event) =>
+      Effect.gen(function* () {
+        const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
+        if (typeof sessionID === "string") {
+          const created = (event as { created?: unknown }).created
+          const completedAt = typeof created === "number" ? created : Date.now()
+          warmingStore.invalidateCompaction(sessionID, completedAt)
+          yield* emitWarmingChanged(state, sessionID)
+        }
+      }).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus compaction event failed", { cause, type: event.type })),
+        Effect.asVoid,
+      ),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
   return Effect.gen(function* () {
     yield* refresh
     yield* sessions
     yield* runs
+    yield* compactions
     yield* watchToolRegistry(ctx, state)
   })
 }

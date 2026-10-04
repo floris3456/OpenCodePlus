@@ -121,6 +121,8 @@ export interface WarmingStatus {
   readonly compact: boolean
   /** When it compacts this chat, while a compaction is scheduled. */
   readonly compactAt?: number
+  /** Latest compaction completed after the last real request; absent otherwise. */
+  readonly compacted?: boolean
   /** A warming window runs now: core keeps the cache warm until `expires`. */
   readonly active: boolean
   readonly source?: WarmingSource
@@ -140,6 +142,14 @@ interface Tracked {
   readonly level?: Level
 }
 
+export interface CompactionRecord {
+  readonly completedAt: number
+  /** Whether a real request (user/assistant) exists after this compaction in durable history. */
+  readonly hasSubsequentRealRequest?: boolean
+}
+
+export type CompactionReader = (sessionID: string) => Promise<CompactionRecord | undefined>
+
 export interface WarmingStore {
   /**
    * Decide one hook event and record the chat's window. `compact` compacts the
@@ -152,6 +162,10 @@ export interface WarmingStore {
   setCompact(sessionID: string, on: boolean): Promise<WarmingStatus>
   /** Whether the chat runs now: a running chat is using its cache and never compacts from here. */
   running(sessionID: string, running: boolean): void
+  /** Invalidate cached compaction truth for this chat. */
+  invalidateCompaction(sessionID: string, completedAt?: number): void
+  /** Configure the durable compaction history reader. */
+  setCompactionReader(reader: CompactionReader): void
   /** Stop every scheduled compaction (tests, shutdown). */
   dispose(): void
 }
@@ -163,6 +177,7 @@ export interface WarmingStoreOptions {
   readonly now?: () => number
   readonly setTimer?: (run: () => void, ms: number) => unknown
   readonly clearTimer?: (timer: unknown) => void
+  readonly compactionHistory?: CompactionReader
 }
 
 export function warmingChatsPath(): string {
@@ -184,19 +199,51 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   // A scheduled compaction never keeps a process alive on its own.
   const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms).unref())
   const clearTimer = options.clearTimer ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
+  let compactionReader: CompactionReader | undefined = options.compactionHistory
+  const compactionCache = new Map<string, Promise<CompactionRecord | undefined>>()
+  const lastReal = new Map<string, number>()
+  const inMemoryCompaction = new Map<string, number>()
   const tracked = new Map<string, Tracked>()
   const chats = { loaded: undefined as Promise<Map<string, ChatSwitch>> | undefined }
   // Compact before cold: the chats it is on for (persisted), when each chat's
-  // cache goes cold, the scheduled compactions, how to compact each chat, the
-  // chats running now, and the chats whose compaction this store started and
-  // whose own request has not been seen yet.
+  // cache goes cold, the scheduled compactions, how to compact each chat, and
+  // the chats running now.
   const compactFile = path.join(path.dirname(file), "compact.json")
   const compactChats = { loaded: undefined as Promise<Set<string>> | undefined }
   const coldAt = new Map<string, number>()
   const scheduled = new Map<string, Scheduled>()
   const compactors = new Map<string, Compact>()
   const busy = new Set<string>()
-  const compacting = new Set<string>()
+  const getCompaction = (sessionID: string): Promise<CompactionRecord | undefined> => {
+    if (!compactionReader) return Promise.resolve(undefined)
+    let cached = compactionCache.get(sessionID)
+    if (cached === undefined) {
+      cached = compactionReader(sessionID).catch(() => undefined)
+      compactionCache.set(sessionID, cached)
+    }
+    return cached
+  }
+  const isCompacted = async (sessionID: string, windowSince?: number): Promise<boolean> => {
+    const compaction = await getCompaction(sessionID)
+    const completedAt = compaction?.completedAt ?? inMemoryCompaction.get(sessionID)
+    if (completedAt === undefined || Number.isNaN(completedAt)) return false
+
+    const lastActivity = lastReal.get(sessionID)
+    if (lastActivity !== undefined) {
+      return completedAt > lastActivity
+    }
+
+    if (windowSince !== undefined) {
+      return completedAt > windowSince
+    }
+
+    const entry = tracked.get(sessionID)
+    if (entry?.window?.since !== undefined) {
+      return completedAt > entry.window.since
+    }
+
+    return compaction ? compaction.hasSubsequentRealRequest !== true : true
+  }
   const load = () => {
     chats.loaded ??= fs
       .readFile(file, "utf8")
@@ -250,19 +297,25 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     const compact = compactors.get(sessionID)
     if (compact === undefined || busy.has(sessionID) || !(await loadCompact()).has(sessionID)) return
     coldAt.delete(sessionID)
-    compacting.add(sessionID)
-    await compact(sessionID).catch(() => compacting.delete(sessionID))
+    await compact(sessionID).catch(() => {})
   }
-  const statusOf = (sessionID: string, chat: ChatSwitch | undefined, compact: boolean, now: number): WarmingStatus => {
+  const statusOf = async (
+    sessionID: string,
+    chat: ChatSwitch | undefined,
+    compact: boolean,
+    now: number,
+  ): Promise<WarmingStatus> => {
+    const compacted = await isCompacted(sessionID)
     const entry = tracked.get(sessionID)
     const window = entry?.window
-    const active = window !== undefined && now < window.expires && chat !== "off"
-    const compactAt = compact ? scheduled.get(sessionID)?.at : undefined
+    const active = !compacted && window !== undefined && now < window.expires && chat !== "off"
+    const compactAt = compact && !compacted ? scheduled.get(sessionID)?.at : undefined
     return {
       sessionID,
       chat: chat ?? "default",
       compact,
       ...(compactAt === undefined ? {} : { compactAt }),
+      ...(compacted ? { compacted: true } : {}),
       active,
       ...(entry?.source === undefined ? {} : { source: entry.source }),
       ...(entry?.level === undefined ? {} : { level: entry.level }),
@@ -274,14 +327,18 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   return {
     async decide(event, rows, compact) {
       const chat = (await load()).get(event.sessionID)
-      // The request of a compaction this store started: the chat is compacted
-      // and its cache about to go cold, so warming the new context would only
-      // cost. Nothing more is scheduled until the next real request.
       const activity = event.phase === "activity"
-      const ours = activity && event.kind === "compaction" && compacting.has(event.sessionID)
-      if (activity) compacting.delete(event.sessionID)
+      const isCompactionActivity = activity && event.kind === "compaction"
+
+      if (isCompactionActivity) {
+        inMemoryCompaction.set(event.sessionID, event.now)
+      } else if (activity) {
+        lastReal.set(event.sessionID, event.now)
+      }
+
+      const compacted = isCompactionActivity || (await isCompacted(event.sessionID, event.since))
       const decided = decideWarming({ configured: event.settings, rows, chat })
-      const decision = ours ? { ...decided, settings: undefined } : decided
+      const decision = compacted ? { ...decided, settings: undefined } : decided
       event.settings = decision.settings
       const before = tracked.get(event.sessionID)
       const beforeCompact = scheduled.get(event.sessionID)?.at
@@ -306,12 +363,17 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       }
       tracked.set(event.sessionID, next)
       if (compact !== undefined) compactors.set(event.sessionID, compact)
-      // A compaction's own request never schedules another: the context it
-      // leaves is already small.
-      if (activity && event.kind === "compaction") coldAt.delete(event.sessionID)
-      else coldAt.set(event.sessionID, window?.expires ?? (activity ? event.now + coldInterval(decided, rows) : event.now))
-      if ((await loadCompact()).has(event.sessionID)) schedule(event.sessionID, event.now)
-      else unschedule(event.sessionID)
+
+      // A compaction never schedules another: the context it leaves is already small.
+      if (compacted) {
+        coldAt.delete(event.sessionID)
+        unschedule(event.sessionID)
+      } else {
+        coldAt.set(event.sessionID, window?.expires ?? (activity ? event.now + coldInterval(decided, rows) : event.now))
+        if ((await loadCompact()).has(event.sessionID)) schedule(event.sessionID, event.now)
+        else unschedule(event.sessionID)
+      }
+
       return (
         beforeCompact !== scheduled.get(event.sessionID)?.at ||
         before?.window?.expires !== window?.expires ||
@@ -340,13 +402,26 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       if (on) set.add(sessionID)
       for (const key of [...set].slice(0, Math.max(0, set.size - MAX_CHATS))) set.delete(key)
       await write(compactFile, [...set])
-      if (on) schedule(sessionID, now())
+      const compacted = await isCompacted(sessionID)
+      if (on && !compacted) schedule(sessionID, now())
       else unschedule(sessionID)
       return statusOf(sessionID, (await load()).get(sessionID), on, now())
     },
     running(sessionID, running) {
       if (running) busy.add(sessionID)
       else busy.delete(sessionID)
+    },
+    invalidateCompaction(sessionID, completedAt) {
+      compactionCache.delete(sessionID)
+      if (completedAt !== undefined) {
+        inMemoryCompaction.set(sessionID, completedAt)
+      }
+      coldAt.delete(sessionID)
+      unschedule(sessionID)
+    },
+    setCompactionReader(reader) {
+      compactionReader = reader
+      compactionCache.clear()
     },
     dispose() {
       for (const sessionID of [...scheduled.keys()]) unschedule(sessionID)

@@ -6,7 +6,7 @@ import { Definition, type Plus } from "../rpc.js"
 // Cache warming in the TUI: a countdown under the prompt to when warming stops
 // for this chat, a per-chat on/off switch (<leader>k), a confirmation before a
 // message goes into a cold cache, and the per-chat compact before cold switch
-// (<leader>j, /compact-warm) with its marker at the left of the prompt footer.
+// (<leader>j, /compact-warm).
 
 /** How long a held send waits for the confirming second submit, as interrupting a running chat does. */
 export const CONFIRM_MS = 5000
@@ -31,6 +31,20 @@ export function warmingLabel(
   now: number,
 ): { text: string; tone: "muted" | "warning" } | undefined {
   if (status === undefined) return undefined
+  if (status.compacted) return { text: "compacted", tone: "muted" }
+
+  if (status.compact) {
+    const deadline = status.compactAt ?? (status.active && status.expires !== undefined ? status.expires : undefined)
+    if (deadline !== undefined) {
+      if (deadline > now) return { text: `compact cache warm · ${formatRemaining(deadline - now)} left`, tone: "muted" }
+      return { text: "compact cache cold", tone: "warning" }
+    }
+    if (status.expires !== undefined) return { text: "compact cache cold", tone: "warning" }
+    if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
+    if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
+    return undefined
+  }
+
   if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
   if (status.active && status.expires !== undefined && status.expires > now)
     return { text: `cache warm · ${formatRemaining(status.expires - now)} left`, tone: "muted" }
@@ -55,9 +69,6 @@ export function nextChatSwitch(status: Plus.WarmingStatus | undefined, now: numb
   if (status.chat === "off") return "on"
   return status.active && status.expires !== undefined && status.expires > now ? "off" : "on"
 }
-
-/** The footer marker while compact before cold is on for the chat. */
-export const COMPACT_MARKER = "compact before cold"
 
 export function createWarming(context: Plugin.Context) {
   const plus = context.client.rpc(Definition)
@@ -201,24 +212,11 @@ export function createWarming(context: Plugin.Context) {
     )
   }
 
-  // Compact before cold at the left of the footer: two words of state, no countdown.
-  function CompactMarker(props: { readonly sessionID?: string }) {
-    createEffect(() => track(props.sessionID))
-    return (
-      <Show when={props.sessionID !== undefined && status()?.sessionID === props.sessionID && status()?.compact === true}>
-        <text fg={context.theme.text.muted} wrapMode="none" flexShrink={0}>
-          {COMPACT_MARKER}
-        </text>
-      </Show>
-    )
-  }
-
   return {
     toggle,
     toggleCompact,
     follow,
     Footer,
-    CompactMarker,
     dispose() {
       clearInterval(tick)
       clearTimeout(timers.disarm)
