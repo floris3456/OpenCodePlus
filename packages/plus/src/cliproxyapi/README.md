@@ -19,6 +19,15 @@ Hosts that do not use CPA see nothing from it.
   `quota` and `catalog` default to `true`. A legacy `quota-handoff.json` (routes
   only) still enables quota and usage, without the catalogue.
 
+  Claude models routed through CPA default to CPA's Anthropic Messages relay with
+  `settings.compaction: { "type": "native" }` (see Anthropic Messages relay below).
+  Optional `"anthropicRelay": false` (per-route in `routes` or top-level in `cliproxyapi.json`
+  or `quota-handoff.json`) opts out and restores the provider's default routing. User's
+  explicit per-model `package` or `settings.compaction` in `opencode.json` always wins.
+  Existing `opencode.json` configurations may carry `compaction: { "mode": "local" }`
+  on Claude models; this key is inert because the schema only recognises
+  `settings.compaction: { "type": "summary" | "native" }`, and is ignored.
+
   Optional `"compactionModel": "<provider>/<model>[#variant]"` (for example
   `"cliproxyapi/deepseek-v4.1-flash-cheap"`) writes the summary when CPA moves a chat
   to another account (see the quota README, "Account switches"); without it the
@@ -46,6 +55,14 @@ Hosts that do not use CPA see nothing from it.
   variants, limits) instead of replacing their variants. The last good catalogue is
   stored and kept through CPA outages; refresh every 5 minutes (every 15 s until
   the first success).
+- **Anthropic Messages relay.** For every provider routed to CPA, Claude models
+  (CPA reports `owned_by: "anthropic"`, or model ID starts with `claude-`) go through
+  CPA's Anthropic Messages relay (`/v1/messages`). They receive the
+  `@opencode/ai/providers/anthropic-compatible` package, Anthropic-spelled effort
+  variants, and `settings.compaction: { type: "native" }` (which enables remote
+  compaction when strategy is Auto). This applies in catalogue mode and in legacy
+  `quota-handoff.json` mode (catalogue off). Warming pings, usage, cost, cache
+  accounting, and quota handoff continue to work over the Anthropic relay.
 - **Image models.** CPA serves `gpt-image-…` models only on `/v1/images/generations`.
   They are listed as "(images)" with image output, and the `image.generate` tool
   creates an image with them and saves a PNG in the project (default

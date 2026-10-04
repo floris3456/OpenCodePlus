@@ -20,6 +20,7 @@ export interface CatalogModel {
   readonly id: string
   readonly name: string
   readonly kind: "chat" | "image"
+  readonly ownedBy?: string
   /** Whole window: prompt + reply. */
   readonly context?: number
   /** Largest prompt, when smaller than `context` (Codex: 272k prompt of a 400k GPT window). */
@@ -39,6 +40,7 @@ export interface Catalogue {
 
 const DetailModel = Schema.Struct({
   id: Schema.String,
+  owned_by: Schema.optional(Schema.NullOr(Schema.String)),
   display_name: Schema.optional(Schema.String),
   kind: Schema.optional(Schema.String),
   context_length: Schema.optional(Schema.NullOr(Schema.Number)),
@@ -55,6 +57,7 @@ const Details = Schema.Struct({ schema: Schema.String, hash: Schema.String, data
 
 const CodexModel = Schema.Struct({
   slug: Schema.String,
+  owned_by: Schema.optional(Schema.NullOr(Schema.String)),
   display_name: Schema.optional(Schema.NullOr(Schema.String)),
   context_window: Schema.optional(Schema.NullOr(Schema.Number)),
   max_context_window: Schema.optional(Schema.NullOr(Schema.Number)),
@@ -100,6 +103,7 @@ export function parseDetails(raw: unknown): Catalogue | undefined {
       id: item.id,
       name: item.display_name?.trim() || item.id,
       kind,
+      ownedBy: item.owned_by ? item.owned_by.toLowerCase() : undefined,
       context,
       inputLimit: inputLimit !== undefined && (context === undefined || inputLimit < context) ? inputLimit : undefined,
       output: positive(item.max_completion_tokens),
@@ -129,6 +133,7 @@ export function parseCodexCatalogue(raw: unknown, hash: string): Catalogue | und
       id: item.slug,
       name: item.display_name?.trim() || item.slug,
       kind,
+      ownedBy: item.owned_by ? item.owned_by.toLowerCase() : undefined,
       context: window !== undefined && output !== undefined ? window + output : window,
       inputLimit: window !== undefined && output !== undefined ? window : undefined,
       output,
@@ -149,6 +154,18 @@ function withInput<T extends { input?: number }>(limit: T, input: number | undef
   return (input === undefined ? rest : { ...rest, input }) as T
 }
 
+export function isClaude(model: {
+  readonly id: string
+  readonly modelID?: string
+  readonly ownedBy?: string
+  readonly owned_by?: string | null
+}): boolean {
+  const owner = model.ownedBy ?? model.owned_by
+  if (owner?.toLowerCase() === "anthropic") return true
+  const id = model.modelID ?? model.id
+  return id.toLowerCase().startsWith("claude-") || model.id.toLowerCase().startsWith("claude-")
+}
+
 type Variants = { id: string; settings?: Record<string, unknown> }[]
 
 /**
@@ -164,6 +181,11 @@ export function spellVariants(pkg: string | undefined, levels: readonly string[]
     }))
   if (pkg === "@opencode/ai/providers/openai-compatible")
     return levels.map((effort) => ({ id: effort, settings: { reasoningEffort: effort } }))
+  if (pkg === "@opencode/ai/providers/anthropic" || pkg === "@opencode/ai/providers/anthropic-compatible")
+    return levels.map((effort) => ({
+      id: effort,
+      settings: { thinking: { type: "adaptive", display: "summarized" }, effort },
+    }))
   return []
 }
 
@@ -183,6 +205,7 @@ export function applyCatalogue(
   providerID: string,
   catalogue: Catalogue,
   pkg: string | undefined,
+  options?: { anthropicRelay?: boolean },
 ) {
   if (pkg)
     providers.update(providerID, (provider) => {
@@ -190,11 +213,25 @@ export function applyCatalogue(
     })
   const ids = new Set(catalogue.models.map((model) => model.id))
   for (const item of catalogue.models) {
-    const variants = item.reasoning.mode === "levels" ? spellVariants(pkg, item.reasoning.levels) : []
+    const claude = options?.anthropicRelay !== false && isClaude(item)
     const define = (id: string, name: string, fast: boolean) =>
       providers.models.update(providerID, id, (model) => {
         model.name = name
         model.modelID = item.id as never
+        const userPackage =
+          model.package !== undefined && model.package !== "@opencode/ai/providers/anthropic-compatible"
+        if (claude && !userPackage) {
+          model.package = "@opencode/ai/providers/anthropic-compatible"
+        }
+        const effectivePkg = claude && !userPackage ? "@opencode/ai/providers/anthropic-compatible" : pkg
+        const variants = item.reasoning.mode === "levels" ? spellVariants(effectivePkg, item.reasoning.levels) : []
+        if (claude) {
+          const userCompaction = model.settings?.compaction?.type ? model.settings.compaction : undefined
+          model.settings = {
+            ...model.settings,
+            compaction: userCompaction ?? { type: "native" },
+          }
+        }
         model.capabilities = {
           tools: item.kind === "chat",
           input: [...item.input],
@@ -212,5 +249,38 @@ export function applyCatalogue(
     const fastID = `${item.id}${FAST_SUFFIX}`
     if (item.kind === "chat" && item.tiers.includes(FAST_TIER) && !ids.has(fastID))
       define(fastID, `${item.name} (Fast)`, true)
+  }
+}
+
+/** Applies Anthropic relay to Claude models on routed providers for legacy/existing models. */
+export function applyRelayToExistingModels(
+  providers: ProviderEditor,
+  routes: Readonly<Record<string, string>>,
+  anthropicRelay?: Readonly<Record<string, boolean>>,
+) {
+  for (const providerID of Object.keys(routes)) {
+    if (anthropicRelay?.[providerID] === false) continue
+    const record = providers.get(providerID)
+    if (!record) continue
+    for (const model of record.models.values()) {
+      if (!isClaude(model)) continue
+      providers.models.update(providerID, model.id, (draft) => {
+        const userPackage =
+          draft.package !== undefined && draft.package !== "@opencode/ai/providers/anthropic-compatible"
+        if (!userPackage) {
+          draft.package = "@opencode/ai/providers/anthropic-compatible"
+          const levels =
+            draft.variants && draft.variants.length > 0
+              ? draft.variants.map((v) => v.id)
+              : ["low", "medium", "high", "max"]
+          draft.variants = spellVariants("@opencode/ai/providers/anthropic-compatible", levels) as never
+        }
+        const userCompaction = draft.settings?.compaction?.type ? draft.settings.compaction : undefined
+        draft.settings = {
+          ...draft.settings,
+          compaction: userCompaction ?? { type: "native" },
+        }
+      })
+    }
   }
 }

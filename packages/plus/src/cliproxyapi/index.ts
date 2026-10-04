@@ -3,7 +3,14 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Schema } from "effect"
 import { registerQuota } from "../quota/register.js"
-import { applyCatalogue, CODEX_CLIENT_VERSION, parseCodexCatalogue, parseDetails, type Catalogue } from "./catalog.js"
+import {
+  applyCatalogue,
+  applyRelayToExistingModels,
+  CODEX_CLIENT_VERSION,
+  parseCodexCatalogue,
+  parseDetails,
+  type Catalogue,
+} from "./catalog.js"
 import { cliproxyapiConfig } from "./config.js"
 import { imageToolRegistration, type ImageTarget } from "./image.js"
 import { migratingStorage } from "./legacy.js"
@@ -40,12 +47,20 @@ export default Plugin.define({
       const storage = migratingStorage(ctx.storage)
       const scoped: Context = { ...ctx, storage }
       yield* registerQuota(scoped, config?.quota)
-      if (!config || Object.keys(config.catalog).length === 0) return
-      yield* catalogueSync(scoped, config.catalog)
+      if (!config) return
+      yield* ctx.provider.transform((providers) => {
+        applyRelayToExistingModels(providers, config.routes, config.anthropicRelay)
+      })
+      if (Object.keys(config.catalog).length === 0) return
+      yield* catalogueSync(scoped, config.catalog, config.anthropicRelay)
     }),
 })
 
-export function catalogueSync(ctx: Context, routes: Readonly<Record<string, string>>) {
+export function catalogueSync(
+  ctx: Context,
+  routes: Readonly<Record<string, string>>,
+  anthropicRelay?: Readonly<Record<string, boolean>>,
+) {
   return Effect.gen(function* () {
     const loaded = new Map<string, Loaded>()
     // The last good catalogue survives restarts and CPA outages.
@@ -56,7 +71,10 @@ export function catalogueSync(ctx: Context, routes: Readonly<Record<string, stri
       if (stored._tag === "Some" && catalogue) loaded.set(providerID, { catalogue, pkg: stored.value.pkg })
     }
     yield* ctx.provider.transform((providers) => {
-      for (const [providerID, entry] of loaded) applyCatalogue(providers, providerID, entry.catalogue, entry.pkg)
+      for (const [providerID, entry] of loaded) {
+        const relay = anthropicRelay?.[providerID] !== false
+        applyCatalogue(providers, providerID, entry.catalogue, entry.pkg, { anthropicRelay: relay })
+      }
     })
     // Image models only work on CPA's images endpoint; the image tool makes them usable.
     yield* imageToolRegistration(ctx, () =>
