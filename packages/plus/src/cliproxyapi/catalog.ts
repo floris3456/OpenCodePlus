@@ -1,5 +1,6 @@
 import type { ProviderEditor } from "@opencode/plugin/effect/provider"
-import { Schema } from "effect"
+import type { Model } from "@opencode/schema/model"
+import { Schema, type Types } from "effect"
 
 /**
  * CLIProxyAPI model catalogue → OpenCode models.
@@ -181,12 +182,32 @@ export function spellVariants(pkg: string | undefined, levels: readonly string[]
     }))
   if (pkg === "@opencode/ai/providers/openai-compatible")
     return levels.map((effort) => ({ id: effort, settings: { reasoningEffort: effort } }))
-  if (pkg === "@opencode/ai/providers/anthropic" || pkg === "@opencode/ai/providers/anthropic-compatible")
+  if (pkg === "@opencode/ai/providers/anthropic" || pkg === ANTHROPIC_COMPATIBLE)
     return levels.map((effort) => ({
       id: effort,
       settings: { thinking: { type: "adaptive", display: "summarized" }, effort },
     }))
   return []
+}
+
+const ANTHROPIC_COMPATIBLE = "@opencode/ai/providers/anthropic-compatible"
+
+/**
+ * Points one routed Claude model at CPA's Anthropic Messages relay: the
+ * anthropic-compatible package, its Anthropic-spelled variants and native
+ * compaction. A user's own package wins, so the relay leaves the model alone
+ * when it is set to anything else. Existing variant ids keep their spelling
+ * (ids are never invented) and a user compaction choice is kept.
+ */
+export function relayClaudeModel(model: Types.DeepMutable<Model.Info>): void {
+  if (!isClaude(model)) return
+  const userPackage = model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE
+  if (userPackage) return
+  model.package = ANTHROPIC_COMPATIBLE
+  const ids = (model.variants ?? []).map((variant) => String(variant.id))
+  if (ids.length > 0) model.variants = spellVariants(ANTHROPIC_COMPATIBLE, ids) as never
+  const userCompaction = model.settings?.compaction?.type ? model.settings.compaction : undefined
+  model.settings = { ...(model.settings ?? {}), compaction: userCompaction ?? { type: "native" } } as never
 }
 
 /** Packages Core spells with OpenAI Responses reasoning settings. */
@@ -213,24 +234,25 @@ export function applyCatalogue(
     })
   const ids = new Set(catalogue.models.map((model) => model.id))
   for (const item of catalogue.models) {
-    const claude = options?.anthropicRelay !== false && isClaude(item)
+    const relay = options?.anthropicRelay !== false && isClaude(item)
     const define = (id: string, name: string, fast: boolean) =>
       providers.models.update(providerID, id, (model) => {
         model.name = name
         model.modelID = item.id as never
-        const userPackage =
-          model.package !== undefined && model.package !== "@opencode/ai/providers/anthropic-compatible"
-        if (claude && !userPackage) {
-          model.package = "@opencode/ai/providers/anthropic-compatible"
-        }
-        const effectivePkg = claude && !userPackage ? "@opencode/ai/providers/anthropic-compatible" : pkg
-        const variants = item.reasoning.mode === "levels" ? spellVariants(effectivePkg, item.reasoning.levels) : []
-        if (claude) {
+        const userPackage = model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE
+        if (relay && !userPackage) {
+          model.package = ANTHROPIC_COMPATIBLE
           const userCompaction = model.settings?.compaction?.type ? model.settings.compaction : undefined
-          model.settings = {
-            ...model.settings,
-            compaction: userCompaction ?? { type: "native" },
-          }
+          model.settings = { ...model.settings, compaction: userCompaction ?? { type: "native" } } as never
+          model.variants =
+            item.reasoning.mode === "levels"
+              ? (structuredClone(spellVariants(ANTHROPIC_COMPATIBLE, item.reasoning.levels)) as never)
+              : ([] as never)
+        } else if (!userPackage) {
+          model.variants =
+            item.reasoning.mode === "levels"
+              ? (structuredClone(spellVariants(pkg, item.reasoning.levels)) as never)
+              : ([] as never)
         }
         model.capabilities = {
           tools: item.kind === "chat",
@@ -241,7 +263,6 @@ export function applyCatalogue(
         if (item.context !== undefined)
           model.limit = withInput({ ...model.limit, context: item.context }, item.inputLimit)
         if (item.output !== undefined) model.limit.output = item.output
-        model.variants = structuredClone(variants) as never
         if (fast) model.body = { ...(model.body ?? {}), service_tier: FAST_TIER } as never
       })
     // Image models answer only on CPA's images endpoint (image.generate tool), not in chat.
@@ -249,6 +270,35 @@ export function applyCatalogue(
     const fastID = `${item.id}${FAST_SUFFIX}`
     if (item.kind === "chat" && item.tiers.includes(FAST_TIER) && !ids.has(fastID))
       define(fastID, `${item.name} (Fast)`, true)
+  }
+}
+
+/** Model-domain editor surface (`@opencode/plugin/effect/model` ModelEditor), structurally. */
+export interface RelayModelEditor {
+  readonly list: (providerID: string) => readonly Types.DeepMutable<Model.Info>[]
+  readonly update: (
+    providerID: string,
+    modelID: Model.ID,
+    update: (model: Types.DeepMutable<Model.Info>) => void,
+  ) => void
+}
+
+/**
+ * Applies Anthropic relay in the model domain, after every provider transform.
+ * This reaches models that config creates after the plugin's provider
+ * transform, such as the Claude models of a legacy quota-handoff route.
+ */
+export function applyRelayToModels(
+  models: RelayModelEditor,
+  routes: Readonly<Record<string, string>>,
+  anthropicRelay?: Readonly<Record<string, boolean>>,
+) {
+  for (const providerID of Object.keys(routes)) {
+    if (anthropicRelay?.[providerID] === false) continue
+    for (const model of models.list(providerID)) {
+      if (!isClaude(model)) continue
+      models.update(providerID, model.id, (draft) => relayClaudeModel(draft))
+    }
   }
 }
 
@@ -264,23 +314,7 @@ export function applyRelayToExistingModels(
     if (!record) continue
     for (const model of record.models.values()) {
       if (!isClaude(model)) continue
-      providers.models.update(providerID, model.id, (draft) => {
-        const userPackage =
-          draft.package !== undefined && draft.package !== "@opencode/ai/providers/anthropic-compatible"
-        if (!userPackage) {
-          draft.package = "@opencode/ai/providers/anthropic-compatible"
-          const levels =
-            draft.variants && draft.variants.length > 0
-              ? draft.variants.map((v) => v.id)
-              : ["low", "medium", "high", "max"]
-          draft.variants = spellVariants("@opencode/ai/providers/anthropic-compatible", levels) as never
-        }
-        const userCompaction = draft.settings?.compaction?.type ? draft.settings.compaction : undefined
-        draft.settings = {
-          ...draft.settings,
-          compaction: userCompaction ?? { type: "native" },
-        }
-      })
+      providers.models.update(providerID, model.id, (draft) => relayClaudeModel(draft))
     }
   }
 }

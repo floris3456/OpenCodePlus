@@ -1,11 +1,12 @@
 import { Plugin } from "@opencode/plugin/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Provider } from "@opencode/schema/provider"
-import { Effect, Schema } from "effect"
+import { Effect, Ref, Schema, Stream } from "effect"
 import { registerQuota } from "../quota/register.js"
 import {
   applyCatalogue,
   applyRelayToExistingModels,
+  applyRelayToModels,
   CODEX_CLIENT_VERSION,
   parseCodexCatalogue,
   parseDetails,
@@ -14,6 +15,8 @@ import {
 import { cliproxyapiConfig } from "./config.js"
 import { imageToolRegistration, type ImageTarget } from "./image.js"
 import { migratingStorage } from "./legacy.js"
+
+export { applyRelayToModels } from "./catalog.js"
 
 export const ID = "opencode.plus.cliproxyapi"
 const REFRESH = "5 minutes"
@@ -48,9 +51,35 @@ export default Plugin.define({
       const scoped: Context = { ...ctx, storage }
       yield* registerQuota(scoped, config?.quota)
       if (!config) return
+      // The model transform runs after provider transforms, so it reaches models
+      // that config creates later (legacy quota-handoff routes, catalogue off).
+      yield* ctx.model.transform((models) => {
+        applyRelayToModels(models, config.routes, config.anthropicRelay)
+      })
       yield* ctx.provider.transform((providers) => {
         applyRelayToExistingModels(providers, config.routes, config.anthropicRelay)
       })
+      // Config applies its own per-model settings and variants in a later model
+      // transform. Re-register the relay once activation has finished (the
+      // appended transform runs after config's) so a user variant written for
+      // the previous package is respelled for the Anthropic relay instead of
+      // being sent as an extra field.
+      const relayRegistered = yield* Ref.make(false)
+      yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === "plugin.updated"),
+        Stream.runForEach(() =>
+          Ref.getAndSet(relayRegistered, true).pipe(
+            Effect.flatMap((done) =>
+              done
+                ? Effect.void
+                : ctx.model.transform((models) => {
+                    applyRelayToModels(models, config.routes, config.anthropicRelay)
+                  }),
+            ),
+          ),
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      )
       if (Object.keys(config.catalog).length === 0) return
       yield* catalogueSync(scoped, config.catalog, config.anthropicRelay)
     }),
