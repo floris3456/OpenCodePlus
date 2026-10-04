@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Schema, Stream } from "effect"
+import { Cause, Context, type Duration, Effect, Layer, Schema, Stream } from "effect"
 import { Auth } from "./auth.js"
 import { Endpoint, type EndpointPatch } from "./endpoint.js"
 import { RequestExecutor } from "./executor.js"
@@ -183,6 +183,7 @@ export interface Interface {
 export interface StreamOptions {
   readonly http?: HttpMiddleware
   readonly webSocket?: WebSocketChannelExecutor
+  readonly idleTimeout?: Duration.Input
 }
 
 export interface StreamMethod {
