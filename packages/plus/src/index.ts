@@ -5527,26 +5527,29 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
   })
 }
 
-// The cross-process half: any write to the shared records file (Bun.write
-// rewrites it in place, so the directory watch sees it) means another Plus
-// instance published. A missing directory (no store written yet) just means no
-// watcher until the first publish creates it; the in-process bus still works.
+// The cross-process half: any write to the shared records file or the global
+// teams root (an empty team is a directory and writes no record, so the teams
+// root needs its own watch) means another Plus instance published. Bun.write
+// rewrites the records file in place, so the directory watch sees it. A missing
+// directory (nothing written yet) just means no watcher for it; the in-process
+// bus still works.
 function watchSharedStoreFile(changes: Queue.Queue<void>): Effect.Effect<void, never, Scope.Scope> {
   return Effect.acquireRelease(
     Effect.sync(() => {
-      const target = globalRecordsPath()
-      try {
-        const watcher = fsSync.watch(path.dirname(target), { persistent: false }, (_event, filename) => {
-          if (filename !== null && String(filename) !== path.basename(target)) return
-          Queue.offerUnsafe(changes, undefined)
-        })
-        watcher.on("error", () => undefined)
-        return watcher
-      } catch {
-        return undefined
+      const targets = [path.dirname(globalRecordsPath()), globalTeamsPath()]
+      const watchers: fsSync.FSWatcher[] = []
+      for (const target of targets) {
+        try {
+          const watcher = fsSync.watch(target, { persistent: false }, () => Queue.offerUnsafe(changes, undefined))
+          watcher.on("error", () => undefined)
+          watchers.push(watcher)
+        } catch {
+          // Missing target: no watcher until the first write creates it.
+        }
       }
+      return watchers
     }),
-    (watcher) => Effect.sync(() => watcher?.close()),
+    (watchers) => Effect.sync(() => watchers.forEach((watcher) => watcher.close())),
   )
 }
 
