@@ -182,13 +182,9 @@ export async function onSessionEvent(
     const working = await updateRun(root, run.id, (record) => {
       const resuming = record.state === "stopped" || record.state === "dead"
       if (record.state !== "idle" && record.state !== "starting" && !resuming) {
-        if (record.retrying !== undefined) {
-          applied.changed = true
-          const next = { ...record }
-          delete next.retrying
-          return next
-        }
-        return record
+        if (record.retrying === undefined) return record
+        applied.changed = true
+        return withoutRetrying(record)
       }
       const trigger = record.state === "idle" ? "prompt" : "resume"
       applied.changed = true
@@ -196,13 +192,7 @@ export async function onSessionEvent(
       const admitted = last === undefined || isAttemptTerminal(last.state)
         ? attemptTransition(startAttempt(record, { trigger }), "admitted", "admit")
         : record
-      const transitioned = transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger)
-      if (transitioned.retrying !== undefined) {
-        const next = { ...transitioned }
-        delete next.retrying
-        return next
-      }
-      return transitioned
+      return withoutRetrying(transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger))
     })
     if (working === undefined || !applied.changed) return undefined
     return working
@@ -212,18 +202,8 @@ export async function onSessionEvent(
     const at = typeof payload.at === "number" ? payload.at : Date.now()
     const attemptNum = typeof payload.attempt === "number" ? payload.attempt : 1
     const parsedError = Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error))
-    const errorObj = {
-      type: parsedError?.type ?? (typeof (payload.error as any)?.type === "string" ? (payload.error as any).type : "error"),
-      message: parsedError?.message ?? (typeof (payload.error as any)?.message === "string" ? (payload.error as any).message : ""),
-    }
-    const retrying = {
-      until: new Date(at).toISOString(),
-      attempt: attemptNum,
-      error: {
-        type: errorObj.type,
-        message: errorObj.message,
-      },
-    }
+    const errorObj = { type: parsedError?.type ?? "error", message: parsedError?.message ?? "" }
+    const retrying = { until: new Date(at).toISOString(), attempt: attemptNum, error: errorObj }
 
     const notify: { action?: { text: string; parentID: string } } = {}
 
@@ -330,14 +310,7 @@ export async function onSessionIdle(
 }
 
 async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptError): Promise<RunRecord> {
-  const current =
-    run.retrying !== undefined
-      ? (() => {
-          const next = { ...run }
-          delete next.retrying
-          return next
-        })()
-      : run
+  const current = withoutRetrying(run)
   const last = current.attempts[current.attempts.length - 1]
   if (last === undefined || isAttemptTerminal(last.state)) return current
   if (outcome === "failed") {
@@ -359,6 +332,14 @@ async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutco
   // and no pending child news ended its attempt without a report.
   if (await waitingOnChildren(root, current)) return current
   return attemptTransition(toFinishing(current), "no_report", "validated")
+}
+
+/** A retry wait ends when the step settles or a new execution starts. */
+function withoutRetrying(run: RunRecord): RunRecord {
+  if (run.retrying === undefined) return run
+  const next = { ...run }
+  delete next.retrying
+  return next
 }
 
 /** True while a child of `run` can still settle or its settlement is not yet delivered. */
