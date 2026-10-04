@@ -634,6 +634,58 @@ test("delegate rejects E_PATHS when a commit for an implementer-preset member ha
   })
 })
 
+test("delegate attaches a relative briefFile from the caller's checkout", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, "notes"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, "notes", "brief.md"), "recognisable relative brief line\n")
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_brief_file",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(await api.delegate(delegateInput({ requestID: "brief-rel-1", briefFile: "notes/brief.md" }), callerFor(parent))) as {
+        briefPath: string
+      }
+      const brief = await fs.readFile(value.briefPath, "utf8")
+      expect(brief).toContain("recognisable relative brief line")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
+test("delegate rejects a briefFile outside the checkout and run directory with a briefFile message", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_brief_outside",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const error = rejected(await api.delegate(delegateInput({ requestID: "brief-out-1", briefFile: "/etc/hostname" }), callerFor(parent)))
+      expect(error.code).toBe("E_PATHS")
+      expect(error.message).toContain("briefFile")
+      expect(error.message).not.toContain("scope.paths")
+      expect(error.accepted).toEqual([repo.dir, path.join(root, "runs", parent.id)])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
 test("delegate rejects E_REQUEST_ID when the id is reused with new arguments", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()

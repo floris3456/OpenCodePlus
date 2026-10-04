@@ -322,7 +322,10 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   let attached: { path: string; content: string } | undefined
   const briefFile = brief.briefFile
   if (briefFile !== undefined) {
-    const realBrief = await realpath(briefFile).catch(() => briefFile)
+    // A relative briefFile is relative to the caller's checkout, the same
+    // directory a shell tool in that session would start in.
+    const resolvedBrief = path.resolve(parent.directory, briefFile)
+    const realBrief = await realpath(resolvedBrief).catch(() => resolvedBrief)
     const callerReal = await realpath(parent.directory).catch(() => parent.directory)
     const runDir = path.join(root, "runs", parent.id)
     const runReal = await realpath(runDir).catch(() => runDir)
@@ -331,7 +334,12 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       realBrief.startsWith(`${callerReal}${path.sep}`) ||
       realBrief === runReal ||
       realBrief.startsWith(`${runReal}${path.sep}`)
-    if (!inside) return fail("E_PATHS", PATHS_MESSAGE, PATHS_ACCEPTED)
+    if (!inside)
+      return fail(
+        "E_PATHS",
+        `briefFile must be inside your checkout (${callerReal}) or this run's directory (${runReal}); got ${realBrief}.`,
+        [parent.directory, runDir],
+      )
     attached = { path: briefFile, content: await readFile(realBrief, "utf8") }
   }
 
