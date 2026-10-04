@@ -1,13 +1,15 @@
 export * as SessionGenerate from "./generate.js"
 
 import { LLMClient, Message, type AIError } from "@opencode/ai"
+import type { Model } from "@opencode/schema/model"
 import { Effect } from "effect"
+import { Agent } from "../agent.js"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
 import { Plugin } from "../plugin/service.js"
 import type { Instructions } from "../instructions/index.js"
 import { SessionContext } from "./context.js"
-import type { AgentNotFoundError } from "./error.js"
+import { AgentNotFoundError } from "./error.js"
 import { SessionHistory } from "./history.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionModelRequest } from "./model-request.js"
@@ -20,6 +22,10 @@ export type Error = AgentNotFoundError | Instructions.InitializationBlocked | Se
 export const generate = Effect.fn("SessionGenerate.generate")(function* (input: {
   session: SessionSchema.Info
   prompt: string
+  /** Pins the request to an earlier selection; used by warming to reuse the last real request's agent. */
+  agent?: Agent.ID
+  /** Pins the request to an earlier selection; used by warming to reuse the last real request's model. */
+  model?: Model.Ref
 }) {
   const instances = yield* Instance.Service
   const database = yield* Database.Service
@@ -29,7 +35,10 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
     yield* Plugin.awaitActivation
     const context = yield* SessionContext.Service
     const selection = yield* context.select(input.session.id)
-    const model = yield* context.resolveModel(selection.session)
+    const agent = yield* selectAgent(input.session.id, selection.agent, input.agent)
+    const model = yield* context.resolveModel(
+      input.model === undefined ? selection.session : { ...selection.session, model: input.model },
+    )
     const history = yield* SessionHistory.preview(
       database.db,
       selection.session.id,
@@ -37,7 +46,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       SessionProviderContext.provenance(model) ?? "local",
     )
     const transcript = SessionModelRequest.baseTranscript({
-      agent: selection.agent.info,
+      agent: agent.info,
       model,
       tools: selection.tools,
       initial: history.initial,
@@ -45,7 +54,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
     })
     const prepared = yield* context.request.generate({
       session: selection.session,
-      agent: selection.agent.id,
+      agent: agent.id,
       model,
       tools: selection.tools,
       system: transcript.system,
@@ -64,4 +73,17 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))
+})
+
+/** Resolves the pinned agent for a warming request, or keeps the stored Session selection. */
+const selectAgent = Effect.fn("SessionGenerate.selectAgent")(function* (
+  sessionID: SessionSchema.ID,
+  stored: SessionContext.Selection["agent"],
+  override: Agent.ID | undefined,
+) {
+  if (override === undefined) return stored
+  const agents = yield* Agent.Service
+  const selected = yield* agents.select(override)
+  if (selected.info === undefined) return yield* new AgentNotFoundError({ sessionID, agent: override })
+  return { id: selected.id, info: selected.info }
 })

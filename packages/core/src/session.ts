@@ -186,6 +186,9 @@ export interface Interface {
   readonly generate: (input: {
     sessionID: SessionSchema.ID
     prompt: string
+    /** Pins the request to the last real request's agent and model; used by warming. */
+    agent?: Agent.ID
+    model?: Model.Ref
   }) => Effect.Effect<string, NotFoundError | SessionGenerate.Error>
   readonly command: (input: {
     sessionID: SessionSchema.ID
@@ -404,7 +407,12 @@ const layer = Layer.effect(
       prompt: (input) => sessions.forSession(input.sessionID).prompt(input),
       generate: Effect.fn("Session.generate")(function* (input) {
         const session = yield* result.get(input.sessionID)
-        return yield* SessionGenerate.generate({ session, prompt: input.prompt }).pipe(
+        return yield* SessionGenerate.generate({
+          session,
+          prompt: input.prompt,
+          ...(input.agent === undefined ? {} : { agent: input.agent }),
+          ...(input.model === undefined ? {} : { model: input.model }),
+        }).pipe(
           Effect.provideService(Instance.Service, instances),
           Effect.provideService(Database.Service, database),
           Effect.provideService(LLMClient.Service, llm),

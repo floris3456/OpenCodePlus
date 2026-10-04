@@ -24,7 +24,7 @@ import { Instructions } from "@opencode/core/instructions/index"
 import { InstructionBuiltIns } from "@opencode/core/instructions/builtins"
 import { Location } from "@opencode/core/location"
 import { McpInstructions } from "@opencode/core/mcp/instructions"
-import { ID } from "@opencode/core/model"
+import { ID, Ref } from "@opencode/core/model"
 import { Project } from "@opencode/core/project"
 import { Provider } from "@opencode/core/provider"
 import { ReferenceInstructions } from "@opencode/core/reference/instructions"
@@ -60,6 +60,7 @@ let instruction: string | Instructions.Unavailable = "Initial context"
 const sessionID = SessionSchema.ID.make("ses_generate_test")
 
 const model = LanguageModel.make({ id: "generate-model", provider: "test", route: OpenAIChat.route })
+const overrideModel = LanguageModel.make({ id: "override-model", provider: "test", route: OpenAIChat.route })
 const client = Layer.mock(LLMClient.Service)({
   stream: () => Stream.die(new Error("unused")),
   generate: (request, requestOptions) =>
@@ -83,9 +84,9 @@ const client = Layer.mock(LLMClient.Service)({
     }),
 })
 const models = Layer.mock(SessionRunnerModel.Service)({
-  resolve: () =>
+  resolve: (session) =>
     Effect.succeed(
-      SessionRunnerModel.resolved(model, {
+      SessionRunnerModel.resolved(session.model?.id === String(overrideModel.id) ? overrideModel : model, {
         capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
         cost: [],
         limit: { context: 200_000, output: 32_000 },
@@ -212,11 +213,15 @@ const setup = Effect.gen(function* () {
   const instructionBuiltIns = yield* InstructionBuiltIns.Service
   const context = yield* SessionContext.Service
   const store = yield* SessionStore.Service
-  yield* agents.transform((editor) =>
+  yield* agents.transform((editor) => {
     editor.update(Agent.ID.make("build"), (agent) => {
       agent.mode = "primary"
-    }),
-  )
+    })
+    editor.update(Agent.ID.make("plan"), (agent) => {
+      agent.mode = "primary"
+      agent.system = "Plan system prompt"
+    })
+  })
   yield* db
     .insert(SessionTable)
     .values({
@@ -390,6 +395,47 @@ it.effect(
       expect(userTexts(requests[0])).toEqual(["[redacted]"])
       expect(requests[0]?.generation).toEqual(expect.objectContaining({ maxTokens: 32 }))
       expect(requests[0]?.providerOptions).toEqual({ reasoningEffort: "low" })
+    }),
+  { timeout: 15_000 },
+)
+
+it.effect(
+  "pins the request to an overridden agent and model",
+  () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      options.length = 0
+      instruction = "Initial context"
+      const { db, bus, instructions, session, instances } = yield* setup
+      yield* InstructionState.prepare(db, bus, instructions, sessionID)
+      const hooks = yield* PluginHooks.Service
+      const seen: Array<{ readonly agent: Agent.ID; readonly model: string }> = []
+      yield* hooks.register("session", "model.request", (event) =>
+        Effect.sync(() => seen.push({ agent: event.agent, model: event.model.id })),
+      )
+      const pinned = Ref.make({ providerID: Provider.ID.make("test"), id: ID.make("override-model") })
+
+      const result = yield* SessionGenerate.generate({
+        session,
+        prompt: "Pinned private summary",
+        agent: Agent.ID.make("plan"),
+        model: pinned,
+      }).pipe(Effect.provideService(Instance.Service, instances))
+
+      expect(result).toBe("Transient answer")
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.model).toBe(overrideModel)
+      expect(requests[0]?.system.map((part) => part.text)).toContain("Plan system prompt")
+      expect(seen).toEqual([{ agent: Agent.ID.make("plan"), model: ID.make("override-model") }])
+
+      // Control: without overrides the request follows the stored Session selection.
+      requests.length = 0
+      seen.length = 0
+      yield* SessionGenerate.generate({ session, prompt: "Stored" }).pipe(
+        Effect.provideService(Instance.Service, instances),
+      )
+      expect(requests[0]?.model).toBe(model)
+      expect(seen).toEqual([{ agent: Agent.ID.make("build"), model: ID.make("generate-model") }])
     }),
   { timeout: 15_000 },
 )

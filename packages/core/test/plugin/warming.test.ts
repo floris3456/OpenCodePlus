@@ -25,7 +25,12 @@ const decode = Schema.decodeUnknownSync(Info)
 const scoped = Schema.decodeUnknownSync(ConfigWarming.Scoped)
 
 type ScopedWarming = ReturnType<typeof scoped>
-type WarmCall = { readonly sessionID: Session.ID; readonly prompt: string }
+type WarmCall = {
+  readonly sessionID: Session.ID
+  readonly prompt: string
+  readonly agent?: Agent.ID
+  readonly model?: Model.Ref
+}
 
 const document = (input: unknown) => new Document({ type: "document", info: decode(input) })
 
@@ -89,7 +94,12 @@ const activate = Effect.fn("activateWarming")(function* (
         ...sessions,
         generate: (input) =>
           Effect.gen(function* () {
-            calls.push({ sessionID: input.sessionID, prompt: input.prompt })
+            calls.push({
+              sessionID: input.sessionID,
+              prompt: input.prompt,
+              ...(input.agent === undefined ? {} : { agent: input.agent }),
+              ...(input.model === undefined ? {} : { model: input.model }),
+            })
             const model = internal?.get(input.sessionID)
             if (!model) return ""
             yield* hooks.trigger("session", "generate", {
@@ -121,12 +131,13 @@ const trigger = Effect.fn("triggerContext")(function* (
   sessionID: Session.ID,
   model: Model.Ref,
   internal?: Map<Session.ID, Model.Ref>,
+  agent: Agent.ID = Agent.ID.make("build"),
 ) {
   internal?.set(sessionID, model)
   const hooks = yield* PluginHooks.Service
   const event: SessionHooks["context"] = {
     sessionID,
-    agent: Agent.ID.make("build"),
+    agent,
     model,
     system: [],
     messages: [],
@@ -296,6 +307,56 @@ describe("WarmingPlugin", () => {
         yield* cross("4 minutes")
         expect(calls.length).toBe(stopped)
       }),
+  )
+
+  it.effect("pins warm pings to the last real request's agent and model until a real request replaces them", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({
+        id: "alpha",
+        models: [{ id: "m1", warming: scoped({ prompt: "alpha-ping" }) }],
+      })
+      yield* addProvider({ id: "beta", models: [{ id: "m2", warming: scoped(false) }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const sessions = yield* Session.Service
+      const ids = yield* makeSessions()
+      const first = ref("alpha", "m1")
+      const second = ref("beta", "m2")
+      const agentA = Agent.ID.make("build")
+      const agentB = Agent.ID.make("plan")
+
+      yield* trigger(ids.parent, first, undefined, agentA)
+      yield* advance(2)
+      const pinned = callsFor(calls, ids.parent)
+      expect(pinned.length).toBeGreaterThan(0)
+      expect(
+        pinned.every(
+          (call) => call.agent === agentA && call.model?.providerID === "alpha" && call.model.id === "m1",
+        ),
+      ).toBe(true)
+
+      // A blank Enter commits the composer's agent and model without a model request.
+      yield* sessions.switchAgent({ sessionID: ids.parent, agent: agentB })
+      yield* sessions.switchModel({ sessionID: ids.parent, model: second })
+      yield* advance(2)
+      const afterSwitch = callsFor(calls, ids.parent).slice(pinned.length)
+      expect(afterSwitch.length).toBeGreaterThan(0)
+      expect(
+        afterSwitch.every(
+          (call) => call.agent === agentA && call.model?.providerID === "alpha" && call.model.id === "m1",
+        ),
+      ).toBe(true)
+
+      // A real request with the new agent and model decides warming: off for beta/m2 stops the old pings.
+      yield* trigger(ids.parent, second, undefined, agentB)
+      const stopped = calls.length
+      yield* advance(3)
+      yield* cross("10 minutes")
+      expect(calls.length).toBe(stopped)
+    }),
   )
 
   it.effect("applies a slower to faster interval change on the next hook event", () =>

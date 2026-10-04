@@ -235,6 +235,35 @@ test("the hook row lookup follows the session's agent", () => {
   expect(warmingRowsOf(state, "unknown", model).row).toBeUndefined()
 })
 
+test("the warming decision reads the activity's agent and model, not the chat's current selection", () => {
+  const state = {
+    cachedAgents: [
+      { id: "alpha", scope: "project" as const },
+      { id: "beta", scope: "project" as const },
+    ],
+    cachedModels: [
+      record({ agent: "alpha", modelID: "claude", warming: "45m" }),
+      record({ agent: "alpha", modelID: "gpt", warming: "2h" }),
+      record({ agent: "beta", modelID: "claude", warming: "off" }),
+    ],
+    cachedModelSettings: [],
+    cachedScopes: scopes,
+  }
+  const decideFor = (agent: string, model: { providerID: string; id: string }) =>
+    decideWarming({ configured, rows: warmingRowsOf(state, agent, model), chat: undefined })
+  // Same model, different activity agent: alpha warms for 45m (rounded up to whole 2m pings), beta switches it off.
+  expect(decideFor("alpha", { providerID: "anthropic", id: "claude" }).settings).toEqual({
+    ...configured,
+    duration: 46 * MINUTE,
+  })
+  expect(decideFor("beta", { providerID: "anthropic", id: "claude" }).settings).toBeUndefined()
+  // Same agent, different activity model: gpt carries its own two hours.
+  expect(decideFor("alpha", { providerID: "anthropic", id: "gpt" }).settings).toEqual({
+    ...configured,
+    duration: 120 * MINUTE,
+  })
+})
+
 test("the hook rows include the Defaults › Models rows for the session's model", () => {
   const state = {
     cachedAgents: [{ id: "alpha", scope: "project" as const }],

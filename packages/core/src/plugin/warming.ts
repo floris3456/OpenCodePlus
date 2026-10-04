@@ -106,8 +106,16 @@ export const Plugin = define({
 
         const last = current.last
         yield* Effect.logInfo("warming session", { sessionID, last })
+        // The ping pins the agent and model of the last real request. A blank Enter only
+        // commits the composer selection, so the session's stored selection must not retarget
+        // the cache the loop is keeping warm. The core generate path reads these fields even
+        // though the plugin session surface only declares `sessionID` and `prompt`.
+        const ping: Parameters<typeof ctx.session.generate>[0] & {
+          agent: Agent.ID
+          model: Model.Ref
+        } = { sessionID, prompt: settings.prompt, agent: current.agent, model: current.model }
         yield* ctx.session
-          .generate({ sessionID, prompt: settings.prompt })
+          .generate(ping)
           .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
         const latest = sessions.get(sessionID)
         if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
