@@ -2,7 +2,7 @@ export * as SessionContext from "./context.js"
 
 import { Model } from "../model.js"
 import { Permission } from "../permission.js"
-import { Context, Effect, Layer } from "effect"
+import { Context, DateTime, Effect, Layer } from "effect"
 import { Agent } from "../agent.js"
 import { CodeModeCatalog } from "../codemode/catalog.js"
 import { CodeModeInstructions } from "../codemode/instructions.js"
@@ -57,8 +57,11 @@ export interface Interface {
     /** Pins selection to an earlier request's agent; used by warming. */
     agent?: Agent.ID,
   ) => Effect.Effect<Selection, AgentNotFoundError>
-  /** Resolves the model and active history for that selection. */
-  readonly load: (selection: Selection) => Effect.Effect<Loaded, SessionRunnerModel.Error>
+  /** Resolves active history. Preview observes instruction changes without committing them. */
+  readonly load: (
+    selection: Selection,
+    mode?: "preview",
+  ) => Effect.Effect<Loaded, SessionRunnerModel.Error | Instructions.InitializationBlocked>
   readonly resolveModel: (
     session: SessionSchema.Info,
   ) => Effect.Effect<SessionRunnerModel.Resolved, SessionRunnerModel.Error>
@@ -125,10 +128,7 @@ const layer = Layer.effect(
       return { agent, primary, selected }
     })
 
-    const select = Effect.fn("SessionContext.select")(function* (
-      sessionID: SessionSchema.ID,
-      pinned?: Agent.ID,
-    ) {
+    const select = Effect.fn("SessionContext.select")(function* (sessionID: SessionSchema.ID, pinned?: Agent.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(new Error(`Session not found: ${sessionID}`))
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -179,20 +179,44 @@ const layer = Layer.effect(
       }
     })
 
-    const load = Effect.fn("SessionContext.load")(function* (selection: Selection) {
+    const load = Effect.fn("SessionContext.load")(function* (selection: Selection, mode?: "preview") {
       const model = yield* resolveModel(selection.session)
-      const history = yield* SessionHistory.entriesForRunner(
-        db,
-        selection.session.id,
-        selection.instructions,
-        SessionProviderContext.provenance(model) ?? "local",
-      )
+      const boundary = SessionProviderContext.provenance(model) ?? "local"
+      const history = yield* Effect.gen(function* () {
+        if (mode === "preview") {
+          // The read-only counterpart of the runner's InstructionState.prepare + load.
+          const preview = yield* SessionHistory.preview(db, selection.session.id, selection.instructions, boundary)
+          return {
+            initial: preview.initial,
+            messages: [
+              ...preview.messages,
+              ...(preview.instructionUpdate
+                ? [
+                    SessionMessage.System.make({
+                      id: SessionMessage.ID.create(),
+                      type: "system",
+                      time: { created: yield* DateTime.now },
+                      text: preview.instructionUpdate,
+                    }),
+                  ]
+                : []),
+            ],
+          }
+        }
+        const loaded = yield* SessionHistory.entriesForRunner(
+          db,
+          selection.session.id,
+          selection.instructions,
+          boundary,
+        )
+        return { initial: loaded.initial, messages: loaded.entries.map((entry) => entry.message) }
+      })
       return {
         session: selection.session,
         agent: selection.agent,
         model,
         initial: history.initial,
-        messages: history.entries.map((entry) => entry.message),
+        messages: history.messages,
         tools: selection.tools,
       }
     })

@@ -373,7 +373,7 @@ it.effect(
 )
 
 it.effect(
-  "runs generate hooks instead of context hooks",
+  "runs primary context hooks before appending the private prompt",
   () =>
     Effect.gen(function* () {
       requests.length = 0
@@ -381,9 +381,9 @@ it.effect(
       const { db, bus, instructions, session, instances } = yield* setup
       yield* InstructionState.prepare(db, bus, instructions, sessionID)
       const hooks = yield* PluginHooks.Service
-      let contexts = 0
-      yield* hooks.register("session", "context", () => Effect.sync(() => contexts++))
-      yield* hooks.register("session", "generate", (event) =>
+      let generates = 0
+      yield* hooks.register("session", "generate", () => Effect.sync(() => generates++))
+      yield* hooks.register("session", "context", (event) =>
         Effect.sync(() => {
           expect(event.sessionID).toBe(sessionID)
           expect(event.agent).toBe(Agent.ID.make("build"))
@@ -399,10 +399,10 @@ it.effect(
         Effect.provideService(Instance.Service, instances),
       )
 
-      expect(contexts).toBe(0)
+      expect(generates).toBe(0)
       expect(requests).toHaveLength(1)
       expect(requests[0]?.system.map((part) => part.text)).toContain("Answer briefly.")
-      expect(userTexts(requests[0])).toEqual(["[redacted]"])
+      expect(userTexts(requests[0])).toEqual(["[redacted]", "Summarize privately"])
       expect(requests[0]?.generation).toEqual(expect.objectContaining({ maxTokens: 32 }))
       expect(requests[0]?.providerOptions).toEqual({ reasoningEffort: "low" })
     }),

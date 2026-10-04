@@ -100,10 +100,14 @@ const testLLM = TestLLM.layer({
   fallback: [],
   transformRequest: (request) =>
     LLMRequest.update(request, {
-      system: request.system.map((part) => ({
-        ...part,
-        text: part.text.replace(emptyCodeMode, ""),
-      })),
+      // Instruction sources now retain their own part boundaries. Normalize the
+      // empty catalog both as its own part and in the older combined fixture form.
+      system: request.system
+        .filter((part) => part.text !== emptyCodeMode.slice(2))
+        .map((part) => ({
+          ...part,
+          text: part.text.replace(emptyCodeMode, ""),
+        })),
       tools: request.tools.filter((tool) => tool.name !== "execute"),
     }),
 })
@@ -1875,8 +1879,8 @@ describe("SessionRunnerLLM", () => {
     yield* s.runPrompt("Second")
 
     expect(s.requests.map((request) => request.system.map((part) => part.text))).toEqual([
-      [defaultSystem, fakeIdentity, "Initial context\n\nBuild skills"],
-      [defaultSystem, fakeIdentity, "Initial context\n\nBuild skills"],
+      [defaultSystem, fakeIdentity, "Initial context", "Build skills"],
+      [defaultSystem, fakeIdentity, "Initial context", "Build skills"],
     ])
     expect(systemTexts(s.requests[1])).toContainEqual(expect.stringContaining("Reviewer skills"))
   })
@@ -1898,7 +1902,7 @@ describe("SessionRunnerLLM", () => {
     yield* s.runPrompt("First")
 
     expect(s.requests.map((request) => request.system.map((part) => part.text))).toEqual([
-      [defaultSystem, fakeIdentity, "Initial context\n\nBuild skills"],
+      [defaultSystem, fakeIdentity, "Initial context", "Build skills"],
     ])
   })
 
@@ -1942,7 +1946,8 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests[0]?.system.map((part) => part.text)).toEqual([
       defaultSystem,
       fakeIdentity,
-      ["Initial context", "", '<context key="deploy-target">', "production", "</context>"].join("\n"),
+      "Initial context",
+      ['<context key="deploy-target">', "production", "</context>"].join("\n"),
     ])
 
     // Non-string JSON pretty-prints; the change narrates as a System update.
