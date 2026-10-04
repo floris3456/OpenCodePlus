@@ -227,6 +227,25 @@ test("catalogue mode drops relay native compaction when config repackages the mo
   expect(updated.settings?.compaction).toBeUndefined()
 })
 
+test("a user Anthropic package keeps native compaction", () => {
+  const provider = {
+    ...Provider.Info.empty(Provider.ID.make("cpa")),
+    package: "@opencode/ai/providers/openai-compatible",
+  }
+  const claude: Model.Info = {
+    ...Model.Info.default(Provider.ID.make("cpa"), Model.ID.make("claude-opus-4-5")),
+    package: "@opencode/ai/providers/anthropic",
+    settings: { compaction: { type: "native" } },
+  }
+
+  const { editor, getModel } = createTestEditor([{ provider, models: [claude] }])
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+
+  const updated = getModel("cpa", "claude-opus-4-5")!
+  expect(updated.package).toBe("@opencode/ai/providers/anthropic")
+  expect(updated.settings?.compaction).toEqual({ type: "native" })
+})
+
 test("user settings.compaction still wins when config repackages the model", () => {
   const provider = {
     ...Provider.Info.empty(Provider.ID.make("cpa")),

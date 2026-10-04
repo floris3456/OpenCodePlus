@@ -192,6 +192,9 @@ export function spellVariants(pkg: string | undefined, levels: readonly string[]
 
 const ANTHROPIC_COMPATIBLE = "@opencode/ai/providers/anthropic-compatible"
 
+/** Packages that use the Anthropic Messages protocol and so can honor native compaction. */
+const ANTHROPIC_PACKAGES = new Set([ANTHROPIC_COMPATIBLE, "@opencode/ai/providers/anthropic"])
+
 /**
  * Points one routed Claude model at CPA's Anthropic Messages relay: the
  * anthropic-compatible package, its Anthropic-spelled variants and native
@@ -205,8 +208,10 @@ export function relayClaudeModel(model: Types.DeepMutable<Model.Info>): void {
   if (userPackage) {
     // The relay owns a model only while it keeps the relay package. Config applies a
     // user's per-model package after an earlier relay pass, which would otherwise leave
-    // the relay's native compaction on a route that cannot honor it.
-    if (model.settings?.compaction?.type === "native") delete model.settings.compaction
+    // the relay's native compaction on a route that cannot honor it. A user's own
+    // Anthropic package can honor native, so it keeps whatever the user set.
+    if (!ANTHROPIC_PACKAGES.has(model.package ?? "") && model.settings?.compaction?.type === "native")
+      delete model.settings.compaction
     return
   }
   model.package = ANTHROPIC_COMPATIBLE
