@@ -58,11 +58,15 @@ Hosts that do not use CPA see nothing from it.
 - **Anthropic Messages relay.** For every provider routed to CPA, Claude models
   (CPA reports `owned_by: "anthropic"`, or model ID starts with `claude-`) go through
   CPA's Anthropic Messages relay (`/v1/messages`). They receive the
-  `@opencode/ai/providers/anthropic-compatible` package, Anthropic-spelled effort
-  variants, and `settings.compaction: { type: "native" }` (which enables remote
+  `@opencode/ai/providers/anthropic-compatible` package, model-aware
+  Anthropic-spelled effort variants (adaptive thinking for newer Claude,
+  `enabled`+`budgetTokens` for 3.7 and 4.5), and
+  `settings.compaction: { type: "native" }` (which enables remote
   compaction when strategy is Auto). This applies in catalogue mode and in legacy
-  `quota-handoff.json` mode (catalogue off). Warming pings, usage, cost, cache
-  accounting, and quota handoff continue to work over the Anthropic relay.
+  `quota-handoff.json` mode (catalogue off). The package and compaction are applied
+  by the relay's post-config pass, so a user's per-model `package` or
+  `settings.compaction` in `opencode.json` always wins. Warming pings, usage, cost,
+  cache accounting, and quota handoff continue to work over the Anthropic relay.
 - **Image models.** CPA serves `gpt-image-…` models only on `/v1/images/generations`.
   They are listed as "(images)" with image output, and the `image.generate` tool
   creates an image with them and saves a PNG in the project (default
