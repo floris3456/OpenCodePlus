@@ -46,8 +46,6 @@ export interface Collector {
   observe(event: { readonly type: string; readonly data?: unknown; readonly created?: number }): void
   /** Waits for pending session lookups (tests and shutdown). */
   settle(): Promise<void>
-  setActiveRequest(sessionID: string, requestID: string): void
-  getActiveRequest(sessionID: string): string | undefined
 }
 
 interface CallState {
@@ -87,7 +85,6 @@ interface Track {
   readonly names: Map<string, string>
   lastAgent?: string
   lastModel?: string
-  activeRequestId?: string
 }
 
 type Data = Readonly<Record<string, unknown>>
@@ -189,19 +186,6 @@ export function createCollector(options: CollectorOptions): Collector {
       ...(model?.variant === undefined ? {} : { variant: model.variant }),
       ...(step.config === undefined ? {} : { config: step.config }),
       started,
-    })
-    const reqId = state.activeRequestId ?? `req_${sessionID}_${messageID}`
-    state.activeRequestId = reqId
-    ledger.requestStarted({
-      id: reqId,
-      sessionID,
-      kind: "step",
-      agent,
-      provider: model?.providerID,
-      model: model?.id,
-      variant: model?.variant,
-      started,
-      messageID,
     })
   }
 
@@ -328,15 +312,36 @@ export function createCollector(options: CollectorOptions): Collector {
     }
     const finish = failed ? "error" : String(data.finish ?? "unknown")
     ledger.stepEnded(sessionID, messageID, now(), finish, usage)
-    const reqId = state.activeRequestId ?? `req_${sessionID}_${messageID}`
-    state.activeRequestId = undefined
-    ledger.requestEnded(reqId, {
-      ended: now(),
-      status: failed ? "error" : "completed",
-      error: failed ? "step failed" : undefined,
-      usage,
-      messageID,
-    })
+    const openReq = ledger.oldestOpenRequest(sessionID, "step")
+    const stepError = failed ? String(data.error && typeof data.error === "object" && "message" in data.error ? (data.error as { message: unknown }).message : "step failed").slice(0, 160) : undefined
+    if (openReq) {
+      ledger.requestEnded(openReq.id, {
+        ended: now(),
+        status: failed ? "error" : "completed",
+        error: stepError,
+        usage,
+        messageID,
+      })
+      ledger.retireOpenRequests(sessionID, "step", openReq.id)
+    } else {
+      const fallbackId = `req_${sessionID}_${messageID}`
+      ledger.requestStarted({
+        id: fallbackId,
+        sessionID,
+        kind: "step",
+        agent: step?.agent,
+        model: step?.model,
+        started: typeof data.started === "number" ? data.started : now(),
+        messageID,
+      })
+      ledger.requestEnded(fallbackId, {
+        ended: now(),
+        status: failed ? "error" : "completed",
+        error: stepError,
+        usage,
+        messageID,
+      })
+    }
     if (step === undefined) return
     const calls = [...step.calls.values()]
     // Visible output is split between the text the step wrote and its calls' inputs.
@@ -388,8 +393,6 @@ export function createCollector(options: CollectorOptions): Collector {
       kind: "compaction",
       detail: { epoch: state.epoch, tokens, model },
     })
-    const reqId = state.activeRequestId ?? `req_${sessionID}_${messageID}`
-    state.activeRequestId = undefined
     ledger.stepStarted({
       sessionID,
       messageID,
@@ -402,37 +405,43 @@ export function createCollector(options: CollectorOptions): Collector {
       ...configOf(),
       started: at,
     })
-    ledger.requestStarted({
-      id: reqId,
-      sessionID,
-      kind: "compaction",
-      provider: model?.providerID,
-      model: model?.id,
-      variant: model?.variant,
-      started: at,
-      messageID,
-    })
-    ledger.stepEnded(sessionID, messageID, at, "compaction", {
+    const usage: Usage = {
       input: tokens?.input ?? 0,
       output: tokens?.output ?? 0,
       reasoning: tokens?.reasoning ?? 0,
       cacheRead: tokens?.cache.read ?? 0,
       cacheWrite: tokens?.cache.write ?? 0,
       cost: typeof data.cost === "number" ? data.cost : 0,
-    })
-    ledger.requestEnded(reqId, {
-      ended: at,
-      status: "completed",
-      usage: {
-        input: tokens?.input ?? 0,
-        output: tokens?.output ?? 0,
-        reasoning: tokens?.reasoning ?? 0,
-        cacheRead: tokens?.cache.read ?? 0,
-        cacheWrite: tokens?.cache.write ?? 0,
-        cost: typeof data.cost === "number" ? data.cost : 0,
-      },
-      messageID,
-    })
+    }
+    ledger.stepEnded(sessionID, messageID, at, "compaction", usage)
+    const openReq = ledger.oldestOpenRequest(sessionID, "compaction")
+    if (openReq) {
+      ledger.requestEnded(openReq.id, {
+        ended: at,
+        status: "completed",
+        usage,
+        messageID,
+      })
+      ledger.retireOpenRequests(sessionID, "compaction", openReq.id)
+    } else {
+      const fallbackId = `req_${sessionID}_${messageID}`
+      ledger.requestStarted({
+        id: fallbackId,
+        sessionID,
+        kind: "compaction",
+        provider: model?.providerID,
+        model: model?.id,
+        variant: model?.variant,
+        started: at,
+        messageID,
+      })
+      ledger.requestEnded(fallbackId, {
+        ended: at,
+        status: "completed",
+        usage,
+        messageID,
+      })
+    }
     state.previous = undefined
     state.dirty = true
   }
@@ -513,27 +522,41 @@ export function createCollector(options: CollectorOptions): Collector {
           | { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
           | undefined
         const cost = typeof data.cost === "number" ? data.cost : 0
-        const reqId = track(sessionID).activeRequestId ?? `title:${now()}`
-        track(sessionID).activeRequestId = undefined
-        ledger.requestStarted({
-          id: reqId,
-          sessionID,
-          kind: "title",
-          isTitle: true,
-          started: now(),
-        })
-        ledger.requestEnded(reqId, {
-          ended: now(),
-          status: "completed",
-          usage: {
-            input: tokens?.input ?? 0,
-            output: tokens?.output ?? 0,
-            reasoning: tokens?.reasoning ?? 0,
-            cacheRead: tokens?.cache?.read ?? 0,
-            cacheWrite: tokens?.cache?.write ?? 0,
-            cost,
-          },
-        })
+        const usage: Usage = {
+          input: tokens?.input ?? 0,
+          output: tokens?.output ?? 0,
+          reasoning: tokens?.reasoning ?? 0,
+          cacheRead: tokens?.cache?.read ?? 0,
+          cacheWrite: tokens?.cache?.write ?? 0,
+          cost,
+        }
+        const messageID = String(data.messageID ?? `title:${now()}`)
+        const openReq = ledger.oldestOpenRequest(sessionID, "title")
+        if (openReq) {
+          ledger.requestEnded(openReq.id, {
+            ended: now(),
+            status: "completed",
+            usage,
+            messageID,
+          })
+          ledger.retireOpenRequests(sessionID, "title", openReq.id)
+        } else {
+          const fallbackId = `title:${now()}`
+          ledger.requestStarted({
+            id: fallbackId,
+            sessionID,
+            kind: "title",
+            isTitle: true,
+            started: now(),
+            messageID,
+          })
+          ledger.requestEnded(fallbackId, {
+            ended: now(),
+            status: "completed",
+            usage,
+            messageID,
+          })
+        }
         return
       }
       // A user prompt, a synthetic message or an instructions update entered the prompt.
@@ -541,12 +564,6 @@ export function createCollector(options: CollectorOptions): Collector {
     },
     settle: async () => {
       while (pending.size > 0) await Promise.all([...pending])
-    },
-    setActiveRequest: (sessionID: string, requestID: string) => {
-      track(sessionID).activeRequestId = requestID
-    },
-    getActiveRequest: (sessionID: string) => {
-      return track(sessionID).activeRequestId
     },
   }
 }

@@ -1,7 +1,6 @@
 export * as SessionGenerate from "./generate.js"
 
-import { LLMClient, Message, type AIError } from "@opencode/ai"
-import type { TokenUsage } from "@opencode/schema/token-usage"
+import { LLMClient, Message, type AIError, type Usage } from "@opencode/ai"
 import { Effect } from "effect"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
@@ -17,13 +16,6 @@ import type { SessionRunnerModel } from "./runner/model.js"
 import type { SessionSchema } from "./schema.js"
 
 export type Error = AgentNotFoundError | Instructions.InitializationBlocked | SessionRunnerModel.Error | AIError
-
-const usages = new Map<string, TokenUsage.Info | undefined>()
-
-export const lastUsage = (sessionID: string): TokenUsage.Info | undefined => usages.get(sessionID)
-export const clearLastUsage = (sessionID: string): void => {
-  usages.delete(sessionID)
-}
 
 /** Generates text from current Session context without mutating the Session. */
 export const generate = Effect.fn("SessionGenerate.generate")(function* (input: {
@@ -69,8 +61,34 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       providerID: model.ref.providerID,
       modelID: model.ref.id,
     })
-    const response = yield* llm.generate(prepared.request, prepared.options)
-    usages.set(input.session.id, response.usage ? SessionUsage.tokens(response.usage) : undefined)
+    const notifySuccess = (res: { usage?: Usage }) => {
+      const usage = res.usage ? SessionUsage.tokens(res.usage) : undefined
+      const cost = usage && model.cost ? SessionUsage.calculateCost(model.cost, usage) : undefined
+      return context.hooks
+        .trigger("session", "generated", {
+          sessionID: selection.session.id,
+          agent: selection.agent.id,
+          model: model.ref,
+          usage,
+          cost,
+        })
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("session generated hook failed", { cause })))
+    }
+    const notifyFailure = (err: unknown) => {
+      const error = String((err as Error)?.message ?? err).slice(0, 160)
+      return context.hooks
+        .trigger("session", "generated", {
+          sessionID: selection.session.id,
+          agent: selection.agent.id,
+          model: model.ref,
+          error,
+        })
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("session generated hook error failed", { cause })))
+    }
+    const response = yield* llm.generate(prepared.request, prepared.options).pipe(
+      Effect.tap(notifySuccess),
+      Effect.tapError(notifyFailure),
+    )
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))

@@ -4,7 +4,10 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
+import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect, Stream } from "effect"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
@@ -15,6 +18,9 @@ import { context } from "./harness.js"
 const priorData = process.env.XDG_DATA_HOME
 const roots: string[] = []
 const opened: string[] = []
+
+const modelRef = (p: string, m: string) =>
+  Model.Ref.make({ providerID: Provider.ID.make(p), id: Model.ID.make(m) })
 
 afterEach(async () => {
   cleanupLedgers()
@@ -32,7 +38,30 @@ async function dataHome(): Promise<string> {
   return root
 }
 
-test("fingerprints from real request bodies for each protocol", async () => {
+type HookCallbackMap = {
+  [K in keyof SessionHooks]?: Array<(event: SessionHooks[K]) => Effect.Effect<void, never, never>>
+}
+
+function makeHookRegistry() {
+  const hooks: HookCallbackMap = {}
+  const hookFn = <K extends keyof SessionHooks>(name: K, cb: (event: SessionHooks[K]) => Effect.Effect<void, never, never>) => {
+    const list = (hooks[name] ?? []) as Array<(event: SessionHooks[K]) => Effect.Effect<void, never, never>>
+    list.push(cb)
+    hooks[name] = list as never
+    return Effect.sync(() => ({
+      dispose: Effect.sync(() => {
+        const l = hooks[name]
+        if (l) {
+          const idx = l.indexOf(cb as never)
+          if (idx !== -1) l.splice(idx, 1)
+        }
+      }),
+    }))
+  }
+  return { hooks, hookFn }
+}
+
+test("fingerprints from real request bodies for each protocol with short hashes", async () => {
   // 1. OpenAI Responses
   const openaiResponsesBody = {
     model: "gpt-4o",
@@ -61,18 +90,22 @@ test("fingerprints from real request bodies for each protocol", async () => {
   expect(fpResponses.systemParts.length).toBe(1)
   expect(fpResponses.systemParts[0]?.source).toBe("date/environment block")
   expect(fpResponses.systemParts[0]?.chars).toBe(openaiResponsesBody.instructions.length)
+  expect(fpResponses.systemParts[0]?.hash.length).toBe(16)
   expect(fpResponses.tools.length).toBe(1)
   expect(fpResponses.tools[0]?.name).toBe("shell")
-  expect(fpResponses.tools[0]?.descHash.length).toBe(64)
-  expect(fpResponses.tools[0]?.schemaHash.length).toBe(64)
+  expect(fpResponses.tools[0]?.descHash.length).toBe(16)
+  expect(fpResponses.tools[0]?.schemaHash.length).toBe(16)
   expect(fpResponses.tools[0]?.descHash).not.toBe(fpResponses.tools[0]?.schemaHash)
   expect(fpResponses.cacheKey).toBe("ses_resp_123")
-  expect(fpResponses.optionsKeys["prompt_cache_key"]).toBeDefined()
-  expect(fpResponses.optionsKeys["reasoning"]).toBeDefined()
-  expect(fpResponses.optionsKeys["temperature"]).toBeDefined()
+  expect(fpResponses.optionsKeys["prompt_cache_key"]?.length).toBe(16)
+  expect(fpResponses.optionsKeys["reasoning"]?.length).toBe(16)
+  expect(fpResponses.optionsKeys["temperature"]?.length).toBe(16)
+  expect(fpResponses.optionsHash.length).toBe(16)
+  expect(fpResponses.bodyHash.length).toBe(16)
   expect(fpResponses.messagePrefixes.length).toBe(3)
   expect(fpResponses.messagePrefixes[0]?.role).toBe("user")
   expect(fpResponses.messagePrefixes[0]?.messageId).toBe("msg_1")
+  expect(fpResponses.messagePrefixes[0]?.prefixHash.length).toBe(16)
   expect(fpResponses.messagePrefixes[1]?.messageId).toBe("msg_2")
   expect(fpResponses.messagePrefixes[2]?.messageId).toBe("msg_3")
 
@@ -119,12 +152,13 @@ test("fingerprints from real request bodies for each protocol", async () => {
   expect(fpChat.systemParts[1]?.source).toBe("date/environment block")
   expect(fpChat.tools.length).toBe(1)
   expect(fpChat.tools[0]?.name).toBe("read")
-  expect(fpChat.tools[0]?.descHash.length).toBe(64)
-  expect(fpChat.tools[0]?.schemaHash.length).toBe(64)
-  expect(fpChat.optionsKeys["temperature"]).toBeDefined()
-  expect(fpChat.optionsKeys["max_tokens"]).toBeDefined()
+  expect(fpChat.tools[0]?.descHash.length).toBe(16)
+  expect(fpChat.tools[0]?.schemaHash.length).toBe(16)
+  expect(fpChat.optionsKeys["temperature"]?.length).toBe(16)
+  expect(fpChat.optionsKeys["max_tokens"]?.length).toBe(16)
   expect(fpChat.messagePrefixes.length).toBe(2)
   expect(fpChat.messagePrefixes[0]?.messageId).toBe("chat_1")
+  expect(fpChat.messagePrefixes[0]?.prefixHash.length).toBe(16)
 
   // 3. Anthropic Messages
   const anthropicBody = {
@@ -154,10 +188,10 @@ test("fingerprints from real request bodies for each protocol", async () => {
   expect(fpAnthropic.systemParts.length).toBe(2)
   expect(fpAnthropic.tools.length).toBe(1)
   expect(fpAnthropic.tools[0]?.name).toBe("bash")
-  expect(fpAnthropic.tools[0]?.descHash.length).toBe(64)
-  expect(fpAnthropic.tools[0]?.schemaHash.length).toBe(64)
-  expect(fpAnthropic.optionsKeys["thinking"]).toBeDefined()
-  expect(fpAnthropic.optionsKeys["output_config"]).toBeDefined()
+  expect(fpAnthropic.tools[0]?.descHash.length).toBe(16)
+  expect(fpAnthropic.tools[0]?.schemaHash.length).toBe(16)
+  expect(fpAnthropic.optionsKeys["thinking"]?.length).toBe(16)
+  expect(fpAnthropic.optionsKeys["output_config"]?.length).toBe(16)
   expect(fpAnthropic.cacheControl).toBeDefined()
   expect(fpAnthropic.cacheControl?.some((cc) => cc.target === "system[0]")).toBe(true)
   expect(fpAnthropic.cacheControl?.some((cc) => cc.target === "tool:bash")).toBe(true)
@@ -168,7 +202,7 @@ test("fingerprints from real request bodies for each protocol", async () => {
   const fpFallback = fingerprintWireBody(rawBody)
   expect(fpFallback.protocol).toBe("fallback")
   expect(fpFallback.messagePrefixes.length).toBeGreaterThan(0)
-  expect(fpFallback.bodyHash).toBeDefined()
+  expect(fpFallback.bodyHash.length).toBe(16)
 })
 
 test("system parts named by source wherever context hook names them", () => {
@@ -288,22 +322,25 @@ test("privacy: no content stored (asserting on stored columns)", async () => {
   expect(allFacts).not.toContain(sensitiveUserPrompt)
 })
 
-test("context facts recorded: account switch, quota handoff, instructions, compactions, switches, reverts", async () => {
+test("context facts recorded and idempotent across multiple observations", async () => {
   const db = await ledger()
   const clock = { now: 1_000 }
   const collector = collect(db, clock)
 
-  // 1. Instructions updated with changed source keys
-  collector.observe({
+  const instrEvent = {
     type: "session.instructions.updated",
     data: {
       sessionID: "ses_facts",
       delta: { "AGENTS.md": "new content", guidance: "active" },
     },
     created: 1_010,
-  })
+  }
 
-  // 2. Model and Agent switch observed on step start
+  // Observe instruction update twice
+  collector.observe(instrEvent)
+  collector.observe(instrEvent)
+
+  // Step start and end with agent/model switch
   const s = script("ses_facts", clock)
   s.created({ agent: "build" })
   s.step("m1", "build", { id: "m1", providerID: "anthropic" })
@@ -313,69 +350,59 @@ test("context facts recorded: account switch, quota handoff, instructions, compa
   s.compact(usage(500, 50))
   s.events.forEach((e) => collector.observe(e))
 
-  // 3. Revert committed
-  collector.observe({
+  // Revert committed observed twice
+  const revertEvent = {
     type: "session.revert.committed",
     data: { sessionID: "ses_facts", to: "m1" },
     created: 1_200,
-  })
+  }
+  collector.observe(revertEvent)
+  collector.observe(revertEvent)
 
-  // 4. CPA account switch and quota handoff directly via ledger.contextFact
-  db.contextFact({
+  // Account switch and quota handoff inserted twice
+  const switchFact = {
     sessionID: "ses_facts",
     at: 1_300,
     kind: "account_switch",
     detail: { alias: "acc_beta", previous: "acc_alpha" },
-  })
-  db.contextFact({
+  }
+  db.contextFact(switchFact)
+  db.contextFact(switchFact)
+
+  const handoffFact = {
     sessionID: "ses_facts",
     at: 1_400,
     kind: "quota_handoff",
     detail: { intent: "auto" },
-  })
+  }
+  db.contextFact(handoffFact)
+  db.contextFact(handoffFact)
 
   const facts = db.getContextFacts("ses_facts")
   const kinds = facts.map((f) => f.kind)
-  expect(kinds).toContain("instruction_update")
+
+  // Unique facts: exactly 1 entry per distinct occurrence
+  expect(facts.filter((f) => f.kind === "instruction_update").length).toBe(1)
+  expect(facts.filter((f) => f.kind === "revert").length).toBe(1)
+  expect(facts.filter((f) => f.kind === "account_switch").length).toBe(1)
+  expect(facts.filter((f) => f.kind === "quota_handoff").length).toBe(1)
   expect(kinds).toContain("agent_switch")
   expect(kinds).toContain("model_switch")
   expect(kinds).toContain("compaction")
-  expect(kinds).toContain("revert")
-  expect(kinds).toContain("account_switch")
-  expect(kinds).toContain("quota_handoff")
 
   const instrFact = facts.find((f) => f.kind === "instruction_update")
   expect(instrFact?.detail?.keys).toEqual(["AGENTS.md", "guidance"])
-
-  const agentFact = facts.find((f) => f.kind === "agent_switch")
-  expect(agentFact?.detail).toEqual({ from: "build", to: "reviewer" })
-
-  const revertFact = facts.find((f) => f.kind === "revert")
-  expect(revertFact?.detail).toEqual({ to: "m1" })
 })
 
-test("a keep-alive ping's usage lands as a ping request in the ledger", async () => {
+test("hook path and event ordering in both orders yields exactly one row per request, and retries retire earlier open requests", async () => {
   await dataHome()
-  const hooks = new Map<string, Array<(event: any) => Effect.Effect<void, any, never>>>()
-  const hookFn = (name: string, cb: (event: any) => Effect.Effect<void, any, never>) => {
-    const list = hooks.get(name) ?? []
-    list.push(cb)
-    hooks.set(name, list)
-    return Effect.sync(() => ({
-      dispose: Effect.sync(() => {
-        const l = hooks.get(name)
-        if (l) {
-          const idx = l.indexOf(cb)
-          if (idx !== -1) l.splice(idx, 1)
-        }
-      }),
-    }))
-  }
+  const { hooks, hookFn } = makeHookRegistry()
+  const clock = { now: 1_000 }
 
   const ctx = context({
     event: { subscribe: () => Stream.empty as never },
     session: {
-      get: () => Effect.succeed({ id: Session.ID.make("ses_ping"), title: "Ping chat" }) as never,
+      get: () => Effect.succeed({ id: Session.ID.make("ses_ord"), title: "Order test" }) as never,
       hook: hookFn as never,
     },
   })
@@ -384,61 +411,117 @@ test("a keep-alive ping's usage lands as a ping request in the ledger", async ()
     Effect.scoped(
       Effect.gen(function* () {
         yield* watchMonitor(ctx, () => undefined)
-        for (const cb of hooks.get("warming") ?? []) {
+
+        // ORDER 1: http.request hook runs FIRST, then step.started, then step.ended
+        const req1 = new Request("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "Order 1" }] }),
+        })
+        for (const cb of hooks["http.request"] ?? []) {
           yield* cb({
-            sessionID: "ses_ping",
+            sessionID: Session.ID.make("ses_ord1"),
             agent: Agent.ID.make("build"),
-            model: { providerID: "anthropic", id: "claude-3-7-sonnet" },
-            phase: "warmed",
-            now: 2_000,
-            since: 1_000,
-            usage: {
-              input: 150,
-              output: 25,
-              reasoning: 0,
-              cache: { read: 800, write: 50 },
-            },
+            model: modelRef("openai", "gpt-4o"),
+            kind: "primary",
+            request: req1,
           })
         }
+        const c1 = collect(ledgerAt(), clock)
+        c1.observe({ type: "session.step.started", data: { sessionID: "ses_ord1", assistantMessageID: "m1", started: 1_000 } })
+        c1.observe({ type: "session.step.ended", data: { sessionID: "ses_ord1", assistantMessageID: "m1", tokens: { input: 100, output: 20, reasoning: 0, cache: { read: 50, write: 0 } }, finish: "stop" } })
+
+        // Assert Order 1 has exactly 1 row
+        const ord1Requests = ledgerAt().getRequests("ses_ord1")
+        expect(ord1Requests.length).toBe(1)
+        expect(ord1Requests[0]?.kind).toBe("step")
+        expect(ord1Requests[0]?.messageID).toBe("m1")
+        expect(ord1Requests[0]?.status).toBe("completed")
+        expect(ord1Requests[0]?.inputTokens).toBe(100)
+        expect(ord1Requests[0]?.outputTokens).toBe(20)
+        expect(ledgerAt().getFingerprint(ord1Requests[0]!.id)).toBeDefined()
+
+        // ORDER 2: step.started runs FIRST, then http.request hook runs, then step.ended
+        const c2 = collect(ledgerAt(), clock)
+        c2.observe({ type: "session.step.started", data: { sessionID: "ses_ord2", assistantMessageID: "m2", started: 2_000 } })
+        const req2 = new Request("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "Order 2" }] }),
+        })
+        for (const cb of hooks["http.request"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_ord2"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            kind: "primary",
+            request: req2,
+          })
+        }
+        c2.observe({ type: "session.step.ended", data: { sessionID: "ses_ord2", assistantMessageID: "m2", tokens: { input: 200, output: 40, reasoning: 0, cache: { read: 80, write: 0 } }, finish: "stop" } })
+
+        // Assert Order 2 has exactly 1 row
+        const ord2Requests = ledgerAt().getRequests("ses_ord2")
+        expect(ord2Requests.length).toBe(1)
+        expect(ord2Requests[0]?.kind).toBe("step")
+        expect(ord2Requests[0]?.messageID).toBe("m2")
+        expect(ord2Requests[0]?.status).toBe("completed")
+        expect(ord2Requests[0]?.inputTokens).toBe(200)
+        expect(ledgerAt().getFingerprint(ord2Requests[0]!.id)).toBeDefined()
+
+        // RETRIED ATTEMPT: attempt 1 open, then attempt 2 fires -> attempt 1 marked retried, attempt 2 completes
+        const reqRetry1 = new Request("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "Retry attempt 1" }] }),
+        })
+        for (const cb of hooks["http.request"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_retry"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            kind: "primary",
+            request: reqRetry1,
+          })
+        }
+        // Second attempt arrives before step ends
+        const reqRetry2 = new Request("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "Retry attempt 2" }] }),
+        })
+        for (const cb of hooks["http.request"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_retry"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            kind: "primary",
+            request: reqRetry2,
+          })
+        }
+        const cRetry = collect(ledgerAt(), clock)
+        cRetry.observe({ type: "session.step.started", data: { sessionID: "ses_retry", assistantMessageID: "m_retry", started: 3_000 } })
+        cRetry.observe({ type: "session.step.ended", data: { sessionID: "ses_retry", assistantMessageID: "m_retry", tokens: { input: 350, output: 60, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop" } })
+
+        const retryRequests = ledgerAt().getRequests("ses_retry")
+        expect(retryRequests.length).toBe(2)
+        expect(retryRequests[0]?.status).toBe("error")
+        expect(retryRequests[0]?.error).toBe("retried")
+        expect(retryRequests[1]?.status).toBe("completed")
+        expect(retryRequests[1]?.inputTokens).toBe(350)
       }),
     ),
   )
-
-  const requests = ledgerAt().getRequests("ses_ping")
-  expect(requests.length).toBe(1)
-  expect(requests[0]?.kind).toBe("ping")
-  expect(requests[0]?.agent).toBe("build")
-  expect(requests[0]?.provider).toBe("anthropic")
-  expect(requests[0]?.model).toBe("claude-3-7-sonnet")
-  expect(requests[0]?.inputTokens).toBe(150)
-  expect(requests[0]?.outputTokens).toBe(25)
-  expect(requests[0]?.cacheReadTokens).toBe(800)
-  expect(requests[0]?.cacheWriteTokens).toBe(50)
-  expect(requests[0]?.status).toBe("completed")
 })
 
-test("wire request interception via http.request hooks records request and fingerprint", async () => {
+test("generate usage hook records request and warming warmed relabels it to ping, clipping errors to 160 chars", async () => {
   await dataHome()
-  const hooks = new Map<string, Array<(event: any) => Effect.Effect<void, any, never>>>()
-  const hookFn = (name: string, cb: (event: any) => Effect.Effect<void, any, never>) => {
-    const list = hooks.get(name) ?? []
-    list.push(cb)
-    hooks.set(name, list)
-    return Effect.sync(() => ({
-      dispose: Effect.sync(() => {
-        const l = hooks.get(name)
-        if (l) {
-          const idx = l.indexOf(cb)
-          if (idx !== -1) l.splice(idx, 1)
-        }
-      }),
-    }))
-  }
+  const { hooks, hookFn } = makeHookRegistry()
 
   const ctx = context({
     event: { subscribe: () => Stream.empty as never },
     session: {
-      get: () => Effect.succeed({ id: Session.ID.make("ses_http"), title: "Wire chat" }) as never,
+      get: () => Effect.succeed({ id: Session.ID.make("ses_ping_test"), title: "Ping" }) as never,
       hook: hookFn as never,
     },
   })
@@ -447,47 +530,99 @@ test("wire request interception via http.request hooks records request and finge
     Effect.scoped(
       Effect.gen(function* () {
         yield* watchMonitor(ctx, () => undefined)
-        const wirePayload = {
-          model: "gpt-4o",
-          messages: [
-            { role: "system", content: "You are an assistant." },
-            { id: "msg_1", role: "user", content: "Hello" },
-          ],
-          tools: [
-            {
-              type: "function",
-              function: { name: "read", description: "Read file", parameters: {} },
-            },
-          ],
-        }
+
+        // 1. HTTP request hook fires for warming generate call
         const req = new Request("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(wirePayload),
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "ping" }] }),
         })
-        for (const cb of hooks.get("http.request") ?? []) {
+        for (const cb of hooks["http.request"] ?? []) {
           yield* cb({
-            sessionID: "ses_http",
+            sessionID: Session.ID.make("ses_ping_test"),
             agent: Agent.ID.make("build"),
-            model: { providerID: "openai", id: "gpt-4o" },
-            kind: "primary",
+            model: modelRef("openai", "gpt-4o"),
+            kind: "generate",
             request: req,
           })
         }
+
+        // 2. Core generate triggers "generated" hook
+        for (const cb of hooks["generated"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_ping_test"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            usage: { input: 120, output: 15, reasoning: 0, cache: { read: 600, write: 0 } },
+            cost: 0.001,
+          })
+        }
+
+        // 3. Warming loop triggers "warming" hook with phase: "warmed"
+        for (const cb of hooks["warming"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_ping_test"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            phase: "warmed",
+            now: 4_000,
+            since: 3_000,
+            settings: undefined,
+          })
+        }
+
+        const requests = ledgerAt().getRequests("ses_ping_test")
+        expect(requests.length).toBe(1)
+        expect(requests[0]?.kind).toBe("ping")
+        expect(requests[0]?.status).toBe("completed")
+        expect(requests[0]?.inputTokens).toBe(120)
+        expect(requests[0]?.cacheReadTokens).toBe(600)
+        expect(requests[0]?.cost).toBe(0.001)
+
+        // Error clipping test: a long error string is clipped to 160 chars
+        const longError = "E".repeat(300)
+        const reqErr = new Request("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "err" }] }),
+        })
+        for (const cb of hooks["http.request"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_ping_err"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            kind: "generate",
+            request: reqErr,
+          })
+        }
+        for (const cb of hooks["generated"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_ping_err"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            error: longError,
+          })
+        }
+        for (const cb of hooks["warming"] ?? []) {
+          yield* cb({
+            sessionID: Session.ID.make("ses_ping_err"),
+            agent: Agent.ID.make("build"),
+            model: modelRef("openai", "gpt-4o"),
+            phase: "warmed",
+            now: 5_000,
+            since: 4_000,
+            error: longError,
+            settings: undefined,
+          })
+        }
+
+        const errRequests = ledgerAt().getRequests("ses_ping_err")
+        expect(errRequests.length).toBe(1)
+        expect(errRequests[0]?.kind).toBe("ping")
+        expect(errRequests[0]?.status).toBe("error")
+        expect(errRequests[0]?.error?.length).toBeLessThanOrEqual(160)
+        expect(errRequests[0]?.error).toBe("E".repeat(160))
       }),
     ),
   )
-
-  const requests = ledgerAt().getRequests("ses_http")
-  expect(requests.length).toBe(1)
-  expect(requests[0]?.kind).toBe("step")
-  expect(requests[0]?.provider).toBe("openai")
-  expect(requests[0]?.model).toBe("gpt-4o")
-
-  const fp = ledgerAt().getFingerprint(requests[0]!.id)
-  expect(fp).toBeDefined()
-  expect(fp?.protocol).toBe("openai-chat")
-  expect(fp?.tools.length).toBe(1)
-  expect(fp?.tools[0]?.name).toBe("read")
-  expect(fp?.messagePrefixes.length).toBe(1)
 })

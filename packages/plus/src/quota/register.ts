@@ -38,11 +38,7 @@ export function registerQuota(ctx: Context, config: Config | undefined) {
       fetch,
       now: Date.now,
       fact: (session, kind, detail) => {
-        try {
-          ledgerAt().contextFact({ sessionID: session, kind, detail, at: Date.now() })
-        } catch {
-          // ignore ledger errors
-        }
+        ledgerAt().contextFact({ sessionID: session, kind, detail, at: Date.now() })
       },
     })
     yield* ctx.rpc

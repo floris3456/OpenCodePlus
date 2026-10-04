@@ -86,42 +86,31 @@ export function watchMonitor(
         const started = Date.now()
         const requestID = `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
 
-        let wireBody: unknown = ""
-        try {
-          const cloned = event.request.clone()
-          wireBody = await cloned.text()
-        } catch {
-          // ignore
-        }
-
+        const wireBody = await event.request.clone().text().catch(() => "")
         const parts = namedSystemParts.get(sessionID)
         const fp = fingerprintWireBody(wireBody, {
           url: event.request.url,
           namedSystemParts: parts,
         })
 
-        try {
-          const l = open()
-          l.requestStarted({
-            id: requestID,
-            sessionID,
-            kind,
-            isTitle,
-            agent,
-            provider,
-            model,
-            variant,
-            started,
-          })
-          l.requestFingerprint({
-            requestID,
-            sessionID,
-            ...fp,
-          })
-          collector()?.setActiveRequest(sessionID, requestID)
-        } catch {
-          // ignore
-        }
+        const l = open()
+        l.retireOpenRequests(sessionID, kind)
+        l.requestStarted({
+          id: requestID,
+          sessionID,
+          kind,
+          isTitle,
+          agent,
+          provider,
+          model,
+          variant,
+          started,
+        })
+        l.requestFingerprint({
+          requestID,
+          sessionID,
+          ...fp,
+        })
       }),
     )
 
@@ -142,28 +131,24 @@ export function watchMonitor(
           namedSystemParts: parts,
         })
 
-        try {
-          const l = open()
-          l.requestStarted({
-            id: requestID,
-            sessionID,
-            kind,
-            isTitle,
-            agent,
-            provider,
-            model,
-            variant,
-            started,
-          })
-          l.requestFingerprint({
-            requestID,
-            sessionID,
-            ...fp,
-          })
-          collector()?.setActiveRequest(sessionID, requestID)
-        } catch {
-          // ignore
-        }
+        const l = open()
+        l.retireOpenRequests(sessionID, kind)
+        l.requestStarted({
+          id: requestID,
+          sessionID,
+          kind,
+          isTitle,
+          agent,
+          provider,
+          model,
+          variant,
+          started,
+        })
+        l.requestFingerprint({
+          requestID,
+          sessionID,
+          ...fp,
+        })
       }),
     )
 
@@ -171,18 +156,63 @@ export function watchMonitor(
       Effect.sync(() => {
         if (event.response.status >= 400) {
           const sessionID = String(event.sessionID)
-          const reqId = collector()?.getActiveRequest(sessionID)
-          if (reqId) {
-            try {
-              open().requestEnded(reqId, {
-                ended: Date.now(),
-                status: "error",
-                error: `HTTP ${event.response.status}`,
-              })
-            } catch {
-              // ignore
-            }
+          const kind = event.kind === "primary" ? "step" : event.kind
+          const l = open()
+          const openReq = l.oldestOpenRequest(sessionID, kind)
+          if (openReq) {
+            l.requestEnded(openReq.id, {
+              ended: Date.now(),
+              status: "error",
+              error: `HTTP ${event.response.status}`.slice(0, 160),
+            })
           }
+        }
+      }),
+    )
+
+    yield* ctx.session.hook("generated", (event) =>
+      Effect.sync(() => {
+        const sessionID = String(event.sessionID)
+        const l = open()
+        const openReq = l.oldestOpenRequest(sessionID, "generate")
+        const at = Date.now()
+        const usage = event.usage
+          ? {
+              input: event.usage.input,
+              output: event.usage.output,
+              reasoning: event.usage.reasoning,
+              cacheRead: event.usage.cache.read,
+              cacheWrite: event.usage.cache.write,
+              cost: event.cost ?? 0,
+            }
+          : undefined
+        const error = event.error ? event.error.slice(0, 160) : undefined
+        if (openReq) {
+          l.requestEnded(openReq.id, {
+            ended: at,
+            status: error ? "error" : "completed",
+            error,
+            usage,
+          })
+          l.retireOpenRequests(sessionID, "generate", openReq.id)
+        } else {
+          const reqId = `gen_${sessionID}_${at}`
+          l.requestStarted({
+            id: reqId,
+            sessionID,
+            kind: "generate",
+            agent: String(event.agent),
+            provider: event.model.providerID,
+            model: event.model.id,
+            variant: event.model.variant,
+            started: at,
+          })
+          l.requestEnded(reqId, {
+            ended: at,
+            status: error ? "error" : "completed",
+            error,
+            usage,
+          })
         }
       }),
     )
@@ -191,43 +221,18 @@ export function watchMonitor(
       Effect.sync(() => {
         if (event.phase === "warmed") {
           const sessionID = String(event.sessionID)
-          const c = collector()
-          const activeReq = c?.getActiveRequest(sessionID)
-          const reqId = activeReq && activeReq.length > 0 ? activeReq : `ping_${sessionID}_${Date.now()}`
-          const at = event.now ?? Date.now()
-          const usage = event.usage
-            ? {
-                input: event.usage.input,
-                output: event.usage.output,
-                reasoning: event.usage.reasoning,
-                cacheRead: event.usage.cache.read,
-                cacheWrite: event.usage.cache.write,
-                cost: 0,
-              }
-            : undefined
-          try {
-            const l = open()
-            l.requestStarted({
-              id: reqId,
-              sessionID,
-              kind: "ping",
-              isTitle: false,
-              agent: String(event.agent),
-              provider: event.model.providerID,
-              model: event.model.id,
-              variant: event.model.variant,
-              started: at,
-            })
-            l.requestEnded(reqId, {
-              ended: at,
-              status: event.error ? "error" : "completed",
-              error: event.error,
-              usage,
-            })
-          } catch {
-            // ignore
+          const l = open()
+          l.relabelLatestRequest(sessionID, "generate", "ping")
+          if (event.error) {
+            const latestPing = l.oldestOpenRequest(sessionID, "ping")
+            if (latestPing) {
+              l.requestEnded(latestPing.id, {
+                ended: event.now ?? Date.now(),
+                status: "error",
+                error: event.error.slice(0, 160),
+              })
+            }
           }
-          c?.setActiveRequest(sessionID, "")
         }
       }),
     )

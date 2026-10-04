@@ -62,7 +62,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function sha256(input: string): string {
-  return createHash("sha256").update(input).digest("hex")
+  return createHash("sha256").update(input).digest("hex").slice(0, 16)
 }
 
 function nameSystemPart(

@@ -223,7 +223,8 @@ create table if not exists context_fact (
   session_id text not null,
   at integer not null,
   kind text not null,
-  detail text not null default '{}'
+  detail text not null default '{}',
+  unique (session_id, at, kind, detail)
 );
 create index if not exists context_fact_session on context_fact(session_id, at);
 create index if not exists context_fact_kind on context_fact(kind, at);
@@ -388,6 +389,9 @@ export interface Ledger {
   requestEnded(id: string, end: RequestEnd): void
   requestFingerprint(fp: RequestFingerprintData): void
   contextFact(fact: ContextFact): void
+  oldestOpenRequest(sessionID: string, kind: string): RequestRow | undefined
+  retireOpenRequests(sessionID: string, kind: string, exceptId?: string): void
+  relabelLatestRequest(sessionID: string, fromKind: string, toKind: string): void
   getRequest(id: string): RequestRow | undefined
   getRequests(sessionID: string): readonly RequestRow[]
   getFingerprint(requestID: string): RequestFingerprintData | undefined
@@ -514,7 +518,20 @@ export function createLedger(file: string): Ledger {
       body_hash = excluded.body_hash`)
   const insertContextFact = db.query(`
     insert into context_fact (session_id, at, kind, detail)
-    values ($session, $at, $kind, $detail)`)
+    values ($session, $at, $kind, $detail)
+    on conflict do nothing`)
+  const findOldestOpenRequest = db.query<Record<string, unknown>, [string, string]>(
+    "select * from request where session_id = ? and kind = ? and ended is null order by started asc limit 1",
+  )
+  const retireEarlierOpenRequests = db.query<void, [number, number, string, string, string]>(
+    "update request set ended = ?, status = 'error', error = 'retried', duration = (? - started) where session_id = ? and kind = ? and ended is null and id != ?",
+  )
+  const retireAllOpenRequests = db.query<void, [number, number, string, string]>(
+    "update request set ended = ?, status = 'error', error = 'retried', duration = (? - started) where session_id = ? and kind = ? and ended is null",
+  )
+  const updateLatestKind = db.query<void, [string, string, string]>(
+    "update request set kind = ? where id = (select id from request where session_id = ? and kind = ? order by started desc limit 1)",
+  )
   const findRequest = db.query<Record<string, unknown>, [string]>(
     "select * from request where id = ?",
   )
@@ -652,7 +669,7 @@ export function createLedger(file: string): Ledger {
         $ended: end.ended,
         $duration: end.duration ?? null,
         $status: end.status,
-        $error: end.error ?? null,
+        $error: end.error ? end.error.slice(0, 160) : null,
         $input: end.usage?.input ?? null,
         $output: end.usage?.output ?? null,
         $reasoning: end.usage?.reasoning ?? null,
@@ -683,6 +700,21 @@ export function createLedger(file: string): Ledger {
         $kind: fact.kind,
         $detail: JSON.stringify(fact.detail ?? {}),
       }),
+    oldestOpenRequest: (sessionID, kind) => {
+      const row = findOldestOpenRequest.get(sessionID, kind)
+      return row ? toRequestRow(row) : undefined
+    },
+    retireOpenRequests: (sessionID, kind, exceptId) => {
+      const now = Date.now()
+      if (exceptId) {
+        retireEarlierOpenRequests.run(now, now, sessionID, kind, exceptId)
+      } else {
+        retireAllOpenRequests.run(now, now, sessionID, kind)
+      }
+    },
+    relabelLatestRequest: (sessionID, fromKind, toKind) => {
+      updateLatestKind.run(toKind, sessionID, fromKind)
+    },
     getRequest: (id) => {
       const row = findRequest.get(id)
       return row ? toRequestRow(row) : undefined

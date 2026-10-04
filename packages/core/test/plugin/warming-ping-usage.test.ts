@@ -8,7 +8,6 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { WarmingPlugin } from "@opencode/core/plugin/warming"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
-import { SessionGenerate } from "@opencode/core/session/generate"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
 import { Document, Info, type Entry } from "@opencode/schema/config"
@@ -25,7 +24,7 @@ const ref = (providerID: string, id: string) =>
   Model.Ref.make({ providerID: Provider.ID.make(providerID), id: Model.ID.make(id) })
 
 describe("warming ping usage seam", () => {
-  it.effect("reports ping usage through the warmed phase of the warming hook", () =>
+  it.effect("reports ping usage through the warmed phase of the warming hook and generated hook", () =>
     Effect.gen(function* () {
       const configEntries = yield* Ref.make<Entry[]>([
         document({ warming: { prompt: "ping", interval: "1 second", duration: "1 hour" } }),
@@ -47,10 +46,16 @@ describe("warming ping usage seam", () => {
       })
 
       const hooks = yield* PluginHooks.Service
-      const seen: Array<SessionHooks["warming"]> = []
+      const seenWarming: Array<SessionHooks["warming"]> = []
       yield* hooks.register("session", "warming", (event) =>
         Effect.sync(() => {
-          seen.push({ ...event })
+          seenWarming.push({ ...event })
+        }),
+      )
+      const seenGenerated: Array<SessionHooks["generated"]> = []
+      yield* hooks.register("session", "generated", (event) =>
+        Effect.sync(() => {
+          seenGenerated.push({ ...event })
         }),
       )
 
@@ -66,6 +71,12 @@ describe("warming ping usage seam", () => {
             ...sessions,
             generate: (input) =>
               Effect.gen(function* () {
+                yield* hooks.trigger("session", "generated", {
+                  sessionID: input.sessionID,
+                  agent: Agent.ID.make("build"),
+                  model: ref("alpha", "m1"),
+                  usage: { input: 15, output: 5, reasoning: 0, cache: { read: 50, write: 0 } },
+                })
                 return ""
               }),
           }),
@@ -92,11 +103,15 @@ describe("warming ping usage seam", () => {
       }
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
 
-      const warmed = seen.filter((event) => event.phase === "warmed")
+      const warmed = seenWarming.filter((event) => event.phase === "warmed")
       expect(warmed.length).toBeGreaterThan(0)
       expect(warmed[0]?.sessionID).toBe(parent.id)
       expect(warmed[0]?.agent).toBe(Agent.ID.make("build"))
       expect(warmed[0]?.model).toEqual(ref("alpha", "m1"))
+
+      expect(seenGenerated.length).toBeGreaterThan(0)
+      expect(seenGenerated[0]?.sessionID).toBe(parent.id)
+      expect(seenGenerated[0]?.usage?.input).toBe(15)
     }),
   )
 })

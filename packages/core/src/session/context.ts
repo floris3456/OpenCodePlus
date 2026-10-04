@@ -68,6 +68,7 @@ export interface Interface {
     | undefined
   >
   readonly request: SessionModelRequest.Interface
+  readonly hooks: PluginHooks.Interface
 }
 
 /** Location-scoped model-context loader for durable Session Steps. */
@@ -189,7 +190,7 @@ const info = agent.info
       }
     })
 
-    return Service.of({ select, load, resolveModel, selectTitle, request })
+    return Service.of({ select, load, resolveModel, selectTitle, request, hooks })
   }),
 )
 
