@@ -57,6 +57,15 @@ export interface SessionCompaction extends SessionContext {
 
 export interface SessionGenerate extends SessionContext {}
 
+export interface SessionGenerated {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  readonly model: Model.Ref
+  readonly usage?: TokenUsage.Info
+  readonly cost?: number
+  readonly error?: string
+}
+
 export interface SessionTitle extends SessionRequest {
   /** Set to use this title and skip the model request. */
   result?: string
@@ -160,13 +169,14 @@ export interface SessionWarming {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
-  readonly phase: "activity" | "warm"
+  readonly phase: "activity" | "warm" | "warmed"
   /** At `activity`, the request that (re)started the window: an agent step, a compaction or a generate call. */
   readonly kind?: "primary" | "compaction" | "generate"
   /** Epoch ms of the latest non-warming request: the start of the warming window. */
   readonly since: number
   /** Epoch ms of this decision. */
   readonly now: number
+  readonly error?: string
   settings: SessionWarmingSettings | undefined
 }
 
@@ -183,6 +193,7 @@ export interface SessionHooks {
   readonly "compaction.decide": SessionCompactionDecision
   readonly compaction: SessionCompaction
   readonly generate: SessionGenerate
+  readonly generated: SessionGenerated
   readonly title: SessionTitle
   readonly catalog: SessionCatalog
   readonly "model.request": SessionModelRequest

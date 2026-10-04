@@ -911,11 +911,14 @@ export const TeamRunEntry = Schema.Struct({
   lastUsed: Schema.String,
   sessionID: Schema.NullOr(Schema.String),
   parent: Schema.NullOr(Schema.String),
+  depth: Schema.optional(Schema.Number),
 }).annotate({ identifier: "Plus.TeamRunEntry" })
 
 export interface TeamRunsListInput extends Schema.Schema.Type<typeof TeamRunsListInput> {}
 export const TeamRunsListInput = Schema.Struct({
   all: Schema.optional(Schema.Boolean),
+  sessionID: Schema.optional(Schema.String),
+  tree: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "Plus.TeamRunsListInput" })
 
 export interface TeamRunsListOutput extends Schema.Schema.Type<typeof TeamRunsListOutput> {}

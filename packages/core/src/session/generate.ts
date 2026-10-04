@@ -1,6 +1,6 @@
 export * as SessionGenerate from "./generate.js"
 
-import { LLMClient, LLMRequest, Message, type AIError } from "@opencode/ai"
+import { LLMClient, LLMRequest, Message, type AIError, type Usage } from "@opencode/ai"
 import type { Model } from "@opencode/schema/model"
 import { Effect } from "effect"
 import { Agent } from "../agent.js"
@@ -11,6 +11,7 @@ import { SessionContext } from "./context.js"
 import { AgentNotFoundError } from "./error.js"
 import { SessionCompaction } from "./compaction.js"
 import { SessionModelRequest } from "./model-request.js"
+import { SessionUsage } from "./usage.js"
 import type { SessionRunnerModel } from "./runner/model.js"
 import type { SessionSchema } from "./schema.js"
 
@@ -69,7 +70,34 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       providerID: loaded.model.ref.providerID,
       modelID: loaded.model.ref.id,
     })
-    const response = yield* llm.generate(request, prepared.options)
+    const notifySuccess = (res: { usage?: Usage }) => {
+      const usage = res.usage ? SessionUsage.tokens(res.usage) : undefined
+      const cost = usage && loaded.model.cost ? SessionUsage.calculateCost(loaded.model.cost, usage) : undefined
+      return context.hooks
+        .trigger("session", "generated", {
+          sessionID: selection.session.id,
+          agent: loaded.agent.id,
+          model: loaded.model.ref,
+          usage,
+          cost,
+        })
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("session generated hook failed", { cause })))
+    }
+    const notifyFailure = (err: unknown) => {
+      const error = String((err as Error)?.message ?? err).slice(0, 160)
+      return context.hooks
+        .trigger("session", "generated", {
+          sessionID: selection.session.id,
+          agent: loaded.agent.id,
+          model: loaded.model.ref,
+          error,
+        })
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("session generated hook error failed", { cause })))
+    }
+    const response = yield* llm.generate(request, prepared.options).pipe(
+      Effect.tap(notifySuccess),
+      Effect.tapError(notifyFailure),
+    )
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))

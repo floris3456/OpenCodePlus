@@ -583,3 +583,68 @@ export async function byDirectory(root: string, directory: string): Promise<RunR
 function canonicalPath(p: string): Promise<string> {
   return realpath(p).catch(() => path.resolve(p))
 }
+
+/**
+ * Builds the team tree for a given sessionID from a list of runs:
+ * 1. Finds the run matching sessionID.
+ * 2. Walks `parent` up to the topmost root run.
+ * 3. Returns the root run (depth 0) and every descendant at any depth,
+ *    ordered in pre-order traversal with `depth` assigned.
+ * Returns an empty array if sessionID does not match any run.
+ */
+export function buildRunTree<T extends { id: string; parent: string | null; sessionID: string | null; state?: string }>(
+  runs: readonly T[],
+  sessionID: string,
+  opts?: { all?: boolean },
+): Array<T & { depth: number }> {
+  const target = runs.find((r) => r.sessionID === sessionID)
+  if (!target) return []
+
+  const byId = new Map<string, T>()
+  for (const run of runs) {
+    byId.set(run.id, run)
+  }
+
+  // Walk parent up to the topmost root
+  let root = target
+  const seenParents = new Set<string>([root.id])
+  while (root.parent !== null && root.parent !== undefined) {
+    const p = byId.get(root.parent)
+    if (!p || seenParents.has(p.id)) break
+    seenParents.add(p.id)
+    root = p
+  }
+
+  // Group children by parent, preserving runs array ordering
+  const childrenByParent = new Map<string, T[]>()
+  for (const run of runs) {
+    if (run.parent !== null && run.parent !== undefined) {
+      const list = childrenByParent.get(run.parent)
+      if (list) list.push(run)
+      else childrenByParent.set(run.parent, [run])
+    }
+  }
+
+  const result: Array<T & { depth: number }> = []
+  const visited = new Set<string>()
+
+  function walk(current: T, depth: number) {
+    if (visited.has(current.id)) return
+    visited.add(current.id)
+
+    const isHidden = !opts?.all && (current.state === "superseded" || current.state === "reaped")
+    if (!isHidden) {
+      result.push({ ...current, depth })
+    }
+
+    const children = childrenByParent.get(current.id)
+    if (children) {
+      for (const child of children) {
+        walk(child, depth + 1)
+      }
+    }
+  }
+
+  walk(root, 0)
+  return result
+}
