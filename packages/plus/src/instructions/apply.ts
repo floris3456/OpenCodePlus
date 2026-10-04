@@ -398,7 +398,10 @@ export function rowGate(input: ApplyInput, agent: ApplyAgent): (ids: readonly st
   return gateOf(isOn)
 }
 
-export function roleUpdates(input: ApplyInput): { agent: string; text: string }[] {
+export function roleUpdates(
+  input: ApplyInput,
+  options?: { readonly skipNoop?: boolean },
+): { agent: string; text: string }[] {
   return input.agents.flatMap((agent) => {
     const gate = rowGate(input, agent)
     return input.items.flatMap((item) => {
@@ -409,7 +412,7 @@ export function roleUpdates(input: ApplyInput): { agent: string; text: string }[
       // does not meet are out and no marker line is left (requires.ts).
       const resolved = resolvedFor(item, agent, input, gate)
       const text = resolved.assembled
-      if (isNoop(item, resolved)) return []
+      if (options?.skipNoop !== true && isNoop(item, resolved)) return []
       // A disabled role never clears the agent system text.
       if (!resolved.enabled || text.trim().length === 0) return []
       return [{ agent: agent.id, text }]

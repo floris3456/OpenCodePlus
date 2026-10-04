@@ -4930,6 +4930,14 @@ export function captureBaselines(
         })
         continue
       }
+      if (winnerScope.has(owner) && teamOverrides?.has(owner)) {
+        next.set(key, {
+          applied: teamOverrides.get(owner)!,
+          upstream: item.text,
+          fileBacked: false,
+        })
+        continue
+      }
       // Team-only host agents surface at `defaults` while their role records
       // live at the team winner's level. Resolving at the discovered scope
       // misses project/global edits, so the next discovery mistakes the
@@ -5157,34 +5165,36 @@ function teamRoleOverrides(
   scopes: Scopes,
   teamBodies: readonly { id: string; scope: AgentSource["scope"]; body: string | undefined }[],
 ): Map<string, string> {
-  const haveRole = new Set(
-    discovered.items.flatMap((item) => {
-      if (item.id !== "system:role") return []
-      return [...(item.agents ?? [])]
-    }),
-  )
+  const teamAgentIds = new Set(teamAgents.map((agent) => agent.id))
+  const itemsWithoutTeamRoles = discovered.items.filter((item) => {
+    if (item.id !== "system:role") return true
+    const owner = item.agents?.[0]
+    return owner === undefined || !teamAgentIds.has(owner)
+  })
   const bodies = new Map(teamBodies.map((entry) => [entry.id, entry.body] as const))
   const synthesized: Item[] = teamAgents.flatMap((agent): Item[] => {
-    if (haveRole.has(agent.id)) return []
     const raw = bodies.get(agent.id)
     if (raw === undefined) return []
     const text = agentBody(raw)
     return [{ id: "system:role", kind: "system", group: "none", title: "Role/persona", text, enabled: true, fingerprint: fingerprint(text), agents: [agent.id], order: 0 }]
   })
   return new Map(
-    roleUpdates({
-      items: [...discovered.items, ...synthesized],
-      // Addressed as apply addresses members (with their team), so a member
-      // created from a preset reads its role text through its link.
-      agents: teamAgents.map((agent) => ({
-        id: agent.id,
-        level: scopeLevel(agent.scope),
-        ...(agent.team === undefined ? {} : { team: { level: scopeLevel(agent.scope), team: agent.team } }),
-      })),
-      records,
-      splits,
-      scopes,
-    }).map((entry) => [entry.agent, entry.text] as const),
+    roleUpdates(
+      {
+        items: [...itemsWithoutTeamRoles, ...synthesized],
+        // Addressed as apply addresses members (with their team), so a member
+        // created from a preset reads its role text through its link.
+        agents: teamAgents.map((agent) => ({
+          id: agent.id,
+          level: scopeLevel(agent.scope),
+          ...(agent.team === undefined ? {} : { team: { level: scopeLevel(agent.scope), team: agent.team } }),
+        })),
+        records,
+        splits,
+        scopes,
+      },
+      { skipNoop: true },
+    ).map((entry) => [entry.agent, entry.text] as const),
   )
 }
 

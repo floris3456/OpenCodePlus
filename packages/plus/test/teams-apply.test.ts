@@ -376,6 +376,94 @@ test("a customized team member role survives publication while an uncustomized s
   expect(await hostSystem(ctx, "beta")).toBe("edited beta role")
 })
 
+test("a member role record with a requires marker keeps the fingerprint across refreshes", async () => {
+  const { project } = await tempRoot()
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  await writeTeamAgent(teamDir, "alpha", "crew alpha body")
+  const ctx = fullContext({ directory: project })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("alpha"))
+  if (!role) throw new Error("expected system:role for alpha")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "system:role",
+      section: null,
+      text: "edited alpha role\n\n## Tests\n<!-- requires: tool:read -->\n\nrun them",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  const initialFingerprint = state.fingerprint
+  const initialSystem = await hostSystem(ctx, "alpha")
+  expect(initialSystem).not.toBe("crew alpha body")
+  expect(initialSystem).toContain("edited alpha role")
+
+  for (let i = 0; i < 4; i++) {
+    await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+    expect(state.fingerprint).toBe(initialFingerprint)
+    const currentSystem = await hostSystem(ctx, "alpha")
+    expect(currentSystem).toBe(initialSystem)
+    expect(currentSystem).not.toBe("crew alpha body")
+  }
+})
+
+test("a member role record with a requires marker on an empty-body member keeps fingerprint and is never empty", async () => {
+  const { project } = await tempRoot()
+  const teamDir = path.join(projectTeamsPath(project), "crew")
+  await writeTeamAgent(teamDir, "alpha", "")
+  const ctx = fullContext({ directory: project })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const role = snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("alpha"))
+  if (!role) throw new Error("expected system:role for alpha")
+  const records: Plus.SnapshotCustomizationRecord[] = [
+    {
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "system:role",
+      section: null,
+      text: "edited alpha role\n\n## Tests\n<!-- requires: tool:read -->\n\nrun them",
+      basedOn: role.fingerprint,
+      updated: UPDATED,
+    },
+  ]
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  const initialFingerprint = state.fingerprint
+  const initialSystem = await hostSystem(ctx, "alpha")
+  expect(initialSystem).not.toBe("")
+  expect(initialSystem).toContain("edited alpha role")
+
+  for (let i = 0; i < 4; i++) {
+    await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
+    expect(state.fingerprint).toBe(initialFingerprint)
+    const currentSystem = await hostSystem(ctx, "alpha")
+    expect(currentSystem).toBe(initialSystem)
+    expect(currentSystem).not.toBe("")
+  }
+})
+
 test("a state-only section exclusion on a Defaults team member does not reinstall on unchanged refresh", async () => {
   const { project } = await tempRoot()
   const shipped = "# Alpha\n\nfirst part\n\n# Beta\n\nsecond part\n"
