@@ -256,6 +256,7 @@ test("enabling a team from the server side activates it and selects its first in
     ui: {
       toast: { show: () => {} },
       slot: () => () => {},
+      router: { current: () => ({ type: "home" }) },
       agents: {
         groups: () => () => {},
         activeGroup: { current: () => activeGroupSignal(), set: (id: string | undefined) => setActiveGroupSignal(id) },
