@@ -48,7 +48,7 @@ import {
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
 import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
-import { globalLogPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
+import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -73,6 +73,7 @@ import { mainCheckout, readProjectChecks, suggestChecks, writeProjectChecks } fr
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
+import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
 import { registerMonitorTools } from "./monitor/tools.js"
@@ -163,6 +164,7 @@ export default Plugin.define({
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
       yield* watchHostEvents(ctx, state)
+      yield* watchSharedStore(ctx, state)
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -3465,6 +3467,8 @@ async function removeAgentRecords(
   // id starts from the preset it is created from, not this one's.
   return removeRecordsAt(directory, loaded, level, (record) => {
     if (record.type === "customization" || record.type === "split") return record.agent === agent && record.level === level
+    if (record.type === "model" || record.type === "rule")
+      return record.agent === agent && record.level === level && record.team === undefined
     return record.type === "link" && record.agent === agent && record.level === level && record.team === undefined
   })
 }
@@ -5010,6 +5014,10 @@ function disposeApplied(state: PlusState): Effect.Effect<void> {
 }
 
 function emitChanged(state: PlusState, revision: number, globalRevision: number): Effect.Effect<void> {
+  // Wake the other Locations in this process (and, through the file watcher,
+  // other processes) before the optional host event: sharing the store is the
+  // point, not the local registration.
+  notifySharedStoreChanged()
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
@@ -5022,6 +5030,9 @@ function emitWarmingChanged(state: PlusState, sessionID: string): Effect.Effect<
 }
 
 function emitTeamsChanged(state: PlusState): Effect.Effect<void> {
+  // A team create/enable/member change can touch no record (an empty team is a
+  // directory), so notify here too: the other Locations must re-discover.
+  notifySharedStoreChanged()
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("teams.changed", {}).pipe(Effect.orDie)
@@ -5166,8 +5177,8 @@ function plusTeamOutputIds(
   discovered: Discovered,
   applied: ReadonlyMap<string, TeamApplied>,
   owned: ReadonlyMap<string, TeamOwnership>,
-): Set<string> {
-  const output = new Set<string>()
+): Map<string, TeamLevel> {
+  const output = new Map<string, TeamLevel>()
   // Recorded ownership is authoritative, keyed by team identity: an id Plus
   // installed last publish that is still enabled by the same team at the same
   // level stays team output regardless of the body the host currently shows
@@ -5190,10 +5201,10 @@ function plusTeamOutputIds(
       if (host === undefined) continue
       if (entry.team !== ownership.team || entry.level !== ownership.level) {
         if (!matchesTeamApplied(host, entry.body, entry.fields)) continue
-        output.add(id)
+        output.set(id, entry.level)
         continue
       }
-      output.add(id)
+      output.set(id, ownership.level)
     }
     return output
   }
@@ -5209,16 +5220,31 @@ function plusTeamOutputIds(
     const host = discovered.hosts.find((agent) => String(agent.id) === id)
     if (host === undefined) continue
     if (!matchesTeamApplied(host, entry.body, entry.fields)) continue
-    output.add(id)
+    output.set(id, entry.level)
   }
   return output
 }
 
-function filteredPublishAgents(agents: readonly AgentSource[], outputIds: ReadonlySet<string>): AgentSource[] {
+function filteredPublishAgents(agents: readonly AgentSource[], outputIds: ReadonlyMap<string, TeamLevel>): AgentSource[] {
   return agents.filter((agent) => !(outputIds.has(agent.id) && agent.scope === "defaults" && agent.path === undefined))
 }
 
-function filteredPublishItems(items: readonly Item[], outputIds: ReadonlySet<string>): Item[] {
+// Snapshot agents keep Defaults-tier team members (their home is Defaults) but
+// drop the host echo of a Global/Project team member: it is unbacked and would
+// otherwise list under Defaults › Agents as well as under its own team (T5).
+function filteredSnapshotAgents(agents: readonly AgentSource[], outputIds: ReadonlyMap<string, TeamLevel>): AgentSource[] {
+  return agents.filter(
+    (agent) =>
+      !(
+        outputIds.has(agent.id) &&
+        outputIds.get(agent.id) !== "defaults" &&
+        agent.scope === "defaults" &&
+        agent.path === undefined
+      ),
+  )
+}
+
+function filteredPublishItems(items: readonly Item[], outputIds: ReadonlyMap<string, TeamLevel>): Item[] {
   return items.flatMap((item): Item[] => {
     if (item.id === "system:role") {
       const owner = item.agents?.[0]
@@ -5241,7 +5267,7 @@ async function stablePublishView(
   directory: string,
   builtins: readonly BuiltinTeam[],
   owned: ReadonlyMap<string, TeamOwnership>,
-): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Set<string>; overrides: Map<string, string> }> {
+): Promise<{ agents: AgentSource[]; items: Item[]; scopes: Scopes; teamAgents: readonly AgentSource[]; teamBodies: { id: string; scope: AgentSource["scope"]; body: string | undefined }[]; outputIds: Map<string, TeamLevel>; overrides: Map<string, string> }> {
   const teamRecords = records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
   const customizations = customizationsOf(records)
@@ -5469,6 +5495,61 @@ export function watchToolRegistry(ctx: Context, state: PlusState): Effect.Effect
   })
 }
 
+// T2: every Location runs its own Plus instance in one server process, but the
+// host Bus is Location-filtered, so a change through one instance never reaches
+// the others' watchHostEvents. Two seams cover the two topologies:
+//
+// - the in-process bus (shared-store-bus.ts) for every Location in the one
+//   elected server;
+// - an fs watcher on the shared records directory for a standalone server of
+//   its own (the `--standalone` dev topology), where module state is not
+//   shared.
+//
+// Both offer to one sliding queue; the debounce coalesces the burst a single
+// store write produces, and refreshFromHost re-reads and republishes. The
+// publish is what makes the host emit agent.updated per Location, so its TUI
+// re-lists agents and teams.
+export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const changes = yield* Queue.sliding<void>(1)
+    const unsubscribe = onSharedStoreChanged(() => Queue.offerUnsafe(changes, undefined))
+    yield* Effect.addFinalizer(() => Effect.sync(unsubscribe))
+    yield* watchSharedStoreFile(changes)
+    yield* Stream.fromQueue(changes).pipe(
+      Stream.debounce("50 millis"),
+      Stream.runForEach(() =>
+        refreshFromHost(ctx, state).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("plus shared store refresh failed", { cause })),
+        ),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+  })
+}
+
+// The cross-process half: any write to the shared records file (Bun.write
+// rewrites it in place, so the directory watch sees it) means another Plus
+// instance published. A missing directory (no store written yet) just means no
+// watcher until the first publish creates it; the in-process bus still works.
+function watchSharedStoreFile(changes: Queue.Queue<void>): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const target = globalRecordsPath()
+      try {
+        const watcher = fsSync.watch(path.dirname(target), { persistent: false }, (_event, filename) => {
+          if (filename !== null && String(filename) !== path.basename(target)) return
+          Queue.offerUnsafe(changes, undefined)
+        })
+        watcher.on("error", () => undefined)
+        return watcher
+      } catch {
+        return undefined
+      }
+    }),
+    (watcher) => Effect.sync(() => watcher?.close()),
+  )
+}
+
 // A session created with, or switched to, an agent adopts that agent's active
 // model via switchModel, and only when the session's current model differs.
 // Manual mid-session picks emit session.model.selected, which we never
@@ -5575,13 +5656,18 @@ function toSnapshot(
   discovered: Discovered,
   loaded: LoadedStores,
   teams: readonly Plus.TeamEntry[],
-  outputIds: ReadonlySet<string> | undefined,
+  outputIds: ReadonlyMap<string, TeamLevel> | undefined,
   listing: readonly PresetEntry[],
 ): Plus.Snapshot {
+  // Team output is not a regular agent: the host echoes an installed member as
+  // an unbacked defaults agent, so without this filter it would also list under
+  // Defaults › Agents beside its own team. Defaults-tier members keep their
+  // row; Global/Project members must not leak into Defaults (T5).
+  const agents = outputIds === undefined ? discovered.agents : filteredSnapshotAgents(discovered.agents, outputIds)
   return {
     revision: loaded.projectRevision,
     globalRevision: loaded.globalRevision,
-    agents: discovered.agents.map((agent) => {
+    agents: agents.map((agent) => {
       // Server-side origin crosses the RPC boundary. Plus team output (an id
       // in plusTeamOutputIds, or an AgentSource carrying team) upgrades to
       // origin plus; otherwise the discovery classification rides through.
@@ -5831,7 +5917,7 @@ async function snapshotOutputIds(
   loaded: LoadedStores,
   builtins: readonly BuiltinTeam[],
   owned: ReadonlyMap<string, TeamOwnership>,
-): Promise<Set<string>> {
+): Promise<Map<string, TeamLevel>> {
   const teamRecords = loaded.records.filter(isTeamRecord)
   const applied = await enabledTeamApplied(directory, teamRecords, builtins)
   return plusTeamOutputIds(discovered, applied, owned)
