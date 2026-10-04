@@ -88,8 +88,9 @@ test.each(["agent", "command"] as const)("%s.updated refreshes only a location t
 
     await setup.data.location[kind].sync()
     expect(requests.filter((path) => path === catalog)).toHaveLength(1)
+    expect(setup.data.location[kind].list()).toBeDefined()
     listeners.forEach((listener) => listener({ name: event.type, details: event }))
-    await setup.data.location[kind].sync()
+    for (let i = 0; i < 200 && requests.filter((path) => path === catalog).length < 2; i++) await Bun.sleep(5)
     expect(requests.filter((path) => path === catalog)).toHaveLength(2)
   } finally {
     setup.dispose()
