@@ -1499,11 +1499,23 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   const targetChanged = !sameModelCandidate(from, to)
   const upstream = modelUpstreamOf(found.memo, address)
   const context = { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) }
+  // A replaced candidate carries its record's keep-alive fields to the new one,
+  // and the old candidate is hidden at this level with a tombstone. So editing
+  // Model/Effort changes THAT row (one row becomes the new candidate), never
+  // leaving the old candidate listed beside the new one — whether the old row
+  // was a local record, inherited, or the agent's upstream model.
+  const carried: ModelWarmingFields = local === undefined
+    ? {}
+    : {
+        ...(local.warming === undefined ? {} : { warming: local.warming }),
+        ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
+      }
   const swapped = targetChanged
-    ? addModelRecord(removeModelRecord(models, addr, from), addr, to, now())
+    ? addModelRecord(tombstoneModelRecord(models, addr, from, now()), addr, to, now())
     : addModelRecord(models, addr, to, now())
   // Re-activate only when the active flag has to be carried over: a replaced
-  // record loses it, and an inherited/upstream edit plants it. A same-target
+  // record keeps it, and an inherited/upstream edit plants it. A same-target
   // local active record is left exactly as it is.
   const withActive = staysActive && (targetChanged || local === undefined || local.active !== true)
     ? activateModel(swapped, addr, to, context)
@@ -1520,7 +1532,8 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
     ...(fields.interval === undefined ? {} : { interval: interval === undefined ? null : formatDuration(interval.interval) }),
     ...(fields.prompt === undefined ? {} : { prompt: prompt === undefined ? null : prompt.prompt }),
   }
-  const next = fieldsSet ? setModelSettings(withActive, addr, to, settings, now()) : withActive
+  const merged: ModelWarmingFields = { ...(targetChanged ? carried : {}), ...settings }
+  const next = fieldsSet || Object.keys(merged).length > 0 ? setModelSettings(withActive, addr, to, merged, now()) : withActive
   if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
   const onlySettings = fieldsSet && JSON.stringify(withActive) === JSON.stringify(models)
   const status = onlySettings
