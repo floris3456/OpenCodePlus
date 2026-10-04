@@ -15,6 +15,7 @@ import {
   type Usage,
 } from "@opencode/ai"
 import type { StreamOptions } from "@opencode/ai/route"
+import { AnthropicMessages } from "@opencode/ai/protocols/anthropic-messages"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -253,7 +254,18 @@ export const layer = Layer.effect(
             message: "Remote compaction cannot recover an overflowing context; select auto or local compaction",
           },
         })
-      const native = strategy === "remote" || (strategy === "auto" && context.model.compaction?.type === "native")
+      const belowMinimum =
+        context.model.model.route.protocol === AnthropicMessages.protocol.id &&
+        estimateContext(context) < AnthropicMessages.MIN_COMPACTION_TOKENS
+      if (strategy === "remote" && belowMinimum)
+        return yield* publish(trigger, {
+          error: {
+            type: "compaction.unavailable",
+            message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
+          },
+        })
+      const native =
+        strategy === "remote" || (strategy === "auto" && !belowMinimum && context.model.compaction?.type === "native")
       const completed = (owner: Trigger, result: Result) =>
         publish(owner, {
           ...result,

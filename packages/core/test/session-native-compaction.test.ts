@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { LLMClient, LanguageModel, Message, ToolDefinition } from "@opencode/ai"
-import { OpenAI } from "@opencode/ai/providers"
+import { Anthropic, AnthropicCompatible, OpenAI } from "@opencode/ai/providers"
 import { Agent } from "@opencode/core/agent"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
@@ -54,7 +54,12 @@ const it = testEffect(
   ),
 )
 
-const setup = Effect.fnUntraced(function* (options: { endpoint?: boolean; config?: Agent.Compaction; policy?: boolean } = {}) {
+const setup = Effect.fnUntraced(function* (options: {
+  endpoint?: boolean
+  config?: Agent.Compaction
+  policy?: boolean
+  anthropic?: "direct" | "compatible"
+} = {}) {
   const endpoint = options.endpoint ?? false
   const db = (yield* Database.Service).db
   const bus = yield* Bus.Service
@@ -93,6 +98,20 @@ const state = { failure: false, flaky: false, hang: false, overflow: false, call
               { error: { message: "fixture rate limit", type: "rate_limit_error" } },
               { status: 429, headers: retry ? {} : { "x-should-retry": "false" } },
             )
+          }
+          if (options.anthropic) {
+            const native = bodies.at(-1)?.context_management !== undefined
+            const events = [
+              { type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } },
+              { type: "content_block_start", index: 0, content_block: native ? { type: "compaction", content: null } : { type: "text", text: "" } },
+              { type: "content_block_delta", index: 0, delta: native ? { type: "compaction_delta", content: "Native summary" } : { type: "text_delta", text: "## Objective\n- Local summary" } },
+              { type: "content_block_stop", index: 0 },
+              { type: "message_delta", delta: { stop_reason: native ? "compaction" : "end_turn" }, usage: native ? { input_tokens: 0, output_tokens: 0, iterations: [{ type: "compaction", input_tokens: 55000, output_tokens: 400 }] } : { input_tokens: 200, output_tokens: 40 } },
+              { type: "message_stop" },
+            ]
+            return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
+              headers: { "content-type": "text/event-stream" },
+            })
           }
           const trigger = JSON.stringify(bodies.at(-1)).includes("compaction_trigger")
           if (state.overflow && trigger)
@@ -163,7 +182,12 @@ const state = { failure: false, flaky: false, hang: false, overflow: false, call
   )
   const native = OpenAI.configure({ apiKey: "fixture", baseURL: server.url.toString() }).responses("gpt-5.4-mini")
   const model = SessionRunnerModel.resolved(
-    endpoint
+    options.anthropic
+      ? (options.anthropic === "direct"
+          ? Anthropic.configure({ apiKey: "fixture", baseURL: server.url.toString() })
+          : AnthropicCompatible.configure({ baseURL: server.url.toString(), provider: "relay" })
+        ).model("claude-opus-4-6")
+      : endpoint
       ? LanguageModel.update(native, {
           route: native.route.with({ compact: { endpoint: native.route.compact.endpoint } }),
         })
@@ -272,6 +296,50 @@ agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), co
     compaction,
   }
 })
+
+for (const anthropic of ["direct", "compatible"] as const) {
+  it.live(`Anthropic ${anthropic}: Auto persists a native checkpoint and compaction iteration usage`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ anthropic })
+      yield* fixture.prompt("Conversation ".repeat(20_000))
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      const last = (yield* fixture.load).messages.at(-1)
+      expect(last).toMatchObject({ status: "completed", summary: "", tokens: { input: 55000, output: 400 } })
+      if (last?.type !== "compaction" || last.status !== "completed" || !last.providerContext)
+        return yield* Effect.die("Missing persisted Anthropic checkpoint")
+      expect(last.providerContext.messages).toContainEqual({
+        role: "assistant",
+        content: [{ type: "compaction", provider: fixture.model.model.provider, text: "Native summary" }],
+      })
+      expect(fixture.bodies).toHaveLength(1)
+      expect(fixture.headers[0].get("anthropic-beta")).toContain("compact-2026-01-12")
+      expect(fixture.bodies[0]).toMatchObject({ context_management: { edits: [{ trigger: { value: 50000 }, pause_after_compaction: true }] } })
+    }),
+  )
+
+  it.live(`Anthropic ${anthropic}: Auto below 50 000 tokens uses a local summary`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ anthropic })
+      yield* fixture.prompt("Short conversation")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      expect(fixture.bodies).toHaveLength(1)
+      expect(fixture.bodies[0].context_management).toBeUndefined()
+      const last = (yield* fixture.load).messages.at(-1)
+      expect(last).toMatchObject({ status: "completed", summary: "## Objective\n- Local summary" })
+      expect(last).not.toHaveProperty("providerContext", expect.anything())
+    }),
+  )
+
+  it.live(`Anthropic ${anthropic}: Remote below 50 000 tokens fails without sending HTTP`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ anthropic, config: { strategy: "remote" } })
+      yield* fixture.prompt("Short conversation")
+      expect(yield* fixture.compact).toMatchObject({ status: "failed", error: { type: "compaction.unavailable", message: expect.stringContaining("at least 50 000 input tokens") } })
+      expect(fixture.bodies).toHaveLength(0)
+      expect((yield* fixture.load).messages.at(-1)).toMatchObject({ status: "failed" })
+    }),
+  )
+}
 
 for (const endpoint of [false, true]) {
   it.live(

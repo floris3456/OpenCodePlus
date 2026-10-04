@@ -9,6 +9,7 @@ import {
   Message,
   SystemPart,
   LanguageModel,
+  type ProviderOptions,
   ToolFailure,
   TransportError,
   InvalidProviderOutputError,
@@ -2630,7 +2631,7 @@ describe("SessionRunnerLLM", () => {
         const hooks = yield* PluginHooks.Service
         const agentID = Agent.ID.make("reviewer")
         const variant = Model.VariantID.make("test-variant")
-        s.currentModel = LanguageModel.make({
+        s.currentModel = LanguageModel.make<ProviderOptions>({
           id: route === AnthropicMessages.route ? "claude-sonnet-4-6" : "gpt-5",
           provider: route === AnthropicMessages.route ? "anthropic" : "openai",
           route,

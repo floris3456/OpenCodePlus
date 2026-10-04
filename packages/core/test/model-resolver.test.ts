@@ -81,6 +81,19 @@ function withConfigEnv<A, E, R>(env: Record<string, string>, effect: () => Effec
 }
 
 describe("ModelResolver", () => {
+  for (const packageName of ["@opencode/ai/providers/anthropic", "@opencode/ai/providers/anthropic-compatible"]) {
+    it.effect(`accepts native compaction for ${packageName}`, () =>
+      Effect.gen(function* () {
+        const resolved = yield* ModelResolver.fromCatalogModel(model(packageName, {
+          modelID: "claude-opus-4-6",
+          settings: { apiKey: "fixture", baseURL: "https://relay.example/v1", compaction: { type: "native" } },
+        }))
+        expect(resolved.route.protocol).toBe("anthropic-messages")
+        expect(resolved.route.compact?.trigger).toBeDefined()
+      }),
+    )
+  }
+
   it.effect("constructs native Azure requests with deployment IDs and projected resource URLs", () =>
     Effect.gen(function* () {
       const responses = yield* ModelResolver.fromCatalogModel(
