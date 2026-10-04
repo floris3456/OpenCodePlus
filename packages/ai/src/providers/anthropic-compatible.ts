@@ -32,7 +32,9 @@ export const routes = [AnthropicMessages.route]
 
 const auth = (input: ProviderAuthOption<"optional">) => {
   if ("auth" in input && input.auth) return input.auth
-  return Auth.optional("apiKey" in input ? input.apiKey : undefined, "apiKey").pipe(Auth.header("x-api-key"))
+  const apiKey = "apiKey" in input ? input.apiKey : undefined
+  if (apiKey !== undefined) return Auth.optional(apiKey, "apiKey").pipe(Auth.header("x-api-key"))
+  return Auth.none
 }
 
 export const configure = (input: Config) => {
