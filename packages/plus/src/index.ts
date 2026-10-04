@@ -46,7 +46,7 @@ import {
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
-import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
+import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
@@ -1696,35 +1696,43 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { level: input.level, agent: input.agent, providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }) },
           },
         }
-      const next: ModelRecord = {
-        type: "model",
+      const target = { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }) }
+      const address = {
         level: input.level,
         agent: input.agent,
         ...(input.team !== undefined ? { team: input.team } : {}),
-        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
-        providerID: validated.providerID,
-        modelID: validated.modelID,
-        ...(validated.variant === undefined ? {} : { variant: validated.variant }),
-        updated: new Date().toISOString(),
+        ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
       }
-      // Re-adding at this level clears a tombstone for the same candidate.
-      const withoutTombstones = loaded.records.filter(
-        (record) =>
-          !(
-            record.type === "model" &&
-            record.removed === true &&
-            record.level === input.level &&
-            record.agent === input.agent &&
-            sameTeam(record.team, input.team) &&
-            catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
-            record.providerID === validated.providerID &&
-            record.modelID === validated.modelID &&
-            record.variant === validated.variant
-          ),
-      )
-      const saved = await saveModelRecords(directory, loaded, [...withoutTombstones, next])
+      // Adding a model always makes it the active one at this level for this
+      // owner: the new row is planted (clearing a tombstone for the same
+      // candidate) and activated exclusively, so the previously active row at
+      // the same (level, agent[, team]) stops being active. One save, one
+      // revision, one log line.
+      const models = modelsOf(loaded.records)
+      const activated = activateModel(addModelRecord(models, address, target, new Date().toISOString()), address, target)
+      const records = [...loaded.records.filter((record) => record.type !== "model"), ...activated]
+      const saved = await saveModelRecords(directory, loaded, records)
       if (!saved.ok) {
         const reason = `Model ${validated.providerID}/${validated.modelID} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      const next = records.find(
+        (record): record is ModelRecord =>
+          record.type === "model" &&
+          record.removed !== true &&
+          record.level === input.level &&
+          record.agent === input.agent &&
+          sameTeam(record.team, input.team) &&
+          catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
+          record.providerID === validated.providerID &&
+          record.modelID === validated.modelID &&
+          record.variant === validated.variant,
+      )
+      if (next === undefined) {
+        const reason = `Model ${validated.providerID}/${validated.modelID} was not saved`
         return {
           ok: false as const,
           error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
