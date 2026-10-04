@@ -83,6 +83,8 @@ export interface RunRecord {
   projectDirectory?: string
   supersededReason?: string
   stopRequested?: boolean
+  stopRequestedBy?: string
+  stoppedBy?: string
   worktree?: WorktreeState
   promotedFrom?: string
   history: HistoryEntry[]

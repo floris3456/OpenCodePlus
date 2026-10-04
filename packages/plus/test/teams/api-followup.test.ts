@@ -421,6 +421,36 @@ test("a stopped child resumes once, consumes stop intent, and replays after sett
   })
 })
 
+test("followup on a child the caller stopped fails E_STOPPED", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", {
+      state: "stopped",
+      stoppedBy: "main-0123456789abcdef",
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+    const result = await api.followup(followupInput({ run: child.id }), callerFor(parent))
+    const error = rejected(result)
+    expect(error.code).toBe("E_STOPPED")
+    expect(error.message).toBe(`You stopped run ${child.id}; delegate a fresh run and point its Brief at the old report`)
+  })
+})
+
+test("followup on a child stopped by reconcile still admits", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", {
+      state: "stopped",
+      // stoppedBy is undefined for reconcile / system stops
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+    const result = await api.followup(followupInput({ run: child.id }), callerFor(parent))
+    expect(required(result)).toMatchObject({ attempt: 2, state: "admitted" })
+  })
+})
+
 test("unavailable targets refuse before inbox, budget or request receipt changes", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     for (const overrides of [{ worktree: "removed" as const }, { sessionID: null }, { state: "dead" as const }]) {

@@ -118,6 +118,8 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
   if (child.parent !== null && (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.state === "landed"))
     return fail("E_ALREADY_LANDED", `Run ${child.id} is already landed; delegate fresh from current parent.`, "delegate fresh from current parent")
   await requireSession(ctx, child)
+  if (child.state === "stopped" && child.stoppedBy === parent.id)
+    return fail("E_STOPPED", `You stopped run ${child.id}; delegate a fresh run and point its Brief at the old report`)
   if (!["idle", "working", "starting", "blocked_input", "stopped"].includes(child.state) || (child.stopRequested && child.state !== "stopped"))
     return fail("E_UNRESUMABLE", `Run ${child.id} is ${child.state} or stopping; delegate fresh from current parent.`, "delegate fresh from current parent")
   if (!occupiesSlot(child)) {

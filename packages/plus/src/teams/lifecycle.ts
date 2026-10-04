@@ -158,9 +158,10 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
 // Resuming the session must not stop the next turn too. A run that has not
 // stopped yet (idle, starting) keeps its intent.
 export function consumeStopIntent(run: RunRecord): RunRecord {
-  if (run.stopRequested !== true) return run
+  if (run.stopRequested !== true && run.stopRequestedBy === undefined) return run
   const next: RunRecord = { ...run }
   delete next.stopRequested
+  delete next.stopRequestedBy
   return next
 }
 
@@ -238,7 +239,8 @@ export async function onSessionIdle(
     if (announce && attempt !== undefined) settled.attempt = attempt
     if (!next.stopRequested) return next
     settled.stopped = true
-    return transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
+    const stopped = transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
+    return next.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: next.stopRequestedBy } : stopped
   })
   if (marked === undefined) return (await loadRun(root, run.id)) ?? run
   if (settled.attempt !== undefined) await notifyParent(ctx, root, marked, settled.attempt)
@@ -303,12 +305,14 @@ export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: 
   const open = run.attempts.at(-1)
   const waiting = open !== undefined && !isAttemptTerminal(open.state)
   const ended = interruptOpenAttempt(run)
-  const stopped = transition(transition(ended, "stopping", "shutdown"), "stopped", "exited")
+  const stoppedTransition = transition(transition(ended, "stopping", "shutdown"), "stopped", "exited")
+  const stopped = by !== undefined ? { ...stoppedTransition, stoppedBy: by } : stoppedTransition
   const attempt = stopped.attempts.at(-1)
-  await saveRun(root, waiting ? markNotified(stopped) : stopped)
+  const toSave = waiting ? markNotified(stopped) : stopped
+  await saveRun(root, toSave)
   if (waiting && attempt !== undefined && stopped.parent !== null && stopped.parent !== by)
     await notifyParent(ctx, root, stopped, attempt)
-  return stopped
+  return toSave
 }
 
 function markNotified(run: RunRecord): RunRecord {

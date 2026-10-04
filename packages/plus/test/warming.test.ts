@@ -7,6 +7,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
+import { AbsolutePath } from "@opencode/schema/schema"
 import {
   formatWarming,
   parseWarming,
@@ -16,10 +17,14 @@ import {
 } from "../src/instructions/model.js"
 import { setModelWarmingRow } from "../src/instructions/ops.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import { warmingRowsOf } from "../src/index.js"
+import { warmingRowsOf, decideWarmingFor, type PlusState } from "../src/index.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { createWarmingStore, decideWarming, WARMING_DEFAULTS } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
+import { Effect } from "effect"
+import { context } from "./harness.js"
+import { saveRun, type RunRecord } from "../src/teams/run.js"
+import { teamsDataDir } from "../src/instructions/paths.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const MINUTE = 60_000
@@ -564,4 +569,67 @@ test("warming recognises every compaction: external compaction, restart, primary
 
   freshStore.dispose()
   store.dispose()
+})
+
+test("the warming hook clears settings for a session whose run record is stopped, using a temp teams root", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-warming-teams-"))
+  temps.push(dir)
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = dir
+  try {
+    const teamsDir = teamsDataDir()
+    const stoppedRun: RunRecord = {
+      id: "w-stopped00000001",
+      role: "implementer",
+      kind: "w",
+      repo: "opencode",
+      repoKey: "opencode",
+      directory: dir,
+      paths: [],
+      branch: "team/implementer/test",
+      base: "0123456789abcdef0123456789abcdef01234567",
+      head: "0123456789abcdef0123456789abcdef01234567",
+      state: "stopped",
+      attempts: [],
+      task: null,
+      parent: null,
+      children: [],
+      briefSha: "abc",
+      bundle: "team-test",
+      budget: {},
+      createdAt: UPDATED,
+      lastUsed: UPDATED,
+      sessionID: "ses_stopped_run",
+      configDigest: null,
+      history: [],
+    }
+    await saveRun(teamsDir, stoppedRun)
+
+    const dummyState = {
+      warmingCheckedAt: Date.now(),
+      cachedAgents: [],
+      cachedModels: [],
+      cachedModelSettings: [],
+      cachedScopes: scopes,
+    } as unknown as PlusState
+    const dummyCtx = context()
+
+    const stoppedEvent = event({
+      sessionID: Session.ID.make("ses_stopped_run"),
+      settings: { ...configured },
+    })
+    await Effect.runPromise(decideWarmingFor(dummyCtx, dummyState, stoppedEvent))
+    expect(stoppedEvent.settings).toBeUndefined()
+
+    // Control: a session without a stopped run keeps its settings
+    const activeEvent = event({
+      sessionID: Session.ID.make("ses_other_run"),
+      settings: { ...configured },
+    })
+    await Effect.runPromise(decideWarmingFor(dummyCtx, dummyState, activeEvent))
+    expect(activeEvent.settings).toEqual(configured)
+  } finally {
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+  }
 })

@@ -145,6 +145,21 @@ test("teams/schema exports every tool input schema as the single source", () => 
   }
 })
 
+test("StopInput parses run and optional force", () => {
+  expect(Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef" })).toEqual({
+    run: "w-0123456789abcdef",
+  })
+  expect(Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", force: true })).toEqual({
+    run: "w-0123456789abcdef",
+    force: true,
+  })
+  expect(Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", force: false })).toEqual({
+    run: "w-0123456789abcdef",
+    force: false,
+  })
+  expect(() => Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", force: "true" })).toThrow()
+})
+
 const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }
 
 describe("validateChecks", () => {

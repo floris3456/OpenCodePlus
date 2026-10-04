@@ -858,6 +858,9 @@ export type SupersedeInput = typeof SupersedeInput.Type
 
 export const StopInput = Schema.Struct({
   run: RunID.annotate({ description: "The child run to stop." }),
+  force: Schema.optional(Schema.Boolean).annotate({
+    description: "End a working child now instead of after its turn.",
+  }),
 })
 export type StopInput = typeof StopInput.Type
 

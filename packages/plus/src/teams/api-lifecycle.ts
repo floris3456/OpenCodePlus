@@ -132,8 +132,11 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
     await saveRun(root, stopped)
     return succeeded({ run: child.id, state: "stopped" })
   }
-  const updated: RunRecord = { ...child, stopRequested: true }
+  const updated: RunRecord = { ...child, stopRequested: true, stopRequestedBy: parent.id }
   await saveRun(root, updated)
+  if (args.force === true) {
+    await interruptSession(ctx, child.sessionID)
+  }
   return succeeded({ run: child.id, state: "stopping" })
 }
 
