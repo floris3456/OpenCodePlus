@@ -40,6 +40,13 @@ export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 export const PATH = "/messages"
 export const DEFAULT_MAX_TOKENS = 32_000
 export const MIN_COMPACTION_TOKENS = 50_000
+// Replaying a `compaction` block requires its strategy in `context_management`,
+// but an edit that actually fires summarizes in-band during an ordinary step and
+// rewrites the latest assistant message, thinking blocks included, which the API
+// refuses. Core schedules native compaction itself through `route.compact.trigger`
+// before the window fills, so the replay copy sits at the largest supported context
+// window and can never fire in-band.
+export const REPLAY_COMPACTION_TRIGGER = 1_000_000
 const MIN_THINKING_BUDGET = 1_024
 const DEFAULT_EFFORT = "high"
 
@@ -1096,10 +1103,21 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
   if (!management) {
     // A replayed compaction block is only accepted alongside the strategy that
     // produced it; a normal request after a native checkpoint carries no
-    // context-management option of its own, so add the strategy bare.
+    // context-management option of its own, so add the strategy with a trigger
+    // that cannot fire in-band before Core's own compaction.
     const replays = messages.some((message) => message.content.some((block) => block.type === "compaction"))
     if (!replays) return body
-    return { ...body, context_management: { edits: [{ type: "compact_20260112" as const }] } }
+    return {
+      ...body,
+      context_management: {
+        edits: [
+          {
+            type: "compact_20260112" as const,
+            trigger: { type: "input_tokens" as const, value: REPLAY_COMPACTION_TRIGGER },
+          },
+        ],
+      },
+    }
   }
   return {
     ...body,

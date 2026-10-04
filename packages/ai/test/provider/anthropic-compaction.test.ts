@@ -83,7 +83,9 @@ for (const model of [
           }
           if (body.messages.length > 1) {
             expect(body.messages[1].content).toEqual([block])
-            expect(body.context_management).toBeUndefined()
+            expect(body.context_management).toEqual({
+              edits: [{ type: "compact_20260112", trigger: { type: "input_tokens", value: 1_000_000 } }],
+            })
           }
           return respond(
             sseEvents(
