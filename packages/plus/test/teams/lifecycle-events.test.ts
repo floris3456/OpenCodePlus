@@ -370,7 +370,7 @@ test("a child whose execution failed tells its parent the host's error and how t
     const text = (await peek(root, parent.id))[0]?.text ?? ""
     expect(text).toContain("attempt 1 failed")
     expect(text).toContain("Error: quota.no-capacity (429): No compatible replacement credential has verified capacity.")
-    expect(text).toContain("next: if the member's model is unavailable (quota, rate limit, provider down), team_supersede it and delegate the same Brief to another member")
+    expect(text).toContain("next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member")
     // A failure the host gives no reason for keeps the plain next step.
     const silent = workingChild("w-7777777777777777", parent.id, "ses_child_silent")
     await saveRun(root, silent)

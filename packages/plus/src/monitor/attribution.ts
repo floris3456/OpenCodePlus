@@ -73,8 +73,7 @@ export function targetOf(
   if (tool === "subagent") return text("agent")
   if (tool === "skill") return text("id") ?? text("name")
   if (tool === "team_delegate") return text("role")
-  if (tool === "team_followup" || tool === "team_stop" || tool === "team_integrate" || tool === "team_supersede")
-    return text("run")
+  if (tool === "team_followup" || tool === "team_stop" || tool === "team_integrate") return text("run")
   return undefined
 }
 

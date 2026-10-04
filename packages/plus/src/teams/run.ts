@@ -87,6 +87,8 @@ export interface RunRecord {
   stopRequested?: boolean
   stopRequestedBy?: string
   stoppedBy?: string
+  /** The reason team_stop was given; cleared when the run resumes. */
+  stopReason?: string
   retrying?: {
     until: string
     attempt: number

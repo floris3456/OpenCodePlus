@@ -919,7 +919,6 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
     },
     approval(),
   ],
-  team_supersede: [runs("team_supersede"), approval()],
   team_stop: [runs("team_stop"), approval()],
   team_status: [runs("team_status")],
   team_diff: [

@@ -90,14 +90,14 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
   if (status !== "done" && status !== "done_with_concerns")
     return fail(
       "E_NOT_DONE",
-      `Child ${child.id} last report is "${status}" (attempt ${attempt}). Only done/done_with_concerns can be integrated. Send a followup or supersede.`,
+      `Child ${child.id} last report is "${status}" (attempt ${attempt}). Only done/done_with_concerns can be integrated. Send a followup, or team_stop it and delegate afresh.`,
     )
   // Outcomes it lands (Permissions of team_integrate).
   const outcome = status === "done" ? "outcomes.done" : "outcomes.concerns"
   if (!allows(table, caller.agent, "integrate", outcome))
     return fail(
       "E_NOT_DONE",
-      `Child ${child.id} reported "${status}", which ${caller.agent} may not land (Permissions → Outcomes it lands). Send a followup or supersede.`,
+      `Child ${child.id} reported "${status}", which ${caller.agent} may not land (Permissions → Outcomes it lands). Send a followup, or team_stop it and delegate afresh.`,
     )
   const top = await gitRaw(parent.directory, ["rev-parse", "--show-toplevel"])
   if (top.code !== 0) return fail("E_INTERNAL", top.err || top.out || `Cannot resolve repository from ${parent.directory}.`)
@@ -173,7 +173,7 @@ function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
     ...(entry.conflictFiles === undefined ? {} : { conflictFiles: entry.conflictFiles }),
     ...(entry.redChecks === undefined ? {} : { redChecks: entry.redChecks }),
     ...(task === undefined ? {} : { reworkTask: task }),
-    next: `Not landed: ${why}. Delegate a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then supersede this child.`,
+    next: `Not landed: ${why}. Delegate a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then team_stop this child.`,
     cleanup,
   }
 }

@@ -94,8 +94,8 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
   if (rounds !== undefined && child.attempts.length > rounds)
     return fail(
       "E_ROUNDS",
-      `Run ${child.id} has had ${child.attempts.length - 1} corrections (limit ${rounds}, Permissions → Limits). Supersede it and delegate a fresh run.`,
-      "supersede and delegate a fresh run",
+      `Run ${child.id} has had ${child.attempts.length - 1} corrections (limit ${rounds}, Permissions → Limits). Stop it with team_stop and delegate a fresh run.`,
+      "team_stop and delegate a fresh run",
     )
   if (isTerminal(child.state))
     return fail(

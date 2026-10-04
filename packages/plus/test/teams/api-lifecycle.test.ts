@@ -8,12 +8,11 @@ import path from "node:path"
 import { context } from "../harness.js"
 import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
-import { loadRun, saveRun, isAttemptTerminal, type AttemptRecord, type RunRecord } from "../../src/teams/run.js"
-import { claim, create, load } from "../../src/teams/tasks.js"
+import { loadRun, saveRun, type AttemptRecord, type RunRecord } from "../../src/teams/run.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
 import { shippedTable } from "./preset-table.js"
-import { stopHandler, stopRun, supersedeHandler } from "../../src/teams/api-lifecycle.js"
-import { onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
+import { stopHandler, stopRun } from "../../src/teams/api-lifecycle.js"
+import { consumeStopIntent, onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
 import { atomicJson } from "../../src/teams/store.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 
@@ -326,268 +325,50 @@ test("stop on a non-child fails E_NOT_CHILD with the exact message", async () =>
   })
 })
 
-test("supersede on an idle clean child supersedes, stores the reason and preserves the worktree", async () => {
+test("stop with a reason keeps it on the stopped child and tells nobody when the stopper is its parent", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-1111111111111111", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-      })
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      await create(root, parent.id, [
-        {
-          id: "T1",
-          title: "Task T1",
-          dependsOn: [],
-          role: "muse-implementer",
-          effort: "small",
-          deliverable: { kind: "commit" },
-          paths: ["docs/*"],
-          checks: [{ id: "t", argv: ["bun", "test", "t.test.ts"] }],
-        },
-      ])
-      await claim(root, parent.id, "T1", child.id)
-      await saveRun(root, { ...child, task: "T1" })
-      const value = required(
-        await supersedeHandler(context({ session: recordSession().domain }), { run: child.id, reason: REASON }, callerFor(parent)),
-      ) as { run: string; state: string; hadUncommitted: boolean; head: string }
-      expect(value).toEqual({ run: child.id, state: "superseded", hadUncommitted: false, head: repo.head })
-      const stored = await loadRun(root, child.id)
-      expect(stored?.state).toBe("superseded")
-      expect(stored?.supersededReason).toBe(REASON)
-      expect((await load(root, parent.id)).tasks["T1"]?.state).toBe("cancelled")
-      expect((await fs.stat(repo.dir)).isDirectory()).toBe(true)
-      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(repo.head)
-      expect(await Bun.file(path.join(repo.dir, "README.md")).exists()).toBe(true)
-    } finally {
-      await removeRepo(repo.dir)
-    }
+    const { parent, child } = parentWithChild("main-0123456789abcdef", "w-1111111111111111")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const value = required(
+      await stopHandler(context({ session: recordSession().domain }), { run: child.id, reason: REASON }, callerFor(parent)),
+    )
+    expect(value).toEqual({ run: child.id, state: "stopped" })
+    const stored = await loadRun(root, child.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.stopReason).toBe(REASON)
+    expect(await peek(root, parent.id)).toEqual([])
   })
 })
 
-test("supersede on an idle dirty child reports hadUncommitted true and preserves the dirty file", async () => {
+test("stop with a reason on a working child keeps it through the stop after its turn", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-2222222222222222", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-      })
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      await fs.writeFile(path.join(repo.dir, "dirty.txt"), "uncommitted work\n")
-      const value = required(
-        await supersedeHandler(context({ session: recordSession().domain }), { run: child.id, reason: REASON }, callerFor(parent)),
-      ) as { run: string; state: string; hadUncommitted: boolean; head: string }
-      expect(value.state).toBe("superseded")
-      expect(value.hadUncommitted).toBe(true)
-      expect(value.head).toBe(repo.head)
-      expect(await Bun.file(path.join(repo.dir, "dirty.txt")).exists()).toBe(true)
-      expect((await loadRun(root, child.id))?.state).toBe("superseded")
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-})
-
-test("supersede on a working child with waitMs 0 still ends superseded via stopping/stopped", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const now = new Date().toISOString()
-      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-3333333333333333", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        state: "working",
-        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
-      })
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      const sessions = recordSession()
-      const value = required(
-        await supersedeHandler(context({ session: sessions.domain }), { run: child.id, reason: REASON, waitMs: 0 }, callerFor(parent)),
-      ) as { run: string; state: string; hadUncommitted: boolean; head: string }
-      expect(value).toEqual({ run: child.id, state: "superseded", hadUncommitted: false, head: repo.head })
-      const stored = await loadRun(root, child.id)
-      expect(stored?.state).toBe("superseded")
-      expect(stored?.history).toEqual([
-        { at: expect.any(String), from: "working", to: "stopping", trigger: "stop_force" },
-        { at: expect.any(String), from: "stopping", to: "stopped", trigger: "exited" },
-        { at: expect.any(String), from: "stopped", to: "superseded", trigger: "supersede" },
-      ])
-      expect(sessions.interrupted).toHaveLength(1)
-      const shutdown = await peek(root, child.id)
-      expect(shutdown.some((item) => item.kind === "shutdown")).toBe(true)
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-})
-
-test("supersede on an already superseded child is a no-op success", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const before = parentWithChild("main-0123456789abcdef", "w-4444444444444444", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        state: "superseded",
-        supersededReason: "Original reason that is long enough.",
-      }).child
-      const parent = baseRun({
-        id: "main-0123456789abcdef",
-        role: "opus-orchestrator",
-        kind: "main",
-        state: "working",
-        sessionID: "ses_parent_003",
-        children: [before.id],
-      })
-      await saveRun(root, parent)
-      await saveRun(root, before)
-      const snapshot = await loadRun(root, before.id)
-      const value = required(
-        await supersedeHandler(
-          context({ session: recordSession().domain }),
-          { run: before.id, reason: "A different reason that is also long enough." },
-          callerFor(parent),
-        ),
-      ) as { run: string; state: string; hadUncommitted: boolean; head: string }
-      expect(value).toEqual({ run: before.id, state: "superseded", hadUncommitted: false, head: repo.head })
-      const after = await loadRun(root, before.id)
-      expect(after).toEqual(snapshot)
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-})
-
-test("supersede on a non-child fails E_NOT_CHILD with the exact message", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const parent = baseRun({
-      id: "main-0123456789abcdef",
-      role: "opus-orchestrator",
-      kind: "main",
+    const now = new Date().toISOString()
+    const { parent, child } = parentWithChild("main-0123456789abcdef", "w-2222222222222222", {
       state: "working",
-      sessionID: "ses_parent_004",
-      children: [],
-    })
-    const stranger = baseRun({
-      id: "w-5555555555555555",
-      role: "muse-implementer",
-      state: "idle",
-      parent: "main-ffffffffffffffff",
-      sessionID: "ses_other_002",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
     })
     await saveRun(root, parent)
-    await saveRun(root, stranger)
-    const error = rejected(
-      await supersedeHandler(context({ session: recordSession().domain }), { run: stranger.id, reason: REASON }, callerFor(parent)),
-    )
-    expect(error.code).toBe("E_NOT_CHILD")
-    expect(error.message).toBe(
-      "Run w-5555555555555555 is not your direct child. Your children: []. Use status to read others.",
-    )
+    await saveRun(root, child)
+    const ctx = context({ session: recordSession().domain })
+    expect(required(await stopHandler(ctx, { run: child.id, reason: REASON }, callerFor(parent)))).toEqual({ run: child.id, state: "stopping" })
+    const requested = await loadRun(root, child.id)
+    expect(requested?.stopReason).toBe(REASON)
+    const finished = await onSessionIdle(ctx, root, requested!)
+    expect(finished.state).toBe("stopped")
+    expect((await loadRun(root, child.id))?.stopReason).toBe(REASON)
   })
 })
 
-test("supersede notifies the parent inbox with the reason", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-6666666666666666", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-      })
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      required(
-        await supersedeHandler(context({ session: recordSession().domain }), { run: child.id, reason: REASON }, callerFor(parent)),
-      )
-      const items = await peek(root, parent.id)
-      expect(items).toHaveLength(1)
-      expect(items[0]?.kind).toBe("notify")
-      expect(items[0]?.from).toBe(child.id)
-      expect(items[0]?.text).toContain(child.id)
-      expect(items[0]?.text).toContain(REASON)
-    } finally {
-      await removeRepo(repo.dir)
-    }
+test("a stopped run that resumes drops its stop intent and reason", () => {
+  const { child } = parentWithChild("main-0123456789abcdef", "w-3333333333333333", {
+    state: "stopped",
+    stopRequested: true,
+    stopRequestedBy: "main-0123456789abcdef",
+    stopReason: REASON,
   })
-})
-
-test("supersede on a starting child with streaming attempt interrupts and settles the attempt", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const now = new Date().toISOString()
-      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-7777777777777777", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        state: "starting",
-        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
-        sessionID: "ses_child_starting_001",
-      })
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      const sessions = recordSession()
-      const value = required(
-        await supersedeHandler(
-          context({ session: sessions.domain }),
-          { run: child.id, reason: REASON, waitMs: 0 },
-          callerFor(parent),
-        ),
-      ) as { run: string; state: string; hadUncommitted: boolean; head: string }
-      expect(value.state).toBe("superseded")
-      expect(sessions.interrupted).toHaveLength(1)
-      const stored = await loadRun(root, child.id)
-      expect(stored?.state).toBe("superseded")
-      const last = stored?.attempts[stored.attempts.length - 1]
-      expect(last !== undefined && isAttemptTerminal(last.state)).toBe(true)
-      expect(last?.state).toBe("interrupted")
-      const shutdown = await peek(root, child.id)
-      expect(shutdown.some((item) => item.kind === "shutdown")).toBe(true)
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
-})
-
-test("supersede on an idle child with terminal attempt does not interrupt", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const repo = await makeRepo()
-    try {
-      const now = new Date().toISOString()
-      const { parent, child } = parentWithChild("main-0123456789abcdef", "w-8888888888888888", {
-        directory: repo.dir,
-        base: repo.head,
-        head: repo.head,
-        state: "idle",
-        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
-        sessionID: "ses_child_idle_001",
-      })
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      const sessions = recordSession()
-      const value = required(
-        await supersedeHandler(context({ session: sessions.domain }), { run: child.id, reason: REASON }, callerFor(parent)),
-      ) as { run: string; state: string }
-      expect(value.state).toBe("superseded")
-      expect(sessions.interrupted).toHaveLength(0)
-      const stored = await loadRun(root, child.id)
-      expect(stored?.state).toBe("superseded")
-      expect(stored?.attempts[stored.attempts.length - 1]?.state).toBe("succeeded")
-    } finally {
-      await removeRepo(repo.dir)
-    }
-  })
+  const resumed = consumeStopIntent(child)
+  expect([resumed.stopRequested, resumed.stopRequestedBy, resumed.stopReason]).toEqual([undefined, undefined, undefined])
 })
 
 test("stopRun on an idle run in the namespace stops it without ownership check", async () => {

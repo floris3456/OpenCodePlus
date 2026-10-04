@@ -57,7 +57,7 @@ function settledText(run: RunRecord, previous: string, attemptN: number): string
     `[team] ${run.id} (${run.role}, ${task}) settled: failed — host session gone; attempt ${attemptN} marked failed.\n` +
     `summary: session ${session} is no longer known to the host; the run was ${previous} and is now dead.\n` +
     `report: none\n` +
-    `next: supersede + delegate fresh`
+    `next: team_stop + delegate fresh`
   )
 }
 
@@ -171,13 +171,15 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
 
 // A stop requested while a run was executing is satisfied by the stop that
 // produced its stopped/dead state, but the record still carries the flag.
-// Resuming the session must not stop the next turn too. A run that has not
-// stopped yet (idle, starting) keeps its intent.
+// Resuming the session must not stop the next turn too, and the stop's reason
+// no longer describes the run. A run that has not stopped yet (idle, starting)
+// keeps its intent.
 export function consumeStopIntent(run: RunRecord): RunRecord {
-  if (run.stopRequested !== true && run.stopRequestedBy === undefined) return run
+  if (run.stopRequested !== true && run.stopRequestedBy === undefined && run.stopReason === undefined) return run
   const next: RunRecord = { ...run }
   delete next.stopRequested
   delete next.stopRequestedBy
+  delete next.stopReason
   return next
 }
 
@@ -446,11 +448,11 @@ export function childSettledText(
     if (error !== undefined) {
       lines.push(`Error: ${error.type}${error.status === undefined ? "" : ` (${error.status})`}: ${error.message}`)
       lines.push(
-        "next: if the member's model is unavailable (quota, rate limit, provider down), team_supersede it and delegate the same Brief to another member; otherwise read team_status and team_diff, then team_followup or team_supersede.",
+        "next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member; otherwise read team_status and team_diff, then team_followup or team_stop.",
       )
       return lines.join("\n")
     }
-    lines.push("next: read team_status and team_diff for it, then team_followup or team_supersede.")
+    lines.push("next: read team_status and team_diff for it, then team_followup or team_stop.")
     return lines.join("\n")
   }
   if (typeof report.summary === "string" && report.summary.trim() !== "") lines.push(report.summary.trim())
@@ -477,8 +479,8 @@ function nextStep(status: string, committed: boolean): string {
     const weigh = status === "done_with_concerns" ? "weigh the concerns, then " : ""
     return committed ? `${weigh}check the change with team_diff and land it with team_integrate.` : `${weigh}use the result; there is nothing to land.`
   }
-  if (status === "rejected") return "re-scope: team_supersede it and delegate a Brief that fits."
-  return "answer the needs with team_followup, or team_supersede it and delegate afresh."
+  if (status === "rejected") return "re-scope: team_stop it and delegate a Brief that fits."
+  return "answer the needs with team_followup, or team_stop it and delegate afresh."
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;

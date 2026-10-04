@@ -207,7 +207,7 @@ test("the parent inbox got exactly one settled failed notify line", async () => 
     expect(items).toHaveLength(1)
     expect(items[0]?.kind).toBe("notify")
     expect(items[0]?.text).toContain("settled: failed")
-    expect(items[0]?.text).toContain("next: supersede + delegate fresh")
+    expect(items[0]?.text).toContain("next: team_stop + delegate fresh")
   })
 })
 

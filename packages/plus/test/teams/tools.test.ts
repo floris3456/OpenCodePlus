@@ -36,7 +36,6 @@ const teamNames = [
   "integrate",
   "checkpoint",
   "set_checks",
-  "supersede",
   "stop",
   "status",
   "diff",
@@ -47,9 +46,11 @@ const teamNames = [
 
 // Gone from the namespace: search moved to the `search` MCP server, wait is
 // replaced by settlement wake-ups (a delegated run waiting on open children
-// keeps its attempt open), and the rest had no implementation to advertise.
+// keeps its attempt open), supersede is team_stop with a reason, and the rest
+// had no implementation to advertise.
 const removedNames = [
   "wait",
+  "supersede",
   "review",
   "shutdown_request",
   "resume",
@@ -61,7 +62,7 @@ const removedNames = [
   "tavily_extract",
 ] as const
 
-const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "checkpoint", "set_checks", "supersede", "stop"])
+const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "checkpoint", "set_checks", "stop"])
 
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`
@@ -245,7 +246,7 @@ async function runMessage(
 test("every team tool registers under namespace team with codemode and permission", async () => {
   const tools = await registeredTools()
   const registered = teamNames.map((name) => need(tools, `team_${name}`))
-  expect(registered).toHaveLength(13)
+  expect(registered).toHaveLength(12)
   for (const [index, tool] of registered.entries()) {
     const name = teamNames[index] as string
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
@@ -502,7 +503,7 @@ test("the instructions namespace still registers alongside team", async () => {
   expect(need(created.tools, "instructions_list").options?.namespace).toBe("instructions")
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
   expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
-  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(13)
+  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(12)
 })
 
 async function auditLines(root: string): Promise<Array<Record<string, unknown>>> {
@@ -597,7 +598,7 @@ test("successful gated call writes tool.call with run id and chain verifies acro
   })
 })
 
-test("integrate, set_checks, supersede, stop and list reach real handlers", async () => {
+test("integrate, set_checks, stop and list reach real handlers", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     await saveRun(root, makeRun("w-dddddddddddddddd", "orchestrator", "ses_team_orch"))
     const tools = await registeredTools()
@@ -614,14 +615,6 @@ test("integrate, set_checks, supersede, stop and list reach real handlers", asyn
     const stopMessage = await runMessage(need(tools, "team_stop"), { run: "w-0000000000000000" }, ctx)
     expect(stopMessage.startsWith("E_NOT_CHILD:")).toBe(true)
     expect(stopMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
-
-    const supersedeMessage = await runMessage(
-      need(tools, "team_supersede"),
-      { run: "w-0000000000000000", reason: "superseded child run in test" },
-      ctx,
-    )
-    expect(supersedeMessage.startsWith("E_NOT_CHILD:")).toBe(true)
-    expect(supersedeMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
 
     const setChecksMessage = await runMessage(
       need(tools, "team_set_checks"),
@@ -1595,10 +1588,6 @@ test("C — every field path of every registered team tool treats null as omissi
     },
     team_set_checks: {
       checks: [{ id: "c1", argv: ["bun", "test", "test.ts"] }],
-    },
-    team_supersede: {
-      run: "w-0123456789abcdef",
-      reason: "Superseding this run for testing purposes",
     },
     team_stop: {
       run: "w-0123456789abcdef",

@@ -26,7 +26,7 @@ import { sessionTokens } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
-import { stopHandler, supersedeHandler } from "./api-lifecycle.js"
+import { stopHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
@@ -66,7 +66,6 @@ import {
   SetChecksInput,
   StatusInput,
   StopInput,
-  SupersedeInput,
   budgetExhaustion,
   toolError,
   validateSummary,
@@ -103,7 +102,6 @@ export interface TeamApi {
   readonly integrate: (input: IntegrateInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly checkpoint: (input: CheckpointInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly set_checks: (input: SetChecksInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly supersede: (input: SupersedeInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly stop: (input: StopInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly status: (input: StatusInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly diff: (input: DiffInput, caller: TeamCaller) => Promise<TeamApiResult>
@@ -161,7 +159,6 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
-    supersede: (input, caller) => guarded(() => supersedeHandler(ctx, input, caller, state.permissions)),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
     status: (input, caller) => guarded(() => statusHandler(ctx, input, caller, state.permissions)),
     diff: (input, caller) => guarded(() => diffHandler(input, caller, state.permissions)),
@@ -1206,6 +1203,7 @@ async function statusOf(ctx: Context, root: string, id: string) {
     run: record.id,
     role: record.role,
     state: record.state,
+    ...(record.stopReason === undefined ? {} : { stopReason: record.stopReason }),
     attempt: last?.n ?? 0,
     attemptState: last?.state ?? "queued",
     task: record.task,
