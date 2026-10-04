@@ -83,7 +83,7 @@ type Registration = {
 type Desired = Pick<Registration, "plugin" | "source" | "target" | "version" | "options"> & { enabled: boolean }
 type Trace = <T>(stage: string, tags: LogTags, task: () => Promise<T>) => Promise<T>
 
-const PluginContext = createContext<Value>()
+export const PluginContext = createContext<Value>()
 
 export function PluginProvider(props: ParentProps<{ packages: PackageSource; directories: string[] }>) {
   const host = usePluginHost()

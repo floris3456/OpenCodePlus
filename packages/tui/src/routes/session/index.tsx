@@ -25,7 +25,7 @@ import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
 import { useTheme, useThemes } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA, MouseEvent } from "@opentui/core"
-import { Prompt, type PromptRef } from "../../component/prompt"
+import { Prompt, PromptFooter, type PromptRef } from "../../component/prompt"
 import type {
   SessionMessageInfo,
   SessionMessageAssistant,
@@ -1485,6 +1485,7 @@ export function Session(props: {
                       ) : null
                     }}
                   </Show>
+                  <PromptFooter sessionID={route.sessionID} />
                 </Match>
                 <Match when={forms().length > 0}>
                   <Show when={forms()[0]?.id} keyed>
@@ -1493,6 +1494,7 @@ export function Session(props: {
                       return form ? <FormPrompt form={form} /> : null
                     }}
                   </Show>
+                  <PromptFooter sessionID={route.sessionID} />
                 </Match>
                 <Match
                   when={
