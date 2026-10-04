@@ -165,6 +165,22 @@ const triggerGenerate = Effect.fn("triggerGenerate")(function* (
   yield* hooks.trigger("session", "generate", event)
 })
 
+/** A warming ping as `SessionGenerate.generate` now raises it: a non-durable context request. */
+const triggerNonDurable = Effect.fn("triggerNonDurable")(function* (sessionID: Session.ID, model: Model.Ref) {
+  const hooks = yield* PluginHooks.Service
+  const event: SessionHooks["context"] = {
+    sessionID,
+    agent: Agent.ID.make("build"),
+    model,
+    system: [],
+    messages: [],
+    tools: {},
+    options: {},
+    durable: false,
+  }
+  yield* hooks.trigger("session", "context", event)
+})
+
 const settle = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
 
 const advance = Effect.fn("advance")(function* (steps: number) {
@@ -492,7 +508,7 @@ describe("WarmingPlugin", () => {
     }),
   )
 
-  it.effect("does not extend warming for a request carrying the warming prompt", () =>
+  it.effect("does not extend warming for a non-durable request", () =>
     Effect.gen(function* () {
       const config = yield* makeConfig([
         document({ warming: { prompt: "global", interval: "1 second", duration: "3 seconds" } }),
@@ -507,7 +523,9 @@ describe("WarmingPlugin", () => {
       const warmed = callsFor(calls, sessions.parent).length
       expect(warmed).toBeGreaterThan(0)
 
-      yield* triggerGenerate(sessions.parent, ref("alpha", "m1"), "global")
+      // The warming ping is raised in the loop, but even from this fiber its marker keeps
+      // it out of the window; the old fiber and prompt-text checks do not apply here.
+      yield* triggerNonDurable(sessions.parent, ref("alpha", "m1"))
       expect(callsFor(calls, sessions.parent).length).toBe(warmed)
 
       yield* advance(1)

@@ -87,6 +87,8 @@ export interface Input {
   readonly toolChoice?: LLM.RequestInput["toolChoice"]
   /** Only the durable runner may use a stateful WebSocket. */
   readonly webSocket?: "session"
+  /** False for a throwaway request (warming ping, `/generate`) that must not persist Session state. */
+  readonly durable?: boolean
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
   readonly inputTokens?: { readonly measured: number; readonly estimated: number }
 }
@@ -281,6 +283,7 @@ export const layer = Layer.effect(
             kind === "primary" || kind === "compaction"
               ? { maxTokens: outputLimit(model.limit, kind, input.inputTokens) }
               : {},
+          ...(input.durable === undefined ? {} : { durable: input.durable }),
         },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )

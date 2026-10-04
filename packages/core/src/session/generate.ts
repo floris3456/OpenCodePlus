@@ -51,10 +51,17 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       system: transcript.system,
       messages: transcript.messages,
       inputTokens: SessionCompaction.estimatePrompt(loaded),
+      // This request will not advance the Session: hooks still shape its content, but
+      // must not persist anything, and the warming loop must not treat it as activity.
+      durable: false,
     })
     // Run all primary content transforms first, then append the private prompt. Never
-    // bind the durable runner's stateful WebSocket to this throwaway response.
+    // bind the durable runner's stateful WebSocket to this throwaway response. The
+    // cache policy keeps the last history boundary marked so the provider caches the
+    // prefix just before the prompt; a real step after a pause then reads it, instead
+    // of only the previous turn's boundary.
     const request = LLMRequest.update(prepared.request, {
+      cache: { tools: true, system: true, messages: { tail: 2 } },
       messages: [...prepared.request.messages, Message.user(input.prompt)],
     })
     yield* Effect.logInfo("sending session generation request", {

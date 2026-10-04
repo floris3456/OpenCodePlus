@@ -64,6 +64,10 @@ export const Plugin = define({
       // Before the user's prompt, matching where agent-switch reminders land.
       const at = event.messages.at(-1)?.role === "user" ? event.messages.length - 1 : event.messages.length
       event.messages.splice(at, 0, Message.user(text))
+      // A non-durable request (a warming ping or a /generate side question) must shape its
+      // content like the next real step but never write to the Session: the next real step
+      // persists the same reminder, and a second copy would otherwise be saved.
+      if (event.durable === false) return Effect.void
       return ctx.session
         .synthetic({ sessionID: event.sessionID, text, resume: false })
         .pipe(

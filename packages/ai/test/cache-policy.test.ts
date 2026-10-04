@@ -369,8 +369,36 @@ describe("applyCachePolicy", () => {
     }),
   )
 
-  it.effect("'latest-assistant' marks the last assistant message", () =>
+  it.effect("tail: 2 keeps the history boundary marked when tools and system already fill the budget", () =>
     Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model: anthropicModel,
+          system: [
+            { type: "text", text: "Base agent" },
+            { type: "text", text: "Project instructions" },
+          ],
+          tools: [{ name: "t1", description: "t1", inputSchema: { type: "object", properties: {} } }],
+          messages: [
+            Message.user("u1"),
+            Message.assistant("a1"),
+            Message.user("last history message"),
+            Message.user("keep-alive prompt"),
+          ],
+          cache: { tools: true, system: true, messages: { tail: 2 } },
+        }),
+      )
+
+      // tools (1) + both system parts (2) use three of the four breakpoints, so the
+      // history boundary is written and the throwaway tail prompt is not.
+      const body = prepared.body as { messages: Array<{ content: Array<{ cache_control?: unknown }> }> }
+      expect(body.messages[1]?.content[0]?.cache_control).toBeUndefined()
+      expect(body.messages[2]?.content[0]?.cache_control).toEqual({ type: "ephemeral" })
+      expect(body.messages[3]?.content[0]?.cache_control).toBeUndefined()
+    }),
+  )
+
+  it.effect("'latest-assistant' marks the last assistant message", () =>    Effect.gen(function* () {
       const prepared = yield* compileRequest(
         LLM.request({
           model: anthropicModel,

@@ -183,8 +183,10 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update"] 
           .run()
           .pipe(Effect.orDie)
         // Content-changing hooks must run for warming too. A generate-only hook is a negative control.
+        const durables: Array<boolean | undefined> = []
         yield* hooks.register("session", "context", (event) =>
           Effect.sync(() => {
+            durables.push(event.durable)
             event.tools.echo.description = "Primary echo description"
             event.system.push(SystemPart.make("Primary system suffix"))
             event.messages = event.messages.map((message) =>
@@ -267,6 +269,12 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update"] 
         expect(llm.requests).toHaveLength(4)
         expectPrefix(llm.requests[2], llm.requests[3])
         expect(generates, "warming must not use a different content hook").toBe(0)
+        expect(
+          llm.requests[2].cache,
+          "warming marks the history boundary so the next real step can read it",
+        ).toEqual({ tools: true, system: true, messages: { tail: 2 } })
+        expect(llm.requests[3].cache, "a real step keeps the default cache policy").toBeUndefined()
+        expect(durables, "only the warming request is non-durable").toEqual([undefined, undefined, false, undefined])
         if (scenario === "plain") {
           expect(llm.requests[2].messages.some((message) => message.role === "tool")).toBe(true)
           expect(JSON.stringify(llm.requests[2].messages)).toContain("tool result")

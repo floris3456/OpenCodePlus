@@ -144,19 +144,12 @@ export const Plugin = define({
 
         const active = sessions.get(event.sessionID)
         // The warming request itself runs this hook from the session's loop; never
-        // interrupt or reschedule that loop from inside its own generate call.
+        // interrupt or reschedule that loop from inside its own generate call. The
+        // request is also marked non-durable, which is the primary guard if the fiber
+        // identity ever stops matching.
+        if (event.durable === false) return
         if (active?.fiber?.id === (yield* Effect.fiberId)) return
         const configured = yield* loadSettings(event.model)
-
-        // Once generate exposes request metadata to context hooks, tag warm requests instead of matching the prompt.
-        const message = event.messages.at(-1)
-        if (
-          message?.role === "user" &&
-          message.content.length === 1 &&
-          message.content[0]?.type === "text" &&
-          (message.content[0].text === active?.settings.prompt || message.content[0].text === configured?.prompt)
-        )
-          return
 
         const now = yield* Clock.currentTimeMillis
         const settings = yield* decide(

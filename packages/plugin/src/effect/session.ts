@@ -29,6 +29,13 @@ export interface SessionRequest {
   system: Array<SystemPart>
   messages: Array<Message>
   options: SessionRequestOptions
+  /**
+   * False for a throwaway request that never advances the Session: a warming ping or a
+   * `/generate` side question. Content-changing hooks still run so the request matches
+   * the next durable step's prefix, but hooks must not persist Session state for it.
+   * Undefined means durable.
+   */
+  readonly durable?: boolean
 }
 
 export interface SessionContext extends SessionRequest {
