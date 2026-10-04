@@ -54,11 +54,13 @@ describe("opencode.plus.cliproxyapi legacy relay", () => {
       // The cliproxyapi plugin registers a model transform before config and
       // another after activation; calling it around ConfigProviderPlugin
       // reproduces that transform order.
-      const relay = () =>
-        host.model.transform((models) => applyRelayToModels(models, { cliproxyapi: "https://cpa.invalid" }))
+      const relay = (options?: { readonly compaction?: boolean }) =>
+        host.model.transform((models) =>
+          applyRelayToModels(models, { cliproxyapi: "https://cpa.invalid" }, undefined, options),
+        )
       yield* relay()
       yield* ConfigProviderPlugin.Plugin.effect(host).pipe(Effect.provide(Config.testLayer(entries)))
-      yield* relay()
+      yield* relay({ compaction: true })
       const models = yield* Model.Service
 
       const claude = yield* models.get(providerID, Model.ID.make("claude-opus-5-5"))
@@ -86,6 +88,39 @@ describe("opencode.plus.cliproxyapi legacy relay", () => {
       expect(other?.variants).toEqual([
         { id: Model.VariantID.make("high"), body: { reasoning: { effort: "high" } } },
       ])
+    }),
+  )
+
+  it.live("relay's post-config pass re-applies after config re-activates", () =>
+    Effect.gen(function* () {
+      const plugin = yield* Plugin.Service
+      const host = yield* PluginHost.make(plugin)
+      const relay = (options?: { readonly compaction?: boolean }) =>
+        host.model.transform((models) =>
+          applyRelayToModels(models, { cliproxyapi: "https://cpa.invalid" }, undefined, options),
+        )
+      yield* relay()
+      yield* ConfigProviderPlugin.Plugin.effect(host).pipe(Effect.provide(Config.testLayer(entries)))
+      yield* relay({ compaction: true })
+      // Config re-activates (for example after its file changes) and appends its
+      // transform after the relay's. The relay re-registers its pass so that it
+      // still runs last and respells the merged user variants for the relay.
+      yield* ConfigProviderPlugin.Plugin.effect(host).pipe(Effect.provide(Config.testLayer(entries)))
+      yield* relay({ compaction: true })
+
+      const models = yield* Model.Service
+      const claude = yield* models.get(providerID, Model.ID.make("claude-opus-5-5"))
+      expect(claude?.variants).toEqual([
+        {
+          id: Model.VariantID.make("low"),
+          settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "low" },
+        },
+        {
+          id: Model.VariantID.make("high"),
+          settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
+        },
+      ])
+      expect(claude?.settings).toMatchObject({ compaction: { type: "native" } })
     }),
   )
 })
@@ -127,7 +162,7 @@ describe("opencode.plus.cliproxyapi relay entry points", () => {
     const claude = ModelSchema.Info.default(ProviderSchema.ID.make("cpa"), ModelSchema.ID.make("claude-3-7-sonnet"))
     const { editor, get } = providerEditor(provider, [claude])
 
-    applyRelayToExistingModels(editor, { cpa: "https://cpa.invalid" })
+    applyRelayToExistingModels(editor, { cpa: "https://cpa.invalid" }, undefined, { compaction: true })
 
     const updated = get("claude-3-7-sonnet")!
     expect(updated.package).toBe("@opencode/ai/providers/anthropic-compatible")

@@ -172,6 +172,7 @@ type Variants = { id: string; settings?: Record<string, unknown> }[]
 /**
  * Spell effort variants the way Core spells them for the provider's protocol
  * package (packages/core/src/variant.ts). Unknown packages get no variants.
+ * Anthropic packages are model-aware, so they go through `anthropicVariants`.
  */
 export function spellVariants(pkg: string | undefined, levels: readonly string[]): Variants {
   if (levels.length === 0) return []
@@ -182,11 +183,6 @@ export function spellVariants(pkg: string | undefined, levels: readonly string[]
     }))
   if (pkg === "@opencode/ai/providers/openai-compatible")
     return levels.map((effort) => ({ id: effort, settings: { reasoningEffort: effort } }))
-  if (pkg === "@opencode/ai/providers/anthropic" || pkg === ANTHROPIC_COMPATIBLE)
-    return levels.map((effort) => ({
-      id: effort,
-      settings: { thinking: { type: "adaptive", display: "summarized" }, effort },
-    }))
   return []
 }
 
@@ -195,30 +191,87 @@ const ANTHROPIC_COMPATIBLE = "@opencode/ai/providers/anthropic-compatible"
 /** Packages that use the Anthropic Messages protocol and so can honor native compaction. */
 const ANTHROPIC_PACKAGES = new Set([ANTHROPIC_COMPATIBLE, "@opencode/ai/providers/anthropic"])
 
+/** The model facts Core uses to decide Anthropic thinking (packages/core/src/variant.ts). */
+export interface AnthropicModel {
+  readonly id: string
+  readonly modelID?: string
+  readonly limit: { readonly output: number }
+}
+
+interface ClaudeInfo {
+  readonly manual: boolean
+  readonly opus45: boolean
+}
+
+function claudeInfo(model: AnthropicModel): ClaudeInfo {
+  const id = model.modelID ?? model.id
+  const familyFirst = /(?:claude-)?(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[.-](\d+))?/i.exec(id)
+  const versionFirst = /claude-(\d+)(?:[.-](\d+))?-(opus|sonnet|haiku|fable|mythos)/i.exec(id)
+  const family = (familyFirst?.[1] ?? versionFirst?.[3])?.toLowerCase()
+  const major = Number(familyFirst?.[2] ?? versionFirst?.[1])
+  const minor = Number(familyFirst?.[3] ?? versionFirst?.[2] ?? 0)
+  return {
+    manual: (major === 3 && minor === 7) || (major === 4 && minor < 6),
+    opus45: family === "opus" && major === 4 && minor === 5,
+  }
+}
+
+/**
+ * Anthropic-spelled effort variants for one model, mirroring Core's model-aware
+ * choice: Claude 3.7 and 4.5 take explicit `enabled`+`budgetTokens` thinking,
+ * newer models add `effort` to adaptive thinking. Existing variant ids are kept.
+ */
+export function anthropicVariants(model: AnthropicModel, levels: readonly string[]): Variants {
+  if (levels.length === 0) return []
+  const info = claudeInfo(model)
+  const budget = Math.min(16_000, model.limit.output - 1)
+  const manual = info.manual && !info.opus45
+  if ((manual || info.opus45) && budget < 1024) return []
+  return levels.map((effort) => {
+    if (manual) return { id: effort, settings: { thinking: { type: "enabled", budgetTokens: budget } } }
+    if (info.opus45)
+      return {
+        id: effort,
+        settings: { thinking: { type: "enabled", budgetTokens: budget }, effort },
+      }
+    return {
+      id: effort,
+      settings: { thinking: { type: "adaptive", display: "summarized" }, effort },
+    }
+  })
+}
+
+/** Core-spelled variants for the model's package: Anthropic is model-aware, the rest is not. */
+function variantsFor(model: AnthropicModel, pkg: string | undefined, levels: readonly string[]): Variants {
+  if (pkg !== undefined && ANTHROPIC_PACKAGES.has(pkg)) return anthropicVariants(model, levels)
+  return spellVariants(pkg, levels)
+}
+
 /**
  * Points one routed Claude model at CPA's Anthropic Messages relay: the
- * anthropic-compatible package, its Anthropic-spelled variants and native
- * compaction. A user's own package wins, so the relay leaves the model alone
- * when it is set to anything else. Existing variant ids keep their spelling
- * (ids are never invented) and a user compaction choice is kept.
+ * anthropic-compatible package and Anthropic-spelled variants. A user's own
+ * package wins, so the relay leaves the model alone when it is set to anything
+ * else.
+ *
+ * Compaction is only applied by the post-config pass (`compaction: true`),
+ * after config has merged the user's per-model settings. That pass runs once
+ * the final package is known, so a model repackaged away from the relay never
+ * gets a relay-owned `settings.compaction` and a user's own compaction is never
+ * removed. It also keeps the relay's native compaction on a route that can
+ * honor it instead of leaving it on a route that cannot.
  */
-export function relayClaudeModel(model: Types.DeepMutable<Model.Info>): void {
+export function relayClaudeModel(
+  model: Types.DeepMutable<Model.Info>,
+  options?: { readonly compaction?: boolean },
+): void {
   if (!isClaude(model)) return
-  const userPackage = model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE
-  if (userPackage) {
-    // The relay owns a model only while it keeps the relay package. Config applies a
-    // user's per-model package after an earlier relay pass, which would otherwise leave
-    // the relay's native compaction on a route that cannot honor it. A user's own
-    // Anthropic package can honor native, so it keeps whatever the user set.
-    if (!ANTHROPIC_PACKAGES.has(model.package ?? "") && model.settings?.compaction?.type === "native")
-      delete model.settings.compaction
-    return
-  }
+  if (model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE) return
   model.package = ANTHROPIC_COMPATIBLE
   const ids = (model.variants ?? []).map((variant) => String(variant.id))
-  if (ids.length > 0) model.variants = spellVariants(ANTHROPIC_COMPATIBLE, ids) as never
-  const userCompaction = model.settings?.compaction?.type ? model.settings.compaction : undefined
-  model.settings = { ...(model.settings ?? {}), compaction: userCompaction ?? { type: "native" } } as never
+  if (ids.length > 0) model.variants = anthropicVariants(model, ids) as never
+  // A user's own compaction (any type) wins; the relay only fills an absent one.
+  if (options?.compaction === true && model.settings?.compaction?.type === undefined)
+    model.settings = { ...(model.settings ?? {}), compaction: { type: "native" } } as never
 }
 
 /** Packages Core spells with OpenAI Responses reasoning settings. */
@@ -251,20 +304,8 @@ export function applyCatalogue(
         model.name = name
         model.modelID = item.id as never
         const userPackage = model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE
-        if (relay && !userPackage) {
-          model.package = ANTHROPIC_COMPATIBLE
-          const userCompaction = model.settings?.compaction?.type ? model.settings.compaction : undefined
-          model.settings = { ...model.settings, compaction: userCompaction ?? { type: "native" } } as never
-          model.variants =
-            item.reasoning.mode === "levels"
-              ? (structuredClone(spellVariants(ANTHROPIC_COMPATIBLE, item.reasoning.levels)) as never)
-              : ([] as never)
-        } else if (!userPackage) {
-          model.variants =
-            item.reasoning.mode === "levels"
-              ? (structuredClone(spellVariants(pkg, item.reasoning.levels)) as never)
-              : ([] as never)
-        }
+        const relayed = relay && !userPackage
+        if (relayed) model.package = ANTHROPIC_COMPATIBLE
         model.capabilities = {
           tools: item.kind === "chat",
           input: [...item.input],
@@ -274,6 +315,12 @@ export function applyCatalogue(
         if (item.context !== undefined)
           model.limit = withInput({ ...model.limit, context: item.context }, item.inputLimit)
         if (item.output !== undefined) model.limit.output = item.output
+        // Variants are spelled after the limit so model-aware Anthropic budgets see the output.
+        if (!userPackage)
+          model.variants =
+            item.reasoning.mode === "levels"
+              ? (structuredClone(variantsFor(model, relayed ? ANTHROPIC_COMPATIBLE : pkg, item.reasoning.levels)) as never)
+              : ([] as never)
         if (fast) model.body = { ...(model.body ?? {}), service_tier: FAST_TIER } as never
       })
     // Image models answer only on CPA's images endpoint (image.generate tool), not in chat.
@@ -303,12 +350,13 @@ export function applyRelayToModels(
   models: RelayModelEditor,
   routes: Readonly<Record<string, string>>,
   anthropicRelay?: Readonly<Record<string, boolean>>,
+  options?: { readonly compaction?: boolean },
 ) {
   for (const providerID of Object.keys(routes)) {
     if (anthropicRelay?.[providerID] === false) continue
     for (const model of models.list(providerID)) {
       if (!isClaude(model)) continue
-      models.update(providerID, model.id, (draft) => relayClaudeModel(draft))
+      models.update(providerID, model.id, (draft) => relayClaudeModel(draft, options))
     }
   }
 }
@@ -318,6 +366,7 @@ export function applyRelayToExistingModels(
   providers: ProviderEditor,
   routes: Readonly<Record<string, string>>,
   anthropicRelay?: Readonly<Record<string, boolean>>,
+  options?: { readonly compaction?: boolean },
 ) {
   for (const providerID of Object.keys(routes)) {
     if (anthropicRelay?.[providerID] === false) continue
@@ -325,7 +374,7 @@ export function applyRelayToExistingModels(
     if (!record) continue
     for (const model of record.models.values()) {
       if (!isClaude(model)) continue
-      providers.models.update(providerID, model.id, (draft) => relayClaudeModel(draft))
+      providers.models.update(providerID, model.id, (draft) => relayClaudeModel(draft, options))
     }
   }
 }

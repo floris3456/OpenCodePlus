@@ -60,23 +60,24 @@ export default Plugin.define({
         applyRelayToExistingModels(providers, config.routes, config.anthropicRelay)
       })
       // Config applies its own per-model settings and variants in a later model
-      // transform. Re-register the relay once activation has finished (the
-      // appended transform runs after config's) so a user variant written for
-      // the previous package is respelled for the Anthropic relay instead of
-      // being sent as an extra field.
-      const relayRegistered = yield* Ref.make(false)
+      // transform, so the relay re-registers a final pass on every plugin update.
+      // Re-registering (instead of once) keeps that pass last when config
+      // re-activates and appends its transform again, and it is the only pass
+      // that sets compaction: by then the package is final, so a model
+      // repackaged away from the relay never carries a relay-owned native
+      // compaction, and a user's own compaction is never removed.
+      const relayDispose = yield* Ref.make<Effect.Effect<void> | undefined>(undefined)
       yield* ctx.event.subscribe().pipe(
         Stream.filter((event) => event.type === "plugin.updated"),
         Stream.runForEach(() =>
-          Ref.getAndSet(relayRegistered, true).pipe(
-            Effect.flatMap((done) =>
-              done
-                ? Effect.void
-                : ctx.model.transform((models) => {
-                    applyRelayToModels(models, config.routes, config.anthropicRelay)
-                  }),
-            ),
-          ),
+          Effect.gen(function* () {
+            const previous = yield* Ref.get(relayDispose)
+            if (previous) yield* previous
+            const registration = yield* ctx.model.transform((models) => {
+              applyRelayToModels(models, config.routes, config.anthropicRelay, { compaction: true })
+            })
+            yield* Ref.set(relayDispose, registration.dispose)
+          }),
         ),
         Effect.forkScoped({ startImmediately: true }),
       )

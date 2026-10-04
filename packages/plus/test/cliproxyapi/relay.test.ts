@@ -3,7 +3,7 @@ import type { ProviderEditor } from "@opencode/plugin/effect/provider"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import type { Types } from "effect"
-import { applyCatalogue, applyRelayToExistingModels, isClaude, spellVariants, type Catalogue } from "../../src/cliproxyapi/catalog.js"
+import { anthropicVariants, applyCatalogue, applyRelayToExistingModels, isClaude, spellVariants, type Catalogue } from "../../src/cliproxyapi/catalog.js"
 
 function createTestEditor(initial: { provider: Provider.Info; models?: Model.Info[] }[]) {
   const store = new Map<string, { provider: Provider.Info; models: Map<string, Model.Info> }>()
@@ -78,13 +78,23 @@ test("isClaude identifies Claude models by id or owned_by", () => {
   expect(isClaude({ id: "deepseek-chat" })).toBe(false)
 })
 
-test("spellVariants spells Anthropic adaptive thinking variants", () => {
-  const variants = spellVariants("@opencode/ai/providers/anthropic-compatible", ["low", "medium", "high", "max"])
-  expect(variants).toEqual([
+test("anthropicVariants is model-aware: adaptive for newer Claude, explicit budgets for 4.5 and 3.7", () => {
+  const newer = anthropicVariants({ id: "claude-opus-4-8", limit: { output: 64_000 } }, ["low", "high"])
+  expect(newer).toEqual([
     { id: "low", settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "low" } },
-    { id: "medium", settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "medium" } },
     { id: "high", settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" } },
-    { id: "max", settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "max" } },
+  ])
+  // Claude 3.7 and 4.5 reject `thinking: adaptive`; Core spells them as enabled+budgetTokens.
+  const sonnet37 = anthropicVariants({ id: "claude-3-7-sonnet", limit: { output: 64_000 } }, ["low", "high"])
+  expect(sonnet37).toEqual([
+    { id: "low", settings: { thinking: { type: "enabled", budgetTokens: 16_000 } } },
+    { id: "high", settings: { thinking: { type: "enabled", budgetTokens: 16_000 } } },
+  ])
+  const opus45 = anthropicVariants({ id: "claude-opus-4-5", limit: { output: 64_000 } }, ["high"])
+  expect(opus45).toEqual([{ id: "high", settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "high" } }])
+  // Non-Anthropic packages keep the plain effort spelling.
+  expect(spellVariants("@opencode/ai/providers/openai-compatible", ["high"])).toEqual([
+    { id: "high", settings: { reasoningEffort: "high" } },
   ])
 })
 
@@ -107,14 +117,15 @@ test("legacy route + catalogue off gives Claude models anthropic-compatible pack
 
   const { editor, getModel } = createTestEditor([{ provider, models: [claudeModel, nonClaudeModel] }])
 
-  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" }, undefined, { compaction: true })
 
   const updatedClaude = getModel("cpa", "claude-3-7-sonnet")!
   expect(updatedClaude.package).toBe("@opencode/ai/providers/anthropic-compatible")
   expect(updatedClaude.settings?.compaction).toEqual({ type: "native" })
+  // Claude 3.7 must not get adaptive thinking; Core spells it enabled+budgetTokens.
   expect(updatedClaude.variants).toEqual([
-    { id: Model.VariantID.make("low"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "low" } },
-    { id: Model.VariantID.make("high"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" } },
+    { id: Model.VariantID.make("low"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 } } },
+    { id: Model.VariantID.make("high"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 } } },
   ])
 
   // Non-Claude model is completely unchanged
@@ -161,14 +172,17 @@ test("catalogue mode gives Claude models anthropic-compatible package, Anthropic
   const { editor, getModel } = createTestEditor([{ provider }])
 
   applyCatalogue(editor, "cpa", catalogue, "@opencode/ai/providers/openai-compatible")
+  // Compaction is applied by the relay's post-config pass, after config has merged settings.
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" }, undefined, { compaction: true })
 
   const opus = getModel("cpa", "claude-opus-4-5")!
   expect(opus.package).toBe("@opencode/ai/providers/anthropic-compatible")
   expect(opus.settings?.compaction).toEqual({ type: "native" })
+  // Opus 4.5 must not get adaptive thinking.
   expect(opus.variants).toEqual([
-    { id: Model.VariantID.make("low"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "low" } },
-    { id: Model.VariantID.make("high"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" } },
-    { id: Model.VariantID.make("max"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "max" } },
+    { id: Model.VariantID.make("low"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "low" } },
+    { id: Model.VariantID.make("high"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "high" } },
+    { id: Model.VariantID.make("max"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "max" } },
   ])
 
   // Fast alias of Claude also gets the relay configuration
@@ -176,9 +190,9 @@ test("catalogue mode gives Claude models anthropic-compatible package, Anthropic
   expect(opusFast.package).toBe("@opencode/ai/providers/anthropic-compatible")
   expect(opusFast.settings?.compaction).toEqual({ type: "native" })
   expect(opusFast.variants).toEqual([
-    { id: Model.VariantID.make("low"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "low" } },
-    { id: Model.VariantID.make("high"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" } },
-    { id: Model.VariantID.make("max"), settings: { thinking: { type: "adaptive", display: "summarized" }, effort: "max" } },
+    { id: Model.VariantID.make("low"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "low" } },
+    { id: Model.VariantID.make("high"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "high" } },
+    { id: Model.VariantID.make("max"), settings: { thinking: { type: "enabled", budgetTokens: 16_000 }, effort: "max" } },
   ])
 
   // Non-Claude model is unchanged (uses provider package and OpenAI variant spelling)
@@ -191,7 +205,7 @@ test("catalogue mode gives Claude models anthropic-compatible package, Anthropic
   ])
 })
 
-test("catalogue mode drops relay native compaction when config repackages the model", () => {
+test("catalogue mode leaves no relay compaction when config repackages the model", () => {
   const provider = {
     ...Provider.Info.empty(Provider.ID.make("cpa")),
     package: "@opencode/ai/providers/openai-compatible",
@@ -216,11 +230,11 @@ test("catalogue mode drops relay native compaction when config repackages the mo
   const { editor, getModel } = createTestEditor([{ provider }])
   // The catalogue's provider transform runs before config's model transform.
   applyCatalogue(editor, "cpa", catalogue, "@opencode/ai/providers/openai-compatible")
-  expect(getModel("cpa", "claude-opus-4-5")!.settings?.compaction).toEqual({ type: "native" })
+  expect(getModel("cpa", "claude-opus-4-5")!.settings?.compaction).toBeUndefined()
 
   // Config then applies the user's own per-model package; the relay pass runs after it.
   ;(getModel("cpa", "claude-opus-4-5") as Types.DeepMutable<Model.Info>).package = "custom-anthropic-package"
-  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" }, undefined, { compaction: true })
 
   const updated = getModel("cpa", "claude-opus-4-5")!
   expect(updated.package).toBe("custom-anthropic-package")
@@ -273,11 +287,34 @@ test("user settings.compaction still wins when config repackages the model", () 
   const model = getModel("cpa", "claude-opus-4-5") as Types.DeepMutable<Model.Info>
   model.package = "custom-anthropic-package"
   model.settings = { ...model.settings, compaction: { type: "summary" } }
-  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" }, undefined, { compaction: true })
 
   const updated = getModel("cpa", "claude-opus-4-5")!
   expect(updated.package).toBe("custom-anthropic-package")
   expect(updated.settings?.compaction).toEqual({ type: "summary" })
+})
+
+test("a user's explicit native compaction on a non-Anthropic package is never removed", () => {
+  const provider = {
+    ...Provider.Info.empty(Provider.ID.make("cpa")),
+    package: "@opencode/ai/providers/openai-compatible",
+  }
+  const claude: Model.Info = {
+    ...Model.Info.default(Provider.ID.make("cpa"), Model.ID.make("claude-opus-4-5")),
+    package: "@opencode/ai/providers/openai/responses",
+    settings: { compaction: { type: "native" } },
+    variants: [{ id: Model.VariantID.make("high"), settings: { reasoningEffort: "high" } }],
+  }
+
+  const { editor, getModel } = createTestEditor([{ provider, models: [claude] }])
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" }, undefined, { compaction: true })
+
+  const updated = getModel("cpa", "claude-opus-4-5")!
+  expect(updated.package).toBe("@opencode/ai/providers/openai/responses")
+  expect(updated.settings?.compaction).toEqual({ type: "native" })
+  expect(updated.variants).toEqual([
+    { id: Model.VariantID.make("high"), settings: { reasoningEffort: "high" } },
+  ])
 })
 
 test("user package and compaction win over relay defaults", () => {
@@ -321,7 +358,7 @@ test("inert compaction: { mode: 'local' } is ignored and replaced with native co
 
   const { editor, getModel } = createTestEditor([{ provider, models: [claudeInert] }])
 
-  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" })
+  applyRelayToExistingModels(editor, { cpa: "https://cpa.example" }, undefined, { compaction: true })
 
   const updated = getModel("cpa", "claude-3-7-sonnet")!
   expect(updated.package).toBe("@opencode/ai/providers/anthropic-compatible")
