@@ -15,8 +15,8 @@ with:
 Both plan files keep their `plus-1.1.12-…` names, because Briefs and run
 records point at them. Their release line now says `plus-1.1.13`.
 
-**Start condition:** `plus-1.1.12` is released and active, with F1–F10 of
-`plus-1.1.12-team-fixes.md` included.
+**Start condition:** `plus-1.1.12` is released and active, with F1–F10 and
+F16 of `plus-1.1.12-team-fixes.md` included.
 - The teams that do this work then already have the HTTP timeout, the child
   error messages, `team_stop` force, and closed workspaces staying closed.
 - The `requires` lines are back in the Simple role bodies.

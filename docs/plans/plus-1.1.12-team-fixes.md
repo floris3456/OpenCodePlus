@@ -2,6 +2,8 @@
 
 **Objective:** release `plus-1.1.12` with the team fixes that cost hours on
 every team run. In that release:
+- warming pings keep the cache that the next real message reads (F16,
+  extreme priority);
 - a silent model reply ends after 10 minutes and is retried;
 - a child's provider errors reach its parent as they happen;
 - closed workspaces stay closed;
@@ -16,7 +18,7 @@ every team run. In that release:
 
 **Release scope (decided 2026-10-04).**
 - `plus-1.1.12` = what is already on the branch (session runtime T1–T6, see
-  `plus-1.1.12-session-runtime.md`) plus tasks F1–F10 below.
+  `plus-1.1.12-session-runtime.md`) plus tasks F1–F10 and F16 below.
 - The Instructions and Monitor work, still on unmerged branches, moves to
   `plus-1.1.13`. So do the team items that are large or need the new release
   first (`plus-1.1.13-team-fixes.md`, F11–F15).
@@ -33,7 +35,7 @@ Their tasks touch different files.
 | Purpose worktree (branch of the same name) | Path | Tasks |
 |---|---|---|
 | `plus-1.1.12_team-fixes` | `/home/bliss/OpenCodePlus/worktrees/plus-1.1.12_team-fixes/opencode` | F1–F6 (`packages/plus` team code) |
-| `plus-1.1.12_runtime-fixes` | `/home/bliss/OpenCodePlus/worktrees/plus-1.1.12_runtime-fixes/opencode` | F7–F10 (`packages/ai`, `core`, `client`, `tui`, and `packages/plus/src/tui`) |
+| `plus-1.1.12_runtime-fixes` | `/home/bliss/OpenCodePlus/worktrees/plus-1.1.12_runtime-fixes/opencode` | F16 first, then F7–F10 (`packages/ai`, `core`, `client`, `tui`, and `packages/plus/src/tui`) |
 
 - Both are made from `plus-1.1.12`, and both have their packages installed.
 - Each orchestrator delegates its tasks to workers, reviews and lands their
@@ -89,10 +91,20 @@ Their tasks touch different files.
   - F3 to `Heavy-Worker` if the first attempt fails its tests twice.
 
 **`plus-1.1.12_runtime-fixes`:**
-- F7, F8, F9 and F10 are independent and all start together.
+- **F16 first, extreme priority.**
+  - Delegate it before anything else, to `Heavy-Worker`: getting two requests
+    to match byte for byte needs care.
+  - Review and land it before any other task.
+  - Report it to the user the moment it lands: the user may build an interim
+    release with it alone.
+- F7, F8, F9 and F10 start right after F16 is delegated. They are
+  independent.
+  - F16 and F7 both touch `packages/core/src/session/model-request.ts`. Land
+    F16 first; F7 rebases.
 - Worker suggestions:
-  - F7 to `Heavy-Worker`: Effect stream timeouts across two packages.
-  - F10 to `Flash-B-Worker`.
+  - F7 to `Flash-B-Worker`: Effect stream timeouts across two packages,
+    which F16's worker cannot take while busy.
+  - F10 to `Flash-B-Worker` after F7.
   - F8 and F9 to `Flash-Worker`.
 
 **Shared files.** Land these one after the other:
@@ -451,6 +463,90 @@ change.
 
 ## Tasks in `plus-1.1.12_runtime-fixes`
 
+### F16. Warming pings keep the cache that the next real message reads (extreme priority)
+
+**Effort:** medium. **Package:** `packages/core`. **Evidence:** research,
+question 9 ("Warming keeps the wrong cache warm").
+
+**Why first.** Today warming saves nothing and costs extra.
+- A ping and a real step share only the first ~37k tokens (in this chat; 8,715
+  earlier in the day).
+- So the first ping after any new history re-sends ~250k tokens uncached.
+- The first real message after a pause still misses the cache: on 2026-10-04
+  at 16:05, 36,901 of 298,033 tokens were read from cache.
+- Opus warming is switched off until this is released (see "After both purpose
+  branches are merged").
+
+**End state.**
+- A warming ping sends exactly the prefix that the session's next real step
+  will send: the same tools, the same system prompt, and the same history
+  (messages, order, parts and text). Only the ping prompt is added, after the
+  last history message.
+- Live, through CLIProxyAPI with `claude-opus-5-5`:
+  - the first ping after work reads at least 90% of its input from cache;
+  - the first real step after 6 minutes of pinging reads at least 90% from
+    cache.
+
+**Interfaces.**
+- Ping today: `packages/core/src/session/generate.ts#generate` (:22-76).
+  - History from `SessionHistory.preview` (:42).
+  - Request from `context.request.generate` (:55).
+  - Instruction updates appended as a System message before the prompt (:63).
+- Real step: `packages/core/src/session/runner/llm.ts#runStep` (:206-297).
+  - History from `prepareContext` + `context.load` (:215).
+  - Then `SessionModelRequest.baseTranscript` (:224), then
+    `context.request.primary` (:231).
+- `packages/core/src/session/model-request.ts`:
+  - the two kinds run different plugin hooks: `agentHook("context")` vs
+    `agentHook("generate")` (:447-454);
+  - they set the output limit differently (:279-282).
+- Step 1: write the test below. It names the first part where the two requests
+  differ.
+- Step 2: build the ping from the same history loading and the same request
+  preparation as a primary step, including the hooks that change request
+  content. Then append the prompt.
+  - `generate` keeps its promise not to change the session.
+  - Titles keep their own path.
+
+**Decisions.**
+- The contract is an identical prefix, pinned by the test.
+- If the content is identical but a real step after pings still reads less
+  than 90% live, the remaining cause is where CLIProxyAPI places its cache
+  breakpoints. Then stop and report the two `session generation usage
+  diagnostic` lines and the step's monitor numbers. Do not change anything on a
+  guess.
+
+**Tests.** In `packages/core`:
+- New `test/session-warming-prefix.test.ts`, using the scripted-model harness of
+  `test/session-runner.test.ts`, with one session:
+  - a primary step that calls a tool and then answers;
+  - `SessionGenerate.generate` with the warming prompt;
+  - a second user message, which runs a primary step.
+- Capture the three `LLMRequest`s and assert:
+  - the ping's tools and system equal the second step's;
+  - the ping's messages without the prompt equal the second step's messages
+    without the new user message.
+- Repeat it for a session with a compaction checkpoint and for one with an
+  instruction update.
+- Run:
+  ```sh
+  bun test test/session-warming-prefix.test.ts test/plugin/warming.test.ts test/session-runner.test.ts test/session-model-request.test.ts
+  bun typecheck
+  ```
+
+**Live test** (`t16-warm`).
+- The dev home copies Opus warming "off" from the release. Turn it on there
+  only, from the dev chat:
+  `tools.instructions.set({ id: "item:defaults:/models:modeldefault:cliproxyapi/claude-opus-5-5", state: "on", interval: "2m" })`.
+- As `build` on `cliproxyapi/claude-opus-5-5`, send two messages that make it
+  run a few tool calls. Note the time.
+- Wait 5 minutes. In `$LOG`, the first `session generation usage diagnostic`
+  line after that time shows `cacheReadInputTokens` at 90% or more of
+  `inputTokens`.
+- Send a message. `tools.monitor.query({ scope: "session", sessionID, since: <send time − 5 s>, until: <send time + 30 s> })`
+  shows at least 90% read from cache.
+- Turn the dev home's warming off again.
+
 ### F7. A no-data timeout on HTTP model replies
 
 **Effort:** medium. **Packages:** `packages/ai`, `packages/core`.
@@ -666,7 +762,13 @@ Steps for `Simple-Build` or the user, through `tools.instructions`:
      another member of its kind";
    - add after the timer paragraph: "A child's provider errors reach you as
      messages while it retries (F5): read them and decide whether to wait."
-3. Restart the TUI.
+3. Turn Opus warming back on (switched off on 2026-10-04 until F16 is
+   released). Reset only the warming field, so it comes from the provider
+   config again, as before:
+   `tools.instructions.reset({ id: "item:defaults:/models:modelsetting:warming:cliproxyapi/claude-opus-5-5" })`.
+   `show` on `item:defaults:/models:modeldefault:cliproxyapi/claude-opus-5-5`
+   then reads "warm 32m · every 4m".
+4. Restart the TUI.
 
 ## Start prompts
 
@@ -684,8 +786,9 @@ When all six are landed, tell me; do not merge into plus-1.1.12.
 **`plus-1.1.12_runtime-fixes`:**
 ```text
 You are in purpose worktree plus-1.1.12_runtime-fixes of release plus-1.1.12.
-Do tasks F7–F10 of docs/plans/plus-1.1.12-team-fixes.md, in its order and by
-its rules. Land each task here with its focused tests and bun typecheck green
-and its live test run, then report per task: commit, tests, live result.
-When all four are landed, tell me; do not merge into plus-1.1.12.
+Do task F16 first (extreme priority), then F7–F10, of
+docs/plans/plus-1.1.12-team-fixes.md, in its order and by its rules. Land each
+task here with its focused tests and bun typecheck green and its live test
+run, then report per task: commit, tests, live result. Tell me the moment F16
+is landed. When all five are landed, tell me; do not merge into plus-1.1.12.
 ```

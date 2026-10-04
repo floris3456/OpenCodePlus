@@ -639,3 +639,23 @@ member's stored role record contains a `<!-- requires: … -->` line.
     13:35:39 after the unanswered `question`, therefore went out as
     `Flash-B-Worker`.
   - Fix: `plus-1.1.12-team-fixes.md` F10.
+- **Warming keeps the wrong cache warm** (measured 16:45 UTC, this chat,
+  `cliproxyapi/claude-opus-5-5`, from the `session generation usage
+  diagnostic` log lines and the monitor).
+  - Ping cache reads, as read / input:
+    - 15:24:03: 36,901 / 284,151; then 15:28 and 15:32: 284,147 / 284,151;
+    - 15:51:31: 36,901 / 287,921; then 15:55–16:03: 287,917;
+    - 16:09:50: 36,901 / 299,320; then 16:13 and 16:17: 299,316.
+  - The first real step after the pause, at 16:05, read 36,901 of 298,033
+    (11%).
+  - Earlier, the 13:05 and 13:27 pings read 8,715. That is the 73,650 → 8,715
+    drop asked about first.
+  - So a ping and a real step share only their first ~37k tokens. Each first
+    ping after new history re-sends ~250k tokens uncached, and the next real
+    message after a pause misses anyway: warming costs and saves nothing.
+  - Pings are built by `core/src/session/generate.ts` (history preview,
+    `context.request.generate`). Steps are built by `runner/llm.ts#runStep`
+    (`context.load`, `context.request.primary`). Which difference breaks the
+    prefix is not established yet.
+  - Opus warming was switched off at 16:52 UTC until the fix ships.
+  - Fix: `plus-1.1.12-team-fixes.md` F16.

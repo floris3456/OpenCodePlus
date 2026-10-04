@@ -599,10 +599,11 @@ visible from every worktree. Team cleanup removes stopped runs' worktrees after
   user's job (skill `opencodeplus-release`).
 - **Team bottleneck fixes:** researched in
   `docs/plans/plus-1.1.12-team-bottlenecks.md` (follow-up research). They are
-  planned in `plus-1.1.12-team-fixes.md` (F1–F10, in this release) and
+  planned in `plus-1.1.12-team-fixes.md` (F1–F10 and F16, in this release) and
   `plus-1.1.13-team-fixes.md` (F11–F15).
 - **Release split (decided 2026-10-04):**
-  - `plus-1.1.12` = session runtime T1–T6 plus F1–F10;
+  - `plus-1.1.12` = session runtime T1–T6 plus F1–F10 and F16 (warming
+    pings, extreme priority);
   - the Instructions and Monitor branches above move to `plus-1.1.13`, which
     lists how to merge them.
 - **Flash-Worker model (changed 2026-10-04):**
