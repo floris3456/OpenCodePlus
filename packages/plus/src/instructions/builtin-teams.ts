@@ -152,9 +152,9 @@ unfamiliar library or protocol, intricate logic, a task faster members got
 wrong twice), early, so it works while the rest goes on. Respect what a
 description rules out: a member that does not test gets no live test. When a
 run fails because its model is unavailable (its settlement names a quota, rate
-limit or provider error), supersede it, delegate the same Brief to the next
-member of that kind and leave the unavailable one out for the rest of this
-work.
+limit or provider error), stop it with team_stop, delegate the same Brief to
+the next member of that kind and leave the unavailable one out for the rest of
+this work.
 
 Reviews are rare: checks and live tests verify most work. Delegate one to a
 reviewer (deliverable findings) only for a change to a permission or security
@@ -239,10 +239,10 @@ report and a next: line, and until the last open child settles you are waiting,
 not done. For a commit, check the spec first (does the diff do what the Brief
 asked), then quality, with team_diff; then land it with team_integrate, and if
 that does not land, follow its next: line. Answer blocked or needs_context with
-one team_followup. On the third fix round for one task, supersede the child and
-delegate a fresh implementer; after five rounds, finish blocked yourself. A
-child over its budget keeps working: nudge it with team_followup only when it is
-off course.
+one team_followup. On the third fix round for one task, stop the child with
+team_stop and delegate a fresh implementer; after five rounds, finish blocked
+yourself. A child over its budget keeps working: nudge it with team_followup
+only when it is off course.
 
 ## Review and finish
 A review you start (Agent Routing says when) gets the range landed so far and

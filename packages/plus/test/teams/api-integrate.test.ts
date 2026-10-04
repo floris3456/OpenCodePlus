@@ -459,7 +459,7 @@ test("blocked report at attempt 2 is refused with E_NOT_DONE", async () => {
       const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
       expect(error.code).toBe("E_NOT_DONE")
       expect(error.message).toBe(
-        `Child w-bbbbbbbbbbbbbbbb last report is "blocked" (attempt 2). Only done/done_with_concerns can be integrated. Send a followup or supersede.`,
+        `Child w-bbbbbbbbbbbbbbbb last report is "blocked" (attempt 2). Only done/done_with_concerns can be integrated. Send a followup, or team_stop it and delegate afresh.`,
       )
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })

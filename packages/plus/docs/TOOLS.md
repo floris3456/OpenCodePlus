@@ -337,8 +337,8 @@ An unknown role is `E_ROLE` (`packages/plus/src/teams/policy.ts:25`).
 
 | Kind | Native (direct) | Code Mode |
 | --- | --- | --- |
-| planner | `delegate`, `followup`, `supersede`, `stop`, `finish` | `status`, `diff`, `list`, `get_context` |
-| orchestrator | `delegate`, `followup`, `integrate`, `set_checks`, `supersede`, `stop`, `finish` | `status`, `diff`, `list`, `get_context`, `check` |
+| planner | `delegate`, `followup`, `stop`, `finish` | `status`, `diff`, `list`, `get_context` |
+| orchestrator | `delegate`, `followup`, `integrate`, `set_checks`, `stop`, `finish` | `status`, `diff`, `list`, `get_context`, `check` |
 | implementer | `checkpoint`, `finish` | `status`, `diff`, `get_context`, `check` |
 | reviewer | `finish` | `status`, `diff`, `get_context` |
 | scout | `finish` | `status`, `diff`, `get_context` |
@@ -359,8 +359,7 @@ implementer/reviewer/scout combinations checked in the API
 | `team_integrate` | native | `IntegrateInput` (`packages/plus/src/teams/schema.ts:625`) | Enqueue a completed child commit |
 | `team_checkpoint` | native | `CheckpointInput` (`packages/plus/src/teams/schema.ts:631`) | Commit intended files after checking HEAD |
 | `team_set_checks` | native | `SetChecksInput` (`packages/plus/src/teams/schema.ts:638`) | Record the task's focused checks |
-| `team_supersede` | native | `SupersedeInput` (`packages/plus/src/teams/schema.ts:643`) | Abandon an owned child and cancel its task |
-| `team_stop` | native | `StopInput` (`packages/plus/src/teams/schema.ts:650`) | Stop an owned child |
+| `team_stop` | native | `StopInput` (`packages/plus/src/teams/schema.ts:650`) | Stop an owned child, optionally with a reason kept on the run |
 | `team_status` | Code Mode | `StatusInput` (`packages/plus/src/teams/schema.ts:655`) | Self plus direct children status; `waitingOn` names the open children a waiting run waits on (there is no `team_wait`: a settling child wakes its parent) |
 | `team_diff` | Code Mode | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff |
 | `team_list` | Code Mode | `ListInput` (`packages/plus/src/teams/schema.ts:690`) | Runs visible to this caller |
@@ -369,7 +368,7 @@ implementer/reviewer/scout combinations checked in the API
 
 Registration lines: `packages/plus/src/teams/tools.ts:343` (`delegate`),
 `:352` (`finish`), `:361` (`followup`), `:370` (`integrate`), `:379`
-(`checkpoint`), `:388` (`set_checks`), `:397` (`supersede`), `:406` (`stop`),
+(`checkpoint`), `:388` (`set_checks`), `:406` (`stop`),
 `:415` (`status`), `:433` (`diff`), `:442` (`list`), `:451`
 (`get_context`), `:460` (`check`). Every tool's permission action is
 `team.<name>` (`packages/plus/src/teams/tools.ts:483`).
@@ -390,9 +389,8 @@ Checks are at most 12, with distinct ids and explicit `bun test FILE` or
 `packages/plus/src/teams/schema.ts:196`). `followup` caps the prompt at 4000
 characters and `integrate` requires `expectedParentHead`
 (`packages/plus/src/teams/schema.ts:610`, `packages/plus/src/teams/schema.ts:627`).
-`supersede` bounds `reason` to 10–500 characters and `waitMs` to
-0–120000 (`packages/plus/src/teams/schema.ts:645`,
-`packages/plus/src/teams/schema.ts:646`).
+`stop` bounds its optional `reason` to 1–300 characters
+(`packages/plus/src/teams/schema.ts`, `StopInput`).
 
 `team_list` is scoped by role: planners see every run in the namespace, and
 every other role sees its own run plus its direct children, sorted by

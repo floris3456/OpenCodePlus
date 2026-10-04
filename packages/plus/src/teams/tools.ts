@@ -27,7 +27,6 @@ import {
   SetChecksInput,
   StatusInput,
   StopInput,
-  SupersedeInput,
   nullTolerant,
 } from "./schema.js"
 
@@ -46,8 +45,7 @@ const IntegrateDescription =
   "Land a done child's commits on your branch: rebased onto your HEAD, verified with your integration checks, then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."
 const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
-const SupersedeDescription = "Abandon a child run and cancel its task, e.g. to replace a child that is off course."
-const StopDescription = "Stop a child run now (a working child after its turn); a followup resumes it."
+const StopDescription = "Stop a child run you no longer need: now, or after its turn while it works (force ends it now)."
 const StatusDescription = "State, latest report, checks and HEAD of your run and your children."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
@@ -410,15 +408,6 @@ export async function registerTeamTools(
       options: teamOptions("set_checks", false),
       origin,
       execute: (input, context) => runGated("set_checks", input, context, ctx, state, (args, caller) => api.set_checks(args, caller)),
-    })
-    add({
-      name: "supersede",
-      description: SupersedeDescription,
-      input: SupersedeInput,
-      output: Schema.Unknown,
-      options: teamOptions("supersede", false),
-      origin,
-      execute: (input, context) => runGated("supersede", input, context, ctx, state, (args, caller) => api.supersede(args, caller)),
     })
     add({
       name: "stop",

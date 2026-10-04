@@ -1659,8 +1659,8 @@ In a chat, arrow-down to the `Team` composer tab shows runs in the current names
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
 The `team` namespace advertises only tools that work. It holds exactly
-thirteen: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
-`set_checks`, `supersede` and `stop` (native, `codemode: false`), and
+twelve: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
+`set_checks` and `stop` (native, `codemode: false`), and
 `status`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
@@ -1745,7 +1745,7 @@ refused, a requirement demands nothing, a bound is absent.
 | orchestrator target needs a reason | `perm:team_get_context:accepts.reason`, … → A reason (`E_REASON`; replaces the caller-side "Reason when delegating to an orchestrator") | the target |
 | a target may need one check, ≤5 paths | `accepts.check` → A check; `limits.paths` Brief limits → Paths per brief (5); `limits.checks` → Checks per brief (1) (`E_BRIEF`); any preset or user edit can set them | the target |
 | reviewer cannot be followed up | `perm:team_get_context:accepts.followup`, … → Corrections by followup (off: `E_NO_FOLLOWUP`) | the child |
-| Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, supersede, status, wait, diff, list; shipped off | the caller |
+| Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, status, diff, list; shipped off | the caller |
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
 | read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `run-configs`, `databases`, and the curated `perm:read:env` | core rules |
 | subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
@@ -1774,7 +1774,7 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   Where, `where.external`, glob/grep roots); `tool:shell`, `tool:question`,
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
   delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
-  `supersede`, `stop`, `status`, `list` off; Worktree committed before done and
+  `stop`, `status`, `list` off; Worktree committed before done and
   Scope paths for a commit on. Its shell's Commands list ships closed with the
   pilotty row open (Every other command off, `commands.pilotty` on), moot while
   `tool:shell` is off: a level that turns `tool:shell` and `skill:pilotty` on
@@ -1990,7 +1990,7 @@ Error codes carrying `accepted` today:
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
 - `E_BOUNDS`: `"end your turn and delegate after a child settles"` for both bounds: `In-flight limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` and `Live team runs limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
 - `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
-- `E_ROUNDS`: `"supersede and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
+- `E_ROUNDS`: `"team_stop and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
 - `E_NO_COMMIT`: `{"status":"blocked","needs":[{"kind":"info","detail":"why nothing was committed"}]}` for `done` on a commit deliverable with no commit since the base, while its row is on
 - `E_PERMISSION` (from `team_check`): `{"status":"blocked","needs":[{"kind":"check","detail":"<check id>"}]}` when the caller's Checks it may run row for that check's family is off
@@ -2670,7 +2670,7 @@ the shipped limits):
 | `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
 | `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |
 | `team_set_checks` | Check commands (input `checks[].argv`) · Approval |
-| `team_supersede`, `team_stop` | Approval |
+| `team_stop` | Approval |
 | `team_status` | — |
 | `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |
 | `team_list` | Parameters (`all`) |
@@ -2695,7 +2695,7 @@ for a commit, Plan files only, A reason, A check, Corrections by followup) ·
 Brief limits (Paths per brief 5, Checks per brief 1, shipped off);
 `team_delegate` Access (Delegate from a delegated run) before its other
 categories; Runs (Deeper descendants, Any other run, shipped off) on
-`followup`, `stop`, `supersede`, `status`, `diff` and `list`;
+`followup`, `stop`, `status`, `diff` and `list`;
 `team_finish` Requirements for done gains Worktree committed before done
 (shipped off). read's Where gains `external` (a rule row on
 `external_directory`), edit gains Files it may change (listed under write and

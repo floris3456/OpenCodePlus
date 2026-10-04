@@ -83,7 +83,6 @@ const teamToolIds = [
   "integrate",
   "checkpoint",
   "set_checks",
-  "supersede",
   "stop",
   "status",
   "diff",
