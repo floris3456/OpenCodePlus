@@ -53,6 +53,49 @@ test("config reads and update refreshes are opt-in", async () => {
   }
 })
 
+test.each(["agent", "command"] as const)("%s.updated refreshes only a location the store already loaded", async (kind) => {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const requests: string[] = []
+  const location = { directory: "/project" }
+  const catalog = `/api/${kind}`
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      requests.push(new URL(request.url).pathname)
+      if (new URL(request.url).pathname === "/api/location") return Response.json(location)
+      return Response.json({ location, data: [] })
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: location.directory,
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    dispose,
+  }))
+  const event: OpenCodeEvent = { id: `evt_${kind}`, created: 1, type: `${kind}.updated`, location, data: {} }
+  try {
+    listeners.forEach((listener) => listener({ name: event.type, details: event }))
+    expect(requests).not.toContain(catalog)
+
+    await setup.data.location[kind].sync()
+    expect(requests.filter((path) => path === catalog)).toHaveLength(1)
+    listeners.forEach((listener) => listener({ name: event.type, details: event }))
+    await setup.data.location[kind].sync()
+    expect(requests.filter((path) => path === catalog)).toHaveLength(2)
+  } finally {
+    setup.dispose()
+  }
+})
+
 test("event refreshes report failures, remain retryable, and preserve explicit read errors", async () => {
   const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
   const reported = Promise.withResolvers<unknown>()

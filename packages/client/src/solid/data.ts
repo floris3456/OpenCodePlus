@@ -1207,19 +1207,29 @@ export function createData(config: CreateDataInput) {
     switch (event.type) {
       case "provider.updated":
         result.location.provider.invalidate(location)
-        refresh(() => result.location.provider.sync(location))
+        if (
+          result.location.provider.list(location) !== undefined ||
+          sync.has(`location.provider:${locationKey(location)}`)
+        )
+          refresh(() => result.location.provider.sync(location))
         break
       case "model.updated":
         result.location.model.invalidate(location)
-        refresh(() => result.location.model.sync(location))
+        if (result.location.model.list(location) !== undefined || sync.has(`location.model:${locationKey(location)}`))
+          refresh(() => result.location.model.sync(location))
         break
       case "agent.updated":
         result.location.agent.invalidate(location)
-        refresh(() => result.location.agent.sync(location))
+        if (result.location.agent.list(location) !== undefined || sync.has(`location.agent:${locationKey(location)}`))
+          refresh(() => result.location.agent.sync(location))
         break
       case "command.updated":
         result.location.command.invalidate(location)
-        refresh(() => result.location.command.sync(location))
+        if (
+          result.location.command.list(location) !== undefined ||
+          sync.has(`location.command:${locationKey(location)}`)
+        )
+          refresh(() => result.location.command.sync(location))
         break
       case "skill.updated":
         result.location.skill.invalidate(location)
