@@ -1,11 +1,11 @@
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { Headers, HttpClientRequest } from "effect/unstable/http"
 import { Auth } from "../auth.js"
 import { render as renderEndpoint } from "../endpoint.js"
 import { Framing } from "../framing.js"
-import type { HttpMiddleware, Transport, TransportPrepareInput } from "./index.js"
+import type { HttpMiddleware, Transport, TransportExecuteOptions, TransportPrepareInput } from "./index.js"
 import * as ProviderShared from "../../protocols/shared.js"
-import { mergeJsonRecords, type LLMRequest } from "../../schema/index.js"
+import { AIError, mergeJsonRecords, TransportError, type LLMRequest } from "../../schema/index.js"
 import { RequestExecutor } from "../executor.js"
 
 export type JsonRequestInput<Body> = TransportPrepareInput<Body>
@@ -87,11 +87,50 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
         middleware: prepareInput.middleware,
       }
     }),
-  execute: (prepared, _request, runtime) =>
+  execute: (prepared, _request, runtime, options?: TransportExecuteOptions) =>
     Effect.gen(function* () {
-      const response = yield* runtime.http.execute(prepared.request, prepared.middleware)
+      const response = yield* options?.idleTimeout
+        ? Effect.timeoutOrElse(runtime.http.execute(prepared.request, prepared.middleware), {
+            duration: options.idleTimeout,
+            orElse: () =>
+              Effect.fail(
+                new AIError({
+                  reason: new TransportError({
+                    message: "Timed out waiting for HTTP response headers",
+                    transport: "http",
+                    code: "idle-timeout",
+                    operation: "request",
+                    phase: "receive",
+                    delivery: "ambiguous",
+                    url: prepared.request.url,
+                  }),
+                }),
+              ),
+          })
+        : runtime.http.execute(prepared.request, prepared.middleware)
+      const rawStream = RequestExecutor.responseStream(response)
+      const byteStream = options?.idleTimeout
+        ? Stream.timeoutOrElse(rawStream, {
+            duration: options.idleTimeout,
+            orElse: () =>
+              Stream.fail(
+                new AIError({
+                  reason: new TransportError({
+                    message: "Timed out waiting for HTTP response data",
+                    transport: "http",
+                    code: "idle-timeout",
+                    operation: "read",
+                    phase: "receive",
+                    delivery: "accepted",
+                    url: prepared.request.url,
+                    http: RequestExecutor.responseHttp(response),
+                  }),
+                }),
+              ),
+          })
+        : rawStream
       return {
-        frames: prepared.framing.frame(RequestExecutor.responseStream(response)),
+        frames: prepared.framing.frame(byteStream),
         http: RequestExecutor.responseHttp(response),
         body: prepared.framing.body,
       }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Logger } from "effect"
+import { TestClock } from "effect/testing"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Database } from "@opencode/core/database/database"
@@ -46,5 +47,33 @@ describe("EventLogger", () => {
       ["event", { event: expect.objectContaining({ type: "command.updated" }) }],
       ["event", { event: expect.objectContaining({ type: "config.updated" }) }],
     ])
+  })
+
+  test("coalesces repeated events of one type into a counted line per window", async () => {
+    const output = new Array<ReturnType<typeof Logger.formatStructured.log>>()
+    const logger = Logger.map(Logger.formatStructured, (entry) => {
+      output.push(entry)
+    })
+    const lines = () =>
+      output.flatMap((entry) => (Array.isArray(entry.message) && entry.message[0] === "event" ? [entry.message] : []))
+
+    await Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      for (let index = 0; index < 100; index++) yield* bus.publish(Agent.Event.Updated, {})
+      expect(lines()).toEqual([["event", { event: expect.objectContaining({ type: "agent.updated" }) }]])
+
+      yield* TestClock.adjust("10 seconds")
+      yield* Effect.yieldNow
+      expect(lines()).toEqual([
+        ["event", { event: expect.objectContaining({ type: "agent.updated" }) }],
+        ["event", { event: expect.objectContaining({ type: "agent.updated" }), count: 99 }],
+      ])
+    }).pipe(
+      Effect.provide(AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, EventLogger.node]))),
+      Effect.provide(Logger.layer([logger])),
+      Effect.provide(TestClock.layer()),
+      Effect.scoped,
+      Effect.runPromise,
+    )
   })
 })

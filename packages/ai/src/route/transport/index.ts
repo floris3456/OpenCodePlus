@@ -1,4 +1,4 @@
-import type { Effect, Scope, Stream } from "effect"
+import type { Duration, Effect, Scope, Stream } from "effect"
 import { Endpoint } from "../endpoint.js"
 import { Auth } from "../auth.js"
 import type { HttpMiddleware, Interface as RequestExecutorInterface } from "../executor.js"
@@ -19,6 +19,7 @@ export interface TransportExecution<Frame> {
 
 export interface TransportExecuteOptions {
   readonly webSocket?: WebSocketChannelExecutor
+  readonly idleTimeout?: Duration.Input
 }
 
 export interface Transport<Body, Prepared, Frame> {

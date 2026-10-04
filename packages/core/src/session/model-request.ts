@@ -24,7 +24,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import type { Content } from "@opencode/schema/tool"
-import { Cause, Context, Effect, Layer, Result, Stream } from "effect"
+import { Cause, Context, type Duration, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { App } from "../app.js"
@@ -61,6 +61,7 @@ const OUTPUT_TOKEN_MIN = 1_024
 // refuses it once it declares any.
 const FREE_TIER_TOOLS = ["shell", "read"]
 const FREE_TIER_PLACEHOLDER = "Not available to you. Never call this tool."
+const HTTP_IDLE_TIMEOUT: Duration.Input = "10 minutes"
 
 /** Tool errors, plus the user declining a permission or dismissing a question. */
 export type ExecuteError = Tool.Error | Permission.DeclinedError | QuestionTool.CancelledError
@@ -414,7 +415,11 @@ export const layer = Layer.effect(
       return {
         event: shaped,
         request,
-        options: { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
+        options: {
+          ...(http ? { http } : {}),
+          ...(webSocket ? { webSocket } : {}),
+          idleTimeout: model.chunkTimeout ?? HTTP_IDLE_TIMEOUT,
+        },
         retry: (event: Parameters<Prepared["retry"]>[0]) =>
           hooks.trigger("session", "retry", event).pipe(Effect.asVoid),
         // Permission.assert and the question tool throw declines as defects so tools cannot

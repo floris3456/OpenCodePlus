@@ -256,6 +256,7 @@ test("enabling a team from the server side activates it and selects its first in
     ui: {
       toast: { show: () => {} },
       slot: () => () => {},
+      router: { current: () => ({ type: "home" }) },
       agents: {
         groups: () => () => {},
         activeGroup: { current: () => activeGroupSignal(), set: (id: string | undefined) => setActiveGroupSignal(id) },
@@ -292,6 +293,73 @@ test("enabling a team from the server side activates it and selects its first in
   expect(activeGroupSignal()).toBe("team:project:beta")
   expect(selected).toEqual(["tester", "designer"])
   expect(manager.activeTeam()?.team).toBe("beta")
+  manager.dispose()
+})
+
+test("enabling a team from the server side does not change the agent when a session route is active", async () => {
+  const teamListeners = new Set<() => void>()
+  const [activeGroupSignal, setActiveGroupSignal] = createSignal<string | undefined>(undefined)
+  const selected: string[] = []
+  let rawStorage: Record<string, any> = { activeTeamByProject: {} }
+  const [storageState, setStorageState] = createStore<Record<string, any>>(rawStorage)
+  const fakeTeams = [
+    { level: "project" as const, team: "alpha", enabled: false, members: [{ id: "coder", mode: "primary" as const }, { id: "tester", mode: "primary" as const }] },
+  ]
+  const context: any = {
+    location: { directory: "/my/project" },
+    data: {
+      location: {
+        default: () => ({ directory: "/my/project" }),
+        agent: { list: () => [{ id: "tester", mode: "primary" }, { id: "build", mode: "primary" }] },
+      },
+    },
+    client: {
+      rpc: () => ({
+        "team.list": async () => ({ teams: fakeTeams.map((t) => ({ ...t, members: t.members.map((m) => ({ ...m })) })) }),
+        events: {
+          on: (event: string, handler: () => void) => {
+            if (event === "teams.changed") teamListeners.add(handler)
+            return () => teamListeners.delete(handler)
+          },
+        },
+      }),
+    },
+    storage: {
+      store: () => [
+        storageState,
+        (mutation: (draft: any) => void) => {
+          const draft = structuredClone(rawStorage)
+          mutation(draft)
+          rawStorage = draft
+          setStorageState(draft)
+          return Promise.resolve()
+        },
+      ],
+    },
+    theme: { text: { subdued: "gray" } },
+    ui: {
+      toast: { show: () => {} },
+      slot: () => () => {},
+      router: {
+        current: () => ({ type: "session", sessionID: "ses_1" }),
+      },
+      agents: {
+        groups: () => () => {},
+        activeGroup: { current: () => activeGroupSignal(), set: (id: string | undefined) => setActiveGroupSignal(id) },
+        set: (id: string) => selected.push(id),
+      },
+    },
+  }
+  const manager = createActiveTeam(context)
+  await new Promise((r) => setTimeout(r, 10))
+  expect(activeGroupSignal()).toBeUndefined()
+  expect(selected).toEqual([])
+
+  fakeTeams[0]!.enabled = true
+  for (const listener of teamListeners) listener()
+  await new Promise((r) => setTimeout(r, 10))
+  expect(activeGroupSignal()).toBe("team:project:alpha")
+  expect(selected).toEqual([])
   manager.dispose()
 })
 

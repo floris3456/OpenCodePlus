@@ -52,6 +52,7 @@ export const resolved = (
     readonly limit: Model.Info["limit"]
     readonly compaction?: Provider.Compaction
     readonly transport?: Provider.Transport
+    readonly chunkTimeout?: number
   },
 ): Resolved => ({
   model,
@@ -65,6 +66,7 @@ export const resolved = (
   limit: options.limit,
   compaction: options.compaction,
   transport: options.transport,
+  chunkTimeout: options.chunkTimeout,
 })
 
 const layer = Layer.effect(

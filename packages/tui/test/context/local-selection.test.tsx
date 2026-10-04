@@ -147,6 +147,29 @@ test("same-model agent switches clear drafts without a model acknowledgment", as
   expect(setup.local.model.current()?.modelID).toBe("second")
 })
 
+test("a session whose agent is not in the active group still reports that agent from current", async () => {
+  await using setup = await renderLocal({
+    models: [model("first")],
+    agents: [agent("build"), agent("astra-planner"), agent("astra-reviewer")],
+    sessions: [session("ses_first", { providerID: "provider", id: "first" }, "build")],
+  })
+  await setup.data.session.sync("ses_first")
+  setup.route.navigate({ type: "session", sessionID: "ses_first" })
+
+  setup.local.agent.groups(() => [
+    {
+      id: "team:opencodeplus",
+      label: "Team: opencodeplus",
+      agents: ["astra-planner", "astra-reviewer"],
+    },
+  ])
+
+  setup.local.agent.activeGroup.set("team:opencodeplus")
+  expect(setup.local.agent.activeGroup.current()).toBe("team:opencodeplus")
+  expect(setup.local.agent.list().map((a) => a.id)).toEqual(["astra-planner", "astra-reviewer"])
+  expect(setup.local.agent.current()?.id).toBe("build")
+})
+
 async function publishSelection(
   setup: Awaited<ReturnType<typeof renderLocal>>,
   agent: string,

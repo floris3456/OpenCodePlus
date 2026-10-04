@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema, Stream } from "effect"
+import { Deferred, Effect, Fiber, Schema, Stream } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import * as OpenAIChat from "../src/protocols/openai-chat.js"
 import { AIError, HttpContext, InvalidProviderOutputError, LLM } from "../src/index.js"
 import { Anthropic } from "../src/providers.js"
 import { Auth, Framing, HttpTransport, LLMClient, Route } from "../src/route.js"
-import { fixedResponse, truncatedStream } from "./lib/http.js"
+import { fixedResponse, handlerLayer, runtimeLayer, truncatedStream } from "./lib/http.js"
 import { sseEvents } from "./lib/sse.js"
 import { it } from "./lib/effect.js"
+import { isRetryable } from "../src/provider-error.js"
 
 describe("Route.with", () => {
   test("merges endpoint query and header defaults while replacing auth and id", () => {
@@ -225,6 +227,105 @@ describe("Route diagnostics", () => {
       expect(error.reason).toMatchObject({ _tag: "InvalidProviderOutput", classification: "incomplete-stream" })
       expect(error.reason.http?.headers).toEqual(headers)
       expect(error.reason.body).toBeUndefined()
+    }),
+  )
+})
+
+describe("HTTP idle timeout", () => {
+  const route = OpenAIChat.route.with({ endpoint: { baseURL: "https://provider.test/v1" } })
+  const request = LLM.request({ model: route.model({ id: "test" }), prompt: "Hello" })
+  const headers = { "content-type": "text/event-stream" }
+
+  it.effect("a body that sends one SSE chunk and then nothing fails with Transport idle-timeout, and isRetryable is true", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>()
+      const chunk = new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+      const hangingStream = Stream.make(chunk).pipe(Stream.concat(Stream.never))
+      const layer = runtimeLayer(
+        handlerLayer((input) => {
+          const res = input.respond(null, { headers })
+          Object.defineProperty(res, "stream", { get: () => hangingStream })
+          return Deferred.succeed(started, undefined).pipe(Effect.as(res))
+        }),
+      )
+
+      const fiber = yield* LLMClient.generate(request, { idleTimeout: "5 seconds" }).pipe(
+        Effect.provide(layer),
+        Effect.forkChild,
+      )
+      yield* Deferred.await(started)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("5 seconds")
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+
+      expect(error.reason).toMatchObject({
+        _tag: "Transport",
+        code: "idle-timeout",
+        operation: "read",
+        phase: "receive",
+        delivery: "accepted",
+      })
+      expect(isRetryable(error)).toBe(true)
+    }),
+  )
+
+  it.effect("headers that never arrive fail with operation: request", () =>
+    Effect.gen(function* () {
+      const layer = runtimeLayer(handlerLayer(() => Effect.never))
+
+      const fiber = yield* LLMClient.generate(request, { idleTimeout: "5 seconds" }).pipe(
+        Effect.provide(layer),
+        Effect.forkChild,
+      )
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("5 seconds")
+      const error = yield* Fiber.join(fiber).pipe(Effect.flip)
+
+      expect(error.reason).toMatchObject({
+        _tag: "Transport",
+        code: "idle-timeout",
+        operation: "request",
+        phase: "receive",
+        delivery: "ambiguous",
+      })
+      expect(isRetryable(error)).toBe(true)
+    }),
+  )
+
+  it.effect("a body that keeps sending : ping lines never times out", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>()
+      const ping = new TextEncoder().encode(": ping\n\n")
+      const done = new TextEncoder().encode(
+        'data: {"choices":[{"delta":{"content":"completed"},"finish_reason":"stop"}]}\n\n',
+      )
+      const stream = Stream.concat(
+        Stream.fromEffect(Effect.sleep("2 seconds").pipe(Effect.as(ping))),
+        Stream.fromEffect(Effect.sleep("2 seconds").pipe(Effect.as(ping))),
+      ).pipe(
+        Stream.concat(Stream.fromEffect(Effect.sleep("2 seconds").pipe(Effect.as(ping)))),
+        Stream.concat(Stream.fromEffect(Effect.sleep("2 seconds").pipe(Effect.as(done)))),
+      )
+      const layer = runtimeLayer(
+        handlerLayer((input) => {
+          const res = input.respond(null, { headers })
+          Object.defineProperty(res, "stream", { get: () => stream })
+          return Deferred.succeed(started, undefined).pipe(Effect.as(res))
+        }),
+      )
+
+      const fiber = yield* LLMClient.generate(request, { idleTimeout: "5 seconds" }).pipe(
+        Effect.provide(layer),
+        Effect.forkChild,
+      )
+      yield* Deferred.await(started)
+      for (let i = 0; i < 4; i++) {
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("2 seconds")
+      }
+      const response = yield* Fiber.join(fiber)
+
+      expect(response.text).toBe("completed")
     }),
   )
 })

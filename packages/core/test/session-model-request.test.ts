@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import { Message, ToolResultPart, Media } from "@opencode/ai"
-import { boundImages, unsupportedParts } from "@opencode/core/session/model-request"
+import { OpenAIChat } from "@opencode/ai/protocols"
+import { Agent } from "@opencode/schema/agent"
+import { Money } from "@opencode/schema/money"
+import { Session } from "@opencode/schema/session"
+import { Location } from "@opencode/core/location"
+import { Project } from "@opencode/core/project"
+import { AbsolutePath } from "@opencode/core/schema"
+import { boundImages, SessionModelRequest, unsupportedParts } from "@opencode/core/session/model-request"
+import { SessionModelTransport } from "@opencode/core/session/model-transport"
+import { SessionRunnerModel } from "@opencode/core/session/runner/model"
+import { DateTime, Effect } from "effect"
+import { testEffect } from "./lib/effect"
+import { PluginTestLayer } from "./plugin/fixture"
+
+const it = testEffect(PluginTestLayer)
 
 const capabilities = (input: string[]) => ({ tools: true, input, output: ["text"] })
 
@@ -111,4 +125,57 @@ describe("SessionModelRequest.boundImages", () => {
       },
     })
   })
+})
+
+const testSession = Session.Info.make({
+  id: Session.ID.make("ses_idle_timeout"),
+  projectID: Project.ID.global,
+  cost: Money.USD.zero,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
+  location: Location.Ref.make({ directory: AbsolutePath.make("/project") }),
+})
+
+const makeModel = (chunkTimeout?: number) =>
+  SessionRunnerModel.resolved(OpenAIChat.route.model({ id: "gpt-5.5", provider: "test" }), {
+    capabilities: { tools: true, input: ["text"], output: ["text"] },
+    cost: [],
+    limit: { context: 200_000, output: 32_000 },
+    chunkTimeout,
+  })
+
+const testTransport = SessionModelTransport.Service.of({
+  bind: () => ({ execute: () => Effect.die("unused WebSocket execution") }),
+  close: () => Effect.void,
+  closeAll: Effect.void,
+})
+
+describe("SessionModelRequest.idleTimeout", () => {
+  it.effect("prepares options.idleTimeout as '10 minutes' by default", () =>
+    Effect.gen(function* () {
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const prepared = yield* requests.primary({
+        session: testSession,
+        agent: Agent.ID.make("build"),
+        model: makeModel(),
+        system: [],
+        messages: [],
+      })
+      expect(prepared.options.idleTimeout).toBe("10 minutes")
+    }).pipe(Effect.provideService(SessionModelTransport.Service, testTransport)),
+  )
+
+  it.effect("prepares options.idleTimeout as chunkTimeout when set", () =>
+    Effect.gen(function* () {
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const prepared = yield* requests.primary({
+        session: testSession,
+        agent: Agent.ID.make("build"),
+        model: makeModel(20_000),
+        system: [],
+        messages: [],
+      })
+      expect(prepared.options.idleTimeout).toBe(20_000)
+    }).pipe(Effect.provideService(SessionModelTransport.Service, testTransport)),
+  )
 })

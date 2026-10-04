@@ -176,7 +176,8 @@ export function createActiveTeam(context: Plugin.Context) {
       // group alone is set and current() falls back to the ring's first entry.
       const first = members.find((id) => hostAgents.some((a) => a.id === id))
       context.ui.agents.activeGroup.set(enabledId)
-      if (first !== undefined) context.ui.agents.set?.(first)
+      // An open chat keeps its agent; only the home screen follows the new ring.
+      if (first !== undefined && context.ui.router.current().type !== "session") context.ui.agents.set?.(first)
     })
 
     let previousActiveTeamName: string | undefined = undefined

@@ -1,17 +1,15 @@
 export * as SessionGenerate from "./generate.js"
 
-import { LLMClient, Message, type AIError } from "@opencode/ai"
+import { LLMClient, LLMRequest, Message, type AIError } from "@opencode/ai"
 import type { Model } from "@opencode/schema/model"
 import { Effect } from "effect"
 import { Agent } from "../agent.js"
-import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
 import { Plugin } from "../plugin/service.js"
 import type { Instructions } from "../instructions/index.js"
 import { SessionContext } from "./context.js"
 import { AgentNotFoundError } from "./error.js"
-import { SessionHistory } from "./history.js"
-import { SessionProviderContext } from "./provider-context.js"
+import { SessionCompaction } from "./compaction.js"
 import { SessionModelRequest } from "./model-request.js"
 import type { SessionRunnerModel } from "./runner/model.js"
 import type { SessionSchema } from "./schema.js"
@@ -28,48 +26,43 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
   model?: Model.Ref
 }) {
   const instances = yield* Instance.Service
-  const database = yield* Database.Service
   const llm = yield* LLMClient.Service
 
   return yield* Effect.gen(function* () {
     yield* Plugin.awaitActivation
     const context = yield* SessionContext.Service
     const selection = yield* context.select(input.session.id, input.agent)
-    const agent = selection.agent
-    const model = yield* context.resolveModel(
-      input.model === undefined ? selection.session : { ...selection.session, model: input.model },
-    )
-    const history = yield* SessionHistory.preview(
-      database.db,
-      selection.session.id,
-      selection.instructions,
-      SessionProviderContext.provenance(model) ?? "local",
+    const loaded = yield* context.load(
+      input.model === undefined ? selection : { ...selection, session: { ...selection.session, model: input.model } },
+      "preview",
     )
     const transcript = SessionModelRequest.baseTranscript({
-      agent: agent.info,
-      model,
-      tools: selection.tools,
-      initial: history.initial,
-      messages: history.messages,
+      agent: loaded.agent.info,
+      model: loaded.model,
+      tools: loaded.tools,
+      initial: loaded.initial,
+      messages: loaded.messages,
     })
-    const prepared = yield* context.request.generate({
-      session: selection.session,
-      agent: agent.id,
-      model,
-      tools: selection.tools,
+    const prepared = yield* context.request.primary({
+      session: loaded.session,
+      agent: loaded.agent.id,
+      model: loaded.model,
+      tools: loaded.tools,
       system: transcript.system,
-      messages: [
-        ...transcript.messages,
-        ...(history.instructionUpdate ? [Message.system(history.instructionUpdate)] : []),
-        Message.user(input.prompt),
-      ],
+      messages: transcript.messages,
+      inputTokens: SessionCompaction.estimatePrompt(loaded),
+    })
+    // Run all primary content transforms first, then append the private prompt. Never
+    // bind the durable runner's stateful WebSocket to this throwaway response.
+    const request = LLMRequest.update(prepared.request, {
+      messages: [...prepared.request.messages, Message.user(input.prompt)],
     })
     yield* Effect.logInfo("sending session generation request", {
       sessionID: selection.session.id,
-      providerID: model.ref.providerID,
-      modelID: model.ref.id,
+      providerID: loaded.model.ref.providerID,
+      modelID: loaded.model.ref.id,
     })
-    const response = yield* llm.generate(prepared.request, prepared.options)
+    const response = yield* llm.generate(request, prepared.options)
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))

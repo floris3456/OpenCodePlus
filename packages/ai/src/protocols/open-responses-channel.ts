@@ -178,7 +178,8 @@ export const transport = <Body>(options: Options): Transport<Body, Prepared, str
       }),
     execute: (prepared, request, runtime, executeOptions) =>
       Effect.gen(function* () {
-        if (!executeOptions?.webSocket || !prepared.channel) return yield* http.execute(prepared.http, request, runtime)
+        if (!executeOptions?.webSocket || !prepared.channel)
+          return yield* http.execute(prepared.http, request, runtime, executeOptions)
         let fallbackHttp: HttpContext | undefined
         const exchange: WebSocketChannelExchange = {
           id: request.id ?? "request",
@@ -189,7 +190,7 @@ export const transport = <Body>(options: Options): Transport<Body, Prepared, str
           },
           fallback: () =>
             Stream.unwrap(
-              http.execute(prepared.http, request, runtime).pipe(
+              http.execute(prepared.http, request, runtime, executeOptions).pipe(
                 Effect.map((execution) => {
                   fallbackHttp = execution.http
                   return execution.frames
