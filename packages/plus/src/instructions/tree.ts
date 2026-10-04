@@ -36,6 +36,7 @@ import type {
   SplitRecord,
   TeamRef,
 } from "./model.js"
+import { categoryByItem, categorySlug, orderedCategories, type CategoryRecord } from "./categories.js"
 import { fromLabel } from "./from-label.js"
 import {
   hostModelOf,
@@ -133,6 +134,7 @@ export type AddKind =
   | "rule"
   | "preset"
   | "team-preset"
+  | "category"
 
 /**
  * What an agent, team, member, entry or preset row stands for: the owner of
@@ -884,8 +886,8 @@ function lazyPresetTeam(ctx: BuildContext, memo: Memo, entry: PresetEntry): Lazy
 // them: `{ level: "defaults", agent: null }` is the one address the resolution
 // chain falls through to, so an inventory row at any other level would address
 // records no agent ever reads.
-function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, depth: number): Lazy[] {
-  return [
+function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, depth: number): readonly Lazy[] {
+  return withUserCategories(memo, `group:defaults:${ownerSegment(null, catalogue)}`, depth, [
     lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyControls(memo, "compaction", "defaults", null, depth, undefined, catalogue),
@@ -893,7 +895,98 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
     lazyBase(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySystem(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyMcpInventory(ctx, memo, catalogue, depth),
+  ])
+}
+
+// The built-in category tabs every owner has, in order, then the user's own
+// categories after them. A row assigned to a user category is dropped from its
+// home subtree (with its children) and listed under the category instead, in
+// every owner's list. No categories: the home groups are returned untouched so
+// the existing tree is byte-identical.
+function withUserCategories(
+  memo: Memo,
+  prefix: string,
+  depth: number,
+  groups: readonly Lazy[],
+): readonly Lazy[] {
+  const categories = memo.ctx.categories
+  if (categories.length === 0) return groups
+  const byItem = categoryByItem(categories)
+  return [
+    ...groups.map((group) => dropAssigned(group, byItem)),
+    ...orderedCategories(categories).map((category) => userCategoryGroup(memo, prefix, depth, category, groups, byItem)),
   ]
+}
+
+function userCategoryGroup(
+  memo: Memo,
+  prefix: string,
+  depth: number,
+  category: CategoryRecord,
+  homeGroups: readonly Lazy[],
+  byItem: ReadonlyMap<string, string>,
+): Lazy {
+  return branch(memo, {
+    kind: "group",
+    id: `${prefix}:category:${categorySlug(category.name)}`,
+    label: category.name,
+    depth,
+    actions: noActions(),
+    children: () => collectAssigned(homeGroups, category.name, byItem, depth + 1),
+  })
+}
+
+// The item a row stands for, when it is a whole row (never a section) and an
+// assignment names it. Group rows have no address and are never assignable.
+function assignedCategory(lazy: Lazy, byItem: ReadonlyMap<string, string>): string | undefined {
+  const address = lazy.address
+  if (address === undefined || address.section !== null) return undefined
+  return byItem.get(address.item)
+}
+
+// Rebuild the home subtrees without the assigned rows: dropping a row drops its
+// whole subtree, and the filter runs at each level so nothing assigned survives
+// under an unrelated group either.
+function dropAssigned(lazy: Lazy, byItem: ReadonlyMap<string, string>): Lazy {
+  return {
+    ...lazy,
+    children: () =>
+      lazy
+        .children()
+        .filter((child) => assignedCategory(child, byItem) === undefined)
+        .map((child) => dropAssigned(child, byItem)),
+  }
+}
+
+// The assigned rows, in home tree order, flattened under the category so a
+// moved row lists directly under it. Depths are rebased so the row and its
+// descendants render at the category's own indent.
+function collectAssigned(
+  groups: readonly Lazy[],
+  name: string,
+  byItem: ReadonlyMap<string, string>,
+  targetDepth: number,
+): Lazy[] {
+  const out: Lazy[] = []
+  const visit = (lazy: Lazy) => {
+    if (assignedCategory(lazy, byItem) === name) {
+      out.push(rebase(lazy, targetDepth - lazy.depth))
+      return
+    }
+    if (lazy.kind === "section") return
+    for (const child of lazy.children()) visit(child)
+  }
+  for (const group of groups) visit(group)
+  return out
+}
+
+function rebase(lazy: Lazy, delta: number): Lazy {
+  if (delta === 0) return lazy
+  return {
+    ...lazy,
+    depth: lazy.depth + delta,
+    children: () => lazy.children().map((child) => rebase(child, delta)),
+  }
 }
 
 // Owner segment of a row id. An agent owns its own segment; a shared
@@ -993,14 +1086,15 @@ function lazyOwnerRow(
     depth: row.depth,
     ...(row.owner === undefined ? {} : { owner: row.owner }),
     actions: { ...noActions(), remove: row.remove },
-    children: () => [
-      lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
-      lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-      lazyControls(memo, "compaction", row.level, row.id, row.depth + 1),
-      lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-      lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-      lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-    ],
+    children: () =>
+      withUserCategories(memo, `group:${row.level}:${row.id}`, row.depth + 1, [
+        lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
+        lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
+        lazyControls(memo, "compaction", row.level, row.id, row.depth + 1),
+        lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
+        lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
+        lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
+      ]),
   }), row.level, row.id)
 }
 
@@ -1120,8 +1214,19 @@ function lazyPlusAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     depth: 2,
     actions: noActions(),
     children: () =>
-      ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "plus").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "plus" && !isTeamMemberEcho(ctx, level, agent))
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
   })
+}
+
+// An installed team member is not a Defaults agent: the host echoes it as an
+// unbacked defaults agent. Keep the echo in ctx.agents (a team member's Models
+// resolve through it) but do not list it under Defaults › Agents (T5); it
+// already renders under its own team.
+function isTeamMemberEcho(ctx: BuildContext, level: Level, agent: AgentSource): boolean {
+  if (level !== "defaults" || agent.path !== undefined) return false
+  return ctx.teams.some((team) => team.enabled && team.agents.includes(agent.id))
 }
 
 function lazyUserAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
@@ -1133,7 +1238,9 @@ function lazyUserAgents(ctx: BuildContext, memo: Memo, level: Level): Lazy {
     add: "agent",
     actions: noActions(),
     children: () => [
-      ...ctx.agents.filter((agent) => agent.scope === level && agentOriginOf(agent) === "user").map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
+      ...ctx.agents
+        .filter((agent) => agent.scope === level && agentOriginOf(agent) === "user" && !isTeamMemberEcho(ctx, level, agent))
+        .map((agent) => lazyAgent(ctx, memo, level, agent, 3)),
       ...(level === "defaults" ? agentEntries(ctx).map((entry) => lazyEntryAgent(ctx, memo, entry)) : []),
     ],
   })
@@ -1300,14 +1407,15 @@ function lazyTeamMember(
     // is a different resolved answer, so the rows carry their own ids under
     // the member's `<team>/:<member>` owner path instead of colliding with
     // the stand-alone agent's.
-    children: () => [
-      lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
-      lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
-      lazyControls(memo, "compaction", level, owner, depth + 1, teamRef, "teams", memberPath),
-      lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
-      lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
-      lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
-    ],
+    children: () =>
+      withUserCategories(memo, memberGroup, depth + 1, [
+        lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
+        lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
+        lazyControls(memo, "compaction", level, owner, depth + 1, teamRef, "teams", memberPath),
+        lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
+        lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
+        lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
+      ]),
   }), level, owner, teamRef, "teams", memberPath)
 }
 
@@ -1341,14 +1449,15 @@ function lazyTeamSpecialAgent(
     label: agent.id,
     depth: 4,
     actions: noActions(),
-    children: () => [
-      lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
-      lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
-      lazyControls(memo, "compaction", level, owner, 5, teamRef, "teams", specialPath),
-      lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
-      lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
-      lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
-    ],
+    children: () =>
+      withUserCategories(memo, specialGroup, 5, [
+        lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
+        lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
+        lazyControls(memo, "compaction", level, owner, 5, teamRef, "teams", specialPath),
+        lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
+        lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
+        lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
+      ]),
   }), level, owner, teamRef, "teams", specialPath)
 }
 

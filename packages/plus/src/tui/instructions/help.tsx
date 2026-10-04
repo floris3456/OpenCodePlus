@@ -37,14 +37,16 @@ export const HELP: readonly HelpGroup[] = [
       ["p", "pin a Code Mode tool"],
       ["w", "shown when: send a system row or section only while chosen rows are on"],
       ["s", "split text into sections"],
+      ["m", "move a row (with its children) into one of your categories, or back home"],
+      ["R", "rename a user category"],
     ],
   ],
   [
     "Create and link",
     [
-      ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section"],
+      ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section, category"],
       ["l", "link an agent, member, team, entry or User preset to a preset (or unlink)"],
-      ["d", "delete (asks first)"],
+      ["d", "delete (asks first; a user category's rows go home)"],
     ],
   ],
   [

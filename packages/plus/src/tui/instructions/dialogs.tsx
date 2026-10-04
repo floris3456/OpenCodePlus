@@ -11,6 +11,7 @@ import {
   type ModelSettingsField,
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
+import { homeCategoryLabel, orderedCategories } from "../../instructions/categories.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { displayLevel } from "./detail-pane.js"
@@ -73,6 +74,7 @@ export function createInstructionsDialogs(
           { title: "Team", value: "team" },
           { title: "Model", value: "model" },
           { title: "Permission rule", value: "rule" },
+          { title: "Category", value: "category" },
         ],
       })
       if (disposed) return
@@ -107,6 +109,7 @@ export function createInstructionsDialogs(
     if (kind === "section") return addSection(node)
     if (kind === "model") return addModel(node)
     if (kind === "rule") return addRule(node)
+    if (kind === "category") return addCategory()
     return addMcp()
   }
 
@@ -1168,7 +1171,84 @@ async function editModel(node: TreeNode): Promise<void> {
     }
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, when, dispose }
+  // a → Category: a user-named tab after the built-in categories. Empty spaces
+// around the name are trimmed; the store refuses an empty or duplicate name.
+  async function addCategory(): Promise<void> {
+    if (disposed) return
+    const raw = await context.ui.dialog.prompt({
+      title: "Category name",
+      description: "Your own tab after the built-in categories; move rows into it with m.",
+      placeholder: "Mine",
+    })
+    if (disposed || raw === undefined) return
+    const name = raw.trim()
+    if (name.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Category name cannot be empty" })
+      return
+    }
+    await state.createCategory(name)
+  }
+
+  // m on any item row: move it (and its children) into a user category, or
+  // back to its home category. Display only; every owner lists it there.
+  async function move(node: TreeNode | undefined): Promise<void> {
+    if (disposed || node === undefined) return
+    const item = node.address?.item
+    if (node.kind !== "item" || item === undefined || node.address?.section !== null) {
+      state.setStatus(`"${node.label}" is not a row that can be moved`)
+      return
+    }
+    const current = await currentSnapshot()
+    if (disposed || current === undefined) return
+    const HOME = "\u0000home"
+    const picked = await context.ui.dialog.select<string>({
+      title: `Move "${node.label}"`,
+      placeholder: "Pick a category",
+      options: [
+        { title: `Back to ${homeCategoryLabel(item)} (home)`, value: HOME },
+        ...orderedCategories(current.categories ?? []).map((category) => ({
+          title: category.name,
+          value: category.name,
+        })),
+      ],
+    })
+    if (disposed || picked === undefined) return
+    await state.assignCategory(node, picked === HOME ? null : picked)
+  }
+
+  // R on a user category: rename it (items and order follow).
+  async function renameCategory(node: TreeNode | undefined): Promise<void> {
+    if (disposed || node === undefined) return
+    const raw = await context.ui.dialog.prompt({
+      title: "Rename category",
+      description: "The category's rows follow; the home categories never change.",
+      value: node.label,
+    })
+    if (disposed || raw === undefined) return
+    const name = raw.trim()
+    if (name.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "Category name cannot be empty" })
+      return
+    }
+    if (name === node.label) return
+    await state.renameCategory(node, name)
+  }
+
+  // d on a user category: delete it after confirmation; its rows go home.
+  async function deleteCategory(node: TreeNode | undefined): Promise<void> {
+    if (disposed || node === undefined) return
+    const confirmed = await context.ui.dialog.confirm({
+      title: `Delete category "${node.label}"?`,
+      message: `Delete category "${node.label}"? Its rows return to their home categories. This cannot be undone.`,
+    })
+    if (disposed || confirmed !== true) {
+      if (!disposed) state.setStatus(`Delete of category "${node.label}" cancelled`)
+      return
+    }
+    await state.deleteCategory(node)
+  }
+
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, when, move, renameCategory, deleteCategory, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

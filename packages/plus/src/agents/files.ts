@@ -1,6 +1,6 @@
 import fs from "node:fs/promises"
-import os from "node:os"
 import path from "node:path"
+import { globalConfigDir } from "../instructions/paths.js"
 
 export type Scope = "project" | "global"
 
@@ -342,12 +342,7 @@ export function parseAgentModel(markdown: string): ParsedModelRef | undefined {
 }
 
 function configDirectory(scope: Scope, projectDirectory: string): string {
-  if (scope === "global") {
-    return (
-      process.env.OPENCODE_CONFIG_DIR ??
-      path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode")
-    )
-  }
+  if (scope === "global") return globalConfigDir()
   return path.join(projectDirectory, ".opencode")
 }
 

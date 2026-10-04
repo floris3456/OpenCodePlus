@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { Option, Schema } from "effect"
+import type { CategoryRecord } from "./categories.js"
 import type { Boundary } from "./sections.js"
 import type {
   Catalogue,
@@ -26,6 +27,7 @@ export type { CustomizationRecord, SplitRecord }
 export type { ModelRecord, ModelSettingsRecord, RuleRecord }
 export type { TeamRecord }
 export type { EntryRecord, LinkRecord, PresetRecord }
+export type { CategoryRecord }
 export type StoredRecord =
   | CustomizationRecord
   | SplitRecord
@@ -36,6 +38,7 @@ export type StoredRecord =
   | LinkRecord
   | EntryRecord
   | PresetRecord
+  | CategoryRecord
 export type RecordState = "on" | "off"
 
 export type { Level }
@@ -243,7 +246,19 @@ const V2Preset = Schema.Struct({
   updated: Schema.String,
 })
 
-const V2Record = Schema.Union([V2Customization, V2Split, V2Team, V2Model, V2ModelSettings, V2Rule, V2Link, V2Entry, V2Preset])
+// A user category (plan plus-1.1.12 T8): user-named, display-only groups of
+// item rows. Always at level global so it lives in the global store; absent
+// records mean no categories.
+const V2Category = Schema.Struct({
+  type: Schema.Literal("category"),
+  level: Schema.Literal("global"),
+  name: Schema.String,
+  order: Schema.Number,
+  items: Schema.Array(Schema.String),
+  updated: Schema.String,
+})
+
+const V2Record = Schema.Union([V2Customization, V2Split, V2Team, V2Model, V2ModelSettings, V2Rule, V2Link, V2Entry, V2Preset, V2Category])
 
 const V2Header = Schema.Struct({
   version: Schema.Literal(2),
@@ -829,7 +844,7 @@ function parseV2(lines: string[]): StoredRecord[] {
         },
       ]
     if (record.type === "modelSettings") return [stable(record)]
-    if (record.type === "link" || record.type === "entry" || record.type === "preset") return [stable(record)]
+    if (record.type === "link" || record.type === "entry" || record.type === "preset" || record.type === "category") return [stable(record)]
     if (record.type === "rule")
       return [
         {
@@ -953,6 +968,7 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 // pattern and name; presets by kind, team and id. All end with `updated`.
 function sortKey(record: StoredRecord): string[] {
   if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
+  if (record.type === "category") return ["category", record.name, String(record.order), record.updated]
   if (record.type === "modelSettings")
     return ["modelSettings", record.providerID ?? "", record.modelID ?? "", record.updated]
   if (record.type === "entry") return ["entry", record.catalogue, record.team ?? "", record.name, record.updated]
@@ -1041,6 +1057,15 @@ export function stable(record: StoredRecord): StoredRecord {
       level: record.level,
       team: record.team,
       enabled: record.enabled,
+      updated: record.updated,
+    }
+  if (record.type === "category")
+    return {
+      type: "category",
+      level: "global",
+      name: record.name,
+      order: record.order,
+      items: [...record.items],
       updated: record.updated,
     }
   if (record.type === "modelSettings")

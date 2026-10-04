@@ -14,13 +14,13 @@ export const teachingTitle = "OpenCodePlus"
 // row id its follow-ups take, the skill that carries the rest, and the
 // permission pattern grammar. teaching.test.ts pins the character bound.
 export const teachingContent =
-  "`tools.instructions.*` edits agents/tools/base/skills/system/MCP/models/teams/perms. " +
+  "`tools.instructions.*` edits agents/tools/base/skills/system/MCP/models/teams/perms/categories. " +
   "Ids: `item:<level>:<agent|''>:<itemId>`, `section:…:<sectionId>`, `agent:<level>:<id>`, `team:<level>:<name>[:<member>]`. " +
   "`create` returns `{id,item}`; `show`/`set`/`delete` take that `id`. " +
   "`list({where:\"review:true\"})`→`show({id,view:\"diff\"})`→`set({id,resolve:\"keep\"})`. " +
   "`list({where:\"agent:X item:tool\"})`→`set({id,text})`. " +
   "Patterns are core wildcards, not regex; shell resource is the parsed command, so `git *` matches bare `git`. " +
-  "Skill `instructions-tools`: filters, views, presets, create/delete, errors."
+  "Skill `instructions-tools`: filters, views, presets."
 
 // Detailed, on-demand guidance keeps the seed instruction within its size budget.
 export const teachingSkillContent = `# instructions-tools
@@ -59,6 +59,10 @@ The tree splits into two catalogues under every level: **Agents** and **Teams**.
 Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|base|skill|system|mcp|model|modeldefault|modelsetting|perm|setting|compaction), \`tool\` (shell|edit|read|webfetch|subagent|skill), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`level\` (project|global|defaults|preset), \`catalogue\` (agents|teams), \`agent\` (case-insensitive substring, \`_\` is the shared row), \`state\` (on|off), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\` (base template active for the agent's model, or the resolved active model on model rows), \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\`, \`label\`, \`updated\`, \`team\`, \`acked\`, \`excluded\`.
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
+
+## Categories
+
+\`create({ kind: "category", name })\` adds a user category after Settings · Models · Compaction · Tools · Base · System · MCP; it is a tab for every owner at every level. \`set({ id, category: "<name>" | null })\` moves the whole item row (with its children) into that category or back to its home category. \`delete({ id: "category:<slug>", confirm: true })\` deletes a category and returns its rows home; the id is printed by \`create\` and likewise accepts a category's tree row id. \`list({ where: "category:<name>" })\` lists the rows in one category, in every owner. Assignments are display only: toggling, editing, inheritance and enforcement never change.
 
 Permission rows hang directly off each OpenCode/Plus tool row (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`. \`server:<name>\` matches a server's own \`mcp:<name>\` row as well as the rows under it, e.g. \`list({ where: "server:search" })\`.
 
@@ -110,6 +114,7 @@ A system row (an instruction file, Tools and rules; not Role/persona as a whole)
 | presetMember | \`team\` (a User team preset), \`id\` (+ optional \`from\`) |
 | model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\` project\|global\|defaults\|preset, \`agent\`; \`level\` defaults to \`project\`, and project/global/preset rows need \`agent\`) |
 | rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ optional \`keywords\`, \`message\`, \`level\` project\|global\|defaults, \`agent\`; \`level\` defaults to \`project\`) |
+| category | \`name\` (a user category tab after the built-in categories) |
 
 Skill \`scope\` picks where the \`SKILL.md\` is written: \`project\` is the checkout's own \`.opencode/skill\`; \`global\`, \`defaults\` and \`preset\` are subdirectories of the global skills folder core scans. The TUI's Add on a Skills row uses that row's level (and the preset under Presets) as the scope, so nothing is typed.
 
