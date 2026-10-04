@@ -175,6 +175,19 @@ Tasks A6 and B6 fix them.
   Only seven tests fail: the four above and the three of the instructions
   branch below. Combining the branches broke nothing.
 
+**Found while preparing (Instructions area): record it as issue #1.**
+- `instructions.create({ kind: "model", level: "global", agent:
+  "Simple/:Simple-Orchestrator" })` (a member's owner segment as `agent`, no
+  `team`) passes the owner check in `packages/plus/src/tools.ts`: it finds
+  `group:global:Simple/:Simple-Orchestrator:models`.
+- It stores a model record whose agent is literally
+  `Simple/:Simple-Orchestrator`, then fails with `create.failed`. No row shows
+  that record, so `delete` cannot remove it.
+- Fix: refuse such an `agent` with a message naming `agent` + `team`, or map
+  it to them. A test proves it.
+- The live store holds one such record. Leave it: the live config is not
+  yours.
+
 What each purpose branch brought:
 
 **From `plus-1.1.15_instructions`:**
