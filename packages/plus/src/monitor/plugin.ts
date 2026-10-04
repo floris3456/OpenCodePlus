@@ -9,8 +9,8 @@ import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/pa
 import type { MonitorMark, MonitorQueryInput, MonitorReport } from "../rpc.js"
 import { bySession, inferRunTeam, loadRun } from "../teams/run.js"
 import { createCollector, MonitorEvents, type Collector } from "./collector.js"
-import { fingerprintWireBody, type NamedSystemPart } from "./fingerprint.js"
-import { ledgerAt, RETENTION_DAYS, type ContextFact, type Ledger, type SessionFacts } from "./ledger.js"
+import { fingerprintWireBody, sha256, type NamedSystemPart } from "./fingerprint.js"
+import { endRequestWindow, ledgerAt, RETENTION_DAYS, type ContextFact, type Ledger, type SessionFacts } from "./ledger.js"
 import { queryMonitor } from "./query.js"
 
 const DAY = 86_400_000
@@ -54,6 +54,18 @@ export function watchMonitor(
   }
 
   const namedSystemParts = new Map<string, NamedSystemPart[]>()
+  const httpRequests = new WeakMap<Request, string>()
+  const wsRequests = new Map<string, string>()
+  const responseId = (requestID: string, body: string) => {
+    const value = JSON.parse(body) as { type?: string; id?: string; response?: { id?: string } }
+    if (value.type && value.type !== "response.created" && value.type !== "response.completed") return false
+    const id = value.response?.id ?? value.id
+    if (typeof id !== "string") return false
+    const l = open()
+    const fp = l.getFingerprint(requestID)
+    if (fp) l.requestFingerprint({ ...fp, responseId: sha256(id) })
+    return true
+  }
   const prices = new Map<string, string>()
   const pricing = async (ledger: Ledger, sessionID: string, provider: string, model: string, at: number) => {
     const listed = await Effect.runPromise(ctx.model.list())
@@ -108,8 +120,8 @@ export function watchMonitor(
         const variant = event.model.variant
         const kind = event.kind === "primary" ? "step" : event.kind
         const isTitle = event.kind === "title"
-        const started = Date.now()
-        const requestID = `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
+        const started = event.started ?? Date.now()
+        const requestID = event.requestID ?? `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
 
         const wireBody = await event.request.clone().text().catch(() => "")
         const parts = namedSystemParts.get(sessionID)
@@ -120,7 +132,6 @@ export function watchMonitor(
 
         const l = open()
         l.session({ id: sessionID, agent, directory: ctx.location.directory }, started)
-        l.retireOpenRequests(sessionID, kind)
         l.requestStarted({
           id: requestID,
           sessionID,
@@ -137,6 +148,13 @@ export function watchMonitor(
           sessionID,
           ...fp,
         })
+        httpRequests.set(event.request, requestID)
+        // Core runs these observers after ALL transforms, including later plugins.
+        event.observers ??= []
+        event.observers.push((request) => Effect.promise(async () => {
+          httpRequests.set(request, requestID)
+          l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(await request.clone().text(), { url: request.url, namedSystemParts: parts }) })
+        }).pipe(Effect.catchCause(() => Effect.logWarning("plus monitor final HTTP fingerprint failed"))))
         await pricing(l, sessionID, provider, model, started)
       }),
     )
@@ -150,8 +168,8 @@ export function watchMonitor(
         const variant = event.model.variant
         const kind = event.kind === "primary" ? "step" : event.kind
         const isTitle = event.kind === "title"
-        const started = Date.now()
-        const requestID = `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
+        const started = event.started ?? Date.now()
+        const requestID = event.requestID ?? `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
 
         const parts = namedSystemParts.get(sessionID)
         const fp = fingerprintWireBody(event.frame, {
@@ -160,7 +178,6 @@ export function watchMonitor(
 
         const l = open()
         l.session({ id: sessionID, agent, directory: ctx.location.directory }, started)
-        l.retireOpenRequests(sessionID, kind)
         l.requestStarted({
           id: requestID,
           sessionID,
@@ -177,34 +194,66 @@ export function watchMonitor(
           sessionID,
           ...fp,
         })
+        wsRequests.set(sessionID, requestID)
+        event.observers ??= []
+        event.observers.push((frame) => Effect.sync(() => {
+          l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(frame, { namedSystemParts: parts }) })
+        }).pipe(Effect.catchCause(() => Effect.logWarning("plus monitor final WebSocket fingerprint failed"))))
         await pricing(l, sessionID, provider, model, started)
       }),
     )
 
     yield* hook("http.response", (event) =>
       Effect.sync(() => {
+        const requestID = httpRequests.get(event.request)
+        const fp = requestID ? open().getFingerprint(requestID) : undefined
+        if (requestID && fp?.protocol === "openai-responses" && event.response.body) {
+          const decoder = new TextDecoder()
+          let buffered = ""
+          let captured = false
+          const capture = () => {
+            if (captured) return
+            for (const line of buffered.split("\n")) {
+              const json = line.startsWith("data: ") ? line.slice(6) : line
+              try { if (responseId(requestID, json)) captured = true } catch { /* An incomplete SSE/JSON record. */ }
+            }
+          }
+          event.response = new Response(event.response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              if (!captured && buffered.length < 65_536) {
+                buffered += decoder.decode(chunk, { stream: true })
+                capture()
+              }
+              controller.enqueue(chunk)
+            },
+            flush() { capture() },
+          })), { status: event.response.status, statusText: event.response.statusText, headers: event.response.headers })
+        }
         if (event.response.status >= 400) {
-          const sessionID = String(event.sessionID)
-          const kind = event.kind === "primary" ? "step" : event.kind
           const l = open()
-          const openReq = l.oldestOpenRequest(sessionID, kind)
+          const openReq = requestID ? l.getRequest(requestID) : undefined
           if (openReq) {
             l.requestEnded(openReq.id, {
               ended: Date.now(),
               status: "error",
-              error: `HTTP ${event.response.status}`.slice(0, 160),
+              error: { type: "HttpError", status: event.response.status },
             })
           }
         }
       }),
     )
 
+    yield* hook("experimental.ws.receive", (event) => Effect.sync(() => {
+      const requestID = wsRequests.get(String(event.sessionID))
+      if (requestID) responseId(requestID, event.frame)
+    }))
+
     yield* hook("generated", (event) =>
       Effect.promise(async () => {
         const sessionID = String(event.sessionID)
         const l = open()
-        const openReq = l.oldestOpenRequest(sessionID, "generate")
-        const at = Date.now()
+        const kind = event.kind ?? "generate"
+        const at = event.ended ?? Date.now()
         l.session({ id: sessionID, agent: String(event.agent), directory: ctx.location.directory }, at)
         const usage = event.usage
           ? {
@@ -216,35 +265,13 @@ export function watchMonitor(
               cost: event.cost ?? 0,
             }
           : undefined
-        const error = event.error ? event.error.slice(0, 160) : undefined
-        if (openReq) {
-          l.requestEnded(openReq.id, {
-            ended: at,
-            status: error ? "error" : "completed",
-            error,
-            usage,
-          })
-          l.retireOpenRequests(sessionID, "generate", openReq.id)
-        } else {
-          const reqId = `gen_${sessionID}_${at}`
-          l.requestStarted({
-            id: reqId,
-            sessionID,
-            kind: "generate",
-            agent: String(event.agent),
-            provider: event.model.providerID,
-            model: event.model.id,
-            variant: event.model.variant,
-            started: at,
-          })
-          l.requestEnded(reqId, {
-            ended: at,
-            status: error ? "error" : "completed",
-            error,
-            usage,
-          })
-        }
-        await pricing(l, sessionID, event.model.providerID, event.model.id, openReq?.started ?? at)
+        const request = endRequestWindow(l, {
+          id: `${kind}_${sessionID}_${event.started ?? at}_${at}`, sessionID, kind, isTitle: kind === "title",
+          messageID: `${kind}:${event.started ?? at}:${at}`,
+          agent: String(event.agent), provider: event.model.providerID, model: event.model.id, variant: event.model.variant,
+          started: event.started ?? 0,
+        }, { ended: at, status: event.error ? "error" : "completed", error: event.error, usage }, true)
+        await pricing(l, sessionID, event.model.providerID, event.model.id, request?.started ?? at)
       }),
     )
 
@@ -260,16 +287,6 @@ export function watchMonitor(
           const sessionID = String(event.sessionID)
           const l = open()
           l.relabelLatestRequest(sessionID, "generate", "ping")
-          if (event.error) {
-            const latestPing = l.oldestOpenRequest(sessionID, "ping")
-            if (latestPing) {
-              l.requestEnded(latestPing.id, {
-                ended: event.now ?? Date.now(),
-                status: "error",
-                error: event.error.slice(0, 160),
-              })
-            }
-          }
         }
       }),
     )

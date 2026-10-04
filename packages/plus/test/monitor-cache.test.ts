@@ -3,7 +3,8 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Schema } from "effect"
 import { MonitorReport } from "../src/rpc.js"
-import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
+import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
+import { prefixDiff } from "../src/monitor/cache.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger } from "./monitor-fixture.js"
@@ -13,6 +14,31 @@ import { monitorQuery } from "../src/monitor/plugin.js"
 import { context } from "./harness.js"
 
 const priorConfig = process.env.XDG_CONFIG_HOME
+
+test("Responses linked continuation reuses full predecessor prompt; unknown and changed previous ids name the change", async () => {
+  const db = await ledger()
+  const make = (id: string, at: number, wire: object, responseId: string) => {
+    db.session({ id: "continuation" }, at)
+    db.requestStarted({ id, sessionID: "continuation", kind: "step", started: at, provider: "openai", model: "gpt-4o" })
+    db.requestEnded(id, { ended: at + 1, status: "completed", usage: { input: 4000, cacheRead: 0, cacheWrite: 0, output: 100, reasoning: 0, cost: 0 } })
+    db.requestFingerprint({ requestID: id, sessionID: "continuation", ...fingerprintWireBody(wire, { protocol: "openai-responses" }), responseId: sha256(responseId) })
+    return db.getFingerprint(id)!
+  }
+  const a = make("a", 100, { input: [{ role: "user", content: "prompt" }] }, "response-a")
+  make("title-between", 150, { input: [{ role: "user", content: "title" }] }, "response-title")
+  db.requestStarted({ id: "title-between", sessionID: "continuation", kind: "title", isTitle: true, started: 150 })
+  const b = make("b", 200, { previous_response_id: "response-a", input: [{ role: "user", content: "next" }] }, "response-b")
+  expect(prefixDiff(a, b).append).toBe(true)
+  const report = queryMonitor(db, { scope: "session", sessionID: "continuation", view: "cache", id: "b" }, { now: 1000 })
+  expect(report.detail?.request.expected).toBe(4000)
+  expect(report.detail?.previous?.id).toBe("a")
+  const c = make("c", 300, { previous_response_id: "response-b", input: [{ role: "user", content: "last" }] }, "response-c")
+  expect(prefixDiff(b, c).append).toBe(true)
+  const unknown = { ...c, previousResponseId: sha256("unknown") }
+  expect(prefixDiff(b, unknown)).toMatchObject({ append: false, common: 0, changes: [{ name: "previous_response_id" }] })
+  expect(prefixDiff(b, { ...c, previousResponseId: a.responseId })).toMatchObject({ append: false, common: 0, changes: [{ name: "previous_response_id" }] })
+  expect(prefixDiff(b, { ...c, previousResponseId: undefined })).toMatchObject({ append: false, common: 0, changes: [{ name: "previous_response_id", change: "removed" }] })
+})
 afterEach(() => {
   if (priorConfig === undefined) delete process.env.XDG_CONFIG_HOME
   else process.env.XDG_CONFIG_HOME = priorConfig
@@ -300,7 +326,7 @@ test("miss cost uses recorded pricing, failed pings cannot renew cache lifetime,
   expect(failed.detail?.request.cause).toBe("cache-expired")
   expect(failed.detail?.timing).toMatchObject({ gapMs: 399_000, warming: "failed", lastPingAt: 390_000 })
   expect(failed.detail?.accounts.length).toBe(1)
-  expect(failed.detail?.pings[0]?.error).toBe("failed")
+  expect(JSON.parse(failed.detail!.pings[0]!.error!)).toEqual({ type: "Error", hash: sha256("failed"), chars: 6 })
 })
 
 test("scopes, title exclusion, per-session compaction windows and detail refusal outside scope", async () => {

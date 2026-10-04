@@ -362,8 +362,11 @@ export const layer = Layer.effect(
             Effect.gen(function* () {
               const before = yield* hooks.trigger("session", "http.request", {
                 ...scope,
+                requestID: crypto.randomUUID(),
+                started: Date.now(),
                 request: yield* HttpClientRequest.toWeb(req),
               })
+              yield* Effect.forEach(before.observers ?? [], (observe) => observe(before.request))
               let sent = HttpClientRequest.fromWeb(before.request)
               if (before.request.body)
                 sent = HttpClientRequest.bodyUint8Array(
@@ -400,8 +403,11 @@ export const layer = Layer.effect(
                     .pipe(Effect.map((event) => ({ url: event.url, headers: event.headers }))),
                 send: (frame) =>
                   hooks
-                    .trigger("session", "experimental.ws.send", { ...scope, frame })
-                    .pipe(Effect.map((event) => event.frame)),
+                    .trigger("session", "experimental.ws.send", { ...scope, frame, requestID: crypto.randomUUID(), started: Date.now() })
+                    .pipe(
+                      Effect.tap((event) => Effect.forEach(event.observers ?? [], (observe) => observe(event.frame))),
+                      Effect.map((event) => event.frame),
+                    ),
                 receive: (frame) =>
                   hooks
                     .trigger("session", "experimental.ws.receive", { ...scope, frame })

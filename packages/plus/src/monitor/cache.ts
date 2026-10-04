@@ -103,6 +103,28 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
   const a = aInfo.segments
   const b = bInfo.segments
 
+  if (before.previousResponseId && !after.previousResponseId) {
+    return { known: true, append: false, common: 0, changes: [{
+      name: "previous_response_id", kind: "marker" as const, change: "removed" as const,
+      before: { hash: before.previousResponseId, chars: 0, tokens: 0 },
+    }] }
+  }
+
+  if (after.protocol === "openai-responses" && after.previousResponseId) {
+    if (before.responseId === after.previousResponseId) {
+      const prefix = a.filter((part) => part.kind !== "message")
+      const next = b.filter((part) => part.kind !== "message")
+      if (prefix.length === next.length && prefix.every((part, index) => part.name === next[index]?.name && part.hash === next[index]?.hash))
+        return { known: true, append: true, common: aInfo.totalTokens, changes: [] }
+    } else {
+      return { known: true, append: false, common: 0, changes: [{
+        name: "previous_response_id", kind: "marker" as const, change: "changed" as const,
+        ...(before.previousResponseId ? { before: { hash: before.previousResponseId, chars: 0, tokens: 0 } } : {}),
+        after: { hash: after.previousResponseId, chars: 0, tokens: 0 },
+      }] }
+    }
+  }
+
   const end = a.findIndex((p, i) => p.name !== b[i]?.name || p.hash !== b[i]?.hash)
   const isPureAppend = end < 0 && a.length <= b.length && before.protocol === after.protocol
 
@@ -413,12 +435,15 @@ export function analyzeSession(ledger: Ledger, rows: readonly RequestRow[], fact
   const earlier: RequestRow[] = []
 
   for (const r of rows) {
-    const previous = earlier.findLast((p) => p.provider === r.provider && p.model === r.model)
+    const fp = fingerprints.get(r.id)
+    const linked = fp?.previousResponseId
+      ? earlier.findLast((p) => p.provider === r.provider && p.model === r.model && fingerprints.get(p.id)?.responseId === fp.previousResponseId)
+      : undefined
+    const previous = linked ?? earlier.findLast((p) => p.provider === r.provider && p.model === r.model)
     const lastRealIndex = earlier.findLastIndex((p) => p.kind !== "ping" && !p.isTitle)
     const lastReal = earlier[lastRealIndex]
     const last = r.kind === "ping" || r.isTitle ? earlier.at(-1) : lastReal
     const between = facts.filter((f) => f.at > (last?.started ?? 0) && f.at <= r.started)
-    const fp = fingerprints.get(r.id)
 
     // 1. Diff: calculate prefix diff and expected tokens
     const { diff, expected } = diffStep(previous, previous ? fingerprints.get(previous.id) : undefined, fp)

@@ -7,7 +7,7 @@
 // steps, the previous finished step (to measure its results against the next
 // prompt) and the session's step index and compaction epoch.
 import { estimateTokens, promptTokens, split, targetOf } from "./attribution.js"
-import type { Ledger, SessionFacts, Usage } from "./ledger.js"
+import { endRequestWindow, type Ledger, type SessionFacts, type Usage } from "./ledger.js"
 
 /** The event types the collector reads; everything else is dropped before any work. */
 export const MonitorEvents: ReadonlySet<string> = new Set([
@@ -22,12 +22,13 @@ export const MonitorEvents: ReadonlySet<string> = new Set([
   "session.tool.success",
   "session.tool.failed",
   "session.compaction.ended",
+  "session.compaction.started",
+  "session.compaction.failed",
   "session.inbox.delivered",
   "session.synthetic",
   "session.instructions.updated",
   "session.revert.committed",
   "session.revert.staged",
-  "session.usage.recorded",
   "session.deleted",
 ])
 
@@ -137,6 +138,7 @@ export function createCollector(options: CollectorOptions): Collector {
   function startStep(sessionID: string, data: Data) {
     const state = track(sessionID)
     const messageID = String(data.assistantMessageID)
+    if (ledger.getRequests(sessionID).some((row) => row.messageID === messageID && row.ended !== undefined)) return
     if (state.steps.has(messageID)) return
     const model = data.model as { id?: string; providerID?: string; variant?: string } | undefined
     const agent = typeof data.agent === "string" ? data.agent : undefined
@@ -297,6 +299,7 @@ export function createCollector(options: CollectorOptions): Collector {
   function endStep(sessionID: string, data: Data, failed: boolean) {
     const state = track(sessionID)
     const messageID = String(data.assistantMessageID)
+    if (ledger.getRequests(sessionID).some((row) => row.messageID === messageID && row.ended !== undefined)) return
     const step = state.steps.get(messageID)
     state.steps.delete(messageID)
     const tokens = data.tokens as
@@ -312,36 +315,11 @@ export function createCollector(options: CollectorOptions): Collector {
     }
     const finish = failed ? "error" : String(data.finish ?? "unknown")
     ledger.stepEnded(sessionID, messageID, now(), finish, usage)
-    const openReq = ledger.oldestOpenRequest(sessionID, "step")
-    const stepError = failed ? String(data.error && typeof data.error === "object" && "message" in data.error ? (data.error as { message: unknown }).message : "step failed").slice(0, 160) : undefined
-    if (openReq) {
-      ledger.requestEnded(openReq.id, {
-        ended: now(),
-        status: failed ? "error" : "completed",
-        error: stepError,
-        usage,
-        messageID,
-      })
-      ledger.retireOpenRequests(sessionID, "step", openReq.id)
-    } else {
-      const fallbackId = `req_${sessionID}_${messageID}`
-      ledger.requestStarted({
-        id: fallbackId,
-        sessionID,
-        kind: "step",
-        agent: step?.agent,
-        model: step?.model,
-        started: typeof data.started === "number" ? data.started : now(),
-        messageID,
-      })
-      ledger.requestEnded(fallbackId, {
-        ended: now(),
-        status: failed ? "error" : "completed",
-        error: stepError,
-        usage,
-        messageID,
-      })
-    }
+    const recorded = ledger.db.query<{ started: number }, [string, string]>("select started from step where session_id = ? and message_id = ?").get(sessionID, messageID)
+    endRequestWindow(ledger, {
+      id: `req_${sessionID}_${messageID}`, sessionID, kind: "step", messageID,
+      agent: step?.agent, model: step?.model, started: recorded?.started ?? now(),
+    }, { ended: now(), status: failed ? "error" : "completed", finish, error: failed ? data.error ?? "step failed" : undefined, usage })
     if (step === undefined) return
     const calls = [...step.calls.values()]
     // Visible output is split between the text the step wrote and its calls' inputs.
@@ -377,20 +355,21 @@ export function createCollector(options: CollectorOptions): Collector {
     return previous.calls.map((call, index) => ({ callID: call.id, resultTokens: parts[index] ?? 0, measured: true }))
   }
 
-  function compacted(sessionID: string, data: Data) {
+  function compacted(sessionID: string, data: Data, failed = false) {
+    const at = now()
+    const messageID = `compaction:${at}`
+    if (ledger.getRequests(sessionID).some((row) => row.messageID === messageID)) return
     const state = track(sessionID)
     const tokens = data.tokens as
       | { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
       | undefined
     const model = data.model as { id?: string; providerID?: string; variant?: string } | undefined
     state.idx += 1
-    state.epoch += 1
-    const at = now()
-    const messageID = `compaction:${at}:${state.idx}`
+    if (!failed) state.epoch += 1
     ledger.contextFact({
       sessionID,
       at,
-      kind: "compaction",
+      kind: failed ? "compaction_failed" : "compaction",
       detail: { epoch: state.epoch, tokens, model },
     })
     ledger.stepStarted({
@@ -413,35 +392,12 @@ export function createCollector(options: CollectorOptions): Collector {
       cacheWrite: tokens?.cache.write ?? 0,
       cost: typeof data.cost === "number" ? data.cost : 0,
     }
-    ledger.stepEnded(sessionID, messageID, at, "compaction", usage)
-    const openReq = ledger.oldestOpenRequest(sessionID, "compaction")
-    if (openReq) {
-      ledger.requestEnded(openReq.id, {
-        ended: at,
-        status: "completed",
-        usage,
-        messageID,
-      })
-      ledger.retireOpenRequests(sessionID, "compaction", openReq.id)
-    } else {
-      const fallbackId = `req_${sessionID}_${messageID}`
-      ledger.requestStarted({
-        id: fallbackId,
-        sessionID,
-        kind: "compaction",
-        provider: model?.providerID,
-        model: model?.id,
-        variant: model?.variant,
-        started: at,
-        messageID,
-      })
-      ledger.requestEnded(fallbackId, {
-        ended: at,
-        status: "completed",
-        usage,
-        messageID,
-      })
-    }
+    ledger.stepEnded(sessionID, messageID, at, failed ? "error" : "compaction", usage)
+    const started = ledger.getContextFacts(sessionID).filter((fact) => fact.kind === "compaction_started" && fact.at <= at).at(-1)?.at ?? at
+    endRequestWindow(ledger, {
+      id: `req_${sessionID}_${messageID}`, sessionID, kind: "compaction", messageID,
+      provider: model?.providerID, model: model?.id, variant: model?.variant, started,
+    }, { ended: at, status: failed ? "error" : "completed", error: failed ? data.error : undefined, usage })
     state.previous = undefined
     state.dirty = true
   }
@@ -489,6 +445,8 @@ export function createCollector(options: CollectorOptions): Collector {
       if (event.type === "session.tool.success") return settled(sessionID, data, "completed")
       if (event.type === "session.tool.failed") return settled(sessionID, data, "error")
       if (event.type === "session.compaction.ended") return compacted(sessionID, data)
+      if (event.type === "session.compaction.failed") return compacted(sessionID, data, true)
+      if (event.type === "session.compaction.started") return ledger.contextFact({ sessionID, at: now(), kind: "compaction_started" })
       if (event.type === "session.instructions.updated") {
         const delta = data.delta as Record<string, unknown> | undefined
         const keys = delta
@@ -515,48 +473,6 @@ export function createCollector(options: CollectorOptions): Collector {
           detail: { to: data.to },
         })
         track(sessionID).dirty = true
-        return
-      }
-      if (event.type === "session.usage.recorded" && data.source === "title") {
-        const tokens = data.tokens as
-          | { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
-          | undefined
-        const cost = typeof data.cost === "number" ? data.cost : 0
-        const usage: Usage = {
-          input: tokens?.input ?? 0,
-          output: tokens?.output ?? 0,
-          reasoning: tokens?.reasoning ?? 0,
-          cacheRead: tokens?.cache?.read ?? 0,
-          cacheWrite: tokens?.cache?.write ?? 0,
-          cost,
-        }
-        const messageID = String(data.messageID ?? `title:${now()}`)
-        const openReq = ledger.oldestOpenRequest(sessionID, "title")
-        if (openReq) {
-          ledger.requestEnded(openReq.id, {
-            ended: now(),
-            status: "completed",
-            usage,
-            messageID,
-          })
-          ledger.retireOpenRequests(sessionID, "title", openReq.id)
-        } else {
-          const fallbackId = `title:${now()}`
-          ledger.requestStarted({
-            id: fallbackId,
-            sessionID,
-            kind: "title",
-            isTitle: true,
-            started: now(),
-            messageID,
-          })
-          ledger.requestEnded(fallbackId, {
-            ended: now(),
-            status: "completed",
-            usage,
-            messageID,
-          })
-        }
         return
       }
       // A user prompt, a synthetic message or an instructions update entered the prompt.

@@ -3170,7 +3170,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
 // Cache warming: the per-chat switch, then the agent's model row (Models tab,
 // resolved down the agent's chain like its active model), then the host
 // configuration core proposed. A failure leaves core's proposal in place.
-function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming): Effect.Effect<void> {
+export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming): Effect.Effect<void> {
+  if (event.phase === "warmed") return Effect.void
   return Effect.promise(async () => {
     if (Date.now() - state.warmingCheckedAt > 5_000) {
       state.warmingCheckedAt = Date.now()

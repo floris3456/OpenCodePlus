@@ -44,6 +44,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       initial: history.initial,
       messages: history.messages,
     })
+    const started = Date.now()
     const prepared = yield* context.request.generate({
       session: selection.session,
       agent: selection.agent.id,
@@ -66,6 +67,9 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       const cost = usage && model.cost ? SessionUsage.calculateCost(model.cost, usage) : undefined
       return context.hooks
         .trigger("session", "generated", {
+          kind: "generate",
+          started,
+          ended: Date.now(),
           sessionID: selection.session.id,
           agent: selection.agent.id,
           model: model.ref,
@@ -75,9 +79,12 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
         .pipe(Effect.catchCause((cause) => Effect.logWarning("session generated hook failed", { cause })))
     }
     const notifyFailure = (err: unknown) => {
-      const error = String((err as Error)?.message ?? err).slice(0, 160)
+      const error = String((err as Error)?.message ?? err)
       return context.hooks
         .trigger("session", "generated", {
+          kind: "generate",
+          started,
+          ended: Date.now(),
           sessionID: selection.session.id,
           agent: selection.agent.id,
           model: model.ref,

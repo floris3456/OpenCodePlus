@@ -47,6 +47,8 @@ import {
   SessionTable,
 } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
+import { SessionTitle } from "@opencode/core/session/title"
+import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SkillInstructions } from "@opencode/core/skill/instructions"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
@@ -55,17 +57,24 @@ import { Tool } from "@opencode/core/tool"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Stream } from "effect"
+import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { testEffect } from "./lib/effect"
 
 const requests: LLMRequest[] = []
 const options: Array<StreamOptions | undefined> = []
+const interceptors: SessionModelTransport.Interceptor[] = []
 let instruction: string | Instructions.Unavailable = "Initial context"
 let failGenerate: AIError | undefined
 const sessionID = SessionSchema.ID.make("ses_generate_test")
 
 const model = LanguageModel.make({ id: "generate-model", provider: "test", route: OpenAIChat.route })
 const client = Layer.mock(LLMClient.Service)({
-  stream: () => Stream.die(new Error("unused")),
+  stream: () => failGenerate ? Stream.fail(failGenerate) : Stream.fromIterable([
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.textDelta({ id: "title", text: "A generated title" }),
+    LLMEvent.stepFinish({ index: 0, reason: { normalized: "stop" }, usage: { inputTokens: 100, nonCachedInputTokens: 40, cacheReadInputTokens: 60, outputTokens: 10 } }),
+    LLMEvent.finish({ reason: { normalized: "stop" } }),
+  ]),
   generate: (request, requestOptions) =>
     Effect.gen(function* () {
       if (failGenerate) return yield* failGenerate
@@ -146,6 +155,7 @@ const it = testEffect(
       Project.node,
       SessionProjector.node,
       SessionStore.node,
+      SessionTitle.node,
       Agent.node,
       InstructionBuiltIns.node,
       SessionContext.node,
@@ -156,6 +166,12 @@ const it = testEffect(
       Bus.node.replace(Bus.configured({ persist: true })),
       llmClient.replace(client),
       SessionRunnerModel.node.replace(models),
+      SessionModelTransport.node.replace(Layer.mock(SessionModelTransport.Service, {
+        bind: (_sessionID, interceptor) => {
+          if (interceptor) interceptors.push(interceptor)
+          return { execute: () => Effect.die("unused WebSocket exchange") }
+        },
+      })),
       InstructionBuiltIns.node.replace(builtins),
       InstructionDiscovery.node.replace(discovery),
       SkillInstructions.node.replace(skills),
@@ -460,6 +476,8 @@ it.effect(
         cache: { read: 0, write: 0 },
       })
       expect(events[0]?.error).toBeUndefined()
+      expect(events[0]?.kind).toBe("generate")
+      expect(events[0]?.ended).toBeGreaterThanOrEqual(events[0]!.started!)
 
       // 2. Failing case: fires generated hook with error
       failGenerate = new AIError({
@@ -484,3 +502,78 @@ it.effect(
     }),
   { timeout: 15_000 },
 )
+
+it.effect("title generation reports usage and failure through generated with kind title", () => Effect.gen(function* () {
+  failGenerate = undefined
+  const fixture = yield* setup
+  const hooks = yield* PluginHooks.Service
+  const title = yield* SessionTitle.Service
+  const agents = yield* Agent.Service
+  yield* agents.transform((editor) => editor.update(Agent.ID.make("title"), (agent) => { agent.mode = "primary" }))
+  const events: SessionHooks["generated"][] = []
+  yield* hooks.register("session", "generated", (event) => Effect.sync(() => { events.push(event) }))
+  const id = SessionMessage.ID.create()
+  yield* fixture.bus.publish(SessionEvent.InboxEnqueued, { sessionID, inboxID: id, item: { type: "user", payload: { text: "Please name this session" }, delivery: "steer" } })
+  yield* fixture.bus.publish(SessionEvent.InboxDelivered, { sessionID, inboxID: id })
+  yield* title.generate(sessionID)
+  expect(events).toHaveLength(1)
+  expect(events[0]).toMatchObject({ kind: "title", sessionID, usage: { input: 40, output: 10, cache: { read: 60, write: 0 } }, cost: 0 })
+  expect(events[0]?.ended).toBeGreaterThanOrEqual(events[0]!.started!)
+  failGenerate = new AIError({ reason: new InvalidRequestError({ message: "private title failure" }) })
+  yield* title.generate(sessionID)
+  expect(events).toHaveLength(2)
+  expect(events[1]).toMatchObject({ kind: "title", error: "private title failure" })
+  failGenerate = undefined
+}), { timeout: 15_000 })
+
+it.effect("HTTP wire observers run after later plugin transforms and see exactly the transport body", () => Effect.gen(function* () {
+  failGenerate = undefined
+  options.length = 0
+  const fixture = yield* setup
+  yield* InstructionState.prepare(fixture.db, fixture.bus, fixture.instructions, sessionID)
+  const hooks = yield* PluginHooks.Service
+  const observed: string[] = []
+  const transported: string[] = []
+  yield* hooks.register("session", "http.request", (event) => Effect.sync(() => {
+    expect(event.requestID).toBeString()
+    expect(event.started).toBeNumber()
+    event.observers = [(request) => Effect.promise(async () => { observed.push(await request.clone().text()) })]
+  }))
+  yield* hooks.register("session", "http.request", (event) => Effect.sync(() => {
+    event.request = new Request(event.request.url, { method: "POST", body: '{"messages":[],"tool_choice":"none"}' })
+  }))
+  yield* SessionGenerate.generate({ session: fixture.session, prompt: "ping" }).pipe(Effect.provideService(Instance.Service, fixture.instances))
+  const middleware = options[0]?.http
+  if (!middleware) return yield* Effect.die("Missing HTTP middleware")
+  yield* middleware(HttpClientRequest.post("https://example.test/chat/completions").pipe(HttpClientRequest.bodyText('{"messages":[]}')), (sent) => Effect.gen(function* () {
+    const web = yield* HttpClientRequest.toWeb(sent)
+    transported.push(yield* Effect.promise(() => web.text()))
+    return HttpClientResponse.fromWeb(sent, new Response("{}"))
+  }))
+  expect(observed).toEqual(['{"messages":[],"tool_choice":"none"}'])
+  expect(transported).toEqual(observed)
+}), { timeout: 15_000 })
+
+it.effect("WebSocket wire observers run after later plugin transforms before transport", () => Effect.gen(function* () {
+  interceptors.length = 0
+  const fixture = yield* setup
+  const context = yield* SessionContext.Service
+  const hooks = yield* PluginHooks.Service
+  const observed: string[] = []
+  yield* hooks.register("session", "experimental.ws.send", (event) => Effect.sync(() => {
+    expect(event.requestID).toBeString()
+    event.observers = [(frame) => Effect.sync(() => { observed.push(frame) })]
+  }))
+  yield* hooks.register("session", "experimental.ws.send", (event) => Effect.sync(() => {
+    event.frame = '{"type":"response.create","input":[],"tool_choice":"none"}'
+  }))
+  yield* context.request.primary({
+    session: fixture.session, agent: Agent.ID.make("build"), system: [], messages: [], webSocket: "session",
+    model: SessionRunnerModel.resolved(model, { transport: "websocket", capabilities: { tools: true, input: ["text"], output: ["text"] }, cost: [], limit: { context: 200_000, output: 32_000 } }),
+  })
+  const send = interceptors[0]?.send
+  if (!send) return yield* Effect.die("Missing WebSocket send interceptor")
+  const sent = yield* send('{"input":[]}')
+  expect(observed).toEqual([sent])
+  expect(sent).toBe('{"type":"response.create","input":[],"tool_choice":"none"}')
+}), { timeout: 15_000 })
