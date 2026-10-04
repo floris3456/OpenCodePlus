@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer"
-import { Effect, Option, Schema, SchemaGetter } from "effect"
+import { Effect, Option, Schema, SchemaGetter, Stream } from "effect"
 import { Tool } from "@opencode/schema/tool"
-import { Route } from "../route/client.js"
+import { Route, type TriggerCompactOperation } from "../route/client.js"
 import { Auth } from "../route/auth.js"
 import { Endpoint } from "../route/endpoint.js"
 import { Framing } from "../route/framing.js"
@@ -10,8 +10,10 @@ import { Headers } from "effect/unstable/http"
 import { HttpTransport } from "../route/transport/index.js"
 import {
   AIError,
+  CompactionCheckpointResponse,
   HttpOptions,
   LLMRequest,
+  LLMResponse,
   LLMEvent,
   mergeJsonRecords,
   Usage,
@@ -36,6 +38,7 @@ const ADAPTER = "anthropic-messages"
 export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 export const PATH = "/messages"
 export const DEFAULT_MAX_TOKENS = 32_000
+export const MIN_COMPACTION_TOKENS = 50_000
 const MIN_THINKING_BUDGET = 1_024
 const DEFAULT_EFFORT = "high"
 
@@ -65,7 +68,7 @@ export const ContextManagement = Schema.Struct({
       trigger: Schema.optional(
         Schema.Struct({
           type: Schema.Literal("input_tokens"),
-          value: Schema.Int.check(Schema.isGreaterThanOrEqualTo(50000)),
+          value: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_COMPACTION_TOKENS)),
         }),
       ),
       pauseAfterCompaction: Schema.optional(Schema.Boolean),
@@ -1657,7 +1660,48 @@ function requiredBetaHeaders(body: Pick<AnthropicMessagesBody, "messages" | "con
   return betas
 }
 
+const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(function* (request, executor, options) {
+  const overlay = request.http?.body
+  if (overlay?.messages !== undefined || overlay?.context_management !== undefined)
+    return yield* ProviderShared.invalidRequest(
+      "Trigger compaction requires canonical history and context management, not raw body overrides",
+    )
+  if (overlay?.stream !== undefined && overlay.stream !== true)
+    return yield* ProviderShared.invalidRequest("Trigger compaction requires a streamed response")
+  const source = request.model.route
+  const compacting = LLMRequest.update(request, {
+    providerOptions: {
+      ...request.providerOptions,
+      contextManagement: {
+        edits: [
+          {
+            type: "compact_20260112",
+            trigger: { type: "input_tokens", value: MIN_COMPACTION_TOKENS },
+            pauseAfterCompaction: true,
+            // With tools present, calling one while summarizing can return a null checkpoint.
+            instructions:
+              "Summarize the conversation for an assistant continuing the task. Preserve the objective, constraints, decisions, current work, next steps, and important references. Return only the summary. Do not continue the task or call tools.",
+          },
+        ],
+      },
+    },
+  })
+  const body = yield* fromRequest(compacting)
+  const prepared = yield* source.prepareTransport(body, compacting, options)
+  const state = yield* source
+    .streamPrepared(prepared, compacting, { http: executor }, options)
+    .pipe(Stream.runFold(LLMResponse.empty, LLMResponse.reduce))
+  const response = LLMResponse.complete(state)
+  const checkpoint = response?.message.content[0]
+  if (response?.finishReason.raw !== "compaction")
+    return yield* ProviderShared.eventError(ADAPTER, "Anthropic compaction did not pause with stop_reason compaction")
+  if (response.message.content.length !== 1 || checkpoint?.type !== "compaction" || !checkpoint.text?.trim())
+    return yield* ProviderShared.eventError(ADAPTER, "Anthropic compaction returned no usable summary checkpoint")
+  return new CompactionCheckpointResponse({ checkpoint, usage: response.usage })
+})
+
 export const route = Route.make({
+  compact: { trigger: compact },
   id: ADAPTER,
   provider: "anthropic",
   providerMetadataKey: "anthropic",

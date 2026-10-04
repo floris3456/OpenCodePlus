@@ -9,6 +9,7 @@ import {
 } from "../../src/index.js"
 import {
   Anthropic,
+  AnthropicCompatible,
   Azure,
   AmazonBedrock,
   AmazonBedrockMantle,
@@ -28,8 +29,9 @@ LLMClient.compact(request, { mechanism: "endpoint" }).pipe(Effect.map((result) =
 LLMClient.compact(request, { mechanism: "trigger", webSocket }).pipe(
   Effect.map((result) => {
     result satisfies CompactionCheckpointResponse
-    result.checkpoint.encrypted satisfies string
-    result.responseID satisfies string
+    result.checkpoint.encrypted satisfies string | undefined
+    result.checkpoint.text satisfies string | null | undefined
+    result.responseID satisfies string | undefined
     // @ts-expect-error A trigger does not return replacement history.
     result.replacement
   }),
@@ -43,6 +45,8 @@ LLMClient.compact(request, { mechanism: "other" })
 
 for (const selected of [
   model,
+  Anthropic.configure().model("fixture"),
+  AnthropicCompatible.configure({ baseURL: "https://relay.example" }).model("fixture"),
   OpenAI.model("fixture", {}),
   model.route.with({ headers: { fixture: "test" } }).model({ id: "fixture" }),
   LanguageModel.make(LanguageModel.input(model)),
@@ -69,7 +73,6 @@ LLMClient.compact(LLM.request({ model: XAI.model("fixture", {}) }), { mechanism:
 const unsupported = {
   bedrock: LLM.request({ model: AmazonBedrock.configure().model("fixture") }),
   mantle: LLM.request({ model: AmazonBedrockMantle.configure().responses("fixture") }),
-  anthropic: LLM.request({ model: Anthropic.configure().model("fixture") }),
   openai: LLM.request({ model: OpenAI.configure().chat("fixture") }),
   azure: LLM.request({ model: Azure.configure({ resourceName: "fixture" }).chat("fixture") }),
   xai: LLM.request({ model: XAI.configure().chat("fixture") }),
@@ -81,8 +84,8 @@ const unsupported = {
 LLMClient.compact(unsupported.bedrock, { mechanism: "trigger" })
 // @ts-expect-error Mantle must not inherit trigger support from OpenAI's protocol.
 LLMClient.compact(unsupported.mantle, { mechanism: "trigger" })
-// @ts-expect-error Anthropic does not expose trigger compaction.
-LLMClient.compact(unsupported.anthropic, { mechanism: "trigger" })
+// @ts-expect-error Anthropic trigger support does not grant an explicit endpoint.
+LLMClient.compact(LLM.request({ model: Anthropic.configure().model("fixture") }), { mechanism: "endpoint" })
 // @ts-expect-error OpenAI Chat does not expose trigger compaction.
 LLMClient.compact(unsupported.openai, { mechanism: "trigger" })
 // @ts-expect-error Azure Chat does not expose trigger compaction.

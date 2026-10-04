@@ -46,7 +46,8 @@ export const configure = (input: Config) => {
   const route = AnthropicMessages.route.with({
     ...rest,
     provider,
-    endpoint: { baseURL },
+    // Fix the deployment path at configuration time so native checkpoints have stable provenance.
+    endpoint: { baseURL, path: provider === "anthropic" ? `${AnthropicMessages.PATH}?beta=true` : AnthropicMessages.PATH },
     auth: auth(input),
   })
   return {

@@ -122,14 +122,14 @@ export class CompactionResponse extends Schema.Class<CompactionResponse>("LLM.Co
 export class CompactionCheckpointResponse extends Schema.Class<CompactionCheckpointResponse>(
   "LLM.CompactionCheckpointResponse",
 )({
-  checkpoint: CompactionPart.pipe(
-    Schema.refine(
-      (part): part is CompactionPart & { readonly encrypted: string; readonly text?: never } =>
-        part.encrypted !== undefined && part.encrypted.length > 0,
-      { message: "A checkpoint response requires encrypted compaction content" },
+  checkpoint: CompactionPart.check(
+    Schema.makeFilter(
+      (part) => (part.encrypted ?? part.text ?? "").trim().length > 0,
+      { message: "A checkpoint response requires nonempty compaction content" },
     ),
   ),
-  responseID: Schema.String.check(Schema.isPattern(/\S/)),
+  /** Responses continuation identity; Messages checkpoints replay their content without one. */
+  responseID: Schema.optional(Schema.String.check(Schema.isPattern(/\S/))),
   usage: Schema.optional(Usage),
 }) {}
 
