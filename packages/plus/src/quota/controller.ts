@@ -8,6 +8,7 @@ export interface QuotaIO {
   read(key: string): Promise<unknown>
   write(key: string, value: Stored): Promise<void>
   notify(session: string, id: string, text: string): Promise<void>
+  fact?: (session: string, kind: string, detail: Record<string, unknown>) => void
   fetch: typeof fetch
   now(): number
 }
@@ -18,6 +19,7 @@ type Route = {
   provider: string
   endpoint: string
   stored: Stored
+  alias?: string
   snapshot?: Snapshot
   decision?: SessionCompactionDecision
   active: boolean
@@ -258,6 +260,7 @@ export class QuotaController {
       event.compact = true
       event.portable = true
       event.metadata = { ...event.metadata, "quota.handoff": snapshot.intent }
+      this.io.fact?.(event.sessionID, "quota_handoff", { intent: snapshot.intent })
     }
   }
   async headers(session: string, provider: string, model: string, kind: string, baseURL: string | undefined) {
@@ -322,7 +325,9 @@ export class QuotaController {
     const binding = Schema.decodeUnknownSync(Schema.fromJsonString(Binding))(
       Buffer.from(header, "base64url").toString(),
     )
+    const previousAlias = route.alias
     route.stored = { ...route.stored, generation: binding.generation }
+    route.alias = binding.alias
     if (kind === "primary" && route.stored.switching !== undefined) {
       // CPA admitted the compacted chat: on the new account, or on the old one if it recovered meanwhile.
       route.stored = { ...route.stored, switching: undefined }
@@ -334,6 +339,15 @@ export class QuotaController {
           text: `Continuing on ${binding.alias} after compacting.`,
         },
       ]
+      this.io.fact?.(session, "account_switch", {
+        alias: binding.alias,
+        previous: previousAlias,
+      })
+    } else if (previousAlias !== undefined && previousAlias !== binding.alias) {
+      this.io.fact?.(session, "account_switch", {
+        alias: binding.alias,
+        previous: previousAlias,
+      })
     }
     await this.save(route)
     await this.poll(route)

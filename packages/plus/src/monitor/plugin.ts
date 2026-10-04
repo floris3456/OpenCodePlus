@@ -3,10 +3,12 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
 import { Effect, Scope, Stream } from "effect"
-import { teamsDataDir } from "../instructions/paths.js"
+import path from "node:path"
+import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/paths.js"
 import type { MonitorMark, MonitorQueryInput, MonitorReport } from "../rpc.js"
 import { bySession, loadRun } from "../teams/run.js"
 import { createCollector, MonitorEvents, type Collector } from "./collector.js"
+import { fingerprintWireBody, type NamedSystemPart } from "./fingerprint.js"
 import { ledgerAt, RETENTION_DAYS, type Ledger, type SessionFacts } from "./ledger.js"
 import { queryMonitor } from "./query.js"
 
@@ -42,13 +44,215 @@ export function watchMonitor(
     lazy.failed = false
     return lazy.collector
   }
-  return ctx.event.subscribe().pipe(
+
+  const namedSystemParts = new Map<string, NamedSystemPart[]>()
+
+  const registerHooks = Effect.gen(function* () {
+    if (typeof ctx.session?.hook !== "function") return
+
+    yield* ctx.session.hook("context", (event) =>
+      Effect.sync(() => {
+        const parts: NamedSystemPart[] = (event.system ?? []).map((part, index) => {
+          const metadata = part.metadata as Record<string, unknown> | undefined
+          const instr = metadata?.instruction as Record<string, unknown> | undefined
+          const pathVal = instr?.path ?? metadata?.path ?? (part as { path?: unknown }).path
+          let name: string
+          if (typeof pathVal === "string") {
+            if (pathVal === guidancePath()) name = "Plus guidance row"
+            else if (pathVal === teachingFilePath()) name = "teaching"
+            else name = path.basename(pathVal)
+          } else if (index === 0) {
+            name = "base template"
+          } else if (part.text.includes("<env>") || part.text.includes("Today's date:") || part.text.includes("Platform:")) {
+            name = "date/environment block"
+          } else {
+            name = `system:${index}`
+          }
+          return { name, text: part.text }
+        })
+        namedSystemParts.set(String(event.sessionID), parts)
+      }),
+    )
+
+    yield* ctx.session.hook("http.request", (event) =>
+      Effect.promise(async () => {
+        const sessionID = String(event.sessionID)
+        const agent = String(event.agent)
+        const provider = event.model.providerID
+        const model = event.model.id
+        const variant = event.model.variant
+        const kind = event.kind === "primary" ? "step" : event.kind
+        const isTitle = event.kind === "title"
+        const started = Date.now()
+        const requestID = `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
+
+        const wireBody = await event.request.clone().text().catch(() => "")
+        const parts = namedSystemParts.get(sessionID)
+        const fp = fingerprintWireBody(wireBody, {
+          url: event.request.url,
+          namedSystemParts: parts,
+        })
+
+        const l = open()
+        l.retireOpenRequests(sessionID, kind)
+        l.requestStarted({
+          id: requestID,
+          sessionID,
+          kind,
+          isTitle,
+          agent,
+          provider,
+          model,
+          variant,
+          started,
+        })
+        l.requestFingerprint({
+          requestID,
+          sessionID,
+          ...fp,
+        })
+      }),
+    )
+
+    yield* ctx.session.hook("experimental.ws.send", (event) =>
+      Effect.sync(() => {
+        const sessionID = String(event.sessionID)
+        const agent = String(event.agent)
+        const provider = event.model.providerID
+        const model = event.model.id
+        const variant = event.model.variant
+        const kind = event.kind === "primary" ? "step" : event.kind
+        const isTitle = event.kind === "title"
+        const started = Date.now()
+        const requestID = `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
+
+        const parts = namedSystemParts.get(sessionID)
+        const fp = fingerprintWireBody(event.frame, {
+          namedSystemParts: parts,
+        })
+
+        const l = open()
+        l.retireOpenRequests(sessionID, kind)
+        l.requestStarted({
+          id: requestID,
+          sessionID,
+          kind,
+          isTitle,
+          agent,
+          provider,
+          model,
+          variant,
+          started,
+        })
+        l.requestFingerprint({
+          requestID,
+          sessionID,
+          ...fp,
+        })
+      }),
+    )
+
+    yield* ctx.session.hook("http.response", (event) =>
+      Effect.sync(() => {
+        if (event.response.status >= 400) {
+          const sessionID = String(event.sessionID)
+          const kind = event.kind === "primary" ? "step" : event.kind
+          const l = open()
+          const openReq = l.oldestOpenRequest(sessionID, kind)
+          if (openReq) {
+            l.requestEnded(openReq.id, {
+              ended: Date.now(),
+              status: "error",
+              error: `HTTP ${event.response.status}`.slice(0, 160),
+            })
+          }
+        }
+      }),
+    )
+
+    yield* ctx.session.hook("generated", (event) =>
+      Effect.sync(() => {
+        const sessionID = String(event.sessionID)
+        const l = open()
+        const openReq = l.oldestOpenRequest(sessionID, "generate")
+        const at = Date.now()
+        const usage = event.usage
+          ? {
+              input: event.usage.input,
+              output: event.usage.output,
+              reasoning: event.usage.reasoning,
+              cacheRead: event.usage.cache.read,
+              cacheWrite: event.usage.cache.write,
+              cost: event.cost ?? 0,
+            }
+          : undefined
+        const error = event.error ? event.error.slice(0, 160) : undefined
+        if (openReq) {
+          l.requestEnded(openReq.id, {
+            ended: at,
+            status: error ? "error" : "completed",
+            error,
+            usage,
+          })
+          l.retireOpenRequests(sessionID, "generate", openReq.id)
+        } else {
+          const reqId = `gen_${sessionID}_${at}`
+          l.requestStarted({
+            id: reqId,
+            sessionID,
+            kind: "generate",
+            agent: String(event.agent),
+            provider: event.model.providerID,
+            model: event.model.id,
+            variant: event.model.variant,
+            started: at,
+          })
+          l.requestEnded(reqId, {
+            ended: at,
+            status: error ? "error" : "completed",
+            error,
+            usage,
+          })
+        }
+      }),
+    )
+
+    yield* ctx.session.hook("warming", (event) =>
+      Effect.sync(() => {
+        if (event.phase === "warmed") {
+          const sessionID = String(event.sessionID)
+          const l = open()
+          l.relabelLatestRequest(sessionID, "generate", "ping")
+          if (event.error) {
+            const latestPing = l.oldestOpenRequest(sessionID, "ping")
+            if (latestPing) {
+              l.requestEnded(latestPing.id, {
+                ended: event.now ?? Date.now(),
+                status: "error",
+                error: event.error.slice(0, 160),
+              })
+            }
+          }
+        }
+      }),
+    )
+  }).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("plus monitor hooks registration failed", { cause })),
+  )
+
+  const stream = ctx.event.subscribe().pipe(
     Stream.filter((event) => MonitorEvents.has(event.type)),
     Stream.runForEach((event) =>
       Effect.try(() => collector()?.observe(event as { type: string; data?: unknown; created?: number })).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus monitor event failed", { cause, type: event.type })),
       ),
     ),
+  )
+
+  return Effect.gen(function* () {
+    yield* registerHooks
+    yield* stream
+  }).pipe(
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )

@@ -10,10 +10,16 @@ import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import path from "node:path"
 import { teamsDataDir } from "../instructions/paths.js"
+import type {
+  CacheControlMarker,
+  MessagePrefixFingerprint,
+  SystemPartFingerprint,
+  ToolFingerprint,
+} from "./fingerprint.js"
 
 export const RETENTION_DAYS = 90
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 
 export const HOUR = 3_600_000
 
@@ -168,6 +174,60 @@ create table if not exists meta (
   key text primary key,
   value text not null
 );
+
+create table if not exists request (
+  id text primary key,
+  session_id text not null,
+  kind text not null,
+  is_title integer not null default 0,
+  agent text,
+  provider text,
+  model text,
+  variant text,
+  started integer not null,
+  ended integer,
+  duration integer,
+  status text not null default 'completed',
+  error text,
+  input_tokens integer not null default 0,
+  output_tokens integer not null default 0,
+  reasoning_tokens integer not null default 0,
+  cache_read_tokens integer not null default 0,
+  cache_write_tokens integer not null default 0,
+  cost real not null default 0,
+  message_id text,
+  created integer not null
+);
+create index if not exists request_session on request(session_id, started);
+create index if not exists request_started on request(started);
+create index if not exists request_kind on request(kind);
+
+create table if not exists request_fingerprint (
+  request_id text primary key,
+  session_id text not null,
+  protocol text not null,
+  system_parts text not null default '[]',
+  tools text not null default '[]',
+  options_hash text not null default '',
+  options_keys text not null default '{}',
+  message_prefixes text not null default '[]',
+  cache_key text,
+  cache_control text,
+  body_hash text not null,
+  created integer not null
+);
+create index if not exists request_fingerprint_session on request_fingerprint(session_id, created);
+
+create table if not exists context_fact (
+  id integer primary key autoincrement,
+  session_id text not null,
+  at integer not null,
+  kind text not null,
+  detail text not null default '{}',
+  unique (session_id, at, kind, detail)
+);
+create index if not exists context_fact_session on context_fact(session_id, at);
+create index if not exists context_fact_kind on context_fact(kind, at);
 `
 
 export interface SessionFacts {
@@ -238,6 +298,79 @@ export interface CallTokens {
   readonly measured?: boolean
 }
 
+export interface RequestStart {
+  readonly id: string
+  readonly sessionID: string
+  readonly kind: "step" | "compaction" | "ping" | "generate" | "title" | string
+  readonly isTitle?: boolean
+  readonly agent?: string
+  readonly provider?: string
+  readonly model?: string
+  readonly variant?: string
+  readonly started: number
+  readonly messageID?: string
+  readonly created?: number
+}
+
+export interface RequestEnd {
+  readonly ended: number
+  readonly duration?: number
+  readonly status: "completed" | "error"
+  readonly error?: string
+  readonly usage?: Usage
+  readonly messageID?: string
+}
+
+export interface RequestRow {
+  readonly id: string
+  readonly sessionID: string
+  readonly kind: string
+  readonly isTitle: boolean
+  readonly agent?: string
+  readonly provider?: string
+  readonly model?: string
+  readonly variant?: string
+  readonly started: number
+  readonly ended?: number
+  readonly duration?: number
+  readonly status: string
+  readonly error?: string
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly reasoningTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly cost: number
+  readonly messageID?: string
+  readonly created: number
+}
+
+export interface RequestFingerprintData {
+  readonly requestID: string
+  readonly sessionID: string
+  readonly protocol: string
+  readonly systemParts: readonly SystemPartFingerprint[]
+  readonly tools: readonly ToolFingerprint[]
+  readonly optionsHash: string
+  readonly optionsKeys: Record<string, string>
+  readonly messagePrefixes: readonly MessagePrefixFingerprint[]
+  readonly cacheKey?: string
+  readonly cacheControl?: readonly CacheControlMarker[]
+  readonly bodyHash: string
+  readonly created?: number
+}
+
+export interface ContextFact {
+  readonly sessionID: string
+  readonly at: number
+  readonly kind: string
+  readonly detail?: Record<string, unknown>
+}
+
+export interface ContextFactRow extends ContextFact {
+  readonly id: number
+}
+
 export interface Ledger {
   readonly db: Database
   readonly path: string
@@ -252,6 +385,17 @@ export interface Ledger {
   mark(label: string, at: number): number
   prune(before: number): void
   close(): void
+  requestStarted(req: RequestStart): void
+  requestEnded(id: string, end: RequestEnd): void
+  requestFingerprint(fp: RequestFingerprintData): void
+  contextFact(fact: ContextFact): void
+  oldestOpenRequest(sessionID: string, kind: string): RequestRow | undefined
+  retireOpenRequests(sessionID: string, kind: string, exceptId?: string): void
+  relabelLatestRequest(sessionID: string, fromKind: string, toKind: string): void
+  getRequest(id: string): RequestRow | undefined
+  getRequests(sessionID: string): readonly RequestRow[]
+  getFingerprint(requestID: string): RequestFingerprintData | undefined
+  getContextFacts(sessionID: string): readonly ContextFactRow[]
 }
 
 /** `monitor.db` next to the teams data, under the XDG data directory. */
@@ -332,6 +476,73 @@ export function createLedger(file: string): Ledger {
   )
   const insertMark = db.query<{ id: number }, [number, string]>(
     "insert into mark (at, label) values (?, ?) returning id",
+  )
+
+  const upsertRequest = db.query(`
+    insert into request (id, session_id, kind, is_title, agent, provider, model, variant, started, message_id, created)
+    values ($id, $session, $kind, $isTitle, $agent, $provider, $model, $variant, $started, $message, $created)
+    on conflict(id) do update set
+      kind = excluded.kind,
+      is_title = excluded.is_title,
+      agent = coalesce(excluded.agent, request.agent),
+      provider = coalesce(excluded.provider, request.provider),
+      model = coalesce(excluded.model, request.model),
+      variant = coalesce(excluded.variant, request.variant),
+      message_id = coalesce(excluded.message_id, request.message_id)`)
+  const updateRequestEnd = db.query(`
+    update request set
+      ended = $ended,
+      duration = case when $duration is not null then $duration else ($ended - started) end,
+      status = $status,
+      error = $error,
+      input_tokens = coalesce($input, input_tokens),
+      output_tokens = coalesce($output, output_tokens),
+      reasoning_tokens = coalesce($reasoning, reasoning_tokens),
+      cache_read_tokens = coalesce($cacheRead, cache_read_tokens),
+      cache_write_tokens = coalesce($cacheWrite, cache_write_tokens),
+      cost = coalesce($cost, cost),
+      message_id = coalesce($message, message_id)
+    where id = $id`)
+  const upsertFingerprint = db.query(`
+    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, cache_key, cache_control, body_hash, created)
+    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $cacheKey, $cacheControl, $bodyHash, $created)
+    on conflict(request_id) do update set
+      protocol = excluded.protocol,
+      system_parts = excluded.system_parts,
+      tools = excluded.tools,
+      options_hash = excluded.options_hash,
+      options_keys = excluded.options_keys,
+      message_prefixes = excluded.message_prefixes,
+      cache_key = excluded.cache_key,
+      cache_control = excluded.cache_control,
+      body_hash = excluded.body_hash`)
+  const insertContextFact = db.query(`
+    insert into context_fact (session_id, at, kind, detail)
+    values ($session, $at, $kind, $detail)
+    on conflict do nothing`)
+  const findOldestOpenRequest = db.query<Record<string, unknown>, [string, string]>(
+    "select * from request where session_id = ? and kind = ? and ended is null order by started asc limit 1",
+  )
+  const retireEarlierOpenRequests = db.query<void, [number, number, string, string, string]>(
+    "update request set ended = ?, status = 'error', error = 'retried', duration = (? - started) where session_id = ? and kind = ? and ended is null and id != ?",
+  )
+  const retireAllOpenRequests = db.query<void, [number, number, string, string]>(
+    "update request set ended = ?, status = 'error', error = 'retried', duration = (? - started) where session_id = ? and kind = ? and ended is null",
+  )
+  const updateLatestKind = db.query<void, [string, string, string]>(
+    "update request set kind = ? where id = (select id from request where session_id = ? and kind = ? order by started desc limit 1)",
+  )
+  const findRequest = db.query<Record<string, unknown>, [string]>(
+    "select * from request where id = ?",
+  )
+  const findSessionRequests = db.query<Record<string, unknown>, [string]>(
+    "select * from request where session_id = ? order by started asc",
+  )
+  const findFingerprint = db.query<Record<string, unknown>, [string]>(
+    "select * from request_fingerprint where request_id = ?",
+  )
+  const findContextFacts = db.query<Record<string, unknown>, [string]>(
+    "select * from context_fact where session_id = ? order by at asc",
   )
 
   const writeCallTokens = db.transaction((updates: readonly CallTokens[]) => {
@@ -429,15 +640,147 @@ export function createLedger(file: string): Ledger {
       db.transaction(() => {
         db.query("delete from call where started < ?").run(before)
         db.query("delete from step where started < ?").run(before)
+        db.query("delete from request where started < ?").run(before)
+        db.query("delete from request_fingerprint where created < ?").run(before)
+        db.query("delete from context_fact where at < ?").run(before)
         db.query("delete from mark where at < ?").run(before)
-        db.query("delete from session where last_seen < ? and id not in (select session_id from step)").run(before)
+        db.query("delete from session where last_seen < ? and id not in (select session_id from step) and id not in (select session_id from request)").run(before)
         db.query("delete from epoch where session_id not in (select distinct session_id from step)").run()
         db.query("delete from call_hour where calls = 0 and inner = 0 and running = 0").run()
       })()
     },
+    requestStarted: (req) =>
+      upsertRequest.run({
+        $id: req.id,
+        $session: req.sessionID,
+        $kind: req.kind,
+        $isTitle: req.isTitle ? 1 : 0,
+        $agent: req.agent ?? null,
+        $provider: req.provider ?? null,
+        $model: req.model ?? null,
+        $variant: req.variant ?? null,
+        $started: req.started,
+        $message: req.messageID ?? null,
+        $created: req.created ?? req.started,
+      }),
+    requestEnded: (id, end) =>
+      updateRequestEnd.run({
+        $id: id,
+        $ended: end.ended,
+        $duration: end.duration ?? null,
+        $status: end.status,
+        $error: end.error ? end.error.slice(0, 160) : null,
+        $input: end.usage?.input ?? null,
+        $output: end.usage?.output ?? null,
+        $reasoning: end.usage?.reasoning ?? null,
+        $cacheRead: end.usage?.cacheRead ?? null,
+        $cacheWrite: end.usage?.cacheWrite ?? null,
+        $cost: end.usage?.cost ?? null,
+        $message: end.messageID ?? null,
+      }),
+    requestFingerprint: (fp) =>
+      upsertFingerprint.run({
+        $requestId: fp.requestID,
+        $session: fp.sessionID,
+        $protocol: fp.protocol,
+        $systemParts: JSON.stringify(fp.systemParts),
+        $tools: JSON.stringify(fp.tools),
+        $optionsHash: fp.optionsHash,
+        $optionsKeys: JSON.stringify(fp.optionsKeys),
+        $messagePrefixes: JSON.stringify(fp.messagePrefixes),
+        $cacheKey: fp.cacheKey ?? null,
+        $cacheControl: fp.cacheControl ? JSON.stringify(fp.cacheControl) : null,
+        $bodyHash: fp.bodyHash,
+        $created: fp.created ?? Date.now(),
+      }),
+    contextFact: (fact) =>
+      insertContextFact.run({
+        $session: fact.sessionID,
+        $at: fact.at,
+        $kind: fact.kind,
+        $detail: JSON.stringify(fact.detail ?? {}),
+      }),
+    oldestOpenRequest: (sessionID, kind) => {
+      const row = findOldestOpenRequest.get(sessionID, kind)
+      return row ? toRequestRow(row) : undefined
+    },
+    retireOpenRequests: (sessionID, kind, exceptId) => {
+      const now = Date.now()
+      if (exceptId) {
+        retireEarlierOpenRequests.run(now, now, sessionID, kind, exceptId)
+      } else {
+        retireAllOpenRequests.run(now, now, sessionID, kind)
+      }
+    },
+    relabelLatestRequest: (sessionID, fromKind, toKind) => {
+      updateLatestKind.run(toKind, sessionID, fromKind)
+    },
+    getRequest: (id) => {
+      const row = findRequest.get(id)
+      return row ? toRequestRow(row) : undefined
+    },
+    getRequests: (sessionID) => findSessionRequests.all(sessionID).map(toRequestRow),
+    getFingerprint: (requestID) => {
+      const row = findFingerprint.get(requestID)
+      return row ? toFingerprintData(row) : undefined
+    },
+    getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
     close: () => {
       open.delete(file)
       db.close()
     },
+  }
+}
+
+function toRequestRow(row: Record<string, unknown>): RequestRow {
+  return {
+    id: String(row.id),
+    sessionID: String(row.session_id),
+    kind: String(row.kind),
+    isTitle: Boolean(row.is_title),
+    agent: typeof row.agent === "string" ? row.agent : undefined,
+    provider: typeof row.provider === "string" ? row.provider : undefined,
+    model: typeof row.model === "string" ? row.model : undefined,
+    variant: typeof row.variant === "string" ? row.variant : undefined,
+    started: Number(row.started),
+    ended: row.ended !== null && row.ended !== undefined ? Number(row.ended) : undefined,
+    duration: row.duration !== null && row.duration !== undefined ? Number(row.duration) : undefined,
+    status: String(row.status ?? "completed"),
+    error: typeof row.error === "string" ? row.error : undefined,
+    inputTokens: Number(row.input_tokens ?? 0),
+    outputTokens: Number(row.output_tokens ?? 0),
+    reasoningTokens: Number(row.reasoning_tokens ?? 0),
+    cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+    cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+    cost: Number(row.cost ?? 0),
+    messageID: typeof row.message_id === "string" ? row.message_id : undefined,
+    created: Number(row.created ?? row.started),
+  }
+}
+
+function toFingerprintData(row: Record<string, unknown>): RequestFingerprintData {
+  return {
+    requestID: String(row.request_id),
+    sessionID: String(row.session_id),
+    protocol: String(row.protocol),
+    systemParts: JSON.parse(String(row.system_parts || "[]")),
+    tools: JSON.parse(String(row.tools || "[]")),
+    optionsHash: String(row.options_hash || ""),
+    optionsKeys: JSON.parse(String(row.options_keys || "{}")),
+    messagePrefixes: JSON.parse(String(row.message_prefixes || "[]")),
+    cacheKey: typeof row.cache_key === "string" ? row.cache_key : undefined,
+    cacheControl: typeof row.cache_control === "string" ? JSON.parse(row.cache_control) : undefined,
+    bodyHash: String(row.body_hash || ""),
+    created: Number(row.created ?? 0),
+  }
+}
+
+function toContextFactRow(row: Record<string, unknown>): ContextFactRow {
+  return {
+    id: Number(row.id),
+    sessionID: String(row.session_id),
+    at: Number(row.at),
+    kind: String(row.kind),
+    detail: row.detail ? JSON.parse(String(row.detail)) : {},
   }
 }

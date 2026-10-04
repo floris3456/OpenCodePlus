@@ -144,13 +144,15 @@ RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/as
 
 ## Team tab
 
-Arrow-down in the composer switches to the `Team` tab, which lists runs in the current namespace (not members):
-- One row per run showing `id`, `role`, `state`, and `task`, newest first.
-- Default view shows active runs (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
-- `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`); hint bar indicates which view is active.
+Arrow-down in the composer switches to the `Team` tab, which defaults to listing runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
+- One row per run showing `id`, `role`, `state`, and `task`.
+- Default view shows active runs in the current team tree.
+- `ctrl+t` toggles between the current chat's team tree and all runs in the namespace; hint bar indicates the current view (`tree` / `all`).
+- `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`); hint bar indicates which view is active (`active` / `inactive`).
 - `Enter` attaches by navigating to that run's session (`sessionID`).
-- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first.
-- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint reads `inactive ctrl+a` while inactive runs are shown, and `tabs ←/→` is the composer's own hint.
+- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. Both `ctrl+a`, `Enter`, and `ctrl+d` keep working in both views.
+- A chat in no team tree shows `No team runs from this chat · ctrl+t shows all`.
+- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  tree ctrl+t  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint reads `inactive ctrl+a` while inactive runs are shown, `ctrl+t` reads `all ctrl+t` while all runs are shown, and `tabs ←/→` is the composer's own hint.
 
 ## Tools
 

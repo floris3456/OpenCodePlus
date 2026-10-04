@@ -4,7 +4,7 @@ import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import type { Session } from "@opencode/schema/session"
-import { Clock, Duration, Effect, Fiber, Scope } from "effect"
+import { Cause, Clock, Duration, Effect, Fiber, Scope } from "effect"
 import { Config } from "../config.js"
 import { ConfigWarming } from "../config/warming.js"
 import { Model } from "../model.js"
@@ -114,9 +114,27 @@ export const Plugin = define({
           agent: Agent.ID
           model: Model.Ref
         } = { sessionID, prompt: settings.prompt, agent: current.agent, model: current.model }
+        let pingError: string | undefined
         yield* ctx.session
           .generate(ping)
-          .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to warm session", { sessionID, cause })))
+          .pipe(
+            Effect.catchCause((cause) => {
+              pingError = Cause.pretty(cause).slice(0, 160)
+              return Effect.logWarning("failed to warm session", { sessionID, cause })
+            }),
+          )
+        yield* hooks
+          .trigger("session", "warming", {
+            sessionID,
+            agent: current.agent,
+            model: current.model,
+            phase: "warmed",
+            since: current.since,
+            now: yield* Clock.currentTimeMillis,
+            error: pingError,
+            settings: undefined,
+          })
+          .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to trigger warmed hook", { cause })))
         const latest = sessions.get(sessionID)
         if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
         return yield* loop(sessionID, epoch)

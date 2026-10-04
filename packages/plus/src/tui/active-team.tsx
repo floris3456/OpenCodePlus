@@ -223,6 +223,7 @@ export function createActiveTeam(context: Plugin.Context) {
     })
 
     const [showInactiveSignal, setShowInactiveSignal] = createSignal(false)
+    const [treeViewSignal, setTreeViewSignal] = createSignal(true)
 
     const disposeComposerTab = context.ui.composer?.tab({
       id: "team",
@@ -231,6 +232,7 @@ export function createActiveTeam(context: Plugin.Context) {
         { label: "move", shortcut: "↑↓" },
         { label: "attach", shortcut: "⏎" },
         { label: showInactiveSignal() ? "inactive" : "active", shortcut: "ctrl+a" },
+        { label: treeViewSignal() ? "tree" : "all", shortcut: "ctrl+t" },
         { label: "stop|resume", shortcut: "ctrl+d" },
       ],
       render: (input) => (
@@ -242,6 +244,8 @@ export function createActiveTeam(context: Plugin.Context) {
           context={context}
           showInactive={showInactiveSignal}
           setShowInactive={setShowInactiveSignal}
+          treeView={treeViewSignal}
+          setTreeView={setTreeViewSignal}
         />
       ),
     }) ?? (() => {})
@@ -272,6 +276,8 @@ export interface TeamMonitorTabProps {
   context: Plugin.Context
   showInactive?: () => boolean
   setShowInactive?: (val: boolean | ((prev: boolean) => boolean)) => void
+  treeView?: () => boolean
+  setTreeView?: (val: boolean | ((prev: boolean) => boolean)) => void
 }
 
 /**
@@ -299,6 +305,13 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     else setInternalShowInactive(val)
   }
 
+  const [internalTreeView, setInternalTreeView] = createSignal(true)
+  const treeView = () => (props.treeView ? props.treeView() : internalTreeView())
+  const setTreeView = (val: boolean | ((prev: boolean) => boolean)) => {
+    if (props.setTreeView) props.setTreeView(val)
+    else setInternalTreeView(val)
+  }
+
   let disposed = false
 
   function targetLocation() {
@@ -312,7 +325,10 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   function refreshRuns() {
     if (disposed) return
     const location = targetLocation()
-    void plus["team.runs.list"]({ all: showInactive() }, { location }).then(
+    void plus["team.runs.list"](
+      { all: showInactive(), tree: treeView(), sessionID: props.sessionID },
+      { location },
+    ).then(
       (output) => {
         if (disposed) return
         setStore("runs", reconcile(output.runs, { key: "id" }))
@@ -341,6 +357,8 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   createEffect(() => {
     targetLocation()
     showInactive()
+    treeView()
+    props.sessionID
     refreshRuns()
   })
 
@@ -477,6 +495,17 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
         },
       },
       {
+        id: "composer.team.toggle_tree",
+        title: "Toggle tree view",
+        group: "Composer",
+        bind: "ctrl+t",
+        run() {
+          setStore("selected", 0)
+          setTreeView((prev) => !prev)
+          refreshRuns()
+        },
+      },
+      {
         id: "composer.team.action",
         title: "Stop or resume run",
         group: "Composer",
@@ -496,7 +525,11 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       fallback={
         <box paddingLeft={1}>
           <text fg={props.context.theme.text.muted}>
-            {showInactive() ? "No inactive runs" : "No active runs"}
+            {treeView() && store.runs.length === 0
+              ? "No team runs from this chat · ctrl+t shows all"
+              : showInactive()
+                ? "No inactive runs"
+                : "No active runs"}
           </text>
         </box>
       }
@@ -537,7 +570,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
                     attributes={isSelected() ? TextAttributes.BOLD : undefined}
                     wrapMode="none"
                   >
-                    {run.id} — {run.role} — {run.state}{run.task ? ` — ${run.task}` : ""}
+                    {"  ".repeat(treeView() ? (run.depth ?? 0) : 0)}{run.id} — {run.role} — {run.state}{run.task ? ` — ${run.task}` : ""}
                   </text>
                 </box>
                 <text
