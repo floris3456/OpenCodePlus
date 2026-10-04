@@ -105,6 +105,7 @@ export interface LockBreakInfo {
 }
 
 export interface LockOptions {
+  /** How long to wait for the lock. `0` means a single try: succeed or fail `E_LOCKED`. */
   timeoutMs?: number
   op?: string
   onBreak?: (info: LockBreakInfo) => void
@@ -114,6 +115,55 @@ export interface LockedError extends Error {
   code: "E_LOCKED"
   accepted: string
   retryAfterMs: number
+}
+
+// In-process queue per lock file. Same-process contenders used to race the
+// kernel lock and could starve one another for the whole timeout; now they
+// take turns in arrival order before any of them touches the file. A present
+// entry means a caller holds the turn; its array holds the waiters' grants.
+// Releasing hands the turn straight to the oldest waiter, so a newcomer never
+// overtakes one (Effect's Semaphore wakes waiters a tick later and lets a
+// newcomer take the permit first). Module state is process-wide because the
+// module is imported once.
+const turns = new Map<string, Array<() => void>>()
+
+function takeTurn(lockPath: string, timeoutMs: number): Promise<boolean> {
+  const waiting = turns.get(lockPath)
+  if (waiting === undefined) {
+    turns.set(lockPath, [])
+    return Promise.resolve(true)
+  }
+  if (timeoutMs <= 0) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const grant = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    // A grant removes itself from `waiting` before it runs, so a waiter still
+    // listed when its time is up has not been handed the turn.
+    const timer = setTimeout(() => {
+      const index = waiting.indexOf(grant)
+      if (index < 0) return
+      waiting.splice(index, 1)
+      resolve(false)
+    }, timeoutMs)
+    waiting.push(grant)
+  })
+}
+
+function passTurn(lockPath: string): void {
+  const next = turns.get(lockPath)?.shift()
+  if (next === undefined) {
+    turns.delete(lockPath)
+    return
+  }
+  next()
+}
+
+// Poll backoff: 25, 50, 100, 200, 250, 250, … ms plus 0-25 ms of jitter so
+// distinct waiters do not resynchronize on the same tick.
+function pollDelayMs(attempt: number): number {
+  return Math.min(250, 25 * 2 ** attempt) + Math.random() * 25
 }
 
 const holdStats = new Map<string, { total: number; count: number }>()
@@ -207,6 +257,7 @@ function acquire(
   onBreak: LockOptions["onBreak"],
 ): Effect.Effect<number, unknown> {
   return Effect.gen(function* () {
+    let attempt = 0
     for (;;) {
       const created = yield* io(() =>
         writeFile(lockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), op }), {
@@ -237,7 +288,8 @@ function acquire(
       const stale = yield* breakStale(lockPath, Option.getOrUndefined(decodeLockFile(raw)), onBreak)
       if (stale) continue
       if (Date.now() >= deadline) return yield* Effect.fail(lockedError(kind, key, timeoutMs))
-      yield* Effect.sleep(Duration.millis(25))
+      yield* Effect.sleep(Duration.millis(pollDelayMs(attempt)))
+      attempt++
     }
   })
 }
@@ -257,19 +309,29 @@ export async function lock<T>(
   fn: () => Promise<T>,
   opts?: LockOptions,
 ): Promise<T> {
+  const dir = path.join(root, "locks", kind)
+  const lockPath = path.join(dir, `${sanitizeLockKey(key)}.lock`)
+  const timeoutMs = opts?.timeoutMs ?? 30000
+  const op = opts?.op ?? ""
+  const deadline = Date.now() + timeoutMs
+  // Queue before the first await, so the turn order is the call order. The
+  // file lock below shares the same deadline.
+  const turn = takeTurn(lockPath, timeoutMs)
   return Effect.runPromise(
-    Effect.gen(function* () {
-      const dir = path.join(root, "locks", kind)
-      yield* io(() => mkdir(dir, { recursive: true }))
-      const lockPath = path.join(dir, `${sanitizeLockKey(key)}.lock`)
-      const timeoutMs = opts?.timeoutMs ?? 30000
-      const op = opts?.op ?? ""
-      const deadline = Date.now() + timeoutMs
-      return yield* Effect.acquireUseRelease(
-        acquire(lockPath, kind, key, op, deadline, timeoutMs, opts?.onBreak),
-        (acquiredAt) => io(fn),
-        (acquiredAt) => release(lockPath, kind, key, acquiredAt),
-      )
-    }),
+    Effect.acquireUseRelease(
+      Effect.promise(() => turn).pipe(
+        Effect.flatMap((granted) => (granted ? Effect.void : Effect.fail(lockedError(kind, key, timeoutMs)))),
+      ),
+      () =>
+        Effect.gen(function* () {
+          yield* io(() => mkdir(dir, { recursive: true }))
+          return yield* Effect.acquireUseRelease(
+            acquire(lockPath, kind, key, op, deadline, timeoutMs, opts?.onBreak),
+            () => io(fn),
+            (acquiredAt) => release(lockPath, kind, key, acquiredAt),
+          )
+        }),
+      () => Effect.sync(() => passTurn(lockPath)),
+    ),
   )
 }

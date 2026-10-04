@@ -105,6 +105,61 @@ describe("lock", () => {
     await holder
   })
 
+  test("five concurrent calls on one key acquire in call order", async () => {
+    const order: number[] = []
+    const calls: Array<Promise<void>> = []
+    for (let n = 0; n < 5; n++) {
+      calls.push(
+        lock(dir, "wt", "fifo", async () => {
+          order.push(n)
+          await sleep(40)
+        }),
+      )
+      // Let each call reach the in-process queue before the next one arrives,
+      // so "arrival order" is unambiguous.
+      await sleep(10)
+    }
+    await Promise.all(calls)
+    expect(order).toEqual([0, 1, 2, 3, 4])
+  })
+
+  test("timeoutMs: 0 on a held lock fails E_LOCKED at once", async () => {
+    const holder = lock(dir, "wt", "single-try", async () => {
+      await sleep(200)
+    })
+    await sleep(30)
+    const start = Date.now()
+    const error = await caught(() => lock(dir, "wt", "single-try", async () => "never", { timeoutMs: 0 }))
+    const elapsed = Date.now() - start
+    expect((error as { code?: unknown }).code).toBe("E_LOCKED")
+    expect(elapsed).toBeLessThan(100)
+    await holder
+  })
+
+  test("a lock released after 100 ms is acquired by a waiter with a 30 s timeout", async () => {
+    const holder = lock(dir, "wt", "released", async () => {
+      await sleep(100)
+    })
+    await sleep(20)
+    const start = Date.now()
+    const out = await lock(dir, "wt", "released", async () => "got", { timeoutMs: 30000 })
+    const elapsed = Date.now() - start
+    expect(out).toBe("got")
+    expect(elapsed).toBeGreaterThanOrEqual(60)
+    await holder
+  })
+
+  test("a waiter that timed out does not hold up the waiter behind it", async () => {
+    const holder = lock(dir, "wt", "skip", async () => {
+      await sleep(150)
+    })
+    const early = caught(() => lock(dir, "wt", "skip", async () => "never", { timeoutMs: 50 }))
+    const late = lock(dir, "wt", "skip", async () => "got", { timeoutMs: 5000 })
+    expect(((await early) as { code?: unknown }).code).toBe("E_LOCKED")
+    expect(await late).toBe("got")
+    await holder
+  })
+
   test("sanitizeLockKey matches the reference mapping", () => {
     expect(sanitizeLockKey("a/b:c")).toBe("a_b_c")
     expect(sanitizeLockKey("")).toBe("_")
