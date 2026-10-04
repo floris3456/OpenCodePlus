@@ -21,9 +21,15 @@ Verification is by `tools.instructions.list` / `show` and a look at the TUI
 - Change configuration only through `tools.instructions.*`, never by editing
   files under `~/.config/opencodeplus/` by hand. Do not change the Basic team or
   its members. Do not touch the service, its databases or any source file.
-- Take row ids from `list` results; do not build them by hand. A member's rows
-  are stored under its bare name at level `global`, so
-  `item:global:<member>:<itemId>` is the same record as the member row.
+- Take row ids from `create` results and `list` results; do not build them by
+  hand. A member's rows are member rows,
+  `item:global:Simple/:<member>:<itemId>` (find them with
+  `list({ where: "team:Simple agent:<member> …" })`). The short form
+  `item:global:<member>:<itemId>` writes the same record, but it may not exist
+  while Simple is off, so prefer the member rows.
+- The store is revisioned: run the writes of a step one after another inside
+  one `execute` (`for … await`), never with `Promise.all`, so they do not
+  collide.
 - After each group of writes, read the rows back with
   `list({ where, fields: ["id", "state", "from"] })` and fix any row that does
   not show the intended state.
@@ -85,11 +91,13 @@ member, and delegators route work by them:
    - set `setting:description` (§2);
    - set `system:role` to its body from §5 (`set({ id, text })`, whole row).
 4. Models, per member:
-   - `create({ kind: "model", level: "global", agent: <member>, providerID, modelID, variant })`;
-   - then `set({ id, active: true })`. In this release an added model is not
-     active by itself;
+   - `create({ kind: "model", level: "global", team: "Simple", agent: <member>, providerID, modelID, variant })`.
+     The `team` is required: without it the row lands in the stand-alone
+     agent's chain, which is how the earlier activation failure happened;
+   - then `set({ id: <the returned id>, active: true })`. In this release an
+     added model is not active by itself;
    - for the three workers, `set({ id, warming: "off" })` on the same row;
-   - verify: `list({ where: "level:global agent:<member> item:model", fields: ["id", "active", "from"] })`
+   - verify: `list({ where: "team:Simple agent:<member> item:model", fields: ["id", "active", "from"] })`
      shows exactly that row active. If activation through the tool does not
      take, activate it in the TUI (Instructions › Global › Teams › Simple ›
      member › Models) and note it.
@@ -514,8 +522,8 @@ nothing and finish blocked.
    `list({ where: "level:global agent:<member> item:tool team_", fields: ["id", "state", "from"] })`.
    - No member has `team_set_checks` or `team_check` on.
    - `team_delegate` is on only for `Simple-Build` and `Simple-Orchestrator`.
-4. `list({ where: "level:global team:Simple item:model active:true", fields:
-   ["id", "from"] })`: six rows, one per member, matching §2.
+4. `list({ where: "team:Simple item:model active:true", fields: ["id", "from"] })`:
+   six rows, one per member, matching §2.
 5. Spot-check §4 rows with `show`:
    - `perm:shell:commands.service-control` is off for a worker;
    - `perm:edit:allowed.*` is on for `Simple-Orchestrator`;
