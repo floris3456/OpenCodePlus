@@ -176,7 +176,9 @@ export function createActiveTeam(context: Plugin.Context) {
       // group alone is set and current() falls back to the ring's first entry.
       const first = members.find((id) => hostAgents.some((a) => a.id === id))
       context.ui.agents.activeGroup.set(enabledId)
-      if (first !== undefined) context.ui.agents.set?.(first)
+      if (first !== undefined && context.ui.router?.current?.()?.type !== "session") {
+        context.ui.agents.set?.(first)
+      }
     })
 
     let previousActiveTeamName: string | undefined = undefined

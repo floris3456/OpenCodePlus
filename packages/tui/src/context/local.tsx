@@ -146,7 +146,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 data.session.get(route.data.sessionID)?.agent ??
                 agentStore.current)
               : agentStore.current
-          return agents().find((agent) => agent.id === selected) ?? agents().at(0)
+          return (
+            agents().find((agent) => agent.id === selected) ??
+            availableAgents().find((agent) => agent.id === selected) ??
+            agents().at(0)
+          )
         },
         set(id: string) {
           const all = availableAgents()
