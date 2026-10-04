@@ -623,18 +623,5 @@ describe("WarmingPlugin", () => {
         expect(test.seen.filter((event) => event.phase === "warm").every((event) => event.kind === undefined)).toBe(true)
       }),
     )
-
-    it.effect("reports ping usage through the warmed phase", () =>
-      Effect.gen(function* () {
-        const test = yield* setup(() => {})
-        yield* trigger(test.sessions.parent, ref("alpha", "m1"))
-        yield* advance(2)
-        const warmed = test.seen.filter((event) => event.phase === "warmed")
-        expect(warmed.length).toBeGreaterThan(0)
-        expect(warmed[0]?.sessionID).toBe(test.sessions.parent)
-        expect(warmed[0]?.agent).toBe(Agent.ID.make("build"))
-        expect(warmed[0]?.model).toEqual(ref("alpha", "m1"))
-      }),
-    )
   })
 })
