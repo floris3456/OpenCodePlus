@@ -28,7 +28,6 @@ import {
   SetChecksInput,
   StatusInput,
   StopInput,
-  SupersedeInput,
   TaskID,
   TaskState,
   TaskStates,
@@ -127,7 +126,6 @@ test("teams/schema exports every tool input schema as the single source", () => 
     IntegrateInput,
     CheckpointInput,
     SetChecksInput,
-    SupersedeInput,
     StopInput,
     StatusInput,
     DiffInput,
@@ -139,13 +137,13 @@ test("teams/schema exports every tool input schema as the single source", () => 
     TavilySearchInput,
     TavilyExtractInput,
   ]
-  expect(toolSchemas).toHaveLength(18)
+  expect(toolSchemas).toHaveLength(17)
   for (const s of toolSchemas) {
     expect(Schema.isSchema(s)).toBe(true)
   }
 })
 
-test("StopInput parses run and optional force", () => {
+test("StopInput parses run, optional force and an optional reason of at most 300 characters", () => {
   expect(Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef" })).toEqual({
     run: "w-0123456789abcdef",
   })
@@ -158,6 +156,12 @@ test("StopInput parses run and optional force", () => {
     force: false,
   })
   expect(() => Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", force: "true" })).toThrow()
+  expect(Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", reason: "Its quota ran out." })).toEqual({
+    run: "w-0123456789abcdef",
+    reason: "Its quota ran out.",
+  })
+  expect(() => Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", reason: "" })).toThrow()
+  expect(() => Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", reason: "x".repeat(301) })).toThrow()
 })
 
 const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }

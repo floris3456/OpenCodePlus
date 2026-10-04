@@ -101,10 +101,10 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     // lands what its orchestrator reports done; workers address only their own
     // run, which get_context describes (no status); a scout changes nothing (no
     // diff); the build seat, never delegated to, finishes nothing.
-    planner: ["delegate", "followup", "integrate", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
+    planner: ["delegate", "followup", "integrate", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
     // An orchestrator commits the tests that judge its implementers (and only
     // what it may edit: Requirements for a commit).
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "supersede", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "set_checks", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
     scout: ["finish", "get_context"],
@@ -307,7 +307,6 @@ test("every field of every team tool input carries a description", () => {
     team_integrate: TeamSchema.IntegrateInput,
     team_checkpoint: TeamSchema.CheckpointInput,
     team_set_checks: TeamSchema.SetChecksInput,
-    team_supersede: TeamSchema.SupersedeInput,
     team_stop: TeamSchema.StopInput,
     team_status: TeamSchema.StatusInput,
     team_diff: TeamSchema.DiffInput,

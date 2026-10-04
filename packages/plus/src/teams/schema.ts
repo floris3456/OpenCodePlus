@@ -847,19 +847,13 @@ export const SetChecksInput = Schema.Struct({
 })
 export type SetChecksInput = typeof SetChecksInput.Type
 
-export const SupersedeInput = Schema.Struct({
-  run: RunID.annotate({ description: "The child run to abandon." }),
-  reason: Schema.String.check(Schema.isMinLength(10), Schema.isMaxLength(500)).annotate({ description: "Why it is abandoned." }),
-  waitMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(120000))).annotate({
-    description: "How long a working child may take to stop before it is interrupted (default 30000).",
-  }),
-})
-export type SupersedeInput = typeof SupersedeInput.Type
-
 export const StopInput = Schema.Struct({
   run: RunID.annotate({ description: "The child run to stop." }),
   force: Schema.optional(Schema.Boolean).annotate({
     description: "End a working child now instead of after its turn.",
+  }),
+  reason: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300))).annotate({
+    description: "Why you stop it. Kept on the run; when the run is not your own child, its parent is told.",
   }),
 })
 export type StopInput = typeof StopInput.Type

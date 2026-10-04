@@ -98,7 +98,7 @@ export async function put(
       const accepted = { maxBytes, pendingBytes: n, availableBytes: Math.max(0, maxBytes - n) }
       throw toolError(
         "E_INBOX_FULL",
-        `Run ${runID} has ${n} bytes of undelivered inbox (max ${maxBytes}). Wait for it to read them, or supersede it.`,
+        `Run ${runID} has ${n} bytes of undelivered inbox (max ${maxBytes}). Wait for it to read them, or team_stop it.`,
         accepted,
       )
     }

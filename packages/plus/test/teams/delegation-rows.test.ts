@@ -17,6 +17,7 @@ import { wildcardMatch } from "../../src/instructions/permission-catalog.js"
 import { policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
 import { createTeamApi, type TeamApiResult, type TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
+import { peek } from "../../src/teams/inbox.js"
 import { reachTools } from "../../src/teams/policy.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief } from "../../src/teams/schema.js"
@@ -542,6 +543,22 @@ test("followup reaches a grandchild only while the caller's Deeper descendants r
   expect(required(await apiWith(deeper).followup({ run: grandchild.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued" })
   // A direct child needs no row.
   expect(required(await apiWith(tableWith()).followup({ run: child.id, requestID: "f-3", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued" })
+})
+
+test("stop reaches a grandchild only while the caller's Deeper descendants row for team_stop is on, and tells its parent the reason", async () => {
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", children: ["w-aaaaaaaaaaaaaaaa"], sessionID: "ses_orchestrator" })
+  const child = working({ id: "w-aaaaaaaaaaaaaaaa", role: "orchestrator", parent: parent.id, children: ["w-bbbbbbbbbbbbbbbb"] })
+  const grandchild = working({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: child.id })
+  for (const run of [parent, child, grandchild]) await saveRun(root, run)
+  const reason = "Its model is out of quota; another worker takes the Brief."
+
+  expect(rejected(await apiWith(tableWith()).stop({ run: grandchild.id, reason }, callerFor(parent))).code).toBe("E_NOT_CHILD")
+  const deeper = tableWith({ agent: parent.role, id: "perm:team_stop:runs.descendants", enabled: true })
+  expect(required(await apiWith(deeper).stop({ run: grandchild.id, reason }, callerFor(parent)))).toEqual({ run: grandchild.id, state: "stopping" })
+  expect((await loadRun(root, grandchild.id))?.stopReason).toBe(reason)
+  expect((await peek(root, child.id)).map((item) => [item.kind, item.from, item.text])).toEqual([
+    ["notify", grandchild.id, `${parent.id} stops run ${grandchild.id}: ${reason}`],
+  ])
 })
 
 test("a planner-preset target accepts plan files only, by its own Plan files only row", async () => {

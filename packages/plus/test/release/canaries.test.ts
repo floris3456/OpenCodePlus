@@ -1380,12 +1380,10 @@ describe("git config: repository operations run no config-named program", () => 
 
   /**
    * Canary: a repository-local `core.fsmonitor` naming a program makes the raw
-   * `git status` run it. The lifecycle handlers (the `status` that checks dirty
-   * state in GC and the `status` that detects uncommitted changes on supersede)
-   * must both run clean, and both operations must still genuinely succeed.
+   * `git status` run it. The `status` that checks dirty state in GC must run
+   * clean, and GC must still genuinely skip the dirty run.
    */
-  test("a repository-local core.fsmonitor cannot run through gc or supersede lifecycle operations", async () => {
-    // 1. GC dirty inspection runs clean.
+  test("a repository-local core.fsmonitor cannot run through gc", async () => {
     const repoGc = resolve(scratch, "config-fsmonitor-gc-repo")
     const headGc = await initRepo(repoGc)
     const sentinelGc = sentinelFor("fsmonitor-gc")
@@ -1410,41 +1408,6 @@ describe("git config: repository operations run no config-named program", () => 
     })
     expect(gcResult.skippedDirty).toContain(runGc.id)
     expect(await Bun.file(sentinelGc).exists()).toBe(false)
-
-    // 2. Supersede headInfo status check runs clean.
-    const repoSupersede = resolve(scratch, "config-fsmonitor-supersede-repo")
-    const headSupersede = await initRepo(repoSupersede)
-    const sentinelSupersede = sentinelFor("fsmonitor-supersede")
-    await git(repoSupersede, ["config", "core.fsmonitor", await plantProgram("fsmonitor-supersede", sentinelSupersede)])
-
-    await rm(sentinelSupersede, { force: true })
-    await gitRaw(repoSupersede, ["status", "--porcelain"])
-    expect(await Bun.file(sentinelSupersede).exists()).toBe(true)
-    await rm(sentinelSupersede, { force: true })
-
-    await writeFile(join(repoSupersede, "uncommitted.txt"), "uncommitted\n")
-    const parent: RunRecord = {
-      ...runRecord(repoSupersede, headSupersede, headSupersede, "w-ca2a2a2a2a2a2a2a"),
-      children: ["w-ca1a1a1a1a1a1a1a"],
-    }
-    const child: RunRecord = {
-      ...runRecord(repoSupersede, headSupersede, headSupersede, "w-ca1a1a1a1a1a1a1a"),
-      parent: parent.id,
-      state: "superseded",
-    }
-
-    const supersedeResult = await withTeamsRoot("fsmonitor-supersede", async () => {
-      const root = teamsDataDir()
-      await saveRun(root, parent)
-      await saveRun(root, child)
-      return createTeamApi(context(), createState()).supersede(
-        { run: child.id, reason: "canary supersede test" },
-        { sessionID: "ses_canary_config", agent: "muse-implementer", run: parent },
-      )
-    })
-    expect(supersedeResult.ok).toBe(true)
-    expect((supersedeResult as { ok: true; value: { hadUncommitted: boolean } }).value.hadUncommitted).toBe(true)
-    expect(await Bun.file(sentinelSupersede).exists()).toBe(false)
   })
 
   /**

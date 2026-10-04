@@ -239,9 +239,9 @@ checkpoints what its agent may edit: its edit rows (Where, Files it may
 change, Protected files) decide, never protected state such as `.git` or
 `.opencodeplus`; so a build seat commits anywhere in its checkout and a
 planner in the chat only its plan files. Workers have no `status`: they address
-only their own run, which `get_context` describes. `followup`, `stop`,
-`supersede` and `diff` never reach past a member's own run and direct children
-until you turn its `Runs` rows on.
+only their own run, which `get_context` describes. `followup`, `stop` and
+`diff` never reach past a member's own run and direct children until you turn
+its `Runs` rows on.
 
 **Instructions that follow capabilities.** A section of a role or instruction
 text can depend on rows, on the first line under its heading:
@@ -416,10 +416,9 @@ member of an enabled team gets a `team.*` wildcard deny, so it sees no
 
 ## Team runs
 
-Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds thirteen tools that all work —
+Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds twelve tools that all work —
 `delegate`, `finish`, `followup`, `integrate`, `checkpoint`, `set_checks`,
-`supersede`, `stop`, `status`, `get_context`, `diff`, `list` and
-`check`. There is no `wait`: a parent ends its turn and each child's
+`stop`, `status`, `get_context`, `diff`, `list` and `check`. There is no `wait`: a parent ends its turn and each child's
 settlement wakes it (below). Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
 read-only `git diff` of your own run or one of your children (further only
 when your `Runs` rows on `team_diff` allow it), truncated to `maxBytes`
@@ -454,14 +453,18 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   `waitingOn`, and the next child settlement is delivered into the same
   attempt. A run therefore ends an attempt without a report only when it has
   no children left to hear from.
-- `stop` and `supersede` are the only ways to halt a child. `team_stop` on a
-  working child asks it to stop after its turn (setting `stopRequested` and
-  returning `state: "stopping"`), completed by `onSessionIdle`; `team_stop` on
-  an idle child stops it now; both are idempotent. Stopping a waiting run ends
-  its open attempt `interrupted`; its parent is told once, unless the parent is
-  the run that stopped it. Resuming a stopped or dead
-  run through its session consumes the retained `stopRequested`, so the first
-  successful turn after the resume stays `idle` instead of stopping again.
+- `stop` is the only way to halt a child. `team_stop` on a working child asks
+  it to stop after its turn (setting `stopRequested` and returning
+  `state: "stopping"`), completed by `onSessionIdle`, or ends it now with
+  `force: true`; `team_stop` on an idle child stops it now; both are
+  idempotent. Stopping a waiting run ends its open attempt `interrupted`; its
+  parent is told once, unless the parent is the run that stopped it. An
+  optional `reason` (at most 300 characters) is kept on the run as
+  `stopReason` and shown by `team_status`; stopping a deeper descendant with a
+  reason also tells that run's own parent. Resuming a stopped or dead run
+  through its session consumes the retained `stopRequested` and `stopReason`,
+  so the first successful turn after the resume stays `idle` instead of
+  stopping again.
 - `team_followup delivery:"now"` works with no tool call from the child.
 - `team_get_context` on a root run returns `brief: null` rather than failing
   `E_NO_BRIEF`. The `conventions` field has been removed.

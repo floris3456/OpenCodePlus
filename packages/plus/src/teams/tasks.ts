@@ -267,7 +267,7 @@ export async function claim(root: string, planRun: string, taskID: string, runID
     }
     if (task.state !== "open") {
       const holder = task.run ?? task.state
-      throw toolError("E_TASK_CLAIMED", `Task ${taskID} is claimed by run ${holder}; supersede it or pick another task.`, holder)
+      throw toolError("E_TASK_CLAIMED", `Task ${taskID} is claimed by run ${holder}; pick another task.`, holder)
     }
     const at = now()
     const next: TaskRecord = {

@@ -17,7 +17,6 @@ export const directTools = [
   "integrate",
   "checkpoint",
   "set_checks",
-  "supersede",
   "stop",
 ] as const
 
@@ -36,4 +35,4 @@ export const teamTools = [...directTools, ...codeTools] as const
 export type TeamTool = (typeof teamTools)[number]
 
 // Tools whose runs a member addresses by id, and so carry Runs rows.
-export const reachTools: readonly TeamTool[] = ["followup", "stop", "supersede", "status", "diff", "list"]
+export const reachTools: readonly TeamTool[] = ["followup", "stop", "status", "diff", "list"]
