@@ -65,6 +65,18 @@ export function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16)
 }
 
+function optionFingerprints(body: Record<string, unknown>, keys: readonly string[]) {
+  const result: Record<string, string> = {}
+  const visit = (key: string, value: unknown) => {
+    if (value === undefined) return
+    result[key] = sha256(canonicalJson(value))
+    if (value !== null && typeof value === "object" && !Array.isArray(value))
+      Object.entries(value).forEach(([name, child]) => visit(`${key}.${name}`, child))
+  }
+  keys.forEach((key) => visit(key, body[key]))
+  return result
+}
+
 function nameSystemPart(
   text: string,
   idx: number,
@@ -258,12 +270,7 @@ function fingerprintAnthropic(
 
   // Options
   const optionKeys = ["thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k", "service_tier", "container"]
-  const optionsKeys: Record<string, string> = {}
-  optionKeys.forEach((key) => {
-    if (body[key] !== undefined) {
-      optionsKeys[key] = sha256(canonicalJson(body[key]))
-    }
-  })
+  const optionsKeys = optionFingerprints(body, optionKeys)
   const optionsHash = sha256(canonicalJson(optionsKeys))
 
   // Messages with rolling prefix hash
@@ -369,6 +376,8 @@ function fingerprintOpenAIResponses(
   // Options
   const optionKeys = [
     "prompt_cache_key",
+    "prompt_cache_retention",
+    "prompt_cache_options",
     "reasoning",
     "temperature",
     "top_p",
@@ -379,12 +388,7 @@ function fingerprintOpenAIResponses(
     "text",
     "parallel_tool_calls",
   ]
-  const optionsKeys: Record<string, string> = {}
-  optionKeys.forEach((key) => {
-    if (body[key] !== undefined) {
-      optionsKeys[key] = sha256(canonicalJson(body[key]))
-    }
-  })
+  const optionsKeys = optionFingerprints(body, optionKeys)
   const optionsHash = sha256(canonicalJson(optionsKeys))
 
   // Messages from body.input
@@ -484,12 +488,7 @@ function fingerprintOpenAIChat(
     "service_tier",
     "prompt_cache_key",
   ]
-  const optionsKeys: Record<string, string> = {}
-  optionKeys.forEach((key) => {
-    if (body[key] !== undefined) {
-      optionsKeys[key] = sha256(canonicalJson(body[key]))
-    }
-  })
+  const optionsKeys = optionFingerprints(body, [...optionKeys, "prompt_cache_retention", "prompt_cache_options"])
   const optionsHash = sha256(canonicalJson(optionsKeys))
 
   // Rolling prefix hashes per non-system message

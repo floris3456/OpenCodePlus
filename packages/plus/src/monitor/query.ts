@@ -22,10 +22,13 @@ import type {
   MonitorTotals,
 } from "../rpc.js"
 import { HOUR, type Ledger } from "./ledger.js"
+import { requestReport } from "./report.js"
 
 const DEFAULT_TOP = 20
 const DEFAULT_FEED = 12
 const MAX_ROWS = 500
+
+const compactionSince = (alias: string) => `(select coalesce(max(at), 0) from context_fact where session_id = ${alias}.session_id and kind = 'compaction' and at < $until)`
 
 export interface QueryContext {
   /** The Location's directory, for project scope. */
@@ -46,17 +49,20 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   const window = { since: input.since ?? 0, until: input.until ?? now + 1 }
   const group = input.group ?? "tool"
   const top = clamp(input.top ?? DEFAULT_TOP)
+  const requests = requestReport(ledger, input, context, window)
   // One grouped pass answers both: the totals sum every group, the table keeps the top ones.
   const read = (target: Window) => {
     const groups = groupsOf(db, input, context, target, group)
+    const totals = totalsOf(db, input, context, target, groups)
     return {
-      totals: totalsOf(db, input, context, target, groups),
+      totals: { ...totals, ...(target === window ? requests.totals : requestReport(ledger, input, context, target).totals), steps: totals.steps },
       groups: groups.slice(0, top).map((entry) => entry.group),
     }
   }
   return {
     now,
     ...read(window),
+    ...requests.sections,
     feed: feedOf(db, input, context, window, clamp(input.feed ?? DEFAULT_FEED)),
     ...(input.compare === undefined
       ? {}
@@ -74,19 +80,31 @@ function clamp(value: number): number {
 }
 
 // The sessions in scope, as a CTE named `scope` (absent for scope "all").
-function scopeOf(input: MonitorQueryInput, context: QueryContext): { cte: string; bindings: Bindings } {
+export function scopeOf(input: MonitorQueryInput, context: QueryContext): { cte: string; bindings: Bindings } {
   if (input.scope === "session" && input.sessionID !== undefined)
     return {
-      cte: "with recursive scope(id) as (select $root union select s.id from session s join scope on s.parent_id = scope.id)",
+      cte: "with scope(id) as (select $root)",
       bindings: { $root: input.sessionID },
     }
+  if (input.scope === "tree" && input.sessionID !== undefined)
+    return {
+      cte: `with recursive ancestors(id, parent_id) as (
+        select id, parent_id from session where id = $root
+        union select s.id, s.parent_id from session s join ancestors a on s.id = a.parent_id
+      ), scope(id) as (
+        select coalesce(parent_id, id) from ancestors where parent_id is null or parent_id not in (select id from session)
+        union select s.id from session s join scope on s.parent_id = scope.id
+      )`, bindings: { $root: input.sessionID },
+    }
+  if (input.scope === "team" && input.team !== undefined)
+    return { cte: "with scope(id) as (select id from session where team = $team)", bindings: { $team: input.team } }
   if (input.scope === "project" && context.directory !== undefined)
     return {
       cte: "with recursive scope(id) as (select id from session where directory = $directory union select s.id from session s join scope on s.parent_id = scope.id)",
       bindings: { $directory: context.directory },
     }
   // Session scope without a session reads nothing rather than everything.
-  if (input.scope === "session") return { cte: "with scope(id) as (select null where 0)", bindings: {} }
+  if (input.scope !== "all") return { cte: "with scope(id) as (select null where 0)", bindings: {} }
   return { cte: "", bindings: {} }
 }
 
@@ -127,7 +145,7 @@ function callRows(
     const tools = inList(`${alias}.tool`, "tool", input.tools)
     const models = inList(`${alias}.model`, "model", input.models)
     return {
-      sql: `${scope.cte === "" ? "" : ` and ${alias}.session_id in (select id from scope)`}${agents.sql}${tools.sql}${models.sql}`,
+      sql: `${scope.cte === "" ? "" : ` and ${alias}.session_id in (select id from scope)`}${agents.sql}${tools.sql}${models.sql}${input.sinceCompaction ? ` and ${alias}.started >= ${compactionSince(alias)}` : ""}`,
       bindings: { ...agents.bindings, ...tools.bindings, ...models.bindings },
     }
   }
@@ -148,7 +166,7 @@ function callRows(
     where ${where}${raw.sql}${errors ? " and c.status = 'error'" : ""}`
   const firstHour = Math.ceil(window.since / HOUR)
   const lastHour = Math.floor(window.until / HOUR)
-  const rollup = options.raw !== true && !errors && firstHour < lastHour
+  const rollup = options.raw !== true && !errors && !input.sinceCompaction && firstHour < lastHour
   if (!rollup)
     return {
       cte: scope.cte,
@@ -205,6 +223,7 @@ function totalsOf(
         sum(s.cost) as cost
       from step s
       where s.started >= $since and s.started < $until
+        ${input.sinceCompaction ? `and s.started >= ${compactionSince("s")}` : ""}
         ${scope.cte === "" ? "" : "and s.session_id in (select id from scope)"}${agents.sql}${models.sql}`,
     )
     .get({ ...scope.bindings, ...agents.bindings, ...models.bindings, $since: window.since, $until: window.until })
@@ -331,6 +350,7 @@ function feedOf(
         c.call_tokens, c.result_tokens, c.measured, c.result_tokens * max(0, coalesce(e.last_idx, c.idx) - c.idx) as carried
       from call c ${index} left join epoch e on e.session_id = c.session_id and e.epoch = c.epoch
       where c.parent_call is null and c.started >= $since and c.started < $until
+        ${input.sinceCompaction ? `and c.started >= ${compactionSince("c")}` : ""}
         ${scope.cte === "" ? "" : "and c.session_id in (select id from scope)"}${agents.sql}${tools.sql}${models.sql}
         ${input.errors === true ? "and c.status = 'error'" : ""}
       order by c.started desc, c.call_id desc

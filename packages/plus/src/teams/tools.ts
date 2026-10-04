@@ -85,6 +85,7 @@ interface TeamAuditState {
   readonly askedRequests: Map<string, AskedCall>
   /** The permission table of the latest publish: whether a chat may start a team run is its row. */
   readonly permissions: () => PermissionTable | undefined
+  readonly team?: (agent: string) => string | undefined
 }
 
 const PermissionEvents: Set<string> = new Set([Permission.Event.Asked.type, Permission.Event.Replied.type])
@@ -342,11 +343,13 @@ export async function registerTeamTools(
   ctx: Context,
   api: TeamApi,
   permissions: () => PermissionTable | undefined = () => undefined,
+  team?: (agent: string) => string | undefined,
 ): Promise<Registration> {
   const state: TeamAuditState = {
     calls: new Map<string, TeamCall[]>(),
     askedRequests: new Map<string, AskedCall>(),
     permissions,
+    ...(team === undefined ? {} : { team }),
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
@@ -532,7 +535,7 @@ function runGated<A>(
       bound: false,
     }
     const auditState: { run: string | null } = { run: null }
-    const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState, state.permissions()).pipe(
+    const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState, state.permissions(), state.team?.(agent)).pipe(
       Effect.map((result) => ({ ok: true as const, output: result.output })),
       Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
     )
@@ -564,6 +567,7 @@ function runGatedInner<A>(
   call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
   auditState: { run: string | null },
   table: PermissionTable | undefined,
+  team?: string,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
@@ -617,6 +621,7 @@ function runGatedInner<A>(
           {
             id: newRunID("main"),
             role: agent,
+            ...(team === undefined ? {} : { team }),
             kind: "main",
             repo: repoKey,
             repoKey,

@@ -8,10 +8,10 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
-import { Effect, Stream } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
-import { watchMonitor } from "../src/monitor/plugin.js"
+import { monitorFact, watchMonitor } from "../src/monitor/plugin.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 import { context } from "./harness.js"
 
@@ -60,6 +60,48 @@ function makeHookRegistry() {
   }
   return { hooks, hookFn }
 }
+
+test("every provider-path monitor hook and reusable fact writer contain ledger failures", async () => {
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({ event: { subscribe: () => Stream.empty as never }, session: { hook: hookFn as never } })
+  const refuse = () => { throw new Error("read-only file system") }
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, refuse)
+    const common = { sessionID: Session.ID.make("ses_fail"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o") }
+    for (const cb of hooks["http.request"] ?? []) yield* cb({ ...common, kind: "primary", request: new Request("https://example.test/chat/completions", { method: "POST", body: '{"messages":[]}' }) })
+    for (const cb of hooks["http.response"] ?? []) yield* cb({ ...common, kind: "primary", request: new Request("https://example.test"), response: new Response("", { status: 500 }) })
+    for (const cb of hooks.context ?? []) yield* cb({ ...common, system: [], messages: [], options: {}, tools: {} })
+    for (const cb of hooks.context ?? []) yield* cb({ ...common, get system(): SessionHooks["context"]["system"] { throw new Error("context failed") }, messages: [], options: {}, tools: {} })
+    for (const cb of hooks["experimental.ws.send"] ?? []) yield* cb({ ...common, kind: "primary", frame: '{"input":[]}' })
+    for (const cb of hooks.generated ?? []) yield* cb({ ...common, error: "test error" })
+    for (const cb of hooks.warming ?? []) yield* cb({ ...common, phase: "warmed", now: 1000, since: 0, settings: undefined })
+    expect(hooks.context?.length).toBe(1)
+    expect(hooks["http.request"]?.length).toBe(1)
+  })))
+  expect(() => monitorFact({ sessionID: "ses_fail", at: 1000, kind: "account_switch" }, refuse)).not.toThrow()
+})
+
+test("request hooks record model pricing once per change for historical miss costs", async () => {
+  const db = await ledger()
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({
+    event: { subscribe: () => Stream.empty as never },
+    session: { hook: hookFn as never },
+    model: { ...context().model, list: () => Effect.succeed({ location: { directory: "/fixture" }, data: [{
+      ...Model.Info.default(Provider.ID.make("openai"), Model.ID.make("gpt-4o")),
+      cost: [Schema.decodeUnknownSync(Model.Cost)({ input: 2, output: 5, cache: { read: 0.1, write: 3 } })],
+    }] }) as never },
+  })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, () => db)
+    for (let i = 0; i < 2; i++) for (const cb of hooks["http.request"] ?? []) yield* cb({
+      sessionID: Session.ID.make("ses_pricing"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o"), kind: "primary",
+      request: new Request("https://example.test/chat/completions", { method: "POST", body: '{"messages":[]}' }),
+    })
+  })))
+  expect(db.getContextFacts("ses_pricing").filter((f) => f.kind === "pricing")).toHaveLength(1)
+  expect(db.getContextFacts("ses_pricing")[0]?.detail).toMatchObject({ provider: "openai", model: "gpt-4o", rates: [{ input: 2, output: 5, cache: { read: 0.1, write: 3 } }] })
+})
 
 test("fingerprints from real request bodies for each protocol with short hashes", async () => {
   // 1. OpenAI Responses

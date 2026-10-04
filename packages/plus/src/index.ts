@@ -3113,7 +3113,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.catalogModels())
         return result.value
       }),
-    "monitor.query": (input) => Effect.sync(() => monitorQuery(ctx, input)),
+    "monitor.query": (input) => Effect.promise(() => monitorQuery(ctx, input)),
     "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
     "checks.suggest": () =>
       Effect.promise(async () => {
@@ -4507,7 +4507,7 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
 // Team tools only. Team rules are instructions rows applied by apply.ts, so
 // there is no permission hook to install here.
 async function installTeamTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
-  return [await registerTeamTools(ctx, createTeamApi(ctx, state), () => state.permissions)]
+  return [await registerTeamTools(ctx, createTeamApi(ctx, state), () => state.permissions, (agent) => state.teamOutputIds.get(agent)?.team)]
 }
 
 function disposeTeamTooling(state: PlusState): Effect.Effect<void> {

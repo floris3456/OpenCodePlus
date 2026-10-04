@@ -1,5 +1,7 @@
 import { expect } from "bun:test"
 import {
+  AIError,
+  InvalidRequestError,
   LLMClient,
   LLMEvent,
   LLMResponse,
@@ -24,7 +26,7 @@ import { Instructions } from "@opencode/core/instructions/index"
 import { InstructionBuiltIns } from "@opencode/core/instructions/builtins"
 import { Location } from "@opencode/core/location"
 import { McpInstructions } from "@opencode/core/mcp/instructions"
-import { ID } from "@opencode/core/model"
+import { ID, Model } from "@opencode/core/model"
 import { Project } from "@opencode/core/project"
 import { Provider } from "@opencode/core/provider"
 import { ReferenceInstructions } from "@opencode/core/reference/instructions"
@@ -50,6 +52,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
 import { Tool } from "@opencode/core/tool"
+import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Stream } from "effect"
 import { testEffect } from "./lib/effect"
@@ -57,13 +60,15 @@ import { testEffect } from "./lib/effect"
 const requests: LLMRequest[] = []
 const options: Array<StreamOptions | undefined> = []
 let instruction: string | Instructions.Unavailable = "Initial context"
+let failGenerate: AIError | undefined
 const sessionID = SessionSchema.ID.make("ses_generate_test")
 
 const model = LanguageModel.make({ id: "generate-model", provider: "test", route: OpenAIChat.route })
 const client = Layer.mock(LLMClient.Service)({
   stream: () => Stream.die(new Error("unused")),
   generate: (request, requestOptions) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      if (failGenerate) return yield* failGenerate
       requests.push(request)
       options.push(requestOptions)
       const response = LLMResponse.fromEvents([
@@ -74,7 +79,7 @@ const client = Layer.mock(LLMClient.Service)({
         LLMEvent.stepFinish({
           index: 0,
           reason: { normalized: "stop" },
-          usage: { inputTokens: 100, outputTokens: 10 },
+          usage: { inputTokens: 100, nonCachedInputTokens: 100, outputTokens: 10 },
         }),
         LLMEvent.finish({ reason: { normalized: "stop" } }),
       ])
@@ -411,6 +416,71 @@ it.effect(
       expect(error).toBeInstanceOf(Instructions.InitializationBlocked)
       expect(requests).toEqual([])
       expect(yield* durableState(db, sessionID)).toEqual(before)
+    }),
+  { timeout: 15_000 },
+)
+
+it.effect(
+  "fires the generated session hook once with usage, and once with error on a failing LLM call",
+  () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      options.length = 0
+      failGenerate = undefined
+      instruction = "Initial context"
+      const { db, bus, instructions, session, instances } = yield* setup
+      yield* InstructionState.prepare(db, bus, instructions, sessionID)
+      const hooks = yield* PluginHooks.Service
+
+      const events: Array<SessionHooks["generated"]> = []
+      yield* hooks.register("session", "generated", (event) =>
+        Effect.sync(() => {
+          events.push({ ...event })
+        }),
+      )
+
+      // 1. Success case: fires generated hook with usage
+      const result = yield* SessionGenerate.generate({ session, prompt: "Ping prompt" }).pipe(
+        Effect.provideService(Instance.Service, instances),
+      )
+      expect(result).toBe("Transient answer")
+      expect(events).toHaveLength(1)
+      expect(events[0]?.sessionID).toBe(sessionID)
+      expect(events[0]?.agent).toBe(Agent.ID.make("build"))
+      expect(events[0]?.model).toEqual(
+        Model.Ref.make({
+          id: Model.ID.make("generate-model"),
+          providerID: Provider.ID.make("test"),
+        }),
+      )
+      expect(events[0]?.usage).toEqual({
+        input: 100,
+        output: 10,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      })
+      expect(events[0]?.error).toBeUndefined()
+
+      // 2. Failing case: fires generated hook with error
+      failGenerate = new AIError({
+        reason: new InvalidRequestError({ message: "LLM failure" }),
+      })
+      const error = yield* SessionGenerate.generate({ session, prompt: "Ping prompt fail" }).pipe(
+        Effect.provideService(Instance.Service, instances),
+        Effect.flip,
+      )
+      expect(error).toEqual(failGenerate)
+      expect(events).toHaveLength(2)
+      expect(events[1]?.sessionID).toBe(sessionID)
+      expect(events[1]?.agent).toBe(Agent.ID.make("build"))
+      expect(events[1]?.model).toEqual(
+        Model.Ref.make({
+          id: Model.ID.make("generate-model"),
+          providerID: Provider.ID.make("test"),
+        }),
+      )
+      expect(events[1]?.error).toBe("LLM failure")
+      expect(events[1]?.usage).toBeUndefined()
     }),
   { timeout: 15_000 },
 )

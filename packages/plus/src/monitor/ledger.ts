@@ -199,6 +199,7 @@ create table if not exists request (
   created integer not null
 );
 create index if not exists request_session on request(session_id, started);
+create index if not exists request_message on request(session_id, message_id);
 create index if not exists request_started on request(started);
 create index if not exists request_kind on request(kind);
 
@@ -238,6 +239,7 @@ export interface SessionFacts {
   readonly directory?: string
   readonly runID?: string
   readonly role?: string
+  readonly team?: string
 }
 
 export interface StepStart {
@@ -395,6 +397,7 @@ export interface Ledger {
   getRequest(id: string): RequestRow | undefined
   getRequests(sessionID: string): readonly RequestRow[]
   getFingerprint(requestID: string): RequestFingerprintData | undefined
+  getFingerprints(sessionID: string): readonly RequestFingerprintData[]
   getContextFacts(sessionID: string): readonly ContextFactRow[]
 }
 
@@ -422,13 +425,20 @@ export function createLedger(file: string): Ledger {
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")
   db.exec(schema)
+  if (
+    !db
+      .query<{ name: string }, []>("pragma table_info(session)")
+      .all()
+      .some((c) => c.name === "team")
+  )
+    db.exec("alter table session add column team text")
   db.query(
     "insert into meta (key, value) values ('schema', ?) on conflict(key) do update set value = excluded.value",
   ).run(String(SCHEMA_VERSION))
 
   const upsertSession = db.query(`
-    insert into session (id, parent_id, agent, title, directory, run_id, role, first_seen, last_seen)
-    values ($id, $parent, $agent, $title, $directory, $run, $role, $now, $now)
+    insert into session (id, parent_id, agent, title, directory, run_id, role, team, first_seen, last_seen)
+    values ($id, $parent, $agent, $title, $directory, $run, $role, $team, $now, $now)
     on conflict(id) do update set
       parent_id = coalesce(excluded.parent_id, session.parent_id),
       agent = coalesce(excluded.agent, session.agent),
@@ -436,6 +446,7 @@ export function createLedger(file: string): Ledger {
       directory = coalesce(excluded.directory, session.directory),
       run_id = coalesce(excluded.run_id, session.run_id),
       role = coalesce(excluded.role, session.role),
+      team = coalesce(excluded.team, session.team),
       last_seen = max(session.last_seen, excluded.last_seen)`)
   const insertStep = db.query(`
     insert into step (session_id, message_id, kind, idx, epoch, agent, provider, model, variant, config, started)
@@ -532,14 +543,15 @@ export function createLedger(file: string): Ledger {
   const updateLatestKind = db.query<void, [string, string, string]>(
     "update request set kind = ? where id = (select id from request where session_id = ? and kind = ? order by started desc limit 1)",
   )
-  const findRequest = db.query<Record<string, unknown>, [string]>(
-    "select * from request where id = ?",
-  )
+  const findRequest = db.query<Record<string, unknown>, [string]>("select * from request where id = ?")
   const findSessionRequests = db.query<Record<string, unknown>, [string]>(
     "select * from request where session_id = ? order by started asc",
   )
   const findFingerprint = db.query<Record<string, unknown>, [string]>(
     "select * from request_fingerprint where request_id = ?",
+  )
+  const findSessionFingerprints = db.query<Record<string, unknown>, [string]>(
+    "select * from request_fingerprint where session_id = ? order by created asc",
   )
   const findContextFacts = db.query<Record<string, unknown>, [string]>(
     "select * from context_fact where session_id = ? order by at asc",
@@ -585,6 +597,7 @@ export function createLedger(file: string): Ledger {
         $directory: facts.directory ?? null,
         $run: facts.runID ?? null,
         $role: facts.role ?? null,
+        $team: facts.team ?? null,
         $now: now,
       }),
     stepStarted: (step) => startStep(step),
@@ -644,7 +657,9 @@ export function createLedger(file: string): Ledger {
         db.query("delete from request_fingerprint where created < ?").run(before)
         db.query("delete from context_fact where at < ?").run(before)
         db.query("delete from mark where at < ?").run(before)
-        db.query("delete from session where last_seen < ? and id not in (select session_id from step) and id not in (select session_id from request)").run(before)
+        db.query(
+          "delete from session where last_seen < ? and id not in (select session_id from step) and id not in (select session_id from request)",
+        ).run(before)
         db.query("delete from epoch where session_id not in (select distinct session_id from step)").run()
         db.query("delete from call_hour where calls = 0 and inner = 0 and running = 0").run()
       })()
@@ -724,6 +739,7 @@ export function createLedger(file: string): Ledger {
       const row = findFingerprint.get(requestID)
       return row ? toFingerprintData(row) : undefined
     },
+    getFingerprints: (sessionID) => findSessionFingerprints.all(sessionID).map(toFingerprintData),
     getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
     close: () => {
       open.delete(file)

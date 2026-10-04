@@ -8,6 +8,7 @@ export type { ModelIdentity, WorktreeState }
 import { atomicJson, lock, readJson } from "./store.js"
 import { append } from "./audit.js"
 import { errCode, io } from "./io.js"
+import { discoverAllTeams } from "../instructions/teams.js"
 
 export type RunKind = "main" | "w"
 
@@ -54,6 +55,8 @@ export interface RunBudget {
 export interface RunRecord {
   id: string
   role: string
+  /** Team identity at admission; absent on older records. */
+  team?: string
   kind: RunKind
   repo: string
   repoKey: string
@@ -477,12 +480,21 @@ export async function saveRun(root: string, run: RunRecord): Promise<void> {
         : run.worktree === undefined
           ? { ...run, worktree: "present" }
           : run
-    await atomicJson(target, toSave)
+    const team = stored?.team ?? run.team ?? (!existed ? await inferRunTeam(run) : undefined)
+    await atomicJson(target, { ...toSave, ...(team === undefined ? {} : { team }) })
     return !existed
   })
   // The first write of a run's record enters the audit chain as run.created;
   // later writes are transitions covered by their own events.
   if (created) await append(root, "run.created", { run: run.id })
+}
+
+/** Historic roles are assigned only when membership identifies one team. */
+export async function inferRunTeam(run: Pick<RunRecord, "role" | "directory" | "projectDirectory" | "team">): Promise<string | undefined> {
+  if (run.team !== undefined) return run.team
+  const teams = await discoverAllTeams(run.projectDirectory ?? run.directory)
+  const names = [...new Set(teams.filter((t) => t.agents.some((a) => a.id === run.role)).map((t) => t.team))]
+  return names.length === 1 ? names[0] : undefined
 }
 
 export async function loadRun(root: string, id: string): Promise<RunRecord | undefined> {

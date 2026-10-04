@@ -385,6 +385,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
         {
           id: childID,
           role: brief.role,
+          ...(state.teamOutputIds.get(brief.role) === undefined ? {} : { team: state.teamOutputIds.get(brief.role)!.team }),
           kind: "w",
           repo: repo.key,
           repoKey: repo.key,
@@ -1236,4 +1237,3 @@ async function statusOf(ctx: Context, root: string, id: string) {
     },
   }
 }
-
