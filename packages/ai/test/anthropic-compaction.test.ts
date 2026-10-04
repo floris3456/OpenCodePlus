@@ -101,7 +101,10 @@ for (const model of [
     expect(input.request.headers["anthropic-beta"]).toContain("compact-2026-01-12")
     expect(body.messages[0]).toEqual({ role: "assistant", content: [{ type: "compaction", content: "Keep building the website." }] })
     expect(body.messages[1]).toMatchObject({ role: "user", content: [{ type: "text", text: "Continue" }] })
-    expect(body.context_management).toEqual({ edits: [{ type: "compact_20260112" }] })
+    // The replayed block needs its strategy, with a trigger that never compacts in-band before Core does.
+    expect(body.context_management).toEqual({
+      edits: [{ type: "compact_20260112", trigger: { type: "input_tokens", value: 1_000_000 } }],
+    })
     return input.respond(textFixture("Continuing."), { headers: { "content-type": "text/event-stream" } })
   })))
   it.effect(`${model.provider}: a request after a native checkpoint replays the compaction block`, () =>
