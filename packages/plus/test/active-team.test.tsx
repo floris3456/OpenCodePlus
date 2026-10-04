@@ -7,19 +7,23 @@ import { createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
-import { projectTeamsPath } from "../src/instructions/paths.js"
+import { projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
 import { createActiveTeam, resetRunMountLog, runMountLog, stopRunMountLog, TeamMonitorTab } from "../src/tui/active-team.js"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { RGBA } from "@opentui/core"
 import { fullContext } from "./harness.js"
+import { saveRun, type RunRecord } from "../src/teams/run.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorDataHome = process.env.XDG_DATA_HOME
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = priorDataHome
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -28,6 +32,7 @@ async function tempRoot(): Promise<{ project: string }> {
   const root = await fs.mkdtemp(path.join(parent, "plus-active-team-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  process.env.XDG_DATA_HOME = path.join(root, "data")
   return { project: path.join(root, "project") }
 }
 
@@ -348,6 +353,7 @@ test("createActiveTeam registers composer tab and hints, cleans up on dispose", 
     { label: "move", shortcut: "↑↓" },
     { label: "attach", shortcut: "⏎" },
     { label: "active", shortcut: "ctrl+a" },
+    { label: "tree", shortcut: "ctrl+t" },
     { label: "stop|resume", shortcut: "ctrl+d" },
   ])
 
@@ -488,12 +494,14 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   expect(defaultFrame).not.toContain("w-run-stopped")
   expect(defaultFrame).not.toContain("w-run-dead")
 
-  expect(commands.length).toBe(5)
+  expect(commands.length).toBe(6)
   const upCmd = commands.find((c) => c.id === "composer.team.up")
   const downCmd = commands.find((c) => c.id === "composer.team.down")
   const selectCmd = commands.find((c) => c.id === "composer.team.select")
   const toggleCmd = commands.find((c) => c.id === "composer.team.toggle_activity")
+  const toggleTreeCmd = commands.find((c) => c.id === "composer.team.toggle_tree")
   const actionCmd = commands.find((c) => c.id === "composer.team.action")
+  expect(toggleTreeCmd).toBeDefined()
 
   // Enter on index 0 (w-run-active) navigates to its sessionID
   selectCmd.run()
@@ -913,5 +921,169 @@ test("a poll that returns equal runs keeps the row components; a changed state s
   } finally {
     stopRunMountLog()
     output.renderer.destroy()
+  }
+})
+
+function makeRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
+  const now = new Date().toISOString()
+  return {
+    role: "implementer",
+    kind: "w",
+    repo: "opencode",
+    repoKey: "opencode",
+    directory: "/tmp/wt-active-team-test",
+    paths: [],
+    branch: "team/test",
+    base: "0123456789abcdef0123456789abcdef01234567",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    state: "working",
+    attempts: [],
+    task: null,
+    parent: null,
+    children: [],
+    briefSha: "abcdef",
+    bundle: "bundle",
+    budget: {},
+    createdAt: now,
+    lastUsed: now,
+    sessionID: null,
+    configDigest: null,
+    history: [],
+    ...overrides,
+  }
+}
+
+test("the tree from an implementer's session shows its orchestrator root and siblings, ctrl+t toggles to all, and empty state shows when no runs exist", async () => {
+  const { project } = await tempRoot()
+  const dataRoot = teamsDataDir()
+  const runs = [
+    { id: "main-orch", role: "orchestrator", kind: "main", sessionID: "ses_orch", parent: null, state: "working", task: "Root Task", lastUsed: "2026-10-04T05:00:00.000Z" },
+    { id: "w-impl-1", role: "implementer-1", sessionID: "ses_impl_1", parent: "main-orch", state: "working", task: "T1", lastUsed: "2026-10-04T05:01:00.000Z" },
+    { id: "w-impl-2", role: "implementer-2", sessionID: "ses_impl_2", parent: "main-orch", state: "idle", task: "T2", lastUsed: "2026-10-04T05:02:00.000Z" },
+    { id: "w-scout", role: "scout", sessionID: "ses_scout", parent: "w-impl-1", state: "working", task: "T1-scout", lastUsed: "2026-10-04T05:03:00.000Z" },
+    { id: "w-other", role: "other-agent", sessionID: "ses_other", parent: null, state: "working", task: "Unrelated Task", lastUsed: "2026-10-04T05:04:00.000Z" },
+  ] as const
+  for (const run of runs) await saveRun(dataRoot, makeRun(run as Partial<RunRecord> & { id: string }))
+
+  const state = createState()
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, state, { builtins: [] })
+
+  // The handler boundary: tree for implementer 1, all runs, a stand-alone chat.
+  const treeRuns = await Effect.runPromise(
+    handlers["team.runs.list"]({ sessionID: "ses_impl_1", tree: true }, throwingContext()),
+  )
+  expect(treeRuns.runs.map((r) => ({ id: r.id, depth: r.depth }))).toEqual([
+    { id: "main-orch", depth: 0 },
+    { id: "w-impl-2", depth: 1 },
+    { id: "w-impl-1", depth: 1 },
+    { id: "w-scout", depth: 2 },
+  ])
+  const allRuns = await Effect.runPromise(
+    handlers["team.runs.list"]({ sessionID: "ses_impl_1", tree: false }, throwingContext()),
+  )
+  expect(allRuns.runs.some((r) => r.id === "w-other")).toBe(true)
+  expect(allRuns.runs.length).toBe(5)
+  const emptyRuns = await Effect.runPromise(
+    handlers["team.runs.list"]({ sessionID: "ses_standalone", tree: true }, throwingContext()),
+  )
+  expect(emptyRuns.runs).toHaveLength(0)
+
+  // The rendered tab.
+  const white = RGBA.fromHex("#ffffff")
+  const gray = RGBA.fromHex("#888888")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { base: white, muted: gray, action: { primary: { base: white, selected: white, focused: white } } },
+    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
+  }
+  const tabContext = (onCommands: (commands: any[]) => void): any => ({
+    location: { directory: project },
+    theme: testTheme,
+    data: { location: { default: () => ({ directory: project }) }, listen: () => () => {} },
+    client: {
+      rpc: () => ({
+        "team.runs.list": (args: any) => Effect.runPromise(handlers["team.runs.list"](args, throwingContext())),
+        "team.runs.stop": (args: any) => Effect.runPromise(handlers["team.runs.stop"](args, throwingContext())),
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: {
+      layer: (factory: any) => {
+        const layer = factory()
+        if (layer.commands) onCommands(layer.commands)
+      },
+    },
+    ui: { toast: { show: () => {} }, router: { navigate: () => {} } },
+  })
+  const settle = async (output: Awaited<ReturnType<typeof createTestRenderer>>) => {
+    await new Promise((r) => setTimeout(r, 20))
+    await output.renderOnce()
+  }
+
+  let commands: any[] = []
+  const [treeView, setTreeView] = createSignal(true)
+  const output = await createTestRenderer({ width: 120, height: 20 })
+  try {
+    render(
+      () => (
+        <TeamMonitorTab
+          sessionID="ses_impl_1"
+          active={() => true}
+          close={() => {}}
+          context={tabContext((list) => (commands = list))}
+          treeView={treeView}
+          setTreeView={setTreeView}
+        />
+      ),
+      output.renderer,
+    )
+    await settle(output)
+    const treeFrame = output.captureCharFrame()
+    expect(treeFrame).toContain("main-orch — orchestrator — working — Root Task")
+    expect(treeFrame).toContain("  w-impl-1 — implementer-1 — working — T1")
+    expect(treeFrame).toContain("    w-scout — scout — working — T1-scout")
+    expect(treeFrame).toContain("  w-impl-2 — implementer-2 — idle — T2")
+    expect(treeFrame).not.toContain("w-other")
+
+    const toggleTree = commands.find((c) => c.id === "composer.team.toggle_tree")
+    expect(toggleTree?.bind).toBe("ctrl+t")
+    toggleTree.run()
+    await settle(output)
+    const allFrame = output.captureCharFrame()
+    expect(allFrame).toContain("w-other — other-agent — working — Unrelated Task")
+    expect(allFrame).toContain("w-impl-1 — implementer-1 — working — T1")
+
+    toggleTree.run()
+    await settle(output)
+    expect(output.captureCharFrame()).not.toContain("w-other")
+  } finally {
+    output.renderer.destroy()
+  }
+
+  // A stand-alone chat says so, and ctrl+t shows every run.
+  let emptyCommands: any[] = []
+  const emptyOutput = await createTestRenderer({ width: 120, height: 20 })
+  try {
+    render(
+      () => (
+        <TeamMonitorTab
+          sessionID="ses_standalone"
+          active={() => true}
+          close={() => {}}
+          context={tabContext((list) => (emptyCommands = list))}
+        />
+      ),
+      emptyOutput.renderer,
+    )
+    await settle(emptyOutput)
+    expect(emptyOutput.captureCharFrame()).toContain("No team runs from this chat · ctrl+t shows all")
+    emptyCommands.find((c) => c.id === "composer.team.toggle_tree").run()
+    await settle(emptyOutput)
+    const toggled = emptyOutput.captureCharFrame()
+    expect(toggled).toContain("main-orch — orchestrator — working — Root Task")
+    expect(toggled).not.toContain("No team runs from this chat")
+  } finally {
+    emptyOutput.renderer.destroy()
   }
 })
