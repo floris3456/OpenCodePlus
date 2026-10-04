@@ -24,7 +24,7 @@ import {
   type HostModel,
   type ModelSettingsRecord,
 } from "../../instructions/model-settings.js"
-import { agentOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, modelSettingsRecordOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
+import { agentOf, categoryOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, modelSettingsRecordOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
   addSection,
@@ -208,6 +208,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const current = snapshot()
     if (!current) return []
     return (current.modelSettings ?? []).map(modelSettingsRecordOf)
+  })
+
+  const categoriesForTree = createMemo(() => {
+    const current = snapshot()
+    return current === undefined ? [] : (current.categories ?? []).map(categoryOf)
   })
 
   const hostModelsForTree = createMemo<HostModel[]>(() => {
@@ -426,6 +431,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       teams: teamsForTree(),
       modelSettings: modelSettingsForTree(),
       hostModels: hostModelsForTree(),
+      categories: categoriesForTree(),
       ...presetStateForTree(),
     }
   }
@@ -538,6 +544,57 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     } finally {
       if (!disposed && requestGen === generation) setLoading(false)
     }
+  }
+
+  // User categories (plan plus-1.1.12 T8): create/rename/delete a category, or
+  // move the selected item row into one (null = back home). The write is a
+  // global-store record; refresh re-reads the snapshot the way a server event
+  // would, so every view updates from the same record.
+  async function categoryAction(
+    input: { action: "create" | "assign" | "rename" | "delete"; name?: string; to?: string; item?: string; category?: string | null; confirm?: boolean },
+    success: string,
+  ): Promise<boolean> {
+    const requestGen = ++generation
+    setLoading(true)
+    try {
+      const result = await plus["category.mutate"](input, { location: context.location })
+      if (disposed || requestGen !== generation) return false
+      void result
+      await refresh()
+      if (disposed) return false
+      setStatus(success)
+      return true
+    } catch (error: unknown) {
+      if (disposed || requestGen !== generation) return false
+      setStatus(errorMessage(error))
+      return false
+    } finally {
+      if (!disposed && requestGen === generation) setLoading(false)
+    }
+  }
+
+  function createCategory(name: string): Promise<boolean> {
+    return categoryAction({ action: "create", name }, `Created category "${name}"`)
+  }
+
+  function assignCategory(node: TreeNode, category: string | null): Promise<boolean> {
+    const item = node.address?.item
+    if (node.kind !== "item" || item === undefined || node.address?.section !== null) {
+      setStatus(`"${node.label}" is not a row that can be moved`)
+      return Promise.resolve(false)
+    }
+    return categoryAction(
+      { action: "assign", item, category },
+      category === null ? `Moved "${node.label}" home` : `Moved "${node.label}" to "${category}"`,
+    )
+  }
+
+  function renameCategory(node: TreeNode, to: string): Promise<boolean> {
+    return categoryAction({ action: "rename", name: node.label, to }, `Renamed category to "${to}"`)
+  }
+
+  function deleteCategory(node: TreeNode): Promise<boolean> {
+    return categoryAction({ action: "delete", name: node.label, confirm: true }, `Deleted category "${node.label}"`)
   }
 
   async function setEnabledRow(node: TreeNode, value: boolean): Promise<boolean> {
@@ -1007,6 +1064,10 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     saveSplit: saveSplitRow,
     addSection: addSectionRow,
     createTeam,
+    createCategory,
+    assignCategory,
+    renameCategory,
+    deleteCategory,
     splitPreview,
     resolvedText,
     threeWay: threeWayFor,

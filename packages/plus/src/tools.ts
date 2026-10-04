@@ -76,6 +76,7 @@ import {
   type ModelSettingsKey,
 } from "./instructions/model-settings.js"
 import { presetListing } from "./instructions/presets.js"
+import { categorySlugFromId, isCategoryGroupId } from "./instructions/categories.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
@@ -107,7 +108,8 @@ const SetDescription =
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
-  "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch."
+  "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
+  "category moves the row into a user category by name, or null moves it back to its home category; the row and its children then list there in every owner (display only)."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -127,6 +129,7 @@ const CreateDescription =
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
   "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
+  "category (name; a user category other rows move into),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
@@ -218,6 +221,11 @@ const SetInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
+  category: Schema.optionalKey(Schema.NullOr(Schema.String)).annotate({
+    description:
+      "Move this whole item row into a user category by name, or null to move it back to its home category. " +
+      "Display only: rows and their children list under the category in every owner.",
+  }),
 })
 
 const ResetInput = Schema.Struct({
@@ -247,6 +255,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("preset"),
     Schema.Literal("teamPreset"),
     Schema.Literal("presetMember"),
+    Schema.Literal("category"),
   ]),
   id: Schema.optionalKey(Schema.String),
   scope: Schema.optionalKey(
@@ -345,6 +354,24 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (input.category !== undefined) {
+            const item = node.address?.item
+            if (node.kind !== "item" || item === undefined || node.address?.section !== null || isCategoryGroupId(node.id))
+              return yield* Effect.fail(new Tool.Error({ message: `category.invalid: "${node.label}" is not an item row that can be moved` }))
+            const moved = yield* Effect.promise(() =>
+              api.category({ action: "assign", item, category: input.category ?? null, actor }),
+            )
+            if (!moved.ok) return yield* Effect.fail(new Tool.Error({ message: `${moved.error.code}: ${moved.error.message}` }))
+            return {
+              output: {
+                id: input.id,
+                category: input.category,
+                status: input.category === null ? `Moved "${node.label}" home` : `Moved "${node.label}" to "${input.category}"`,
+                revision: moved.value.revision,
+                globalRevision: moved.value.globalRevision,
+              },
+            }
+          }
           if (isModelSettingRowId(input.id)) {
             const field = settingOf(node)?.field
             if (field === undefined) return yield* Effect.fail(unknownError(input.id))
@@ -451,6 +478,14 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
+          const categoryName = categoryIdOf(input.id)
+          if (categoryName !== undefined) {
+            const removed = yield* Effect.promise(() =>
+              api.category({ action: "delete", name: categoryName, confirm: true, actor }),
+            )
+            if (!removed.ok) return yield* Effect.fail(new Tool.Error({ message: `${removed.error.code}: ${removed.error.message}` }))
+            return { output: { id: input.id, status: `Deleted category "${removed.value.name}"`, revision: removed.value.revision, globalRevision: removed.value.globalRevision } }
+          }
           const node = findRow(memo, input.id)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
@@ -509,6 +544,13 @@ function actorFrom(context: Tool.Context): Plus.Actor {
 
 function unknownError(id: string): Tool.Error {
   return new Tool.Error({ message: `row.unknown: ${unknownRowRefusal(id)}` })
+}
+
+// The category a delete id names: a `category:<slug>` id or any category group
+// row id (`…:category:<slug>`).
+function categoryIdOf(id: string): string | undefined {
+  if (!id.startsWith("category:") && !isCategoryGroupId(id)) return undefined
+  return categorySlugFromId(id)
 }
 
 function protectedError(agent: string): Tool.Error {
@@ -1551,6 +1593,7 @@ function createRow(
       | "preset"
       | "teamPreset"
       | "presetMember"
+      | "category"
     id?: string
     scope?: "project" | "global" | "defaults" | "preset"
     preset?: string | Plus.PresetRef
@@ -1576,6 +1619,13 @@ function createRow(
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
+    if (input.kind === "category") {
+      const name = input.name?.trim() ?? ""
+      if (name.length === 0) return yield* Effect.fail(new Tool.Error({ message: "create category requires name" }))
+      const created = yield* Effect.promise(() => api.category({ action: "create", name, actor }))
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      return { output: { id: created.value.id, item: created.value.name, name: created.value.name, revision: created.value.revision, globalRevision: created.value.globalRevision } }
+    }
     if (input.kind === "agent") {
       if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create agent requires id" }))
       const scope = input.scope ?? "project"

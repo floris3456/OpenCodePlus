@@ -26,7 +26,7 @@ import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
-import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, userCategoryName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -514,6 +514,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   const listKey = () => `${workspace().owner?.key ?? ""}|${workspace().category?.id ?? ""}`
   const listRows = (): readonly Row[] => (filtering() && state.filter().trim().length > 0 ? filterRows() : workspace().list)
+  // A user category leads its own list with a category header row; that header
+  // alone is not content, so the empty-category text still shows.
+  const listHasChildren = (): boolean => listRows().some((row) => row.node.id !== workspace().category?.id)
   const listRow = createMemo(() => {
     const rows = listRows()
     const filtered = filtering() && state.filter().trim().length > 0
@@ -1013,7 +1016,33 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   function remove() {
     const node = current()
-    if (node) void state.remove(node)
+    if (node === undefined) return
+    if (userCategoryName(node) !== undefined) {
+      void dialogs.deleteCategory(node)
+      return
+    }
+    // The cursor may be in the sidebar while a user category is selected: d
+    // then deletes that category rather than the sidebar row.
+    const category = workspace().category
+    if (userCategoryName(category) !== undefined) {
+      void dialogs.deleteCategory(category)
+      return
+    }
+    void state.remove(node)
+  }
+
+  // m on an item row: move it (with its children) into a user category or home.
+  function moveToCategory() {
+    const node = current()
+    if (node) void dialogs.move(node)
+  }
+
+  // R on a user category: rename the selected category, whatever pane holds
+  // the cursor.
+  function renameCategory() {
+    const node = current()
+    const target = userCategoryName(node) !== undefined ? node : workspace().category
+    if (target) void dialogs.renameCategory(target)
   }
 
   function resetRow() {
@@ -1372,7 +1401,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node?.actions?.requires === true) hints.push(["w", "shown when"])
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
-    if (node?.actions?.remove === true) hints.push(["d", "delete"])
+    if (node?.kind === "item" && node.address !== undefined && node.address.section === null) hints.push(["m", "move"])
+    if (userCategoryName(workspace().category) !== undefined) hints.push(["R", "rename"])
+    if (node?.actions?.remove === true || userCategoryName(node) !== undefined) hints.push(["d", "delete"])
     if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
     if (node?.actions?.split === true) hints.push(["s", "split"])
     if ((workspace().levels.find((entry) => entry.id === level())?.review ?? 0) > 0) hints.push(["n", "next review"])
@@ -1456,6 +1487,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "a", title: "Add", group: "Instructions", run: add },
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: () => void dialogs.relink(current()) }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },
+        ...(node?.kind === "item" && node.address !== undefined && node.address.section === null
+          ? [{ bind: "m", title: "Move to a category", group: "Instructions", run: moveToCategory }]
+          : []),
+        ...(userCategoryName(workspace().category) !== undefined
+          ? [{ bind: "shift+r,R", title: "Rename category", group: "Instructions", run: renameCategory }]
+          : []),
         ...(canReset(node) ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }] : []),
         ...(node?.actions?.split === true ? [{ bind: "s", title: "Split", group: "Instructions", run: split }] : []),
         { bind: "n", title: "Next to review", group: "Instructions", run: () => nextReview(1) },
@@ -1627,10 +1664,18 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       </Show>
       <box flexShrink={0} height={1} />
       <Show
-        when={listRows().length > 0}
+        when={listHasChildren()}
         fallback={
           <text paddingLeft={1} fg={theme().text.muted}>
-            {filtering() ? (state.filter().trim().length === 0 ? "Type to filter" : "No matches") : workspace().category?.add === undefined ? "Nothing here" : "Nothing here yet · a adds one"}
+            {filtering()
+              ? state.filter().trim().length === 0
+                ? "Type to filter"
+                : "No matches"
+              : userCategoryName(workspace().category) !== undefined
+                ? "No rows yet · m on a row moves it here"
+                : workspace().category?.add === undefined
+                  ? "Nothing here"
+                  : "Nothing here yet · a adds one"}
           </text>
         }
       >
