@@ -31,7 +31,7 @@ import {
 } from "../src/instructions/model.js"
 import { derive } from "../src/instructions/sections.js"
 import { expandedTree } from "../src/instructions/tree.js"
-import { toggle } from "../src/instructions/ops.js"
+import { activateModelRow, toggle } from "../src/instructions/ops.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -709,4 +709,53 @@ test("warming is hidden with its tombstoned candidate", () => {
   expect(resolveModelWarming({ models, scopes, level: "project", agent: "alpha" }, target)?.value).toBe("45m")
   const hidden = tombstoneModelRecord(models, { level: "project", agent: "alpha" }, target, UPDATED)
   expect(resolveModelWarming({ models: hidden, scopes, level: "project", agent: "alpha" }, target)).toBeUndefined()
+})
+
+// T3 evidence case: Planner exists only as a member of the Global "Basic"
+// team, so the tool activation writes a flat `global/Planner` record (no team
+// owner path, exactly what the log showed). That flat record must take effect
+// for the member's chain — both the runtime chain (level + team) and the
+// tree's memberOf chain — or the write is a silent no-op for the user.
+test("tool activation of a member-only agent's model row writes a flat record its member chain reads", () => {
+  const candidate: ModelRecord = {
+    type: "model",
+    level: "defaults",
+    agent: null,
+    catalogue: "teams",
+    providerID: "acme",
+    modelID: "base",
+    updated: UPDATED,
+  }
+  const memo = {
+    items: [] as Item[],
+    records: [candidate],
+    agents: [] as { id: string; scope: "global" }[],
+    teams: [{ level: "global" as const, team: "Basic", enabled: true, agents: ["Planner"] }],
+  }
+  const row = expandedTree(memo).find((node) => node.id === "item:global:Basic/:Planner:model:acme/base")
+  expect(row).toBeDefined()
+  if (row === undefined) return
+  const op = activateModelRow(memo, row.id)
+  if ("refusal" in op) throw new Error(`expected activation, got ${op.refusal}`)
+  const written = op.models.find((record) => record.level === "global" && record.agent === "Planner")
+  expect(written?.active).toBe(true)
+  expect(written?.team).toBeUndefined()
+  const emptyScopes: Scopes = { global: new Set<string>(), defaults: new Set<string>() }
+  const runtime = resolveActiveModel({
+    models: op.models,
+    scopes: emptyScopes,
+    level: "global",
+    agent: "Planner",
+    team: { level: "global", team: "Basic" },
+  })
+  expect(runtime?.providerID).toBe("acme")
+  expect(runtime?.modelID).toBe("base")
+  const treeView = resolveActiveModel({
+    models: op.models,
+    scopes: emptyScopes,
+    level: "global",
+    agent: "Planner",
+    memberOf: { level: "global", team: "Basic" },
+  })
+  expect(treeView?.modelID).toBe("base")
 })

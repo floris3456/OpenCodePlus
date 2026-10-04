@@ -34,6 +34,7 @@ import {
   modelDefaultValue,
   modelDefaultView,
   isModelSettingRowId,
+  modelFieldItemId,
   modelSettingItemId,
   modelSettingParentRowId,
   modelSettingRowId,
@@ -588,6 +589,69 @@ test("instructions tools set, reset and show one Defaults › Models field", asy
   const after = (await load(project)).records.find((entry) => entry.type === "modelSettings")
   expect(after).toMatchObject({ warming: "32m" })
   expect(after).not.toHaveProperty("interval")
+})
+
+test("an agent's model row opens into field rows and one field edits and resets through the tool", async () => {
+  const project = await tempProject()
+  const buildPath = path.join(project, ".opencode", "agent", "build.md")
+  await fs.mkdir(path.dirname(buildPath), { recursive: true })
+  await Bun.write(buildPath, "build body\n")
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude", { variants: ["low", "high"] })],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  const rows = expandedTree(memoInputOf((await api.snapshot()).value))
+  const at = rows.findIndex((row) => row.id === "item:project:build:model:anthropic/claude")
+  expect(at).toBeGreaterThanOrEqual(0)
+  const fields = rows.slice(at + 1, at + 6)
+  expect(fields.map((row) => row.label)).toEqual(["Model", "Effort", "Warming", "Ping every", "Keep-alive prompt"])
+  // The row is inherited (the agent's upstream model), so Model and Warming
+  // name where they came from; none of the fields is local yet.
+  expect(fields[0]?.badges.value).toBe("anthropic/claude · upstream")
+  expect(fields[2]?.badges.value).toBe("off · built-in")
+  expect(fields.every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
+  const target = { providerID: "anthropic", modelID: "claude" }
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1]) => `item:project:build:${modelFieldItemId(target, field)}`
+
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  // set on the Warming field plants a project record for the candidate and
+  // writes only that field.
+  await runOk(set, { id: fieldRow("warming"), text: "30m" })
+  const stored = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
+  expect(stored).toMatchObject({ providerID: "anthropic", modelID: "claude", warming: "30m" })
+  // reset clears that field at this level again.
+  await runOk(reset, { id: fieldRow("warming") })
+  const after = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
+  expect(after).not.toHaveProperty("warming")
+  // The Model field refuses reset.
+  expect((await runFail(reset, { id: fieldRow("model") })).message).toContain("cannot be reset")
+  // Editing Effort changes that one row's candidate in place: the old
+  // candidate is hidden at this level (not left beside the new one) and the
+  // row's warming and active state carry over.
+  await runOk(set, { id: fieldRow("warming"), text: "30m" })
+  await runOk(set, { id: fieldRow("effort"), text: "high" })
+  const highRows = expandedTree(memoInputOf((await api.snapshot()).value))
+  expect(highRows.some((row) => row.id === "item:project:build:model:anthropic/claude@high")).toBe(true)
+  expect(highRows.some((row) => row.id === "item:project:build:model:anthropic/claude")).toBe(false)
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)).toMatchObject({
+    providerID: "anthropic",
+    modelID: "claude",
+    variant: "high",
+    warming: "30m",
+    active: true,
+  })
+  // r on Effort clears the variant on that same row; warming stays.
+  const highEffort = `item:project:build:${modelFieldItemId({ providerID: "anthropic", modelID: "claude", variant: "high" }, "effort")}`
+  await runOk(reset, { id: highEffort })
+  const plain = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)
+  expect(plain).not.toHaveProperty("variant")
+  expect(plain).toMatchObject({ warming: "30m" })
 })
 
 // ---------------------------------------------------------------------------

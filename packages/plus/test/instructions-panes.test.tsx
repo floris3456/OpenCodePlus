@@ -1,7 +1,7 @@
 import { RGBA, TextAttributes } from "@opentui/core"
 import { expect, test } from "bun:test"
-import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
-import { tree } from "../src/instructions/tree.js"
+import { fingerprint, type AgentSource, type CustomizationRecord, type Item, type ModelRecord } from "../src/instructions/model.js"
+import { expandedTree, tree } from "../src/instructions/tree.js"
 import {
   displayLevel,
   excludedAttributes,
@@ -464,4 +464,25 @@ test("detail pane names an owner's link and what a Defaults entry matches", () =
     "matching now: crew › CrewMate",
   ])
   expect(matchLines(nodes.find((node) => node.id === "agent:project:Implementer")!, snap)).toEqual([])
+})
+
+// T7: an agent's model row is no longer a leaf: it opens into the same field
+// rows a Defaults › Models row does, and those field rows are leaves.
+test("an agent's model row expands into its field rows", () => {
+  const model: ModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "Implementer",
+    providerID: "openai",
+    modelID: "gpt-5",
+    active: true,
+    updated: UPDATED,
+  }
+  const nodes = expandedTree({ items: items(), records: [model], agents: agents() })
+  const row = nodes.find((node) => node.id === "item:project:Implementer:model:openai/gpt-5")
+  expect(row).toBeDefined()
+  expect(isExpandableRow(row!, true, new Set())).toBe(true)
+  const fields = nodes.filter((node) => node.id.startsWith("item:project:Implementer:modelfield:"))
+  expect(fields.map((node) => node.label)).toEqual(["Model", "Effort", "Warming", "Ping every", "Keep-alive prompt"])
+  expect(fields.every((node) => isExpandableRow(node, false, new Set([node.id])) === false)).toBe(true)
 })

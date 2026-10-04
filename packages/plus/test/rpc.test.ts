@@ -688,6 +688,45 @@ test("two publishes with an active model keep an identical fingerprint and do no
   expect(state.fingerprint).toBe(fingerprintAfterMutate)
 })
 
+test("model.add makes the added model the exclusive active model in one revision and one log line", async () => {
+  const { project } = await tempRoot()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "alpha role", modelRef("acme", "nova-1"))],
+    models: [modelInfo("acme", "nova-1"), modelInfo("acme", "nova-2")],
+    classifications: { "": "general", "nova-1": "general", "nova-2": "general" },
+  })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const first = await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+  )
+  expect(first).toMatchObject({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" })
+  const afterFirst = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const activeFirst = afterFirst.records.filter((record) => record.type === "model" && record.active === true)
+  expect(afterFirst.revision).toBe(before.revision + 1)
+  expect(activeFirst).toHaveLength(1)
+  expect(activeFirst[0]).toMatchObject({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-2" })
+  // Adding another model at the same level flips exclusivity to the new row in
+  // a single revision; the previous active row is no longer active.
+  await Effect.runPromise(
+    handlers["model.add"]({ level: "project", agent: "alpha", providerID: "acme", modelID: "nova-1" }, throwingContext({})),
+  )
+  const afterSecond = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(afterSecond.revision).toBe(afterFirst.revision + 1)
+  const models = afterSecond.records.filter((record) => record.type === "model")
+  const active = models.filter((record) => record.active === true)
+  expect(active).toHaveLength(1)
+  expect(active[0]).toMatchObject({ providerID: "acme", modelID: "nova-1" })
+  expect(models.find((record) => record.modelID === "nova-2" && record.active === true)).toBeUndefined()
+  // One log line per add, naming the row that changed.
+  const logged = await Effect.runPromise(handlers["instructions.log"]({}, throwingContext({})))
+  const addTargets = logged.entries.filter((entry) => entry.op === "model.add").map((entry) => entry.target)
+  expect(addTargets).toHaveLength(2)
+  expect(addTargets.some((target) => target.includes("nova-1"))).toBe(true)
+  expect(addTargets.some((target) => target.includes("nova-2"))).toBe(true)
+})
+
 test("two publishes with discovered perm candidates keep an identical fingerprint and do not reinstall", async () => {
   const { project } = await tempRoot()
   const upstream = "upstream role"
