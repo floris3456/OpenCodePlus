@@ -22,7 +22,29 @@ seen, and ends with **PASS**, **FAIL** or **NOT LIVE** plus the reason.
 
 ### L1. Every provider request recorded (time, session, kind, agent, provider/model/variant, usage or error)
 
-_TODO_
+Did: one `Build` chat in the owned home, model
+`cliproxyapi/claude-opus-5-5@high` (the notes' fallback), with a first
+sentinel prompt, a second prompt, and one compaction. Read the owned
+`monitor.db` read-only. Requests seen:
+
+```
+{"id":"c8f05bf7-…","session_id":"ses_ef351470cffe7zANSBNCCogS9V","kind":"title","is_title":1,
+ "agent":"title","provider":"cliproxyapi","model":"claude-opus-5-5","variant":"high",
+ "started":1791214139772,"ended":1791214144331,"duration":4559,"status":"completed","error":null,
+ "input_tokens":940,"output_tokens":316,"reasoning_tokens":0,"cache_read_tokens":0,
+ "cache_write_tokens":0,"cost":0,"message_id":"title:…"}
+{"id":"6ec41e7e-…","kind":"step","is_title":0,"agent":"build","provider":"cliproxyapi",
+ "model":"claude-opus-5-5","variant":"high", … "input_tokens":8031,"output_tokens":17,
+ "reasoning_tokens":0,"cache_read_tokens":4837,"cache_write_tokens":0,"cost":0}
+{"id":"8cf5e4be-…","kind":"compaction","is_title":0,"agent":"build", … "input_tokens":8506,
+ "output_tokens":216,"cache_read_tokens":5041}
+```
+
+Kinds agent step, compaction and title (flagged `is_title=1`) are present,
+each with time/session/agent/provider/model/variant and full usage; `step`
+rows keep all their fields. `$DEV/.../monitor.db` schema `meta.schema=2`, tables
+`request`, `request_fingerprint`, `context_fact`, `step` present. The error path
+is exercised below (L1e). **PASS** (L1e still to add).
 
 ### L2. Keep-alive pings recorded with their usage
 
