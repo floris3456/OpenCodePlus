@@ -109,7 +109,8 @@ const SetDescription =
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
-  "category moves the row into a user category by name, or null moves it back to its home category; the row and its children then list there in every owner (display only)."
+  "category moves the row into a user category by name, or null moves it back to its home category; the row and its children then list there in every owner (display only).\n" +
+  "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -225,6 +226,12 @@ const SetInput = Schema.Struct({
     description:
       "Move this whole item row into a user category by name, or null to move it back to its home category. " +
       "Display only: rows and their children list under the category in every owner.",
+  }),
+  rename: Schema.optionalKey(Schema.String).annotate({
+    description:
+      "Rename this agent, on-disk team member or Project/Global team row to this new name/id. " +
+      "Everything that names it follows in one store revision; built-ins, shipped Defaults rows, " +
+      "ancestor-backed agents and Protected agents (tool actor) refuse.",
   }),
 })
 
@@ -372,6 +379,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
               },
             }
           }
+          if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
           if (isModelSettingRowId(input.id)) {
             const field = settingOf(node)?.field
             if (field === undefined) return yield* Effect.fail(unknownError(input.id))
@@ -677,6 +685,45 @@ function protectedOf(snapshot: Plus.Snapshot, node: TreeNode): string | undefine
   const owner = node.address?.agent ?? node.owner?.agent
   if (owner !== undefined && owner !== null && snapshot.protectedAgents.includes(owner)) return owner
   return undefined
+}
+
+// `set {id, rename}`: rename an agent, on-disk team member or Project/Global
+// team. The API owns the refusals (built-ins, shipped Defaults rows,
+// ancestor-backed agents, protected agents for a tool actor); this wrapper
+// only routes the row to the right method.
+function renameRow(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  node: TreeNode,
+  to: string,
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const name = to.trim()
+    if (name.length === 0) return yield* Effect.fail(new Tool.Error({ message: `rename.invalid: a new name is required` }))
+    const owner = node.owner
+    if (node.kind === "agent" && owner !== undefined && owner.preset === undefined && owner.entry === undefined && owner.agent !== null && (owner.level === "project" || owner.level === "global")) {
+      const result = yield* Effect.promise(() => api.renameAgent({ scope: owner.level as "project" | "global", from: owner.agent as string, to: name, actor }))
+      if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+      return { output: { id: `agent:${owner.level}:${result.value.to}`, to: result.value.to, path: result.value.path, status: `Renamed ${node.label} to ${result.value.to}` } }
+    }
+    if (node.kind === "team" && owner !== undefined && owner.preset === undefined && owner.entry === undefined && owner.team !== undefined && (owner.level === "project" || owner.level === "global")) {
+      if (owner.agent === null) {
+        const result = yield* Effect.promise(() => api.renameTeam({ level: owner.level as "project" | "global", from: node.label, to: name, actor }))
+        if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+        return { output: { id: `team:${owner.level}:${result.value.to}`, to: result.value.to, path: result.value.path, status: `Renamed team ${node.label} to ${result.value.to}` } }
+      }
+      const team = snapshot.teams?.find((entry) => entry.level === owner.level && entry.team === owner.team?.team)
+      if (team?.agents.includes(owner.agent as string)) {
+        const result = yield* Effect.promise(() => api.renameAgent({ scope: owner.level as "project" | "global", team: owner.team?.team ?? "", from: owner.agent as string, to: name, actor }))
+        if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+        return { output: { id: `team:${owner.level}:${owner.team?.team}:${result.value.to}`, to: result.value.to, path: result.value.path, status: `Renamed member ${node.label} to ${result.value.to}` } }
+      }
+    }
+    const defaults = owner?.level === "defaults" || node.id.startsWith("team:defaults:")
+    const reason = defaults ? "shipped and cannot be renamed" : owner?.preset !== undefined ? "a preset row and cannot be renamed" : "not a renamable row"
+    return yield* Effect.fail(new Tool.Error({ message: `rename.invalid: "${node.label}" is ${reason}` }))
+  })
 }
 
 // `set {id, preset}`: relink (or with null unlink) the row's owner.

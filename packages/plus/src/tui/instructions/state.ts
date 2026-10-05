@@ -593,6 +593,52 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return categoryAction({ action: "rename", name: node.label, to }, `Renamed category to "${to}"`)
   }
 
+  // T6: rename a renamable row through the same RPC path the palette and the
+  // tools use. Agents and team members both go through agent.rename (a member
+  // names its team); teams through team.rename. Returns the renamed row's new
+  // tree id; the caller reveals it.
+  //
+  // The write emits a store-change event, whose reload bumps the generation
+  // while the RPC is in flight. The id is still valid, so the return is not
+  // gated on the generation: only an explicit refresh is skipped when another
+  // reload already owns the snapshot.
+  async function renameRow(
+    input:
+      | { readonly kind: "agent"; readonly level: "project" | "global"; readonly from: string; readonly to: string }
+      | { readonly kind: "member"; readonly level: "project" | "global"; readonly team: string; readonly from: string; readonly to: string }
+      | { readonly kind: "team"; readonly level: "project" | "global"; readonly from: string; readonly to: string },
+  ): Promise<string | undefined> {
+    const requestGen = ++generation
+    setLoading(true)
+    try {
+      if (input.kind === "team") {
+        const result = await plus["team.rename"]({ level: input.level, from: input.from, to: input.to }, { location: context.location })
+        if (disposed) return undefined
+        const row = `team:${input.level}:${result.to}`
+        if (requestGen === generation) await refresh()
+        if (disposed) return undefined
+        setStatus(`Renamed team ${input.from} to ${result.to}`)
+        return row
+      }
+      const result =
+        input.kind === "member"
+          ? await plus["agent.rename"]({ scope: input.level, team: input.team, from: input.from, to: input.to }, { location: context.location })
+          : await plus["agent.rename"]({ scope: input.level, from: input.from, to: input.to }, { location: context.location })
+      if (disposed) return undefined
+      const row = input.kind === "member" ? `team:${input.level}:${input.team}:${result.to}` : `agent:${input.level}:${result.to}`
+      if (requestGen === generation) await refresh()
+      if (disposed) return undefined
+      setStatus(input.kind === "member" ? `Renamed member ${input.from} to ${result.to}` : `Renamed agent ${input.from} to ${result.to}`)
+      return row
+    } catch (error: unknown) {
+      if (disposed) return undefined
+      setStatus(errorMessage(error))
+      return undefined
+    } finally {
+      if (!disposed && requestGen === generation) setLoading(false)
+    }
+  }
+
   function deleteCategory(node: TreeNode): Promise<boolean> {
     return categoryAction({ action: "delete", name: node.label, confirm: true }, `Deleted category "${node.label}"`)
   }
@@ -1067,6 +1113,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     createCategory,
     assignCategory,
     renameCategory,
+    renameRow,
     deleteCategory,
     splitPreview,
     resolvedText,

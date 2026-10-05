@@ -1134,7 +1134,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `instructions.log` | `LogInput` | `LogOutput` | — |
 | `instructions.assembled` | `{ agent }` | `Assembled` | `agent.unknown` |
 | `agent.create` | `{ scope, id, preset?: PresetRef, actor? }` | `AgentRef` | `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid` |
-| `agent.rename` | `{ scope, from, to, actor? }` | `RenameAgentResult` | `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected` |
+| `agent.rename` | `{ scope, from, to, team?, actor? }` (with `team`: rename an on-disk team member) | `RenameAgentResult` | `agent.missing`, `agent.exists`, `agent.invalid`, `agent.protected`, `team.unknown`, `team.invalid` |
 | `agent.delete` | `{ scope, id, actor? }` | `AgentRef` | `agent.missing`, `agent.invalid`, `agent.protected` |
 | `skill.create` | `{ name, body }` | `SkillRef` | `skill.exists`, `skill.invalid` |
 | `skill.import` | `{ path }` | `SkillRef` | `skill.exists`, `skill.invalid` |
@@ -1150,6 +1150,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `team.addAgent` | `{ level, team, id, preset?: PresetRef, actor? }` | `AgentRef` (at defaults `path` is the entry's row id) | `team.unknown`, `team.invalid`, `agent.exists`, `agent.invalid`, `agent.protected`, `preset.invalid`, `entry.invalid`, `entry.exists` |
 | `team.removeAgent` | `{ level, team, id, actor? }` | `AgentRef` | `team.unknown`, `team.invalid`, `agent.invalid`, `agent.protected` |
 | `team.delete` | `{ level, team, actor? }` | `DeleteTeamResult` | `team.unknown`, `team.invalid`, `agent.protected` |
+| `team.rename` | `{ level: project\|global, from, to, actor? }` | `RenameTeamResult` | `team.unknown`, `team.exists`, `team.invalid`, `agent.protected` |
 | `team.list` | `void` | `TeamListOutput` | — |
 | `team.runs.list` | `{ all?: boolean }` | `TeamRunsListOutput` | — |
 | `team.runs.stop` | `{ run: string }` | `TeamRunsStopOutput` | `E_BUSY`, `run.unknown` |
@@ -1185,7 +1186,15 @@ agent's link and its own records (customizations, splits, models, rules at
 `{level: scope, agent: from}`, no team) to the new id with the file; records a
 deleted agent of the new id left behind give way, while a member of the same
 id and the agent at another level keep theirs. If the store cannot be saved,
-the file is moved back and the call answers `agent.invalid`.
+the file is moved back and the call answers `agent.invalid`. `agent.rename`
+with `team` renames an on-disk team member: the member file moves inside its
+team directory and its team-scoped link, row edits, splits, models, rules and
+warming rows move to the new id, as does every `team_delegate` "Delegate to"
+row that names it. `team.rename` moves the team directory and every stored
+record that names the team (its enablement row, links and every team-scoped
+row of its members). Built-ins (OpenCode/Special/Plus), shipped Defaults teams
+and members, ancestor-backed agents, and (for a tool actor) rows of a
+`protectedAgents` agent refuse. Session history keeps the old name.
 `team.addAgent` at `defaults` stores a Teams member entry (`team`, `id` are
 patterns) instead of a file. Entry names may hold `*`/`%`, never `:`, NUL or a
 line break (`presets.ts` `validateEntryName`); team patterns follow

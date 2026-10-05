@@ -399,10 +399,9 @@ async function scanProjectAgentFiles(directory: string): Promise<{ files: Map<st
   const ancestors = new Set<string>()
   const globalDir = path.resolve(globalConfigDir())
   const realGlobalDir = await fs.realpath(globalDir).catch(() => globalDir)
-  const globalParent = path.dirname(globalDir)
   let current = path.resolve(directory)
   while (true) {
-    if (current === globalDir || current === globalParent) break
+    if (current === globalDir) break
     const realCurrent = await fs.realpath(current).catch(() => current)
     const opencodeDir = path.resolve(current, ".opencode")
     if (opencodeDir !== globalDir) {

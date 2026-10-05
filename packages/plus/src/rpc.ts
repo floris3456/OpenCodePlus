@@ -566,11 +566,15 @@ export const AgentRef = Schema.Struct({
   path: Schema.String,
 }).annotate({ identifier: "Plus.AgentRef" })
 
+// T6: `team` makes this a rename of an on-disk team MEMBER (the file lives in
+// the team directory, not the agent directory); without it the row is a
+// stand-alone agent at `scope`.
 export interface RenameAgentInput extends Schema.Schema.Type<typeof RenameAgentInput> {}
 export const RenameAgentInput = Schema.Struct({
   scope: FileScope,
   from: Schema.String,
   to: Schema.String,
+  team: Schema.optionalKey(Schema.String),
   actor: Schema.optionalKey(Actor),
 }).annotate({ identifier: "Plus.RenameAgentInput" })
 
@@ -924,6 +928,24 @@ export const DeleteTeamResult = Schema.Struct({
   team: Schema.String,
   removedMembers: Schema.Number,
 }).annotate({ identifier: "Plus.DeleteTeamResult" })
+
+// T6: rename an on-disk team. `to` is the new directory name; the team's
+// members, records, links and enablement follow in the same revision.
+export interface RenameTeamInput extends Schema.Schema.Type<typeof RenameTeamInput> {}
+export const RenameTeamInput = Schema.Struct({
+  level: FileScope,
+  from: Schema.String,
+  to: Schema.String,
+  actor: Schema.optionalKey(Actor),
+}).annotate({ identifier: "Plus.RenameTeamInput" })
+
+export interface RenameTeamResult extends Schema.Schema.Type<typeof RenameTeamResult> {}
+export const RenameTeamResult = Schema.Struct({
+  level: TeamLevel,
+  from: Schema.String,
+  to: Schema.String,
+  path: Schema.String,
+}).annotate({ identifier: "Plus.RenameTeamResult" })
 
 export type TeamDeleteInput = DeleteTeamInput
 export const TeamDeleteInput = DeleteTeamInput
@@ -1697,6 +1719,12 @@ const PortableDeleteTeamInput = Schema.toStandardSchemaV1(
 const PortableDeleteTeamResult = Schema.toStandardSchemaV1(
   DeleteTeamResult.annotate({ identifier: "Plus.DeleteTeamResult" }),
 )
+const PortableRenameTeamInput = Schema.toStandardSchemaV1(
+  RenameTeamInput.annotate({ identifier: "Plus.RenameTeamInput" }),
+)
+const PortableRenameTeamResult = Schema.toStandardSchemaV1(
+  RenameTeamResult.annotate({ identifier: "Plus.RenameTeamResult" }),
+)
 const PortableTeamListOutput = Schema.toStandardSchemaV1(
   TeamListOutput.annotate({ identifier: "Plus.TeamListOutput" }),
 )
@@ -1893,6 +1921,8 @@ export const Definition = Rpc.define({
         "agent.exists": PortableAgentExists,
         "agent.invalid": PortableAgentInvalid,
         "agent.protected": PortableAgentProtected,
+        "team.unknown": PortableTeamUnknown,
+        "team.invalid": PortableTeamInvalid,
       },
     },
     "agent.delete": {
@@ -2037,6 +2067,16 @@ export const Definition = Rpc.define({
       output: PortableDeleteTeamResult,
       errors: {
         "team.unknown": PortableTeamUnknown,
+        "team.invalid": PortableTeamInvalid,
+        "agent.protected": PortableAgentProtected,
+      },
+    },
+    "team.rename": {
+      input: PortableRenameTeamInput,
+      output: PortableRenameTeamResult,
+      errors: {
+        "team.unknown": PortableTeamUnknown,
+        "team.exists": PortableTeamExists,
         "team.invalid": PortableTeamInvalid,
         "agent.protected": PortableAgentProtected,
       },

@@ -38,7 +38,7 @@ export const HELP: readonly HelpGroup[] = [
       ["w", "shown when: send a system row or section only while chosen rows are on"],
       ["s", "split text into sections"],
       ["m", "move a row (with its children) into one of your categories, or back home"],
-      ["R", "rename a user category"],
+      ["R", "rename a user category, user agent, team member or team"],
     ],
   ],
   [

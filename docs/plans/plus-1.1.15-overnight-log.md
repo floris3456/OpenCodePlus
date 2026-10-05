@@ -6,6 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B1 merge/review. No task newly landed yet.
 - Pending: B1, A1, A2, B2; A3/A6/B6 repairs; A4/A5/B3/B4; F.
+- B1 source merged as `26eacdfc14`; #2/#3 fixes running. A1 merge/review in progress. Independent repairs running in T76/T77/T78; #2 T79 and #3 T80 (five children).
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
 ## Decisions
@@ -30,6 +31,12 @@
 - A3: no Defaults echo for team members; preserve instructions_show refusal evidence on member run-scope rows.
 - A6: inspect shell description and registration-count expectations before choosing test or code fix.
 - B6: inspect warming test-harness failure; preserve `/tools`, extend `/monitor` checks after B2.
+
+### A1 — merge/review in progress
+
+- Input `team/Flash-Implementer/t58b343-20261004-1306` merges cleanly. Reviewed all source/docs/test additions: file/member/team API paths, record rewrites, tools/RPC, rename selection/help.
+- Reproduced known ancestor refusal failure: rename test **5 pass / 1 fail** (`legacy` called built-in rather than ancestor). Actual cause is #5, not refusal order.
+- Small discovery-boundary fix retained symlink confinement and the real global-config-directory exclusion, but removed premature stop at its arbitrary parent directory. Verification: `bun test test/rename.test.ts test/discover.test.ts test/model.test.ts test/rpc.test.ts test/categories.test.ts test/monitor-requests.test.ts test/active-team.test.tsx` **185 pass, 5 pre-existing skips, 0 fail**; Plus typecheck passes. Live pending a worker slot.
 
 ## Issues
 
@@ -61,6 +68,14 @@
 
 - Observed merge check: five `monitor-view.test.tsx` failures, including expected `scope this chat + delegated`, four calls versus two, missing `explore` facet and absent child groups. T2 intentionally makes `session` exactly one session; compact Tools must default to tree in T3.
 - Plan: reconcile B2 production compact/full view and tests against T2 tree/session contract; run every monitor file and Plus/TUI typechecks; live /monitor, /tools and M at 80/160 columns.
+
+### #5 — ancestor scan stops at configured global directory's parent (fix in A1)
+
+- Observed `rename.test.ts` refusal returned `Agent legacy is built in and cannot be renamed`. With `OPENCODE_CONFIG_DIR=<fixture>/config` and project `<fixture>/project`, discovery stops at `<fixture>` before seeing `<fixture>/.opencode/agent/legacy.md`.
+- Weight: breaks Instructions T6 clear ancestor refusal; also wrong ancestor discovery for a real custom config directory beside a project.
+- Files: `packages/plus/src/instructions/discover.ts`.
+- Decision/fix: remove the `current === globalParent` stop; the actual global directory exclusion and realpath/symlink checks still prevent treating global files as project files. This matches V2 upward discovery to filesystem root.
+- Focused proof passed within A1's 185-test check, including refusal and symlink controls; Plus typecheck passes. Live A1 ancestor refusal in isolated home still pending.
 
 ## Live evidence
 
