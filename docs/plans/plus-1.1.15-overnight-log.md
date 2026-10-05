@@ -4,9 +4,9 @@
 
 - Branch/worktree: `plus-1.1.15_overnight`; initial HEAD `75a8d9e20f`.
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
-- Current phase: B2 source merge/review complete; repair its page gaps (#7) before live acceptance.
+- Current phase: B3 review/issue repairs alongside B1/A1 acceptance; repair B2 page gaps (#7) before live acceptance.
 - Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`; T79/T80 stopped. B1 live T84 and #9 privacy T85 running. A3 T76 landed `ae09701991`, A6 T77 landed `2f7287ee59`, both stopped. B6 fixture landed `1047b1e5df` and stopped.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`; T79/T80 stopped. B1 live T84, #1/#6 T82, #9 privacy T85, A1 live T86 and #7 fresh T87 running. A3/A6/B6 tests landed and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -15,6 +15,7 @@
 - 2026-10-05: Follow the overnight plan's explicit five-child limit and order (it supersedes the older task plans' two-child limit). Only Flash-C-Worker codes/tests unless its provider is unavailable. I alone merge, review, land, and log.
 - 2026-10-05: Start B1 first while independent A3 (T5 expectations), A6, and B6 test repairs run. Defer A3 RPC declarations until all four branch merges land.
 - 2026-10-05: Log did not exist at start; created before implementation. Existing prepared branches are inputs, not worktrees to change.
+- 2026-10-05 03:02 local: watchdog inspection found T83 had no commit or changed file for 35 minutes; stopped force and delegated fresh same-kind T87 at current HEAD. No provider failure reported, so Flash-C remains the only coder. Other runs had recent changes or started less than 30 minutes ago. T83 made no source/evidence changes and claimed no acceptance.
 
 ## Progress and verification
 
@@ -88,15 +89,15 @@
 - Plan: refuse owner-segment `agent` with actionable `agent` + `team` instructions before any write; cover store revision/record refusal and valid member create in focused model/tool tests; live re-check in isolated dev home. Leave the existing live-store record untouched.
 - Fix/verification: pending A2 reconciliation.
 
-### #2 — auxiliary generation transport is mislabeled after preserving primary transforms (open)
+### #2 — auxiliary generation transport is mislabeled after preserving primary transforms (source fixed, live pending)
 
 - Seen in source review: `SessionGenerate.generate` correctly uses non-durable primary/context transforms to preserve the real request cache prefix. HTTP hook consequently says `primary`, which Monitor stores as `step`; generated outcome matches only `generate`, creates another row and warming relabels only that duplicate to ping. Wire fingerprint remains on an unfinished step row.
 - Where: core `session/generate.ts`, `session/model-request.ts`, Plus `monitor/plugin.ts` and `ledger.ts`.
 - Weight: breaks Monitor T1 every-request identity/kind/fingerprint/usage, B1 ping acceptance.
 - Plan: distinguish transport request identity/kind without changing primary content hooks/cache policy, propagate generate outcome correctly; actual core HTTP middleware + Plus hook regression must assert exactly one completed fingerprinted generate/ping and no orphan step, pinned identities and durable state unchanged. Live B1 re-check two messages/three pings.
-- Fix/verification: pending worker after merge checkpoint.
+- Fix/verification: `de7c1952bf`; parent focused tests/typechecks and exact discriminating assertions recorded under B1. T84 live pending.
 
-### #3 — request analysis cache serves stale in-place outcomes (open)
+### #3 — request analysis cache serves stale in-place outcomes (source fixed, live pending)
 
 - Seen in source review: report cache key is last request id/count + last fact timestamp/count only. `requestEnded`, final wire fingerprint updates and generate→ping relabel mutate existing rows with those keys unchanged. Polling an open request then its completion can forever show zero usage / old verdict / old kind until another row/fact appears.
 - Where: `packages/plus/src/monitor/report.ts:30–69`, ledger writes.
@@ -133,7 +134,7 @@
 - Other concrete gaps: narrow Cache hides the kind (pings indistinguishable), agents table width 82+ even after dropping model at 80, full-row selection never scrolls into view, and top-tools overview uses whichever grouped/top-limited tool query was last selected. Detail fixtures invent exact line/character changes impossible from hashed segments, include explicit `undefined`, and story ignores request id/scope/view; inherited member field issues are separate #6.
 - Weight: breaks Monitor T3 controls, open-session scope, intuitive narrow layout and story/real-contract reconciliation.
 - Plan: repair minimal existing seams in page/route/settings/tabs/query and fixtures/story; preserve compact capabilities, temporary drill-downs and persisted settings. Add actual-ledger tests for compact drill, M open/back, filters/selected detail, session/tree ownership, polling and narrow columns/scroll. Live every tab/scope/window and M via both composer tabs at 80/160. Keep optional RPC additions and privacy.
-- Worker T83 `w-d97ad6d4f18f9ee2` running from `2f7287ee59`. #1/#6 worker T82 `w-b932eadad70bb911` running from `ae09701991`.
+- T83 stopped for no material activity for 35 minutes. Fresh T87 `w-52d5fb25d626bd21` started at `254fcbcccc`; same page repairs/live, forbidden Instructions/report/cache/collector/ledger overlap. #1/#6 T82 `w-b932eadad70bb911` running from `ae09701991`.
 - Root preflight `bun run check` stopped at lint (before typechecks): story `monitor.tsx:466/473` uses restricted `Reflect.get`, two errors. T83 notified to replace these at the typed fixture boundary; canonical final gate remains pending.
 - Parent broader focused check also finds two stale active-team expectations after new M: hint list misses monitor/M and commands expect 6 instead of 7. T83 notified; action assertions must remain and actual M open/back regression added.
 
@@ -158,14 +159,14 @@
 - Where: `packages/plus/src/index.ts:4529–4555,4610–4662`, `instructions/discover.ts`; A4.
 - Plan: profile actual first/repeat Defaults and agent Models opens, correct measured catalogue work at existing registry/cache seams without stale base-family classification or dropping host warming/variants, prove navigation makes no catalogue fetch and pickers load/cache it. Measure live before/after with prescribed clock method, record every number; targets 1.5 s/300 ms.
 
-### #11 — deleting a standalone agent erases same-id team edits (open)
+### #11 — deleting a standalone agent erases same-id team edits (source fixed, live pending)
 
 - Source review: `removeAgentRecords` scopes model/rule/link removal by absent `team`, but customization/split branches match only level + agent. Deleting a Global user agent whose id also names a Global team member removes that independent member's edits/splits.
 - Where: `packages/plus/src/index.ts:3713`; violates T1/T5 owner isolation.
 - Plan: one-line team-owner exclusion before cascade branches; extend actual `agent.delete` regression with same-id team customization/split controls. Parent handles this small fix, Plus propagation/RPC/Monitor-focused checks and typecheck; final Instructions live sweep covers delete and preserved member owner.
 - Actual `agent.delete` regression failed before repair: expected two member-owned records, received `[]`; standalone records correctly deleted. One-line exclusion applied; propagation/RPC/Monitor plugin+requests **84 pass, 3 pre-existing skips, 0 fail**, Plus typecheck passes. Member controls survive, standalone re-create starts clean, single revision preserved. Live final sweep still pending.
 
-### #12 — punctuation-equivalent category names collide on row identity (open)
+### #12 — punctuation-equivalent category names collide on row identity (source fixed, live pending)
 
 - Source review: category create/rename checks names case-insensitively, but row ids use `categorySlug`; `One Two` and `One-Two` both produce `category:one-two`. Creation can return the same id twice; id-based rename/delete then selects the first category and one tab hides the other.
 - Where: `packages/plus/src/index.ts:1465,1494`, `instructions/categories.ts`; breaks T8 category identity/rename/delete.
@@ -190,4 +191,4 @@
 
 ## Open findings for morning
 
-None beyond #1 pending fix. Final sweep and all required gates remain outstanding.
+Issues #1/#6/#7/#8/#9/#10/#13/#14 and the acceptance/gates above remain pending. Final sweep has not run; no final acceptance claim.
