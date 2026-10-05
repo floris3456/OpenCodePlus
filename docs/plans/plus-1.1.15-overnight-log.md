@@ -573,3 +573,8 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Decided fix: also rewrite an unteamed Delegate-to row naming the member when its owner is a member of that team (or the member itself) at the rename's level, and leave rows owned outside the team alone.
   - Test: a `rename.test.ts` case with an unteamed peer row, an unteamed own row and an outside agent's row as the control.
   - Delegated 18:09 (T135, `w-11617a201214c13d`, base `7325b609d4`). Live re-check: re-sweep T6's Delegate-to line after landing.
+- **Instructions T1 swept: PASS** (T134, landed as four evidence commits ending in the cherry-pick of `3b9e6cc`).
+  - Create and rename of a Global user agent use the build's real global directory, `$DEV/config/opencode/agents/` (`XDG_CONFIG_HOME/opencode` for the upstream-identity dev build). `OPENCODE_CONFIG_DIR` is NOT LIVE, because it is set at process start; `agents.test.ts` "global scope uses OPENCODE_CONFIG_DIR when set" covers it.
+  - Deleting `Global › User › sweep-agent` removed it at once from the tree, `shift+tab` and the agent picker, and its three records in the same revision (499→500), leaving another agent's records untouched. Re-creating the id starts clean.
+  - The deletion was shown on `sweep-agent`, not the literal `deepseek-worker` (the cascade is keyed by level and agent; `agents.test.ts` covers it, 16 pass).
+  - Log: 0 ERROR. Child stopped.
