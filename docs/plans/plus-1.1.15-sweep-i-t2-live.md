@@ -104,6 +104,13 @@ probe over 6.1 s showed the disabled `Build` in TUI two's `shift+tab` cycle.
 `shift+tab` additionally navigated an open picker in TUI two, not the
 composer.)
 
+**Team picker coverage for agent verbs.** The Team picker is the same
+`Select agent or team` dialog filtered to `Team:`; for a team member it shows
+the member id. TUI one renamed the member `gmember` → `gmember-rn` at
+`1791212427650` while TUI two's Team picker was open; the picker showed the new
+id from `+630 ms`. **PASS** (Team picker follows an agent/member rename in
+~0.6 s).
+
 ### Line 2 — team create / add / remove member / enable / disable reach the other TUI
 
 **2a. Create a team.** Project team `livecrew` created in TUI one at
@@ -173,3 +180,45 @@ Covered by 1a and its controlled re-run at `1791211441165`: disabling `build`
 in TUI one, the very first `shift+tab` probe in TUI two (`+613 ms`) already
 lacked `Build`, and 40 probes over 6.1 s never showed it. In TUI one itself the
 post-disable cycle was `T2-Live / T2-Live2 / Plan` with no `Build`. **PASS.**
+
+### Server log — every ERROR and WARN line
+
+`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **472 lines, 460
+INFO, 12 WARN, 0 ERROR.** There is **no** `level=ERROR` line. Every WARN line
+is the expected `executor-controlled plugin source refused` refusal control
+(sources under the workspace root and this worktree's `.opencode`); there is no
+other WARN text:
+
+```
+timestamp=2026-10-05T14:25:58.766Z level=WARN run=ee61156b message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=110 role=server
+timestamp=2026-10-05T14:25:58.766Z level=WARN run=ee61156b message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=110 role=server
+timestamp=2026-10-05T14:26:00.759Z level=WARN run=ee61156b message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=948 role=server
+timestamp=2026-10-05T14:26:00.759Z level=WARN run=ee61156b message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=948 role=server
+timestamp=2026-10-05T14:26:00.759Z level=WARN run=ee61156b message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t124490f-20261005-1623/.opencode/opencode.jsonc type=document http.span=948 role=server
+timestamp=2026-10-05T14:26:00.759Z level=WARN run=ee61156b message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t124490f-20261005-1623/.opencode type=directory http.span=948 role=server
+timestamp=2026-10-05T14:26:52.873Z level=WARN run=35ff0f92 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=194 role=server
+timestamp=2026-10-05T14:26:52.873Z level=WARN run=35ff0f92 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=194 role=server
+timestamp=2026-10-05T14:26:54.189Z level=WARN run=35ff0f92 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=289 role=server
+timestamp=2026-10-05T14:26:54.190Z level=WARN run=35ff0f92 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=290 role=server
+timestamp=2026-10-05T14:26:54.190Z level=WARN run=35ff0f92 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t124490f-20261005-1623/.opencode/opencode.jsonc type=document http.span=290 role=server
+timestamp=2026-10-05T14:26:54.190Z level=WARN run=35ff0f92 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t124490f-20261005-1623/.opencode type=directory http.span=290 role=server
+```
+
+The two runs (`ee61156b`, `35ff0f92`) are the two standalone servers started by
+the two TUIs, both on the first start.
+
+## Result
+
+All three end-state lines verified **PASS** against this worktree's own build:
+
+1. **PASS** — agent disable, enable, create, delete and rename all reached the
+   other TUI's agent picker and `shift+tab` (and the Team picker for a member
+   rename) within ~0.5–1.2 s, with no restart.
+2. **PASS** — team create, add member, remove member, enable and disable
+   reached the other TUI's picker, the Instructions tree, and (for enable/
+   disable) the composer within ~0.5 s; a team filled while enabled showed its
+   new member at +506 ms without toggling off/on.
+3. **PASS** — a disabled agent never appeared in the other TUI's `shift+tab`
+   cycle over 6.1 s of probing.
+
+No source file was changed; only this evidence file.
