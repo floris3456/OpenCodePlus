@@ -241,7 +241,54 @@ PASS.
 
 ## L9 — `d` deletes after confirmation; its rows go home; empty category text
 
-Pending.
+Done (two parts).
+
+**Empty category text:** created a second category `EmptyCat` (`a` → `Category` → `EmptyCat`) and
+selected its tab (`]` from the user category). Its list showed:
+
+```
+Defaults › Agents › EmptyCat
+▾ Agents                │ Every agent                                │ EmptyCat                                     group
+Every agent  no tools   │ no tools on · link a preset (l) or turn tools on (4)
+▾ OpenCode              │ Settings  Models  Compaction  Tools 0  Base  System  MCP  EmptyCat
+  ● build         77    │ SweepRenamedSweepCat  EmptyCat
+  ● general subagent 77 │
+  ● explore subagent 77 │No rows yet · m on a row moves it here
+  ● plan         77     │
+```
+
+The text `No rows yet · m on a row moves it here` is exactly the line (one row, no header
+confusion: the category header row is not counted as content). PASS.
+
+**Delete with confirmation:** on the `SweepRenamedSweepCat` header row, `d` opened:
+
+```
+   Delete category "SweepRenamedSweepCat"?              esc
+   Delete category "SweepRenamedSweepCat"? Its rows return
+   to their home categories. This cannot be undone.
+                                                        Cancel  Confirm
+```
+
+`right` (or `tab`) moved to `Confirm`, `Enter` confirmed. The category record was removed from
+`records.jsonl` (only `EmptyCat` line 2 remains; `SweepRenamedSweepCat` is gone), and the log
+gained:
+
+```
+{"ts":"2026-10-05T16:21:56.135Z","actor":{"type":"tui"},"op":"category","target":"category:sweeprenamedsweepcat","summary":"Deleted category \"SweepRenamedSweepCat\"","revision":505}
+```
+
+Rows went home: the `build` tools count returned `77 → 78` and `Tools › OpenCode` again lists
+`edit` at its home position:
+
+```
+▾ OpenCode     │   ▸ ○ edit       off by default
+               │   ▾ ○ execute    off by default
+```
+
+The tab row lost `SweepRenamedSweepCat` and kept `EmptyCat`. PASS.
+
+(Cancel path observed once earlier: pressing `d` and `Escape` left the record and tabs
+unchanged — `Cancel` is the default selection.)
 
 ## L10 — filter `category:<name>`
 
