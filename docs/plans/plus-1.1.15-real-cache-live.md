@@ -165,4 +165,97 @@ This is an **evidence-only** task: no production file is changed.
 
 ## In-chat Code Mode `monitor.query` equality (observed)
 
-Still to be captured from the same chat below.
+In *the same chat* (`ses_ef4c1b688ffeCt0a1OoliAT748`), the agent ran real Code
+Mode calls: `monitor.query({view:'cache',missesOnly:true})` and
+`monitor.query({view:'cache',id:'33594a72-f76b-435c-9f5f-a13c8fef7d97'})`. Two
+`monitor.query` calls are recorded in the ledger (call ids
+`toolu_01S6rWJmFQUaKMQiZVBCGN3H#0`/`#1`, started 1791192806216). The agent's own
+summary (verbatim from `session_message`:164):
+
+- Misses list `view:'cache', missesOnly:true`:
+
+  | requestID | verdict | cause | confidence | expected | actual cache read | gap/lifetime | warming |
+  |---|---|---|---|---|---|---|---|
+  | `da91778f-58f7-4a8e-b85b-1aa37686aa2f` | miss | unknown | unknown | 12851 | 5026 | not reported | not reported |
+  | `f0742a0a-0305-41a9-90f4-2ed7d3787910` | partial | prefix-changed | certain | 7910 | 5026 | not reported | not reported |
+  | `d387a377-1d65-4032-a099-48328d9c5e8b` | miss | cache-expired | likely | 13775 | 0 | 439062 ms / 300000 ms | on (last ping: none) |
+  | `33594a72-f76b-435c-9f5f-a13c8fef7d97` | miss | prefix-changed | certain | 14267 | 5602 | not reported | not reported |
+
+  plus a fifth row `9b61603b-3857-4517-a8f0-2b2450d560cf` (miss, unknown) that
+  was the still-running assistant step of this very turn at query time (see
+  the note below). Listed totals: 19 requests, 5 misses, 32745 miss tokens,
+  hit rate 0.602.
+- Detail for `33594a72-f76b-435c-9f5f-a13c8fef7d97` as returned by the tool:
+  - requestID `33594a72-f76b-435c-9f5f-a13c8fef7d97` (step, plan,
+    `claude-opus-5-5`/high)
+  - verdict `miss`; cause `prefix-changed`; confidence `certain`
+  - expected tokens `14267` (segment-size estimate)
+  - actual cache read `5602` (miss tokens `8261`)
+  - gap/lifetime `1750 ms / 300000 ms`; warming `on`
+  - first divergence `message 2 (message)`; previous request
+    `3b486a9b-4c25-41f8-a7bc-cdeae525c3a7`
+  - changed segments: `message 2` hash `2c2fff53d0179d20` (549 chars, 220 tok) →
+    `6851779cfa9dbbfa` (108 chars, 44 tok); `message 3` hash
+    `bcaac7fc30ab5fe7` (108 chars, 44 tok) → `ce8a49d56487a1f8` (158 chars,
+    64 tok)
+  - miss cost unavailable (no per-token pricing recorded)
+
+Equality: the page Cache-tab detail for `33594a72-…` shows exactly
+`[MISS] prefix-changed (certain)`, expected `14.3k`, cache read `5.6k`, gap
+`1.8s`, lifetime `5m`, warming `on`, first diverging segment
+`message 2 (message)`. The tool's `14267`/`5602`/`1750 ms`/`300000 ms` are the
+same values with full precision. The tool answer matches the page.
+
+Note (honest, not a fabricated acceptance): at the moment the tool ran, the
+assistant's own in-flight step was already in the ledger as a running row with
+no usage yet, so the analyzer listed it as `miss`/`unknown`. By the time the
+page was read that same row had completed with `cache_read 13859` (a hit). The
+difference is query timing, not a contradiction or a claimed defect.
+
+## #25 — T110 owned warming WARN classification (read-only)
+
+- Source of the finding: the stopped T110 home
+  `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t110991f-20261005-0935`,
+  read only; nothing in it was modified.
+- The one non-confinement WARN, verbatim:
+  `timestamp=2026-10-05T07:55:46.253Z level=WARN run=297e5649 message="failed to
+  warm session" sessionID=ses_ef4f9769dffe8KzRX1mNLbDXBl
+  cause="Cause([Fail(Session.AgentNotFoundError: Agent not found: \"build\")])"
+  role=server`.
+- Hash check: the reported `cause` encoding hash `a8a0a01a366f4450`/71 chars is
+  the JSON-encoded log field
+  `"Cause([Fail(Session.AgentNotFoundError: Agent not found: \"build\")])"`
+  (71 chars, sha256 prefix `a8a0a01a366f4450`). The raw unencoded cause is 67
+  chars (`2c2c74298671915b`). So the reported identifier is the log-quoted form,
+  not a different message.
+- Actual boundary: `packages/core/src/plugin/warming.ts:118-125` calls
+  `ctx.session.generate(ping)` with the **pinned** `agent: current.agent` and
+  `Effect.catchCause` logs `failed to warm session`. The error itself comes from
+  `packages/core/src/session/context.ts:139-141`
+  (`agents.select(pinned ?? session.agent)` returned no info →
+  `new AgentNotFoundError({ sessionID, agent: pinned ?? … })`). So the pinned
+  agent id `build` did not resolve in the location's agent registry at that
+  instant.
+- What happened around it in the same owned log:
+  - `07:51:44Z` a ping succeeded (`providerID=cliproxyapi
+    modelID=claude-opus-5-5`, usage cache read 12875).
+  - `07:53:24.670Z` `POST /api/rpc/opencode.plus/link.set` returned HTTP 400.
+  - `07:54:40.585Z` `provider.updated`/`model.updated` fired for the project
+    directory (count=2); `07:54:50.587Z` the same pair fired for
+    `packages/cli` (count=1). This is active host config/Instructions churn
+    inside the T110 session's own home.
+  - `07:55:46.251Z` the next ping started, then failed with the WARN above.
+  - `07:59:46.265Z` the following ping succeeded again on the same pinned
+    agent/model.
+- Classification: a **single, transient** failure. The pinned agent `build`
+  was not resolvable for one ping during concurrent host config/instruction
+  mutation (a `link.set` 400 plus provider/model update events), and the next
+  ping resolved normally. It is not shutdown noise (cleanup happened later), it
+  did not recur, and no request/ledger content or credential was involved.
+- No source defect is established from this evidence: the failure is caught by
+  the warming loop's designed failure control, and the transient non-resolution
+  is consistent with a host catalogue reload. Pinned-agent fallback/retry on a
+  transient `AgentNotFoundError` would be a design change, not a demonstrated
+  bug, so none is made here (source is out of this evidence-only task's scope);
+  it is left for the parent to assign if wanted.
+- Own log for this run: see the Run log classification section below.
