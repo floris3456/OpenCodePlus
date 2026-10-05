@@ -567,3 +567,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - An activation overrode an earlier manual pick in a reopened chat in about 1.1 s, and a manual pick made after the activation held for that chat.
   - Focused: `agent-model-refresh` 2 pass, `active-team` 13 pass. Log: 0 ERROR, 30 expected WARN. Child stopped.
 - #29 (note, open): `ctrl+x n` (`session.new`, upstream `packages/tui/src/app.tsx:726-745`, not changed in this release) copies the current composer model into the new chat. So a new chat opened from a chat holding a post-activation manual pick starts on that pick, not on the activation. T4's "a pick … wins for that chat" can be read as excluding this. Upstream behaviour, outside Plus; left for a decision in plus-1.1.16.
+- 17:58: Instructions T1 delegated (T134, `w-3cd2afa682d7ddbf`, base `31da2e54bf`). Remaining: Instructions T5 and Monitor T4.
