@@ -34,16 +34,32 @@ was never used as a source of truth for these claims.
   removed both the `low` row and its `xhigh` tombstone (revision 2, one live candidate gone,
   no stale hidden row). This is the queued "inactive inherited B alongside active A → C →
   reset restores B" contract at the TUI boundary.
-- **Local-only original.** Edited the Model field of the Defaults-derived row to
-  `cliproxyapi/gemini-3.8-flash-high`; the store recorded
+- **Defaults-derived original (live).** Edited the Model field of the Defaults-derived row to
+  `cliproxyapi/gemini-3.8-flash-high`; the owned store recorded
   `originalCandidate.source:"defaults"` on the live replacement and a tombstone for the old
   candidate. `r` on Model restored the Defaults candidate (`claude-opus-5-5@xhigh`) and left
-  the owned project store empty (`{"version":2,"revision":4}` only). No `resolveActiveModel`
-  guess of the upstream active model was used.
-- **Repeated reset refuses without writes.** The focused regression
-  `model-settings.test.ts` "no-warming control" drives B@high→Model C→Effort low→activate→
-  reset Model (B@low active)→repeat reset (refuses, identical records/revision)→reset Effort
-  (B@high active preserved). It passes at HEAD.
+  the owned project store empty (`{"version":2,"revision":4}` only). This is a
+  **defaults-derived** original, not a local-only one; no `resolveActiveModel` guess of the
+  upstream active model was used.
+- **Local-only and independent reset (source regression).** The live pass did not construct a
+  local-only inactive B beside an active A, so that exact contract is proven by focused
+  regression, not claimed live:
+  - "Model reset restores a local-only original that never existed above": local-only
+    inactive `openai/gpt-5@high` beside active Global A → Model to `google/gemini@high` →
+    reset restores B, not A.
+  - "local-only inactive B@high -> Effort low -> resetEffort restores B@high with unrelated
+    active A intact": the Effort branch now mirrors the Model branch's
+    `orig.source === addr.level` restoration, so the local-only original comes back instead
+    of vanishing; Global A stays active.
+  - "Model reset of inherited inactive candidate…" and "Effort reset restores original
+    inherited variant…": inherited inactive B beside active A → C → reset restores B (the
+    inherited original), including the variant.
+- **Repeated FIELD Model reset refuses with no write.** After Model and Effort have been
+  restored, a repeated Model FIELD `r` must not erase the local row: only the model ROW's `r`
+  clears activation. Focused regressions assert the refusal (`has no override to reset`) with
+  byte-identical records and revision, in the no-warming control, the inherited inactive-B
+  case (Model → resetModel → resetWarming → repeat Model FIELD), and the end of "an agent's
+  model row opens into field rows…".
 - **Unknown legacy original refuses honestly.** The focused regression
   "Model reset refuses honestly for a legacy row with no original metadata" asserts the
   refusal contains `no recorded original candidate` and the store is byte-identical
@@ -84,6 +100,11 @@ cannot normalize it onto the reset key. `route.test.tsx` "no model field command
 normalizes onto the reset key r" asserts exactly one `r` token, no bare `R`, `shift+r`
 present, and that `r` really writes the reset through the real command.
 
+This test deliberately constrains only the *binding tokens*, not the help/footer label text,
+so it stays compatible with the sibling category T107 change that displays the explicit
+binding as `shift+r` in help and footer. The explicit `shift+r` / no-bare-`R` binding is
+preserved; no help-label change was made here.
+
 ## #1 — owner-segment create refuses before any write
 
 - **Tool boundary.** `instructions_create({ kind:"model", level:"global",
@@ -99,7 +120,7 @@ present, and that `r` really writes the reset through the real command.
 
 ## #15 — the eight stale suite failures reconciled
 
-Whole `packages/plus` suite at HEAD: **2249 pass / 14 existing skips / 0 fail / 36508
+Whole `packages/plus` suite at HEAD: **2251 pass / 14 existing skips / 0 fail / 36528
 expects** (148 files). The eight previously failing cases now assert the actual contracts
 without weakening refusal controls:
 
@@ -117,9 +138,10 @@ without weakening refusal controls:
 
 - **80×24.** Model group opens with two candidates (`…@high` active, `…@xhigh` from
   defaults); Enter opens the five field rows; each field shows its inherited label; `r` on
-  Warming cleared the local `45m` back to `32m · opencode.json`; `r` on Effort restored
-  `xhigh`; active-model `d` refused with `"cliproxyapi/claude-opus-5-5@high" is the active
-  model here: activate another model first`.
+  Warming cleared the local `45m` back to `32m · opencode.json`; `r` on Effort restored the
+  Defaults-derived `xhigh` on that same row (this is the Defaults-derived row, not the
+  Model-B→C→reset-B case); active-model `d` refused with `"cliproxyapi/claude-opus-5-5@high"
+  is the active model here: activate another model first`.
 - **160×48.** The same group and fields render wide (list + inspector + detail), including
   the exact `warming 30m · set at Defaults` / `ping every 4m · set at Defaults` facts.
 - **Every field edits and resets independently** (Ping every and Keep-alive prompt measured
@@ -177,7 +199,7 @@ No request was needed for these field claims; the composer stayed on the observe
 - `route-panes`: `bun test test/route.test.tsx test/instructions-panes.test.tsx` — 101 pass / 2 skip / 0 fail.
 - `both-parts-index`: `bun test test/plus-instructions-propagation.test.ts test/monitor-plugin.test.ts test/monitor-requests.test.ts` — 26 pass / 0 fail.
 - `plus-typecheck`: `bun run typecheck` — pass.
-- Whole `packages/plus` suite — 2249 pass / 14 skip / 0 fail.
+- Whole `packages/plus` suite — 2251 pass / 14 skip / 0 fail.
 
 ## Open / not claimed
 

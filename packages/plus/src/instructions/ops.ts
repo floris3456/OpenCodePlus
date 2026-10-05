@@ -1740,7 +1740,12 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
         )
       }
       let next: ModelRecord[]
-      if (nextOriginalCandidate !== undefined || hasOtherOverrides) {
+      // Mirror the Model branch: a local-only original (source === this level)
+      // has no lower row, so removing its tombstone is not enough — the record
+      // itself must come back. An inherited/upstream original resumes by
+      // dropping the tombstone.
+      const restoresLocalRow = orig.source === addr.level
+      if (nextOriginalCandidate !== undefined || hasOtherOverrides || restoresLocalRow) {
         const added = addModelRecord(
           without,
           addr,
@@ -1780,29 +1785,10 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
         ? orig.editedFields.includes("model")
         : (local.providerID !== orig.providerID || local.modelID !== orig.modelID || !sameModelCandidate(local, orig))
       if (!isModelEdited) {
-        // The model itself was not replaced here. If the row only carries an
-        // unrelated Effort edit or keep-alive settings, removing it would drop
-        // them too. Removing is only honest when the chain above resolves the
-        // same candidate the row would restore, so the effective model does
-        // not change; otherwise refuse (a repeated reset must not silently
-        // switch the agent to a different active model above).
-        const isEffortEdited = orig.editedFields !== undefined
-          ? orig.editedFields.includes("effort")
-          : ((local.variant ?? undefined) !== (orig.variant ?? undefined))
-        const hasKeepAlive = local.warming !== undefined || local.interval !== undefined || local.prompt !== undefined
-        if (!hasKeepAlive && !isEffortEdited) {
-          const above = resolveActiveModel(
-            runtimeModelInput(found.memo, address, models.filter((record) => !scopedTo(record, addr))),
-          )
-          if (above !== undefined && sameModelCandidate(above, orig)) {
-            const without = removeModelRecord(models, addr, parsed.target)
-            return {
-              models: without,
-              status: `Reset "${found.node.label}" to "${modelKey(orig)}"`,
-              retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
-            }
-          }
-        }
+        // The Model field was not replaced here, so resetting it again is a
+        // no-op. Only the model ROW's r clears activation; a FIELD reset must
+        // never erase the local row (that would drop its remaining Effort,
+        // keep-alive or active fields). Refuse with no write.
         return { refusal: `"${found.node.label}" has no override to reset` }
       }
       const origTarget = { providerID: orig.providerID, modelID: orig.modelID }
