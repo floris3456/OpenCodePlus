@@ -39,13 +39,13 @@ changed; this evidence file is the only edit.
 ## Status
 
 - [x] Build started, home initialized.
-- [ ] Line 1 — TUI add for agent, member, preset, Defaults catalogue.
-- [ ] Line 2 — tool `set` activation, next request really used, inspector,
-      `show`.
-- [ ] Line 3 — flat member-only row case.
-- [ ] Focused tests / typecheck.
-- [ ] Server log ERROR/WARN quoted.
-- [ ] Cleanup and `pilotty list-sessions`.
+- [x] Line 1 — TUI add for agent, member, preset, Defaults catalogue. **PASS**
+- [x] Line 2 — tool `set` activation, next request really used, inspector,
+      `show`. **PASS**
+- [x] Line 3 — flat member-only row case. **PASS**
+- [x] Focused tests / typecheck.
+- [x] Server log ERROR/WARN quoted.
+- [x] Cleanup and `pilotty list-sessions`.
 
 ## Evidence log
 
@@ -324,8 +324,9 @@ level=WARN run=c98c35e1 message="executor-controlled plugin source refused"
 ```
 
 (4 warnings at `2026-10-05T14:26:05.167Z` and 2 more at `14:26:07.002Z`, all
-`executor-controlled plugin source refused`; no other WARN or ERROR anywhere in
-the 295-line log.)
+`executor-controlled plugin source refused`; re-checked after the sweep, no
+other WARN or ERROR anywhere in the 382-line log. These WARNs are the expected
+executor-controlled-plugin-source refusals, not a product failure.)
 
 ## Store revisions (owned home)
 
@@ -337,7 +338,34 @@ the 295-line log.)
 
 ## Cleanup
 
-- `pilotty list-sessions` before kill and after kill recorded below.
+`pilotty list-sessions` before kill (mine first; the others are not mine):
+
+```
+sweep-i-t3 fd400ebe-9609-428f-8d98-5b97b65bac76
+sweep-m-t2 77aae261-9102-4402-bd2e-28a3a65ce736
+w-f15454a0a1ed9809-b e1d404da-839e-4f25-bf4e-ab11e0e5d0f6
+w-1e01-story 7ee9758b-79e4-4bb5-9ac9-73eaa5423479
+w-f15454a0a1ed9809-a 2eee7514-d624-4eb4-bd57-592c11b73473
+sweep-i-t7a 15833326-6a32-4937-abe6-e6b84bf83729
+ux1 8ee9a647-d0bc-465c-bbe4-d3f9b34493ca
+rt-t6 fed714d9-4c52-4929-aeb6-46e36a51fa64
+```
+
+Killed only `sweep-i-t3` (`pilotty kill -s sweep-i-t3` → "Session
+fd400ebe-9609-428f-8d98-5b97b65bac76 killed"). After:
+
+```
+w-f15454a0a1ed9809-b e1d404da-839e-4f25-bf4e-ab11e0e5d0f6
+w-1e01-story 7ee9758b-79e4-4bb5-9ac9-73eaa5423479
+w-f15454a0a1ed9809-a 2eee7514-d624-4eb4-bd57-592c11b73473
+sweep-i-t7a 15833326-6a32-4937-abe6-e6b84bf83729
+ux1 8ee9a647-d0bc-465c-bbe4-d3f9b34493ca
+rt-t6 fed714d9-4c52-4929-aeb6-46e36a51fa64
+```
+
+`sweep-i-t3` is gone; every remaining session is one I did not start. (The
+sibling `sweep-m-t2` also left the list between the two calls; I sent it no
+input and did not kill it — its own worker owns it.)
 
 ### 2026-10-05 — line results summary
 
