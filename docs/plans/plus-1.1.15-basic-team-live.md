@@ -304,3 +304,13 @@ All four steps passed against this worktree's own build:
 
 No source file was changed; only this evidence file.
 
+
+## Parent review (residual run)
+
+The screens and on-disk states quoted above are consistent and cover the four
+steps. One correction: the failed first `team_delegate` did surface in the
+chat. The stored tool result is `E_INTERNAL: Cannot read HEAD from
+<dev-home>/project: fatal: ambiguous argument 'HEAD': unknown revision…`. The
+home's scratch project had no commit yet. build-seat then ran
+`git commit --allow-empty -m "chore: initialize worktree"` and the second
+call succeeded. Recorded as issue #27 in the overnight log.
