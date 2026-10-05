@@ -578,3 +578,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Deleting `Global › User › sweep-agent` removed it at once from the tree, `shift+tab` and the agent picker, and its three records in the same revision (499→500), leaving another agent's records untouched. Re-creating the id starts clean.
   - The deletion was shown on `sweep-agent`, not the literal `deepseek-worker` (the cascade is keyed by level and agent; `agents.test.ts` covers it, 16 pass).
   - Log: 0 ERROR. Child stopped.
+- 18:11: Instructions T5 delegated (T136, `w-f068f55f90e583a8`, base `31623301b0`). Remaining: Monitor T4, which mostly overlaps R2's Basic team test (tree, `ctrl+t`, `ctrl+a`, `ctrl+d` stop). Its open parts are attach, resume, the empty state and Team/Tools staying separate.
