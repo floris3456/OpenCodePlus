@@ -207,10 +207,14 @@ export default Plugin.define({
       )
       yield* watchHostEvents(ctx, state)
       yield* watchSharedStore(ctx, state)
+      // Core runs warming hooks in registration order on one event, so Plus
+      // decides before the monitor records the warming fact: registered the
+      // other way round, the fact kept core's proposal ("on") after Plus had
+      // turned warming off.
+      yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
-      yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // One tick, one place: dead-run reconciliation (and later GC) runs here
       // and nowhere else, cancelled with the plugin scope. One pass per process
       // at a time, whichever workspace's loop wins the sweep permit.

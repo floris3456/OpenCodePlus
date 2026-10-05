@@ -7,14 +7,16 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
+import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
-import { Effect, Schema, Stream } from "effect"
+import { Effect, Exit, Schema, Scope, Stream } from "effect"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
 import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { monitorFact, watchMonitor } from "../src/monitor/plugin.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
-import { context } from "./harness.js"
-import { createState, decideWarmingFor } from "../src/index.js"
+import { context, fullContext } from "./harness.js"
+import plus, { createState, decideWarmingFor } from "../src/index.js"
+import { warmingStore } from "../src/warming.js"
 import { prefixDiff } from "../src/monitor/cache.js"
 
 const priorData = process.env.XDG_DATA_HOME
@@ -63,6 +65,48 @@ test("warmed is only a notification and leaves Plus warming state and settings u
   expect(JSON.stringify(state)).toBe(before)
   expect(event.settings).toEqual({ prompt: "ping", interval: 100, duration: 1000 })
 })
+
+// #26: core runs the warming hooks in registration order on one event and
+// uses the settings the last one leaves. The monitor's fact must record Plus's
+// decision, not core's proposal, so the real entrypoint decides first.
+test("the entrypoint's warming fact records Plus's decision: a chat switched off is stored as off", async () => {
+  await dataHome()
+  const project = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-monitor-warm-"))
+  roots.push(project)
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = {
+    ...fullContext({ directory: project, session: { hook: hookFn as never } }),
+    rpc: Object.assign(
+      () => {
+        throw new Error("unused rpc.client")
+      },
+      { register: () => Effect.succeed({ dispose: Effect.void, events: { emit: () => Effect.void } }) },
+    ),
+  } as Context
+  const sessionID = Session.ID.make("ses_warming_off")
+  await warmingStore.setChat(sessionID, "off")
+  const scope = await Effect.runPromise(Scope.make())
+  try {
+    await Effect.runPromise(plus.effect(ctx).pipe(Effect.provideService(Scope.Scope, scope)))
+    const event: SessionHooks["warming"] = {
+      sessionID,
+      agent: Agent.ID.make("build"),
+      model: modelRef("openai", "gpt-4o"),
+      phase: "activity",
+      kind: "primary",
+      since: 1000,
+      now: 1000,
+      settings: { prompt: "ping", interval: 60_000, duration: 300_000 },
+    }
+    for (const cb of hooks.warming ?? []) await Effect.runPromise(cb(event))
+    expect(event.settings).toBeUndefined()
+    const facts = ledgerAt().getContextFacts(sessionID).filter((fact) => fact.kind === "warming")
+    expect(facts.map((fact) => fact.detail)).toEqual([{ state: "off", phase: "activity", since: 1000 }])
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await warmingStore.setChat(sessionID, "default")
+  }
+}, 30000)
 
 test("delayed step A outcomes cannot consume request B; retries and both collectors are idempotent", async () => {
   const db = await ledger()
