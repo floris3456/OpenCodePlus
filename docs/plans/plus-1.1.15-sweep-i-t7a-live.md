@@ -29,7 +29,64 @@ PASS.
 
 ## Step 1 — layout (field rows and sources)
 
-_(pending)_
+Done: `/instructions` Enter, `@` (Global → `Global › Agents › OpenCode › build`), `→`
+(middle pane), `2` (Models → `… › Models › cliproxyapi/claude-opus-5-5@high`). Enter on the
+solid cursor row `cliproxyapi/claude-opus-5-5@high` opened the field group (footer became
+`enter open fields   ←→ close`).
+
+At **160×48** (Global, active inherited row):
+
+```
+▌▾ cliproxyapi/claude-opus-5-5@high                                active ◆
+▎    Model                               cliproxyapi/claude-opus-5-5@high ◆
+▎    Effort                                                          high ◆
+     Warming                                            32m · opencode.json
+     Ping every                                               4m · defaults
+     Keep-...romptThis is a keep-alive reques...with exactly: OK · built-in
+```
+
+At **80×24** (Global):
+
+```
+▌▾ cliproxyapi/claude-opus-5-5@high                                    active ◆
+▎    Model                                   cliproxyapi/claude-opus-5-5@high ◆
+▎    Effort                                                              high ◆
+     Warming                                                32m · opencode.json
+     Ping every                                                   4m · defaults
+     Keep-...romptThis is a keep-alive request....y with exactly: OK · built-in
+```
+
+Then `#` (Defaults → `Defaults › Agents › OpenCode › build › Models`), selected `Models` in
+the sidebar (`Down` put the cursor on the second row), `→`, and `→` opened
+`cliproxyapi/claude-opus-5-5@xhigh` into field rows:
+
+At **160×48** (Defaults):
+
+```
+▌▾ cliproxyapi/claude-opus-5-5@xhighfrom default build...arm 30m · every 4m
+▎    Model                              cliproxyapi/claude-opus-5-5@xhigh ◆
+▎    Effort                                                         xhigh ◆
+▎    Warming                                                          30m ◆
+▎    Ping every                                                        4m ◆
+     Keep-...romptThis is a keep-alive reques...with exactly: OK · built-in
+```
+
+At **80×24** (Defaults):
+
+```
+▌▾ cliproxyapi/claude-opus-5-5@xhigh   from default build · warm 30m · every 4m
+▎    Model                                  cliproxyapi/claude-opus-5-5@xhigh ◆
+▎    Effort                                                             xhigh ◆
+▎    Warming                                                              30m ◆
+▎    Ping every                                                            4m ◆
+     Keep-...romptThis is a keep-alive request....y with exactly: OK · built-in
+```
+
+The five rows are `Model`, `Effort`, `Warming`, `Ping every`, `Keep-...rompt` (Keep-alive
+prompt) in the same style for both the Global and the Defaults candidate, at both widths.
+Values are shown; a `◆` marks a value set at the current level, and an inherited value shows
+its source (`· opencode.json`, `· defaults`, `· built-in`). Both panes show the same field-row
+style. PASS.
 
 ## Step 2 — pickers
 
