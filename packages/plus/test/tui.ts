@@ -12,6 +12,7 @@ import { createSnapshotCache, type SnapshotCache } from "../src/tui/snapshot-cac
 import { Definition } from "../src/rpc.js"
 import type {
   AddMcpInput,
+  CategoryMutateInput,
   CreateAgentInput,
   CreateBaseInput,
   CreateInstructionInput,
@@ -32,6 +33,7 @@ import type {
   RuleAddInput,
   SetModelSettingsInput,
   Snapshot,
+  SnapshotModelRecord,
   TeamAddAgentInput,
 } from "../src/rpc.js"
 
@@ -46,6 +48,7 @@ export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
     ...(overrides?.entries === undefined ? {} : { entries: overrides.entries }),
     ...(overrides?.presets === undefined ? {} : { presets: overrides.presets }),
     ...(overrides?.teams === undefined ? {} : { teams: overrides.teams }),
+    ...(overrides?.categories === undefined ? {} : { categories: overrides.categories }),
     ...(overrides?.modelSettings === undefined ? {} : { modelSettings: overrides.modelSettings }),
     ...(overrides?.hostModels === undefined ? {} : { hostModels: overrides.hostModels }),
     ...(overrides?.listing === undefined ? {} : { listing: overrides.listing }),
@@ -145,6 +148,8 @@ export interface FakeRpc {
   readonly presetDeletes: PresetDeleteInput[]
   readonly linkSets: LinkSetInput[]
   readonly modelAdds: ModelAddInput[]
+  readonly modelRemoves: { level: string; agent: string | null; providerID: string; modelID: string; variant?: string }[]
+  readonly categoryMutates: CategoryMutateInput[]
   readonly modelSettingsSets: SetModelSettingsInput[]
   /** Every toast shown, in order. */
   readonly toasts: { variant?: string; message: string }[]
@@ -281,6 +286,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     presetDeletes: [],
     linkSets: [],
     modelAdds: [],
+    modelRemoves: [],
+    categoryMutates: [],
     toasts: [],
     promptInputs: [],
     selectInputs: [],
@@ -306,6 +313,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
   // flight, then releases it to observe the fresh snapshot replace the cached.
   const heldSnapshots: (() => void)[] = []
   let holdingSnapshots = options.holdSnapshots ?? false
+  let activeSnapshot: Snapshot | undefined
 
   function commands(): readonly TestKeymapCommand[] {
     return [...layers]
@@ -337,13 +345,53 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         "instructions.snapshot": async () => {
           fake.snapshotCalls++
           if (holdingSnapshots) await new Promise<void>((release) => heldSnapshots.push(release))
-          return nextSnapshot()
+          activeSnapshot = nextSnapshot()
+          return activeSnapshot
         },
-        "instructions.refresh": async () => nextSnapshot(),
+        "instructions.refresh": async () => {
+          activeSnapshot = nextSnapshot()
+          return activeSnapshot
+        },
         "instructions.mutate": async (input: MutateInput) => {
           fake.mutateInputs.push(input)
+          // A real mutate answers with the store's post-write snapshot. Derive
+          // it from the request records so tests can assert what actually
+          // changed on disk instead of a canned reply: a visible model in the
+          // previous snapshot with no surviving copy is an actual removal.
+          const previousModels = (activeSnapshot?.records ?? []).filter(
+            (record): record is SnapshotModelRecord => record.type === "model" && record.removed !== true,
+          )
+          for (const previous of previousModels) {
+            const survives = input.records.some(
+              (record) =>
+                record.type === "model" &&
+                record.level === previous.level &&
+                record.agent === previous.agent &&
+                record.providerID === previous.providerID &&
+                record.modelID === previous.modelID &&
+                (record.variant ?? "") === (previous.variant ?? "") &&
+                record.removed !== true,
+            )
+            if (!survives)
+              fake.modelRemoves.push({
+                level: previous.level,
+                agent: previous.agent,
+                providerID: previous.providerID,
+                modelID: previous.modelID,
+                ...(previous.variant === undefined ? {} : { variant: previous.variant }),
+              })
+          }
           if (options.mutateResult !== undefined) return options.mutateResult
-          return { ok: true, revision: 1, globalRevision: 1, snapshot: nextSnapshot() }
+          const next =
+            queue.length > 0
+              ? nextSnapshot()
+              : {
+                  ...(activeSnapshot ?? createSnapshot()),
+                  revision: (activeSnapshot?.revision ?? 1) + 1,
+                  records: input.records,
+                }
+          activeSnapshot = next
+          return { ok: true, revision: next.revision, globalRevision: next.globalRevision, snapshot: next }
         },
         "agent.create": async (input: CreateAgentInput) => {
           fake.agentCreates.push(input)
@@ -437,6 +485,11 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fake.modelAdds.push(input)
           fail("model.add")
           return { level: input.level, agent: input.agent, providerID: input.providerID, modelID: input.modelID }
+        },
+        "category.mutate": async (input: CategoryMutateInput) => {
+          fake.categoryMutates.push(input)
+          fail("category.mutate")
+          return { id: `category:${input.name ?? ""}`, name: input.name ?? "", revision: 1, globalRevision: 1 }
         },
         "modelSettings.set": async (input: SetModelSettingsInput) => {
           fake.modelSettingsSets.push(input)
@@ -695,6 +748,8 @@ export interface RenderRouteOptions {
   readonly cache?: SnapshotCache
   /** Holds every `instructions.snapshot` answer until releaseSnapshots(). */
   readonly holdSnapshots?: boolean
+  /** Extra RPC methods answered by the test. */
+  readonly rpc?: Readonly<Record<string, (input: never) => Promise<unknown>>>
 }
 
 export async function renderInstructionsRoute(options: RenderRouteOptions): Promise<TestFixture> {
@@ -711,6 +766,7 @@ export async function renderInstructionsRoute(options: RenderRouteOptions): Prom
     ...(options.storage === undefined ? {} : { storage: options.storage }),
     ...(options.cache === undefined ? {} : { cache: options.cache }),
     ...(options.holdSnapshots === undefined ? {} : { holdSnapshots: options.holdSnapshots }),
+    ...(options.rpc === undefined ? {} : { rpc: options.rpc }),
     render: (context, cache) =>
       createComponent(InstructionsRoute, {
         context,

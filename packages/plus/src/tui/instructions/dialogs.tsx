@@ -84,6 +84,23 @@ export function createInstructionsDialogs(
       await addKind(picked, node)
       return
     }
+    // Models carries a direct add (`add: "model"`): `a` there keeps the group
+    // context but first offers Model or Category. The generic picker above
+    // stays the fallback for rows with no direct add.
+    if (kind === "model") {
+      const picked = await context.ui.dialog.select<"model" | "category">({
+        title: "Add",
+        placeholder: "Select what to add",
+        options: [
+          { title: "Model", value: "model" },
+          { title: "Category", value: "category" },
+        ],
+      })
+      if (disposed) return
+      if (picked === undefined) return
+      await addKind(picked, node)
+      return
+    }
     await addKind(kind, node)
   }
 

@@ -148,8 +148,8 @@ export async function category(fixture: TestFixture, label: string): Promise<voi
     dispatch(fixture, "tab")
     await fixture.waitForFrame((frame) => footer(frame).includes("tab sidebar"))
   }
-  const labels = ["Settings", "Models", "Compaction", "Tools", "Base", "Skills", "System", "MCP"]
-  for (let step = 0; step < labels.length; step++) {
+  // Built-in labels come first, then user categories; cycle past both.
+  for (let step = 0; step < 24; step++) {
     if (breadcrumb(fixture.captureCharFrame()).includes(`› ${label}`)) return
     const before = breadcrumb(fixture.captureCharFrame())
     dispatch(fixture, "]")

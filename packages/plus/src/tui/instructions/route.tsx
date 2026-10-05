@@ -27,7 +27,7 @@ import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { renameCandidateOf } from "./rename.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
-import { ancestry, canExpand, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, userCategoryName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, canExpand, CATEGORY, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, userCategoryName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -914,7 +914,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     const ownerIndex = chain.findIndex((entry, at) => {
       const next = chain[at + 1]
-      return next !== undefined && next.kind === "group" && /:(settings|models|compaction|tools|base|system|mcp)$/.test(next.id)
+      return next !== undefined && next.kind === "group" && CATEGORY.test(next.id)
         && (entry.kind === "agent" || entry.kind === "team" || (entry.kind === "group" && chain[at - 1]?.kind === "root"))
     })
     const node = chain[chain.length - 1]
@@ -1021,15 +1021,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function remove() {
     const node = current()
     if (node === undefined) return
+    // Only an explicit category header (the row a user category leads its own
+    // list with) targets the category. Content rows and sidebar rows keep
+    // their own delete path: a selected category never hijacks d.
     if (userCategoryName(node) !== undefined) {
       void dialogs.deleteCategory(node)
-      return
-    }
-    // The cursor may be in the sidebar while a user category is selected: d
-    // then deletes that category rather than the sidebar row.
-    const category = workspace().category
-    if (userCategoryName(category) !== undefined) {
-      void dialogs.deleteCategory(category)
       return
     }
     void state.remove(node)
@@ -1430,7 +1426,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
     if (node?.kind === "item" && node.address !== undefined && node.address.section === null) hints.push(["m", "move"])
-    if (renameCandidateOf(node, state.snapshot())?.target !== undefined || userCategoryName(workspace().category) !== undefined) hints.push(["R", "rename"])
+    if (renameCandidateOf(node, state.snapshot())?.target !== undefined || userCategoryName(workspace().category) !== undefined) hints.push(["shift+r", "rename"])
     if (node?.actions?.remove === true || userCategoryName(node) !== undefined) hints.push(["d", "delete"])
     if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
     if (node?.actions?.split === true) hints.push(["s", "split"])
@@ -1519,7 +1515,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           ? [{ bind: "m", title: "Move to a category", group: "Instructions", run: moveToCategory }]
           : []),
         {
-          bind: "shift+r,R",
+          bind: "shift+r",
           title: "Rename",
           group: "Instructions",
           run: () => void renameCurrent(),

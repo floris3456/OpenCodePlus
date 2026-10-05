@@ -25,7 +25,7 @@ export function isLevelId(value: unknown): value is LevelId {
   return LEVELS.some((level) => level.id === value)
 }
 
-const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$|:category(:[^:]*)?$/
+export const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$|:category(:[^:]*)?$/
 
 /** A user category's name when `node` is one of its group rows (T8), else undefined. */
 export function userCategoryName(node: TreeNode | undefined): string | undefined {
