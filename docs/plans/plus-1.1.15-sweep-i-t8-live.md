@@ -371,7 +371,41 @@ That matches the display model — a category lists the row in every owner list 
 
 ## L13 — documented in `teaching.ts` and the skill text
 
-Pending.
+Done. `packages/plus/src/instructions/teaching.ts:65` has the `## Categories` paragraph:
+
+```
+`create({ kind: "category", name })` adds a user category after Settings · Models · Compaction ·
+Tools · Base · System · MCP; it is a tab for every owner at every level. `set({ id, category:
+"<name>" | null })` moves the whole item row (with its children) into that category or back to
+its home category. `delete({ id: "category:<slug>", confirm: true })` deletes a category and
+returns its rows home; the id is printed by `create` and likewise accepts a category's tree row
+id. `list({ where: "category:<name>" })` lists the rows in one category, in every owner.
+Assignments are display only: toggling, editing, inheritance and enforcement never change.
+```
+
+and `teachingContent` (line 17) names categories in the tool-surface summary. In the live chat
+the agent loaded `skill instructions-tools` (`Skill "instructions-tools"`) and quoted the
+`## Categories` section and the structural-key list back verbatim (screen quoted above); the
+skill text is `teachingSkillContent` from this worktree's build.
+
+Focused tests from `packages/plus`:
+
+```
+bun test test/teaching.test.ts test/categories.test.ts
+(pass) tools create, set, list and delete a category [131.98ms]
+(pass) the skill content covers the tool surface
+(pass) every filter expression in the skill parses in the real query engine
+… 16 pass, 0 fail, 143 expect() calls
+```
+
+`test/categories.test.ts` exercises create/set/list/delete directly; `teaching.test.ts` pins the
+skill content and parses every `where:` expression in it. PASS.
+
+Note (recorded, not a failure): the live System › OpenCodePlus row in this dev home showed the
+release-copied instruction file `$DEV/config/opencode/opencodeplus/instructions/OPENCODEPLUS.md`,
+which still lacks the `categories` mention (the dev script copies the release's instructions on
+first start). The build's own skill content is correct, as quoted. This is the dev-home seed, not
+this worktree's `teaching.ts`.
 
 ## Server log
 
