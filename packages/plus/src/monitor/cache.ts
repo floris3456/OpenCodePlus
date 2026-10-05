@@ -425,6 +425,19 @@ function causeStep(
     last !== undefined && (last.provider !== r.provider || last.model !== r.model || last.variant !== r.variant)
   const agent = last !== undefined && last.agent !== r.agent
   const cold = !previous || compacted || switched || agent
+  // A request still running has no usage yet. Judging its zero cache read
+  // against the expected prefix called every in-flight step a miss, so an
+  // agent querying its own chat always saw its current step as one.
+  if (!cold && r.status === "running")
+    return {
+      accounts,
+      instructions,
+      reverts,
+      verdict: "none",
+      cause: "unknown",
+      confidence: "unknown",
+      evidence: "Request still running; no usage reported yet",
+    }
 
   const reported =
     r.cacheReadTokens > 0 ||

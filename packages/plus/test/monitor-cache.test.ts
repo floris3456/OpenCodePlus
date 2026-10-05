@@ -457,7 +457,9 @@ test("a completion written by a second handle invalidates the first handle's cac
 
   const read = () => queryMonitor(db, { scope: "session", sessionID: "two", view: "cache", id: "open" }, { now: 3000 })
   const openRow = read().requests?.find((r) => r.id === "open")
-  expect(openRow).toMatchObject({ input: 0, cacheRead: 0, verdict: "miss" })
+  // #28: a running request has no usage yet, so it is not judged a miss.
+  expect(openRow).toMatchObject({ input: 0, cacheRead: 0, verdict: "none", missTokens: 0, evidence: "Request still running; no usage reported yet" })
+  expect(read().totals.misses).toBe(0)
 
   // The other handle/process completes the existing row: the first handle's
   // own total_changes never moves, so only data_version can reveal it.
@@ -523,7 +525,9 @@ test("in-place request completion invalidates the cached query-time analysis", a
   const read = () =>
     queryMonitor(db, { scope: "session", sessionID: "completion", view: "cache", id: "open" }, { now: 3000 })
   const openRow = read().requests?.find((r) => r.id === "open")
-  expect(openRow).toMatchObject({ input: 0, cacheRead: 0, verdict: "miss" })
+  // #28: a running request has no usage yet, so it is not judged a miss.
+  expect(openRow).toMatchObject({ input: 0, cacheRead: 0, verdict: "none", missTokens: 0, evidence: "Request still running; no usage reported yet" })
+  expect(read().totals.misses).toBe(0)
   // A second poll with no write still reads the cached analysis.
   expect(read().requests?.find((r) => r.id === "open")).toEqual(openRow)
 
