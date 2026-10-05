@@ -340,15 +340,15 @@ the row footer both say so); `r` alone is reset. PASS.
 
 ## Server log — every ERROR and WARN line
 
-`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **225 lines, 1
-ERROR, 7 WARN.** Full lines:
+`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **278 lines, 1
+ERROR, 8 WARN.** Full lines:
 
 **The one ERROR** (my own chat attempt while the session was briefly on the
 `Scout` team member, whose `claude-fable-5-1` has no provider route in this dev
-home — a test-setup error, not a rename failure):
+home — a test-setup error, not a rename failure). Full line:
 
 ```
-timestamp=2026-10-05T16:02:32.905Z level=ERROR run=a6e9eeef message="Failed to drain Session" cause="AI.Error: unknown provider for model claude-fable-5-1 ..." role=server sessionID=ses_ef3328fd6ffeR3jnwgXNQrlvRE
+timestamp=2026-10-05T16:02:32.905Z level=ERROR run=a6e9eeef message="Failed to drain Session" cause="AI.Error: unknown provider for model claude-fable-5-1\n    at httpFailure (.../packages/ai/src/route/executor.ts:131:10)\n    at <anonymous> (.../packages/ai/src/route/executor.ts:108:19)\n    at SessionStep.attempt (.../packages/core/src/session/runner/llm.ts:245:38)\n    at SessionStep.attempt (definition) (.../packages/core/src/session/runner/step.ts:72:26)\n    at SessionRunner.runStep (.../packages/core/src/session/runner/llm.ts:191:29)\n    at SessionRunner.runStep (definition) (.../packages/core/src/session/runner/llm.ts:206:28)\n    at SessionRunner.drain (.../node_modules/.bun/effect@4.0.0-rc.112/node_modules/effect/dist/internal/effect.js:462:98)\n    at SessionRunner.drain (definition) (.../packages/core/src/session/runner/llm.ts:54:26)\n    at ServerProcess.start (.../packages/cli/src/server-process.ts:85:29)\n    at ServerProcess.start (definition) (.../packages/server/src/process.ts:46:29) {\n  [cause]: AI.Error.InvalidRequest: unknown provider for model claude-fable-5-1\n      at classifyProviderFailure (.../packages/ai/src/provider-error.ts:238:69)\n      at httpFailure (.../packages/ai/src/route/executor.ts:132:13)\n      at <anonymous> (.../packages/ai/src/route/executor.ts:108:19)\n}" role=server sessionID=ses_ef3328fd6ffeR3jnwgXNQrlvRE
 ```
 
 The retry after switching to the user agent `t6-palette` (model
@@ -366,14 +366,19 @@ timestamp=2026-10-05T15:28:03.771Z level=WARN run=a6e9eeef message="executor-con
 timestamp=2026-10-05T15:28:03.771Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t130dc70-20261005-1726/.opencode type=directory http.span=70 role=server
 ```
 
-**One further WARN** is a direct consequence of the rename contract (session
+**Two further WARNs** are a direct consequence of the rename contract (session
 history keeps the old name): after `t6-palette` was renamed to `t6-history`, the
-still-open chat session was pinned to the old id, so a warming ping could not
-find the agent under its new name:
+still-open chat session stayed pinned to the old id, so its warming pings could
+not find the agent under its new name:
 
 ```
 timestamp=2026-10-05T16:09:41.463Z level=WARN run=a6e9eeef message="failed to warm session" sessionID=ses_ef3328fd6ffeR3jnwgXNQrlvRE cause="Cause([Fail(Session.AgentNotFoundError: Agent not found: \"t6-palette\")])" role=server
+timestamp=2026-10-05T16:13:41.473Z level=WARN run=a6e9eeef message="failed to warm session" sessionID=ses_ef3328fd6ffeR3jnwgXNQrlvRE cause="Cause([Fail(Session.AgentNotFoundError: Agent not found: \"t6-palette\")])" role=server
 ```
+
+These two WARNs are expected given the contract: session history intentionally
+keeps the old name, so a warming ping addressed to a session still pinned to the
+old id finds no such agent.
 
 ## Result
 
