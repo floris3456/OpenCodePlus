@@ -3,7 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
-import { formatClock, formatCost, formatTokens, pad } from "../format.js"
+import { formatClock, formatCost, formatCostLabel, formatTokens, pad } from "../format.js"
 
 export interface OverviewTabProps {
   readonly context: Plugin.Context
@@ -128,7 +128,7 @@ export function OverviewTab(props: OverviewTabProps) {
                     {`#${index() + 1} [${miss.verdict.toUpperCase()}] ${miss.cause ?? "miss"}${miss.confidence ? ` (${miss.confidence})` : ""}: ${miss.evidence ?? "cache miss"}`}
                   </text>
                   <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
-                    {`   missed ${formatTokens(miss.missTokens ?? miss.input)} · ${formatCost(miss.missCost ?? miss.cost) ?? "$0.00"} · ${miss.model ?? miss.agent ?? ""}`}
+                    {`   missed ${formatTokens(miss.missTokens ?? miss.input)} · ${formatCostLabel(miss.missCost)} · ${miss.model ?? miss.agent ?? ""}`}
                   </text>
                 </box>
               )}

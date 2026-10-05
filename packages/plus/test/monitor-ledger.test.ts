@@ -1,166 +1,205 @@
-// The durable ledger's own boundary: schema v2 migration from a real v1 file,
-// idempotent writes across instances, retention pruning, and the revision seam
-// that invalidates query-time analysis after an in-place update.
+// Actual-ledger query regressions for the Monitor page controls (#7): scope,
+// filters, top tools and id detail, all read from a real temporary monitor.db
+// through queryMonitor, never a mock. Raw ledger/attribution coverage lives in
+// monitor.test.ts; this file owns the query seams the page depends on.
 import { afterEach, expect, test } from "bun:test"
-import fs from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
-import { Database } from "bun:sqlite"
-import { createLedger, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
+import type { SessionFacts } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
-const dirs: string[] = []
-afterEach(async () => {
-  await Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })))
-})
-
-async function tempFile(): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-monitor-ledger-"))
-  dirs.push(dir)
-  return path.join(dir, "monitor.db")
+function ids(report: ReturnType<typeof queryMonitor>): string[] {
+  return report.feed.map((entry) => entry.callID).sort()
 }
 
-// An older monitor.db: the pre-migration shape, missing the columns later
-// releases added (session.team, request.finish, the fingerprint response ids).
-// createLedger must add them in place and keep every row readable.
-function writeOlder(file: string): void {
-  const db = new Database(file, { create: true })
-  db.exec(`
-    create table session (id text primary key, parent_id text, agent text, title text, directory text, run_id text, role text, first_seen integer not null, last_seen integer not null);
-    create table step (session_id text not null, message_id text not null, kind text not null, idx integer not null, epoch integer not null, agent text, provider text, model text, variant text, config text, started integer not null, ended integer, finish text, input integer not null default 0, output integer not null default 0, reasoning integer not null default 0, cache_read integer not null default 0, cache_write integer not null default 0, cost real not null default 0, primary key (session_id, message_id));
-    create table call (session_id text not null, call_id text not null, message_id text not null, parent_call text, idx integer not null, epoch integer not null, agent text, model text, config text, tool text not null, target text, status text not null, error text, started integer not null, ended integer, input_chars integer not null default 0, result_chars integer not null default 0, call_tokens integer not null default 0, result_tokens integer not null default 0, measured integer not null default 0, primary key (session_id, call_id));
-    create table epoch (session_id text not null, epoch integer not null, last_idx integer not null, primary key (session_id, epoch));
-    create table mark (id integer primary key autoincrement, at integer not null, label text not null);
-    create table meta (key text primary key, value text not null);
-    create table request (id text primary key, session_id text not null, kind text not null, is_title integer not null default 0, agent text, provider text, model text, variant text, started integer not null, ended integer, duration integer, status text not null default 'completed', error text, input_tokens integer not null default 0, output_tokens integer not null default 0, reasoning_tokens integer not null default 0, cache_read_tokens integer not null default 0, cache_write_tokens integer not null default 0, cost real not null default 0, message_id text, created integer not null);
-    create table request_fingerprint (request_id text primary key, session_id text not null, protocol text not null, system_parts text not null default '[]', tools text not null default '[]', options_hash text not null default '', options_keys text not null default '{}', message_prefixes text not null default '[]', cache_key text, cache_control text, body_hash text not null, created integer not null);
-    create table context_fact (id integer primary key autoincrement, session_id text not null, at integer not null, kind text not null, detail text not null default '{}', unique (session_id, at, kind, detail));
-  `)
-  db.query("insert into session (id, agent, title, first_seen, last_seen) values (?, ?, ?, ?, ?)").run(
-    "ses_old",
-    "build",
-    "Old chat",
-    1,
-    1,
-  )
-  db.query(
-    "insert into step (session_id, message_id, kind, idx, epoch, agent, provider, model, started, ended, finish, input, output, cache_read) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run("ses_old", "m1", "step", 0, 0, "build", "p", "m1", 1, 2, "stop", 100, 10, 50)
-  db.query("insert into request (id, session_id, kind, started, created) values (?, ?, ?, ?, ?)").run(
-    "req_old",
-    "ses_old",
-    "step",
-    1,
-    1,
-  )
-  db.query(
-    "insert into request_fingerprint (request_id, session_id, protocol, body_hash, created) values (?, ?, ?, ?, ?)",
-  ).run("req_old", "ses_old", "anthropic", "bodyhash", 1)
-  db.query("insert into meta (key, value) values ('schema', '1')").run()
-  db.close()
+// Root build chat -> host child -> delegated team run, plus an unrelated chat.
+// The same shape monitor.test.ts uses, so scope semantics are pinned twice.
+async function tree() {
+  const db = await ledger()
+  const clock = { now: 1 }
+  const resolve = async (id: string): Promise<SessionFacts | undefined> =>
+    id === "ses_run" ? { id, parentID: "ses_child", runID: "run_1", role: "implementer" } : undefined
+  const collector = collect(db, clock, { resolve })
+  const root = script("ses_root", clock)
+  root.created({ agent: "build" })
+  root.step("r1")
+  root.call("r1", "c_root", "read", { path: "root.ts" })
+  root.ok("r1", "c_root", "a".repeat(80))
+  root.end("r1", "stop", usage(100, 10, 400))
+  const child = script("ses_child", clock)
+  child.created({ agent: "general", parentID: "ses_root" })
+  child.step("k1", "general", { id: "m", providerID: "q" })
+  child.call("k1", "c_child", "grep", { pattern: "needle" })
+  child.ok("k1", "c_child", "b".repeat(40))
+  child.end("k1", "stop", usage(50, 5, 100))
+  const run = script("ses_run", clock)
+  run.created({ agent: "implementer", location: { directory: "/work/worktree" } })
+  run.step("w1", "implementer")
+  run.call("w1", "c_run", "edit", { path: "run.ts" })
+  run.ok("w1", "c_run", "c".repeat(20))
+  run.end("w1", "stop", usage(20, 3, 0))
+  const other = script("ses_other", clock)
+  other.created({ agent: "plan" })
+  other.step("o1", "plan")
+  other.call("o1", "c_other", "shell", { command: "git status" })
+  other.ok("o1", "c_other", "d".repeat(10))
+  other.end("o1", "stop", usage(10, 2, 0))
+  ;[...root.events, ...child.events, ...run.events, ...other.events].forEach((event) => collector.observe(event))
+  await collector.settle()
+  return { db, clock, collector }
 }
 
-test("an older monitor.db migrates in place and keeps its rows readable", async () => {
-  const file = await tempFile()
-  writeOlder(file)
-  const migrated = createLedger(file)
-  try {
-    // The added columns exist; nothing the old file stored was dropped.
-    expect(
-      migrated.db.query<{ name: string }, []>("pragma table_info(session)").all().some((c) => c.name === "team"),
-    ).toBe(true)
-    expect(
-      migrated.db.query<{ name: string }, []>("pragma table_info(request)").all().some((c) => c.name === "finish"),
-    ).toBe(true)
-    expect(
-      migrated.db
-        .query<{ name: string }, []>("pragma table_info(request_fingerprint)")
-        .all()
-        .some((c) => c.name === "response_id"),
-    ).toBe(true)
-    // The old step and request are still readable through the real query path.
-    const report = queryMonitor(migrated, { scope: "all", view: "steps" }, { now: 10 })
-    expect(report.totals.steps).toBe(1)
-    expect(report.totals.input).toBe(100)
-    expect(report.requests?.find((request) => request.id === "req_old")).toMatchObject({ sessionID: "ses_old" })
-    expect(migrated.getFingerprint("req_old")?.bodyHash).toBe("bodyhash")
-    // The schema marker advanced.
-    expect(migrated.db.query<{ value: string }, []>("select value from meta where key = 'schema'").get()?.value).toBe("2")
-  } finally {
-    migrated.close()
-  }
+test("session scope is exactly one chat; tree lifts to the topmost root; project spans trees", async () => {
+  const { db, clock } = await tree()
+  const now = clock.now
+  expect(ids(queryMonitor(db, { scope: "session", sessionID: "ses_root", feed: 20 }, { now }))).toEqual(["c_root"])
+  expect(ids(queryMonitor(db, { scope: "session", sessionID: "ses_child", feed: 20 }, { now }))).toEqual(["c_child"])
+  // From the delegated run, tree reaches the host child and its root and siblings.
+  expect(ids(queryMonitor(db, { scope: "tree", sessionID: "ses_run", feed: 20 }, { now }))).toEqual([
+    "c_child",
+    "c_root",
+    "c_run",
+  ])
+  // A session scope with no session reads nothing, never everything.
+  expect(ids(queryMonitor(db, { scope: "session", feed: 20 }, { now }))).toEqual([])
+  // Project needs a directory; without one it fails closed.
+  expect(ids(queryMonitor(db, { scope: "project", feed: 20 }, { now }))).toEqual([])
+  expect(ids(queryMonitor(db, { scope: "project", feed: 20 }, { directory: "/work/project", now }))).toEqual([
+    "c_child",
+    "c_other",
+    "c_root",
+    "c_run",
+  ])
+  // Everything reads every session.
+  expect(ids(queryMonitor(db, { scope: "all", feed: 20 }, { now }))).toEqual([
+    "c_child",
+    "c_other",
+    "c_root",
+    "c_run",
+  ])
 })
 
-test("two handles on one file share the same durable facts and the revision tracks the other's writes", async () => {
-  const file = await tempFile()
-  const first = createLedger(file)
-  const second = createLedger(file)
-  try {
-    const clock = { now: 10 }
-    const s = script("ses_shared", clock)
-    s.step("m1")
-    s.end("m1", "stop", usage(10, 5, 100))
-    collect(first, clock).observe(s.events[0]!)
-    collect(first, clock).observe(s.events[1]!)
-    // The second handle reads the committed step.
-    const before = queryMonitor(second, { scope: "all", view: "steps" }, { now: 20 })
-    expect(before.totals.steps).toBe(1)
-    // A write through the first handle advances the second's revision, so a
-    // cached analysis keyed on it cannot serve the stale value.
-    const revision = second.revision()
-    const t = script("ses_shared", clock)
-    t.step("m2")
-    t.end("m2", "stop", usage(10, 5, 200))
-    collect(first, clock).observe(t.events[0]!)
-    collect(first, clock).observe(t.events[1]!)
-    expect(second.revision()).not.toBe(revision)
-    const after = queryMonitor(second, { scope: "all", view: "steps" }, { now: 30 })
-    expect(after.totals.steps).toBe(2)
-  } finally {
-    first.close()
-    second.close()
-  }
+test("agent, tool and model filters narrow calls and steps; facets stay unfiltered", async () => {
+  const { db, clock } = await tree()
+  const now = clock.now
+  const byAgent = queryMonitor(db, { scope: "all", agents: ["general"], feed: 20 }, { now })
+  expect(ids(byAgent)).toEqual(["c_child"])
+  expect(byAgent.totals).toMatchObject({ calls: 1, steps: 1, input: 50 })
+  // Facets describe the scope, not the active filters.
+  expect([...byAgent.facets.agents].sort()).toEqual(["build", "general", "implementer", "plan"])
+
+  const byTool = queryMonitor(db, { scope: "all", tools: ["edit"], feed: 20 }, { now })
+  expect(ids(byTool)).toEqual(["c_run"])
+  const byModel = queryMonitor(db, { scope: "all", models: ["q/m"], feed: 20 }, { now })
+  expect(ids(byModel)).toEqual(["c_child"])
+  expect(byModel.facets.models).toContain("q/m")
 })
 
-test("writing the same request twice is idempotent and prune keeps in-window rows", async () => {
-  const db: Ledger = await ledger()
+test("a failed-only filter keeps failed calls and their step totals", async () => {
+  const db = await ledger()
   const clock = { now: 1_000 }
-  const s = script("ses_idem", clock)
+  const collector = collect(db, clock)
+  const s = script("ses_err", clock)
+  s.created({ agent: "build" })
   s.step("m1")
   s.call("m1", "c1", "read", { path: "a" })
-  s.ok("m1", "c1", "z".repeat(200))
-  s.end("m1", "stop", usage(10, 5, 100))
-  const collector = collect(db, clock)
-  // Observing the same event stream twice writes the same rows.
+  s.ok("m1", "c1", "x".repeat(30))
+  s.call("m1", "c2", "shell", { command: "git status" })
+  s.fail("m1", "c2", "exit 1")
+  s.end("m1", "stop", usage(30, 4))
   s.events.forEach((event) => collector.observe(event))
-  const rows = () => ({
-    steps: db.db.query("select session_id, message_id, idx, input, output from step order by idx").all(),
-    calls: db.db.query("select session_id, call_id, tool, status, result_tokens from call order by call_id").all(),
-  })
-  const once = rows()
-  s.events.forEach((event) => collector.observe(event))
-  expect(rows()).toEqual(once)
-
-  clock.now = 100_000
-  const later = script("ses_idem", clock)
-  later.step("m2")
-  later.end("m2", "stop", usage(1, 1))
-  later.events.forEach((event) => collector.observe(event))
-  db.prune(50_000)
-  expect(db.db.query("select message_id from step order by idx").all()).toEqual([{ message_id: "m2" }])
-  expect(db.db.query("select count(*) as c from call").get()).toEqual({ c: 0 })
+  const now = clock.now
+  const failed = queryMonitor(db, { scope: "all", errors: true, feed: 20 }, { now })
+  expect(failed.feed.map((entry) => entry.callID)).toEqual(["c2"])
+  expect(failed.totals.errors).toBe(1)
+  const all = queryMonitor(db, { scope: "all", feed: 20 }, { now })
+  expect(ids(all)).toEqual(["c1", "c2"])
+  expect(all.totals.errors).toBe(1)
 })
 
-test("ledgerAt returns one shared handle per file and close forgets it", async () => {
-  const file = await tempFile()
-  const a = ledgerAt(file)
-  const b = ledgerAt(file)
-  expect(a).toBe(b)
-  a.close()
-  const c = ledgerAt(file)
-  expect(c).not.toBe(a)
-  c.close()
+test("the overview top tools are tool-grouped and independent of the requested grouping", async () => {
+  const db = await ledger()
+  const clock = { now: 1_000 }
+  const collector = collect(db, clock)
+  const s = script("ses_top", clock)
+  s.created({ agent: "build" })
+  s.step("m1")
+  s.call("m1", "c1", "read", { path: "a.ts" })
+  s.call("m1", "c2", "read", { path: "b.ts" })
+  s.call("m1", "c3", "shell", { command: "bun test" })
+  s.at(1_000)
+  s.ok("m1", "c1", "a".repeat(3_000))
+  s.at(2_000)
+  s.ok("m1", "c2", "b".repeat(1_000))
+  s.at(3_000)
+  s.ok("m1", "c3", "c".repeat(500))
+  s.end("m1", "stop", usage(1_000, 100, 9_000))
+  s.events.forEach((event) => collector.observe(event))
+  const now = clock.now
+  // Grouping by target, the table keeps target rows but the overview top tools
+  // are the tool-level groups, ordered by carried tokens.
+  const report = queryMonitor(
+    db,
+    { scope: "session", sessionID: "ses_top", view: "overview", group: "target", sort: "tokens", top: 20, feed: 0 },
+    { now },
+  )
+  expect(report.groups.map((group) => group.key)).toEqual(["read a.ts", "read b.ts", "shell bun test"])
+  expect(report.topTools?.map((group) => group.key)).toEqual(["read", "shell"])
+  expect(report.topTools?.every((group) => group.key === group.label)).toBe(true)
+  // topTools is an overview section only.
+  expect(queryMonitor(db, { scope: "session", sessionID: "ses_top", view: "tools" }, { now }).topTools).toBeUndefined()
+})
+
+test("id returns detail only for the requested request and respects scope", async () => {
+  const { db, clock } = await tree()
+  const now = clock.now
+  const detail = queryMonitor(
+    db,
+    { scope: "tree", sessionID: "ses_run", view: "cache", id: "req_child" },
+    { now },
+  )
+  // No such request id in this ledger: no detail is invented.
+  expect(detail.detail).toBeUndefined()
+  // A real step request id resolves to its own detail within scope.
+  const first = queryMonitor(db, { scope: "session", sessionID: "ses_root", view: "steps" }, { now })
+  const requestID = first.requests?.[0]?.id
+  expect(requestID).toBeDefined()
+  const withDetail = queryMonitor(
+    db,
+    { scope: "session", sessionID: "ses_root", view: "steps", id: requestID },
+    { now },
+  )
+  expect(withDetail.detail?.request.id).toBe(requestID)
+  expect(withDetail.detail?.request.sessionID).toBe("ses_root")
+  // Out of scope, the same id yields no detail.
+  const other = queryMonitor(db, { scope: "session", sessionID: "ses_other", view: "steps", id: requestID }, { now })
+  expect(other.detail).toBeUndefined()
+})
+
+test("missesOnly narrows the request list without changing totals; titles are excluded by default", async () => {
+  const { db, clock } = await tree()
+  const now = clock.now
+  const all = queryMonitor(db, { scope: "all", view: "cache" }, { now })
+  const missesOnly = queryMonitor(db, { scope: "all", view: "cache", missesOnly: true }, { now })
+  expect(missesOnly.totals).toEqual(all.totals)
+  expect((missesOnly.requests ?? []).every((request) => request.verdict === "miss" || request.verdict === "partial")).toBe(
+    true,
+  )
+})
+
+test("a ping is listed with its kind and its usage survives the query", async () => {
+  const db = await ledger()
+  db.session({ id: "ses_ping", agent: "build" }, 1)
+  db.requestStarted({ id: "req_ping", sessionID: "ses_ping", kind: "ping", started: 100, agent: "build", provider: "p", model: "m" })
+  db.requestEnded("req_ping", {
+    ended: 200,
+    status: "completed",
+    usage: { input: 0, output: 4, reasoning: 0, cacheRead: 8_000, cacheWrite: 0, cost: 0.002 },
+  })
+  const report = queryMonitor(db, { scope: "session", sessionID: "ses_ping", view: "cache" }, { now: 300 })
+  const ping = report.requests?.find((request) => request.id === "req_ping")
+  expect(ping).toMatchObject({ kind: "ping", cacheRead: 8_000, output: 4, cost: 0.002 })
+  expect(report.totals.pings).toBe(1)
+  expect(report.totals.pingCost).toBeCloseTo(0.002)
 })

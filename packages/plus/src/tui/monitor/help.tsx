@@ -59,8 +59,8 @@ export function MonitorHelp(props: HelpProps) {
       title: "Sessions Tab",
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select session in delegation tree" },
-        { key: "Enter", desc: "Scope monitor to this session" },
-        { key: "space / t", desc: "Scope monitor to this session's tree" },
+        { key: "Enter", desc: "Scope monitor to this session (temporary; ⌫ restores)" },
+        { key: "space", desc: "Scope monitor to this session's tree (temporary; ⌫ restores)" },
       ],
     },
     {

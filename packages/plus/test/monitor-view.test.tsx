@@ -357,6 +357,71 @@ test("S opens a session picker over every session from any tab", async () => {
   }
 })
 
+test("Sessions Enter and space are temporary drills that restore scope and filters on Esc", async () => {
+  const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const sessions = [
+    { ...base.sessions![0]!, sessionID: "ses_chat", rootID: "ses_chat", depth: 0 },
+    {
+      ...base.sessions![0]!,
+      sessionID: "ses_other",
+      rootID: "ses_other",
+      depth: 0,
+      title: "Other chat",
+    },
+  ]
+  const saved: MonitorSettings = {
+    ...defaultSettings,
+    tab: "sessions",
+    scope: "project",
+    agent: "build",
+    filterText: "chat",
+  }
+  const { fixture, queries } = await render(db, {
+    width: 120,
+    height: 40,
+    settings: saved,
+    settingsKey: "monitor",
+    customReport: (input) =>
+      input.view === "sessions"
+        ? { ...base, sessions }
+        : { ...base, scope: input.scope, sessions },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Session / Role"))
+    expect(queries[0]).toMatchObject({ scope: "project", view: "sessions" })
+
+    // Enter scopes to the selected session as a temporary drill.
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((text) => text.includes("drilled 1"))
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    // The stored preference and filters are untouched.
+    const storedAfterEnter = (fixture.storeValue("monitor") as { settings: MonitorSettings }).settings
+    expect(storedAfterEnter).toMatchObject({ scope: "project", agent: "build", filterText: "chat" })
+
+    // space scopes to that session's tree as another temporary drill.
+    dispatch(fixture, "space")
+    await fixture.waitForFrame((text) => text.includes("drilled 2"))
+    expect(queries.at(-1)).toMatchObject({ scope: "tree", sessionID: "ses_chat" })
+
+    // Esc pops one level at a time; the original project scope and filters return.
+    dispatch(fixture, "escape")
+    await fixture.waitForFrame((text) => text.includes("drilled 1"))
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    dispatch(fixture, "escape")
+    await fixture.waitForFrame((text) => !text.includes("drilled"))
+    expect(queries.at(-1)).toMatchObject({ scope: "project" })
+    expect(queries.at(-1)?.agents).toEqual(["build"])
+    expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings).toMatchObject({
+      scope: "project",
+      agent: "build",
+      filterText: "chat",
+    })
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("the narrow Sessions layout drops columns instead of clipping", async () => {
   const db = await seeded()
   const { fixture } = await render(db, {
@@ -567,6 +632,124 @@ test("the Cache selection scrolls its full row into view", async () => {
     const frame = await fixture.waitForFrame((text) => text.includes("row-19"))
     // The selected full row scrolled into view rather than staying above the fold.
     expect(frame).toContain("row-19")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("every total metric stays visible and labelled at 80, 100 and 160 columns", async () => {
+  const db = await seeded()
+  const totals: Plus.MonitorTotals = {
+    steps: 4,
+    calls: 6,
+    errors: 1,
+    running: 0,
+    input: 21_400,
+    output: 376,
+    reasoning: 120,
+    cacheRead: 30_800,
+    cacheWrite: 15_800,
+    cost: 0.09,
+    callTokens: 273,
+    resultTokens: 464,
+    carried: 502,
+    requests: 5,
+    pings: 2,
+    pingCost: 0.006,
+    misses: 1,
+    missTokens: 18_000,
+    missCost: 0.027,
+    hitRate: 0.59,
+  }
+  const labels = [
+    "reqs:",
+    "steps:",
+    "in:",
+    "read:",
+    "write:",
+    "out:",
+    "reason:",
+    "hit rate:",
+    "misses:",
+    "miss cost:",
+    "pings:",
+    "cost:",
+  ]
+  for (const width of [80, 100, 160]) {
+    const { fixture } = await render(db, {
+      width,
+      height: 40,
+      settings: { ...defaultSettings, tab: "overview" },
+      customReport: () => ({ ...contractFixtureReport(NOW), totals }),
+    })
+    try {
+      const frame = await fixture.waitForFrame((text) => text.includes("reqs: 5"))
+      const totalsBlock = frame
+        .split("\n")
+        .filter((line) => /^(reqs|steps|in|read|write|out|reason|hit rate|misses|miss cost|pings|cost):/.test(line.trim()))
+        .join("\n")
+      labels.forEach((label) => expect(totalsBlock).toContain(label))
+      frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
+      // Known-zero and non-zero values stay visible, never dropped.
+      expect(totalsBlock).toContain("reason: 120")
+      expect(totalsBlock).toContain("pings: 2")
+      expect(totalsBlock).toContain("write: 15.8k")
+    } finally {
+      fixture.destroy()
+    }
+  }
+})
+
+test("known zero, known positive and omitted miss cost each render distinctly", async () => {
+  const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const omitted: Plus.MonitorTotals = { ...base.totals, misses: 1 }
+  delete (omitted as { missCost?: number }).missCost
+  const cases: { totals: Plus.MonitorTotals; expect: string; absent?: string }[] = [
+    { totals: { ...base.totals, misses: 1, missCost: 0.027 }, expect: "miss cost: $0.03" },
+    { totals: { ...base.totals, misses: 1, missCost: 0 }, expect: "miss cost: $0.00" },
+    { totals: omitted, expect: "miss cost: —", absent: "miss cost: $0.00" },
+  ]
+  for (const item of cases) {
+    const { fixture } = await render(db, {
+      width: 140,
+      height: 40,
+      settings: { ...defaultSettings, tab: "overview" },
+      customReport: () => ({ ...base, totals: item.totals }),
+    })
+    try {
+      const frame = await fixture.waitForFrame((text) => text.includes("miss cost:"))
+      expect(frame).toContain(item.expect)
+      if (item.absent !== undefined) expect(frame).not.toContain(item.absent)
+    } finally {
+      fixture.destroy()
+    }
+  }
+})
+
+test("the overview top miss shows an unknown miss cost as — and never the request cost", async () => {
+  const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const request = {
+    ...base.topMisses![0]!,
+    missCost: undefined,
+    missTokens: 18_000,
+    cost: 0.035,
+  } as unknown as Plus.MonitorRequest
+  delete (request as { missCost?: number }).missCost
+  const { fixture } = await render(db, {
+    width: 140,
+    height: 40,
+    settings: { ...defaultSettings, tab: "overview" },
+    customReport: () => ({ ...base, topMisses: [request], requests: [request] }),
+  })
+  try {
+    const frame = await fixture.waitForFrame((text) => text.includes("Top Cache Misses"))
+    const missLine = frame.split("\n").find((line) => line.includes("missed"))
+    expect(missLine).toBeDefined()
+    expect(missLine).toContain("—")
+    expect(missLine).not.toContain("$0.04")
+    expect(missLine).not.toContain("$0.00")
   } finally {
     fixture.destroy()
   }
@@ -820,4 +1003,28 @@ test("the view polls every second while calls are live and every five when quiet
   // first. A view reading requests[0] would poll idle here.
   const oldest = { now: 100_000, totals: { running: 0 }, feed: [], requests: [{ at: 10_000 }, { at: 99_500 }] }
   expect(refreshInterval(oldest as unknown as Plus.MonitorReport)).toBe(1_000)
+  // An older tool feed must not mask a fresh request or ping: take the newest
+  // timestamp available anywhere, not feed-first-then-requests.
+  const oldFeedNewRequest = {
+    now: 100_000,
+    totals: { running: 0 },
+    feed: [{ started: 10_000 }],
+    requests: [{ at: 99_500 }],
+  }
+  expect(refreshInterval(oldFeedNewRequest as unknown as Plus.MonitorReport)).toBe(1_000)
+  const oldFeedNewPing = {
+    now: 100_000,
+    totals: { running: 0 },
+    feed: [{ started: 10_000 }],
+    requests: [{ at: 20_000 }, { at: 99_800 }],
+  }
+  expect(refreshInterval(oldFeedNewPing as unknown as Plus.MonitorReport)).toBe(1_000)
+  // Truly quiet: nothing recent anywhere stays at the idle pace.
+  const quiet = {
+    now: 100_000,
+    totals: { running: 0 },
+    feed: [{ started: 10_000 }],
+    requests: [{ at: 20_000 }],
+  }
+  expect(refreshInterval(quiet as unknown as Plus.MonitorReport)).toBe(5_000)
 })

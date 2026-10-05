@@ -20,6 +20,7 @@ import {
   SORTS,
   TABS,
   totalsLine,
+  totalsLines,
   windowLabels,
   WINDOWS,
   type Drill,
@@ -45,8 +46,14 @@ const LIVE_FOR_MS = 60_000
 
 export function refreshInterval(report: Plus.MonitorReport | undefined): number {
   if (report === undefined) return REFRESH_MS
-  // requests are oldest-first: the newest is the last row, not the first.
-  const latest = report.feed[0]?.started ?? report.requests?.at(-1)?.at ?? 0
+  // Take the newest timestamp available anywhere: the newest tool feed entry,
+  // the last (newest) request, or the newest ping. `requests` is oldest-first,
+  // so its newest row is the last one. Reading only the first request would
+  // treat a live ping or a fresh request as idle whenever an older feed exists.
+  const latest = Math.max(
+    report.feed[0]?.started ?? 0,
+    report.requests?.at(-1)?.at ?? 0,
+  )
   return report.totals.running > 0 || report.now - latest < LIVE_FOR_MS ? REFRESH_MS : IDLE_REFRESH_MS
 }
 
@@ -305,8 +312,9 @@ export function MonitorView(props: MonitorViewProps) {
     void plus["monitor.query"]({ scope: "all", view: "sessions" }, { location: location() }).then(
       (all) =>
         openSessionPicker(props.context, all.sessions, (picked) => {
-          change({ ...settings(), scope: "session" })
-          setDrills((stack) => [...stack, { settings: settings(), sessionID: picked }])
+          // The picked session is a temporary drill; the stored scope stays.
+          setSelected(0)
+          setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: picked }])
         }),
       (error: unknown) =>
         props.context.ui.toast.show({
@@ -379,8 +387,10 @@ export function MonitorView(props: MonitorViewProps) {
     if (current === "sessions") {
       const s = shown()?.sessions?.[selected()]
       if (s === undefined) return
-      change({ ...settings(), scope: "session" })
-      setDrills((stack) => [...stack, { settings: settings(), sessionID: s.sessionID }])
+      // Scope to the session as a temporary drill: the stored preference and
+      // the original filters stay untouched, so Esc restores exactly.
+      setSelected(0)
+      setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: s.sessionID }])
       return
     }
   }
@@ -537,8 +547,9 @@ export function MonitorView(props: MonitorViewProps) {
           if (tab() === "sessions") {
             const s = shown()?.sessions?.[selected()]
             if (s !== undefined) {
-              change({ ...settings(), scope: "tree" })
-              setDrills((stack) => [...stack, { settings: settings(), sessionID: s.sessionID }])
+              // Temporary tree drill: the stored scope/filters never change.
+              setSelected(0)
+              setDrills((stack) => [...stack, { settings: { ...settings(), scope: "tree" }, sessionID: s.sessionID }])
             }
           }
         },
@@ -727,13 +738,17 @@ export function MonitorView(props: MonitorViewProps) {
         )}
       </Show>
 
-      {/* Totals Line */}
+      {/* Totals: every metric, labelled, wrapped at this width */}
       <Show when={report()}>
         {(current) => (
-          <box flexDirection="row" flexShrink={0} marginTop={0}>
-            <text fg={theme().text.base} wrapMode="none" truncate>
-              {totalsLine(current().totals, dimensions().width)}
-            </text>
+          <box flexDirection="column" flexShrink={0} marginTop={0}>
+            <For each={totalsLines(current().totals, dimensions().width)}>
+              {(line) => (
+                <text fg={theme().text.base} wrapMode="none" truncate>
+                  {line}
+                </text>
+              )}
+            </For>
           </box>
         )}
       </Show>
@@ -826,12 +841,12 @@ export function MonitorView(props: MonitorViewProps) {
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   onScopeSession={(sid) => {
-                    change({ ...settings(), scope: "session" })
-                    setDrills((stack) => [...stack, { settings: settings(), sessionID: sid }])
+                    setSelected(0)
+                    setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: sid }])
                   }}
                   onScopeTree={(sid) => {
-                    change({ ...settings(), scope: "tree" })
-                    setDrills((stack) => [...stack, { settings: settings(), sessionID: sid }])
+                    setSelected(0)
+                    setDrills((stack) => [...stack, { settings: { ...settings(), scope: "tree" }, sessionID: sid }])
                   }}
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.sessions = ref)}

@@ -267,6 +267,17 @@ export function formatCost(value: number): string | undefined {
   return value < 0.01 ? "<$0.01" : `$${value.toFixed(2)}`
 }
 
+/**
+ * A labelled cost that never invents a free number: an absent value is
+ * explicitly unknown (`—`), a known zero is `$0.00`, and any other value uses
+ * the same short form as `formatCost`.
+ */
+export function formatCostLabel(value: number | undefined): string {
+  if (value === undefined) return "—"
+  if (value <= 0) return "$0.00"
+  return value < 0.01 ? "<$0.01" : `$${value.toFixed(2)}`
+}
+
 export function pad(text: string, width: number, align: "left" | "right" = "left"): string {
   const fitted = text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text
   return align === "left" ? fitted.padEnd(width) : fitted.padStart(width)
@@ -290,12 +301,54 @@ export const windowLabels: Readonly<Record<WindowName, string>> = {
   "30d": "30d",
 }
 
-/** The totals line: always-visible labelled totals. */
+/**
+ * The full page's totals: every metric is always present and labelled, wrapped
+ * across as many lines as `width` needs. A metric is never dropped and an
+ * unknown miss cost is `—`, never a substituted or invented number.
+ */
+export function totalsLines(totals: Plus.MonitorTotals, width = 120): string[] {
+  const hr = totals.hitRate === undefined ? "—" : `${Math.round(totals.hitRate * 100)}%`
+  const cost = formatCostLabel(totals.cost)
+  const missCost = formatCostLabel(totals.missCost)
+  const metrics = [
+    `reqs: ${totals.requests ?? totals.steps}`,
+    `steps: ${totals.steps}`,
+    `in: ${formatTokens(totals.input)}`,
+    `read: ${formatTokens(totals.cacheRead)}`,
+    `write: ${formatTokens(totals.cacheWrite)}`,
+    `out: ${formatTokens(totals.output)}`,
+    `reason: ${formatTokens(totals.reasoning)}`,
+    `hit rate: ${hr}`,
+    `misses: ${totals.misses ?? "—"}`,
+    `miss cost: ${missCost}`,
+    `pings: ${totals.pings ?? 0}`,
+    `cost: ${cost}`,
+  ]
+  // The page insets its content by one column on each side, so wrap to the
+  // usable width rather than the terminal width to avoid renderer clipping.
+  return wrapLabels(metrics, Math.max(20, width - 2))
+}
+
+function wrapLabels(metrics: readonly string[], width: number): string[] {
+  const lines: string[] = []
+  let current = ""
+  for (const metric of metrics) {
+    const candidate = current === "" ? metric : `${current} · ${metric}`
+    if (current !== "" && candidate.length > width) {
+      lines.push(current)
+      current = metric
+    } else {
+      current = candidate
+    }
+  }
+  if (current !== "") lines.push(current)
+  return lines
+}
+
+/** The compact composer totals: one line, never a horizontal overflow. */
 export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
   const hr = totals.hitRate === undefined ? "—" : `${Math.round(totals.hitRate * 100)}%`
-  const cost = formatCost(totals.cost) ?? "$0.00"
-  const missCost = (totals.missCost ?? 0) > 0 ? ` (${formatCost(totals.missCost!)})` : ""
-
+  const cost = formatCostLabel(totals.cost)
   if (width < 90) {
     return [
       `reqs: ${totals.requests ?? totals.steps}`,
@@ -306,7 +359,6 @@ export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
       `cost: ${cost}`,
     ].join(" · ")
   }
-
   return [
     `reqs: ${totals.requests ?? totals.steps}`,
     `steps: ${totals.steps}`,
@@ -314,10 +366,11 @@ export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
     `read: ${formatTokens(totals.cacheRead)}`,
     `write: ${formatTokens(totals.cacheWrite)}`,
     `out: ${formatTokens(totals.output)}`,
-    ...(totals.reasoning > 0 ? [`reason: ${formatTokens(totals.reasoning)}`] : []),
+    `reason: ${formatTokens(totals.reasoning)}`,
     `hit rate: ${hr}`,
-    `misses: ${totals.misses ?? "—"}${missCost}`,
-    ...((totals.pings ?? 0) > 0 ? [`pings: ${totals.pings}`] : []),
+    `misses: ${totals.misses ?? "—"}`,
+    `miss cost: ${formatCostLabel(totals.missCost)}`,
+    `pings: ${totals.pings ?? 0}`,
     `cost: ${cost}`,
   ].join(" · ")
 }
