@@ -552,3 +552,11 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Line 3: the flat and legacy member-only ids refuse with `row.unknown` naming the member row (`item:global:Sweep/:Sweep-Only:model:…`), and the named row activates and is used, as README/SPEC document. The literal `Planner`/`Basic` instance is NOT LIVE here, because Basic ships disabled in this home; the focused test covers it (`model.test.ts` and `member-model-activation.test.ts`: 58 pass).
   - Log: 0 ERROR. The run survived the provider restart via a followup. Child stopped.
 - 17:31: Instructions T4 delegated (T132, `w-c0ecd03b294a9261`, base `9c6b6f9c3d`, with the A5 workaround in place). Remaining: Instructions T1, T5 and T8, and Monitor T4.
+- **Monitor T1 swept: PASS on all six lines** (T131, landed as six evidence commits ending in the cherry-pick of `878fee7`).
+  - Request rows for step, compaction, title (`is_title=1`) and ping carry time, session, agent, model and usage. The refused `claude-fable-5-1` title is stored `error` as a hash and size.
+  - Three warming pings carry their usage, relabelled from generate to ping.
+  - A live openai-responses fingerprint holds 18 source-named system parts, 12 tools with separate description and schema hashes, option hashes, rolling message prefixes and the cache key. The other protocols and the fallback are covered by focused tests.
+  - The facts instruction_update, compaction, agent_switch, model_switch and revert were recorded live. Account switch and handoff are NOT LIVE, covered by the named test.
+  - Five sentinels appear in no table.
+  - Live `meta.schema=2`. v1→v2 migration, 90-day retention and idempotent writes are covered by `monitor-ledger` (10 pass).
+  - Log: the one ERROR is the deliberate fable request. Child stopped.
