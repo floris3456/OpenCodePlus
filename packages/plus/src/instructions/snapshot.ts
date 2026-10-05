@@ -138,6 +138,17 @@ function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
     ...(record.interval === undefined ? {} : { interval: record.interval }),
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
+    ...(record.originalCandidate === undefined
+      ? {}
+      : {
+          originalCandidate: {
+            providerID: record.originalCandidate.providerID,
+            modelID: record.originalCandidate.modelID,
+            ...(record.originalCandidate.variant === undefined ? {} : { variant: record.originalCandidate.variant }),
+            ...(record.originalCandidate.source === undefined ? {} : { source: record.originalCandidate.source }),
+            ...(record.originalCandidate.editedFields === undefined ? {} : { editedFields: [...record.originalCandidate.editedFields] }),
+          },
+        }),
     updated: record.updated,
   }
 }

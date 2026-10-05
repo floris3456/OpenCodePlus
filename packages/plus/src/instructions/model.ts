@@ -589,11 +589,28 @@ export function hasModelActiveAt(models: readonly ModelRecord[], address: Record
 export function addModelRecord(
   models: readonly ModelRecord[],
   address: RecordScope,
-  target: { providerID: string; modelID: string; variant?: string },
+  target: { providerID: string; modelID: string; variant?: string; originalCandidate?: OriginalCandidate },
   updated: string,
 ): ModelRecord[] {
   const exists = hasModelRecordAt(models, address, target)
-  if (exists) return [...models]
+  if (exists) {
+    if (target.originalCandidate !== undefined) {
+      return models.map((record) => {
+        if (
+          record.removed !== true &&
+          scopedTo(record, address) &&
+          record.providerID === target.providerID &&
+          record.modelID === target.modelID &&
+          record.variant === target.variant &&
+          record.originalCandidate === undefined
+        ) {
+          return { ...record, originalCandidate: target.originalCandidate }
+        }
+        return record
+      })
+    }
+    return [...models]
+  }
   const rest = models.filter(
     (record) =>
       !(
@@ -615,6 +632,7 @@ export function addModelRecord(
       providerID: target.providerID,
       modelID: target.modelID,
       ...(target.variant === undefined ? {} : { variant: target.variant }),
+      ...(target.originalCandidate === undefined ? {} : { originalCandidate: target.originalCandidate }),
       updated,
     },
   ]
@@ -804,6 +822,20 @@ export function permItemId(tool: string, ruleId: string): string {
   return `perm:${tool}:${ruleId}`
 }
 
+// A team member's owner path is `<team>/:<member>` (tree.ts lazyTeamMember
+// and the row ids it builds). Agent ids forbid `:` (validateAgentId), so any
+// `/:` marks a member owner path and never a legal agent id. Splits on the
+// last `/:` so a team name may itself contain `:`. Used by the tool and RPC
+// model-create boundaries to refuse it before any write.
+export function parseMemberOwnerPath(agent: string): { readonly team: string; readonly member: string } | undefined {
+  const at = agent.lastIndexOf("/:")
+  if (at <= 0) return undefined
+  const team = agent.slice(0, at)
+  const member = agent.slice(at + 2)
+  if (team.length === 0 || member.length === 0) return undefined
+  return { team, member }
+}
+
 export function parsePermItemId(id: string): { tool: string; ruleId: string } | undefined {
   if (!id.startsWith("perm:")) return undefined
   const rest = id.slice("perm:".length)
@@ -873,6 +905,7 @@ function cleared(record: ModelRecord): ModelRecord {
     ...(record.interval === undefined ? {} : { interval: record.interval }),
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
+    ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
     updated: record.updated,
   }
 }
@@ -917,6 +950,14 @@ export interface SplitRecord {
   readonly updated: string
 }
 
+export interface OriginalCandidate {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+  readonly source?: Level | "upstream"
+  readonly editedFields?: readonly ("model" | "effort")[]
+}
+
 // Per-agent model selection: which provider model an agent uses. At most one
 // record per (level, agent) carries `active`. `active` is `true` or omitted,
 // never `false`: records cross the RPC boundary as JSON, where a
@@ -947,6 +988,11 @@ export interface ModelRecord {
    * tombstone's node is the most specific one naming it in the chain).
    */
   readonly removed?: true
+  /**
+   * What candidate this row replaced when edited at this level. Preserves
+   * independent Model and Effort reset semantics across repeated edits.
+   */
+  readonly originalCandidate?: OriginalCandidate
   readonly updated: string
 }
 
@@ -2081,6 +2127,7 @@ function withoutField(record: ModelRecord, field: ModelWarmingField): ModelRecor
     ...(field === "interval" || record.interval === undefined ? {} : { interval: record.interval }),
     ...(field === "prompt" || record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
+    ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
     updated: record.updated,
   }
 }

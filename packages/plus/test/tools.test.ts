@@ -1325,9 +1325,16 @@ test("set text on a model row replaces the candidate and keeps the active flag",
   await runOk(set, { id: created.id, active: true })
   const replaced = (await runOk(set, { id: created.id, text: "acme/nova-3#high" })) as { status: string }
   expect(replaced.status).toBe('Updated "acme/nova-2"')
-  const stored = (await load(project)).records.filter((record) => record.type === "model" && record.agent === "alpha")
+  // The row changes in place: one live record for the new candidate and a
+  // tombstone hiding the old one at this level.
+  const stored = (await load(project)).records.filter((record) => record.type === "model" && record.agent === "alpha" && record.removed !== true)
   expect(stored).toHaveLength(1)
   expect(stored[0]).toMatchObject({ providerID: "acme", modelID: "nova-3", variant: "high", active: true })
+  expect(
+    (await load(project)).records.some(
+      (record) => record.type === "model" && record.agent === "alpha" && record.removed === true && record.modelID === "nova-2",
+    ),
+  ).toBe(true)
   expect((await runFail(set, { id: "item:defaults:alpha:model:acme/nova-3@high", text: "not-a-model" })).message).toContain("takes provider/model")
 })
 
@@ -1381,7 +1388,6 @@ test("create model preserves the selected member owner and returns its addressab
   expect(await runOk(show, { id: member.id, view: "record" })).toMatchObject({ record: { active: true } })
   expect((await load(project)).records.find((record) => record.type === "model" && record.team === undefined))
     .toEqual(prior.records.find((record) => record.type === "model"))
-
   // Ordinary discovered members keep per-agent storage, just like the TUI,
   // but the returned row stays in the selected team's inheritance chain.
   await runOk(create, { kind: "team", team: "live", level: "project", preset: "crew" })
@@ -1394,6 +1400,54 @@ test("create model preserves the selected member owner and returns its addressab
   const entry = await runOk(create, { ...model, level: "defaults", team: "crew*", agent: "reader*" }) as { id: string }
   expect(entry.id).toBe("item:defaults:crew*/:reader*:model:acme/nova-2")
   expect(await runOk(show, { id: entry.id, view: "record" })).toMatchObject({ record: { team: { level: "defaults", team: "crew*" } } })
+})
+
+test("show view:record matches the full owner, not just level and agent", async () => {
+  const { api, tools } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const create = need(tools, "instructions_create")
+  const show = need(tools, "instructions_show")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "preset", id: "reader", from: "basic/scout" })
+  await runOk(create, { kind: "teamPreset", id: "crew" })
+  await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "basic/scout" })
+  const model = { kind: "model", providerID: "acme", modelID: "nova-2", level: "preset", agent: "reader" }
+  // The member (with its team) is created first, so without a full-owner match
+  // a lookup that only checks level and agent would return it for the
+  // standalone row too.
+  const member = await runOk(create, { ...model, team: "crew" }) as { id: string }
+  await runOk(set, { id: member.id, warming: "45m" })
+  const standalone = await runOk(create, model) as { id: string }
+  await runOk(set, { id: standalone.id, warming: "10m" })
+  const standaloneRecord = await runOk(show, { id: standalone.id, view: "record" }) as { record: Record<string, unknown> | null }
+  const memberRecord = await runOk(show, { id: member.id, view: "record" }) as { record: Record<string, unknown> | null }
+  expect(standaloneRecord.record).toMatchObject({ warming: "10m" })
+  expect(standaloneRecord.record?.team).toBeUndefined()
+  expect(memberRecord.record).toMatchObject({ warming: "45m", team: { level: "preset", team: "crew" } })
+})
+
+test("create model refuses an owner-segment agent before writing and names agent + team", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const create = need(tools, "instructions_create")
+  // A Global team whose member exists only as a team member.
+  await runOk(create, { kind: "team", team: "Simple", level: "global" })
+  await runOk(create, { kind: "member", team: "Simple", level: "global", id: "Simple-Orchestrator" })
+  const memberRow = `team:global:Simple:Simple-Orchestrator`
+  expect((await snapshotOf(api)).teams?.some((team) => team.team === "Simple")).toBe(true)
+  void memberRow
+  const before = await load(project)
+  // The member's owner path is not an agent id: the old guard found the
+  // member's Models group, wrote a literal-owner record, then failed with
+  // create.failed, leaving a row delete could not reach.
+  const refused = await runFail(create, { kind: "model", level: "global", agent: "Simple/:Simple-Orchestrator", providerID: "acme", modelID: "nova-2" })
+  expect(refused.message).toContain("model.invalid")
+  expect(refused.message).toContain('"Simple-Orchestrator"')
+  expect(refused.message).toContain('"Simple"')
+  // No write: store revision and records are unchanged.
+  expect(await load(project)).toEqual(before)
+  // The valid member control passes agent + team and returns the member row.
+  const valid = (await runOk(create, { kind: "model", level: "global", agent: "Simple-Orchestrator", team: "Simple", providerID: "acme", modelID: "nova-2" })) as { id: string }
+  expect(valid.id).toBe("item:global:Simple/:Simple-Orchestrator:model:acme/nova-2")
+  expect((await load(project)).records.some((record) => record.type === "model" && record.level === "global" && record.agent === "Simple-Orchestrator")).toBe(true)
 })
 
 test("show separates inherited state and text provenance across role override and reset", async () => {
@@ -2341,6 +2395,8 @@ test("every enabled create kind returns the row id show and delete accept, and d
     readonly show?: { readonly view?: string; readonly expect?: Record<string, unknown> }
     readonly showFail?: string
     readonly gone?: boolean
+    /** Reset the active flag before deleting (create makes a model active). */
+    readonly resetFirst?: boolean
   }[] = [
     {
       name: "agent",
@@ -2389,6 +2445,9 @@ test("every enabled create kind returns the row id show and delete accept, and d
       status: 'Removed "acme/nova-2"',
       show: { expect: { view: "resolved" } },
       gone: true,
+      // Create activates the model; reset clears the active flag so the row
+      // is no longer the effective model and deletes.
+      resetFirst: true,
     },
     {
       name: "rule",
@@ -2452,6 +2511,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
         project,
       )
     }
+    if (step.resetFirst === true) await runOk(need(tools, "instructions_reset"), { id: step.id })
     const deleted = (await runOk(del, { id: step.id, confirm: true })) as { status: string }
     expect(deleted.status).toBe(step.status)
     if (step.gone === true) expect(await known(step.id)).toBeUndefined()
@@ -2554,6 +2614,8 @@ test("create returns the created level's model and rule row, not the identical D
   for (const id of [sharedModel.id, sharedRule.id, projectModel.id, globalModel.id, projectRule.id, globalRule.id]) {
     const snapshot = await snapshotOf(api)
     if (!expandedTree(memoFromSnapshot(snapshot)).some((node) => node.id === id)) throw new Error(`missing created row ${id}`)
+    // Create activates a model, so clear its active flag before deleting it.
+    if (id.includes(":model:")) await runOk(need(tools, "instructions_reset"), { id })
     const deleted = (await runOk(del, { id, confirm: true })) as { status: string }
     expect(deleted.status).toContain("Removed")
     round3Capture("levels delete round-trip", { request: { id, confirm: true }, output: deleted }, project)
@@ -3054,8 +3116,8 @@ test("instructions_delete removes orphan links with the preset and still refuses
 test("delete hides an inherited model row at this level, re-adding clears it, and the effective model refuses", async () => {
   const { api, tools, project } = await freshFixture({
     agents: [agentInfo("build", "upstream role", modelRef("acme", "base"))],
-    models: [modelInfo("acme", "base"), modelInfo("acme", "opus")],
-    classifications: { "": "general", "base": "general", "opus": "general" },
+    models: [modelInfo("acme", "base"), modelInfo("acme", "opus"), modelInfo("acme", "alt")],
+    classifications: { "": "general", "base": "general", "opus": "general", "alt": "general" },
   })
   const create = need(tools, "instructions_create")
   const del = need(tools, "instructions_delete")
@@ -3066,7 +3128,12 @@ test("delete hides an inherited model row at this level, re-adding clears it, an
   expect(created.id).toBe("item:global:build:model:acme/opus")
   const projectRow = "item:project:build:model:acme/opus"
   expect(await rowOf(projectRow)).toBeDefined()
-
+  // The Global add is active, so opus is the effective model at Project: its
+  // row refuses deletion until another model is activated.
+  const refused = await runFail(del, { id: projectRow, confirm: true })
+  expect(refused.message).toBe('"acme/opus" is the active model here: activate another model first')
+  // Activating another model at Project makes the inherited opus row deletable.
+  await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "project", agent: "build" })
   const hidden = (await runOk(del, { id: projectRow, confirm: true })) as { status: string }
   expect(hidden.status).toBe('Hidden "acme/opus" at this level')
   expect(await rowOf(projectRow)).toBeUndefined()
@@ -3076,22 +3143,18 @@ test("delete hides an inherited model row at this level, re-adding clears it, an
   )
   expect(stored).toMatchObject({ removed: true, agent: "build" })
 
-  // Re-adding at Project clears the tombstone.
+  // Re-adding at Project clears the tombstone and activates it exclusively.
   await runOk(create, { kind: "model", providerID: "acme", modelID: "opus", level: "project", agent: "build" })
   expect(await rowOf(projectRow)).toBeDefined()
   expect(
     (await load(project)).records.some((record) => record.type === "model" && record.level === "project" && record.modelID === "opus" && record.removed === true),
   ).toBe(false)
 
-  // The host model is build's upstream: with nothing active it is the
-// effective model, so the upstream row refuses.
-  const upstream = "item:project:build:model:acme/base"
-  const refused = await runFail(del, { id: upstream, confirm: true })
-  expect(refused.message).toBe('"acme/base" is the active model here: activate another model first')
   // Activating another model makes the upstream row deletable: it is hidden at
   // Project while the Global view (which does not resolve through Project)
   // still lists the host fallback.
-  await runOk(set, { id: projectRow, active: true })
+  const upstream = "item:project:build:model:acme/base"
+  await runOk(set, { id: "item:project:build:model:acme/alt", active: true })
   const hiddenUpstream = (await runOk(del, { id: upstream, confirm: true })) as { status: string }
   expect(hiddenUpstream.status).toBe('Hidden "acme/base" at this level')
   expect(await rowOf("item:project:build:model:acme/base")).toBeUndefined()

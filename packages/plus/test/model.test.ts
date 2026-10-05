@@ -711,7 +711,91 @@ test("warming is hidden with its tombstoned candidate", () => {
   expect(resolveModelWarming({ models: hidden, scopes, level: "project", agent: "alpha" }, target)).toBeUndefined()
 })
 
-// T3 evidence case: Planner exists only as a member of the Global "Basic"
+// T7 issue #6: a field row shows the effective value and its real source, not
+// the Defaults value whenever the source level differs from the row's. A
+// Global record inherited at Project names Global on every field, and an
+// explicit variant belongs to the candidate so Effort inherits with it.
+test("model field rows name the level that set an inherited value, not the Defaults value", () => {
+  const record: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "alpha",
+    providerID: "acme",
+    modelID: "nova",
+    variant: "high",
+    warming: "30m",
+    interval: "4m",
+    prompt: "keep alive",
+    updated: UPDATED,
+  }
+  const memo = {
+    items: [] as Item[],
+    records: [record],
+    agents: [
+      { id: "alpha", scope: "project" as const },
+      { id: "alpha", scope: "global" as const },
+    ],
+  }
+  const rows = expandedTree(memo)
+  const fields = rows.filter((row) => row.id.startsWith("item:project:alpha:modelfield:"))
+  expect(fields.map((row) => [row.label, row.badges.value, row.actions?.reset])).toEqual([
+    ["Model", "acme/nova@high · global", false],
+    ["Effort", "high · global", false],
+    ["Warming", "30m · global", false],
+    ["Ping every", "4m · global", false],
+    ["Keep-alive prompt", "keep alive · global", false],
+  ])
+})
+
+// The same rule for a preset member and a team member: their own candidate's
+// fields are named with the level that set them, and a preset row at its own
+// level reads as own.
+test("preset and team member field rows name their own level when set there", () => {
+  const presetRecord: ModelRecord = {
+    type: "model",
+    level: "preset",
+    agent: "reader",
+    team: { level: "preset", team: "crew" },
+    providerID: "acme",
+    modelID: "nova",
+    warming: "30m",
+    updated: UPDATED,
+  }
+  const presetRows = expandedTree({
+    items: [] as Item[],
+    records: [presetRecord],
+    agents: [],
+    presets: [
+      { type: "preset" as const, level: "preset" as const, kind: "team" as const, id: "crew", updated: UPDATED },
+      { type: "preset" as const, level: "preset" as const, kind: "agent" as const, id: "reader", team: "crew", updated: UPDATED },
+    ],
+  })
+  const presetWarming = presetRows.find((row) => row.id === "item:preset:crew/:reader:modelfield:warming:acme/nova")
+  expect(presetWarming?.badges.value).toBe("30m")
+  expect(presetWarming?.actions?.reset).toBe(true)
+  const presetModel = presetRows.find((row) => row.id === "item:preset:crew/:reader:modelfield:model:acme/nova")
+  expect(presetModel?.badges.value).toBe("acme/nova")
+
+  const teamRecord: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "Planner",
+    providerID: "acme",
+    modelID: "nova",
+    warming: "45m",
+    updated: UPDATED,
+  }
+  const teamRows = expandedTree({
+    items: [] as Item[],
+    records: [teamRecord],
+    agents: [],
+    teams: [{ level: "global" as const, team: "Basic", enabled: true, agents: ["Planner"] }],
+  })
+  const memberWarming = teamRows.find((row) => row.id === "item:global:Basic/:Planner:modelfield:warming:acme/nova")
+  expect(memberWarming?.badges.value).toBe("45m")
+  expect(memberWarming?.actions?.reset).toBe(true)
+})
+
 // team, so the tool activation writes a flat `global/Planner` record (no team
 // owner path, exactly what the log showed). That flat record must take effect
 // for the member's chain — both the runtime chain (level + team) and the
@@ -758,4 +842,65 @@ test("tool activation of a member-only agent's model row writes a flat record it
     memberOf: { level: "global", team: "Basic" },
   })
   expect(treeView?.modelID).toBe("base")
+})
+
+test("lazyModelField shows independent Model and Effort source when only one is edited", () => {
+  // Candidate originally inherited from Global (openai/gpt-5@high).
+  // Case A: Only Model is edited at Project (to google/gemini).
+  const modelOnlyRecord: ModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "google",
+    modelID: "gemini",
+    variant: "high",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["model"],
+    },
+    updated: UPDATED,
+  }
+  const rowsA = expandedTree({
+    items: [] as Item[],
+    records: [modelOnlyRecord],
+    agents: [{ id: "alpha", scope: "project" as const }],
+  })
+  const modelFieldA = rowsA.find((r) => r.id === "item:project:alpha:modelfield:model:google/gemini@high")
+  expect(modelFieldA?.badges.value).toBe("google/gemini@high")
+  expect(modelFieldA?.actions?.reset).toBe(true)
+  const effortFieldA = rowsA.find((r) => r.id === "item:project:alpha:modelfield:effort:google/gemini@high")
+  expect(effortFieldA?.badges.value).toBe("high · global")
+  expect(effortFieldA?.actions?.reset).toBe(false)
+
+  // Case B: Only Effort is edited at Project (to low).
+  const effortOnlyRecord: ModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "low",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["effort"],
+    },
+    updated: UPDATED,
+  }
+  const rowsB = expandedTree({
+    items: [] as Item[],
+    records: [effortOnlyRecord],
+    agents: [{ id: "alpha", scope: "project" as const }],
+  })
+  const modelFieldB = rowsB.find((r) => r.id === "item:project:alpha:modelfield:model:openai/gpt-5@low")
+  expect(modelFieldB?.badges.value).toBe("openai/gpt-5@low · global")
+  expect(modelFieldB?.actions?.reset).toBe(false)
+  const effortFieldB = rowsB.find((r) => r.id === "item:project:alpha:modelfield:effort:openai/gpt-5@low")
+  expect(effortFieldB?.badges.value).toBe("low")
+  expect(effortFieldB?.actions?.reset).toBe(true)
 })

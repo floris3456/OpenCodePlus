@@ -18,6 +18,7 @@ import {
   resolveActiveModel,
   resolveSplit,
   sameModelCandidate,
+  scopedTo,
 } from "./model.js"
 import type {
   Address,
@@ -1911,19 +1912,60 @@ function lazyModelField(
     const modelSetting = settingsFor(ctx.modelSettings, { providerID: candidate.providerID, modelID: candidate.modelID })
     const view = modelDefaultViewOf(modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
     const fields = resolveModelFields({ models: ctx.models, scopes: ctx.scopes, ...rowScope }, target)
+    const local = ctx.models.find(
+      (record) => record.removed !== true && scopedTo(record, rowScope) && sameModelCandidate(record, target),
+    )
     if (field === "model") {
       // The row always names its candidate; the source is the level that
       // supplied it, so an inherited row says where the model comes from.
+      if (local?.originalCandidate !== undefined) {
+        const orig = local.originalCandidate
+        const modelEdited = orig.editedFields !== undefined
+          ? orig.editedFields.includes("model")
+          : (local.providerID !== orig.providerID || local.modelID !== orig.modelID)
+        const source = orig.source ?? (candidate.source !== level ? candidate.source : "upstream")
+        return {
+          value: modelEdited ? modelLabel(candidate) : `${modelLabel(candidate)} · ${levelWord(source)}`,
+          own: modelEdited,
+        }
+      }
       const inherited = candidate.source !== level
       return { value: inherited ? `${modelLabel(candidate)} · ${levelWord(candidate.source)}` : modelLabel(candidate), own: !inherited }
     }
     if (field === "effort") {
-      if (target.variant !== undefined) return { value: target.variant, own: true }
+      // An explicit variant belongs to the candidate, so it is inherited when
+      // the candidate is: the Effort field names the same source as Model.
+      if (local?.originalCandidate !== undefined) {
+        const orig = local.originalCandidate
+        const effortEdited = orig.editedFields !== undefined
+          ? orig.editedFields.includes("effort")
+          : ((local.variant ?? undefined) !== (orig.variant ?? undefined))
+        const source = orig.source ?? (candidate.source !== level ? candidate.source : "upstream")
+        if (effortEdited) {
+          return { value: target.variant ?? "none", own: true }
+        }
+        if (target.variant !== undefined) {
+          return { value: `${target.variant} · ${levelWord(source)}`, own: false }
+        }
+        const inherited = defaultEffort({ ...(modelSetting === undefined ? {} : { model: modelSetting }), ...(everySettings(ctx.modelSettings) === undefined ? {} : { every: everySettings(ctx.modelSettings) }), ...(host?.variants === undefined ? {} : { variants: host.variants }) })
+        return inherited === undefined ? { value: "none", own: false } : { value: `${inherited.value} · ${defaultsSource(inherited.from)}`, own: false }
+      }
+      if (target.variant !== undefined) {
+        const inherited = candidate.source !== level
+        return { value: inherited ? `${target.variant} · ${levelWord(candidate.source)}` : target.variant, own: !inherited }
+      }
       const inherited = defaultEffort({ ...(modelSetting === undefined ? {} : { model: modelSetting }), ...(everySettings(ctx.modelSettings) === undefined ? {} : { every: everySettings(ctx.modelSettings) }), ...(host?.variants === undefined ? {} : { variants: host.variants }) })
       return inherited === undefined ? { value: "none", own: false } : { value: `${inherited.value} · ${defaultsSource(inherited.from)}`, own: false }
     }
-    const own = fields[field] !== undefined && fields[field]!.level === level
-    if (own) return { value: fields[field]!.value, own: true }
+    // Warming / Ping every / Keep-alive prompt: the effective value wherever
+    // the agent's chain sets it, not only at this row's level. An inherited
+    // value names its own level; the Defaults › Models fallback names the
+    // settings surface it came from.
+    const resolved = fields[field]
+    if (resolved !== undefined) {
+      const own = resolved.level === level
+      return { value: own ? resolved.value : `${resolved.value} · ${levelWord(resolved.level)}`, own }
+    }
     const effective = modelSettingEffective(view, field)
     if (effective === undefined) return { value: "none", own: false }
     return { value: `${effective.text} · ${defaultsSource(effective.from)}`, own: false }

@@ -2137,6 +2137,89 @@ test("agent delete shadowing guard keeps global records when project agent is de
   }
 })
 
+test("SnapshotModelRecord with originalCandidate round-trips through mutate, snapshot, and recordOf", async () => {
+  const { project } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  await Effect.runPromise(
+    handlers["agent.create"]({ scope: "project", id: "alpha" }, throwingContext({})),
+  )
+  const initial = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const recordWithCandidate: Plus.SnapshotModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "alpha",
+    providerID: "google",
+    modelID: "gemini",
+    variant: "low",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["model", "effort"],
+    },
+    updated: UPDATED,
+  }
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"]({
+      expectedRevision: initial.revision,
+      expectedGlobalRevision: initial.globalRevision,
+      records: [recordWithCandidate],
+    }, throwingContext({})),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const modelInSnapshot = mutated.snapshot.records.find((r) => r.type === "model" && r.agent === "alpha")
+  expect(modelInSnapshot).toMatchObject({
+    type: "model",
+    providerID: "google",
+    modelID: "gemini",
+    variant: "low",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["model", "effort"],
+    },
+  })
+  const { recordOf } = await import("../src/instructions/snapshot.js")
+  const roundtrippedModel = recordOf(modelInSnapshot!)
+  expect(roundtrippedModel).toMatchObject({
+    type: "model",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["model", "effort"],
+    },
+  })
+})
+
+test("model.add refuses a team member owner path before writing and names agent + team", async () => {
+  const { project } = await tempRoot()
+  const handlers = createHandlers(fullContext({ directory: project }), createState())
+  const captured: { current?: CapturedError } = {}
+  const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  await expectDeclaredError(
+    handlers["model.add"](
+      { level: "global", agent: "Simple/:Simple-Orchestrator", providerID: "acme", modelID: "nova-2" },
+      throwingContext(captured),
+    ),
+    captured,
+    "model.invalid",
+  )
+  expect(captured.current?.message).toContain("team member's owner path")
+  expect(captured.current?.message).toContain('"Simple-Orchestrator"')
+  expect(captured.current?.message).toContain('"Simple"')
+  // No write: the store revision and records are unchanged and no literal
+  // owner record exists.
+  const after = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(after.revision).toBe(before.revision)
+  expect(after.records.filter((record) => record.type === "model")).toEqual([])
+})
+
 test("base delete drops customizations so re-created base resolves new body", async () => {
   const { project } = await tempRoot()
 

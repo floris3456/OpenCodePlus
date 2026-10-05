@@ -47,7 +47,7 @@ import {
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
-import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
+import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type CategoryRecord, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
@@ -1852,6 +1852,19 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         return {
           ok: false as const,
           error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      // The same owner-segment guard as the tool boundary: a member's owner
+      // path is not an agent id, and passing it here would write a literal
+      // owner record the tree can never select. Refuse before any write.
+      if (input.team === undefined && input.agent !== null) {
+        const owner = parseMemberOwnerPath(input.agent)
+        if (owner !== undefined) {
+          const reason = `${JSON.stringify(input.agent)} is a team member's owner path, not an agent id; pass agent ${JSON.stringify(owner.member)} with team ${JSON.stringify(owner.team)}`
+          return {
+            ok: false as const,
+            error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+          }
         }
       }
       const catalog = await Effect.runPromise(
@@ -4467,6 +4480,17 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
+      ...(record.originalCandidate === undefined
+        ? {}
+        : {
+            originalCandidate: {
+              providerID: record.originalCandidate.providerID,
+              modelID: record.originalCandidate.modelID,
+              ...(record.originalCandidate.variant === undefined ? {} : { variant: record.originalCandidate.variant }),
+              ...(record.originalCandidate.source === undefined ? {} : { source: record.originalCandidate.source }),
+              ...(record.originalCandidate.editedFields === undefined ? {} : { editedFields: [...record.originalCandidate.editedFields] }),
+            },
+          }),
       updated: record.updated,
     }
   if (record.type === "rule")
@@ -6219,6 +6243,7 @@ function toSnapshot(
             ...(record.interval === undefined ? {} : { interval: record.interval }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
+            ...(record.originalCandidate === undefined ? {} : { originalCandidate: { ...record.originalCandidate } }),
             updated: record.updated,
           },
         ]

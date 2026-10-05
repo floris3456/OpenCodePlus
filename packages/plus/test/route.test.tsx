@@ -994,6 +994,42 @@ test("tool row does not offer d delete", async () => {
   }
 })
 
+// T7: `r` resets a model field. A previous `shift+r,R` rename binding
+// registered a bare lowercase `r` (the keymap lowercases every binding token),
+// so it shadowed the reset command on every row. The rename key must not
+// normalize onto `r`.
+test("no model field command binding normalizes onto the reset key r", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("alice")],
+    records: [
+      { type: "model" as const, level: "project" as const, agent: "alice", providerID: "acme", modelID: "nova-1", warming: "45m", updated: PRESET_UPDATED },
+    ],
+    hostModels: [{ providerID: "acme", modelID: "nova-1", variants: ["low", "high"] }],
+  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160 })
+  try {
+    await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
+    await moveTo(fixture, "Warming")
+    // The keymap lowercases each comma-separated token: a bind of "R" is a
+    // second `r` and would win over the reset command.
+    const tokens = binds(fixture).flatMap((bind) => bind.split(",")).map((token) => token.trim().toLowerCase())
+    expect(tokens.filter((token) => token === "r")).toHaveLength(1)
+    expect(binds(fixture).some((bind) => bind.split(",").some((token) => token.trim() === "R"))).toBe(false)
+    // The rename command is still reachable on shift+r.
+    expect(binds(fixture).some((bind) => bind.split(",").some((token) => token.trim() === "shift+r"))).toBe(true)
+    // And `r` really resets the field through the real command.
+    dispatch(fixture, "r")
+    await until(fixture, () => fixture.fake.mutateInputs.length === 1)
+    const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
+    expect(own).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-1" })])
+    expect(own[0]).not.toHaveProperty("warming")
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("reset asks for confirmation and clears the override", async () => {
   const snapshot = createSnapshot({
     items: [mcpItem()],
@@ -3977,16 +4013,16 @@ test("inspector: a team's Special agent shows its team-scoped active model and s
   }
 })
 
-// D: enter on a model row opens the edit dialog (model, variant, warming).
-// Inherited rows are listed, so editing one plants a local record; the
-// dialog validates the model against the host catalog and shows the
-// inherited warming.
-test("enter on a model row edits model, variant, warming, interval and prompt; w is no longer bound", async () => {
+// D: enter on a model row opens its field rows; enter on one field edits that
+// field alone (T7 removed the whole-row editor). The Model field picks from
+// the host catalog, the warming fields prompt; `w` is no longer bound.
+test("enter on a model row opens its field rows and one field edits alone; w is no longer bound", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("alice")],
     records: [
       { type: "model" as const, level: "project" as const, agent: "alice", providerID: "acme", modelID: "nova-1", updated: PRESET_UPDATED },
     ],
+    hostModels: [{ providerID: "acme", modelID: "nova-1", variants: ["low", "high"] }],
   })
   const models = [
     { providerID: "acme", modelID: "nova-1", name: "Nova 1" },
@@ -3996,28 +4032,68 @@ test("enter on a model row edits model, variant, warming, interval and prompt; w
     snapshots: [snapshot],
     width: 160,
     models,
-    dialogs: { prompts: ["acme/nova-2", "high", "45m", "3m30s", "ping"] },
+    dialogs: { selects: ["acme", "nova-2", "high"], prompts: ["45m"] },
   })
   try {
     await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
-    // The model-row warming key is gone; enter is the editor.
+    // The model-row warming key is gone; enter opens the field rows.
     expect(fixture.commands().some((command) => command.bind === "w")).toBe(false)
-    expect(footer(fixture.captureCharFrame())).toContain("enter edit model")
+    expect(footer(fixture.captureCharFrame())).toContain("enter open fields")
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
+    const open = listPane(fixture.captureCharFrame())
+    for (const label of ["Model", "Effort", "Warming", "Ping every"]) expect(open).toContain(label)
+    // The Model field picks from the host catalog and writes only that field
+    // (the candidate is replaced in place).
+    await moveTo(fixture, "Model")
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.mutateInputs.length === 1)
-    // The prompts prefill the current model and variant; warming, interval and
-    // prompt start empty (the dialogs fixture answers each in order).
-    expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? ""])).toEqual([
-      ["Model", "acme/nova-1"],
-      ["Variant", ""],
-      ["Cache warming · acme/nova-1", ""],
-      ["Ping every · acme/nova-1", ""],
-      ["Keep-alive prompt · acme/nova-1", ""],
-    ])
-    const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice")
-    expect(own).toEqual([
-      expect.objectContaining({ providerID: "acme", modelID: "nova-2", variant: "high", warming: "45m", interval: "3m30s", prompt: "ping" }),
-    ])
+    expect(fixture.fake.selectInputs.map((input) => input.title)).toEqual(["Model provider", "Model"])
+    const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
+    expect(own).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-2" })])
+    // The Warming field prompts for its own value and writes it alone.
+    await moveTo(fixture, "Warming")
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.mutateInputs.length === 2)
+    expect(fixture.fake.promptInputs.at(-1)?.title).toBe("Warming · acme/nova-1")
+    const warming = fixture.fake.mutateInputs[1].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
+    expect(warming).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-1", warming: "45m" })])
+    // The Effort picker names the candidate, not the row label ("Effort").
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("Effort"))
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.selectInputs.some((input) => input.title.startsWith("Effort ·")))
+    const effort = fixture.fake.selectInputs.find((input) => input.title.startsWith("Effort ·"))
+    expect(effort?.title).toBe("Effort · acme/nova-1")
+    expect(effort?.options.map((option) => option.title)).toEqual(["(inherit / none)", "high", "low"])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+// Enter on a model row refuses a model outside the host catalog: the Model
+// field's picker offers only catalog models, and with an empty catalog it
+// toasts and writes nothing.
+test("the Model field picker offers only the host catalog and writes nothing when it is empty", async () => {
+  const snapshot = createSnapshot({
+    agents: [projectAgent("alice")],
+    records: [
+      { type: "model" as const, level: "project" as const, agent: "alice", providerID: "acme", modelID: "nova-1", updated: PRESET_UPDATED },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [snapshot],
+    width: 160,
+    models: [],
+  })
+  try {
+    await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
+    dispatch(fixture, "return")
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
+    await moveTo(fixture, "Model")
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.toasts.some((toast) => toast.message.includes("No models in the host catalog")))
+    expect(fixture.fake.mutateInputs).toEqual([])
   } finally {
     fixture.destroy()
   }
@@ -4101,29 +4177,6 @@ test("the filter reaches a Defaults › Models field row inside its closed model
     await until(fixture, () => fixture.fake.modelSettingsSets.length === 1)
     expect(fixture.fake.promptInputs[0]?.title).toBe("Effort · Every model")
     expect(fixture.fake.modelSettingsSets[0]).toEqual({ effort: "low" })
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("enter on a model row refuses a model outside the host catalog", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("alice")],
-    records: [
-      { type: "model" as const, level: "project" as const, agent: "alice", providerID: "acme", modelID: "nova-1", updated: PRESET_UPDATED },
-    ],
-  })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    width: 160,
-    models: [{ providerID: "acme", modelID: "nova-1", name: "Nova 1" }],
-    dialogs: { prompts: ["acme/ghost", "", ""] },
-  })
-  try {
-    await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
-    dispatch(fixture, "return")
-    await until(fixture, () => fixture.fake.toasts.some((toast) => toast.message.includes("is not a model in the host catalog")))
-    expect(fixture.fake.mutateInputs).toEqual([])
   } finally {
     fixture.destroy()
   }

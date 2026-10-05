@@ -139,6 +139,14 @@ export function toRpcRecords(
         ...(record.interval === undefined ? {} : { interval: record.interval }),
         ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
         ...(record.removed === undefined ? {} : { removed: record.removed }),
+        ...(record.originalCandidate === undefined
+          ? {}
+          : {
+              originalCandidate: {
+                ...record.originalCandidate,
+                ...(record.originalCandidate.editedFields === undefined ? {} : { editedFields: [...record.originalCandidate.editedFields] }),
+              },
+            }),
         updated: record.updated,
       }),
     ),

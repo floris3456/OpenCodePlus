@@ -1017,9 +1017,12 @@ test("editModelRow replaces the candidate and keeps the effective model active",
   const result = editModelRow(input, rowIdOf("project", "acme/mine"), { providerID: "acme", modelID: "mine", variant: "high", warming: "45m" })
   if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
   expect(result.status).toBe('Updated "acme/mine"')
-  const replaced = result.models.find((record) => record.level === "project")
+  // The row changes in place: one live project record for the new candidate,
+  // and the old candidate is hidden at this level by a tombstone.
+  const replaced = result.models.find((record) => record.level === "project" && record.removed !== true)
   expect(replaced).toMatchObject({ providerID: "acme", modelID: "mine", variant: "high", active: true, warming: "45m" })
-  expect(result.models.some((record) => record.variant === undefined && record.modelID === "mine")).toBe(false)
+  expect(result.models.some((record) => record.removed !== true && record.variant === undefined && record.modelID === "mine")).toBe(false)
+  expect(result.models.some((record) => record.removed === true && record.variant === undefined && record.modelID === "mine")).toBe(true)
   const nodes = expandedTree({ items: [], records: result.models, agents: [{ id: "build", scope: "defaults", origin: "native", model: { providerID: "acme", modelID: "base" } }] })
   const row = nodes.find((node) => node.id === rowIdOf("project", "acme/mine@high"))
   expect(row?.badges.active).toBe(true)
@@ -1032,14 +1035,16 @@ test("editModelRow plants a local record for an inherited row, active for the ef
   ])
   const inactive = editModelRow(input, rowIdOf("project", "acme/other"), { providerID: "acme", modelID: "other", variant: "low", warming: "off" })
   if ("refusal" in inactive) throw new Error(`expected success, got ${inactive.refusal}`)
-  expect(inactive.models.find((record) => record.level === "project" && record.modelID === "other")).toMatchObject({ variant: "low", warming: "off" })
-  expect(inactive.models.find((record) => record.level === "project" && record.modelID === "other")?.active).toBeUndefined()
+  // The inherited row changes in place at Project: the old variant-less
+  // candidate is tombstoned here and the new one is local.
+  expect(inactive.models.find((record) => record.level === "project" && record.modelID === "other" && record.removed !== true)).toMatchObject({ variant: "low", warming: "off" })
+  expect(inactive.models.find((record) => record.level === "project" && record.modelID === "other" && record.removed !== true)?.active).toBeUndefined()
 
   // Nothing is active, so the host model is the effective one: editing its
   // Project row plants a local active record for the new candidate.
   const upstream = editModelRow(input, rowIdOf("project", "acme/base"), { providerID: "acme", modelID: "base", variant: "high" })
   if ("refusal" in upstream) throw new Error(`expected success, got ${upstream.refusal}`)
-  expect(upstream.models.find((record) => record.level === "project" && record.modelID === "base")).toMatchObject({ variant: "high", active: true })
+  expect(upstream.models.find((record) => record.level === "project" && record.modelID === "base" && record.removed !== true)).toMatchObject({ variant: "high", active: true })
 })
 
 test("editModelRow validates warming and refuses an empty edit", () => {

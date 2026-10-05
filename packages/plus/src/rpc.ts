@@ -186,6 +186,15 @@ export const SnapshotSplitRecord = Schema.Struct({
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotSplitRecord" })
 
+export interface OriginalCandidate extends Schema.Schema.Type<typeof OriginalCandidate> {}
+export const OriginalCandidate = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+  source: Schema.optionalKey(Schema.Union([Level, Schema.Literal("upstream")])),
+  editedFields: Schema.optionalKey(Schema.Array(Schema.Union([Schema.Literal("model"), Schema.Literal("effort")]))),
+}).annotate({ identifier: "Plus.OriginalCandidate" })
+
 // Per-agent model selection. `active` is `true` or omitted, never `false`:
 // results are validated as JSON, so a present-but-undefined key fails the
 // whole call with HTTP 400.
@@ -205,6 +214,7 @@ export const SnapshotModelRecord = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   removed: Schema.optionalKey(Schema.Literal(true)),
+  originalCandidate: Schema.optionalKey(OriginalCandidate),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotModelRecord" })
 

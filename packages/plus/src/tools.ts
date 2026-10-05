@@ -47,7 +47,9 @@ import { query } from "./instructions/query.js"
 import {
   applies,
   catalogueField,
+  catalogueMatches,
   modelItemId,
+  parseMemberOwnerPath,
   parseModelItemId,
   parsePermItemId,
   permItemId,
@@ -715,6 +717,14 @@ function toSnapshotRecords(
         ...(record.interval === undefined ? {} : { interval: record.interval }),
         ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
         ...(record.removed === undefined ? {} : { removed: record.removed }),
+        ...(record.originalCandidate === undefined
+          ? {}
+          : {
+              originalCandidate: {
+                ...record.originalCandidate,
+                ...(record.originalCandidate.editedFields === undefined ? {} : { editedFields: [...record.originalCandidate.editedFields] }),
+              },
+            }),
         updated: record.updated,
       }),
     ),
@@ -1509,10 +1519,15 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     if (modelField !== undefined) {
       if (view === "record") {
         const address = node.address!
+        // Match the full owner: level, agent, team and catalogue. A shared
+        // inventory row's Teams record is a different record from its Agents
+        // one, and a member row's team-scoped record from its flat one.
         const record = modelsOfMemo(memo).find(
           (entry) =>
             entry.level === address.level &&
             entry.agent === address.agent &&
+            sameTeam(entry.team, address.team) &&
+            catalogueMatches(address.agent, entry.catalogue, address.catalogue) &&
             entry.providerID === modelField.target.providerID &&
             entry.modelID === modelField.target.modelID &&
             entry.variant === modelField.target.variant,
@@ -1715,7 +1730,7 @@ function ruleMessageOf(snapshot: Plus.Snapshot, item: Item): string | undefined 
 
 function recordOfRow(
   memo: MemoInput,
-  address: { level: CustomizationRecord["level"]; agent: string | null; item: string; section: string | null; team?: CustomizationRecord["team"] },
+  address: { level: CustomizationRecord["level"]; agent: string | null; item: string; section: string | null; team?: CustomizationRecord["team"]; catalogue?: CustomizationRecord["catalogue"] },
   customizations: readonly CustomizationRecord[],
 ): ModelRecord | RuleRecord | CustomizationRecord | null {
   if (address.item.startsWith("model:")) {
@@ -1727,6 +1742,7 @@ function recordOfRow(
           record.level === address.level &&
           record.agent === address.agent &&
           sameTeam(record.team, address.team) &&
+          catalogueMatches(address.agent, record.catalogue, address.catalogue) &&
           record.providerID === parsed.providerID &&
           record.modelID === parsed.modelID &&
           record.variant === parsed.variant,
@@ -1999,6 +2015,21 @@ function createRow(
         return yield* Effect.fail(protectedError(agent))
       const memo = memoFromSnapshot(snapshot)
       const team = input.team?.trim()
+      // A member's owner path (`<team>/:<member>`, the segment team and
+      // member rows carry) is not an agent id: agent ids forbid `:`. Passing
+      // it as `agent` with no `team` would otherwise find the member's Models
+      // group, write a record whose agent is literally that path, and fail to
+      // find the row, leaving an unreachable record delete cannot remove.
+      // Refuse before any write and name the two fields to pass instead.
+      if (team === undefined && agent !== null) {
+        const owner = parseMemberOwnerPath(agent)
+        if (owner !== undefined)
+          return yield* Effect.fail(
+            new Tool.Error({
+              message: `model.invalid: ${JSON.stringify(agent)} is a team member's owner path, not an agent id; pass agent ${JSON.stringify(owner.member)} with team ${JSON.stringify(owner.team)}`,
+            }),
+          )
+      }
       const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`)
       // Match the TUI Models group: presets and Defaults entries own scoped
       // records; an ordinary member writes its agent's records in this team's chain.

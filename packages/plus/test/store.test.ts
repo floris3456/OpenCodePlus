@@ -645,6 +645,50 @@ test("snapshot record schemas accept model and rule records over the RPC boundar
     decode({ type: "model", level: "project", agent: "alpha", providerID: "openai", modelID: "gpt-5", removed: true, updated: UPDATED }),
   ).toMatchObject({ removed: true })
   expect(
+    decode({
+      type: "model",
+      level: "project",
+      agent: "alpha",
+      providerID: "openai",
+      modelID: "gpt-5",
+      originalCandidate: { providerID: "anthropic", modelID: "claude", variant: "high", source: "global", editedFields: ["model"] },
+      updated: UPDATED,
+    }),
+  ).toMatchObject({
+    originalCandidate: { providerID: "anthropic", modelID: "claude", variant: "high", source: "global", editedFields: ["model"] },
+  })
+  expect(
     decode({ type: "rule", level: "project", agent: "alpha", tool: "shell", id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], updated: UPDATED }),
   ).toMatchObject({ tool: "shell", id: "git-push" })
+})
+
+test("ModelRecord with originalCandidate round-trips through disk save and load", async () => {
+  const { project } = await isolated()
+  const candidateRecord = model({
+    providerID: "google",
+    modelID: "gemini",
+    variant: "low",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["model", "effort"],
+    },
+  })
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records: [candidateRecord] })
+  const loaded = await load(project)
+  expect(loaded.records[0]).toMatchObject({
+    type: "model",
+    providerID: "google",
+    modelID: "gemini",
+    variant: "low",
+    originalCandidate: {
+      providerID: "openai",
+      modelID: "gpt-5",
+      variant: "high",
+      source: "global",
+      editedFields: ["model", "effort"],
+    },
+  })
 })

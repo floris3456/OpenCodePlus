@@ -186,7 +186,7 @@ export function createInstructionsDialogs(
       (current.hostModels ?? []).find((entry) => entry.providerID === parsed.target.providerID && entry.modelID === parsed.target.modelID)?.variants ?? []
     if (field === "effort") {
       const picked = await context.ui.dialog.select<string>({
-        title: `Effort · ${node.label}`,
+        title: `Effort · ${parsed.target.providerID}/${parsed.target.modelID}`,
         placeholder: "The variant this row runs with",
         options: [
           { title: "(inherit / none)", value: "", description: "No variant of its own" },
@@ -198,8 +198,9 @@ export function createInstructionsDialogs(
       return
     }
     const now = node.badges.value ?? ""
+    const target = `${parsed.target.providerID}/${parsed.target.modelID}`
     const raw = await context.ui.dialog.prompt({
-      title: `${MODEL_FIELD_LABELS[field]} · ${node.label}`,
+      title: `${MODEL_FIELD_LABELS[field]} · ${target}`,
       description: `${fieldHelp(field, variants)} Empty inherits.${now === "" ? "" : ` Now: ${now}.`}`,
       value: "",
       placeholder: now,

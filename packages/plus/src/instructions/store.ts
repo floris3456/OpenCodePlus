@@ -10,6 +10,7 @@ import type {
   Level,
   LinkRecord,
   ModelRecord,
+  OriginalCandidate,
   PresetRecord,
   PresetRef,
   RuleRecord,
@@ -24,7 +25,7 @@ import { catalogFor } from "./permission-catalog.js"
 import { ensure } from "../project.js"
 
 export type { CustomizationRecord, SplitRecord }
-export type { ModelRecord, ModelSettingsRecord, RuleRecord }
+export type { ModelRecord, ModelSettingsRecord, OriginalCandidate, RuleRecord }
 export type { TeamRecord }
 export type { EntryRecord, LinkRecord, PresetRecord }
 export type { CategoryRecord }
@@ -149,6 +150,14 @@ const V2Team = Schema.Struct({
   updated: Schema.String,
 })
 
+const V2OriginalCandidate = Schema.Struct({
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optional(Schema.String),
+  source: Schema.optional(Schema.Union([LevelSchema, Schema.Literal("upstream")])),
+  editedFields: Schema.optional(Schema.Array(Schema.Union([Schema.Literal("model"), Schema.Literal("effort")]))),
+})
+
 // Per-agent model selection. `active` is `true` or omitted, never `false`:
 // records cross the RPC boundary as JSON, where a present-but-undefined key
 // fails validation. `removed: true` is a tombstone hiding an inherited or
@@ -168,6 +177,7 @@ const V2Model = Schema.Struct({
   interval: Schema.optional(Schema.String),
   prompt: Schema.optional(Schema.String),
   removed: Schema.optional(Schema.Literal(true)),
+  originalCandidate: Schema.optional(V2OriginalCandidate),
   updated: Schema.String,
 })
 
@@ -840,6 +850,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           ...(record.interval === undefined ? {} : { interval: record.interval }),
           ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
           ...(record.removed === undefined ? {} : { removed: record.removed }),
+          ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
           updated: record.updated,
         },
       ]
@@ -1096,6 +1107,17 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
+      ...(record.originalCandidate === undefined
+        ? {}
+        : {
+            originalCandidate: {
+              providerID: record.originalCandidate.providerID,
+              modelID: record.originalCandidate.modelID,
+              ...(record.originalCandidate.variant === undefined ? {} : { variant: record.originalCandidate.variant }),
+              ...(record.originalCandidate.source === undefined ? {} : { source: record.originalCandidate.source }),
+              ...(record.originalCandidate.editedFields === undefined ? {} : { editedFields: [...record.originalCandidate.editedFields] }),
+            },
+          }),
       updated: record.updated,
     }
   if (record.type === "rule")

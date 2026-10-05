@@ -629,12 +629,28 @@ test("an agent's model row opens into field rows and one field edits and resets 
   await runOk(reset, { id: fieldRow("warming") })
   const after = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
   expect(after).not.toHaveProperty("warming")
-  // The Model field refuses reset.
-  expect((await runFail(reset, { id: fieldRow("model") })).message).toContain("cannot be reset")
+  // The Model field resets the whole local candidate override: the inherited
+  // candidate resumes and the unrelated keep-alive fields are preserved.
+  // First plant a local candidate with warming, then reset its Model field.
+  await runOk(set, { id: fieldRow("warming"), text: "30m" })
+  await runOk(set, { id: fieldRow("model"), text: "anthropic/claude#high" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)).toMatchObject({
+    providerID: "anthropic",
+    modelID: "claude",
+    variant: "high",
+    warming: "30m",
+  })
+  const resetModel = (await runOk(reset, { id: `item:project:build:${modelFieldItemId({ providerID: "anthropic", modelID: "claude", variant: "high" }, "model")}` })) as { status: string }
+  expect(resetModel.status).toContain("anthropic/claude")
+  const restored = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)
+  // The inherited upstream candidate is back (no variant), its unrelated
+  // warming preserved, and no tombstone is left behind.
+  expect(restored).toMatchObject({ providerID: "anthropic", modelID: "claude", warming: "30m" })
+  expect(restored).not.toHaveProperty("variant")
+  expect((await load(project)).records.filter((entry) => entry.type === "model" && entry.removed === true)).toHaveLength(0)
   // Editing Effort changes that one row's candidate in place: the old
   // candidate is hidden at this level (not left beside the new one) and the
   // row's warming and active state carry over.
-  await runOk(set, { id: fieldRow("warming"), text: "30m" })
   await runOk(set, { id: fieldRow("effort"), text: "high" })
   const highRows = expandedTree(memoInputOf((await api.snapshot()).value))
   expect(highRows.some((row) => row.id === "item:project:build:model:anthropic/claude@high")).toBe(true)
@@ -653,6 +669,673 @@ test("an agent's model row opens into field rows and one field edits and resets 
   expect(plain).not.toHaveProperty("variant")
   expect(plain).toMatchObject({ warming: "30m" })
 })
+
+// T7 issue #6: every field edits and resets individually at the real tool
+// boundary, and a reset clears only its own field. Model reset restores the
+// inherited candidate with the row's unrelated fields preserved; Effort
+// reset drops the variant; the warming fields clear and inherit again.
+test("every model field edits and resets individually and resets preserve unrelated fields", async () => {
+  const project = await tempProject()
+  const buildPath = path.join(project, ".opencode", "agent", "build.md")
+  await fs.mkdir(path.dirname(buildPath), { recursive: true })
+  await Bun.write(buildPath, "build body\n")
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude", { variants: ["low", "high"] })],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const target = { providerID: "anthropic", modelID: "claude" }
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t = target) => `item:project:build:${modelFieldItemId(t, field)}`
+  const local = async () => (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)
+
+  // Each warming field edits and resets on its own, preserving the others.
+  await runOk(set, { id: fieldRow("warming"), text: "30m" })
+  await runOk(set, { id: fieldRow("interval"), text: "4m" })
+  await runOk(set, { id: fieldRow("prompt"), text: "keep alive" })
+  expect(await local()).toMatchObject({ warming: "30m", interval: "4m", prompt: "keep alive" })
+  await runOk(reset, { id: fieldRow("interval") })
+  expect(await local()).toMatchObject({ warming: "30m", prompt: "keep alive" })
+  expect(await local()).not.toHaveProperty("interval")
+  await runOk(reset, { id: fieldRow("prompt") })
+  expect(await local()).toMatchObject({ warming: "30m" })
+  expect(await local()).not.toHaveProperty("prompt")
+
+  // Effort edits and resets its variant on the same row; warming stays.
+  await runOk(set, { id: fieldRow("effort"), text: "high" })
+  const high = { providerID: "anthropic", modelID: "claude", variant: "high" }
+  expect(await local()).toMatchObject({ variant: "high", warming: "30m" })
+  await runOk(reset, { id: fieldRow("effort", high) })
+  expect(await local()).not.toHaveProperty("variant")
+  expect(await local()).toMatchObject({ warming: "30m" })
+
+  // Model reset restores the inherited upstream candidate and preserves the
+  // unrelated warming; no tombstone is left behind.
+  await runOk(set, { id: fieldRow("model"), text: "anthropic/claude#high" })
+  expect(await local()).toMatchObject({ variant: "high", warming: "30m" })
+  await runOk(reset, { id: fieldRow("model", high) })
+  const restored = await local()
+  expect(restored).toMatchObject({ providerID: "anthropic", modelID: "claude", warming: "30m" })
+  expect(restored).not.toHaveProperty("variant")
+  expect((await load(project)).records.filter((entry) => entry.type === "model" && entry.removed === true)).toHaveLength(0)
+
+  // The last reset clears the warming field so it reads inherited again. The
+  // restored candidate stays local (the Model field still has an override);
+  // warming, interval and prompt read inherited.
+  await runOk(reset, { id: fieldRow("warming") })
+  expect(await local()).not.toHaveProperty("warming")
+  const rows = expandedTree(memoInputOf((await api.snapshot()).value))
+  const fields = rows.filter((row) => row.id.startsWith("item:project:build:modelfield:"))
+  const byLabel = new Map(fields.map((row) => [row.label, row]))
+  expect(byLabel.get("Warming")?.actions?.reset).toBe(false)
+  expect(byLabel.get("Ping every")?.actions?.reset).toBe(false)
+  expect(byLabel.get("Keep-alive prompt")?.actions?.reset).toBe(false)
+  expect(byLabel.get("Warming")?.badges.value).toBe("off · built-in")
+  // Reset the Model field too: the bare local candidate goes and the row is
+  // inherited again from the upstream model.
+  await runOk(reset, { id: fieldRow("model") })
+  expect(await local()).toBeUndefined()
+  const after = expandedTree(memoInputOf((await api.snapshot()).value))
+  const afterFields = after.filter((row) => row.id.startsWith("item:project:build:modelfield:"))
+  expect(afterFields.every((row) => row.actions?.reset === false)).toBe(true)
+  expect(afterFields[0]?.badges.value).toBe("anthropic/claude · upstream")
+})
+// T7 issue #6: reset restores the candidate a *Global* record inherited at
+// Project replaced, preserving the row's own warming.
+test("Model reset at Project restores the inherited Global candidate", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude"), modelWith("openai", "gpt-5")],
+    classifications: { "": "general", claude: "general", "gpt-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // A Global active record for a different model is what the Project chain
+  // resolves; the agent's upstream model stays anthropic/claude.
+  const globalActive: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    warming: "45m",
+    active: true,
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, { expectedProjectRevision: stored.projectRevision, expectedGlobalRevision: stored.globalRevision, records: [...stored.records, globalActive] })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const inherited = { providerID: "openai", modelID: "gpt-5" }
+  const edited = { providerID: "anthropic", modelID: "claude" }
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string }) => `item:project:build:${modelFieldItemId(t, field)}`
+  // Edit Project's Model field to the other model and give it warming.
+  await runOk(set, { id: fieldRow("model", inherited), text: "anthropic/claude" })
+  await runOk(set, { id: fieldRow("warming", edited), text: "10m" })
+  expect((await load(project)).records.find(
+    (entry) => entry.type === "model" && entry.level === "project" && entry.agent === "build" && entry.removed !== true,
+  )).toMatchObject({ providerID: "anthropic", modelID: "claude", warming: "10m" })
+  // Reset the Model field: the inherited Global candidate returns at Project
+  // with the row's unrelated warming preserved; Global is untouched.
+  await runOk(reset, { id: fieldRow("model", edited) })
+  const project2 = (await load(project)).records.find(
+    (entry) => entry.type === "model" && entry.level === "project" && entry.agent === "build" && entry.removed !== true,
+  )
+  expect(project2).toMatchObject({ providerID: "openai", modelID: "gpt-5", warming: "10m" })
+  expect(project2).not.toHaveProperty("variant")
+  const globalStill = (await load(project)).records.find(
+    (entry) => entry.type === "model" && entry.level === "global" && entry.agent === "build" && entry.removed !== true,
+  )
+  expect(globalStill).toMatchObject({ providerID: "openai", modelID: "gpt-5", warming: "45m", active: true })
+})
+
+test("Model reset of inherited inactive candidate restores that candidate and leaves upstream active candidate active", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude"),
+      modelWith("openai", "gpt-5", { variants: ["high", "low"] }),
+      modelWith("google", "gemini", { variants: ["high", "low"] }),
+    ],
+    classifications: { "": "general", claude: "general", "gpt-5": "general", gemini: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Global has active candidate A (anthropic/claude) and inactive candidate B (openai/gpt-5@high).
+  const globalActive: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "anthropic",
+    modelID: "claude",
+    active: true,
+    updated: UPDATED,
+  }
+  const globalInactive: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, globalActive, globalInactive],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const candidateB = { providerID: "openai", modelID: "gpt-5", variant: "high" }
+  const candidateC = { providerID: "google", modelID: "gemini", variant: "high" }
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+
+  // Edit Candidate B's Model field to C (google/gemini).
+  await runOk(set, { id: fieldRow("model", candidateB), text: "google/gemini" })
+
+  // Verify Project level has exactly one visible edited row for C, plus tombstone for B.
+  const recordsAfterEdit = (await load(project)).records
+  const projectRecords = recordsAfterEdit.filter((r): r is ModelRecord => r.type === "model" && r.level === "project" && r.agent === "build")
+  const visibleC = projectRecords.find((r) => r.removed !== true)
+  expect(visibleC).toMatchObject({
+    providerID: "google",
+    modelID: "gemini",
+    variant: "high",
+    originalCandidate: { providerID: "openai", modelID: "gpt-5", variant: "high", source: "global" },
+  })
+  expect(visibleC?.active).toBeUndefined()
+  const tombstoneB = projectRecords.find((r) => r.removed === true)
+  expect(tombstoneB).toMatchObject({ providerID: "openai", modelID: "gpt-5", variant: "high", removed: true })
+
+  // Verify Global candidate A is still active in the snapshot!
+  const snap1 = memoInputOf((await api.snapshot()).value)
+  const rows1 = expandedTree(snap1)
+  const modelRows1 = rows1.filter((r) => r.id.startsWith("item:project:build:model:"))
+  expect(modelRows1.map((r) => r.label)).toEqual(["anthropic/claude", "google/gemini@high"])
+  const activeRow1 = modelRows1.find((r) => r.badges.active === true)
+  expect(activeRow1?.label).toBe("anthropic/claude")
+
+  // Reset the Model field on C: must restore B (openai/gpt-5@high), NOT upstream active A!
+  await runOk(reset, { id: fieldRow("model", candidateC) })
+
+  // Verify B is restored, tombstone for B is gone, C is gone.
+  const recordsAfterReset = (await load(project)).records
+  const projectRecordsAfterReset = recordsAfterReset.filter((r): r is ModelRecord => r.type === "model" && r.level === "project" && r.agent === "build")
+  expect(projectRecordsAfterReset).toHaveLength(0)
+
+  // Verify tree rows: B is back, and A remains active!
+  const snap2 = memoInputOf((await api.snapshot()).value)
+  const rows2 = expandedTree(snap2)
+  const modelRows2 = rows2.filter((r) => r.id.startsWith("item:project:build:model:"))
+  expect(modelRows2.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5@high"])
+  const activeRow2 = modelRows2.find((r) => r.badges.active === true)
+  expect(activeRow2?.label).toBe("anthropic/claude")
+
+  // Attempt repeat reset on B's Model field: must refuse with no revision write!
+  const revBeforeRepeat = (await load(project)).projectRevision
+  const err = await runFail(reset, { id: fieldRow("model", candidateB) })
+  expect(err.message).toContain("has no override to reset")
+  const revAfterRepeat = (await load(project)).projectRevision
+  expect(revAfterRepeat).toBe(revBeforeRepeat)
+})
+
+test("Effort reset restores original inherited variant from low to high instead of no-variant", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude"),
+      modelWith("openai", "gpt-5", { variants: ["high", "low"] }),
+    ],
+    classifications: { "": "general", claude: "general", "gpt-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Global has active candidate A and inactive candidate B@high.
+  const globalActive: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "anthropic",
+    modelID: "claude",
+    active: true,
+    updated: UPDATED,
+  }
+  const globalInactive: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, globalActive, globalInactive],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+
+  // Edit Effort on B@high to low.
+  await runOk(set, { id: fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "high" }), text: "low" })
+
+  const editedRecord = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(editedRecord).toMatchObject({
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "low",
+    originalCandidate: { providerID: "openai", modelID: "gpt-5", variant: "high", source: "global" },
+  })
+
+  // Reset Effort on B@low: must restore "high", NOT no-variant!
+  await runOk(reset, { id: fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "low" }) })
+
+  // Verify tree shows B@high restored
+  const snap = memoInputOf((await api.snapshot()).value)
+  const rows = expandedTree(snap)
+  const effortRow = rows.find((r) => r.id === fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "high" }))
+  expect(effortRow?.badges.value).toBe("high · global")
+  expect(effortRow?.actions?.reset).toBe(false)
+
+  // Repeat reset on Effort: must refuse with no revision write!
+  const revBeforeRepeat = (await load(project)).projectRevision
+  const err = await runFail(reset, { id: fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "high" }) })
+  expect(err.message).toContain("has no override to reset")
+  const revAfterRepeat = (await load(project)).projectRevision
+  expect(revAfterRepeat).toBe(revBeforeRepeat)
+})
+
+test("Independent Model and Effort edits support independent reset, warming preservation, and repeated edits B->C->D", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude", { variants: ["high", "low"] }),
+      modelWith("openai", "gpt-5", { variants: ["high", "low"] }),
+      modelWith("google", "gemini", { variants: ["high", "low"] }),
+    ],
+    classifications: { "": "general", claude: "general", "gpt-5": "general", gemini: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Global has inactive candidate B@high.
+  const globalB: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, globalB],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+
+  // Edit B@high: Model to C (anthropic/claude), Effort to low, warming to 25m, active to true.
+  await runOk(set, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5", variant: "high" }), text: "anthropic/claude" })
+  await runOk(set, { id: fieldRow("effort", { providerID: "anthropic", modelID: "claude", variant: "high" }), text: "low" })
+  await runOk(set, { id: fieldRow("warming", { providerID: "anthropic", modelID: "claude", variant: "low" }), text: "25m" })
+  await runOk(set, { id: `item:project:build:model:anthropic/claude@low`, active: true })
+
+  const cLow = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(cLow).toMatchObject({
+    providerID: "anthropic",
+    modelID: "claude",
+    variant: "low",
+    warming: "25m",
+    active: true,
+    originalCandidate: { providerID: "openai", modelID: "gpt-5", variant: "high", source: "global" },
+  })
+
+  // Part 3A: Reset Model restores B + compatible local low, preserving warming and active intent.
+  await runOk(reset, { id: fieldRow("model", { providerID: "anthropic", modelID: "claude", variant: "low" }) })
+  const bLow = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(bLow).toMatchObject({
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "low",
+    warming: "25m",
+    active: true,
+  })
+
+  // Repeat reset on Model: refuses with no writes.
+  const revBeforeRepeatModel = (await load(project)).projectRevision
+  const errModel = await runFail(reset, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5", variant: "low" }) })
+  expect(errModel.message).toContain("has no override to reset")
+  expect((await load(project)).projectRevision).toBe(revBeforeRepeatModel)
+
+  // Reset Effort on B@low: restores original high variant, preserving warming.
+  await runOk(reset, { id: fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "low" }) })
+  const bHigh = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(bHigh).toMatchObject({
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+    warming: "25m",
+    active: true,
+  })
+
+  // Repeat reset on Effort: refuses with no writes.
+  const revBeforeRepeatEffort = (await load(project)).projectRevision
+  const errEffort = await runFail(reset, { id: fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "high" }) })
+  expect(errEffort.message).toContain("has no override to reset")
+  expect((await load(project)).projectRevision).toBe(revBeforeRepeatEffort)
+
+  // Part 3B: Reset Effort first: keeps Model C and restores Effort high.
+  await runOk(set, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5", variant: "high" }), text: "anthropic/claude" })
+  await runOk(set, { id: fieldRow("effort", { providerID: "anthropic", modelID: "claude", variant: "high" }), text: "low" })
+  await runOk(reset, { id: fieldRow("effort", { providerID: "anthropic", modelID: "claude", variant: "low" }) })
+  const cHigh = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(cHigh).toMatchObject({
+    providerID: "anthropic",
+    modelID: "claude",
+    variant: "high",
+  })
+  const revBeforeRepeatEffortFirst = (await load(project)).projectRevision
+  const errEffortFirst = await runFail(reset, { id: fieldRow("effort", { providerID: "anthropic", modelID: "claude", variant: "high" }) })
+  expect(errEffortFirst.message).toContain("has no override to reset")
+  expect((await load(project)).projectRevision).toBe(revBeforeRepeatEffortFirst)
+
+  // Reset Model: restores Model B@high!
+  await runOk(reset, { id: fieldRow("model", { providerID: "anthropic", modelID: "claude", variant: "high" }) })
+  const bRestored = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(bRestored).toMatchObject({
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+  })
+
+  // Part 3C: Repeated edits B -> C -> D: reset restores B!
+  await runOk(set, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5", variant: "high" }), text: "anthropic/claude" })
+  await runOk(set, { id: fieldRow("model", { providerID: "anthropic", modelID: "claude", variant: "high" }), text: "google/gemini" })
+
+  const dRecord = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(dRecord).toMatchObject({
+    providerID: "google",
+    modelID: "gemini",
+    originalCandidate: { providerID: "openai", modelID: "gpt-5", variant: "high", source: "global" },
+  })
+
+  // Reset Model on D restores B!
+  await runOk(reset, { id: fieldRow("model", { providerID: "google", modelID: "gemini", variant: "high" }) })
+  const restoredFromD = (await load(project)).records.find(
+    (r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true,
+  )
+  expect(restoredFromD).toMatchObject({
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+  })
+})
+
+test("no-warming control: B@high->C->effort low->activate->reset Model->B@low active->repeat refuses->reset Effort->B@high", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude", { variants: ["high", "low"] }),
+      modelWith("openai", "gpt-5", { variants: ["high", "low"] }),
+    ],
+    classifications: { "": "general", claude: "general", "gpt-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Global has inactive candidate B@high, no warming anywhere.
+  const globalB: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, globalB],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+  const local = async () =>
+    (await load(project)).records.find((r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true)
+
+  // B@high -> Model C, Effort low, then activate C@low (no warming set).
+  await runOk(set, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5", variant: "high" }), text: "anthropic/claude" })
+  await runOk(set, { id: fieldRow("effort", { providerID: "anthropic", modelID: "claude", variant: "high" }), text: "low" })
+  await runOk(set, { id: "item:project:build:model:anthropic/claude@low", active: true })
+  const cLow = await local()
+  expect(cLow).toMatchObject({ providerID: "anthropic", modelID: "claude", variant: "low", active: true })
+  expect(cLow).not.toHaveProperty("warming")
+
+  // Reset Model: B@low active (the locally-edited effort survives), no warming.
+  const beforeReset = await load(project)
+  await runOk(reset, { id: fieldRow("model", { providerID: "anthropic", modelID: "claude", variant: "low" }) })
+  const bLow = await local()
+  expect(bLow).toMatchObject({ providerID: "openai", modelID: "gpt-5", variant: "low", active: true })
+  expect(bLow).not.toHaveProperty("warming")
+
+  // Repeat reset refuses with identical records and revision.
+  const recordsNow = (await load(project)).records
+  const revNow = (await load(project)).projectRevision
+  const refused = await runFail(reset, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5", variant: "low" }) })
+  expect(refused.message).toContain("has no override to reset")
+  expect((await load(project)).records).toEqual(recordsNow)
+  expect((await load(project)).projectRevision).toBe(revNow)
+
+  // Reset Effort: B@high, active kept.
+  await runOk(reset, { id: fieldRow("effort", { providerID: "openai", modelID: "gpt-5", variant: "low" }) })
+  const bHigh = await local()
+  expect(bHigh).toMatchObject({ providerID: "openai", modelID: "gpt-5", variant: "high", active: true })
+  expect(bHigh).not.toHaveProperty("warming")
+  // The active model in the snapshot is B@high.
+  const rows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:"))
+  expect(rows.find((r) => r.badges.active === true)?.label).toBe("openai/gpt-5@high")
+  void beforeReset
+})
+
+test("Model reset restores a local-only original that never existed above", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude"),
+      modelWith("openai", "gpt-5", { variants: ["high", "low"] }),
+      modelWith("google", "gemini", { variants: ["high", "low"] }),
+    ],
+    classifications: { "": "general", claude: "general", "gpt-5": "general", gemini: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Global has active candidate A (anthropic/claude). Candidate B (openai/gpt-5@high)
+  // exists only as a local Project row, so it is *not* in the chain above.
+  const globalActive: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "anthropic",
+    modelID: "claude",
+    active: true,
+    updated: UPDATED,
+  }
+  const localB: ModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    variant: "high",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, globalActive, localB],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const candidateB = { providerID: "openai", modelID: "gpt-5", variant: "high" }
+  const candidateC = { providerID: "google", modelID: "gemini", variant: "high" }
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+  const projectLocal = async () =>
+    (await load(project)).records.find((r) => r.type === "model" && r.level === "project" && r.agent === "build" && r.removed !== true)
+
+  // Edit B's Model field to C. B is captured as the original even though it
+  // never existed above, and B's tombstone hides it at this level.
+  await runOk(set, { id: fieldRow("model", candidateB), text: "google/gemini" })
+  expect(await projectLocal()).toMatchObject({
+    providerID: "google",
+    modelID: "gemini",
+    variant: "high",
+    originalCandidate: { providerID: "openai", modelID: "gpt-5", variant: "high", source: "project" },
+  })
+
+  // Reset restores the local-only B, not the active A above.
+  await runOk(reset, { id: fieldRow("model", candidateC) })
+  expect(await projectLocal()).toMatchObject({ providerID: "openai", modelID: "gpt-5", variant: "high" })
+  expect(await projectLocal()).not.toHaveProperty("originalCandidate")
+  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:"))
+  expect(modelRows.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5@high"])
+  expect(modelRows.find((r) => r.badges.active === true)?.label).toBe("anthropic/claude")
+})
+
+test("Model reset refuses honestly for a legacy row with no original metadata", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude"), modelWith("openai", "gpt-5")],
+    classifications: { "": "general", claude: "general", "gpt-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // A legacy local row written before originalCandidate existed: it has no
+  // originalCandidate, so what it replaced cannot be known.
+  const legacy: ModelRecord = {
+    type: "model",
+    level: "project",
+    agent: "build",
+    providerID: "anthropic",
+    modelID: "claude",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, { expectedProjectRevision: stored.projectRevision, expectedGlobalRevision: stored.globalRevision, records: [...stored.records, legacy] })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const reset = need(tools, "instructions_reset")
+  const before = await load(project)
+  const refused = await runFail(reset, { id: "item:project:build:modelfield:model:anthropic/claude" })
+  expect(refused.message).toContain("no recorded original candidate")
+  // No write happened.
+  expect(await load(project)).toEqual(before)
+})
+
+test("Inherited row edit maintains one visible row, tombstone old candidate, and re-add restores old candidate", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude"),
+      modelWith("openai", "gpt-5"),
+    ],
+    classifications: { "": "general", claude: "general", "gpt-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Global has inactive candidate B.
+  const globalB: ModelRecord = {
+    type: "model",
+    level: "global",
+    agent: "build",
+    providerID: "openai",
+    modelID: "gpt-5",
+    updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, globalB],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const create = need(tools, "instructions_create")
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+
+  // Edit B (openai/gpt-5) to C (anthropic/claude).
+  await runOk(set, { id: fieldRow("model", { providerID: "openai", modelID: "gpt-5" }), text: "anthropic/claude" })
+
+  // Exactly one visible row for anthropic/claude; openai/gpt-5 is tombstoned.
+  const snap1 = memoInputOf((await api.snapshot()).value)
+  const rows1 = expandedTree(snap1)
+  const modelRows1 = rows1.filter((r) => r.id.startsWith("item:project:build:model:"))
+  expect(modelRows1.map((r) => r.label)).toEqual(["anthropic/claude"])
+
+  // Re-add openai/gpt-5: clears tombstone, both rows are visible.
+  await runOk(create, { kind: "model", level: "project", agent: "build", providerID: "openai", modelID: "gpt-5" })
+
+  const snap2 = memoInputOf((await api.snapshot()).value)
+  const rows2 = expandedTree(snap2)
+  const modelRows2 = rows2.filter((r) => r.id.startsWith("item:project:build:model:"))
+  expect(modelRows2.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5"])
+})
+
 
 // ---------------------------------------------------------------------------
 

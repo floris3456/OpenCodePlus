@@ -1,6 +1,6 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
-import { parseModelFieldItemId, type ModelFieldName } from "./model-settings.js"
+import { hostModelOf, parseModelFieldItemId, type ModelFieldName } from "./model-settings.js"
 import {
   acknowledgeActiveModel,
   activateModel,
@@ -15,6 +15,7 @@ import {
   formatWarming,
   hasModelRecordAt,
   merge,
+  modelCandidates,
   modelItemId,
   modelKey,
   modelRuntimeScope,
@@ -45,6 +46,7 @@ import type {
   ModelInput,
   ModelRecord,
   ModelWarmingFields,
+  OriginalCandidate,
   PresetRef,
   RecordScope,
   ReviewPart,
@@ -1474,6 +1476,7 @@ export interface ModelEditFields {
   readonly interval?: string
   /** undefined = leave the keep-alive text alone; "" clears it; else a parsePrompt value. */
   readonly prompt?: string
+  readonly editedField?: "model" | "effort"
 }
 
 // Enter on a model row: replace the candidate (provider/model/variant) at this
@@ -1495,7 +1498,11 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   const to = { providerID: fields.providerID, modelID: fields.modelID, ...(fields.variant === undefined ? {} : { variant: fields.variant }) }
   const local = models.find((record) => record.removed !== true && scopedTo(record, addr) && sameModelCandidate(record, from))
   const effective = effectiveModelAt(found.memo, address, models)
-  const staysActive = local !== undefined ? local.active === true : effective !== undefined && sameModelCandidate(effective, from)
+  // A local active record keeps its flag. A local record that is not active
+  // but names the effective model (the level below resolves the same
+  // candidate, e.g. after a Model reset preserved its warming) also stays
+  // effective: editing the row that is in force must not silently drop it.
+  const staysActive = local?.active === true || (effective !== undefined && sameModelCandidate(effective, from))
   const targetChanged = !sameModelCandidate(from, to)
   const upstream = modelUpstreamOf(found.memo, address)
   const context = { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) }
@@ -1511,14 +1518,66 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
         ...(local.interval === undefined ? {} : { interval: local.interval }),
         ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
       }
+  let originalCandidate: OriginalCandidate | undefined = local?.originalCandidate
+  if (originalCandidate === undefined && targetChanged) {
+    const aboveInput = runtimeModelInput(found.memo, address, models.filter((record) => !scopedTo(record, addr)))
+    const aboveCandidates = modelCandidates(aboveInput)
+    const orig = aboveCandidates.find((c) => sameModelCandidate(c, from))
+    if (orig !== undefined) {
+      originalCandidate = {
+        providerID: orig.providerID,
+        modelID: orig.modelID,
+        ...(orig.variant === undefined ? {} : { variant: orig.variant }),
+        source: orig.source,
+      }
+    } else if (upstream !== undefined && sameModelCandidate(upstream, from)) {
+      originalCandidate = {
+        providerID: upstream.providerID,
+        modelID: upstream.modelID,
+        ...(upstream.variant === undefined ? {} : { variant: upstream.variant }),
+        source: "upstream",
+      }
+    } else if (local !== undefined) {
+      // The replaced candidate is a local-only row (added at this level, not
+      // inherited). It is its own original: capture it so a later Model reset
+      // restores this candidate instead of guessing the active model above.
+      originalCandidate = {
+        providerID: from.providerID,
+        modelID: from.modelID,
+        ...(from.variant === undefined ? {} : { variant: from.variant }),
+        source: addr.level,
+      }
+    }
+  }
+
+  if (originalCandidate !== undefined) {
+    const existing = new Set<"model" | "effort">(originalCandidate.editedFields ?? [])
+    if (fields.editedField === "model") {
+      existing.add("model")
+    } else if (fields.editedField === "effort") {
+      existing.add("effort")
+    } else if (targetChanged) {
+      existing.add("model")
+    }
+    const nextEdited = Array.from(existing)
+    originalCandidate = {
+      ...originalCandidate,
+      editedFields: nextEdited,
+    }
+  }
+
+  const toWithOriginal = {
+    ...to,
+    ...(originalCandidate === undefined ? {} : { originalCandidate }),
+  }
   const swapped = targetChanged
-    ? addModelRecord(tombstoneModelRecord(models, addr, from, now()), addr, to, now())
-    : addModelRecord(models, addr, to, now())
+    ? addModelRecord(tombstoneModelRecord(models, addr, from, now()), addr, toWithOriginal, now())
+    : addModelRecord(models, addr, toWithOriginal, now())
   // Re-activate only when the active flag has to be carried over: a replaced
   // record keeps it, and an inherited/upstream edit plants it. A same-target
   // local active record is left exactly as it is.
   const withActive = staysActive && (targetChanged || local === undefined || local.active !== true)
-    ? activateModel(swapped, addr, to, context)
+    ? activateModel(swapped, addr, toWithOriginal, context)
     : swapped
   const warming = fields.warming === undefined || fields.warming.trim().length === 0 ? undefined : parseWarming(fields.warming)
   if (warming !== undefined && "error" in warming) return { refusal: warming.error }
@@ -1533,7 +1592,7 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
     ...(fields.prompt === undefined ? {} : { prompt: prompt === undefined ? null : prompt.prompt }),
   }
   const merged: ModelWarmingFields = { ...(targetChanged ? carried : {}), ...settings }
-  const next = fieldsSet || Object.keys(merged).length > 0 ? setModelSettings(withActive, addr, to, merged, now()) : withActive
+  const next = fieldsSet || Object.keys(merged).length > 0 ? setModelSettings(withActive, addr, toWithOriginal, merged, now()) : withActive
   if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
   const onlySettings = fieldsSet && JSON.stringify(withActive) === JSON.stringify(models)
   const status = onlySettings
@@ -1567,6 +1626,7 @@ export function modelFieldEdit(
         providerID: parsed.providerID,
         modelID: parsed.modelID,
         ...(variant === undefined ? {} : { variant }),
+        editedField: "model",
       },
     }
   }
@@ -1577,6 +1637,7 @@ export function modelFieldEdit(
         providerID: target.providerID,
         modelID: target.modelID,
         ...(variant.length === 0 ? {} : { variant }),
+        editedField: "effort",
       },
     }
   }
@@ -1615,13 +1676,210 @@ export function setModelFieldRow(input: MemoInput, rowId: string, text: string, 
   return editModelRow(input, parent, edit.fields, sharedMemo)
 }
 
+// `r` on a field row clears that field at the row's level. Warming, Ping every
+// and Keep-alive prompt go through the shared edit; Effort drops the variant
+// (or restores the inherited variant when originally set). Model clears the local
+// candidate override at this level and restores the original candidate this row
+// replaced, preserving compatible local effort and unrelated keep-alive fields.
+// One row still never becomes two (the closed editing decision).
 export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
-  const parsed = found.node.address === undefined ? undefined : parseModelFieldItemId(found.node.address.item)
-  if (parsed === undefined) return { refusal: `"${found.node.label}" is not a model field` }
-  if (parsed.field === "model") return { refusal: `"${found.node.label}" cannot be reset; activate another model or delete the row` }
-  return setModelFieldRow(input, rowId, "", sharedMemo)
+  const address = found.node.address
+  const parsed = address === undefined ? undefined : parseModelFieldItemId(address.item)
+  if (parsed === undefined || address === undefined) return { refusal: `"${found.node.label}" is not a model field` }
+  const models = modelsOfInput(input)
+  const addr = modelScopeOf(address)
+  const local = models.find(
+    (record) => record.removed !== true && scopedTo(record, addr) && sameModelCandidate(record, parsed.target),
+  )
+  if (local === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
+
+  if (parsed.field === "warming" || parsed.field === "interval" || parsed.field === "prompt") {
+    if (local[parsed.field] === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
+    const next = setModelSettings(models, addr, parsed.target, { [parsed.field]: null }, now())
+    if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no override to reset` }
+    return {
+      models: next,
+      status: `Reset "${found.node.label}"`,
+      retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
+    }
+  }
+
+  if (parsed.field === "effort") {
+    const orig = local.originalCandidate
+    if (orig !== undefined) {
+      const isEffortEdited = orig.editedFields !== undefined
+        ? orig.editedFields.includes("effort")
+        : ((local.variant ?? undefined) !== (orig.variant ?? undefined))
+      if (!isEffortEdited) {
+        return { refusal: `"${found.node.label}" has no override to reset` }
+      }
+      const origVariant = orig.variant ?? undefined
+      const targetWithRestoredVariant = {
+        providerID: local.providerID,
+        modelID: local.modelID,
+        ...(origVariant === undefined ? {} : { variant: origVariant }),
+      }
+      const remainingEditedFields = (orig.editedFields ?? []).filter((f) => f !== "effort")
+      const isModelStillEdited = remainingEditedFields.includes("model")
+      const carried: ModelWarmingFields = {
+        ...(local.warming === undefined ? {} : { warming: local.warming }),
+        ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
+      }
+      const wasActive = local.active === true
+      const hasOtherOverrides = Object.keys(carried).length > 0 || wasActive
+      const nextOriginalCandidate: OriginalCandidate | undefined = (remainingEditedFields.length > 0 || hasOtherOverrides)
+        ? { ...orig, editedFields: remainingEditedFields }
+        : undefined
+      let without = removeModelRecord(models, addr, parsed.target)
+      if (!isModelStillEdited) {
+        without = without.filter(
+          (record) => !(record.removed === true && scopedTo(record, addr) && sameModelCandidate(record, orig)),
+        )
+      }
+      let next: ModelRecord[]
+      if (nextOriginalCandidate !== undefined || hasOtherOverrides) {
+        const added = addModelRecord(
+          without,
+          addr,
+          {
+            ...targetWithRestoredVariant,
+            ...(nextOriginalCandidate !== undefined ? { originalCandidate: nextOriginalCandidate } : {}),
+          },
+          now(),
+        )
+        const withSettings = Object.keys(carried).length > 0
+          ? setModelSettings(added, addr, targetWithRestoredVariant, carried, now())
+          : added
+        next = wasActive
+          ? activateModel(withSettings, addr, targetWithRestoredVariant, { scopes: found.memo.ctx.scopes })
+          : withSettings
+      } else {
+        next = without
+      }
+      if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no override to reset` }
+      const restoredLabel = origVariant ?? "none"
+      return {
+        models: next,
+        status: `Reset "${found.node.label}" to "${restoredLabel}"`,
+        retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
+      }
+    }
+    if (local.variant !== undefined) {
+      return setModelFieldRow(input, rowId, "", sharedMemo)
+    }
+    return { refusal: `"${found.node.label}" has no override to reset` }
+  }
+
+  if (parsed.field === "model") {
+    const orig = local.originalCandidate
+    if (orig !== undefined) {
+      const isModelEdited = orig.editedFields !== undefined
+        ? orig.editedFields.includes("model")
+        : (local.providerID !== orig.providerID || local.modelID !== orig.modelID || !sameModelCandidate(local, orig))
+      if (!isModelEdited) {
+        // The model itself was not replaced here. If the row only carries an
+        // unrelated Effort edit or keep-alive settings, removing it would drop
+        // them too. Removing is only honest when the chain above resolves the
+        // same candidate the row would restore, so the effective model does
+        // not change; otherwise refuse (a repeated reset must not silently
+        // switch the agent to a different active model above).
+        const isEffortEdited = orig.editedFields !== undefined
+          ? orig.editedFields.includes("effort")
+          : ((local.variant ?? undefined) !== (orig.variant ?? undefined))
+        const hasKeepAlive = local.warming !== undefined || local.interval !== undefined || local.prompt !== undefined
+        if (!hasKeepAlive && !isEffortEdited) {
+          const above = resolveActiveModel(
+            runtimeModelInput(found.memo, address, models.filter((record) => !scopedTo(record, addr))),
+          )
+          if (above !== undefined && sameModelCandidate(above, orig)) {
+            const without = removeModelRecord(models, addr, parsed.target)
+            return {
+              models: without,
+              status: `Reset "${found.node.label}" to "${modelKey(orig)}"`,
+              retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
+            }
+          }
+        }
+        return { refusal: `"${found.node.label}" has no override to reset` }
+      }
+      const origTarget = { providerID: orig.providerID, modelID: orig.modelID }
+      const remainingEditedFields = (orig.editedFields ?? []).filter((f) => f !== "model")
+      const isEffortStillEdited = remainingEditedFields.includes("effort")
+      let restoredVariant: string | undefined
+      if (!isEffortStillEdited) {
+        restoredVariant = orig.variant
+      } else {
+        const host = hostModelOf(found.memo.ctx.hostModels, origTarget)
+        const compatible = host?.variants === undefined || host.variants.length === 0 || (local.variant !== undefined && host.variants.includes(local.variant))
+        restoredVariant = compatible ? local.variant : orig.variant
+      }
+      const restoredCandidate = {
+        ...origTarget,
+        ...(restoredVariant === undefined ? {} : { variant: restoredVariant }),
+      }
+      const effortStillDifferent = (restoredVariant ?? undefined) !== (orig.variant ?? undefined)
+      const carried: ModelWarmingFields = {
+        ...(local.warming === undefined ? {} : { warming: local.warming }),
+        ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
+      }
+      const wasActive = local.active === true
+      const hasOtherOverrides = Object.keys(carried).length > 0 || wasActive
+      const nextOriginalCandidate: OriginalCandidate | undefined = (remainingEditedFields.length > 0 || hasOtherOverrides)
+        ? { ...orig, editedFields: remainingEditedFields }
+        : undefined
+      let without = removeModelRecord(models, addr, parsed.target)
+      if (!isEffortStillEdited || !effortStillDifferent) {
+        without = without.filter(
+          (record) => !(record.removed === true && scopedTo(record, addr) && sameModelCandidate(record, orig)),
+        )
+      }
+      without = without.filter(
+        (record) => !(record.removed === true && scopedTo(record, addr) && sameModelCandidate(record, restoredCandidate)),
+      )
+      let next: ModelRecord[]
+      // A local-only original (source === this level) has no lower row: removing
+      // its tombstone is not enough, the record itself must come back. An
+      // inherited/upstream original resumes by dropping the tombstone.
+      const restoresLocalRow = orig.source === addr.level
+      if (nextOriginalCandidate !== undefined || hasOtherOverrides || restoresLocalRow) {
+        const added = addModelRecord(
+          without,
+          addr,
+          {
+            ...restoredCandidate,
+            ...(nextOriginalCandidate !== undefined ? { originalCandidate: nextOriginalCandidate } : {}),
+          },
+          now(),
+        )
+        const withSettings = Object.keys(carried).length > 0
+          ? setModelSettings(added, addr, restoredCandidate, carried, now())
+          : added
+        next = wasActive
+          ? activateModel(withSettings, addr, restoredCandidate, { scopes: found.memo.ctx.scopes })
+          : withSettings
+      } else {
+        next = without
+      }
+      if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no override to reset` }
+      return {
+        models: next,
+        status: `Reset "${found.node.label}" to "${modelKey(restoredCandidate)}"`,
+        retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
+      }
+    }
+    // Legacy fallback without originalCandidate: the row was written before
+    // original metadata existed, so what it replaced is unknown. Guessing the
+    // active model above would restore a different candidate; refuse honestly.
+    return {
+      refusal: `"${found.node.label}" has no recorded original candidate to restore; delete the row instead`,
+    }
+  }
+
+  return { refusal: `"${found.node.label}" is not a model field` }
 }
 
 export function isModelRowId(rowId: string): boolean {
