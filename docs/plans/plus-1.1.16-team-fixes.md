@@ -317,6 +317,31 @@ definitions and system text to today.
 4. After a compaction, the system text holds the change and the next message
    reads the new prefix.
 
+## 6. Instructions: no provider catalogue reads while navigating (moved from 1.1.15 #10)
+
+**Where this comes from:** `plus-1.1.15-residual.md` R4. The 1.1.15 lists met
+their speed targets (`plus-1.1.15-a4-live.md`: Defaults › Models 133 ms on the
+first open after a server start, 129–131 ms on repeats; an agent's Models
+14–16 ms). So the remaining part of 1.1.15 Instructions T7 moves here; it no
+longer blocks 1.1.15.
+
+**What is still unproved:** "Navigating fetches no provider catalogue; the
+catalogue loads only for pickers, and is cached." The overnight run never
+showed, at the real Core Model/State boundary, that moving through the tree
+causes no catalogue read, model transform, refetch or rebuild. Nor did it show
+that the effective provider/model warming, names and variants survive the
+caching. Unaccepted drafts (temporary transform register/dispose) are kept as
+patches under `run/plus/data/opencodeplus/teams/runs/main-165a4a6fe1411f5f/tmp/source-input/`
+and must not be reused as they are.
+
+**Change:** profile first. Then cache the host model metadata at a legitimate
+host lifecycle point (not per navigation), with no Plus runtime import of Core
+and no public API expansion.
+
+**Tests:** a real Core Model/State control that counts catalogue reads and
+model notifications across a scripted navigation (zero), and a picker open
+(one, then cached). Effective warming, names and variants are unchanged.
+
 ## Open questions for the user
 
 None. Settled on 2026-10-05:
