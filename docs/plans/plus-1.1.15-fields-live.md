@@ -122,6 +122,18 @@ without weakening refusal controls:
   model here: activate another model first`.
 - **160×48.** The same group and fields render wide (list + inspector + detail), including
   the exact `warming 30m · set at Defaults` / `ping every 4m · set at Defaults` facts.
+- **Every field edits and resets independently** (Ping every and Keep-alive prompt measured
+  live on the Defaults-derived `…@xhigh` row at 80 and 160):
+  - Warming `30m · defaults` → typed `45m` → row `warm 45m`; `r` cleared it to `inherited`.
+  - Ping every `4m · defaults` → typed `5m` → row `every 5m`; `r` cleared it to `4m · defaults`.
+    Repeated at 6m → `6m` → `r` → `4m · defaults`.
+  - Keep-alive prompt `… Reply with exactly: OK · built-in` → typed `ping me ok` → row
+    `ping me ok`; `r` cleared it to `… Reply with exactly: OK · built-in`.
+  - Each edit left the row's other fields untouched and the active inherited candidate
+    (`…@high`) unchanged: after every reset the group again showed `…@high` active plus the
+    one local `…@xhigh` row with its remaining local warming only.
+  - The edits and resets produced exactly one owned-store revision each (rev 5–11), visible
+    as one live local record, never a second visible row.
 - **Model picker.** Enter on the Model field opens `Model provider`, then the model list;
   selecting an entry replaces the candidate in place (one visible row + tombstone), and a
   later `r` restores the original candidate.
@@ -135,18 +147,19 @@ No request was needed for these field claims; the composer stayed on the observe
 
 ## Runtime classification and cleanup
 
-- Actual `opencode-local.log`: **436 lines / 424 INFO / 12 WARN / 0 ERROR**; all 12 WARNs are
-  the expected `executor-controlled plugin source refused` refusals, zero other
-  warnings/errors.
-- Owned PIDs (kernel cwd/fd proven):
+- Actual `opencode-local.log` (second, clean live pass): **642 lines / 624 INFO / 18 WARN /
+  0 ERROR**; all 18 WARNs are the expected `executor-controlled plugin source refused`
+  refusals, zero other warnings/errors. The first pass logged 436/424/12/0 with the same
+  all-refusal classification.
+- Owned PIDs (kernel cwd/fd proven), first pass:
   - launcher `3823121`: cwd `<dev-home>/project`, fd 9 → `<dev-home>/data/opencode/log/opencode-local.log`;
   - server `3823152`: cwd `<worktree>/packages/cli`, fd 9 → the log, fds 11/12/13 → the owned `opencode-local.db` (+`-wal`/`-shm`);
   - search `3823220`: cwd `<dev-home>/project`.
-- Exited the owned TUI through the palette (`Ctrl+P` → `exit` → Enter); pilotty status
-  `exited`, exit code `0`, `killed_by_client:false`.
-- Parent-verifiable cleanup: all three PIDs absent; a full `/proc` cwd/fd/maps scan for the
-  exact owned home finds **no matches**. No test PTY or owned runtime remains. No
-  environment/credential material was read or printed.
+- Exited the owned TUI through the palette (`Ctrl+P` → `exit` → Enter) in both passes;
+  pilotty status `exited`, exit code `0`, `killed_by_client:false`.
+- Parent-verifiable cleanup: the first-pass PIDs are absent; a full `/proc` cwd/fd/maps scan
+  for the exact owned home finds **no matches** after both passes. No test PTY or owned
+  runtime remains. No environment/credential material was read or printed.
 
 ## Checked at HEAD
 
