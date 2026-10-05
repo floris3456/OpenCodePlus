@@ -1184,6 +1184,97 @@ test("no-warming control: B@high->C->effort low->activate->reset Model->B@low ac
   void beforeReset
 })
 
+test("Effort reset of an inherited-original row removes its tombstone and leaves no stale hidden row", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("cliproxyapi", "claude-opus-5-5"))],
+    models: [modelWith("cliproxyapi", "claude-opus-5-5", { variants: ["high", "low", "xhigh"] })],
+    classifications: { "": "general", "claude-opus-5-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  // Defaults carries xhigh for build, Global has active high.
+  const defaultsRow: ModelRecord = {
+    type: "model", level: "defaults", agent: "build",
+    providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh", updated: UPDATED,
+  }
+  const globalActive: ModelRecord = {
+    type: "model", level: "global", agent: "build",
+    providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high", active: true, updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, defaultsRow, globalActive],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+  const projectRecords = async () =>
+    (await load(project)).records.filter((r): r is ModelRecord => r.type === "model" && r.level === "project" && r.agent === "build")
+
+  // Edit Effort on the defaults-derived candidate xhigh to low.
+  await runOk(set, { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" }), text: "low" })
+  expect(await projectRecords()).toHaveLength(2) // low live + xhigh tombstone
+  expect((await projectRecords()).find((r) => r.removed !== true)).toMatchObject({ variant: "low", originalCandidate: { variant: "xhigh", source: "defaults", editedFields: ["effort"] } })
+
+  // Reset Effort on low: restores xhigh and must not leave the tombstone behind.
+  await runOk(reset, { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "low" }) })
+  expect(await projectRecords()).toHaveLength(0)
+  const shown = await runOk(need(tools, "instructions_show"), { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" }) }) as { value?: unknown }
+  expect(shown).toMatchObject({ value: "xhigh · defaults" })
+})
+
+test("Effort reset over a pre-existing other-variant tombstone restores the original cleanly", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "build body", modelRef("cliproxyapi", "claude-opus-5-5"))],
+    models: [modelWith("cliproxyapi", "claude-opus-5-5", { variants: ["high", "low", "xhigh"] })],
+    classifications: { "": "general", "claude-opus-5-5": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  const defaultsRow: ModelRecord = {
+    type: "model", level: "defaults", agent: "build",
+    providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh", updated: UPDATED,
+  }
+  const globalActive: ModelRecord = {
+    type: "model", level: "global", agent: "build",
+    providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high", active: true, updated: UPDATED,
+  }
+  // A pre-existing tombstone hiding the Global "high" candidate at Project.
+  const highTombstone: ModelRecord = {
+    type: "model", level: "project", agent: "build",
+    providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high", removed: true, updated: UPDATED,
+  }
+  const stored = await load(project)
+  await save(project, {
+    expectedProjectRevision: stored.projectRevision,
+    expectedGlobalRevision: stored.globalRevision,
+    records: [...stored.records, defaultsRow, globalActive, highTombstone],
+  })
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reset = need(tools, "instructions_reset")
+  const fieldRow = (field: Parameters<typeof modelFieldItemId>[1], t: { providerID: string; modelID: string; variant?: string }) =>
+    `item:project:build:${modelFieldItemId(t, field)}`
+  const projectRecords = async () =>
+    (await load(project)).records.filter((r): r is ModelRecord => r.type === "model" && r.level === "project" && r.agent === "build")
+
+  await runOk(set, { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" }), text: "low" })
+  expect(await projectRecords()).toHaveLength(3) // low live + xhigh tombstone + pre-existing high tombstone
+
+  await runOk(reset, { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "low" }) })
+  const after = await projectRecords()
+  expect(after).toHaveLength(1)
+  expect(after[0]).toMatchObject({ variant: "high", removed: true })
+})
+
 test("Model reset restores a local-only original that never existed above", async () => {
   const project = await tempProject()
   const ctx = fullContext({
