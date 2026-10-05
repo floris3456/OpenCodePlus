@@ -472,3 +472,8 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
 - Where: `packages/plus/src/index.ts:212-213`. `watchMonitor` registers its `warming` hook before `decideWarmingFor`, and core runs hooks in registration order (`core/src/plugin/hooks.ts:88-95`). So the monitor stores core's proposed settings before Plus clears them. The quota hook in the cliproxyapi plugin (`quota/register.ts:81`) can also clear them later.
 - Weight: wrong behaviour. It breaks Monitor T2's line that a cache-expired miss names whether warming was off, ended or failed.
 - Planned fix: register `decideWarmingFor` before `watchMonitor` in `src/index.ts`. Test: a monitor hook test where a later decision clears the settings and the stored fact says `off`. Live re-check: case 4 again (warming off, wait past 5 m), and the detail says `Warming: off`. This is not yet delegated: the plan names no Brief for it, and this chat cannot delegate.
+
+### Continuation in the same chat: the team run is still bound to plus-1.1.15
+
+- The user sent the new start prompt into the first chat. The chat was moved to `plus-1.1.15_overnight`, but its team run (`main-8af0d3a0ca65e6a9`) was created before the move and stays bound to branch `plus-1.1.15` (`team_get_context` says so). This is the case the plan describes as tested.
+- Decision: delegate from this chat anyway, safely. Every `team_delegate` passes `base` = the current `plus-1.1.15_overnight` HEAD, so workers start from this branch. `team_integrate` is never called, because it would fast-forward `plus-1.1.15`. A finished worker's commits are reviewed with `team_diff` and landed here with `git cherry-pick` from its team branch, then the focused checks run here, as with T112's evidence.
