@@ -139,12 +139,12 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
   (`releases/2.0.18-plus-1.1.14/bin/opencodeplus search-mcp`, PPid 2592457),
   which is not a runtime I started and is left running.
 - Log `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t8752d5-20261005-0302/data/opencode/log/opencode-local.log`
-  (796 777 bytes, 3 136 lines): **0 ERROR**, 90 WARN, 3 046 INFO. Every WARN is
+  (846 869 bytes, 3 340 lines): **0 ERROR**, 96 WARN, 3 244 INFO. Every WARN is
   `executor-controlled plugin source refused` for the workspace `.opencode`
-  sources (the confinement rule). INFO is dominated by `watcher subscribe` (915),
-  `watcher started/stopped` (690 each), `spawning process` (378), `plugin
-  reconciliation started/completed` (61 each), `mcp connected`, `location
-  services booted` and `cli starting` (30 each), plus 15 `InterruptError: All
+  sources (the confinement rule). INFO is dominated by `watcher subscribe` (976),
+  `watcher started/stopped` (736 each), `spawning process` (399), `plugin
+  reconciliation started/completed` (65 each), `mcp connected`, `location
+  services booted` and `cli starting` (32 each), plus 16 `InterruptError: All
   fibers interrupted without error` lines, one per normal TUI shutdown. No
   Monitor or Plus error or warning.
 
