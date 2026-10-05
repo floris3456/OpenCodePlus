@@ -170,13 +170,39 @@ result.
   `session_message` rows sent while the row was `new-a1` still carry that
   text; rows after the rename carry `new-b`; assistant rows recorded before
   the rename keep `agent:"m1x"`. Nothing rewrites old messages.
-- **Runtime log**: the only `level=ERROR` in
-  `<dev-home>/data/opencode/log/opencode-local.log` is a harness mis-pick —
-  switching the composer to `claude-fable-5-1` produced
-  `Failed to drain Session … AI.Error.InvalidRequest: unknown provider for
-  model claude-fable-5-1` (that model has no route in this home). Not a T6
-  defect; renames then ran on `deepseek-v4.1-flash-cheap`. No rename-related
-  ERROR/WARN.
+- **Runtime log / relay error — open availability finding (not a T6 defect,
+  not a harness dismissal).** The only `level=ERROR` in
+  `<dev-home>/data/opencode/log/opencode-local.log` (final counts at the end
+  of my runs: 1592 lines, 1 ERROR, 49 WARN, 1542 INFO; the WARNs are
+  `executor-controlled plugin source refused`) is a genuine relay rejection.
+  Sanitized facts from the owned projected state, not from raw config or
+  prompts:
+  - Owned monitor ledger `data/opencode/opencodeplus/monitor.db`, `request`
+    rows: 37 `completed` and 1 `error`; the error row is
+    `0d434120-52eb-4cb1-8e8b-a85a378c0fe6`: kind `step`, agent `new-b`,
+    provider `cliproxyapi`, model `claude-fable-5-1`, variant `xhigh`, status
+    `error`, `finish=error`, `started=1791165229421`,
+    `ended=1791165229443` (22 ms), `error` =
+    `{"type":"provider.invalid-request","status":400,"hash":"0dd35a2328c29e26","chars":43}`.
+  - The same request has exactly one `request_fingerprint` row (protocol
+    `openai-responses`, `body_hash=e2044e429a5004d3`), so a real wire request
+    was built and sent.
+  - Log line: `Failed to drain Session … AI.Error …` with inner
+    `AI.Error.InvalidRequest: unknown provider for model claude-fable-5-1`
+    (sanitized: no body/prompt copied). In `provider-error.ts` that inner
+    type maps to `InvalidRequestError` because the relay answered HTTP 400;
+    the `message` comes from the relay body.
+  - `claude-fable-5-1` is a **release-provided** catalog model
+    (`config/opencode/opencode.json` ships it under provider `cliproxyapi`
+    with variants low/medium/high/xhigh/max), not a fixture I seeded. So the
+    chooser offered a real, valid entry, the client built a valid request, and
+    the CLIProxyAPI relay rejected it with HTTP 400 — an **operational
+    provider/relay availability failure**, not a wrong host provider and not a
+    T6 rename defect. Correcting the composer to
+    `cliproxyapi/deepseek-v4.1-flash-cheap` then completed every subsequent
+    request (ledger rows `completed`). Parent records this as an operational
+    finding; it cannot be fixed from this worktree (provider config / shared
+    relay). No further provider probes were run.
 
 ### 2026-10-05 04:10 — narrow (80×24) pass (run 1)
 
@@ -184,8 +210,11 @@ result.
   `Rename m1z` with `m1z`.
 - Team row footer narrow reads `… space toggle   a add   l link   R rename
   d delete …`; the R hint is present at 80 columns.
-- No layout break; Instructions is already a narrow two-page layout. Refusal
-  toasts were captured wide; narrow verified prefill, hint and layout only.
+- **Refusal captured narrow (followup run `overnight-a1-live-narrow`)**:
+  at 80×24, `R` on `Project › Agents › OpenCode › explore` showed the toast
+  `Agent explore is built in and cannot be renamed` in the narrow layout. So
+  the refusal path is now observed at both 160×48 and 80×24.
+- No layout break; Instructions is already a narrow two-page layout.
 
 ### 2026-10-05 04:18–04:22 — Global rename (run `overnight-a1-live-retry2`)
 
@@ -238,7 +267,7 @@ actions**; records are labelled fixtures.
 | Renamable: Project/Global teams | live: `crew`→`squad`→`squad2`→`squad3`→`squadx` (project), `gcrew`→`gcrew2` (global) |
 | Collision: choose another free key, update help/hints | live refusals `Agent m2 already exists …` and `Team squad2 already exists`; no writes; `R rename` hint in wide and narrow footers |
 | File/team directory follows | live: agent `.md` and team dir moved in every run |
-| Customizations, splits, models, rules, links follow | live: agent set (incl. split); member set incl. a live member `split`; global agent + global member sets |
+| Customizations, splits, models, rules, links follow | live: agent set incl. agent `split`; member set incl. a live member `split` (real rename over a fixture split, run 3); global agent + global member sets. Unit proofs: `test/rename.test.ts` "rename an agent moves its file and records of every kind and keeps resolution" asserts `["customization","link","model","rule","split"]`; "rename a member moves its records and the Delegate-to rows that name it" asserts `["customization","link","model","rule"]` for the member |
 | Warming rows follow | live: `m1y`→`m1z` kept warming/interval/prompt |
 | `team_delegate` "Delegate to" rows follow | live: `to.m1`→`to.m1x`→`to.m1y`→`to.m1z`→`to.m1w` |
 | Team-scoped records + team enablement follow | live: enablement record and every scoped row followed team renames; enable toggle is real |
@@ -276,6 +305,10 @@ Kernel proof that the server opens `opencode-local.log` (run
   - fd 11 →
     `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258/data/opencode/opencode-local.db`
   - fd 12 / 13 → the same path with `-wal` / `-shm`.
+- Maps proof (run `overnight-a1-live-proof`, server PID `3041206`): the
+  `/proc/3041206/maps` entries under the owned dev home are exactly the
+  `opencode-local.db-shm` mapping; the loaded native libraries map from the
+  owned worktree's `node_modules/.bun/…` paths. No shared-service path appears.
 
 After exiting each run through the palette `exit`:
 
@@ -284,18 +317,13 @@ After exiting each run through the palette `exit`:
 - Run 2 owned PIDs `2957618` and `2957664` — all gone.
 - Run 3 owned PIDs `2982254` (launcher), `2982300` (server), `2982447` and
   `2982732` (search children) — all gone.
-- `pilotty status` for each of the three sessions reports `exited`; none
-  appears in `pilotty list-sessions`.
+- Narrow followup PIDs `3033923` (launcher) and `3033960` (server) — gone.
+- Proof run PIDs `3041131`, `3041146` (launcher) and `3041206` (server) — gone.
+- `pilotty status` for each of the five sessions reports `exited`; none appears
+  in `pilotty list-sessions`.
 - No live process has its cwd under the owned dev home and no live process
   holds an fd whose target is under it (checked over every `/proc/<pid>/cwd`
-  and `/proc/<pid>/fd/*`).
-- The one remaining process with this worktree in its cwd is PID `2699280`
-  (`/home/bliss/OpenCodePlus/releases/opencodeplus/releases/2.0.18-plus-1.1.14/bin/opencodeplus
-  search-mcp`), child of the shared service PID `2592457`
-  (`…/2.0.18-plus-1.1.14/bin/opencodeplus serve --service`). Its cwd is this
-  worktree but it holds no fd under my dev home, and its start time (02:58:12)
-  precedes my first spawn (02:59). It is the shared service's child, not owned
-  by this run, and was not touched.
+  and `/proc/<pid>/fd/*`). This proof uses only owned cwd/fd/maps paths.
 
 ## Open issues / deferred
 
@@ -305,11 +333,17 @@ After exiting each run through the palette `exit`:
   `… is shipped and cannot be renamed` message was not observed live. Covered
   by `test/rename.test.ts` with an injected `builtins` registry. To observe it
   live would need a build that ships a Defaults team.
-- **D2 — narrow refusal toast.** At 80×24 I verified prefill, the R hint and
-  layout; the refusal toasts were captured at 160×48.
-- **D3 — `claude-fable-5-1` provider error.** One `Failed to drain Session …
-  unknown provider` ERROR in the owned log from my composer mis-pick; not a
-  T6 defect, recorded so it is not mistaken for a rename regression.
+- **D2 — narrow refusal toast: closed.** A small owned followup run captured
+  the built-in refusal at 80×24:
+  `Agent explore is built in and cannot be renamed`. No deferral remains.
+- **D3 — `cliproxyapi/claude-fable-5-1` relay rejection (open operational
+  finding, parent logs it).** One `level=ERROR`; a genuine release-provided
+  catalog model with a real wire request (owned ledger row
+  `0d434120-52eb-4cb1-8e8b-a85a378c0fe6`, `provider.invalid-request` HTTP 400,
+  hash `0dd35a2328c29e26`) was rejected by the CLIProxyAPI relay. Not a T6
+  defect and not fixable from this worktree (provider config / shared relay).
+  Correcting the composer to `cliproxyapi/deepseek-v4.1-flash-cheap` completed
+  every subsequent request.
 - **Note — no source edits.** This run only created
   `docs/plans/plus-1.1.15-a1-live.md`; `packages/*` and
   `docs/plans/plus-1.1.15-overnight-log.md` were not touched.
