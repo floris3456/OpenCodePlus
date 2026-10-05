@@ -7,7 +7,7 @@ instructions tools' `set` on field rows.
 ## Build and home
 
 - Worktree: `/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1280af3-20261005-1704`
-- Start commit (HEAD at test start): to be filled.
+- Start commit (HEAD at test start): `012caf2267b27eae35dbe01800ededa75dd7e1ff`.
 - Launched exactly: `pilotty spawn --name sweep-i-t7b opencodeplus-dev .` from the
   worktree root, then `pilotty resize -s sweep-i-t7b 160 48`.
 - Dev home: `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t1280af3-20261005-1704`
@@ -188,3 +188,101 @@ all. The footer confirms `enter open fields`.
 
 **PASS** — Enter opens the model row's field rows; the old whole-row editor
 dialog is gone and the help lists no editor entry.
+
+### Step 6 — instructions tools on the field rows (PASS)
+
+Esc left Instructions; the composer was at agent `build`, model
+`cliproxyapi/deepseek-v4.1-flash-cheap` (switched via `/models`). Asked the
+agent to call the tools; it did, printing each call and result.
+
+**6a. `show` (build field row).**
+
+```
+tools.instructions.show
+{ "id": "item:global:build:modelfield:warming:cliproxyapi/claude-opus-5-5@high" }
+Result:
+{ "id": "item:global:build:modelfield:warming:cliproxyapi/claude-opus-5-5@high",
+  "view": "resolved", "label": "Warming", "field": "warming", "value": "32m · opencode.json" }
+```
+
+**6b. `set` with `warming:` (refused, as written in the Brief's first form).**
+
+```
+tools.instructions.set
+{ "id": "item:global:build:modelfield:warming:cliproxyapi/claude-opus-5-5@high", "warming": "25m" }
+Result (error, no write):
+"Warming" takes text: its value, or "" to inherit
+```
+
+**6c. `set` with `text:` (the accepted form).**
+
+```
+tools.instructions.set
+{ "id": "item:global:build:modelfield:warming:cliproxyapi/claude-opus-5-5@high", "text": "25m" }
+```
+
+Result reported as a write, `globalRevision 484`; the agent re-read:
+`{ "id": "…@high", "view": "resolved", "label": "Warming", "field": "warming", "value": "25m" }`.
+Store line 215 then read exactly (only `warming` added beside the existing
+fields):
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-opus-5-5@xhigh","warming":"25m","updated":"2026-10-05T15:12:31.126Z"}
+```
+
+**6d. same `set` on the Defaults › Models field row.** The agent's own
+`instructions_show` on `item:defaults:build:modelfield:warming:cliproxyapi/claude-opus-5-5@xhigh`
+reports the row's label `Warming` (mirroring the Defaults › Models field rows),
+and it set its `text` to `25m` (`globalRevision 485`); line 224 then read
+`…"modelID":"claude-opus-5-5","variant":"xhigh","active":true,…,"warming":"25m","interval":"4m"…`.
+`instructions_list { "where": "models" }` returned 40 of 486 rows naming model
+groups/permissions/tools (`group:project:build:models`,
+`item:project:build:tool:opencode_models`, `item:project:build:perm:instructions_set:targets.models`,
+…), the model-items view rather than the field ids.
+
+**6e. `reset` on the build field row.**
+
+```
+tools.instructions.reset
+{ "id": "item:global:build:modelfield:warming:cliproxyapi/claude-opus-5-5@high" }
+Result:
+{ "id": "item:global:build:modelfield:warming:cliproxyapi/claude-opus-5-5@high",
+  "status": "Reset \"Warming\"", "revision": 0, "globalRevision": 486 }
+```
+
+A re-read then showed `{ … "field": "warming", "value": "32m · opencode.json" }`,
+and store line 215 was back to its pre-step-6 content with only the `updated`
+timestamp changed:
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-opus-5-5@xhigh","updated":"2026-10-05T15:13:23.705Z"}
+```
+
+**Conclusion — the build record changed only `warming` and was then reset.**
+The set added only `"warming":"25m"` (all other fields identical); the reset
+removed it, leaving the record as before apart from `updated`. The earlier
+`warming:`-parameter call was refused with no write, and the `warming`-field
+row mirrors the Defaults › Models field row (`set` uses `text`, `reset` clears
+the override, source returns to `· opencode.json`).
+
+**PASS** (with a note: the Brief's literal `warming: "25m"` form is refused —
+`text` is required for a field row; recorded as observed).
+
+## Runtime log and cleanup
+
+- Server log `<dev-home>/data/opencode/log/opencode-local.log`: **238 lines,
+  0 ERROR, 6 WARN**.
+- Every WARN is the expected `executor-controlled plugin source refused`:
+  - line 31: `path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document`
+  - line 32: `path=/home/bliss/OpenCodePlus/.opencode type=directory`
+  - line 104: `path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document`
+  - line 105: `path=/home/bliss/OpenCodePlus/.opencode type=directory`
+  - line 106: `path=<worktree>/.opencode/opencode.jsonc type=document`
+  - line 107: `path=<worktree>/.opencode type=directory`
+- No ERROR line at all.
+- The only pilotty session started was `sweep-i-t7b`, killed with
+  `pilotty kill -s sweep-i-t7b`; `pilotty list-sessions` then listed only the
+  pre-existing sessions (`sweep-i-t3`, `sweep-m-t2`, `w-f15454a0a1ed9809-b`,
+  `w-1e01-story`, `w-f15454a0a1ed9809-a`, `sweep-i-t7a`, `ux1`, `rt-t6`) — none
+  of them mine.
+- No source file was changed; the diff is this evidence file only.
