@@ -12,6 +12,33 @@ No source file is changed by this sweep; this file only.
 
 Status legend: PASS / FAIL (recorded, not fixed) / NOT LIVE (reason + covering test).
 
+## Status by line
+
+| End-state line | Result |
+| --- | --- |
+| `/monitor`, `/tools` alias, `M` (Tools + Team), filtered on the opening session | PASS |
+| Scope line `s` (This session · Team tree · Team · Project · Everything) and `T` team picker | PASS |
+| `S` session picker, grouped tree, newest first, Enter scopes | PASS |
+| When `t` (All · Since last compaction · 15m · 1h · 24h · 7d · 30d) | PASS |
+| Totals line, every metric labelled at 80/100/160 | PASS |
+| Tabs 1–5 (Overview · Cache · Tools · Sessions · Steps) | PASS |
+| Overview token mix · agents table · top-3 misses/tools · context now | PASS |
+| Overview unstable-prefix warnings | NOT LIVE (no unstable signal; `monitor-analysis.test.ts` / `monitor-cache.test.ts` pass) |
+| Overview context `(at last compaction: …)` | NOT LIVE (no compaction ran; source `tabs/overview.tsx:97`) |
+| Cache requests time-ordered, verdict, Enter detail, `x` misses-only | PASS |
+| Cache miss feedback token · cold dim · ping row | NOT LIVE (ledger `misses: 0`, no cold start, no ping; `monitor-view.test.tsx` pass) |
+| Tools group/drill/compare/marks/a·f·F/failed-only | PASS |
+| Sessions tree, totals, Enter/space drills | PASS |
+| Steps all fields, duration, finish, tools, Enter calls + diff | PASS |
+| Keys `o` `a` `f` `F` `/` `m` `c` Enter `⌫` esc `?` | PASS |
+| One-line hint bar on every tab; settings persist, drills don't | PASS |
+| Intuitive: scope+window unasked, labels, 100-col no h-scroll, narrow drops columns | PASS |
+| Composer `Tools` compact, default scope tree, `M` opens on its session | PASS |
+| Older-run team derivation from role membership | NOT LIVE (all runs already carry `team`) |
+
+Final: 0 FAIL. Focused checks `bun test test/monitor-view.test.tsx` → 33 pass;
+plus `monitor-analysis` / `monitor-cache` → 65 pass / 0 fail.
+
 ---
 
 ## Progress log
