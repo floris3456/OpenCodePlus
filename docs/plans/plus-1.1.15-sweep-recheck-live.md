@@ -179,15 +179,72 @@ usage is no longer judged a miss.
 
 ### B1. Model and two prompts
 
-_Pending._
+Did: `Esc` back to the chat. The chat had inherited the team's `Build-Seat`
+agent (`claude-fable-5-1`, no route in this dev home). `/model` → filtered
+`claude-opus-5-5` → `Enter` → `Select variant` → `high` → `Enter`. Footer then
+read `Build-Seat · claude-opus-5-5 CLIProxyAPI · high`.
+
+Sent `Reply with exactly OK` twice; each reply rendered `OK` with
+`Build-Seat · claude-opus-5-5 · 1.6s` / `1.5s`.
+
+**PASS** (model `cliproxyapi/claude-opus-5-5` variant `high` chosen, two prompts
+sent).
 
 ### B2. `monitor.query({ view: "cache" })`
 
-_Pending._
+Did: sent the brief's prompt in the same chat:
+
+```
+Call monitor.query({ view: "cache" }) in Code Mode and print, for every request, its id, verdict, cause and evidence, then the misses count.
+```
+
+The agent ran `✓ execute` → `› monitor.query [view=cache]` and replied (`Each of
+the three requests, with its id, verdict, cause and evidence:`):
+
+```
+1. 57ec1557-d6df-4fea-8890-c51b7416c94f
+   - Verdict: none
+   - Cause: prefix-changed (confidence: certain)
+   - Evidence: option prompt_cache_key removed; instruction update: core/environment, core/date, core/codemode, ...
+2. 93a2098b-c6c7-4e83-8bcd-2b0bf588f877
+   - Verdict: partial
+   - Cause: unknown (confidence: unknown)
+   - Evidence: Reusable prefix unchanged, within cache lifetime; provider-side eviction or routing
+   - It expected 18,227 cached tokens but read 9,265, so 8,962 tokens missed.
+3. eedc1942-f963-4b80-8d1c-4df5698f9e52
+   - Verdict: none
+   - Cause: unknown (confidence: unknown)
+   - Evidence: Request still running; no usage reported yet
+   - This is the request that ran the query.
+
+Misses: 1 (8,962 tokens), from request 93a2098b. The cache hit rate was 25.4%.
+```
+
+**PASS** (one `monitor.query({ view: "cache" })` call returned the calling
+session's requests with id, verdict, cause and evidence, plus the misses count).
 
 ### B3. Still-running request shows verdict `none`
 
-_Pending._
+The third request, `eedc1942-f963-4b80-8d1c-4df5698f9e52` — the very step that
+called the tool, still running — reads exactly:
+
+```
+3. eedc1942-f963-4b80-8d1c-4df5698f9e52
+   - Verdict: none
+   - Cause: unknown (confidence: unknown)
+   - Evidence: Request still running; no usage reported yet
+   - This is the request that ran the query.
+```
+
+and the misses count names only `93a2098b`:
+
+```
+Misses: 1 (8,962 tokens), from request 93a2098b.
+```
+
+So the still-running request is verdict `none` with the exact evidence text and
+is **not** counted among the misses. This is fix #28: pre-fix, that same row was
+reported as a miss (see `plus-1.1.15-sweep-m-t2-live.md` E1). **PASS.**
 
 ### B4. `/monitor` Cache tab shows the real verdict after completion
 
