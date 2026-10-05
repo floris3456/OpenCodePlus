@@ -42,7 +42,9 @@ changed; this evidence file is the only edit.
 - [x] Line 1 — TUI add for agent, member, preset, Defaults catalogue. **PASS**
 - [x] Line 2 — tool `set` activation, next request really used, inspector,
       `show`. **PASS**
-- [x] Line 3 — flat member-only row case. **PASS**
+- [x] Line 3 — flat member-only row case. **PASS** (contract; the literal
+      `Planner`/`Basic` instance is **NOT LIVE** in this dev home — `Basic`
+      ships disabled).
 - [x] Focused tests / typecheck.
 - [x] Server log ERROR/WARN quoted.
 - [x] Cleanup and `pilotty list-sessions`.
@@ -289,16 +291,22 @@ tool/build.
 
 **Literal `Planner`/`Basic`:** this dev home ships `Basic` disabled
 (`{"type":"team","level":"global","team":"Basic","enabled":false}`), so its
-members are not registered and the flat `Planner` id computes no member note
-(`row.unknown` with no hint). The member-only mechanism itself is proven above
-on the real member `Sweep-Only`, which is the same code path
-(`memberRowNote`/`memberModelRows`, `packages/plus/src/tools.ts`). The focused
+members are not registered; the flat `Planner` id computes no member note
+(`row.unknown` with no hint) and the literal case cannot be shown live here.
+I also tried to stand up a member literally named `Planner` under team `Sweep`
+through the tool actor to exercise the hint, but the second session's composer
+kept a stale `@opencode` autocomplete token and the request was never submitted;
+rather than keep fighting the composer I stopped. **The member-only mechanism
+itself is proven live** on the real member `Sweep-Only` above (same code path
+`memberRowNote`/`memberModelRows`, `packages/plus/src/tools.ts`), and the focused
 test `test/member-model-activation.test.ts` covers the exact `Planner` shape:
 `both flat model id forms for a member-only agent refuse and name the member
 row` (`item:global:Planner:model:acme/nova-2` vs
 `item:global:Basic/:Planner:model:acme/nova-2`) and
 `tool activation of a member-only agent's model row writes a flat record its
-member chain reads` (58 pass / 0 fail, run below).
+member chain reads` (58 pass / 0 fail, run below). So the *literal* `Planner`
+line is NOT LIVE (home config), while the line's contract — refuse and name the
+member row — is PASS.
 
 **Line 3 result: PASS** — the tool refuses the flat row and names the member row,
 matching README/SPEC; the named member row activates.
@@ -322,7 +330,7 @@ From `packages/plus` at this HEAD:
 ## Server log
 
 The owned log `<dev-home>/data/opencode/log/opencode-local.log` has **0 lines at
-`level=ERROR`**. Its `level=WARN` lines are **6**, every one of them the
+`level=ERROR`**. Its `level=WARN` lines are **12**, every one of them the
 expected:
 
 ```
@@ -333,10 +341,12 @@ level=WARN run=c98c35e1 message="executor-controlled plugin source refused"
   path=<worktree>/.opencode type=directory
 ```
 
-(4 warnings at `2026-10-05T14:26:05.167Z` and 2 more at `14:26:07.002Z`, all
-`executor-controlled plugin source refused`; re-checked after the sweep, no
-other WARN or ERROR anywhere in the 382-line log. These WARNs are the expected
-executor-controlled-plugin-source refusals, not a product failure.)
+(6 at first start — 4 at `2026-10-05T14:26:05.167Z` and 2 at `14:26:07.002Z` —
+and 6 more when the second session `sweep-i-t3b` started; all 12 are
+`executor-controlled plugin source refused`, the only distinct WARN message.
+Re-checked at the end of the sweep, no other WARN or ERROR anywhere in the
+586-line log. These WARNs are the expected executor-controlled-plugin-source
+refusals, not a product failure.)
 
 ## Store revisions (owned home)
 
@@ -377,6 +387,11 @@ rt-t6 fed714d9-4c52-4929-aeb6-46e36a51fa64
 `sweep-i-t3` is gone; every remaining session is one I did not start. (The
 sibling `sweep-m-t2` also left the list between the two calls; I sent it no
 input and did not kill it — its own worker owns it.)
+
+I then started a second session `sweep-i-t3b` (same home) to try the literal
+`Planner` reproduction; it is also killed. After both kills, `sweep-i-t3` and
+`sweep-i-t3b` are absent and no session I created remains (`sweep-i-t3`,
+`sweep-i-t3b` both confirmed gone by `pilotty list-sessions`).
 
 ### 2026-10-05 — line results summary
 
