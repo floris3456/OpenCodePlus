@@ -215,3 +215,45 @@ heading (`In / Read / Write / Out / R / Hit`, `Agent / Steps / Hit Rate / Misses
   scout           12      88%       0       83.1k     $0.00     17:30:10
 ```
 
+#### Cache
+
+**PASS.** Every request in time order with a verdict, cause and evidence; cold
+starts are dim and pings are visible (this ledger had none of either, so those
+two stylings are covered by the focused test, see Checks). Enter opened the
+detail; `x` toggled `misses only` in the filters line.
+
+At 160 columns (ordered by time):
+```
+  Time     Kind      Verdict   Cause             Agent/Model     In       Read     Cost     Evidence
+  17:29:21 step      [HIT]     prefix-changed    deepse...h-cheap12.4k    0        $0.00    option prompt_cache_key removed...757b28e0af5, core/skill-guidance
+  17:29:26 step      [HIT]     —                 deepse...h-cheap716      12.3k    $0.00    Cache read 12288; expected reusable prefix 12353 tokens
+  17:29:26 step      [HIT]     prefix-changed    deepse...h-cheap5k       0        $0.00    option prompt_cache_key removed...ons/opencodeplus.md-1757b28e0af5
+  ...
+  17:30:20 step      [HIT]     —                 deepse...h-cheap209      13.3k    $0.00    Cache read 13312; expected reusable prefix 13427 tokens
+```
+Enter detail (`Request Detail: 1963b786-… · step at 17:29:21`):
+```
+  [HIT] Cause: prefix-changed (certain) · Expected prefix: 0 tokens · Cache read: 0 · Miss tokens: 0
+  Session: ses_ef350f372ffe9eWmLyKecAQpDZ · Message: msg_10caf0cf20017WHcwAYKglerFH
+  Gap since last request: 125ms · Cache lifetime: — · Warming: —
+  Pings on the prefix: 0
+  First diverging segment: option prompt_cache_key
+  Evidence:
+    • option prompt_cache_key removed; instruction update: core/environment, ...
+    • Expected reusable prefix: 0 tokens (segment-size estimate); actual cache read: 0
+    • Session ses_ef350f…; message msg_10caf0cf…; request 1963b786-…
+    • Gap 125ms; lifetime unknownms; warming not recorded
+    • Miss tokens 0; processing cost USD 0 (not net savings)
+  Segment Diff ... Changed Segments:  Kind  Change  Before  After
+```
+`x`:
+```
+ misses only · order tokens
+```
+At 80 columns the Cache keeps `Kind` and drops the agent/model and cost:
+```
+  Time     Kind      Verdict   Cause           Read     Evidence
+  17:29:21 step      [HIT]     prefix-changed  0        option pr...l-guidance
+  17:29:26 step      [HIT]     —               12.3k    Cache rea...353 tokens
+```
+
