@@ -90,7 +90,34 @@ style. PASS.
 
 ## Step 2 — pickers
 
-_(pending)_
+Done on `Global › Agents › OpenCode › build › Models › cliproxyapi/claude-opus-5-5@xhigh`
+(field group open; the row is build's Defaults-derived candidate, also verified on the Defaults
+level candidate). On the `Model` field Enter opened the catalogue picker; quote then Esc:
+
+```
+     Model             Model provider                                   esc
+                       [S]elect a provider
+                       cliproxyapi
+                       lithosai
+                       opencode
+```
+
+On the `Effort` field Enter opened the variant picker of that model; quote then Esc:
+
+```
+     Effort            Effort · cliproxyapi/claude-opus-5-5             esc
+                       [T]he variant this row runs with
+                       (inherit / none) No variant of its own
+                       high
+                       low
+                       max
+                       medium
+                       xhigh
+```
+
+The inspector showed `field model / value cliproxyapi/claude-opus-5-5@xhigh · defaults` and
+`field effort / value xhigh · defaults`. Both opened without a write; after Esc the field group
+was back at the same rows. PASS.
 
 ## Step 3 — edit one field
 
