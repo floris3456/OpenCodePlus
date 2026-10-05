@@ -519,3 +519,11 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Line 3: 40 `shift+tab` probes over 6.1 s never showed the disabled agent.
   - Log: 0 ERROR, 12 expected WARN. The worker's early "disable FAIL" draft was a mislabelled probe window, corrected in the evidence. Its attempt 3 ended `no_report` with the final edit uncommitted; one followup closed it. Child stopped.
 - 17:04: T7b delegated (T128, `w-0af3bb46aafbb893`).
+- **Instructions T7b swept: PASS on all six steps** (T128, landed as seven evidence commits ending in the cherry-pick of `5c76b8a`).
+  - Badges `active ◆` and `warm … · every …` show.
+  - Adding a model activates it. Space activates exclusively. `r` clears the level's active flag and Space restores it.
+  - `d` on an inactive local row removes its record, with no tombstone.
+  - Enter opens the five field rows, there is no whole-row dialog, and help has no editor entry.
+  - Tool `set`/`show`/`reset` on build's Warming field row and the same `set` on a Defaults › Models field row change only `warming`.
+  - `set` with `warming:` on a field row is refused with `"Warming" takes text …` and no write. That matches the README ("a model field row … takes `text`"), so it is not an issue.
+  - Log: 0 ERROR, 6 expected WARN. Child stopped.
