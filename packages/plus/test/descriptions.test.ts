@@ -238,7 +238,7 @@ test("a tool's Description group, a team's Special group and permission categori
     "Every permission of shell, one group per category. Rows are on/off; enter edits a rule's patterns or a limit's number.",
   )
   expect(detail("group:project:alice:tool:shell:permissions:commands")).toBe(
-    "Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it.",
+    "Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it. With Every other command off, only the allowed rows run, each command of a pipeline or list checked on its own.",
   )
   expect(detail("group:project:alice:tool:shell:permissions:suggested")).toBe(
     "Rules suggested by paths, commands and sites the instructions mention. They refuse what they match while off.",

@@ -269,9 +269,12 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
       teamAgents: ["muse-implementer"],
     }),
   )
-  // The Code Mode denial, and the core deny on the tool's own permission
-  // (`team.diff`) a team tool row that is off installs as a refusal.
-  expect(applied.registrations).toHaveLength(2)
+  // The Code Mode denial, the core deny on the tool's own permission
+  // (`team.diff`) a team tool row that is off installs as a refusal, and the
+  // per-request enforcement hook an enabled team member always installs
+  // (tableActive returns true whenever the table holds team members, so a
+  // run's edit scope is admitted).
+  expect(applied.registrations).toHaveLength(3)
 
   const permissions = agents.state.get("muse-implementer")?.permissions ?? []
   expect(permissions).toContainEqual({ action: "team_diff", resource: "*", effect: "deny" })

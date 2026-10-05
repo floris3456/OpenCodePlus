@@ -295,7 +295,7 @@ shell [on]
     Approval
 ```
 
-(`Mentioned in instructions` follows when instruction text suggested shell rules.) On `Permissions` (`group:project:build:tool:shell:permissions`) the detail pane reads `Every permission of shell, one group per category. Rows are on/off; enter edits a rule's patterns or a limit's number.`; on `Commands` it reads the category's summary, `Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it.`
+(`Mentioned in instructions` follows when instruction text suggested shell rules.) On `Permissions` (`group:project:build:tool:shell:permissions`) the detail pane reads `Every permission of shell, one group per category. Rows are on/off; enter edits a rule's patterns or a limit's number.`; on `Commands` it reads the category's summary, `Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it. With Every other command off, only the allowed rows run, each command of a pipeline or list checked on its own.`
 
 ## 2. Read "enforced by" and turn a row off
 
