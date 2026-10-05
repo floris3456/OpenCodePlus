@@ -182,4 +182,32 @@ invoke it here. Step 4 marked FAIL for the refusal sub-claim; see concerns.
 
 ## Step 5 — old-style row repeat reset
 
-_(pending)_
+Done: Global › `plan` › Models (`→`, `2`) → `cliproxyapi/deepseek-v4.1-flash-cheap@high`
+(the seeded row, `variant: high`, no `originalCandidate`). Enter opened the field group
+(`Model cliproxyapi/deepseek-v4.1-flash-cheap@high`, `Effort high`, `Warming off · built-in`,
+`Ping every 4m · built-in`, `Keep-alive prompt … OK · built-in`). Cursor on `Effort`, `r`.
+
+First `r`: the row lost its variant. Store header `{"version":2,"revision":488}` →
+`{"version":2,"revision":489}`; line count 246 → 247. The live row (now line 225) has no
+variant and no `originalCandidate`; the old candidate is tombstoned at line 228:
+
+```
+225: {"type":"model","level":"global","agent":"plan","providerID":"cliproxyapi","modelID":"deepseek-v4.1-flash-cheap","updated":"2026-10-05T15:18:30.991Z"}
+228: {"type":"model","level":"global","agent":"plan","providerID":"cliproxyapi","modelID":"deepseek-v4.1-flash-cheap","variant":"high","removed":true,"updated":"2026-10-05T15:18:30.990Z"}
+```
+
+Row/label after: `cliproxyapi/deepseek-v4.1-flash-cheap`, `Effort none`. PASS.
+
+Reopened the row (Enter), cursor on `Effort` (`field effort / value none`), `r` again. Header was
+`{"version":2,"revision":489}` before **and after**; a whole-file `diff` against a copy taken
+before the keypress printed nothing (`STORE BYTE-IDENTICAL`), and the field stayed `none`. But the
+refusal text was again **not** displayed: the footer showed no `r reset` on the `none` field, and
+grep of the retained session output for `no override` returned 0 matches. Same gate as step 4 —
+`packages/plus/src/instructions/tree.ts:1980` sets `actions.reset: current.own` and
+`packages/plus/src/tui/instructions/route.tsx:1523` only binds `r` when `canReset(node)`, so an
+un-overridden field never invokes the tool-layer refusal
+(`packages/plus/src/instructions/ops.ts:1775,1799`).
+
+So: first reset PASS; second reset no-write PASS (revision 489 unchanged, store byte-identical);
+the expected `"has no override to reset"` refusal text FAIL — never shown. Step 5 marked FAIL
+for the refusal sub-claim.
