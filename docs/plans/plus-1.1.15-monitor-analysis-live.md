@@ -33,8 +33,8 @@ Scope: source regressions for overnight #8 (derived report loses unknowns/state 
   change and honors the selected window; unread counts a write only after its
   lifetime passes by the cutoff, a read before the cutoff clears it, and a
   request at/after the cutoff never changes a historical report; the same input
-  with a later cutoff evolves without any write (the cutoff is part of the
-  analysis key).
+   with a later cutoff evolves without any write (the cutoff is applied at
+   report time, not included in the expensive fold's revision key).
 - **#8 unstable prefix historical & future write control.** Retains per-request
   streak and identity (`UnstableStreak`: `requestID`, `agent`, `provider`,
   `model`, `at`, `streak`, `segment`), selecting the latest matching entry
@@ -99,7 +99,9 @@ Evaluated at 80×24 and 160×40 columns.
   and generate rows; the chat's primary agent was never overwritten.
 - **Totals/unknown omission.** Overview totals line read:
   `reqs: 1 · steps: 1 · in: 8k · read: 4.8k · write: 0 · out: 6 · reason: 0 · hit rate: 38% · misses: 0 · miss cost: $0.00 · pings: 0 · cost: $0.00`.
-  Unknown costs are omitted honestly and not merged into a free zero.
+  This live sample has no miss, so its $0.00 miss total does not establish the
+  unknown-priced-miss omission boundary; that boundary is proved by the real
+  ledger regression above.
 - **Cache tab.** At 80×24 and 160×40:
   `06:24:17 step [HIT] prefix-changed 4.8k option prompt_cache_key removed...`.
   Enter opened Request Detail: `ef5c0146-8781-4c66-92d7-2dfcb0c13633`,
@@ -139,3 +141,8 @@ Evaluated at 80×24 and 160×40 columns.
 
 - The live route exercised here was `cliproxyapi/claude-opus-5-5`; Anthropic marked-prefix ping tail is verified by the real-wire fingerprint unit regression.
 - Conservative analyzer TTL is not a provider-known lifetime; DeepSeek route lifetimes remain unknown.
+- Parent integration found a large-ledger no-write polling regression (#22):
+  the existing 200×200×200 benchmark's repeat Everything queries take about
+  8.2 seconds instead of the earlier 80–87 ms. The smaller advancing-now
+  benchmark proves evolving signals, not acceptable large-ledger performance.
+  Repair and B4/final combined-head acceptance remain required.

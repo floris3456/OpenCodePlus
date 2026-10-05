@@ -328,6 +328,10 @@ owned dev home, and fds targeting the owned dev home), never by a registration f
 - WARN: 6 (all 6 are expected executor confinement warnings: `executor-controlled plugin source refused` for `.opencode/opencode.json` / `.opencode`)
 - ERROR: 0
 
+Parent after-landing check observed the final log grow to **250 lines / 244
+INFO / 6 expected confinement WARN / 0 ERROR** after shutdown. Both listed PIDs
+are absent and an independent exact-home cwd/fd/maps scan finds no matches.
+
 ## Open issues / deferred
 
 - **D1 — exclusive activation live from member chat RESOLVED.** The live exclusive
