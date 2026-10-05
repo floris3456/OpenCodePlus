@@ -523,9 +523,13 @@ export function createLedger(file: string): Ledger {
     "insert into mark (at, label) values (?, ?) returning id",
   )
 
+  // An open request is `running`, never the column default: a request that has
+  // not ended must not claim `completed` or `error`. Only `requestEnded` writes
+  // the real terminal status, so a row that never received its terminal event
+  // stays honestly open (ended NULL) instead of reporting a fabricated outcome.
   const upsertRequest = db.query(`
-    insert into request (id, session_id, kind, is_title, agent, provider, model, variant, started, message_id, created)
-    values ($id, $session, $kind, $isTitle, $agent, $provider, $model, $variant, $started, $message, $created)
+    insert into request (id, session_id, kind, is_title, agent, provider, model, variant, started, message_id, created, status)
+    values ($id, $session, $kind, $isTitle, $agent, $provider, $model, $variant, $started, $message, $created, 'running')
     on conflict(id) do update set
       kind = excluded.kind,
       is_title = excluded.is_title,
