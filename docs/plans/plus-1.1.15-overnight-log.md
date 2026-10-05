@@ -602,3 +602,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - In both cases the Defaults record count stayed 10, no Defaults entry or overlay was written, and Defaults › Agents and › Teams list none of the members. Both name collisions were covered: `BASIC` beside the release's `Basic`, and `basic` the same case as the shipped preset.
   - Focused: `tree` 58, `agents` 16 and `plus-instructions-propagation` 5 pass (including the T5 test).
   - Log: 0 ERROR. Child stopped.
+- **Gates repeated at `bbf9425577`** (source includes #26, #28 and #30): whole Plus suite **2270 pass, 14 skip, 0 fail** across 150 files (receipt `run/plus/tmp/opencodeplus/final-plus-suite.log`). `bun typecheck` passes in core, plugin, plus, tui and client. Root `bun run check` passes, 36 of 36. The core and TUI focused tests are unchanged since R5: no core or TUI source changed after it.
