@@ -104,6 +104,25 @@ cliproxyapi/claude-opus-5-5/xhigh`.
 
 ### B3. agent switch
 
-Did: pending — switch the chat agent then ask. Below.
+Did: created two probe agents in the owned dev home
+(`$DEV/config/opencode/agents/sweep-a.md`, `sweep-b.md`, both
+`model: cliproxyapi/claude-opus-5-5#xhigh`), asked a prompt as `Sweep-A`, then
+switched to `Sweep-B` via the `/agent` command and asked again.
 
-PLACEHOLDER_B3
+Screen: footer `Sweep-A · claude-opus-5-5 CLIProxyAPI · xhigh` → `Sweep-B ·
+claude-opus-5-5 CLIProxyAPI · xhigh`.
+
+Cache row: `16:43:20 step [COLD] agent-switch 0 Agent swi... → sweep-b`.
+
+Detail (`74d8472f-1c90-4daa-af28-f8e8c9c3baff`):
+`[COLD] Cause: agent-switch (certain) · Expected prefix: 0 · Cache read: 0 · Miss
+tokens: 0`; `First diverging segment: system part base template`; evidence
+`Agent switched: sweep-a → sweep-b`.
+
+**PASS** (cold start, cause `agent-switch`, confidence certain).
+
+### B4. prefix changed (certain), first diverging segment named
+
+Did: toggled a project instruction (the notes' recipe) and asked again.
+
+PLACEHOLDER_B4
