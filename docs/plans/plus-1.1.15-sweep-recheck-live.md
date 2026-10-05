@@ -275,8 +275,53 @@ still-running request is no longer counted as a miss once it completes. **PASS**
 
 ## Server log — every ERROR and WARN line
 
-_Pending._
+`<dev-home>/data/opencode/log/opencode-local.log` after cleanup:
+**280 lines, 0 ERROR, 6 WARN** (all 6 are `executor-controlled`).
+
+**No ERROR line at all.**
+
+All six WARNs are the expected `executor-controlled plugin source refused`
+refusal control (workspace root `.opencode` and this worktree's `.opencode`).
+Full lines:
+
+```
+timestamp=2026-10-05T16:20:23.588Z level=WARN run=c939a9c2 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=89 role=server
+timestamp=2026-10-05T16:20:23.588Z level=WARN run=c939a9c2 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=89 role=server
+timestamp=2026-10-05T16:20:25.458Z level=WARN run=c939a9c2 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=238 role=server
+timestamp=2026-10-05T16:20:25.458Z level=WARN run=c939a9c2 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=238 role=server
+timestamp=2026-10-05T16:20:25.458Z level=WARN run=c939a9c2 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1386fc0-20261005-1819/.opencode/opencode.jsonc type=document http.span=238 role=server
+timestamp=2026-10-05T16:20:25.458Z level=WARN run=c939a9c2 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1386fc0-20261005-1819/.opencode type=directory http.span=238 role=server
+```
+
+No Monitor or Plus ERROR/WARN, and no rename-related WARN (the chat stayed on the
+team's `Build-Seat`, which was never renamed).
+
+## Cleanup
+
+Killed only the session I started: `pilotty kill -s sweep-recheck` →
+`Session b02f9bda-e602-4560-8e96-14bde812eeac killed`. `pilotty list-sessions`
+afterwards: `['w-f15454a0a1ed9809-b', 'sweep-m-t4', 'w-1e01-story',
+'w-f15454a0a1ed9809-a', 'ux1', 'rt-t6']` — `sweep-recheck` is gone; every
+remaining session belongs to another run and was left alone. A kernel scan
+(`/proc/*/cwd` and `/proc/*/fd`) for anything pointing into the owned dev home
+found 0, so no owned launcher or server survived.
 
 ## Result
 
-_Pending._
+Re-check of both contract lines touched by fixes #30 and #28, in this worktree's
+own build (HEAD `bba249ddebbddbf75576650ec3ae5c57aa8c3d7e`):
+
+- **A — Instructions T6 (fix #30): PASS.** A member rename now moves the stored
+  `team_delegate` "Delegate to" row: `perm:team_delegate:to.scout` became
+  `…:to.scout-rn` with `state off` in place, `grep -c 'team_delegate:to.scout"'`
+  is `0`, and the live row `Delegate to › scout-rn` reads `state off`,
+  `source state: set here (Global)`. The record the fix moves is the same
+  no-`team`-field shape the pre-fix sweep found left behind, so the live defect
+  recorded in `plus-1.1.15-sweep-i-t6-live.md` Line 2 is closed.
+- **B — Monitor T2 (fix #28): PASS.** A still-running request reports verdict
+  `none` with evidence `Request still running; no usage reported yet` and is not
+  counted among the misses (`Misses: 1 … from request 93a2098b`), and after it
+  completes the same id shows its real verdict (`[HIT]`) in `/monitor` → Cache.
+- **Server log: 0 ERROR, 6 WARN**, all six the expected
+  `executor-controlled plugin source refused` refusal control.
+- **No source file changed** — this evidence file only.
