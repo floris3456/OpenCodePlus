@@ -39,3 +39,53 @@ a add   m move   d delete   r reset   [ ] category   tab sidebar   / filter
 ? help   esc sidebar`.
 
 **PASS** — the model rows keep their `active`/`◆` and `warm …` badges.
+
+### Step 2 — Space activates exclusively (PASS)
+
+State before: the owned store's `build` model records were
+`…claude-opus-5-5 variant high active` (line 215) and no `build` deepseek row.
+
+Pressed `a` → chose `Model` → `Model provider` (`cliproxyapi`, `lithosai`,
+`opencode`) → `Model` → `deepseek-v4.1-flash-cheap` → `Variant` →
+`(no variant)`. Adding made it the active one; the pane showed:
+
+```
+▸ cliproxyapi/claude-opus-5-5@high                                       ◆
+▸ cliproxyapi/claude-opus-5-5@xhighfrom default build...arm 30m · every 4m
+▸ cliproxyapi/deepseek-v4.1-flash-cheap                           active ◆
+```
+
+and the store gained exactly (one activation, exclusive):
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"deepseek-v4.1-flash-cheap","active":true,"updated":"2026-10-05T15:07:10.645Z"}
+```
+
+while the opus record lost `active:true`:
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","basedOn":"cliproxyapi/claude-opus-5-5@xhigh","updated":"2026-09-29T10:13:12.020Z"}
+```
+
+Then Space on `cliproxyapi/claude-opus-5-5@high` (cursor `↑` back to it). The
+pane then showed opus as the only active row at Global for build and deepseek
+without `active`:
+
+```
+▌▸ cliproxyapi/claude-opus-5-5@high                                active ◆
+ ▸ cliproxyapi/claude-opus-5-5@xhighfrom default build...arm 30m · every 4m
+▎▸ cliproxyapi/deepseek-v4.1-flash-cheap                                  ◆
+```
+
+Store after (two `build` model rows, exactly one `active`):
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-opus-5-5@xhigh","updated":"2026-09-29T10:13:12.020Z"}
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"deepseek-v4.1-flash-cheap","updated":"2026-10-05T15:07:10.645Z"}
+```
+
+The deepseek row dropped `"active":true`; the opus row got `"active":true`
+(`◆` marker alone remains on the inactive deepseek row).
+
+**PASS** — Space activates exclusively at this level; adding a model already
+activates it.
