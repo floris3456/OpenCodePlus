@@ -80,49 +80,51 @@ log line.
 Store baseline revision at load: **478**. Every add below was done through the
 running build's Instructions TUI: step into the target's `Models` group,
 press `a`, pick provider → model → variant, and watch the store and log.
+(`records.jsonl` line numbers drift as saves rewrite the file; they are given as
+seen at that step. The revision in `log.jsonl` is the stable anchor.)
 
 **1. Global agent `general` — exclusivity across two adds.**
 
 - `a` on `Global › Agents › OpenCode › general › Models` → provider
   `cliproxyapi` → model `deepseek-v4.1-flash-cheap` → variant `max`.
   Screen toast `Added model cliproxyapi/deepseek-v4.1-flash-cheap`, the new row
-  read `▸ cliproxyapi/deepseek-v4.1-flash-cheap@max  active ◆`. Store line 227:
-  `{"type":"model","level":"global","agent":"general",...,"variant":"max","active":true,...}`.
+  read `▸ cliproxyapi/deepseek-v4.1-flash-cheap@max  active ◆`. Store: the
+  `general` global row `{"type":"model","level":"global","agent":"general",…,
+  "variant":"max","active":true,…}`.
   Log: `model.add cliproxyapi/deepseek-v4.1-flash-cheap (global)`, revision
   **479**.
 - `a` again on the same Models group → `cliproxyapi/claude-opus-5-5` (no
   variant). New row `▸ cliproxyapi/claude-opus-5-5  active ◆`; the flash-cheap
-  row dropped to `▸ … ◆` with **no** `active` badge. Store line 215 now
-  `claude-opus-5-5 active:true` and line 228 `deepseek…@max` with no `active`
-  field. Log: one `model.add cliproxyapi/claude-opus-5-5 (global)`, revision
+  row dropped to `▸ … ◆` with **no** `active` badge. Store: `claude-opus-5-5
+  active:true` and `deepseek…@max` with no `active` field. Log: one
+  `model.add cliproxyapi/claude-opus-5-5 (global)`, revision
   **480**. So one add = one revision + one log line, and the previously active
   row at that level is no longer active.
 
 **2. Defaults catalogue `general` — same exclusivity.**
 
 - Defaults (`#`) → Agents › OpenCode › general › Models, `a` → `gpt-6-sol`
-  (no variant): store line 236
-  `{"level":"defaults","agent":"general",...,"active":true,...}`, log
+  (no variant): store
+  `{"level":"defaults","agent":"general",…,"active":true,…}`, log
   `model.add cliproxyapi/gpt-6-sol (defaults)`, revision **481**. Inspector
   showed `effective cliproxyapi/claude-opus-5-5 · active at global` because the
   Global row still wins down the chain.
-- `a` again → `gpt-6.1-sol`: store line 239 `gpt-6.1-sol active:true`; line 238
-  `gpt-6-sol` no longer active. Log `model.add cliproxyapi/gpt-6.1-sol
+- `a` again → `gpt-6.1-sol`: store `gpt-6.1-sol active:true`; `gpt-6-sol` no
+  longer active. Log `model.add cliproxyapi/gpt-6.1-sol
   (defaults)`, revision **487**.
 
 **3. Agent preset `Build`.**
 
 - Presets (`$`) → Agents › OpenCode › Build › Models, `a` →
   `cliproxyapi/gpt-5.6-luna`: row `▸ cliproxyapi/gpt-5.6-luna  active ◆`;
-  store line 233 `{"level":"preset","agent":"build",...,"active":true}`; log
+  store `{"level":"preset","agent":"build",…,"active":true}`; log
   `model.add cliproxyapi/gpt-5.6-luna (preset)`, revision **488**.
 
 **4. Member preset `basic/implementer` (team-scoped owner path).**
 
 - Presets (`$`) → Teams › Plus › Basic › implementer › Models, `a` →
   `cliproxyapi/gpt-6-luna`: row `▸ cliproxyapi/gpt-6-luna  active ◆`; store
-  line 236
-  `{"level":"preset","agent":"implementer","team":{"level":"preset","team":"basic"},...,"active":true}`;
+  `{"level":"preset","agent":"implementer","team":{"level":"preset","team":"basic"},…,"active":true}`;
   log target `model:preset:basic:preset:implementer:cliproxyapi/gpt-6-luna`,
   revision **482**.
 
@@ -144,9 +146,9 @@ On `Global › Teams › Sweep › Sweep-Only › Models` the inherited candidat
 `a` there → `cliproxyapi/gpt-6.1-sol` (no variant): toast
 `Added model cliproxyapi/gpt-6.1-sol`, new row
 `▸ cliproxyapi/gpt-6.1-sol  active ◆`, and the inherited gpt-6-luna row lost the
-`active` badge (`from preset Basic › implementer` with no marker). Store line
-242 `{"type":"model","level":"global","agent":"Sweep-Only","providerID":
-"cliproxyapi","modelID":"gpt-6.1-sol","active":true,...}`; log
+`active` badge (`from preset Basic › implementer` with no marker). Store:
+`{"type":"model","level":"global","agent":"Sweep-Only","providerID":
+"cliproxyapi","modelID":"gpt-6.1-sol","active":true,…}`; log
 `model.add cliproxyapi/gpt-6.1-sol (global)` target
 `model:global:Sweep-Only:cliproxyapi/gpt-6.1-sol`, revision **491**. One
 revision, one log line, previously-active row no longer active.
@@ -173,9 +175,9 @@ Code Mode `instructions.*` namespace; the log actor is `tool/agent build`.
   active true*. Transcript result:
   `{"id":"item:global:general:model:cliproxyapi/deepseek-v4.1-flash-cheap@max",
   "status":"Activated \"cliproxyapi/deepseek-v4.1-flash-cheap@max\"",
-  "revision":0,"globalRevision":492}`. Store line 231 gained `"active":true`
-  with `"basedOn":"cliproxyapi/gpt-6.1-sol"` and the previous active
-  `claude-opus-5-5` (line 218) lost `active`. Log:
+  "revision":0,"globalRevision":492}`. The `general` active row gained
+  `"active":true` with `"basedOn":"cliproxyapi/gpt-6.1-sol"` and the previous
+  active `claude-opus-5-5` lost `active`. Log:
   `mutate 2 rows (global): model:global:general:cliproxyapi/claude-opus-5-5,
   model:global:general:…deepseek-v4.1-flash-cheap@max`, revision **492**, one
   line.
@@ -185,8 +187,8 @@ Code Mode `instructions.*` namespace; the log actor is `tool/agent build`.
   `{"id":"item:global:build:model:cliproxyapi/gpt-6-luna","status":
   "Activated \"cliproxyapi/gpt-6-luna\"","revision":0,"globalRevision":495}`
   and `instructions.list where=agent:build item:model` → `gpt-6-luna: active`,
-  `gpt-6.1-sol: inactive`. Store: line 240 `gpt-6-luna active:true
-  basedOn:"cliproxyapi/claude-opus-5-5@xhigh"`; line 244 `gpt-6.1-sol` no
+  `gpt-6.1-sol: inactive`. Store: `gpt-6-luna active:true
+  basedOn:"cliproxyapi/claude-opus-5-5@xhigh"`; `gpt-6.1-sol` no
   active. Logs: `model.add` revision 494 and
   `mutate 2 rows (global): …gpt-6-luna, …gpt-6.1-sol` revision **495**, both
   actor tool/build.
@@ -215,7 +217,7 @@ returned `{"id":"item:global:build:model:cliproxyapi/gpt-6.1-sol","status":
 The composer switched (`Switched model to gpt-6.1-sol`, then
 `Build · gpt-6.1-sol CLIProxyAPI`); the reply `PONG2.` rendered under
 `Build · gpt-6.1-sol · 2.5s · 3.2 tok/s`; `/monitor` → `5 Steps` shows the step
-`17:18:10  step  gpt-6.1-sol  16.2k …  stop`. Store line 244 `gpt-6.1-sol
+`17:18:10  step  gpt-6.1-sol  16.2k …  stop`. Store: `gpt-6.1-sol
 active:true basedOn:"cliproxyapi/claude-opus-5-5@xhigh"`; log `mutate 2 rows
 (global): …gpt-6-luna, …gpt-6.1-sol`, revision **497**, actor tool/build. So the
 bare `set` is activation-equivalent and the very next request ran on it.
@@ -242,16 +244,22 @@ consistent, documented.
 ### Result: PASS (refuses with the member row named, and the member row works)
 
 The documented choice is the **refuse-and-name** form, stated in
-`packages/plus/README.md` (line 108) and `packages/plus/SPEC.md` (lines 125–137):
-*"[a] flat owner model id names nothing: the row grammar
+`packages/plus/README.md` (line 108):
+*"An agent that exists only as a team member has no stand-alone Agents row, so a
+flat owner model id names nothing: the row grammar
 `item:<level>:<member>:model:…` and the legacy log target
 `model:<level>:<member>:<provider>/<model>` both resolve to no row. A tool call
 on either (`set`, `show`, `reset`, `delete`) refuses with `row.unknown` and names
 the member row to use instead (`item:<level>:<team>/:<member>:model:…`)."*
+`packages/plus/SPEC.md` (lines 125–137) says a flat `item:<level>:<member>:
+<itemId>` id "still resolves: it is the stand-alone Agents-catalogue row for the
+same agent" — which is exactly why a member-only agent, having no stand-alone
+Agents-catalogue row, gets the refusal instead.
 
 **Reproduction with this build's real Global team member `Sweep`/`Sweep-Only`**
-(an agent that exists only as a team member: its only stored record is the
-`link` at line 214 and the member `model` row at line 243; there is no
+(an agent that exists only as a team member: its only stored records are the
+`link` (`{"type":"link","level":"global","agent":"Sweep-Only","team":
+{"level":"global","team":"Sweep"},…}`) and the member `model` row; there is no
 stand-alone `agent:global:Sweep-Only` node and no agent file). Through the real
 tool actor:
 
@@ -274,8 +282,8 @@ tool actor:
 `{"id":"item:global:Sweep/:Sweep-Only:model:cliproxyapi/gpt-6.1-sol","status":
 "Activated \"cliproxyapi/gpt-6.1-sol\"","revision":0,"globalRevision":496}` and
 `show` on it returned `"assembled":"cliproxyapi/gpt-6.1-sol"`,
-`"enabled":true`, `"from":"set here"`. Store line 243 kept `active:true` with
-`basedOn:"cliproxyapi/gpt-6-luna"`; log `mutate
+`"enabled":true`, `"from":"set here"`. Store: the `Sweep-Only` member model row
+kept `active:true` with `basedOn:"cliproxyapi/gpt-6-luna"`; log `mutate
 model:global:Sweep-Only:cliproxyapi/gpt-6.1-sol`, revision **496**, actor
 tool/build.
 
@@ -286,7 +294,9 @@ members are not registered and the flat `Planner` id computes no member note
 on the real member `Sweep-Only`, which is the same code path
 (`memberRowNote`/`memberModelRows`, `packages/plus/src/tools.ts`). The focused
 test `test/member-model-activation.test.ts` covers the exact `Planner` shape:
-`tool activation … flat-id guidance` and
+`both flat model id forms for a member-only agent refuse and name the member
+row` (`item:global:Planner:model:acme/nova-2` vs
+`item:global:Basic/:Planner:model:acme/nova-2`) and
 `tool activation of a member-only agent's model row writes a flat record its
 member chain reads` (58 pass / 0 fail, run below).
 
@@ -331,9 +341,10 @@ executor-controlled-plugin-source refusals, not a product failure.)
 ## Store revisions (owned home)
 
 - revision 478 at load → 479 first TUI add, 480 second, 481 Defaults, 482 member
-  preset, 487 Defaults exclusive, 488 agent preset + team.create, 489
-  team.addAgent, 490 a system toggle, 491 team-member add, 492/493/494/495/496
-  the tool-actor adds/sets. Each add/set was exactly one revision and one
+  preset, 483–486 my accidental Enabled toggles (restored to on; recorded as a
+  concern), 487 Defaults exclusive, 488 agent preset + team.create, 489
+  team.addAgent, 490 a system toggle, 491 team-member add, 492/493/494/495/496/
+  497 the tool-actor adds/sets. Each add/set was exactly one revision and one
   `model.add`/`mutate` log line.
 
 ## Cleanup
