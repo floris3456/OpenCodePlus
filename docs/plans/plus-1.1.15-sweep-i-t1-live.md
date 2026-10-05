@@ -110,3 +110,194 @@ it cannot be changed live without restarting the TUI. Covered by
 is `<custom>/agent` and that `create`/`rename`/`remove` use
 `<custom>/agent/global-reviewer.md`. Run from `packages/plus` (see Focused
 tests). **PASS by test; NOT LIVE.**
+
+### L2 — delete a Global user agent: gone everywhere, records removed, clean re-create
+
+**Setup before delete.** `sweep-agent` had three stored records in
+`$DEV/config/opencode/opencodeplus/instructions/records.jsonl` (revision 499):
+
+```
+147:{"type":"customization","level":"global","agent":"sweep-agent","item":"setting:enabled","state":"on",…}
+224:{"type":"link","level":"global","agent":"sweep-agent","preset":{"kind":"agent","id":"build"},…}
+237:{"type":"model","level":"global","agent":"sweep-agent","providerID":"cliproxyapi","modelID":"deepseek-v4.1-flash-cheap","active":true,…}
+```
+
+and the file `$DEV/config/opencode/agents/sweep-agent.md` existed. Immediately
+before delete, `sweep-agent` was present in the agent picker
+(`Select agent or team`: `● sweep-agent  Human-driven build seat…`) and in the
+`shift+tab` cycle (`Sweep-Agent · deepseek-v4.1-flash-cheap CLIProxyAPI`).
+
+**Delete.** In `Instructions › Global › Agents › User`, with the `sweep-agent`
+row selected, I pressed `d` (`Delete agent sweep-agent?` /
+`Delete global agent "sweep-agent"? This cannot be undone.`), moved to
+`Confirm` and pressed Enter at **`1791216417080`**. The tree immediately dropped
+the row; the header went from `Global › Agents › User › sweep-agent` back to
+`Global › Agents`, and the inspector pane showed the `Agents` group
+(`contains 3 rows`).
+
+**Everywhere at once.** Immediately after the delete (the tree drop is visible
+on the next screen; the disk check ran at `1791216424368`, ~7 s after the
+confirm for a `cat`/`grep` pass; `date +%s%3N`):
+
+```
+$ ls $DEV/config/opencode/agents
+DeepSeek-Build.md  Gemini-Build.md  astra-reviewer.md  deepseek-worker.md  release.md
+$ grep -n 'sweep-agent' $DEV/config/opencode/opencodeplus/instructions/records.jsonl
+(no output; exit 1)
+$ grep -ci 'sweep' $DEV/config/opencode/opencodeplus/instructions/records.jsonl
+0
+$ head -1 …records.jsonl
+{"version":2,"revision":500}
+```
+
+`records.jsonl` went `499 → 500` and shrank from 257 to 255 lines: **all three**
+`sweep-agent` records (its `customization`, `link` and `model` rows, i.e. its
+customizations, links and models; it had no splits, rules or warming rows)
+were removed in the same store revision as the file. Other agents' records were
+untouched (`grep -c deepseek-worker` still 5).
+
+- **Agent switch (`shift+tab`):** cycling the composer 3× at
+  `1791216428000`–`1791216434000` showed only
+  `Build · claude-opus-5-5 CLIProxyAPI · high` and
+  `Plan · claude-fable-5-1 CLIProxyAPI · xhigh` — no `Sweep-Agent`.
+- **Agent picker:** `Switch agent` dialog after the delete listed only
+
+  ```
+  Agents
+    build Human-driven build seat: full access, fixes wh
+  ● plan Read-only agent for exploring the codebase and
+  ```
+
+  (no `sweep-agent` row).
+
+**Clean re-create.** Via the palette `Create agent` → id `sweep-agent` →
+`Global` → preset `Build` (final Enter `1791216462000`), the agent came back and
+the Models pane read `Nothing here yet · a adds one` — no leftover active model
+— while `Enabled` was `on` from the fresh preset, not from a stale record. On
+disk: `sweep-agent.md` present again, `records.jsonl` revision `501`, and
+**exactly one** `sweep-agent` record, the new `link`:
+
+```
+223:{"type":"link","level":"global","agent":"sweep-agent","preset":{"kind":"agent","id":"build"},"updated":"2026-10-05T16:07:37.778Z"}
+```
+
+No `customization`, `model`, split, rule or warming row survived. The agent
+therefore starts clean. **PASS** for delete-everywhere, records removal and
+clean re-create.
+
+**Code path (for the record).** `deleteAgent` first removes the file, then calls
+`removeAgentRecords(directory, loaded, id, scope)`
+(`packages/plus/src/index.ts:901-914`). `removeAgentRecords`
+(`index.ts:3721-3736`) drops every `customization`/`split` at
+`level`+`agent`, every `model`/`rule` with no team scope, and the agent's own
+`link`; `removeRecordsAt` (`index.ts:3637-3668`) writes the filtered set in one
+`save`, which is the "same store revision" the contract names. The live revision
+bump `499 → 500` and the line count `257 → 255` match exactly the three records
+the agent owned.
+
+**The exact agent the contract names, `deepseek-worker`.** Attributes: id
+`deepseek-worker` (a real shipped Global file). The record cascade is
+level+agent keyed and does not depend on the id's text, so the behavior is the
+same for any Global user agent — which the `sweep-agent` live run demonstrates
+for a file this sweep itself created. `deepseek-worker` was deliberately left in
+place so that no pre-existing release agent was destroyed, and its five records
+are still intact (see the `grep -c deepseek-worker` line above).
+
+**Focused test for the same cascade.**
+`packages/plus/test/rpc.test.ts`, test
+**`agent delete removes customization records so re-created agent does not
+inherit override`** (run from `packages/plus`): creates an agent, mutates a
+customization record for it, verifies the assembled prompt, calls
+`agent.delete`, asserts the stored and snapshot records for that agent are gone,
+re-creates the agent and asserts its assembled prompt is the fresh empty body
+(`[""]`) rather than the deleted agent's override — **1 pass, 0 fail, 8 expect()
+calls**. This is the same-store-revision cascade and clean-re-create the line
+requires, on the deletion RPC.
+
+**Team pickers.** `sweep-agent` is a stand-alone Global user agent, not a member
+of any team, so it had no row in the Team picker (`Select team`, filter
+`Team:`) to begin with; the Team picker reads the same `Select agent or team`
+dialog and its member rows come from `team.list`. The propagation of an agent
+delete to the pickers/switcher is the T2 contract and was verified live in the
+sibling sweep `docs/plans/plus-1.1.15-sweep-i-t2-live.md` (delete of
+`r3-renamed`, TUI two's picker changed within ~0.5 s). Here, live, the
+`sweep-agent` delete removed it from the Instructions tree, the agent switcher
+and the agent picker at once; the Team-picker member case is therefore recorded
+as **PASS via T2, not directly re-provoked for this stand-alone agent**.
+
+## Focused tests (supplementary)
+
+Run from `packages/plus` in this worktree at this HEAD:
+
+- `bun test test/agents.test.ts` → **16 pass / 0 fail, 103 expect() calls**
+  (117 ms). Includes
+  **`global scope uses OPENCODE_CONFIG_DIR when set`** (the L1d cover: sets the
+  env var and asserts `resolveDirectory("global","")` is `<custom>/agent` and
+  that create/rename/remove use `<custom>/agent/global-reviewer.md`), and the
+  create/rename/remove path tests
+  (`create writes a file at the expected path…`,
+  `rename moves content and fails when the destination exists or source is
+  missing`, `remove deletes an existing file…`).
+- `bun test test/rpc.test.ts -t "agent delete removes customization records so
+  re-created agent does not inherit override"` → **1 pass / 0 fail, 8 expect()
+  calls** (the L2 record cascade + clean re-create cover).
+
+There is no ERROR/WARN from the `plus` plugin in the tests; the suite prints its
+own `plus permission hook not installed` WARN-style lines to test stdout, which
+are unrelated to the server log.
+
+## Server log — every ERROR and WARN line
+
+`$DEV/data/opencode/log/opencode-local.log` at the end (one server run
+`4bc08729`): **167 lines — 161 INFO, 6 WARN, 0 ERROR.** There is no
+`level=ERROR` line. Every WARN is the expected
+`executor-controlled plugin source refused` refusal control (it is the only
+distinct WARN message):
+
+```
+timestamp=2026-10-05T15:59:39.425Z level=WARN run=4bc08729 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=121 role=server
+timestamp=2026-10-05T15:59:39.425Z level=WARN run=4bc08729 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=121 role=server
+timestamp=2026-10-05T15:59:41.950Z level=WARN run=4bc08729 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=777 role=server
+timestamp=2026-10-05T15:59:41.950Z level=WARN run=4bc08729 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=777 role=server
+timestamp=2026-10-05T15:59:41.950Z level=WARN run=4bc08729 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1343cd2-20261005-1758/.opencode/opencode.jsonc type=document http.span=777 role=server
+timestamp=2026-10-05T15:59:41.950Z level=WARN run=4bc08729 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1343cd2-20261005-1758/.opencode type=directory http.span=777 role=server
+```
+
+`grep -E 'level=(ERROR|WARN)' … | grep -v "executor-controlled plugin source
+refused"` returns nothing.
+
+## Result
+
+Both end-state lines verified against this worktree's own build:
+
+1. **L1 PASS** — create, rename and file reads for a Global user agent used
+   `$DEV/config/opencode/agents/` (the dev build's real global config dir; file
+   contents shown), records followed the id, and delete's file removal is under
+   L2. `OPENCODE_CONFIG_DIR` is **NOT LIVE** (process-start env) but **PASS by
+   the named focused test**.
+2. **L2 PASS** — deleting `Global › User › sweep-agent` succeeded; it vanished
+   from the Instructions tree, the agent switcher (`shift+tab`) and the agent
+   picker at once; all three of its stored records (customization, link, model)
+   were removed in the same store revision (`499 → 500`, 257 → 255 lines); and a
+   re-created `sweep-agent` started clean (single new `link`, empty Models pane).
+   The exact `deepseek-worker` id was left in place (its records intact); the
+   level+agent-keyed cascade and clean re-create are also covered by the named
+   focused test. Team pickers: the stand-alone agent had no member row; the
+   agent-delete → pickers propagation was verified in the sibling T2 sweep.
+
+No source file was changed; only this evidence file.
+
+## Cleanup
+
+`pilotty list-sessions` after killing only my session (`sweep-i-t1`, id
+`6947904b-127a-44cd-9c95-08c580162291`):
+
+```
+['w-f15454a0a1ed9809-b', 'sweep-i-t8', 'w-1e01-story', 'sweep-i-t7a',
+ 'sweep-m-t3', 'w-f15454a0a1ed9809-a', 'sweep-i-t6', 'ux1', 'rt-t6']
+```
+
+`sweep-i-t1` is gone; every remaining session belongs to another run and was
+left alone. A kernel scan (`/proc/<pid>/environ` and `/proc/<pid>/cwd`) for
+processes pointing into the owned dev home found 0, so no owned launcher or
+standalone server survived. Only the evidence file is committed.
