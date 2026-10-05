@@ -214,6 +214,15 @@ heading (`In / Read / Write / Out / R / Hit`, `Agent / Steps / Hit Rate / Misses
   build-seat      5       79%       0       66.6k     $0.00     17:30:20
   scout           12      88%       0       83.1k     $0.00     17:30:10
 ```
+Sub-item **unstable-prefix warnings: NOT LIVE** (the live ledger had no
+`unstable` signal, so the warning block never rendered). Covered by the focused
+tests `monitor-analysis.test.ts` "#8: unstable and unread honor the selection
+and the as-of cutoff…" and `monitor-cache.test.ts` (both pass below).
+Context now versus at the last compaction: the live line read
+`Context Size: 8.8k tokens` with no `(at last compaction: …)` because no
+compaction had run; the compact form is source at
+`tabs/overview.tsx:97` and the fixture carries `atCompaction` (`monitor-fixture.ts:358`).
+Sub-item **at-last-compaction text: NOT LIVE** (no compaction in the run).
 
 #### Cache
 
