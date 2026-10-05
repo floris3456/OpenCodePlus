@@ -580,3 +580,12 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Log: 0 ERROR. Child stopped.
 - 18:11: Instructions T5 delegated (T136, `w-f068f55f90e583a8`, base `31623301b0`). Remaining: Monitor T4, which mostly overlaps R2's Basic team test (tree, `ctrl+t`, `ctrl+a`, `ctrl+d` stop). Its open parts are attach, resume, the empty state and Team/Tools staying separate.
 - **#30 fixed** (T135, landed as `5e76f0c97f`, reviewed with `team_diff`). `renameTeamMember` rewrites an unteamed `perm:team_delegate:to.<from>` row at the rename's level when its owner is a member of the team, and moves the owner too for the member's own row. Rows owned outside the team are untouched. The new `rename.test.ts` case covers a peer row, an own row and an outside row; the worker showed it fails without the source change. Parent checks: `rename` and `agents` 23 pass; Plus typecheck passes. Child stopped. Live re-check: T6's Delegate-to line, re-swept after T130 settles.
+- **Monitor T3 swept: PASS, no FAIL** (T129, landed as 11 evidence commits ending in the cherry-pick of `fae364b`, swept at `012caf2267`).
+  - Entrypoints: `/monitor`, `/tools` and `M` from the composer Tools and Team tabs, each filtered on its session.
+  - Header: the five scopes, with `T` picking `basic-live`; the `S` picker grouped, newest first; the windows; labelled totals at 80/100/160.
+  - The five tabs with their drills, keys, `?`, the per-tab hint bar, persisted settings, and the compact composer tab with `M`.
+  - A real team run (`basic-live`, build-seat → scout).
+  - NOT LIVE: Overview unstable-prefix warnings, the "at last compaction" suffix, and cold-start dimming plus ping rows on the Cache tab, because this chat had none. Focused tests cover them. Monitor T2's sweep showed `[COLD]` rows and pings live.
+  - The worker ran before #28, so in-flight rows were not checked here; that goes to the post-fix re-check.
+  - Log: 0 ERROR. Child stopped.
+- 18:17: Monitor T4 delegated (T137, `w-35334871d9956043`, base `59b0029be1`), the last of the twelve sweeps.
