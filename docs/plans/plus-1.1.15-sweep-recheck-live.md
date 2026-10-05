@@ -97,11 +97,79 @@ step recorded; the fix's behaviour is judged in A3/A4).
 
 ### A3. Rename member `scout` → `scout-rn` with `shift+r`
 
-_Pending._
+Did: selected the member row `rc-team › scout` and pressed `R` (`shift+r`).
+A prompt opened, prefilled with the current id:
+
+```
+Rename scout
+New id; use / for nesting. .. is not allowed.
+scout
+enter submit
+```
+
+The textarea had focus and the value prefilled (`scout`). I cleared it
+(`Ctrl+A` did not select; Backspace cleared, then typed `-rn` after `End`, since
+`pilotty type "-rn"` needs `--`) and submitted `scout-rn`.
+
+Saw the tree select `Global › Teams › rc-team › scout-rn`:
+
+```
+Global › Teams › rc-team › scout-rn
+   ▾ ● rc-team
+       ● build-seat        89
+       ● implementer       15
+       ● orchestrator      23
+       ● planner           23
+       ● reviewer          10
+▌      ● scout-rn           9
+```
+
+On disk `scout.md` is gone and `scout-rn.md` is present. Log:
+`{"op":"agent.rename","target":".../teams/rc-team/scout-rn.md","summary":"agent.rename
+scout to scout-rn (global team rc-team)","revision":498}`.
+
+**PASS** (rename prompts prefilled and lands the file/member).
 
 ### A4. PASS criteria
 
-_Pending._
+The brief's three criteria, checked exactly:
+
+1. `grep 'team_delegate:to.scout-rn' $DEV/config/opencode/opencodeplus/instructions/records.jsonl`:
+
+```
+120:{"type":"customization","level":"global","agent":"build-seat","item":"perm:team_delegate:to.scout-rn","section":null,"state":"off","basedOn":"3608e4bd0e693177369e17f48cdf750eb962b86aaac1bf6b50c7a46d52f7d94b","basedOnState":"on","updated":"2026-10-05T16:41:42.929Z"}
+```
+
+build-seat's record with `state off`. **The item id moved from `to.scout` to
+`to.scout-rn` in place**, same `basedOn`/`basedOnState`/`updated`. This is the
+record the pre-fix sweep found left naming the old member.
+
+2. `grep -c 'team_delegate:to.scout"' $DEV/config/opencode/opencodeplus/instructions/records.jsonl`
+   → `0`. No stored `Delegate to` row still names the old member id.
+
+3. The screen row `Delegate to › scout-rn` reads:
+
+```
+scout-rn                                permission
+Global › Teams › rc-team › build-seat › Tools ›
+OpenCodePlus › delegate › Permissions › Delegate
+to › scout-rn
+state       off
+source      state: set here (Global) · text: from
+            preset Basic › build-seat
+rule        team_delegate · to.scout-rn
+message     build-seat may not delegate to scout-
+            rn
+```
+
+`state off`, `set here (Global)` — the stored override still applies to the
+renamed member.
+
+**PASS — all three criteria.**
+
+Note on the fix: the same TUI-written record shape as the pre-fix sweep (no
+`team` field; see A2) now follows the rename, so fix #30 closes the live defect
+recorded in `plus-1.1.15-sweep-i-t6-live.md` Line 2. No source file changed.
 
 ## Part B — Monitor T2 (fix #28)
 
