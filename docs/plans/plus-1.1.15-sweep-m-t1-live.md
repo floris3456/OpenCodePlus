@@ -61,8 +61,17 @@ recorded with its hashed error instead of usage:
 
 The TUI showed `Error: unknown provider for model claude-fable-5-1`. Kinds
 agent step, compaction, ping, title and generate (`generate` before the warming
-`warmed` relabel to `ping`) are all in the ledger. The `generate` kind for
-non-ping generate calls is covered by the focused test
+`warmed` relabel to `ping`) are all in the ledger. Live kind counts at sweep
+end:
+
+```
+{"kind":"compaction","is_title":0,"n":1}
+{"kind":"ping","is_title":0,"n":3}
+{"kind":"step","is_title":0,"n":8}
+{"kind":"title","is_title":1,"n":1}
+```
+
+The `generate` kind for non-ping generate calls is covered by the focused test
 `test/monitor-requests.test.ts` "generate usage hook records request and warming
 warmed relabels it to ping, hashing errors without text" (passed, recorded under
 L6). **PASS**.
@@ -95,12 +104,12 @@ with their tokens. **PASS**.
 
 ### L3. Request fingerprint, as sent, protocol-aware
 
-Did: read `request_fingerprint` for the chat's five wire requests. All are
+Did: read `request_fingerprint` for the chat's wire requests. All are
 `openai-responses` (the protocol in use for CLIProxyAPI here), each with a
 `body_hash`, and every key the contract names:
 
 ```
-systemParts (18 entries, 5 requests): base template (892 chars), system:1,
+systemParts (18 entries on the main steps): base template (892 chars), system:1,
  date/environment block (777, 29), system:4 (8633), AGENTS.md (6799),
  teaching (792), system:7 (1495), system:8 (238), plus "system remainder"
  separators; each has hash/chars/estimatedTokens.
@@ -120,8 +129,10 @@ fallback (`packages/plus/src/monitor/fingerprint.ts:164-234`). The live
 Responses body is fully fingerprinted; the other protocols and the fallback are
 covered by the named focused test "fingerprints from real request bodies for
 each protocol with short hashes" (asserts each protocol, per-part/tool hashes,
-rolling prefix divergence, cache-control markers and the fallback), which
-passed in the run recorded under L6. **PASS**.
+rolling prefix divergence, cache-control markers and the fallback). The
+after-every-transform final body (including WebSocket frames) is covered by
+"final wire observers capture later HTTP and WebSocket transforms and hashed
+response lineage" (both passed, recorded under L6). **PASS**.
 
 ### L4. Context facts (account switch/handoff, instruction updates, compactions, agent/model switches, reverts)
 
@@ -187,7 +198,7 @@ hash, not the message:
 
 ```
 request 0a2223d8-…: status "error",
- error "{\"type\":\"provider.invalid-request\",\"status\":400,\"hash\":"0dd35a2328c29e26\",\"chars\":43}"
+ error = {"type":"provider.invalid-request","status":400,"hash":"0dd35a2328c29e26","chars":43}
 ```
 
 The focused test `test/monitor-requests.test.ts` "privacy: no content stored
@@ -225,6 +236,27 @@ Focused tests run from `packages/plus`:
 **PASS (migration, retention and idempotency by the named focused tests;
 schema 2 seen live)**.
 
+## Result
+
+Every end-state line of Monitor T1 verified in this worktree's own build:
+
+1. **L1 PASS** — step, compaction, title and ping requests recorded with time,
+   session, kind, agent, provider/model/variant and usage; the refused
+   `claude-fable-5-1` request recorded with a hashed error.
+2. **L2 PASS** — three keep-alive pings recorded with usage and relabelled from
+   `generate` to `ping`.
+3. **L3 PASS** — the live `openai-responses` wire body fingerprinted
+   (system parts, tools, options, rolling message prefixes, cache key); the chat
+   and Anthropic protocols and the fallback by the named focused test.
+4. **L4 PASS** — instruction updates, compactions, agent/model switches and a
+   revert live; CLIProxyAPI account switch/handoff by the named focused test.
+5. **L5 PASS** — no sentinel prompt text in any table; only hashes, sizes,
+   names, ids and timings, and the provider error is a hash.
+6. **L6 PASS** — live `schema=2`; v1→v2 migration, 90-day retention and
+   idempotent writes by the named focused tests.
+
+No source file was changed; only this evidence file.
+
 ## Log and cleanup
 
 ### Server log
@@ -255,5 +287,13 @@ No Monitor or Plus ERROR/WARN in the log (no `plus monitor` line).
 
 ### Cleanup
 
-_TODO_
+Killed only the session I started:
+`pilotty kill -s sweep-m-t1` → `Session 53cd3f4f-9475-4d03-afc8-1154e95e79ef
+killed`. `pilotty list-sessions` afterwards:
+`['w-f15454a0a1ed9809-b', 'w-1e01-story', 'sweep-i-t7a', 'sweep-m-t3',
+'sweep-i-t4b', 'w-f15454a0a1ed9809-a', 'sweep-i-t6', 'ux1', 'rt-t6']` —
+`sweep-m-t1` is gone; every remaining session belongs to another run and was
+left alone. A kernel scan (`/proc/<pid>/environ` and `/proc/<pid>/cwd`) for
+processes pointing into the owned dev home found 0, so no owned launcher or
+server survived.
 
