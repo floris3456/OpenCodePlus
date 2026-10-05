@@ -296,9 +296,48 @@ miss**, exactly as the notes require.
 
 ## E. Agent tools (Code Mode)
 
-Did: pending. Below.
+Did: asked the chat's `Build` agent (its own Code Mode tools present) to call
+`monitor.query({ view: "cache", missesOnly: true })` then
+`monitor.query({ view: "cache", id: … })`. Read the rendered reply at 160×45.
 
-PLACEHOLDER_E
+- **One call returns the calling session's misses with cause, confidence and
+  one-line evidence.** The agent rendered 4 rows:
+  `4bfc60bf-… miss unknown unknown Reusable prefix unchanged, within cache
+  lifetime; provider-side eviction or routing`;
+  `7fa8ef2d-… partial prefix-changed certain message 20 (message) changed`;
+  `b5683adb-… miss cache-expired likely Reusable prefix unchanged; gap 474424ms
+  exceeds lifetime 300000ms; last ping none; warming off`;
+  `7f6dade9-… miss unknown unknown Reusable prefix unchanged, within cache
+  lifetime; provider-side eviction or routing`.
+- **One more call returns the full evidence.** The detail call on
+  `b5683adb-a020-42ce-81b1-3920b1d2e067` returned: `Timing gap: 474424 ms
+  (about 7.9 min) · lifetime: 300000 ms (5 min) · warming: off · no pings in the
+  detail (pings: []); the evidence says "last ping none"`, and
+  `Expected vs actual tokens: expected reusable prefix: 6790 tokens, based on
+  the previous real prompt usage · actual cache read: 0 · miss tokens: 6790;
+  input was 6817 · cost: "Miss cost unavailable: per-token pricing was not
+  recorded"`. The page's own Detail for the same id shows the same numbers. The
+  agent's other observations (`system part base template` unstable streak 3;
+  `Pings: 5 sent, 1 followed by a hit, 4 followed by a miss`) match the page's
+  Overview signals.
+- **`monitor.mark` stays** and **scope/since/view** are present in the registered
+  tool: `QueryDescription` (`packages/plus/src/monitor/tools.ts:15-18`) says
+  `scope: session (only this chat; default), tree …, team (requires team name),
+  project or all. since:'compaction' … view: overview, cache, tools, sessions or
+  steps`, and `MarkDescription` (`:20`) is `Record a named mark (now), to compare
+  the monitor before and after a change.` The schema takes
+  `scope` = session/tree/team/project/all, `since` = number|"compaction", `view`
+  = overview/cache/tools/sessions/steps (`packages/plus/src/rpc.ts:1119-1121`,
+  `tools.ts:24-33`).
+- Focused tests: `test/monitor-plugin.test.ts` "the monitor tools answer for the
+  calling chat and record marks" exercises the calling session's default scope,
+  `since: "compaction"`, `scope: "all"` window/compare, a refused malformed
+  window, and `monitor.mark` — 3 pass. `test/monitor-ledger.test.ts` "session
+  scope is exactly one chat; tree lifts to the topmost root; project spans trees"
+  exercises the scope variants — 10 pass.
+
+**PASS** (agent tools shown live; scope/since/view/mark and description wording
+by the named focused tests and the source lines).
 
 ## F. Log and cleanup
 
