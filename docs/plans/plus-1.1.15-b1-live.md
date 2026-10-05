@@ -68,8 +68,10 @@ The footer counted down a single window and never restarted on a ping:
 01:35:48Z  cache warm · 2:11 left
 01:36:28Z  cache warm · 1:31 left
 01:36:56Z  cache warm · 0:56 left
-01:41:11Z  cache cold · enter again to send   (cold-send guard, first submit held)
 ```
+
+(Five minutes later, at 01:41:11Z, the first submit of the phase-2 message showed
+`cache cold · enter again to send` — the cold-send guard holding a send.)
 
 Server log `opencode-local.log`, exactly three `warming session` lines:
 
@@ -90,11 +92,14 @@ variant=default`, each with usage:
 | `b78bb7f7-fe97-4c0f-961b-25979d52b60f` | ping | completed | 01:37:02.052 | 49 | 8448 | 2 | 0 | 0 |
 
 Each ping has exactly one `request_fingerprint` row (`openai-responses`,
-body-hash `17321134d710d262` on all three, `system_parts` 1592 chars,
-`tools` 1375 chars, `message_prefixes` 540 chars, consistent
-`prompt_cache_key`). No orphan rows: `select count(*) from request where ended
-is null` = **0**; `step where ended is null` = **0**; two `step` rows only, one
-per real message.
+body-hash `17321134d710d262` on all three, consistent `prompt_cache_key`). The
+stored fingerprint columns are encoded JSON: `length(system_parts)` 1592,
+`length(tools)` 1375, `length(message_prefixes)` 540 characters. These are
+serialized-column lengths, **not** prompt segment character sizes (segment
+sizes are the per-part `chars`/`estimatedTokens` fields inside that JSON and
+were not separately summed here). No orphan rows: `select count(*) from
+request where ended is null` = **0**; `step where ended is null` = **0**; two
+`step` rows only, one per real message.
 
 `monitor.query` (view `cache`, scope `session`) returns the pings as kind
 `ping`, verdict `hit`, with usage and a real detail; first ping detail:
@@ -106,8 +111,9 @@ verdict hit / confidence certain / expected 8469
 actualCacheRead 8448
 ```
 
-Totals for the session at this point: `requests 9, pings 6, hitRate 0.884,
-misses 1, unread 0`.
+Phase-1 totals readback, captured 2026-10-05T01:38Z (after the three pings of
+phase 1 and before phases 2–3): `requests 5, pings 3, hitRate 0.7966,
+misses 0, unread 0`.
 
 ## Phase 2 — next message reads the cache
 
@@ -119,8 +125,12 @@ confirmed). Ledger row:
 step completed started 01:41:18.917 input 33 cache_read 8448 cache_write 0 output 2
 ```
 
-**cacheRead 8448 > 0** — the next real message read the warmed cache, and the
-message was one step, not two.
+**cacheRead 8448 > 0** — the next real message reused the cached prompt prefix
+(observed reuse after the pings). This does not by itself prove the pings
+causally refreshed a DeepSeek disk-cache lifetime; the provider's cache
+lifetime is recorded as `unknown` for this route, so the reuse is the required
+`cacheRead > 0` observation, not a causal warming-lifetime claim. The message
+was one step, not two.
 
 ## Phase 3 — composer-only selection does not redirect pings
 
@@ -139,10 +149,25 @@ countdown from `cache warm · 3:26 left` to `cache cold`. Durable host history
 `assistant` messages; `session_inbox` and `session_pending` are empty, so the
 private keep-alive prompt is never persisted as a message.
 
+Session totals after all phases (readback captured 2026-10-05T01:46Z): `requests
+9, pings 6, hitRate 0.884, misses 1, unread 0`.
+
+## Failed auxiliary — not exercised live
+
+The Brief's optional control for a *failed* auxiliary generation (the refusal
+path that must record one errored fingerprinted row) could not be injected
+safely in the live relay without breaking the run, so it was **not exercised
+live**. It remains covered by unit tests only: `test/monitor-requests.test.ts`
+("generate usage hook records request and warming warmed relabels it to ping,
+hashing errors without text") and the core `session-generate` suite (33 pass /
+18 pass above). No live claim is made for the failure path.
+
 ## Log classification (actual owned file)
 
-`<home>/data/opencode/log/opencode-local.log` (68068 bytes; `opencode.log` is
-not created for the local channel). Levels: **212 INFO, 6 WARN, 0 ERROR**.
+`<home>/data/opencode/log/opencode-local.log` (`opencode.log` is not created for
+the local channel). Mid-run read at 01:44Z: 68068 bytes, **212 INFO, 6 WARN, 0
+ERROR**. Final read at 02:01Z after cleanup: 78580 bytes, **259 INFO, 6 WARN, 0
+ERROR** (the six WARN are the same lines).
 
 - All six WARN lines are `executor-controlled plugin source refused` for the
   test worktree's / workspace root's own `.opencode` plugin sources
@@ -160,9 +185,25 @@ not created for the local channel). Levels: **212 INFO, 6 WARN, 0 ERROR**.
 - `packages/plus bun test test/monitor-requests.test.ts` → 18 pass, 0 fail.
 - `packages/core` and `packages/plus` `bun run typecheck` → exit 0.
 
-## Cleanup (see next section for PTY exit and kernel absence)
+## Cleanup (observed)
 
-Stop the owned TUI and every owned test PID; confirm `pilotty kill` reports
-`SESSION_EXITED` and a `/proc` scan finds no process with cwd under this dev
-home. The old T84 home under
-`.../Flash-C-Worker-t84524a-20261005-0236` is not touched.
+- The owned TUI was exited through the palette (`ctrl+p` → `exit` → Enter) at
+  01:48Z. Final PTY state read at 01:48:41Z: `outcome: exited`,
+  `exit: {exit_code: 0, signal: null, success: true, killed_by_client: false,
+  output_complete: true}`. `pilotty kill` then reported
+  `[SESSION_EXITED] Session 'overnight-b1-live-retry' exited (exit code 0)`.
+- At final check (02:01:20Z) the session has aged out of the daemon:
+  `pilotty snapshot`/`status` return
+  `[SESSION_NOT_FOUND] Session 'overnight-b1-live-retry' not found`.
+- Owned test PIDs found by kernel cwd during the run — `2775307` (TUI),
+  `2775428` (serve --stdio), `2775570` (search helper), `2775612` (search
+  helper) — are all gone.
+- `/proc` scan across every PID: **0** processes with cwd under this dev home,
+  **0** with an open fd path under it. Final log: 78580 bytes, **259 INFO, 6
+  WARN, 0 ERROR** (the same six executor-controlled-source refusals).
+- PID `2769658` (`.../opencodeplus search-mcp`, ppid `2592457`, exe under
+  `releases/opencodeplus/releases/2.0.18-plus-1.1.14`) remains: it is the
+  immutable shared release worker's MCP helper indexing this worktree, not this
+  test's runtime, so it was left untouched.
+- The old T84 home under
+  `.../Flash-C-Worker-t84524a-20261005-0236` is not touched.
