@@ -218,8 +218,77 @@ row; edit the row and see it in the sections.
    - **They only mark changes.** They never push anything into a running chat's
      prompt (item 5).
 
+6. **Search: hosted Tavily and Exa servers. On hold (user, 2026-10-05).**
+   - **For now:** keep Plus's own search server and its three tools as they
+     are.
+   - **Why:** for the same three tools, the hosted servers cost 528 more tokens
+     per request. Nearly all of it is Tavily search's parameters, which
+     Instructions cannot edit yet. Revisit after item 6; the findings below
+     stay for then.
+   - **Meanwhile:** items 4.1–4.5 limit the search processes, because a stopped
+     worker's folder unloads, and its search server goes with it.
+   - **Why the change:** Plus ships its own search server
+     (`packages/plus/src/search/`, about 300 lines). It calls the Tavily and Exa
+     web APIs directly and offers three tools.
+     - Core runs every local (stdio) tool server once per folder, upstream V2
+       too (`core/src/mcp/stdio.ts`). That is where the 51 copies came from.
+     - A hosted server runs no local process at all: core connects over HTTP
+       (`type: "remote"`, `schema/src/mcp.ts:54`).
+   - **Configure two hosted servers:**
+     - `tavily`: `https://mcp.tavily.com/mcp/` with an
+       `Authorization: Bearer` header;
+     - `exa`: `https://mcp.exa.ai/mcp`, choosing its tools with the `tools=`
+       parameter.
+   - **Keys stay out of the config.** Each header reads its key with core's
+     `{file:…}` substitution (`core/src/config/variable.ts`) from the existing
+     0600 key files.
+     - Check first how Exa's hosted server takes a key: a URL parameter or a
+       header.
+     - A key must never sit in a config file, a row, a log or a URL that gets
+       logged.
+   - **Tools by default:** only Tavily search, Tavily extract and Exa code search
+     are on for every agent, through Defaults rows. Any agent or team can switch
+     on others (Tavily crawl and map, Exa web search) in Instructions.
+   - **Rename every reference** to the old `search_*` tool names: Tools and
+     rules sections, `perm:search:team-tavily`, the permission catalogue's
+     parameter rules, presets, guidance, `requires`, teaching and the README.
+     That is 12 places in `packages/plus/src`.
+     - User rows on the old names are mapped to the new ones, or flagged for
+       review.
+   - **Remove** `packages/plus/src/search/`, the `search` server registration
+     and the `search-mcp` CLI subcommand.
+   - **Measured 2026-10-05** with Anthropic's token count, through CLIProxyAPI:
+
+     | Same three tools | Code Mode catalogue line | Native tool definition |
+     |---|---|---|
+     | Ours | 801 tokens | 1,510 tokens |
+     | Hosted | 1,329 tokens | 2,077 tokens |
+     | Hosted, all 8 tools | (not measured) | 4,430 tokens |
+
+     - Nearly all of the difference is Tavily search: its schema has many
+       parameters, so its Code Mode line is 900 tokens against 250 for ours.
+     - Exa code search is smaller hosted: 175 tokens against 341.
+     - Instructions can replace a description, but not the schema, so
+       overrides barely shrink this.
+     - In Code Mode the inline catalogue has a fixed 2,000-token budget
+       (`core/src/codemode/catalog.ts`). If the cost matters, leave
+       `tavily_search` unpinned: agents then find it through `search()`.
+   - **Keys, tested 2026-10-05 with a wrong key, which costs nothing:**
+     - Tavily answers 401 without a valid `Authorization: Bearer` header.
+     - Exa reads `Authorization: Bearer` or `x-api-key` (it suggests these
+       itself) as well as the `exaApiKey` URL parameter. Use a header, so the
+       key never appears in a URL.
+     - Without a key, Exa code search still works, on Exa's anonymous free
+       tier.
+     - Core's `{file:…}` substitution trims and escapes the key file
+       (`core/src/config/variable.ts`), so it fits in a header value.
+     - Use an absolute key path: a dev home has a different `~`.
+     - Exa's Cloudflare front blocks clients without a normal User-Agent
+       (error 1010). Check that core's MCP client sends one.
+
 **Tests:**
 - An event for a dropped folder does not reopen it.
+- After `team_stop`, the worker's search server process is gone.
 - `team_stop` unloads the worker's folder.
 - No MCP process exists before the first message, and one exists after it.
 - `/refresh` and the tool reload a changed skill and report the cost.
@@ -259,6 +328,16 @@ row; edit the row and see it in the sections.
 **Must not change:** a chat without mid-chat changes sends byte-identical tool
 definitions and system text to today.
 
+**Cost of applying overrides on every request** (measured 2026-10-05, with the
+real `apply()` and `context` hook in a temporary benchmark):
+- the setup is 40 tools (20 overridden, 5 removed), 10 permission rules
+  scrubbed, and a 44 KB system prompt;
+- building the plans once, per Instructions change: 5.2 ms;
+- applying them per request: 0.79 ms median, 1.05 ms p99.
+
+Overrides add no noticeable latency next to a model's response time, and the
+same input always gives the same bytes, so they do not disturb the cache.
+
 **Decisions (user):**
 - Changes apply automatically and seamlessly. No refresh step is needed in
   normal use.
@@ -274,9 +353,13 @@ definitions and system text to today.
    replaces the earlier text. The prefix is untouched, so only the change's
    own tokens are new.
 2. **Tools.**
-   - **Off:** enforced at once at the call (refused with its message), plus a
-     one-line System note.
-   - **Code Mode tools** (catalogue text): a note with the change.
+   - **Off:** only the permission changes at once: a call is refused with its
+     message, and a one-line System note says so. The tool's definition and
+     description stay in the prompt unchanged until the next rebuild moment, so
+     nothing cached is lost.
+   - **Code Mode tools:** core already sends a changed catalogue as an update
+     message instead of rewriting the prefix (`core/src/codemode/instructions.ts`,
+     `update`). Check that Plus's `catalog` hook changes go through it.
    - **A native tool switched on, a new MCP server, or a changed native tool
      description:** these sit in the tool definitions, which come first, so
      they wait for the next rebuild (item 3 below).
@@ -317,7 +400,179 @@ definitions and system text to today.
 4. After a compaction, the system text holds the change and the next message
    reads the new prefix.
 
-## 6. Instructions: no provider catalogue reads while navigating (moved from 1.1.15 #10)
+## 6. Tools: a Parameters section in each tool row
+
+**Why (user, 2026-10-05):** a tool reaches the model as its description *and*
+its parameters. Instructions shows and edits only the description, so the
+larger part is invisible and cannot be changed.
+- **Measured:**
+  - Hosted `tavily_search` has a 145-character description and a
+    2,913-character parameter schema.
+  - Plus's own `exa_code_search` has 225 and 991.
+- **Code Mode:** the parameters become the signature, 900 tokens for hosted
+  `tavily_search`.
+
+**What:**
+1. **A Parameters section** under every tool row (native, MCP and Code Mode).
+   It has one entry per parameter: name, type, required or not, and its
+   description.
+2. **Edit a parameter's description** like any text row; reset brings back the
+   tool's own.
+3. **Switch off an optional parameter:** the model no longer sees it, and the
+   tool uses its own default.
+   - A required parameter cannot be switched off.
+   - A call that still passes a hidden parameter is passed on unchanged. A
+     refusal would be extra machinery for a rare case; ask the user before
+     adding one.
+4. **Review:** when a tool changes a parameter's description or adds a
+   parameter, the row is marked for review, as descriptions are today.
+
+**Where it applies** (line numbers at `86054c38be`):
+- **Native tools:** Plus's `context` hook already receives each tool's JSON
+  schema (`plugin/src/effect/session.ts:43`, `{ description, input }`).
+  - Rewrite parameter descriptions there, next to the description override.
+  - Drop switched-off parameters there too.
+- **Code Mode:** the catalogue override replaces only `description` and
+  `pinned`. It passes `signature` through unchanged
+  (`core/src/codemode/catalog.ts:186-216`).
+  - The signature is rendered from the schema
+    (`codemode/src/tool-runtime.ts`, `describeTool`).
+  - So the schema must be overridden before rendering. Then the catalogue line
+    and `search()` results show the edited parameters.
+  - First check whether `ToolEditor.update` can change the schema at its
+    source. That would cover both forms at once.
+- **Cache:** a parameter edit changes a tool definition, so it follows item 5.
+  - An unchanged chat stays byte-identical.
+  - A native change applies at a rebuild moment.
+  - A Code Mode change goes through the catalogue update message.
+
+**Tests:**
+- An edited parameter description reaches the native definition and the
+  Code Mode line; reset brings back the tool's own.
+- A switched-off optional parameter is absent from both forms.
+- A required parameter refuses to be switched off.
+- With no edits, tool definitions are byte-identical to today.
+- A changed upstream parameter description marks the row for review.
+
+**Live** (on `claude-opus-5-5`):
+1. Edit one parameter description of `search_tavily_search`.
+2. Switch off its `include_domains` parameter.
+3. After a rebuild moment, the request's tool definition shows both changes.
+4. The next message reads the prefix from cache.
+
+## 7. A moved chat takes its team run along
+
+**Why (2026-10-05):** the residual orchestrator was opened in `plus-1.1.15`
+instead of `plus-1.1.15_overnight`. It could not just switch folder.
+- `session_move` was off for it. It is on now, at the Simple-Orchestrator row.
+- Its first team call had already tied its root run to `plus-1.1.15`.
+- A root run is found by session ID alone (`teams/run.ts`, `bySession`), and
+  Plus ignores `session.moved`. So a moved chat keeps the old folder and branch,
+  and `team_integrate` lands there.
+- Tested 2026-10-05 against the real tools in a temporary test:
+  - moved after the first team call: same run, old folder and branch;
+  - moved before it: a new run in the new folder.
+
+**Change:**
+- On `session.moved`, a root run with no children takes the chat's new folder.
+  That updates `directory`, `projectDirectory`, `branch`, `base` and `head`
+  from the new checkout, and logs one history entry.
+- A root run with children stays where it is. Its next team call says so and
+  names the run's folder.
+- Replace the refusal's "do not session_move"
+  (`E_NOT_ACTOR`, `teams/tools.ts`) with this rule.
+
+**Tests:**
+- Move before any child: the next team call reports the new folder and branch,
+  and `team_integrate` lands there.
+- Move with a child open: the run keeps its folder, and the next team call says
+  so.
+
+**Live:**
+1. Open an orchestrator chat in `plus-1.1.16`.
+2. Make one team call.
+3. Move the chat to a `plus-1.1.16_<purpose>` worktree.
+4. Delegate and land one small task: it lands in the purpose worktree.
+
+## 8. A followup after a stop, and a nudge that arrives in time
+
+**Why (2026-10-05):** the residual orchestrator force-stopped T126 after 16
+minutes without an evidence file, though its screen showed progress. Its
+unsaved work was lost, and the task had to be briefed again in two parts. A
+nudge would have kept it going. He sent none because:
+- Plus refuses a followup from the parent that stopped the run (`E_STOPPED`,
+  `teams/api-followup.ts:121`), while `team_stop`'s description said "a
+  followup resumes it";
+- a followup to a working child waits for the end of the child's turn
+  (`followupQueue` puts it in the inbox, `onSessionIdle` delivers it).
+  - Of the 76 sent to working children since 2026-10-04 12:00Z, 56 arrived:
+    median 20 min, 17 within 10 min, 23 after more than 30 min, the last after
+    162 min.
+  - The other 20 never arrived, because the child was stopped first.
+
+The Simple team's rules changed the same day (Instructions revisions
+479–489):
+- nudge freely;
+- never stop a run to get a message through;
+- start a fresh run only for a Brief far too big or a confused worker;
+- workers ask early with `needs_context`.
+
+**Change (user):**
+1. **Plus knows whether a child's cache is still warm:** its warming window is
+   open, or its last request or warming ping is younger than the warming
+   interval (`WarmingStatus` `active`, `expires`, `lastWarm`, `interval` in
+   `packages/plus/src/rpc.ts`). If no warming is enabled for the child's model,
+   it always counts as warm.
+   - **Today a stop ends warming at once:** Plus refuses warming for a
+     stopping, stopped, dead, superseded or reaped run (`decideWarmingFor`,
+     `packages/plus/src/index.ts:3197-3207`).
+   - The stop does not unload the run's workspace. Core unloads a workspace
+     after 60 idle minutes (`core/src/location-activity.ts:25`).
+   - So today a stopped child stays warm only while its last request is younger
+     than the provider's cache lifetime.
+   - **Proposed (open question below):** a stopped run keeps warming for one
+     more warming window (until `expires`), so a followup soon after a stop
+     finds the cache warm.
+2. **A warm child takes a followup after a stop:** `E_STOPPED` applies only to
+   a cold child. A warm stopped child resumes like an idle one, with its
+   context and its cache.
+3. **A cold child compacts first:** `team_followup` gets `compactWith`, a model
+   (for now `cliproxyapi/deepseek-v4.1-flash-cheap`). On a cold stopped child:
+   - the chat compacts with that model through the `compaction.decide` hook,
+     the way a CPA account switch does (`quota/controller.ts` `decide` sets
+     `compact`, `portable` and `compactionModel`);
+   - then the child continues on its own model, with the followup as its next
+     message.
+
+   A followup to a cold stopped child without `compactWith` is refused, and
+   the refusal names the parameter. With item 2 this makes
+   `team_followup({ run, prompt?, budget?, reason?, compactWith? })`.
+4. **Rules follow:** the role's "team_stop is final" line and the `team_stop`
+   description change to "a followup after a stop needs `compactWith` once the
+   child is cold".
+
+**Proposed by the build seat, waiting for your OK:** deliver a followup to a
+working child at its next step, not at the end of its turn. Core already
+delivers a steered message at the next safe step boundary
+(`delivery: "steer"`, used for the quota notice in `quota/register.ts`). This
+would make a nudge reach a child that sits in one long turn within a minute.
+
+**Tests:**
+- Warm stopped child: the followup is admitted with no compaction, and the
+  next request reads the cache.
+- Cold stopped child with `compactWith`: exactly one compaction by that model,
+  then the next step runs on the child's own model with the followup last.
+- Cold stopped child without `compactWith`: refused, the message names the
+  parameter, and nothing reaches the child.
+- No warming for the child's model: it counts as warm.
+
+**Live:** one owned run on Flash-C-Worker.
+1. Stop it and send a followup at once: it goes on, with a cache hit.
+2. Stop another, wait until it is cold, and follow up with `compactWith`: the
+   monitor shows one compaction on `deepseek-v4.1-flash-cheap`, then the
+   child's next step on its own model.
+
+## 9. Instructions: no provider catalogue reads while navigating (moved from 1.1.15 #10)
 
 **Where this comes from:** `plus-1.1.15-residual.md` R4. The 1.1.15 lists met
 their speed targets (`plus-1.1.15-a4-live.md`: Defaults › Models 133 ms on the
@@ -342,7 +597,7 @@ and no public API expansion.
 model notifications across a scripted navigation (zero), and a picker open
 (one, then cached). Effective warming, names and variants are unchanged.
 
-## 7. Leftovers from the 1.1.15 residual run (open)
+## 10. Leftovers from the 1.1.15 residual run (open)
 
 Three findings from `plus-1.1.15-residual.md` R6, recorded open because that
 plan names no Brief for them and they block nothing. Full detail in
@@ -369,8 +624,13 @@ plan names no Brief for them and they block nothing. Full detail in
 
 ## Open questions for the user
 
-None. Settled on 2026-10-05:
+- Item 8: should a followup to a working child arrive at its next step
+  (steered) instead of at the end of its turn?
+- Item 8: should a stopped run keep warming for one more window, or should a
+  stop end warming at once, as today?
+
+Settled on 2026-10-05:
 - "cache input" means cache writes (item 2).
 - A compaction and a model switch apply pending changes (item 5).
-- Running `search-mcp` once for the whole service is still to be decided
-  (item 4).
+- Search stays on Plus's own server for now; the switch to hosted servers waits
+  for parameter rows (items 4.6 and 6).
