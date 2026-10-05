@@ -6,7 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B3 review/issue repairs alongside B1/A1 acceptance; repair B2 page gaps (#7) before live acceptance.
 - Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`; T79/T80 stopped. B1 fresh live T88, #1/#6/#15 T82, #9 privacy receipt T85, A1 live T86 and #7 fresh T87 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; all workers stopped. B1 fresh live T88, #1/#6/#15 T82, A1 live T86 and #7 fresh T87 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -153,7 +153,7 @@
 - Plan: after #3 lands, correct report aggregation/omission and per-session real state using existing query/event/run seams; filtered signals honor the requested window, retain history only as evidence/predecessors. Focused actual-ledger regressions for unknown vs known pricing, windowed pings/unstable/unread, legacy breakdown, running/completed/error states and reasoning/cache-inclusive totals. T83 handles visible Sessions token total; avoid new durable derived state. Re-check page scopes/windows live.
 - Further review: unread writes are counted even before their expiry (analysis has no as-of time), and later out-of-window reads can change historical-window signals. Session `agent` is overwritten by title/generate hook identities; derive/enrich Sessions from real host active/outcome/agent when available, not the last auxiliary request. `ctx.session.active()` and `Session.Info.outcome` are existing authoritative seams.
 
-### #9 — legacy call attribution persists content-bearing errors/targets (open)
+### #9 — legacy call attribution persists content-bearing errors/targets (fixed; source and owned live verified)
 
 - Actual collector reproduction writes fictional `FICTIONAL_PRIVATE_ERROR_SENTINEL` unchanged to `call.error` (`tool: …`). Request errors correctly hash through `errorFingerprint`, but callEnded does not. `innerTarget` also writes the first arbitrary string argument of unknown Code Mode tools, and targetOf stores raw search text; commandHead treats any lower-case second argument as a subcommand (e.g. echo's payload).
 - Weight: violates T1 no-content ledger privacy; existing request-only privacy assertions miss call columns. No real secret read or printed; reproduction used a fictional sentinel and isolated temp ledger.
@@ -162,6 +162,8 @@
 - Early T85 diff correctly hashes call errors at the persistence boundary and removes arbitrary inner-argument attribution. Proposed program-arity check still retains `git fictional_private_payload_sentinel`; requested recognized-subcommand-only control. Also require lowercase echo sentinel (uppercase alone would not discriminate old regex). No final verdict/landing yet.
 - T85 attempt 1 reported source `44970b598a` and README `f130f6cf2d`, green focused checks and isolated failed-tool/search privacy evidence; queued correction is now attempt 2 working, so not landed/stopped yet. Its report identified four existing `tools.test.ts` failures; parent reproduced and recorded #15 rather than ignoring them.
 - T85 attempt 2 source correction `77eeb9397b` personally read: explicit known subcommands, lowercase arbitrary git/echo refusal assertions over every table, useful git diff/push and bun test controls, updated README. Reported focused checks/live lowercase controls pass. Receipt followup is attempt 3 working (exact log/owned cleanup proof and allowed-path vs content-sentinel distinction), still not landed.
+- Full diff/receipt reviewed and landed as `4588c190a2`, T85 stopped immediately. Parent monitor/cache/requests/plugin/RPC focused check **72 pass / 0 fail**, Plus typecheck passes. Expected ledger/final-observer failure-control warnings remain; bogus monitor-plugin registration warnings are gone. Parent clarified the receipt's unit-vs-live sentinel table: all stored-column fictional-sentinel controls are real source regressions, whereas actual owned live exercised failed read/search/shell and lowercase git/echo with useful git diff. No invented claim that all five unit inputs ran through the TUI.
+- Owned receipt `plus-1.1.15-monitor-privacy-live.md`: actual `opencode-local.log` has 24 warning/error lines, all executor-controlled source refusals, zero other errors/warnings. Parent independently confirms PIDs 2757434/2757513/2757651/2757697 absent and no cwd/fd/maps match in the exact privacy dev home. Failed-read path names intentionally stay visible; only error/query/content payloads are hashed/omitted. Existing old raw records stay readable, not migrated or edited. No push.
 
 ### #10 — navigation still reads the provider catalogue through base classification (open)
 
@@ -208,4 +210,4 @@
 
 ## Open findings for morning
 
-Issues #1/#6/#7/#8/#9/#10/#13/#14/#15 and the acceptance/gates above remain pending. Final sweep has not run; no final acceptance claim.
+Issues #1/#6/#7/#8/#10/#13/#14/#15 and the acceptance/gates above remain pending. Final sweep has not run; no final acceptance claim.

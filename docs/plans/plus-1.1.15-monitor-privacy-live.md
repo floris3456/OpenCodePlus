@@ -90,20 +90,28 @@ and `echo` were. In the prior run at `77eeb9397b`, a later
 `git diff --stat` stored target `"git diff"`, i.e. the allowlist keeps useful
 subcommands.
 
-## Sentinel accounting (distinguish the two kinds)
+## Source-regression sentinel accounting
 
-Five content/error/query sentinels whose absence from **all** stored tables is
-proven, plus one pathname sentinel that is intentionally retained:
+The actual collector/ledger tests inject the following content/error/query
+sentinels and assert their absence from **all** stored tables. These assertions
+are source regression evidence, not a claim that every input was exercised
+through the live TUI:
 
 | sentinel | where injected | persisted? |
 | --- | --- | --- |
-| `FICTIONAL_PRIVATE_ERROR_SENTINEL` | failed tool error message | no — stored as `{"type":"tool.execution","hash":"9b318c6cf1a79421","chars":72}` |
+| `FICTIONAL_PRIVATE_ERROR_SENTINEL` | failed tool error message | no — stored as the asserted `errorFingerprint` hash/type/size |
 | `FICTIONAL_SHELL_PAYLOAD_SENTINEL` | shell stdout payload | no |
-| `FICTIONAL_SEARCH_SENTINEL` | grep pattern | no — stored as hash + `33c` |
+| `FICTIONAL_SEARCH_SENTINEL` | grep pattern | no — stored as the asserted hash + character size |
 | `FICTIONAL_QUERY_SENTINEL` | websearch query | no — stored as hash + size |
 | `FICTIONAL_PAYLOAD_SENTINEL` | unknown Code Mode inner input | no — target omitted |
-| `fictional_lowercase_payload_sentinel` | `git` / `echo` second word | no — programs `git`, `echo` only |
-| `/…/FICTIONAL_PRIVACY_ERROR_SENTINEL.txt` | file **path** argument | **yes, by design** — paths are explicitly allowed target semantics |
+| `fictional_private_payload_sentinel` / `fictional_lowercase_payload_sentinel` | `git` / `echo` second word | no — programs `git`, `echo` only |
+
+The owned live failed-read/search checks separately observed a hashed error
+`{"type":"tool.execution","hash":"9b318c6cf1a79421","chars":72}` and grep
+target `"200071ab6bb03781 33c"`. The live pathname
+`/…/FICTIONAL_PRIVACY_ERROR_SENTINEL.txt` intentionally remains a target: paths
+are allowed semantics, unlike error or query text. The corrected live lowercase
+shell controls and useful `git diff` control are recorded above.
 
 The failed-read pathname is a legitimate file target; only its error *text* was
 hashed. No blanket claim is made that a pathname sentinel is absent.
