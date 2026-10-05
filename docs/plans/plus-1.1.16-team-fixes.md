@@ -218,8 +218,45 @@ row; edit the row and see it in the sections.
    - **They only mark changes.** They never push anything into a running chat's
      prompt (item 5).
 
+6. **Search: use the hosted Tavily and Exa servers (user, 2026-10-05).**
+   - **Why the change:** Plus ships its own search server
+     (`packages/plus/src/search/`, about 300 lines). It calls the Tavily and Exa
+     web APIs directly and offers three tools.
+     - Core runs every local (stdio) tool server once per folder, upstream V2
+       too (`core/src/mcp/stdio.ts`). That is where the 51 copies came from.
+     - A hosted server runs no local process at all: core connects over HTTP
+       (`type: "remote"`, `schema/src/mcp.ts:54`).
+   - **Configure two hosted servers:**
+     - `tavily`: `https://mcp.tavily.com/mcp/` with an
+       `Authorization: Bearer` header;
+     - `exa`: `https://mcp.exa.ai/mcp`, choosing its tools with the `tools=`
+       parameter.
+   - **Keys stay out of the config.** Each header reads its key with core's
+     `{file:…}` substitution (`core/src/config/variable.ts`) from the existing
+     0600 key files.
+     - Check first how Exa's hosted server takes a key: a URL parameter or a
+       header.
+     - A key must never sit in a config file, a row, a log or a URL that gets
+       logged.
+   - **Tools by default:** only Tavily search, Tavily extract and Exa code search
+     are on for every agent, through Defaults rows. Any agent or team can switch
+     on others (Tavily crawl and map, Exa web search) in Instructions.
+   - **Rename every reference** to the old `search_*` tool names: Tools and
+     rules sections, `perm:search:team-tavily`, the permission catalogue's
+     parameter rules, presets, guidance, `requires`, teaching and the README.
+     That is 12 places in `packages/plus/src`.
+     - User rows on the old names are mapped to the new ones, or flagged for
+       review.
+   - **Remove** `packages/plus/src/search/`, the `search` server registration
+     and the `search-mcp` CLI subcommand.
+   - **Check:** the hosted tools' descriptions cost tokens in every prompt.
+     Measure them, and shorten them with Instructions text overrides where
+     needed.
+
 **Tests:**
 - An event for a dropped folder does not reopen it.
+- With the hosted search servers, no search process runs; search, extract and
+  code search answer, and other tools are off until switched on.
 - `team_stop` unloads the worker's folder.
 - No MCP process exists before the first message, and one exists after it.
 - `/refresh` and the tool reload a changed skill and report the cost.
@@ -274,8 +311,10 @@ definitions and system text to today.
    replaces the earlier text. The prefix is untouched, so only the change's
    own tokens are new.
 2. **Tools.**
-   - **Off:** enforced at once at the call (refused with its message), plus a
-     one-line System note.
+   - **Off:** only the permission changes at once: a call is refused with its
+     message, and a one-line System note says so. The tool's definition and
+     description stay in the prompt unchanged until the next rebuild moment, so
+     nothing cached is lost.
    - **Code Mode tools** (catalogue text): a note with the change.
    - **A native tool switched on, a new MCP server, or a changed native tool
      description:** these sit in the tool definitions, which come first, so
@@ -322,5 +361,5 @@ definitions and system text to today.
 None. Settled on 2026-10-05:
 - "cache input" means cache writes (item 2).
 - A compaction and a model switch apply pending changes (item 5).
-- Running `search-mcp` once for the whole service is still to be decided
-  (item 4).
+- Search uses the hosted Tavily and Exa servers instead of Plus's own
+  (item 4.6).
