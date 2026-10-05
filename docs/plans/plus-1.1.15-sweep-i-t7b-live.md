@@ -124,3 +124,42 @@ The row again shows `active ◆`, deepseek unbadged.
 
 **PASS** — `r` on the active model row clears the active flag at this level and
 writes one revision; Space restores it.
+
+### Step 4 — `d` deletes the inactive deepseek row (PASS)
+
+Store before: `{"version":2,"revision":482}`, 246 lines, and the `build` model
+rows were opus `…@high active` plus
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"deepseek-v4.1-flash-cheap","updated":"2026-10-05T15:07:10.645Z"}
+```
+
+(the inherited `defaults` opus row and the removed fable row also present).
+
+Cursor `↓` onto the inactive `cliproxyapi/deepseek-v4.1-flash-cheap` row and
+pressed `d`. The confirm dialog read `Remove
+"cliproxyapi/deepseek-v4.1-flash-cheap"? … A local candidate is deleted; an
+inherited or upstream one is hidden here, and re-adding the model clears that.`
+For the first attempt the focused button was `Cancel`, so Enter dismissed it
+with `Delete of "cliproxyapi/deepseek-v4.1-flash-cheap" cancelled` (store still
+revision 482). Pressed `d` again, moved focus `→` to `Confirm`, Enter. The row
+disappeared from the pane (only opus `…@high active` and the inherited
+`…@xhigh` remain):
+
+```
+▌▸ cliproxyapi/claude-opus-5-5@high                                active ◆
+ ▸ cliproxyapi/claude-opus-5-5@xhighfrom default build...arm 30m · every 4m
+```
+
+Store after: `{"version":2,"revision":483}`, 245 lines, the
+`deepseek-v4.1-flash-cheap` `build` local record gone (no tombstone — a local
+record is deleted):
+
+```
+214 fable removed
+215 {"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-opus-5-5@xhigh","updated":"2026-09-29T10:13:12.020Z"}
+224 defaults opus xhigh active
+```
+
+**PASS** — `d` on the inactive local deepseek row deletes its local record
+(one revision, line count 246 → 245).
