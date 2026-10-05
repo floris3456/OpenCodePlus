@@ -130,6 +130,7 @@
 - Files: `packages/plus/src/instructions/discover.ts`.
 - Decision/fix: remove the `current === globalParent` stop; the actual global directory exclusion and realpath/symlink checks still prevent treating global files as project files. This matches V2 upward discovery to filesystem root.
 - Focused proof passed within A1's 185-test check, including refusal and symlink controls; Plus typecheck passes. Live A1 ancestor refusal in isolated home still pending.
+- T86 attempt1 reported `done_with_concerns` at `afb108803d`: real R/palette/tools rename, all Project/Global owner kinds, classes/delegate/warming/enablement, no-write validation/collision/refusals and immutable history evidence. Current attempt2 handles queued sanitation/corrections; not landed yet. Remove all environment-variable/environ descriptions and inaccurate claim that the plan requires them; use exact owned cwd/fd/log/kernel absence. Member split is unit-only and needs an exact assertion or tiny live followup; shippedDefaults registry absent live, actual preset refusal + injected real implementation tests are distinguished. Source tests6pass/Plus-typecheck reported, not parent re-run yet.
 
 ### #6 — model field inheritance/reset breaks T7 (open)
 
@@ -214,6 +215,12 @@
 - Parent `bun test test/tools.test.ts`: **66 pass, 1 existing skip, 4 fail**. Worker T85 reproduced them at its base before privacy edits. One replacement test at line 1329 expects one stored model record but receives two (candidate plus hiding tombstone); three delete flows at lines 2455/2557/3070 try to delete a model immediately after create, which now correctly activates it exclusively and refuses deleting the effective model.
 - Weight: failing Instructions regression gate; contracts T3 auto-activation and A2 closed in-place editing are not to be weakened.
 - Plan: reconcile these actual tool tests after validating each failure against the contract: assert exactly one visible edited row plus the correctly scoped tombstone, preserved active/unrelated fields; preserve the effective-model deletion refusal, explicitly activate another candidate/reset the local active flag before deletion/hiding as appropriate. Retain returned-level/owner id and re-add/refusal assertions. T82 already owns model/tool tests; include this in its focused check and later live model sweep. Fixture permission-hook warnings are separate from these four demonstrated assertion/refusal failures.
+
+### #16 — owned test's Claude fallback route rejects a real request (open external availability finding)
+
+- T86 log reports one `AI.Error.InvalidRequest: unknown provider for model claude-fable-5-1` after accidental composer selection; its first doc wrongly calls it an intentional failure/unregistered host variant. Parent read-only owned ledger confirms request `0d434120-52eb-4cb1-8e8b-a85a378c0fe6`, provider `cliproxyapi`, model `claude-fable-5-1`, variant `xhigh`, agent `new-b`, ended statuserror with exactly one final wire fingerprint. Hashed error type `provider.invalid-request`, HTTP400, hash `0dd35a2328c29e26`, chars43. The provider rejected a real wire request; there is no evidence of an unknown host provider or malformed rename.
+- Weight: external model-route availability, not established Instructions/Monitor source regression. Corrected DeepSeek model requests complete. B1 DeepSeek has real cache fields, so prescribed B4 does not need this failing fallback. No shared relay/provider config inspection or mutation is authorized.
+- Plan: preserve exact sanitized refusal/identity and correct T86's classification; continue acceptance on valid cheap model, report route failure for morning provider owner. No speculative source fix or catalogue hiding; final sweep records this already-known operational finding if it recurs. Initial SQL status predicate used a double-quoted identifier, returning no rows; corrected to a bound value and verified the above actual row.
 
 ## Live evidence
 
