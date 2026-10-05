@@ -460,6 +460,40 @@ larger part is invisible and cannot be changed.
 3. After a rebuild moment, the request's tool definition shows both changes.
 4. The next message reads the prefix from cache.
 
+## 7. A moved chat takes its team run along
+
+**Why (2026-10-05):** the residual orchestrator was opened in `plus-1.1.15`
+instead of `plus-1.1.15_overnight`. It could not just switch folder.
+- `session_move` was off for it. It is on now, at the Simple-Orchestrator row.
+- Its first team call had already tied its root run to `plus-1.1.15`.
+- A root run is found by session ID alone (`teams/run.ts`, `bySession`), and
+  Plus ignores `session.moved`. So a moved chat keeps the old folder and branch,
+  and `team_integrate` lands there.
+- Tested 2026-10-05 against the real tools in a temporary test:
+  - moved after the first team call: same run, old folder and branch;
+  - moved before it: a new run in the new folder.
+
+**Change:**
+- On `session.moved`, a root run with no children takes the chat's new folder.
+  That updates `directory`, `projectDirectory`, `branch`, `base` and `head`
+  from the new checkout, and logs one history entry.
+- A root run with children stays where it is. Its next team call says so and
+  names the run's folder.
+- Replace the refusal's "do not session_move"
+  (`E_NOT_ACTOR`, `teams/tools.ts`) with this rule.
+
+**Tests:**
+- Move before any child: the next team call reports the new folder and branch,
+  and `team_integrate` lands there.
+- Move with a child open: the run keeps its folder, and the next team call says
+  so.
+
+**Live:**
+1. Open an orchestrator chat in `plus-1.1.16`.
+2. Make one team call.
+3. Move the chat to a `plus-1.1.16_<purpose>` worktree.
+4. Delegate and land one small task: it lands in the purpose worktree.
+
 ## Open questions for the user
 
 None. Settled on 2026-10-05:
