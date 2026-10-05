@@ -154,9 +154,26 @@ named, instruction update named).
 
 ### B5. cache expired (likely)
 
-Did: pending warming off + wait past the 5 m lifetime. Below.
+Did: `Ctrl+X k` (`plus.warming.toggle`) switched warming off for the chat (footer
+`cache warming off`), then waited past the 5 m Claude/CPA lifetime and sent a
+plain prompt.
 
-PLACEHOLDER_B5
+Cache row (`x` misses-only filter): `17:09:33 step [MISS] cache-expired 0
+Reusable ...arming off`.
+
+Detail (`b5683adb-a020-42ce-81b1-3920b1d2e067`):
+`[MISS] Cause: cache-expired (likely) · Expected prefix: 6.8k · Cache read: 0 ·
+Miss tokens: 6.8k`; `Gap since last request: 7.9m · Cache lifetime: 5m ·
+Warming: off`; `Pings on the prefix: 0`; evidence
+`Reusable prefix unchanged; gap 474424ms exceeds lifetime 300000ms; last ping
+none; warming off`; and
+`Expected reusable prefix: 6790 tokens (previous real prompt usage); actual cache
+read: 0`.
+
+The detail names the gap, the lifetime, the last ping (`none`) and warming
+(`off`), exactly as required.
+
+**PASS**.
 
 ### B6. provider account changed (likely)
 
