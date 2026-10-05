@@ -152,7 +152,33 @@ edit = one revision). PASS.
 
 ## Step 4 — reset and repeat reset
 
-_(pending)_
+Done on the Global `build` candidate `cliproxyapi/claude-opus-5-5@high`. Edit to `20m` as in
+step 3 (record line 215 held `"warming":"20m"`), then `r` on the `Warming` field.
+
+First reset: the field returned to its inherited value and source; the footer dropped its
+`r reset` hint at the same moment. Store header before `{"version":2,"revision":487}` → after
+`{"version":2,"revision":488}`; line 215 after the reset lost `warming`:
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-fable-5-1@xhigh","updated":"2026-10-05T15:12:14.855Z"}
+```
+
+Screen after the first reset: `Warming 32m · opencode.json`, inspector
+`field warming / value 32m · opencode.json`.
+
+Repeat reset: the header was `{"version":2,"revision":488}` before and **byte-identical** after
+(`diff` of the whole `records.jsonl` against a copy taken before the keypress printed nothing);
+line 215 was unchanged. But the refusal text was **not** shown: once the field is inherited the
+`r` key is no longer bound (the footer shows no `r reset`, and the help/command list omits it),
+so pressing `r` again is a silent no-op. A grep of the whole retained session output for
+`no override` returns 0 matches.
+
+So: no-write on repeat PASS (revision 488 unchanged, store byte-identical); the expected
+`"has no override to reset"` refusal text FAIL — it never reaches the screen in this build
+because `canReset`/`actions.reset` gate the key off for an inherited field
+(`packages/plus/src/instructions/tree.ts:1980` sets `reset: current.own`). The tool-layer
+refusal exists (`packages/plus/src/instructions/ops.ts:1696,1699,1701`) but the TUI does not
+invoke it here. Step 4 marked FAIL for the refusal sub-claim; see concerns.
 
 ## Step 5 — old-style row repeat reset
 
