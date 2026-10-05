@@ -18,13 +18,17 @@ no credentials, no raw private prompts.
 ## Status
 
 - [x] Build started, home initialized.
-- [ ] Setup rows created.
-- [ ] R prefill + validation + rename + selection.
-- [ ] Files/records follow; history unchanged.
-- [ ] Palette `plus.agent.rename`.
-- [ ] Tool `instructions.set({id,rename})` for agent/member/team.
-- [ ] Refusals: built-in, Special, shipped Defaults team/member, ancestor, protected.
-- [ ] Cleanup with kernel proof.
+- [x] Setup rows created (Project user agent, Global agent, Project + Global
+      teams/members, representative records).
+- [x] R prefill + validation + rename + selection.
+- [x] Files/records follow; history unchanged.
+- [x] Palette `plus.agent.rename` (same path).
+- [x] Tool `instructions.set({id,rename})` for agent/member/team.
+- [x] Refusals: built-in, Special, shipped Defaults team/member (unit-only,
+      see below), ancestor, protected tool actor.
+- [x] Cleanup with kernel proof.
+- [x] `bun test test/rename.test.ts` 6 pass / 0 fail; `bun typecheck` in
+      `packages/plus` passes.
 
 ## Evidence log
 
@@ -196,7 +200,9 @@ then renamed the member `m1y` → `m1z` via
 `agent` moved to `"m1z"` with `warming`/`interval`/`prompt` intact, the peer
 `perm:team_delegate:to.m1y` moved to `…to.m1z`, and the member file moved to
 `…/teams/squad2/m1z.md`. This is the warming-row-follows fact live, not just
-in `rename.test.ts`.
+in `rename.test.ts`. The member's Models screen also showed the followed row
+at 160 columns: `▎▸ cliproxyapi/deep…-v4.1-flash-cheapwarm 30 minutes …ery
+3.5 minutes ◆`.
 
 **Session history keeps the old name (live, read from the owned SQLite).**
 Read `data/opencode/opencode-local.db` `session_message` read-only. Messages
@@ -214,6 +220,25 @@ T6 renames then ran on `deepseek-v4.1-flash-cheap`. No other ERROR/WARN
 attributable to rename exists in the log (WARNs are only
 `executor-controlled plugin source refused`).
 
+### 2026-10-05 04:18–04:22 — Global team/member rename (live)
+
+A second owned run (`overnight-a1-live-retry2`, own dev home, same worktree)
+confirmed the Global path:
+
+- `Global › Teams › gcrew` → `R`, prefilled `gcrew`, renamed to `gcrew2`:
+  header followed `Global › Teams › gcrew2`, team directory moved to
+  `config/opencode/opencodeplus/teams/gcrew2`, log
+  `team.rename gcrew to gcrew2 (global)` revision 466.
+- `Global › Teams › gcrew2 › gm1` → `R`, prefilled `gm1`, renamed to `gm1x`:
+  header followed, `gm1x.md` present, log
+  `agent.rename gm1 to gm1x (global team gcrew2)` revision 466.
+- This closes the Global half of the team/member renamable rows; the Project
+  half was covered by the first run.
+
+Cleanup of this second run: palette `exit`; kernel check shows the owned
+server PIDs gone, `pilotty status` reports `exited`, and no session remains in
+`pilotty list-sessions`.
+
 ### 2026-10-05 04:10 — Narrow (80×24) pass
 
 Resized to 80×24 and repeated the key T6 surfaces:
@@ -221,11 +246,9 @@ Resized to 80×24 and repeated the key T6 surfaces:
   `Rename m1z` with `m1z` (member rename works narrow).
 - The team row footer narrow reads `… space toggle   a add   l link   R rename
   d delete …`, so the R hint is present at 80 columns.
-- The built-in/Special refusal path and the tree-following behaved the same
-  as wide (no layout break; the Instructions screen is already a narrow
-  two-page layout).
-- Member Models showed the followed warming row:
-  `▎▸ cliproxyapi/deep…-v4.1-flash-cheapwarm 30 minutes …ery 3.5 minutes ◆`.
+- No layout break; the Instructions screen is already a narrow two-page
+  layout. (The refusal toasts were captured wide; narrow only verified prefill,
+  hint and layout, not a separate refusal.)
 
 ## Summary
 
@@ -234,3 +257,71 @@ noted as unit-only (shipped Defaults team/member rows have no live instance in
 this build). Files, every stored record class, tree selection, palette and
 tools paths, and all four refusal classes were observed; history kept old
 names. Sanitized evidence above. Runtime cleanup is recorded separately below.
+
+## T6 end-state line checklist
+
+| T6 line | Result |
+| --- | --- |
+| `R` on a renamable row prompts prefilled, validated like creation | live: Project agent, member, team, palette — prefilled with current id |
+| Renamable rows: Project/Global user agents | live (`ren-a1`→`new-a1` project; `g-a1`→`g-a2` global) |
+| Renamable rows: on-disk team members | live (`m1`→`m1x`→`m1y`→`m1z` project; `gm1`→`gm1x` global) |
+| Renamable rows: Project/Global teams | live (`crew`→`squad`→`squad2` project; `gcrew`→`gcrew2` global) |
+| Collision handling (choose another free key; help/hints) | live refusal `Agent m2 already exists at …`; no write; hint `R rename` in wide and narrow footers |
+| File/team directory follows | live: agent `.md` and team dir moved |
+| Customizations, splits, models, rules, links follow | live for agent; live member records (customization/model/rule/link) followed; `split` on agent followed (unit for member split) |
+| Warming rows follow | live (`m1y`→`m1z` kept warming/interval/prompt) |
+| `team_delegate` "Delegate to" rows follow | live `to.m1`→`to.m1x`→`to.m1y`→`to.m1z` |
+| Team-scoped records + team enablement follow | live (`crew`→`squad`→`squad2`, `enabled:true` followed) |
+| Tree selection follows | live after every rename (header + selected row) |
+| Session history keeps the old name | live: SQLite `session_message` still holds old ids/agent |
+| Refuse built-in OpenCode agents | live (R toast and tool `agent.invalid`) |
+| Refuse Special agents | live (R toast and tool `agent.invalid`) |
+| Refuse shipped Defaults teams | **unit-only** (no live Defaults team row in this build); live preset row refused as `rename.invalid` |
+| Refuse shipped Defaults members | **unit-only** (same; `team:defaults:ship:mate` in test) |
+| Refuse ancestor-backed agents | live (R toast and tool `agent.invalid`) |
+| Refuse protected agent for a tool actor | live (`agent.protected`) |
+| Palette `plus.agent.rename` uses same path | live (picker → prefill → rename → file/log) |
+| Tools `instructions.set({id,rename})` on agent/member/team | live for all three |
+| Documented in `teaching.ts` | source read: `teaching.ts:79,138` documents the shape and refusals |
+
+## Runtime cleanup
+
+- Exited the TUI through the palette `exit` (not a kill).
+- Kernel proof (not a registration file): the owned server chain disappeared:
+  - PID 2702055 (dev launcher, cwd `…/project`) — gone.
+  - PID 2702207 (private `serve --stdio --port 0`) — gone.
+  - PID 2702254 / 2879171 (search children of the server) — gone.
+- `pilotty status -s overnight-a1-live-retry` reports `"state": "exited"`; the
+  session no longer appears in `pilotty list-sessions`.
+- The only remaining process with this worktree in its cwd is PID 2699280
+  `…/releases/2.0.18-plus-1.1.14/bin/opencodeplus search-mcp`, whose parent is
+  PID 2592457 (`…/2.0.18-plus-1.1.14/bin/opencodeplus serve --service`) with
+  cwd `/home/bliss`, `XDG_CONFIG_HOME=/home/bliss/.config`,
+  `XDG_DATA_HOME=/home/bliss/OpenCodePlus/run/plus/data` and no
+  `OPENCODE_DB`/`OPENCODE_TUI_CHANNEL` pointing at my home. It is **not**
+  owned by this run (it predates my spawn at 02:58:12; my spawn was 02:59);
+  it is the shared service's child and must not be killed.
+- No test process or other owned process remains.
+
+## Open issues / deferred
+
+- **D1 — shipped Defaults team/member refusal is unit-only live.** This build
+  ships no Defaults team (the shipped `Basic` is a preset), so the exact
+  `… is shipped and cannot be renamed` message for a Defaults team/member was
+  not observed live. It is covered by `test/rename.test.ts` with an injected
+  `builtins` registry. To observe it live one would need a build that ships a
+  Defaults team; not available at this HEAD.
+- **D2 — member `split` record follow is unit-only.** Live I followed member
+  customization/model/rule/link/warming and a peer delegate row; a member
+  `split` record was not seeded live (the agent case had one and it followed).
+  Covered by the member test's record set.
+- **D3 — narrow refusal toast not separately captured.** At 80×24 I verified
+  prefill, the R hint and layout; the refusal toasts were captured at 160×48.
+- **D4 — `claude-fable-5-1` provider error.** Switching the composer to
+  `claude-fable-5-1` produced one `Failed to drain Session … unknown provider`
+  ERROR in the log. This is the config's model entry lacking a matching
+  provider route in this home, not a T6 defect; recorded so it is not mistaken
+  for a rename regression.
+- **Note — no source edits.** This run only created
+  `docs/plans/plus-1.1.15-a1-live.md`; `packages/*` and the overnight log were
+  not touched.
