@@ -614,3 +614,9 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - #30, T6: build-seat's TUI-written override "Delegate to › scout: off" (no `team` field, the pre-fix shape) moved to `to.scout-rn` with `state off` after `shift+r`. No `to.scout` record is left, and the live row reads `off · set here (Global)`. T6's last FAIL is closed.
   - #28, T2: in-chat `monitor.query({view:"cache"})` listed its own running step `eedc1942…` as verdict `none`, evidence "Request still running; no usage reported yet", not counted among the misses. After completion `/monitor` Cache showed the same id `[HIT]`, 18.2k read of 18.2k expected.
   - Log: 0 ERROR, 6 expected WARN. Child stopped.
+- **Monitor T4 swept: PASS on all five lines.**
+  - T137 (`w-35334871d9956043`, base `59b0029be1`) recorded L1–L3 with a real `basic-t4` tree (build-seat root, scout child): the default indented tree; `ctrl+t` tree/all with the hint naming the view; `ctrl+a`, Enter attach and `ctrl+d` stop/resume in both views.
+  - It then wrote nothing for 27 minutes, after two nudges; its tokens were still rising but its screen stood still. Stopped by the watchdog at 19:08 with no provider error.
+  - The parent kept its uncommitted L1–L3 text and recorded L4 and L5 in its own build (`r6-m-t4`). A plain chat shows `No team runs from this chat · ctrl+t shows all`, `ctrl+t` shows `all` (`No active runs`), and Tools and Team are separate tabs with their own bodies and hints.
+  - Logs: 0 ERROR in both homes. Both PTYs killed, 0 cwd references.
+- **R6 is complete.** All twelve tasks are swept, plus the post-fix re-check. Every end-state line is PASS, or NOT LIVE with a named test or a stated reason. The two sweep FAILs were fixed and re-checked live (#30, plus #28 found in the T2 sweep).
