@@ -287,7 +287,8 @@ export interface CallEnd {
   readonly sessionID: string
   readonly callID: string
   readonly status: "completed" | "error"
-  readonly error?: string
+  /** Provider/tool failure. Hashed at this persistence boundary, never stored as text. */
+  readonly error?: unknown
   readonly ended: number
   readonly resultChars: number
   readonly resultTokens: number
@@ -671,7 +672,8 @@ export function createLedger(file: string): Ledger {
         $session: end.sessionID,
         $call: end.callID,
         $status: end.status,
-        $error: end.error ?? null,
+        // The owning boundary hashes any error so no caller can persist text.
+        $error: end.error === undefined ? null : errorFingerprint(end.error),
         $ended: end.ended,
         $resultChars: end.resultChars,
         $resultTokens: end.resultTokens,

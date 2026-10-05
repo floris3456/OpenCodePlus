@@ -239,7 +239,7 @@ export function createCollector(options: CollectorOptions): Collector {
       sessionID,
       callID,
       status,
-      ...(error === undefined ? {} : { error: `${error.type ?? "error"}: ${(error.message ?? "").slice(0, 160)}` }),
+      ...(error === undefined ? {} : { error }),
       ended: now(),
       resultChars,
       resultTokens: estimateTokens(resultChars),
@@ -488,13 +488,23 @@ function targetField(target: string | undefined): { target?: string } {
   return target === undefined ? {} : { target }
 }
 
-// An inner Code Mode call's own arguments: an instructions row id, a search
-// query, … — the first short string argument, clipped.
+// An inner Code Mode call's own arguments. A recognized tool (file, search,
+// host, shell, team/instruction address) yields a target; an unknown one is
+// omitted rather than attributing its first arbitrary string argument, which
+// could be content, a query or a secret. Instruction and team addresses are
+// known identifiers and may be named explicitly.
 function innerTarget(tool: string, input: Readonly<Record<string, unknown>>): string | undefined {
-  const own = targetOf(tool.slice(tool.lastIndexOf(".") + 1), input)
+  const own = targetOf(tool, input) ?? targetOf(tool.slice(tool.lastIndexOf(".") + 1), input)
   if (own !== undefined) return own
-  const first = Object.values(input).find((value): value is string => typeof value === "string" && value.length > 0)
-  if (first === undefined) return undefined
-  const single = first.replace(/\s+/g, " ").trim()
-  return single.length <= 80 ? single : `${single.slice(0, 79)}…`
+  if (tool.startsWith("instructions.")) return firstIdentifier(input, ["id", "name"])
+  if (tool.startsWith("team.") || tool.startsWith("team_")) return firstIdentifier(input, ["run", "role", "id"])
+  return undefined
+}
+
+function firstIdentifier(input: Readonly<Record<string, unknown>>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = input[key]
+    if (typeof value === "string" && value.length > 0) return value.replace(/\s+/g, " ").trim().slice(0, 80)
+  }
+  return undefined
 }

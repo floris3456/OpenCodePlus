@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { commandHead, split, targetOf } from "../src/monitor/attribution.js"
+import { errorFingerprint, sha256 } from "../src/monitor/fingerprint.js"
 import type { Ledger, SessionFacts } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import { parseDuration } from "../src/monitor/tools.js"
@@ -230,7 +231,103 @@ test("a malformed call that fails without being called is still recorded", async
   s.end("m1", "tool-calls", usage(1, 3))
   const collector = collect(db, clock)
   s.events.forEach((event) => collector.observe(event))
-  expect(call(db, "c1")).toMatchObject({ tool: "edit", status: "error", error: "tool: Invalid input for tool edit" })
+  const recorded = call(db, "c1")
+  expect(recorded).toMatchObject({ tool: "edit", status: "error" })
+  // The error is hashed at the ledger boundary: size and hash, never its text.
+  expect(JSON.parse(String(recorded?.error))).toEqual(JSON.parse(errorFingerprint({ type: "tool", message: "Invalid input for tool edit" })))
+  expect(String(recorded?.error)).not.toContain("Invalid input")
+})
+
+test("every stored call column refuses content sentinels while useful names remain", async () => {
+  const db = await ledger()
+  const clock = { now: 1 }
+  const collector = collect(db, clock)
+  const s = script("ses_privacy", clock)
+  s.created({ agent: "build" })
+  s.step("m1", "build")
+  // Known file, known host and known program controls.
+  s.call("m1", "c_read", "read", { path: "/work/project/src/a.ts" })
+  s.ok("m1", "c_read", "ok")
+  s.call("m1", "c_fetch", "webfetch", { url: "https://known.example.com/doc" })
+  s.ok("m1", "c_fetch", "ok")
+  s.call("m1", "c_shell", "shell", { command: "cd /work && git diff --cached" })
+  s.ok("m1", "c_shell", "ok")
+  // A failed tool whose message carries a fictional sentinel.
+  s.call("m1", "c_fail", "shell", { command: "echo FICTIONAL_SHELL_PAYLOAD_SENTINEL" })
+  s.fail("m1", "c_fail", "FICTIONAL_PRIVATE_ERROR_SENTINEL")
+  // A grep pattern and a websearch query are content searches.
+  s.call("m1", "c_grep", "grep", { pattern: "FICTIONAL_SEARCH_SENTINEL" })
+  s.ok("m1", "c_grep", "ok")
+  s.call("m1", "c_web", "websearch", { query: "FICTIONAL_QUERY_SENTINEL" })
+  s.ok("m1", "c_web", "ok")
+  // An unknown Code Mode tool whose first argument is a secret-ish payload.
+  s.call("m1", "c_exec", "execute", { code: "await tools.mystery.send({ payload: 'FICTIONAL_PAYLOAD_SENTINEL' })" })
+  s.ok("m1", "c_exec", "ok", {
+    toolCalls: [
+      { tool: "mystery.send", status: "completed", input: { payload: "FICTIONAL_PAYLOAD_SENTINEL" } },
+      // Known instructions/team identifiers may be named explicitly.
+      { tool: "instructions.delete", status: "error", input: { id: "agent:project:known-row" } },
+    ],
+  })
+  s.end("m1", "stop", usage(10, 40))
+  s.events.forEach((event) => collector.observe(event))
+
+  const all = (table: string) => JSON.stringify(db.db.query(`select * from ${table}`).all())
+  const stored = ["session", "step", "call", "call_hour", "epoch", "mark", "meta", "request", "request_fingerprint", "context_fact"]
+    .map((table) => all(table))
+    .join("\n")
+  for (const sentinel of [
+    "FICTIONAL_PRIVATE_ERROR_SENTINEL",
+    "FICTIONAL_SHELL_PAYLOAD_SENTINEL",
+    "FICTIONAL_SEARCH_SENTINEL",
+    "FICTIONAL_QUERY_SENTINEL",
+    "FICTIONAL_PAYLOAD_SENTINEL",
+  ])
+    expect(stored).not.toContain(sentinel)
+
+  // Controls: useful names, paths, hosts, programs and known ids remain.
+  expect(call(db, "c_read")?.target).toBe("src/a.ts")
+  expect(call(db, "c_fetch")?.target).toBe("known.example.com")
+  expect(call(db, "c_shell")?.target).toBe("git diff")
+  expect(call(db, "c_fail")?.target).toBe("echo")
+  expect(call(db, "c_grep")?.target).toBe(
+    `${sha256("FICTIONAL_SEARCH_SENTINEL")} ${"FICTIONAL_SEARCH_SENTINEL".length}c`,
+  )
+  expect(call(db, "c_web")?.target).toBe(`${sha256("FICTIONAL_QUERY_SENTINEL")} ${"FICTIONAL_QUERY_SENTINEL".length}c`)
+  // The failed call's error is stored as a hash and size, not its text.
+  const failedError = JSON.parse(String(call(db, "c_fail")?.error))
+  expect(failedError).toEqual(JSON.parse(errorFingerprint({ type: "tool", message: "FICTIONAL_PRIVATE_ERROR_SENTINEL" })))
+  expect(String(call(db, "c_fail")?.error)).not.toContain("FICTIONAL")
+  // The unknown inner tool is omitted; the known instructions id is named.
+  const inner = db.db
+    .query<{ call_id: string; tool: string; target: string | null }, []>(
+      "select call_id, tool, target from call where parent_call = 'c_exec' order by call_id",
+    )
+    .all()
+  expect(inner).toEqual([
+    { call_id: "c_exec#0", tool: "mystery.send", target: null },
+    { call_id: "c_exec#1", tool: "instructions.delete", target: "agent:project:known-row" },
+  ])
+  // Totals and attribution are unchanged by the hashing.
+  const report = queryMonitor(db, { scope: "all", feed: 20 }, { now: clock.now })
+  expect(report.totals).toMatchObject({ steps: 1, calls: 7, errors: 1 })
+})
+
+test("callEnded hashes an error at the ledger boundary so alternate callers cannot leak text", async () => {
+  const db = await ledger()
+  const collector = collect(db, { now: 1 })
+  const s = script("ses_boundary", { now: 1 })
+  s.created({ agent: "build" })
+  s.step("m1")
+  s.call("m1", "c1", "read", { path: "a" })
+  s.ok("m1", "c1", "ok")
+  s.end("m1", "stop", usage(1, 1))
+  s.events.forEach((event) => collector.observe(event))
+  // A caller writing straight through the ledger must still be refused raw text.
+  db.callEnded({ sessionID: "ses_boundary", callID: "c1", status: "error", error: "RAW_PRIVATE_BOUNDARY_SENTINEL", ended: 2, resultChars: 0, resultTokens: 0 })
+  const row = call(db, "c1")
+  expect(JSON.parse(String(row?.error))).toEqual(JSON.parse(errorFingerprint("RAW_PRIVATE_BOUNDARY_SENTINEL")))
+  expect(JSON.stringify(db.db.query("select * from call").all())).not.toContain("RAW_PRIVATE_BOUNDARY_SENTINEL")
 })
 
 test("session scope is only the chat; tree reaches the topmost root and all descendants", async () => {
@@ -311,7 +408,10 @@ test("filters narrow calls and steps, facets ignore them, and a comparison reads
   expect(explore.totals).toMatchObject({ calls: 1, steps: 1, input: 20 })
   expect([...explore.facets.agents].sort()).toEqual(["build", "explore"])
   const errors = queryMonitor(db, { scope: "all", errors: true, feed: 10 }, { now: clock.now })
-  expect(errors.feed.map((entry) => [entry.callID, entry.error])).toEqual([["c2", "tool: exit 1"]])
+  expect(errors.feed.map((entry) => [entry.callID, JSON.parse(String(entry.error))])).toEqual([
+    ["c2", JSON.parse(errorFingerprint({ type: "tool", message: "exit 1" }))],
+  ])
+  expect(errors.feed[0]?.error).not.toContain("exit 1")
   const models = queryMonitor(db, { scope: "all", models: ["q/m2"] }, { now: clock.now })
   expect(models.totals).toMatchObject({ calls: 1, steps: 1 })
   const byConfig = queryMonitor(db, { scope: "all", group: "config" }, { now: clock.now })
@@ -360,7 +460,18 @@ test("targets name what a call touched without contents or secrets", () => {
   expect(commandHead("/usr/bin/python3 script.py")).toBe("python3")
   expect(commandHead("curl -H 'Authorization: Bearer abc' https://x")).toBe("curl")
   expect(commandHead("cd only")).toBeUndefined()
+  // Only a recognized program's own subcommand is kept; a payload word is not.
+  expect(commandHead("git diff HEAD")).toBe("git diff")
+  expect(commandHead("bun test test/a.ts")).toBe("bun test")
+  expect(commandHead("echo FICTIONAL_SHELL_PAYLOAD_SENTINEL")).toBe("echo")
+  expect(commandHead("curl https://x/FICTIONAL_TOKEN_SENTINEL")).toBe("curl")
+  expect(commandHead("mysterytool subcommand")).toBe("mysterytool")
   expect(targetOf("webfetch", { url: "https://example.com/path?token=abc" })).toBe("example.com")
+  // A glob names files; a grep pattern names content and becomes a hash + size.
+  expect(targetOf("glob", { pattern: "src/**/*.ts" })).toBe("src/**/*.ts")
+  expect(targetOf("grep", { pattern: "FICTIONAL_SEARCH_SENTINEL" })).toBe(
+    `${sha256("FICTIONAL_SEARCH_SENTINEL")} ${"FICTIONAL_SEARCH_SENTINEL".length}c`,
+  )
   expect(
     targetOf("patch", { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n@@\n*** Add File: src/b.ts\n" }),
   ).toBe("src/a.ts +1")

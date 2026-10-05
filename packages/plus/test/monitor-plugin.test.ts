@@ -50,11 +50,15 @@ function chat(clock: { now: number }) {
   return s.events
 }
 
+// A real host always exposes `session.hook`; fixtures that leave it out make
+// `watchMonitor` log a bogus registration failure that hides real ones.
+const hostHooks = { hook: () => Effect.succeed({ dispose: Effect.void }) }
+
 test("the plugin records the host's event stream into the ledger at the data directory", async () => {
   await dataHome()
   const ctx = context({
     event: { subscribe: () => Stream.fromIterable(chat({ now: 1_000 })) as never },
-    session: { get: () => Effect.succeed({ id: Session.ID.make("ses_live"), title: "Live chat" }) as never },
+    session: { ...hostHooks, get: () => Effect.succeed({ id: Session.ID.make("ses_live"), title: "Live chat" }) as never },
   })
   await Effect.runPromise(
     Effect.scoped(
@@ -89,6 +93,7 @@ test("the plugin records the host's event stream into the ledger at the data dir
 test("the ledger opens only when a monitored event arrives, and a broken one is tried once", async () => {
   const quiet = context({
     event: { subscribe: () => Stream.fromIterable([{ type: "session.text.delta", data: {} }]) as never },
+    session: { ...hostHooks },
   })
   let opens = 0
   const refuse = () => {
@@ -105,7 +110,7 @@ test("the ledger opens only when a monitored event arrives, and a broken one is 
   )
   // Nothing monitored happened: nothing was opened.
   expect(opens).toBe(0)
-  const busy = context({ event: { subscribe: () => Stream.fromIterable(chat({ now: 1 })) as never } })
+  const busy = context({ event: { subscribe: () => Stream.fromIterable(chat({ now: 1 })) as never }, session: { ...hostHooks } })
   const exit = await Effect.runPromiseExit(
     Effect.scoped(
       Effect.gen(function* () {
@@ -122,7 +127,10 @@ test("the ledger opens only when a monitored event arrives, and a broken one is 
 test("the monitor tools answer for the calling chat and record marks", async () => {
   const root = await dataHome()
   const tools = toolHarness()
-  const ctx = fullContext({ directory: path.join(root, "project") })
+  const ctx = fullContext({
+    directory: path.join(root, "project"),
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
   const withEvents: typeof ctx = {
     ...ctx,
     event: { subscribe: () => Stream.fromIterable(chat({ now: 2_000 })) as never },

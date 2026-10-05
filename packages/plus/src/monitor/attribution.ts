@@ -11,6 +11,8 @@
 //   carried — the result re-read by every later step until the next
 //            compaction, derived at query time (never stored).
 import path from "node:path"
+import { commandHeads } from "../instructions/tool-permissions.js"
+import { sha256 } from "./fingerprint.js"
 
 // Measured prompt growth over result characters on real sessions of this
 // workspace (7 804 clean tool steps, 2026-09-29): median 1.58 tokens per four
@@ -50,8 +52,9 @@ const MAX_TARGET = 80
 
 /**
  * A short, secret-free description of what a call touched: a shell command's
- * program and subcommand, a file path, a search pattern, a host. Never the
- * full command or any content.
+ * program and recognized subcommand, a file path, a glob pattern, a host, or a
+ * recognized identifier. A content search (grep pattern, websearch query) is
+ * reduced to a stable hash plus its size; the text itself never persists.
  */
 export function targetOf(
   tool: string,
@@ -67,9 +70,11 @@ export function targetOf(
   )
     return clip(relative(file, directory), "left")
   if (tool === "patch") return patchFiles(text("patchText"))
-  if (tool === "grep" || tool === "glob") return clip(text("pattern"), "right")
+  // A glob names files (path semantics); a grep pattern names content.
+  if (tool === "glob") return clip(text("pattern"), "right")
+  if (tool === "grep") return contentSummary(text("pattern"))
   if (tool === "webfetch") return hostOf(text("url"))
-  if (tool === "websearch") return clip(text("query"), "right")
+  if (tool === "websearch") return contentSummary(text("query"))
   if (tool === "subagent") return text("agent")
   if (tool === "skill") return text("id") ?? text("name")
   if (tool === "team_delegate") return text("role")
@@ -78,8 +83,10 @@ export function targetOf(
 }
 
 // "cd packages/plus && FOO=1 bun test x.ts | tail" → "bun test". The first
-// segment that is not a cd, without variable assignments; the second word only
-// when it reads like a subcommand (never a flag, path or quoted value).
+// segment that is not a cd, without variable assignments. The second word is
+// kept only when the program's own recognized arity (`commandHeads`) takes a
+// subcommand, so `git push` and `bun test` survive while `echo <text>`,
+// `curl <payload>` and an arbitrary lower-case word do not.
 export function commandHead(command: string | undefined): string | undefined {
   if (command === undefined) return undefined
   const segment = command
@@ -91,9 +98,15 @@ export function commandHead(command: string | undefined): string | undefined {
   const program = words[0]?.split("/").pop()
   if (program === undefined || program.length === 0) return undefined
   const sub = words[1]
-  return sub !== undefined && /^[a-z][a-z0-9:_-]*$/.test(sub)
+  return (commandHeads[program] ?? 1) >= 2 && sub !== undefined && /^[a-z][a-z0-9:_-]*$/.test(sub)
     ? clip(`${program} ${sub}`, "right")
     : clip(program, "right")
+}
+
+/** Stable content-free stand-in for a search term: its hash and its size. */
+function contentSummary(text: string | undefined): string | undefined {
+  if (text === undefined || text.length === 0) return undefined
+  return `${sha256(text)} ${text.length}c`
 }
 
 function patchFiles(text: string | undefined): string | undefined {
