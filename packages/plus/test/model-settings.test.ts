@@ -1346,7 +1346,7 @@ test("Model reset restores a local-only original that never existed above", asyn
   expect(modelRows.find((r) => r.badges.active === true)?.label).toBe("anthropic/claude")
 })
 
-test("inherited inactive B beside active A: water->reset model->reset warming->repeat Model FIELD refuses no-write", async () => {
+test("inherited inactive B beside active A: edit Model and Warming, reset both, repeat Model FIELD refuses no-write", async () => {
   const project = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -1474,7 +1474,8 @@ test("local-only inactive B@high -> Effort low -> resetEffort restores B@high wi
   expect(modelRows.find((r) => r.badges.active === true)?.label).toBe("anthropic/claude")
 })
 
-test("Model reset refuses honestly for a legacy row with no original metadata", async () => {  const project = await tempProject()
+test("Model reset refuses honestly for a legacy row with no original metadata", async () => {
+  const project = await tempProject()
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("build", "build body", modelRef("anthropic", "claude"))],
