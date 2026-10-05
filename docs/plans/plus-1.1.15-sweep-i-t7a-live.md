@@ -169,9 +169,9 @@ Screen after the first reset: `Warming 32m · opencode.json`, inspector
 Repeat reset: the header was `{"version":2,"revision":488}` before and **byte-identical** after
 (`diff` of the whole `records.jsonl` against a copy taken before the keypress printed nothing);
 line 215 was unchanged. But the refusal text was **not** shown: once the field is inherited the
-`r` key is no longer bound (the footer shows no `r reset`, and the help/command list omits it),
-so pressing `r` again is a silent no-op. A grep of the whole retained session output for
-`no override` returns 0 matches.
+live footer hint drops `r reset` (the hints list is built from `canReset(node)`,
+`route.tsx:1431`), so pressing `r` again is a silent no-op. A grep of the whole retained session
+output for `no override` returns 0 matches.
 
 So: no-write on repeat PASS (revision 488 unchanged, store byte-identical); the expected
 `"has no override to reset"` refusal text FAIL — it never reaches the screen in this build
@@ -211,3 +211,44 @@ un-overridden field never invokes the tool-layer refusal
 So: first reset PASS; second reset no-write PASS (revision 489 unchanged, store byte-identical);
 the expected `"has no override to reset"` refusal text FAIL — never shown. Step 5 marked FAIL
 for the refusal sub-claim.
+
+## Server log
+
+`<dev-home>/data/opencode/log/opencode-local.log`: 397 lines, **0 ERROR / 12 WARN**. Every WARN
+is the expected `executor-controlled plugin source refused` (refusing `OpenCodePlus/.opencode`
+and this worktree's `.opencode`); no other WARN message occurs:
+
+```
+timestamp=2026-10-05T14:42:36.280Z level=WARN run=092321dc message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=99 role=server
+timestamp=2026-10-05T14:42:36.280Z level=WARN run=092321dc message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=99 role=server
+timestamp=2026-10-05T14:42:38.059Z level=WARN run=092321dc message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=110 role=server
+timestamp=2026-10-05T14:42:38.059Z level=WARN run=092321dc message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=110 role=server
+timestamp=2026-10-05T14:42:38.059Z level=WARN run=092321dc message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t127ac25-20261005-1641/.opencode/opencode.jsonc type=document http.span=110 role=server
+timestamp=2026-10-05T14:42:38.059Z level=WARN run=092321dc message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t127ac25-20261005-1641/.opencode type=directory http.span=110 role=server
+timestamp=2026-10-05T14:43:36.080Z level=WARN run=cfa5c8ac message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=156 role=server
+timestamp=2026-10-05T14:43:36.080Z level=WARN run=cfa5c8ac message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=156 role=server
+timestamp=2026-10-05T14:43:37.719Z level=WARN run=cfa5c8ac message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=77 role=server
+timestamp=2026-10-05T14:43:37.719Z level=WARN run=cfa5c8ac message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=77 role=server
+timestamp=2026-10-05T14:43:37.719Z level=WARN run=cfa5c8ac message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t127ac25-20261005-1641/.opencode/opencode.jsonc type=document http.span=77 role=server
+timestamp=2026-10-05T14:43:37.719Z level=WARN run=cfa5c8ac message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t127ac25-20261005-1641/.opencode type=directory http.span=77 role=server
+```
+
+## Cleanup
+
+Killed the one session I started (`pilotty kill -s sweep-i-t7a` → `Session
+15833326-… killed`); `pilotty list-sessions` afterwards showed no `sweep-i-t7a`. A `/proc`
+scan of `environ` and `cwd` for this dev home found no process. No shared service, port 40375,
+`~/.config/opencodeplus`, `bun run dev:live` or `bun run dev` was used, and configuration was
+changed only inside `$DEV`.
+
+## Result per step
+
+| Step | Result |
+| --- | --- |
+| 0 setup | PASS |
+| 1 layout | PASS |
+| 2 pickers | PASS |
+| 3 edit one field | PASS |
+| 4 reset + repeat reset | PASS (reset; repeat no-write) / **FAIL** (expected refusal text not shown) |
+| 5 old-style repeat reset | PASS (first reset; second no-write) / **FAIL** (expected refusal text not shown) |
+
