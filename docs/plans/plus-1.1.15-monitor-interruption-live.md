@@ -54,7 +54,7 @@ the real ledger — only the host event stream is scripted. It asserts on stored
 
 - **interrupted, no observed terminal event** → `status=running`, `ended`
   undefined, `duration`/`finish` omitted; the page omits `durationMs`; the
-  session-state fallback still reports `running`. *Fails before the fix
+   session-state fallback does not invent a terminal state. *Fails before the fix
   (`completed`)*.
 - **completed physical attempt, later interrupted** → keeps `status=completed`,
   real `ended`, real `duration`, real `finish`; the interruption boundary does
@@ -100,7 +100,7 @@ Steps and what was seen:
    `5.9s` `tool-calls`/`stop` finishes. (Rows print `—` for an unknown duration
    via `formatMsLabel`, so an open row would show `—`, never `0ms`.)
 
-Log classification of the owned home's `opencode-local.log` (198 lines): 192
+Log classification during the live observation of `opencode-local.log` (198 lines): 192
 INFO, 6 WARN (the known `executor-controlled plugin source refused` path
 guards), **0 ERROR**. The only non-INFO event worth naming is one
 `GET /api/shell/<id>/output http.status=404` after the interrupt — the expected
@@ -131,7 +131,10 @@ interrupt settled through the real `session.step.failed` path.
 ## Deferred / open
 
 - No provider-side statement is made about the historical row itself; #24 was an
-  observation and remains explained, not proven to have a race.
+   observation and remains explained, not proven to have a race. Parent's final
+   exact-home kernel scan found 0 cwd/fd/maps matches; the final actual log had
+   245 lines / 239 INFO / 6 expected confinement WARN / 0 ERROR. Both facts were
+   independently checked after the worker's final settlement.
 - The broader question of whether a request whose terminal event is *permanently*
   lost (rather than delivered late) should ever be reconciled by a later
   execution boundary is left open; the honest current behavior is to keep the

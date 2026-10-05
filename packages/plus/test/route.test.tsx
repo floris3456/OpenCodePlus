@@ -3655,7 +3655,7 @@ test("a on a member preset's Models group adds a team-scoped model at level pres
     snapshots: [snapshot],
     height: 60,
     models: [{ providerID: "acme", modelID: "nova", name: "Nova" }],
-    dialogs: { selects: ["acme", "nova"] },
+    dialogs: { selects: ["model", "acme", "nova"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
@@ -3674,7 +3674,7 @@ test("a on a member preset's Models group adds a team-scoped model at level pres
       modelID: "nova",
     })
     // No scope or agent prompts: the group names the preset.
-    expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Model provider", "Model"])
+    expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Add", "Model provider", "Model"])
     expect(fixture.fake.promptInputs).toEqual([])
   } finally {
     fixture.destroy()

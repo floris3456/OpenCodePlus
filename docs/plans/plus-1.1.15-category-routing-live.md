@@ -162,11 +162,11 @@ Spawned owned TUI via `pilotty spawn --name continuation-category opencodeplus-d
   the number key `7` opened `Project › Agents › OpenCode › build › Gamma Cat`,
   `]`/`[` cycled to and back from it, and a text filter (`cliproxyapi`) matched
   the moved row under `Gamma Cat`. `category:Gamma` and `category:Gamma Cat`
-  both reported `No matches` because filter terms are whitespace-split and the
-  whole category name must be one term without a literal space; the grammar
-  matches the stored name exactly (the route test proves the populated
-  `category:<name>` path for a space-free name). This is the existing filter
-  grammar, not a routing defect.
+   both reported `No matches`: the name match is exact and an unquoted space
+   separates terms. The existing query grammar also supports quoted values,
+   e.g. `category:"Gamma Cat"` (`query.ts:918–952`); that quoted form was not
+   exercised live here. The route test proves the populated `category:<name>`
+   path for a space-free name. No spaced-name routing defect is established.
 - Case M: Escape from help and dialogs returned to the composer (`Ask anything…`).
 
 ## Ownership and cleanup
