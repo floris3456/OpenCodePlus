@@ -17,7 +17,44 @@ Status legend: PASS / FAIL (recorded, not fixed) / NOT LIVE (reason + covering t
 ## Progress log
 
 - Session started. Evidence file created before the first sweep step.
+- Build spawned; own home created; scratch project committed (`fac26da init`).
+- Project team `basic-live` created from the `Basic` preset and enabled; `build-seat`
+  and `scout` activated on `cliproxyapi/deepseek-v4.1-flash-cheap`.
+- `build-seat` delegated a report task to `scout` (root `main-b258bf5ddae11f0a`,
+  child `w-f39dd5543c695d6c`, both idle) so the Team tree and Team scopes exist.
 
 ## End-state results
 
-_(each line is filled in as it is verified)_
+### Entrypoints — `/monitor`, `/tools`, `M` (composer Tools and Team), filtered on the session it was opened from
+
+**PASS.** Steps and screens:
+
+1. `ctrl+p` → typed `monitor` → the palette listed
+   `Monitor: tokens, cache and tools   OpenCodePlus`; Enter opened the full page.
+2. In the empty first chat (cursor on the composer, no session yet) the page read
+   `Scope: Project`, because there is no chat session to filter on yet.
+3. Typed `/tools` in the composer; the command menu listed
+   `/tools   Monitor: tokens, cache and tools` and `/monitor   Monitor: tokens, cache and tools`
+   (the alias row); Enter opened the same full page.
+4. In the `build-seat` chat (`· team basic-live`), `M` on the composer **Team** tab
+   opened the page at `Scope: This session (ses_ef350f)` — filtered on the session
+   it was opened from. (`M` on the composer **Tools** tab is shown under the
+   composer section below.)
+
+Screen (palette):
+```
+ monitor[]
+ Monitor: tokens, cache and tools        OpenCodePlus
+```
+Screen (`/tools` command menu):
+```
+ /tools          Monitor: tokens, cache and tools
+ /monitor        Monitor: tokens, cache and tools
+```
+Screen (`M` from the composer Team tab):
+```
+ Monitor                                                                    tokens, cache and tools
+ Scope: This session (ses_ef350f) [s] step · [S] session · [T] team
+ When: All [t] step window
+```
+
