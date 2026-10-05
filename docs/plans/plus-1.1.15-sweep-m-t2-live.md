@@ -35,8 +35,11 @@ was used), then `/monitor` → Cache (`2`). Verdicts seen live:
 - **cold start** (`[COLD]`): shown live by the compaction/model-switch lines
   below (C1/C2), and by the Cache legend rendering `[COLD]` dim
   (`packages/plus/src/tui/monitor/tabs/cache.tsx:52`).
-- **partial miss** (`[PARTIAL]`): not reproduced live (a partial read is a
-  race), covered by the focused test
+- **partial miss** (`[PARTIAL]`): reproduced live later in the same chat:
+  `17:01:39 step [PARTIAL] prefix-changed 6.8k message 2...e) changed`; Detail
+  (`7fa8ef2d-7c73-45f6-81be-df4e16beaefd`): `Cause: prefix-changed (certain) ·
+  Expected prefix: 8.5k · Cache read: 6.8k · Miss tokens: 31` (read 80 % of
+  expected → partial). Also covered by the focused test
   `test/monitor-cache.test.ts` "append uses measured prompt tokens; changed
   prefixes estimate segments; thresholds are exact": `["partial", 2000,
   "partial"]` with `expected: 4000` — `bun test test/monitor-cache.test.ts`
