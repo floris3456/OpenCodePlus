@@ -79,8 +79,11 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
   Team tab hints `move attach active tree stop|resume monitor M`; `M` opens the
   page and `Escape` returns to the chat.
 - Story `OPENCODE_STORY=monitor opencodeplus-dev .`: real page with contract
-  fixtures; Overview unstable-prefix warning, token mix, top misses/tools; Cache
-  `compaction [COLD] compacted`, `step [HIT]`, `ping [HIT]`, `step [MISS]
+  fixtures; at 80 columns the totals wrap to
+  `reqs: 4 · steps: 3 · in: 17.1k · read: 37.5k · write: 15.8k · out: 925` /
+  `reason: 120 · hit rate: 69% · misses: 1 · miss cost: $0.03 · pings: 1` /
+  `cost: $0.09`; Overview unstable-prefix warning, token mix, top misses/tools;
+  Cache `compaction [COLD] compacted`, `step [HIT]`, `ping [HIT]`, `step [MISS]
   prefix-changed`; `Enter` on the miss opens `Request Detail: req_miss · step …
   Cause: prefix-changed (certain)` with `system part AGENTS.md changed: chars
   3200 → 3800`; `ctrl+m` switches the cause and the footer reads `miss:
@@ -95,7 +98,7 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
   immutable worker MCP (`releases/2.0.18-plus-1.1.14/bin/opencodeplus
   search-mcp`), which is not a runtime I started and is left running.
 - Log `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t8752d5-20261005-0302/data/opencode/log/opencode-local.log`
-  (583 267 bytes, 2 298 lines): **0 ERROR**, 66 WARN — every WARN is
+  (690 000 bytes, 2 717 lines): **0 ERROR**, 78 WARN — every WARN is
   `executor-controlled plugin source refused` for the workspace `.opencode`
   sources (the confinement rule), and 11 INFO `InterruptError: All fibers
   interrupted without error` lines, one per normal TUI shutdown. No Monitor or
