@@ -105,6 +105,64 @@ This is an **evidence-only** task: no production file is changed.
 - Note: the model+variant matched (opus@high) so the cause is the agent switch,
   as the analyzer reports.
 
-Status of remaining cases: **in progress** (warming-off delay, compaction). The
-`monitor.query` in-chat Code Mode equality proof and the basic Project team
-delegation are recorded further below when observed.
+## Case 4 — warming off, real wallclock gap past the analyzer lifetime (observed)
+
+- Deliberate change: Defaults › Models › `cliproxyapi/claude-opus-5-5` ›
+  `Warming` set to **off** at `2026-10-05T09:18:15.884Z` (record
+  `"modelSettings","level":"defaults","providerID":"cliproxyapi",
+  "modelID":"claude-opus-5-5","warming":"off","interval":"4m"`). No
+  timestamp/ledger mutation and no provider-config change; the ordinary UI edit
+  only.
+- Last real request before the gap: `GAP-BEFORE` request
+  `ef0ec86f-e99d-4917-a6bf-38303a06a383` at `2026-10-05T09:18:35.389Z`
+  (started 1791191915389). Last ping ever: `11:13:31Z`-window ping at
+  09:13:31Z; **no warming ping fired after 09:17:34Z** — the next `warming
+  session` log line does not exist, so the cache really was not refreshed.
+- Next message `GAP-AFTER`: request
+  `d387a377-1d65-4032-a099-48328d9c5e8b` at `2026-10-05T09:25:54.451Z`
+  (started 1791192354451), agent plan, cliproxyapi/claude-opus-5-5@high,
+  completed, input 13803, cache_read 0, cache_write 0, output 10.
+- Real gap: `1791192354451 - 1791191915389 = 439062 ms` = **7.32 minutes**
+  (wallclock), reported by the page as `Gap since last request: 7.3m`.
+- Cache-tab row (misses-only `x`): `11:25:54 step [MISS] cache-expired 0
+  Reusable ...warming on`.
+- Detail (`d387a377-…`): `Cause: cache-expired (likely)`,
+  `Expected prefix: 13.8k tokens`, `Cache read: 0`, `Miss tokens: 13.8k`,
+  `Gap since last request: 7.3m · Cache lifetime: 5m · Warming: on`,
+  `Pings on the prefix: 0`,
+  evidence `Reusable prefix unchanged; gap 439062ms exceeds lifetime 300000ms;
+  last ping none; warming on`.
+- Honest qualification: the page's `Warming: on` comes from the stored
+  `warming` context fact read for that request; although the model-level
+  default was saved `off` 20 s earlier and no ping fired in the gap, the fact
+  recorded at the pre-gap activity hook still said `on`. The expiry evidence is
+  the real measured gap (439062 ms) versus the analyzer's inferred 300000 ms
+  lifetime for this route, not a provider-reported TTL. DeepSeek/CPA lifetime
+  stays unknown elsewhere; the 5m here is the Claude/CPA analyzer branch.
+
+## Case 5 — compaction between two requests (observed)
+
+- Pre-gap request `d387a377-1d65-4032-a099-48328d9c5e8b` (the case-4 miss).
+- Deliberate change: `Compact session` at `2026-10-05T09:30:20.903Z`
+  (compaction request `cb70dde7-a682-439c-bbc5-c1bf7805c9a1`, kind
+  `compaction`, agent plan, opus@high, completed, input 9421, cache_read 5026,
+  cache_write 0, output 632). Context facts:
+  `compaction_started {}` at 1791192620872 and
+  `compaction {"epoch":1,"tokens":{...},"model":{"id":"claude-opus-5-5",
+  "providerID":"cliproxyapi","variant":"high"}}` at 1791192628266.
+- Next message `AFTER-COMPACT` request
+  `33594a72-f76b-435c-9f5f-a13c8fef7d97` at `11:31:06Z`, agent plan,
+  opus@high, completed, input 8261, cache_read 5602, cache_write 0, output 157.
+- Cache-tab row: `11:31:06 step [MISS] prefix-changed 5.6k message 2...e) changed`.
+- Detail (`33594a72-…`): `Cause: prefix-changed (certain)`,
+  `Expected prefix: 14.3k tokens`, `Cache read: 5.6k`, `Miss tokens: 8.3k`,
+  `Gap since last request: 1.8s · Cache lifetime: 5m · Warming: on`,
+  `First diverging segment: message 2 (message)`.
+- Note: the compaction is a real context rewrite (two steps run after the
+  compaction request), so the analyzer reports the *actual* first divergent
+  segment it sees rather than the `compacted` cause label; the divergence is
+  real and named. No fabricated cause.
+
+## In-chat Code Mode `monitor.query` equality (observed)
+
+Still to be captured from the same chat below.
