@@ -491,3 +491,8 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
 - `packages/tui`, the one touched test (`agent-model-refresh.test.tsx`): 2 pass, 0 fail.
 - `bun typecheck` in `core`, `plugin`, `tui` and `client`: all exit 0. In `plus`: exit 0 (at `a531bc98b9`, and again inside the root check).
 - Root `bun run check`: exit 0, 36 of 36 tasks successful.
+- **T115 (R4) stopped by the watchdog at 15:47.** Its evidence file had not changed since 15:24, and it had spent 33 minutes calibrating in four PTYs without a checkpoint. No provider error. Cause, found by the parent in its PTY: on the Defaults level the group rows Plus, User and a collapsed Agents render the same Defaults › Models list. A model name that "only shows in that list" was therefore already on screen before the open. The agent's list needs focus in the middle pane before `2` switches to Models. Decision for the fresh Brief:
+  - **Defaults › Models.** The first open is the first render of that list after a fresh start: from the `summary` row, `↓` onto `Plus`. Each repeat moves from `Teams` (no list on screen) `↑` onto `Models`. The predicate is `muse-spark-1.3-contributor`.
+  - **The agent's Models.** `@`, then `→` into the middle pane, then `2` opens and `1` closes. The predicate is `claude-opus-5-5@xhigh`.
+  - Parent probes on that warm PTY: repeats of 8–15 ms. These are not R4 numbers.
+- Killed only the stopped child's PTY `a4-defaults`; the owned home then has 0 cwd references. The immutable worker MCP was left alone.
