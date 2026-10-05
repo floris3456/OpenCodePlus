@@ -75,7 +75,63 @@ makes it the active model at that level for that owner, exclusively. The
 previously active row at that level is no longer active. One store revision, one
 log line.
 
-_Pending live run._
+### Result: PASS (TUI `a` on agent, preset, member preset, Defaults)
+
+Store baseline revision at load: **478**. Every add below was done through the
+running build's Instructions TUI: step into the target's `Models` group,
+press `a`, pick provider → model → variant, and watch the store and log.
+
+**1. Global agent `general` — exclusivity across two adds.**
+
+- `a` on `Global › Agents › OpenCode › general › Models` → provider
+  `cliproxyapi` → model `deepseek-v4.1-flash-cheap` → variant `max`.
+  Screen toast `Added model cliproxyapi/deepseek-v4.1-flash-cheap`, the new row
+  read `▸ cliproxyapi/deepseek-v4.1-flash-cheap@max  active ◆`. Store line 227:
+  `{"type":"model","level":"global","agent":"general",...,"variant":"max","active":true,...}`.
+  Log: `model.add cliproxyapi/deepseek-v4.1-flash-cheap (global)`, revision
+  **479**.
+- `a` again on the same Models group → `cliproxyapi/claude-opus-5-5` (no
+  variant). New row `▸ cliproxyapi/claude-opus-5-5  active ◆`; the flash-cheap
+  row dropped to `▸ … ◆` with **no** `active` badge. Store line 215 now
+  `claude-opus-5-5 active:true` and line 228 `deepseek…@max` with no `active`
+  field. Log: one `model.add cliproxyapi/claude-opus-5-5 (global)`, revision
+  **480**. So one add = one revision + one log line, and the previously active
+  row at that level is no longer active.
+
+**2. Defaults catalogue `general` — same exclusivity.**
+
+- Defaults (`#`) → Agents › OpenCode › general › Models, `a` → `gpt-6-sol`
+  (no variant): store line 236
+  `{"level":"defaults","agent":"general",...,"active":true,...}`, log
+  `model.add cliproxyapi/gpt-6-sol (defaults)`, revision **481**. Inspector
+  showed `effective cliproxyapi/claude-opus-5-5 · active at global` because the
+  Global row still wins down the chain.
+- `a` again → `gpt-6.1-sol`: store line 239 `gpt-6.1-sol active:true`; line 238
+  `gpt-6-sol` no longer active. Log `model.add cliproxyapi/gpt-6.1-sol
+  (defaults)`, revision **487**.
+
+**3. Agent preset `Build`.**
+
+- Presets (`$`) → Agents › OpenCode › Build › Models, `a` →
+  `cliproxyapi/gpt-5.6-luna`: row `▸ cliproxyapi/gpt-5.6-luna  active ◆`;
+  store line 233 `{"level":"preset","agent":"build",...,"active":true}`; log
+  `model.add cliproxyapi/gpt-5.6-luna (preset)`, revision **488**.
+
+**4. Member preset `basic/implementer` (team-scoped owner path).**
+
+- Presets (`$`) → Teams › Plus › Basic › implementer › Models, `a` →
+  `cliproxyapi/gpt-6-luna`: row `▸ cliproxyapi/gpt-6-luna  active ◆`; store
+  line 236
+  `{"level":"preset","agent":"implementer","team":{"level":"preset","team":"basic"},...,"active":true}`;
+  log target `model:preset:basic:preset:implementer:cliproxyapi/gpt-6-luna`,
+  revision **482**.
+
+All four levels: the added row is the only `active` row at that level for that
+owner, and each add is exactly one revision and one `model.add` log line.
+
+**Not yet shown in this line:** a *real* (file-backed) Global team member's
+Models group; a member-preset group was shown instead. To be completed below
+with team `Sweep`.
 
 ## Line 2 — Tool `set({ id, active: true })` activation and real use
 
