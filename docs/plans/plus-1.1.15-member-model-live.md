@@ -11,7 +11,7 @@ Sanitized evidence only: no credentials, no raw private prompts.
 
 ## Build under test
 
-- HEAD: `95480af6ab322a89f42b305b999bb457c7117b85` (branch
+- HEAD: `12c3a75c8ec3c606f1e5f910dcdc8f69cb55ec88` (parent base `95480af6ab322a89f42b305b999bb457c7117b85`, branch
   `team/Flash-B-Worker/t1029cd3-20261005-0610`); historical initial run at
   `7d8995925ceb827f580bb4f953328351f368cc84` (branch
   `team/Flash-C-Worker/t91575a-20261005-0455`).
@@ -108,7 +108,7 @@ Proving that `Planner` exists ONLY as a team member, never as a stand-alone agen
 ### 2026-10-05 06:20–06:26 — live run `overnight-member-backup` (exclusive two-candidate proof, D1 resolved)
 
 Launched `pilotty spawn --name overnight-member-backup opencodeplus-dev .` on
-worktree HEAD `95480af6ab322a89f42b305b999bb457c7117b85`.
+worktree base HEAD `95480af6ab322a89f42b305b999bb457c7117b85` (commit `12c3a75c8ec3c606f1e5f910dcdc8f69cb55ec88`).
 
 **Kernel state during test**:
 - Launcher PID `3357819`: cwd `<dev-home>/project`, fd 9 -> `<dev-home>/data/opencode/log/opencode-local.log`
