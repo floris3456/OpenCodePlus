@@ -170,3 +170,67 @@ raw result.
   registry. The live shipped team is a preset row:
   `instructions.set({id:"team:preset:basic",rename:"fleet"})` →
   `rename.invalid: "Basic" is a preset row and cannot be renamed`.
+
+### 2026-10-05 03:58–04:10 — Refusals via tools + history proof
+
+Tool-actor refusals, each in a real `execute` call:
+
+- Built-in agent `agent:project:build`:
+  `agent.invalid: Agent build is built in and cannot be renamed`.
+- Special agent `agent:project:compaction` (Special row shown at Project):
+  `agent.invalid: Agent compaction is built in and cannot be renamed`.
+  (The `Defaults`-level id `agent:defaults:compaction` is not a tree row:
+  `rename.invalid: "compaction" is not a renamable row`.)
+- Ancestor-backed `agent:project:legacy`:
+  `agent.invalid: Agent legacy is inherited from an ancestor directory and
+  cannot be renamed`.
+- Protected agent (tool actor), after re-adding
+  `protectedAgents:["new-b"]`:
+  `agent.protected: row belongs to protected agent "new-b"`.
+
+**Warming row follows a member rename (live).** Appended a real
+team-scoped warming model record for member `m1y`
+(`warming:"30 minutes", interval:"3.5 minutes", prompt:"keep-warm sentinel"`),
+then renamed the member `m1y` → `m1z` via
+`instructions.set({id:"team:project:squad2:m1y",rename:"m1z"})`. The record's
+`agent` moved to `"m1z"` with `warming`/`interval`/`prompt` intact, the peer
+`perm:team_delegate:to.m1y` moved to `…to.m1z`, and the member file moved to
+`…/teams/squad2/m1z.md`. This is the warming-row-follows fact live, not just
+in `rename.test.ts`.
+
+**Session history keeps the old name (live, read from the owned SQLite).**
+Read `data/opencode/opencode-local.db` `session_message` read-only. Messages
+sent while the row was `new-a1` still carry that text
+(`…instructions.set({ id: "agent:project:new-a1", …`), messages sent after the
+rename carry `new-b`, and assistant messages recorded before the rename keep
+`agent:"m1x"`. Nothing rewrites old messages.
+
+**Runtime errors in the log.** The only `level=ERROR` in
+`opencode-local.log` is the intentional failure when I switched the composer to
+`claude-fable-5-1` (a model variant not registered for the `cliproxyapi`
+provider): `Failed to drain Session … AI.Error.InvalidRequest: unknown provider
+for model claude-fable-5-1`. This is a harness mis-pick, not a T6 defect; the
+T6 renames then ran on `deepseek-v4.1-flash-cheap`. No other ERROR/WARN
+attributable to rename exists in the log (WARNs are only
+`executor-controlled plugin source refused`).
+
+### 2026-10-05 04:10 — Narrow (80×24) pass
+
+Resized to 80×24 and repeated the key T6 surfaces:
+- On `Project › Teams › squad2 › m1z`, `R` opened the prefilled prompt
+  `Rename m1z` with `m1z` (member rename works narrow).
+- The team row footer narrow reads `… space toggle   a add   l link   R rename
+  d delete …`, so the R hint is present at 80 columns.
+- The built-in/Special refusal path and the tree-following behaved the same
+  as wide (no layout break; the Instructions screen is already a narrow
+  two-page layout).
+- Member Models showed the followed warming row:
+  `▎▸ cliproxyapi/deep…-v4.1-flash-cheapwarm 30 minutes …ery 3.5 minutes ◆`.
+
+## Summary
+
+All T6 end-state lines verified live at this HEAD except the two explicitly
+noted as unit-only (shipped Defaults team/member rows have no live instance in
+this build). Files, every stored record class, tree selection, palette and
+tools paths, and all four refusal classes were observed; history kept old
+names. Sanitized evidence above. Runtime cleanup is recorded separately below.
