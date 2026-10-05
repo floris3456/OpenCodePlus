@@ -355,8 +355,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
         "instructions.mutate": async (input: MutateInput) => {
           fake.mutateInputs.push(input)
           // A real mutate answers with the store's post-write snapshot. Derive
-          // it from the request records so tests can assert what actually
-          // changed on disk instead of a canned reply: a visible model in the
+          // it from the request records so tests can assert the submitted
+          // mutation instead of a canned reply: a visible model in the
           // previous snapshot with no surviving copy is an actual removal.
           const previousModels = (activeSnapshot?.records ?? []).filter(
             (record): record is SnapshotModelRecord => record.type === "model" && record.removed !== true,
