@@ -16,7 +16,8 @@ was never used as a source of truth for these claims.
 
 ## Build under test
 
-- HEAD: `88c914294274d8d0772952af22459c1e58362be1` (base `b6835471ee1b6b088d717ebff565d345c4da430f`).
+- Source HEAD: `88c914294274d8d0772952af22459c1e58362be1` (base `b6835471ee1b6b088d717ebff565d345c4da430f`);
+  this live receipt and its added focused controls are committed at `199607495f2331908aeaeb2f833422e38e134bbc`.
 - Applied the preserved T100 source input as an unaccepted draft, retaining the landed T102
   member diagnostics and T99/T104 Monitor repairs.
 - Seeded active/inherited candidates: Global `cliproxyapi/claude-opus-5-5@high` (active),
