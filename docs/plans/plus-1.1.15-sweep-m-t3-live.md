@@ -96,3 +96,29 @@ Screens:
  Scope: Team: basic-live [s] step · [S] session · [T] team
 ```
 
+### `S` session picker
+
+**PASS.** `S` opened `Pick session to scope`, sorted newest first, with the team
+tree grouped under its root (root title, agent, last active) and the child
+indented:
+
+```
+ Pick session to scope                            esc
+ [S]earch sessions…
+ ▼ Scout report task: top-level files · build-seat ·
+   └─ Listing top-level repo files and directories ·
+```
+
+`Down` + Enter scoped the page to the picked session:
+`Scope: This session (ses_ef350e)` with `drilled 1 (⌫ back)`; totals switched to
+that session (`reqs: 12 · ... · hit rate: 88%`). Only the tree's two sessions
+existed, so no stand-alone chat row was present to show.
+
+Screen after picking the child:
+```
+ Scope: This session (ses_ef350e) [s] step · [S] session · [T] team
+ ...
+ reqs: 12 · steps: 12 · in: 9.6k · read: 68.9k · write: 0 · out: 1.7k · reason: 2.9k · hit rate: 88%
+ [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]                drilled 1 (⌫ back)
+```
+
