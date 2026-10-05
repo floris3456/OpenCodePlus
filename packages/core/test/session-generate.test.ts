@@ -649,6 +649,59 @@ it.effect("HTTP wire observers run after later plugin transforms and see exactly
   expect(transported).toEqual(observed)
 }), { timeout: 15_000 })
 
+it.effect("labels the generate transport as generate while the primary content hook still runs", () =>
+  Effect.gen(function* () {
+    failGenerate = undefined
+    requests.length = 0
+    options.length = 0
+    instruction = "Initial context"
+    const fixture = yield* setup
+    yield* InstructionState.prepare(fixture.db, fixture.bus, fixture.instructions, sessionID)
+    const hooks = yield* PluginHooks.Service
+    let contexts = 0
+    let generates = 0
+    const transportKinds: Array<{ hook: string; kind: string }> = []
+    yield* hooks.register("session", "context", (event) =>
+      Effect.sync(() => {
+        contexts++
+        // The content hook that shapes the cache prefix is the primary one, non-durable.
+        expect(event.durable).toBe(false)
+      }),
+    )
+    yield* hooks.register("session", "generate", () => Effect.sync(() => void generates++))
+    yield* hooks.register("session", "model.request", (event) =>
+      Effect.sync(() => void transportKinds.push({ hook: "model.request", kind: event.kind })),
+    )
+    yield* hooks.register("session", "http.request", (event) =>
+      Effect.sync(() => void transportKinds.push({ hook: "http.request", kind: event.kind })),
+    )
+
+    yield* SessionGenerate.generate({ session: fixture.session, prompt: "ping" }).pipe(
+      Effect.provideService(Instance.Service, fixture.instances),
+    )
+
+    // The mocked client never sends; run the middleware the way transport would.
+    const middleware = options[0]?.http
+    if (!middleware) return yield* Effect.die("Missing HTTP middleware")
+    yield* middleware(
+      HttpClientRequest.post("https://example.test/chat/completions").pipe(
+        HttpClientRequest.bodyText('{"messages":[]}'),
+      ),
+      (sent) => Effect.succeed(HttpClientResponse.fromWeb(sent, new Response("{}"))),
+    )
+
+    // Primary content transform ran; the auxiliary generate content hook did not.
+    expect(contexts).toBe(1)
+    expect(generates).toBe(0)
+    // Both transport hook families identify the auxiliary wire request as generate.
+    expect(transportKinds).toEqual([
+      { hook: "model.request", kind: "generate" },
+      { hook: "http.request", kind: "generate" },
+    ])
+  }),
+  { timeout: 15_000 },
+)
+
 it.effect("WebSocket wire observers run after later plugin transforms before transport", () => Effect.gen(function* () {
   interceptors.length = 0
   const fixture = yield* setup

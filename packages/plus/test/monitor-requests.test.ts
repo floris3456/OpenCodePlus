@@ -732,6 +732,109 @@ test("hook path and event ordering in both orders yields exactly one row per req
   )
 })
 
+test("generate transport joins exactly one completed fingerprinted row to its outcome, and warming relabels that same row to ping", async () => {
+  await dataHome()
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({
+    event: { subscribe: () => Stream.empty as never },
+    session: {
+      get: () => Effect.succeed({ id: Session.ID.make("ses_join"), title: "Join" }) as never,
+      hook: hookFn as never,
+    },
+  })
+  const modelRefPinned = modelRef("openai", "gpt-4o")
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* watchMonitor(ctx, () => undefined)
+        const sessionID = Session.ID.make("ses_join")
+        const common = {
+          sessionID,
+          agent: Agent.ID.make("plan"),
+          model: modelRefPinned,
+        }
+        // 1. The wire request carries the auxiliary generate kind (core sets it while
+        //    running the primary content transforms), so it opens a generate row.
+        const wire = new Request("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "ping" }] }),
+        })
+        for (const cb of hooks["http.request"] ?? []) {
+          yield* cb({ ...common, kind: "generate", started: 1_000, requestID: "wire-join", request: wire })
+        }
+        // 2. The generated outcome must join the same wire row, not open a second one.
+        for (const cb of hooks.generated ?? []) {
+          yield* cb({
+            ...common,
+            kind: "generate",
+            started: 1_000,
+            ended: 1_200,
+            usage: { input: 120, output: 15, reasoning: 0, cache: { read: 600, write: 0 } },
+            cost: 0.001,
+          })
+        }
+
+        const afterOutcome = ledgerAt().getRequests(String(sessionID))
+        expect(afterOutcome).toHaveLength(1)
+        expect(afterOutcome[0]).toMatchObject({
+          id: "wire-join",
+          kind: "generate",
+          status: "completed",
+          inputTokens: 120,
+          cacheReadTokens: 600,
+          cost: 0.001,
+        })
+        // The completed row keeps the final wire fingerprint and no orphan step row exists.
+        expect(ledgerAt().getFingerprint("wire-join")).toBeDefined()
+        expect(afterOutcome.some((row) => row.kind === "step")).toBe(false)
+
+        // 3. The warming notification relabels that one row to ping; it does not add a row.
+        for (const cb of hooks.warming ?? []) {
+          yield* cb({ ...common, phase: "warmed", now: 1_300, since: 900, settings: undefined })
+        }
+        const afterWarm = ledgerAt().getRequests(String(sessionID))
+        expect(afterWarm).toHaveLength(1)
+        expect(afterWarm[0]).toMatchObject({ id: "wire-join", kind: "ping", status: "completed", inputTokens: 120 })
+        expect(ledgerAt().getFingerprint("wire-join")?.bodyHash).toBeString()
+
+        // Control: an unrelated open step row is never consumed by the warming relabel,
+        // which only touches generate/ping rows, so no orphan step is relabeled.
+        const db = ledgerAt()
+        db.requestStarted({ id: "open-step", sessionID: String(sessionID), kind: "step", started: 2_000 })
+        for (const cb of hooks.warming ?? []) {
+          yield* cb({ ...common, phase: "warmed", now: 2_100, since: 1_900, settings: undefined })
+        }
+        expect(ledgerAt().getRequest("open-step")?.kind).toBe("step")
+        expect(ledgerAt().getRequest("open-step")?.ended).toBeUndefined()
+        // The earlier completed row is still the sole ping.
+        expect(ledgerAt().getRequests(String(sessionID)).filter((row) => row.kind === "ping").map((row) => row.id)).toEqual(["wire-join"])
+
+        // Refusal/error control: a failing outcome joins its wire row and hashes the error
+        // text; the warming relabel still makes the same row ping, carrying the usage that
+        // arrived with the outcome (none on failure).
+        const errWire = '{"model":"gpt-4o","messages":[{"role":"user","content":"ping"}]}'
+        for (const cb of hooks["http.request"] ?? []) {
+          yield* cb({ ...common, kind: "generate", started: 3_000, requestID: "wire-err", request: new Request(wire.url, { method: "POST", body: errWire }) })
+        }
+        for (const cb of hooks.generated ?? []) {
+          yield* cb({ ...common, kind: "generate", started: 3_000, ended: 3_100, error: "SECRET refusal text" })
+        }
+        for (const cb of hooks.warming ?? []) {
+          yield* cb({ ...common, phase: "warmed", now: 3_200, since: 2_900, error: "SECRET refusal text", settings: undefined })
+        }
+        const errRow = ledgerAt().getRequest("wire-err")
+        expect(errRow).toMatchObject({ kind: "ping", status: "error" })
+        expect(JSON.stringify(errRow)).not.toContain("SECRET")
+        expect(JSON.parse(errRow!.error!)).toMatchObject({ hash: sha256("SECRET refusal text") })
+
+        // Pinned control: the row keeps the auxiliary generate request's pinned agent/model.
+        expect(afterWarm[0]).toMatchObject({ agent: "plan", provider: "openai", model: "gpt-4o" })
+      }),
+    ),
+  )
+})
+
 test("generate usage hook records request and warming warmed relabels it to ping, hashing errors without text", async () => {
   await dataHome()
   const { hooks, hookFn } = makeHookRegistry()

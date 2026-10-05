@@ -87,6 +87,13 @@ export interface Input {
   readonly toolChoice?: LLM.RequestInput["toolChoice"]
   /** Only the durable runner may use a stateful WebSocket. */
   readonly webSocket?: "session"
+  /**
+   * Labels this request's transport hooks (model.request, http.*, ws.*) while its
+   * content hook stays the one for its flow. A warming ping reuses the primary
+   * content transforms so its cache prefix matches the next real step, but its wire
+   * request is an auxiliary generate so Monitor can join it to its outcome.
+   */
+  readonly transportKind?: SessionRequestKind
   /** False for a throwaway request (warming ping, `/generate`) that must not persist Session state. */
   readonly durable?: boolean
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
@@ -261,7 +268,9 @@ export const layer = Layer.effect(
     >(kind: SessionRequestKind, input: Input, shape: (draft: SessionRequest, tools: Definitions) => Effect.Effect<S>) {
       const session = input.session
       const model = input.model
-      const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind }
+      // The content hook below follows `kind`; the transport hooks carry `transportKind`
+      // when set, so an auxiliary wire request can be labelled precisely (see Input).
+      const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind: input.transportKind ?? kind }
       const tools = input.tools ?? {
         definitions: [],
         execute: () => new Tool.Error({ message: "Tools are not available for this request" }),

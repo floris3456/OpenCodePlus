@@ -53,6 +53,11 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       system: transcript.system,
       messages: transcript.messages,
       inputTokens: SessionCompaction.estimatePrompt(loaded),
+      // Transport hooks must see this wire request as auxiliary generate so Monitor
+      // joins it to the `generated` outcome and the warming relabel. The content hook
+      // stays primary on purpose: its transforms make this request's cache prefix
+      // identical to the next real step.
+      transportKind: "generate",
       // This request will not advance the Session: hooks still shape its content, but
       // must not persist anything, and the warming loop must not treat it as activity.
       durable: false,
