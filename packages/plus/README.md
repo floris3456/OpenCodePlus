@@ -154,7 +154,7 @@ Arrow-down in the composer switches to the `Team` tab, which defaults to listing
 - `Enter` attaches by navigating to that run's session (`sessionID`).
 - `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. Both `ctrl+a`, `Enter`, and `ctrl+d` keep working in both views.
 - A chat in no team tree shows `No team runs from this chat · ctrl+t shows all`.
-- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  tree ctrl+t  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint reads `inactive ctrl+a` while inactive runs are shown, `ctrl+t` reads `all ctrl+t` while all runs are shown, and `tabs ←/→` is the composer's own hint.
+- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  tree ctrl+t  stop|resume ctrl+d  monitor M  tabs ←/→`; the `ctrl+a` hint reads `inactive ctrl+a` while inactive runs are shown, `ctrl+t` reads `all ctrl+t` while all runs are shown, `M` opens the Monitor page on this session, and `tabs ←/→` is the composer's own hint.
 
 ## Tools
 
@@ -666,16 +666,34 @@ Keep-alive requests are real provider requests and cost tokens (cache reads are 
 
 ## Monitor
 
-Requests, cache reuse, token usage and attributed tool costs, live and kept for comparison.
+One page for chat metrics: reasoning, cache reads and writes, uncached input, output, cost, steps and tools with their token attribution, with heavy emphasis on cache misses.
 
-- **Where**: a `Tools` tab in the session composer, next to Subagents, Shell, Terminals and Team (open the composer, `←`/`→` to the tab; it is taller than the native tabs, so selecting it grows the composer), scoped to the chat and every session it delegated to; and a full-screen `/tools` (palette: "Tools: calls and tokens", or `M` in the tab) for history, grouping and comparisons.
-- **What it shows**: totals (steps, calls, failures, running, input/cache/output tokens, cost when the provider reports it), the top groups and the latest calls with what each touched (a shell command's program and subcommand, a file path, a pattern, a host; never contents or full commands).
+- **Where**:
+  - Full-screen `/monitor` (palette: "Monitor: tokens, cache and tools"; `/tools` is an alias, and `M` in composer `Tools` and `Team` tabs opens it). It opens filtered on the session it was opened from.
+  - A compact `Tools` tab in the session composer, next to Subagents, Shell, Terminals and Team, defaulting to the current team tree.
+- **Scope** (header line 1, `s` steps through):
+  - **This session**: only that session.
+  - **Team tree**: root of this session's delegation tree + all descendants at any depth.
+  - **Team**: every session of a chosen Plus team across trees (`T` picks the team).
+  - **Project**: all sessions in this project.
+  - **Everything**: all recorded sessions.
+  - `S` opens a session picker grouped by team tree (indented children) and stand-alone chats, sorted newest first.
+- **When** (header line 2, `t` steps through):
+  - All · Since last compaction · 15m · 1h · 24h · 7d · 30d.
+- **Totals line** (always visible, every number labelled):
+  - Requests and steps, uncached input, cache read, cache write, output, reasoning, cost, hit rate, misses and miss cost, keep-alive pings. Narrow layout drops columns before labels.
+- **Tabs** (`tab` / `shift+tab` or `1`–`5`):
+  - **Overview**: token mix, agents in scope (agent, model, steps, hit rate, misses, tokens, cost, last active), top 3 misses, top 3 tools by carried tokens, unstable-prefix warnings, context size now vs at compaction.
+  - **Cache**: every request in time order with verdict (`[HIT]`, `[PARTIAL]`, `[MISS]`, `[COLD]`, `[NONE]`). Misses use feedback tokens, cold starts are dim, pings visible. `x` toggles misses only. `Enter` opens detail with cause, confidence, evidence lines, segment diff, timing (gap, lifetime, pings, warming), expected vs actual tokens, session/message ids.
+  - **Tools**: keeps every tool capability: group by tool, agent, model, target, session, or config (`g`), sort (`o`), filters for agent (`a`), tool (`f`), model (`F`), failed-only (`x`), compare (`c`), mark (`m`), drill-down (`Enter`) and feed.
+  - **Sessions**: delegation tree with per-session totals, state, and activity. `Enter` scopes page to that session; `space`/`t` scopes to its tree.
+  - **Steps**: every request with all token fields, duration, finish reason, and tools called. `Enter` opens step detail showing calls with attributed tokens and fingerprint change vs previous request.
+- **Keys**: `g` group, `s` scope, `S` session picker, `T` team picker, `t` window, `o` order, `a`/`f`/`F` filters, `/` text filter, `x` toggle filter, `c` compare, `m` mark, `Enter` drill/detail, `⌫`/`esc` back, `?` help popup. Settings persist; drill-downs do not.
 - **Tokens per call** are attributed, because providers bill per step (one LLM call), never per tool:
   - `call` — the step's visible output tokens, split across its text and each call's input by size.
   - `result` — what the result added to the next prompt: the next step's prompt growth minus this step's own output, split across its results by size. When no clean next step exists (a user message, compaction or instruction update in between, or the last step) it is estimated at 2.5 characters per token and marked `~`; on this workspace's real sessions 96 % of results are measured.
   - `carried` — the result re-read by every later step until the next compaction. This is where most tokens go: a large `read` result is paid for again on every step after it.
   - `+n` counts Code Mode calls made inside an `execute` call (their tokens belong to the execute call); `*` marks a call still running.
-- **Keys**: `g` group by tool / agent / model / target / session / config (the project and global instruction revisions in force), `s` scope (this chat + delegated / this project / everywhere), `t` window (all, 15m, 1h, 24h, 7d, 30d), `o` order, `a` / `f` / `F` filter by agent / tool / model, `x` failed calls only, `c` compare (off / previous window / before and after the latest mark), `m` mark this moment, `↑↓` + `⏎` drill into a row (a tool into its targets, an agent or model into its tools, a session into its own tree), `⌫` back. Settings persist; drill-downs do not.
 - **Code Mode**: `monitor.query({})` returns the calling session's requests and misses with cause, confidence and one-line evidence. `monitor.query({view: "cache", id})` returns the named segment diff, timing and lifetime, ping history, account switches, instruction updates/reverts, expected versus actual cache tokens, session/message ids and attributed calls. `monitor.mark({label})` stays available.
 - **Scope and time**: `session` means only the calling chat; `tree` includes the topmost delegation root and every descendant (host children and Plus runs); `team` requires a team name and crosses trees; `project` and `all` broaden further. New team runs retain their team; old runs are inferred only when role membership is unambiguous. `since: "compaction"` starts at each session's own latest compaction. `window: "24h"`, numeric `since`/`until`, filters, groupings and `compare: {window}` (the previous period) remain available. Views are `overview`, `cache`, `tools`, `sessions`, `steps`; `missesOnly` filters the request list without changing totals.
 - **Cache analysis**: verdicts are hit, partial miss, miss, cold start and no cache reported. Expected reusable tokens use the earlier same-session/provider/model request's real prompt usage for a pure append, otherwise common segment-size estimates. At least 1024 expected tokens and less than 50% read is a miss; 50–90% is partial. Compaction, model/variant and agent switches are expected cold starts, not misses. Causes are checked in order: compaction, model/variant, agent, named prefix change, likely expiry, likely account change, then unknown (provider-side eviction or routing). Expiry uses the conservative idle lifetimes above; unknown lifetimes remain unknown.

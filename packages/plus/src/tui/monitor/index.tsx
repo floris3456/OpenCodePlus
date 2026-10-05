@@ -22,10 +22,10 @@ export function createMonitor(context: Plugin.Context) {
 
   const disposeRoute = context.ui.router.register({
     name: "monitor",
-    render: () => (
+    render: (route) => (
       <MonitorView
         context={context}
-        sessionID={chat}
+        sessionID={() => (route?.data as { sessionID?: string } | undefined)?.sessionID ?? chat()}
         active={() => {
           const current = context.ui.router.current()
           return current.type === "plugin" && current.name === "monitor"

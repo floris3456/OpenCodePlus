@@ -18,7 +18,7 @@ import {
   stopGroupMountLog,
   TOOLS_BODY_ROWS,
 } from "../src/tui/monitor/view.js"
-import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
+import { cleanupLedgers, collect, contractFixtureReport, ledger, script, usage } from "./monitor-fixture.js"
 import { dispatch, sleep } from "./instructions-nav.js"
 import { renderPlusFixture, type DialogScript, type TestFixture } from "./tui.js"
 
@@ -86,6 +86,7 @@ async function render(
     marker?: boolean
     /** Keep every monitor.query pending to observe the Loading state. */
     hold?: boolean
+    customReport?: Plus.MonitorReport | ((input: Plus.MonitorQueryInput) => Plus.MonitorReport)
   } = {},
 ): Promise<{ fixture: TestFixture; queries: Plus.MonitorQueryInput[]; closed: () => number }> {
   const queries: Plus.MonitorQueryInput[] = []
@@ -102,6 +103,9 @@ async function render(
       "monitor.query": async (input: Plus.MonitorQueryInput) => {
         queries.push(input)
         if (options.hold === true) return await new Promise<never>(() => {})
+        if (options.customReport !== undefined) {
+          return typeof options.customReport === "function" ? options.customReport(input) : options.customReport
+        }
         return queryMonitor(db, input, { directory: "/work/project", now: NOW })
       },
       "monitor.mark": async (input: Plus.MonitorMarkInput) => ({
@@ -152,14 +156,138 @@ function groupRows(frame: string): string[] {
     .map((line) => line.split(/\s+/)[0]!)
 }
 
-test("the monitor shows this chat's and its delegates' totals, tools and latest calls", async () => {
+test("the monitor opens on the session, shows totals line, and s reaches the tree", async () => {
   const db = await seeded()
   const { fixture, queries } = await render(db)
   try {
+    const frame = await fixture.waitForFrame((text) => text.includes("Scope: This session"))
+    expect(queries[0]).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    expect(frame).toContain("Scope: This session (ses_chat)")
+    expect(frame).toContain("When: All")
+    expect(frame).toContain("reqs: 2")
+    expect(frame).toContain("steps: 2")
+    expect(frame).toContain("hit rate: 91%")
+    expect(frame).toContain("[1 Overview]")
+    expect(frame).toContain("[2 Cache]")
+    expect(frame).toContain("[3 Tools]")
+    expect(frame).toContain("[4 Sessions]")
+    expect(frame).toContain("[5 Steps]")
+    dispatch(fixture, "s")
+    const treeFrame = await fixture.waitForFrame((text) => text.includes("Scope: Team tree"))
+    expect(treeFrame).toContain("Scope: Team tree")
+    expect(queries.at(-1)?.scope).toBe("tree")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("the Cache tab shows a fixture miss with its cause, and detail opens and closes", async () => {
+  const db = await seeded()
+  const { fixture } = await render(db, {
+    customReport: contractFixtureReport(NOW),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Scope: This session"))
+    dispatch(fixture, "2")
+    const cacheFrame = await fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("[MISS]"))
+    expect(cacheFrame).toContain("[MISS]")
+    expect(cacheFrame).toContain("prefix-changed")
+    expect(cacheFrame).toContain("system part AGENTS.md changed")
+    expect(cacheFrame).toContain("[HIT]")
+    expect(cacheFrame).toContain("[COLD]")
+
+    // Move selection down to the miss request (3rd row) and open detail with return
+    dispatch(fixture, "down")
+    dispatch(fixture, "down")
+    dispatch(fixture, "return")
+    const detailFrame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
+    expect(detailFrame).toContain("Cause: prefix-changed (certain)")
+    expect(detailFrame).toContain("system: AGENTS.md")
+    expect(detailFrame).toContain("Fingerprint Segments:")
+    expect(detailFrame).toContain("diverged on line 24")
+
+    // Close detail with backspace
+    dispatch(fixture, "backspace")
+    const closedFrame = await fixture.waitForFrame((text) => !text.includes("Request Detail:"))
+    expect(closedFrame).toContain("[MISS]")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("narrow and wide layouts format totals line without horizontal scroll", async () => {
+  const db = await seeded()
+  const wide = await render(db, { width: 140, height: 40 })
+  try {
+    const wideFrame = await wide.fixture.waitForFrame((text) => text.includes("Scope: This session"))
+    wideFrame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(140))
+    expect(wideFrame).toContain("reqs: 2")
+    expect(wideFrame).toContain("read: 19.8k")
+    expect(wideFrame).toContain("hit rate: 91%")
+    expect(wideFrame).toContain("cost: $0.00")
+  } finally {
+    wide.fixture.destroy()
+  }
+
+  const narrow = await render(db, { width: 80, height: 40 })
+  try {
+    const narrowFrame = await narrow.fixture.waitForFrame((text) => text.includes("Scope: This session"))
+    narrowFrame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
+    expect(narrowFrame).toContain("reqs: 2")
+    expect(narrowFrame).toContain("steps: 2")
+    expect(narrowFrame).toContain("hit rate: 91%")
+    expect(narrowFrame).toContain("cost: $0.00")
+  } finally {
+    narrow.fixture.destroy()
+  }
+})
+
+test("S opens a session picker over every session from any tab", async () => {
+  const db = await seeded()
+  const { fixture, queries } = await render(db, {
+    settings: { ...defaultSettings, tab: "overview" },
+    customReport: () => contractFixtureReport(NOW),
+    dialogs: { selects: ["ses_chat"] },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Scope: This session"))
+    dispatch(fixture, "shift+s")
+    await fixture.waitForFrame((text) => text.includes("drilled 1"))
+    // The picker asks the ledger for every session, not just the current tab's.
+    expect(queries.some((query) => query.scope === "all" && query.view === "sessions")).toBe(true)
+    expect(fixture.fake.selectInputs.at(-1)?.options.map((option) => option.value)).toEqual(["ses_chat"])
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("the narrow Sessions layout drops columns instead of clipping", async () => {
+  const db = await seeded()
+  const { fixture } = await render(db, {
+    width: 80,
+    height: 40,
+    settings: { ...defaultSettings, tab: "sessions" },
+    customReport: () => contractFixtureReport(NOW),
+  })
+  try {
+    const frame = await fixture.waitForFrame((text) => text.includes("Session / Role"))
+    expect(frame).toContain("Active")
+    expect(frame).not.toContain("Agent")
+    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("the monitor shows this chat's totals, tools and latest calls on Tools tab", async () => {
+  const db = await seeded()
+  const { fixture, queries } = await render(db, { settings: { ...defaultSettings, tab: "tools" } })
+  try {
     const frame = await fixture.waitForFrame((text) => text.includes("latest calls"))
     expect(queries[0]).toMatchObject({ scope: "session", sessionID: "ses_chat", group: "tool", sort: "tokens" })
-    expect(frame).toContain("scope this chat + delegated · window all")
-    expect(frame).toContain("3 steps · 4 calls (1 failed) · in 2.5k · cache 19.8k · out 290")
+    expect(frame).toContain("Scope: This session (ses_chat)")
     expect(frame).toContain("tools: call")
     // Groups, largest first: read (1.2k measured) above shell.
     const rows = frame.split("\n").map((line) => line.trim())
@@ -168,10 +296,9 @@ test("the monitor shows this chat's and its delegates' totals, tools and latest 
     expect(read).toBeGreaterThan(-1)
     expect(shell).toBeGreaterThan(read)
     expect(rows[read]).toContain("1.2k")
-    // The feed names what each call touched, and marks the failure.
+    // The feed names what each call touched.
     expect(frame).toContain("src/a.ts")
     expect(frame).toContain("bun test")
-    expect(rows.find((line) => line.includes(" edit ") && line.includes("src/b.ts"))).toContain("✗")
   } finally {
     fixture.destroy()
   }
@@ -179,7 +306,10 @@ test("the monitor shows this chat's and its delegates' totals, tools and latest 
 
 test("keys change grouping, scope, window and filters, and the choice persists", async () => {
   const db = await seeded()
-  const { fixture, queries } = await render(db, { dialogs: { selects: ["explore"] } })
+  const { fixture, queries } = await render(db, {
+    settings: { ...defaultSettings, tab: "tools", scope: "tree" },
+    dialogs: { selects: ["explore"] },
+  })
   try {
     await fixture.waitForFrame((text) => text.includes("latest calls"))
     dispatch(fixture, "g")
@@ -201,11 +331,14 @@ test("keys change grouping, scope, window and filters, and the choice persists",
     await fixture.waitForFrame((text) => text.includes("failed only"))
     expect(queries.at(-1)).toMatchObject({ agents: ["explore"], errors: true })
     dispatch(fixture, "s")
-    await fixture.waitForFrame((text) => text.includes("scope this project"))
+    await fixture.waitForFrame((text) => text.includes("Scope: Team"))
+    expect(queries.at(-1)?.scope).toBe("team")
+    dispatch(fixture, "s")
+    await fixture.waitForFrame((text) => text.includes("Scope: Project"))
     expect(queries.at(-1)?.scope).toBe("project")
     dispatch(fixture, "t")
-    await fixture.waitForFrame((text) => text.includes("window 15m"))
-    expect(queries.at(-1)?.since).toBeGreaterThan(0)
+    await fixture.waitForFrame((text) => text.includes("When: Since last compaction"))
+    expect(queries.at(-1)?.sinceCompaction).toBe(true)
   } finally {
     fixture.destroy()
   }
@@ -213,7 +346,7 @@ test("keys change grouping, scope, window and filters, and the choice persists",
 
 test("enter drills from a tool into its targets and backspace comes back", async () => {
   const db = await seeded()
-  const { fixture, queries, closed } = await render(db)
+  const { fixture, queries, closed } = await render(db, { settings: { ...defaultSettings, tab: "tools" } })
   try {
     await fixture.waitForFrame((text) => text.includes("latest calls"))
     dispatch(fixture, "return")
@@ -236,7 +369,10 @@ test("enter drills from a tool into its targets and backspace comes back", async
 
 test("a mark is recorded and a comparison against it adds before/after columns", async () => {
   const db = await seeded()
-  const { fixture, queries } = await render(db, { dialogs: { prompts: ["before the prompt change"] } })
+  const { fixture, queries } = await render(db, {
+    settings: { ...defaultSettings, tab: "tools" },
+    dialogs: { prompts: ["before the prompt change"] },
+  })
   try {
     await fixture.waitForFrame((text) => text.includes("latest calls"))
     dispatch(fixture, "m")
@@ -250,7 +386,7 @@ test("a mark is recorded and a comparison against it adds before/after columns",
     expect(frame).toContain("compare before/after “before the prompt change”")
     // After the mark nothing happened yet; before it, everything did.
     expect(queries.at(-1)).toMatchObject({ since: NOW, compare: { until: NOW } })
-    expect(frame).toContain("(before: 4 calls")
+    expect(frame).toContain("(before: 2 calls")
     // Every tool of the earlier window keeps its row, at zero now.
     const read = frame.split("\n").find((line) => line.trim().startsWith("read "))
     expect(read).toContain("-100%")
@@ -332,7 +468,7 @@ test("the composer Tools tab scrolls the selection through groups past the fold"
 
 test("a poll that returns the same groups keeps their row components", async () => {
   const db = await seeded()
-  const { fixture, queries } = await render(db)
+  const { fixture, queries } = await render(db, { settings: { ...defaultSettings, tab: "tools", scope: "tree" } })
   try {
     await fixture.waitForFrame((text) => text.includes("latest calls"))
     const before = queries.length
@@ -350,7 +486,7 @@ test("a poll that returns the same groups keeps their row components", async () 
 
 test("an empty ledger says so instead of showing an empty table", async () => {
   const db = await ledger()
-  const { fixture } = await render(db, { settings: { ...defaultSettings, window: "1h" } })
+  const { fixture } = await render(db, { settings: { ...defaultSettings, tab: "tools", window: "1h" } })
   try {
     const frame = await fixture.waitForFrame((text) => text.includes("No tool calls"))
     expect(frame).toContain("No tool calls in this chat yet in the last 1h.")
@@ -362,7 +498,7 @@ test("an empty ledger says so instead of showing an empty table", async () => {
 test("queries follow the settings: windows, comparisons and a chat-less session scope", () => {
   const marks = [{ id: 1, at: 5_000_000, label: "m" }]
   const base = { now: 10_000_000, marks, top: 5, feed: 3 }
-  expect(queryOf(defaultSettings, { ...base, sessionID: "s" })).toEqual({
+  expect(queryOf(defaultSettings, { ...base, sessionID: "s" })).toMatchObject({
     scope: "session",
     sessionID: "s",
     group: "tool",

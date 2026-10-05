@@ -103,7 +103,7 @@ export function scopeOf(input: MonitorQueryInput, context: QueryContext): { cte:
       cte: "with recursive scope(id) as (select id from session where directory = $directory union select s.id from session s join scope on s.parent_id = scope.id)",
       bindings: { $directory: context.directory },
     }
-  // Session scope without a session reads nothing rather than everything.
+  // Any incomplete scoped query reads nothing rather than everything.
   if (input.scope !== "all") return { cte: "with scope(id) as (select null where 0)", bindings: {} }
   return { cte: "", bindings: {} }
 }
@@ -243,6 +243,16 @@ function totalsOf(
     callTokens: sum((entry) => entry.group.callTokens),
     resultTokens: sum((entry) => entry.group.resultTokens),
     carried: sum((entry) => entry.group.carried),
+    requests: number(stepRow, "steps"),
+    pings: 0,
+    pingCost: 0,
+    misses: 0,
+    missTokens: 0,
+    missCost: 0,
+    hitRate:
+      number(stepRow, "input") + number(stepRow, "cacheRead") > 0
+        ? number(stepRow, "cacheRead") / (number(stepRow, "input") + number(stepRow, "cacheRead"))
+        : 0,
   }
 }
 

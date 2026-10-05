@@ -234,6 +234,7 @@ export function createActiveTeam(context: Plugin.Context) {
         { label: showInactiveSignal() ? "inactive" : "active", shortcut: "ctrl+a" },
         { label: treeViewSignal() ? "tree" : "all", shortcut: "ctrl+t" },
         { label: "stop|resume", shortcut: "ctrl+d" },
+        { label: "monitor", shortcut: "M" },
       ],
       render: (input) => (
         <TeamMonitorTab
@@ -514,6 +515,21 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
           const list = visibleRuns()
           const run = list[store.selected]
           if (run) void handleAction(run)
+        },
+      },
+      {
+        id: "composer.team.monitor",
+        title: "Open Monitor page",
+        group: "Composer",
+        bind: "shift+m,M",
+        run() {
+          props.close()
+          props.context.ui.dialog.clear()
+          props.context.ui.router.navigate({
+            type: "plugin",
+            name: "monitor",
+            data: { sessionID: props.sessionID },
+          })
         },
       },
     ],

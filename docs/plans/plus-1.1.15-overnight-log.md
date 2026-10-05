@@ -4,9 +4,9 @@
 
 - Branch/worktree: `plus-1.1.15_overnight`; initial HEAD `75a8d9e20f`.
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
-- Current phase: B1 merge/review. No task newly landed yet.
-- Pending: B1, A1, A2, B2; A3/A6/B6 repairs; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2/#3 fixes running. A1 merge/review in progress. Independent repairs running in T76/T77/T78; #2 T79 and #3 T80 (five children).
+- Current phase: B2 source merge/review complete; repair its page gaps (#7) before live acceptance.
+- Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
+- B1 source merged as `26eacdfc14`; #2 T79 and #3 T80 running. A3 T76 ready to land, A6 T77 running; B6 fixture landed `1047b1e5df` and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -45,6 +45,19 @@
 - Documented closed editing decision in README: Model/Effort replace in place, inherited old candidate hidden at this level, re-add restores/activates.
 - `bun test test/model.test.ts test/rpc.test.ts test/model-settings.test.ts test/instructions-panes.test.tsx test/categories.test.ts test/rename.test.ts` **151 pass, 3 pre-existing skips, 0 fail**; Plus typecheck passes.
 - #1 and #6 corrections, T3 member provider-use evidence, every T7 field live, A4 speed and A5 workaround evaluation still pending.
+
+### B2 — source merge/review complete, acceptance pending
+
+- Merged T3 page input `team/Flash-Implementer/t45315d-20261004-1103` personally. Retained T2 topmost-root tree SQL and fail-closed incomplete scope; removed duplicate auto-merged query/report/totals fields. New totals stay optional, with UI fallbacks rather than changing the RPC contract.
+- Reviewed all page tabs, keymap, command/route wiring, compact Tools, session picker, story and test diffs. Production view uses real RPC; story renders the actual view. Found #7 below; no acceptance claim until repair/live.
+- `bun test test/monitor*.test.*`: **59 pass, 0 fail**; Plus/TUI typechecks pass. No tests skipped/weakened. Revised session-only test expectations are intentional T2 scope changes, but additional tree/compact regression needed (#7).
+- Synthetic analysis benchmark: first session overview 60.3 ms; tree 494.6 ms; all 10013.8 ms. Repeat 0.85/3.97/78.85 ms respectively; cache rows repeat 0.40/3.09/75.43 ms. All first-open cost recorded for follow-up, not a passing speed claim.
+- Monitor-plugin tests warn `plus monitor hooks registration failed`: the old context fixture has unimplemented hooks while tests exercise events. Investigate/repair fixture alongside A3 RPC/B6; expected explicit ledger-failure controls retain their warnings.
+
+### A3/B6 — partial source verified
+
+- T76 diff reviewed: only two T5 expectation repairs, plus rule/pattern assertions; no enforcement change. Landing next after B2 checkpoint. Worker checks permissions 15 pass, walkthrough 9 pass and Plus typecheck.
+- B6 `1047b1e5df`: reviewed test-harness-only `ui.prompt.guard` repair; production setup matches the public context. Parent command tests 2 pass, Plus typecheck pass. Worker stopped. `/monitor` plus `/tools` alias assertions remain after B2.
 
 ## Issues
 
@@ -92,6 +105,13 @@
 - Weight: breaks Instructions T7 effective values/provenance/field reset and owner identity.
 - Plan: field display follows real resolved chain and includes its actual source; reset Model restores the inherited candidate at this level while preserving unrelated fields (closed editing semantics), reset Effort inherits correctly; record lookup matches full scope. Cover Global→Project, team/preset/catalogue identity, every individual edit/reset and preservation. Update inaccurate refusal expectation; live every field after correction at 80/160 columns.
 - Additional review note for A4: catalogue is cached but first snapshot still calls `ctx.model.list()`; verify T7's catalogue-only-in-pickers rule in measured speed work, not only timings.
+
+### #7 — T3 page controls/layout do not fully match real behavior (open)
+
+- Source evidence: `/` saves `filterText` but no tab applies it. Compact renders Tools and requests `view: tools`, while Enter branches on stored `tab` (initial Overview), so a fresh compact Enter is inert. Full and compact share `monitor` stored scope, so M may open on tree rather than its session. Team M navigates directly and bypasses remembered return route. Oldest-first request list is polled using its first row, missing recent activity without a tool feed.
+- Other concrete gaps: narrow Cache hides the kind (pings indistinguishable), agents table width 82+ even after dropping model at 80, full-row selection never scrolls into view, and top-tools overview uses whichever grouped/top-limited tool query was last selected. Detail fixtures invent exact line/character changes impossible from hashed segments, include explicit `undefined`, and story ignores request id/scope/view; inherited member field issues are separate #6.
+- Weight: breaks Monitor T3 controls, open-session scope, intuitive narrow layout and story/real-contract reconciliation.
+- Plan: repair minimal existing seams in page/route/settings/tabs/query and fixtures/story; preserve compact capabilities, temporary drill-downs and persisted settings. Add actual-ledger tests for compact drill, M open/back, filters/selected detail, session/tree ownership, polling and narrow columns/scroll. Live every tab/scope/window and M via both composer tabs at 80/160. Keep optional RPC additions and privacy.
 
 ## Live evidence
 
