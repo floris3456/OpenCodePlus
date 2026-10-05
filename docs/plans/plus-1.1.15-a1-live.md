@@ -96,3 +96,77 @@ no credentials, no raw private prompts.
   `Rename g-a1` prefilled `g-a1`; renamed to `g-a2`. Toast/close and on disk
   `config/opencode/agents/g-a1.md` → `g-a2.md`; log
   `agent.rename g-a1 to g-a2 (global)` revision 466. Same path as `R`.
+
+### 2026-10-05 03:24–03:32 — Team rename via R
+
+- **Team rename via `R`** on `Project › Teams › crew`:
+  - Prompt `Rename crew`, prefilled `crew`.
+  - Invalid name `bad/name` refused in-dialog:
+    `Invalid team name "bad/name": team names are single path segments (no
+    slashes)`; no change.
+  - Renamed `crew` → `squad`: header followed `Project › Teams › squad`,
+    selected row `squad`; team directory moved to `…/teams/squad`, member
+    files `m1x.md`/`m2.md` inside; every team-scoped record's
+    `team.team` moved `crew`→`squad`; enablement record followed; log
+    `team.rename crew to squad (project)` revision 4.
+
+### 2026-10-05 03:32–03:40 — Refusals through `R` (live)
+
+- **Built-in OpenCode agent** (`Defaults › Agents › OpenCode › build`, also
+  shown at Project): toast
+  `Agent build is built in and cannot be renamed` (live screen, row `build`).
+- **Special agent** (`… › Special › compaction`): toast
+  `Agent compaction is built in and cannot be renamed`.
+- **Ancestor-backed agent**: wrote `…/<dev-home>/.opencode/agent/legacy.md`
+  (above the session's `project/`), reloaded the tree; row appeared under
+  `Project › Agents › User › legacy` with `no tools`. `R` produced the
+  full-screen toast (ANSI output captured):
+  `Agent legacy is inherited from an ancestor directory and cannot be
+  renamed`. No file or record change.
+
+### 2026-10-05 03:40–03:56 — Tool `instructions.set({id,rename})` (live)
+
+Session model switched to `cliproxyapi/deepseek-v4.1-flash-cheap`; agent
+`New-B`. Each call ran in a real `execute` tool call and the model printed the
+raw result.
+
+- **Agent row**: `instructions.set({id:"agent:project:new-a1",rename:"new-b"})`
+  →
+  `{"id":"agent:project:new-b","to":"new-b","path":"…/project/.opencode/agent/new-b.md","status":"Renamed new-a1 to new-b"}`.
+  On disk `new-b.md`; records (customization/split/model/rule/link) moved to
+  `agent:"new-b"`; log actor `{type:"tool",agent:"build"}`
+  `agent.rename new-a1 to new-b (project)` revision 5.
+- **Member row**:
+  `instructions.set({id:"team:project:squad:m1x",rename:"m1y"})` →
+  `{"id":"team:project:squad:m1y","to":"m1y","path":"…/teams/squad/m1y.md","status":"Renamed member m1x to m1y"}`.
+  Member records and the peer `perm:team_delegate:to.m1x` →
+  `…to.m1y`; log `agent.rename m1x to m1y (project team squad)` revision 6.
+- **Team row**:
+  `instructions.set({id:"team:project:squad",rename:"squad2"})` →
+  `{"id":"team:project:squad2","to":"squad2","path":"…/teams/squad2","status":"Renamed team squad to squad2"}`.
+  Directory and every team-scoped record followed; log
+  `team.rename squad to squad2 (project)` revision 7.
+- **Built-in refusal via tool**:
+  `instructions.set({id:"agent:project:build",rename:"builder"})` →
+  `✗ instructions.set … ↳ agent.invalid: Agent build is built in and cannot
+  be renamed`.
+- Composer chip followed each rename (`M1x` → `New-B` agent selection) and the
+  session-history transcript kept the old names in the already-sent user
+  messages (messages are immutable; only the tree/composer changed).
+- **Protected agent (tool actor)**:
+  wrote `.opencodeplus/project.json` with `protectedAgents: ["new-b"]` in the
+  owned project, reselected agent `New-B`, then
+  `instructions.set({id:"agent:project:new-b",rename:"new-c"})` →
+  `✗ instructions.set … ↳ agent.protected: row belongs to protected agent
+  "new-b"`. No file/record change. (Removed the fixture after: see below.)
+- **Shipped Defaults team row**: live this build has **no** shipped Defaults
+  team row — the shipped teams are presets (`Basic`) and `Defaults › Teams`
+  lists only `Every member`. `instructions.set({id:"team:defaults:basic",
+  rename:"fleet"})` → `row.unknown: Unknown row "team:defaults:basic"`.
+  The shipped-Defaults refusal (`… is shipped and cannot be renamed`) is
+  therefore **unit-only** here, proved by
+  `test/rename.test.ts` "instructions.set rename covers agent, member and team
+  rows and refuses Defaults rows" with an injected `builtins:[{name:"ship"}]`
+  registry. The live shipped team is a preset row:
+  `instructions.set({id:"team:preset:basic",rename:"fleet"})` →
+  `rename.invalid: "Basic" is a preset row and cannot be renamed`.
