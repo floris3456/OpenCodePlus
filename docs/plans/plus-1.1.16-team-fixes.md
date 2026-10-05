@@ -56,7 +56,7 @@ text; missing check file refused with no run created; existing files pass.
 
 **Decisions (user):**
 - Count input, cache input and output. Cache reads do not count.
-  - Read here as: input + cache writes + output, with reasoning counted as
+  - That means input + cache writes + output, with reasoning counted as
     output, because it is billed as output.
 - A budget that runs out never stops or interrupts the worker. Stopping costs
   progress, and a restart re-reads its context.
@@ -232,84 +232,95 @@ row; edit the row and see it in the sections.
 3. The worker folders and their processes are gone and stay gone.
 4. Instructions writes take as long as with no workers.
 
-## 5. A running chat keeps its prompt until a refresh
+## 5. Instructions changes reach a running chat by themselves, without a cache miss
 
 **What happens today:**
-- A Plus Instructions change rewrites a running chat's system prompt and tool
+- A Plus Instructions change rewrites a running chat's system prompt or tool
   list at its next request.
+  - The role text becomes `agent.system` (`packages/plus/src/instructions/apply.ts:430`).
+  - System rows are pushed into the system parts on every request (`apply.ts:1271`).
 - Measured in the 1.1.15 cache test (T112, 2026-10-05 08:54Z):
-  - turning off build's "Tools and rules" row removed the last system part of
-    the next request;
-  - it read 5,026 of about 12,700 tokens from cache.
+  - turning off build's "Tools and rules" row removed the last system part;
+  - the next request read 5,026 of about 12,700 tokens from cache.
 - A change earlier in the prompt misses everything. Providers cache by prefix,
-  and the request order is tool definitions, then system, then messages. A tool
-  or role change therefore costs the whole conversation, for Anthropic, OpenAI,
-  DeepSeek and Gemini alike.
+  and the request order is tool definitions, then system, then messages.
 - Without such changes, caching on 1.1.14 has been flawless in daily use. The
   only misses are about 10 tokens per turn on Gemini, provider-side and
   harmless.
+- Core already has the cache-safe mechanism for its own instruction files
+  (`core/src/session/instruction-state.ts`):
+  - a session keeps an instruction baseline;
+  - later changes are added as durable System messages at the end of the
+    conversation;
+  - a compaction moves the baseline.
+
+  Plus's role and system rows bypass it.
 
 **Must not change:** a chat without mid-chat changes sends byte-identical tool
 definitions and system text to today.
 
 **Decisions (user):**
-- An explicit `/refresh` keeps this simple and makes the cache cost a
-  deliberate choice.
-- Changes that cannot affect the cache must not need a refresh.
+- Changes apply automatically and seamlessly. No refresh step is needed in
+  normal use.
+- A compaction and a model switch apply everything, since they rebuild the
+  cache anyway.
+- Changes the human makes in the Instructions page take effect when the page
+  closes, as one update, not one per keypress.
 
-**Change:**
-1. **A chat keeps its prompt.** It keeps the Plus-rendered system parts and
-   tool definitions it started with, stored with the session, until one of:
-   - `/refresh`;
-   - a compaction, which rebuilds the cache anyway (core already moves its
-     instruction epoch there);
-   - a model switch, which starts a new cache anyway.
-
-   A new chat always starts from the current settings.
-2. **What waits is computed, not listed.** After an Instructions write, render
-   each running chat's tools and system from the new settings and compare them
-   with what it sends now, using the Monitor's segment fingerprints.
-   - Equal: nothing to do.
-   - Different: the change is pending for that chat.
-3. **Everything outside the prompt applies at once.** That includes model
-   activation, keep-alive, budgets, team members, delegate permissions and
-   colours. When such a change also shows in a tool description (for example a
-   worker list), only that description waits.
-4. **Safety first.** A permission that turns something off is enforced at once
-   at the call, refusing with its message, even while the old tool description
-   is still in the prompt. Turning a tool on waits for the refresh.
-5. **Visible.** The TUI shows pending changes in that chat's footer, for
-   example "Instructions changed · /refresh re-reads ~48k tokens". An agent
-   that changes Instructions gets the same note in the tool's result, so it can
-   call refresh when it wants the change now.
-6. **Instruction files are untouched.** Core's own instruction files
-   (`AGENTS.md` and the like) already add changes as messages without touching
-   the prefix. They stay as they are.
+**Change ("add now, fold in later"):**
+1. **System text.** Plus role text and system rows go through core's
+   instruction mechanism. A change during a chat is added as one System
+   message at the end: what changed, section by section, saying that it
+   replaces the earlier text. The prefix is untouched, so only the change's
+   own tokens are new.
+2. **Tools.**
+   - **Off:** enforced at once at the call (refused with its message), plus a
+     one-line System note.
+   - **Code Mode tools** (catalogue text): a note with the change.
+   - **A native tool switched on, a new MCP server, or a changed native tool
+     description:** these sit in the tool definitions, which come first, so
+     they wait for the next rebuild (item 3 below).
+3. **Folded in at rebuild moments.** These rebuild the cache anyway, so at each
+   one the prompt is re-rendered cleanly from the current settings, and the
+   added notes drop out:
+   - a compaction;
+   - a model switch;
+   - a new chat;
+   - the cache having expired, where the Monitor knows the lifetime and the
+     chat has been idle past it with keep-alive off.
+4. **Instructions page.** Edits are saved as you make them, as today. A running
+   chat gets them as one combined update when the page closes. Edits by an
+   agent through `tools.instructions.*` apply at that agent's next step.
+5. **Nothing to do for changes outside the prompt.** Model activation,
+   keep-alive, budgets, team members, delegate permissions and colours apply at
+   once.
+6. **`/refresh` stays as an escape hatch:** apply everything now, including
+   waiting tool changes, at the cost of one cache rebuild. It names that cost
+   first. Normal use never needs it.
 
 **Tests:**
 - **Unchanged chat:** the tool and system fingerprints are identical to today,
   over several turns.
-- **Pending:** set only when the rendered prefix differs; a keep-alive or
-  model-activation change sets none.
-- **Applying:** `/refresh`, a compaction and a model switch each apply pending
-  changes and clear them. A new chat gets the new prompt.
-- **Deny:** a turned-off tool is refused at once while still listed.
+- **A system-row or role change:** the prefix fingerprints are unchanged, one
+  System update message is added, and the model's next request contains it.
+- **Folding in:** after a compaction, a model switch or a new chat, the change
+  is part of the system text and the notes are gone.
+- **A turned-off tool** is refused at once while still listed.
+- **A native tool switched on** appears only after a rebuild moment.
+- **Several page edits** produce one update message when the page closes.
 
 **Live** (on `claude-opus-5-5`):
 1. Send two messages.
-2. Turn off a system row.
-3. The next message still reads the whole prefix from cache, and the footer
-   shows the pending change.
-4. Run `/refresh`: the next message rebuilds the cache once, and the one after
-   reads it again.
-5. Change a keep-alive time: nothing is shown as pending.
+2. Change one role section and turn off one system row.
+3. The next message reads the whole prefix from cache, and the model follows
+   the changed section.
+4. After a compaction, the system text holds the change and the next message
+   reads the new prefix.
 
 ## Open questions for the user
 
-1. Item 2: "cache input" is read as cache writes. If it meant cache reads, the
-   count changes by little (T92: 10.0M of 10.4M were cache reads).
-2. Item 4: run folder-independent MCP servers such as `search-mcp` once for the
-   whole service instead of once per folder? That alone would have turned 51
-   processes into 1.
-3. Item 5: should a compaction and a model switch apply pending changes by
-   themselves, since the cache is rebuilt then anyway? Or only `/refresh`?
+None. Settled on 2026-10-05:
+- "cache input" means cache writes (item 2).
+- A compaction and a model switch apply pending changes (item 5).
+- Running `search-mcp` once for the whole service is still to be decided
+  (item 4).
