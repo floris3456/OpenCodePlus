@@ -502,7 +502,7 @@ The NOT LIVE sub-items use these named passes:
 
 ## Server log — every ERROR and WARN line
 
-Home log `$DEV/data/opencode/log/opencode-local.log` (430 lines at the end):
+Home log `$DEV/data/opencode/log/opencode-local.log` (436 lines at the end):
 **0 ERROR**, 8 WARN. Every WARN is the expected
 `executor-controlled plugin source refused` for the workspace `.opencode`
 sources; no Monitor or Plus error.
