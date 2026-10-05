@@ -43,8 +43,29 @@ sentinel prompt, a second prompt, and one compaction. Read the owned
 Kinds agent step, compaction and title (flagged `is_title=1`) are present,
 each with time/session/agent/provider/model/variant and full usage; `step`
 rows keep all their fields. `$DEV/.../monitor.db` schema `meta.schema=2`, tables
-`request`, `request_fingerprint`, `context_fact`, `step` present. The error path
-is exercised below (L1e). **PASS** (L1e still to add).
+`request`, `request_fingerprint`, `context_fact`, `step` present.
+
+The error path was exercised live: switching to the `plan` agent (its route
+`claude-fable-5-1` is rejected by CLIProxyAPI) produced a refused request,
+recorded with its hashed error instead of usage:
+
+```
+{"id":"0a2223d8-…","kind":"step","agent":"plan","provider":"cliproxyapi",
+ "model":"claude-fable-5-1","variant":"xhigh","started":1791214970905,
+ "duration":25,"status":"error",
+ "error":"{\"type\":\"provider.invalid-request\",\"status\":400,
+ \"hash\":\"0dd35a2328c29e26\",\"chars\":43}",
+ "input_tokens":0,"output_tokens":0,…,"cost":0,
+ "message_id":"msg_10cbb67fd001raBkN7pCdkoMR6"}
+```
+
+The TUI showed `Error: unknown provider for model claude-fable-5-1`. Kinds
+agent step, compaction, ping, title and generate (`generate` before the warming
+`warmed` relabel to `ping`) are all in the ledger. The `generate` kind for
+non-ping generate calls is covered by the focused test
+`test/monitor-requests.test.ts` "generate usage hook records request and warming
+warmed relabels it to ping, hashing errors without text" (passed, recorded under
+L6). **PASS**.
 
 ### L2. Keep-alive pings recorded with their usage
 
@@ -176,8 +197,63 @@ and `context_fact` (passed, recorded under L6). **PASS**.
 
 ### L6. Schema v2 migrates v1 in place; retention 90 days; idempotent writes
 
-_TODO_
+Did: read `meta` from the owned live ledger: `[{"key":"schema","value":"2"}]`.
+Retention is `RETENTION_DAYS = 90` (`packages/plus/src/monitor/ledger.ts:21`)
+and `watchMonitor` prunes `Date.now() - 90d` once per ledger per process
+(`plugin.ts:44-45`); the live ledger is minutes old, so pruning cannot be
+observed live. Writes are keyed by request id / `(session_id, message_id)` and
+upsert, so re-observing the same event is inert.
+
+Focused tests run from `packages/plus`:
+
+- `bun test test/monitor-requests.test.ts test/monitor.test.ts
+  test/monitor-plugin.test.ts test/monitor-ledger.test.ts` → **47 pass, 0 fail,
+  386 expect() calls** (1.4 s). Includes
+  "v1 to v2 migration keeps v1 rows while creating empty v2 tables" (asserts
+  `schema=2`, v1 `session`/`step`/`call` rows intact, new tables empty),
+  "privacy: no content stored (asserting on stored columns)",
+  "context facts recorded and idempotent across multiple observations",
+  "observing every event twice writes the same ledger", and "the hourly rollup
+  answers exactly what the raw calls answer, through updates and pruning".
+- `bun test test/monitor-ledger.test.ts` → **10 pass, 0 fail**, including
+  "an older monitor.db migrates in place and keeps its rows readable"
+  (adds the `team`, `finish`, `response_id` columns; `schema` becomes `2`; old
+  rows still query and `getFingerprint("req_old")` still readable) and
+  "two handles share the same durable facts and the revision tracks the other's
+  writes" (idempotent shared writes).
+
+**PASS (migration, retention and idempotency by the named focused tests;
+schema 2 seen live)**.
 
 ## Log and cleanup
 
+### Server log
+
+`$DEV/data/opencode/log/opencode-local.log` at cleanup: **232 lines — 225 INFO,
+6 WARN, 1 ERROR.**
+
+Every WARN (6 lines, 2 runs of the same refusal) is the expected
+`executor-controlled plugin source refused`; no other WARN text:
+
+```
+timestamp=2026-10-05T15:28:40.919Z level=WARN run=8a6c78f4 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=91 role=server
+timestamp=2026-10-05T15:28:40.919Z level=WARN run=8a6c78f4 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=91 role=server
+timestamp=2026-10-05T15:28:42.643Z level=WARN run=8a6c78f4 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=82 role=server
+timestamp=2026-10-05T15:28:42.643Z level=WARN run=8a6c78f4 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=82 role=server
+timestamp=2026-10-05T15:28:42.643Z level=WARN run=8a6c78f4 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1311ea8-20261005-1727/.opencode/opencode.jsonc type=document http.span=82 role=server
+timestamp=2026-10-05T15:28:42.643Z level=WARN run=8a6c78f4 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1311ea8-20261005-1727/.opencode type=directory http.span=82 role=server
+```
+
+The single ERROR is the deliberately attempted `claude-fable-5-1` request (the
+plan-agent line / L1), which the notes say that route rejects:
+
+```
+timestamp=2026-10-05T15:42:50.933Z level=ERROR run=8a6c78f4 message="Failed to drain Session" cause="AI.Error: unknown provider for model claude-fable-5-1 … [cause]: AI.Error.InvalidRequest: unknown provider for model claude-fable-5-1" role=server sessionID=ses_ef351470cffe7zANSBNCCogS9V
+```
+
+No Monitor or Plus ERROR/WARN in the log (no `plus monitor` line).
+
+### Cleanup
+
 _TODO_
+
