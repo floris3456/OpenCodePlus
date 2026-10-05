@@ -292,11 +292,40 @@ unchanged — `Cancel` is the default selection.)
 
 ## L10 — filter `category:<name>`
 
-Pending.
+Done: with `EmptyCat` tab selected, moved `tool:edit` into `EmptyCat`, then opened `/` and typed
+`category:EmptyCat`. The result listed the assigned row under every owner that has it, grouped:
+
+```
+Defaults › edit
+▾ Agents
+    OpenCode
+      ● build    │  EmptyCat │ ● edit
+    ● general      │  EmptyCat │ ● edit
+    ● explore      │  EmptyCat │ ● edit
+    ● plan         │  EmptyCat │ ● edit
+    Special
+      ● compaction hidden │ EmptyCat │ ● edit
+      ● title      hidden │ EmptyCat │ ● edit
+```
+
+and the inspector reported `category EmptyCat (home: Tools)`. A filter for a category that holds
+nothing (`category:EmptyCat` before the move) showed `No matches`. PASS: `category:<name>`
+matches the rows in that category across owners.
 
 ## L11 — category records stored once globally, revisioned and logged, all projects share
 
-Pending.
+Done throughout. All category edits wrote exactly one record in the *global* instruction store:
+`$DEV/config/opencode/opencodeplus/instructions/records.jsonl`, `type":"category","level":"global"`,
+one line per category (`grep -c '"type":"category"'` = 1 after `SweepCat` was created, 2 after
+`EmptyCat`; `SweepRenamedSweepCat` removed on delete). Nothing under a per-project store was
+written for categories.
+
+Each mutation bumped the header revision in order and appended one `log.jsonl` line with
+`op":"category"` and an actor/`summary`, e.g. create revision 493 (`Created category "SweepCat"`),
+assign 494–502, rename 503, delete 505. The stored assignment is the whole-row item id list
+(`items`), the name and the order; `updated` is a timestamp. The tab appears at Project/Global/
+Defaults/Presets alike (L3) because the record is global and shared: the same `SweepCat` tab was
+present in the Project-level list and all other levels. PASS.
 
 ## L12 — tools: create / set / delete / list where category
 
