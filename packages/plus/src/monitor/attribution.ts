@@ -11,7 +11,6 @@
 //   carried — the result re-read by every later step until the next
 //            compaction, derived at query time (never stored).
 import path from "node:path"
-import { commandHeads } from "../instructions/tool-permissions.js"
 import { sha256 } from "./fingerprint.js"
 
 // Measured prompt growth over result characters on real sessions of this
@@ -83,10 +82,26 @@ export function targetOf(
 }
 
 // "cd packages/plus && FOO=1 bun test x.ts | tail" → "bun test". The first
-// segment that is not a cd, without variable assignments. The second word is
-// kept only when the program's own recognized arity (`commandHeads`) takes a
-// subcommand, so `git push` and `bun test` survive while `echo <text>`,
-// `curl <payload>` and an arbitrary lower-case word do not.
+// segment that is not a cd, without variable assignments. A second word is
+// kept only when it is one of the program's recognized subcommands, so
+// `git diff` and `bun test` survive while `echo <text>`, `curl <payload>`, an
+// arbitrary lower-case word, or `git <fictional-payload>` do not. The
+// allowlist holds actual subcommand names only; an unrecognized argument falls
+// back to the bare program.
+const RECOGNIZED_SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  git: new Set(["add", "branch", "checkout", "cherry-pick", "commit", "config", "diff", "fetch", "log", "merge", "mv", "pull", "push", "rebase", "remote", "reset", "restore", "revert", "rm", "show", "stash", "status", "switch", "tag", "worktree"]),
+  bun: new Set(["add", "build", "install", "link", "remove", "run", "test", "update", "x"]),
+  npm: new Set(["ci", "exec", "init", "install", "link", "publish", "run", "test", "uninstall", "update", "view"]),
+  pnpm: new Set(["add", "dlx", "exec", "install", "link", "publish", "remove", "run", "test", "update"]),
+  yarn: new Set(["add", "dlx", "install", "link", "publish", "remove", "run", "test", "upgrade"]),
+  docker: new Set(["build", "builder", "compose", "container", "exec", "image", "logs", "network", "ps", "pull", "push", "rm", "run", "stop", "volume"]),
+  kubectl: new Set(["apply", "config", "delete", "describe", "exec", "get", "kustomize", "logs", "rollout", "scale"]),
+  cargo: new Set(["add", "build", "check", "clippy", "fmt", "install", "publish", "remove", "run", "test", "update"]),
+  go: new Set(["build", "env", "generate", "get", "install", "mod", "run", "test", "vet", "work"]),
+  gh: new Set(["api", "auth", "issue", "pr", "release", "repo", "run", "workflow"]),
+  terraform: new Set(["apply", "destroy", "fmt", "init", "output", "plan", "state", "validate", "workspace"]),
+}
+
 export function commandHead(command: string | undefined): string | undefined {
   if (command === undefined) return undefined
   const segment = command
@@ -98,7 +113,7 @@ export function commandHead(command: string | undefined): string | undefined {
   const program = words[0]?.split("/").pop()
   if (program === undefined || program.length === 0) return undefined
   const sub = words[1]
-  return (commandHeads[program] ?? 1) >= 2 && sub !== undefined && /^[a-z][a-z0-9:_-]*$/.test(sub)
+  return sub !== undefined && /^[a-z][a-z0-9:_-]*$/.test(sub) && RECOGNIZED_SUBCOMMANDS[program]?.has(sub)
     ? clip(`${program} ${sub}`, "right")
     : clip(program, "right")
 }

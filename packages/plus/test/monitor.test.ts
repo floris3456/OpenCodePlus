@@ -252,6 +252,12 @@ test("every stored call column refuses content sentinels while useful names rema
   s.ok("m1", "c_fetch", "ok")
   s.call("m1", "c_shell", "shell", { command: "cd /work && git diff --cached" })
   s.ok("m1", "c_shell", "ok")
+  // An unknown lower-case second word to a recognized 2-word program is a
+  // payload, not a subcommand: later commits may hold a fictional secret there.
+  s.call("m1", "c_gitsub", "shell", { command: "git fictional_private_payload_sentinel" })
+  s.ok("m1", "c_gitsub", "ok")
+  s.call("m1", "c_echosub", "shell", { command: "echo fictional_lowercase_payload_sentinel" })
+  s.ok("m1", "c_echosub", "ok")
   // A failed tool whose message carries a fictional sentinel.
   s.call("m1", "c_fail", "shell", { command: "echo FICTIONAL_SHELL_PAYLOAD_SENTINEL" })
   s.fail("m1", "c_fail", "FICTIONAL_PRIVATE_ERROR_SENTINEL")
@@ -282,6 +288,8 @@ test("every stored call column refuses content sentinels while useful names rema
     "FICTIONAL_SEARCH_SENTINEL",
     "FICTIONAL_QUERY_SENTINEL",
     "FICTIONAL_PAYLOAD_SENTINEL",
+    "fictional_private_payload_sentinel",
+    "fictional_lowercase_payload_sentinel",
   ])
     expect(stored).not.toContain(sentinel)
 
@@ -289,6 +297,8 @@ test("every stored call column refuses content sentinels while useful names rema
   expect(call(db, "c_read")?.target).toBe("src/a.ts")
   expect(call(db, "c_fetch")?.target).toBe("known.example.com")
   expect(call(db, "c_shell")?.target).toBe("git diff")
+  expect(call(db, "c_gitsub")?.target).toBe("git")
+  expect(call(db, "c_echosub")?.target).toBe("echo")
   expect(call(db, "c_fail")?.target).toBe("echo")
   expect(call(db, "c_grep")?.target).toBe(
     `${sha256("FICTIONAL_SEARCH_SENTINEL")} ${"FICTIONAL_SEARCH_SENTINEL".length}c`,
@@ -310,7 +320,7 @@ test("every stored call column refuses content sentinels while useful names rema
   ])
   // Totals and attribution are unchanged by the hashing.
   const report = queryMonitor(db, { scope: "all", feed: 20 }, { now: clock.now })
-  expect(report.totals).toMatchObject({ steps: 1, calls: 7, errors: 1 })
+  expect(report.totals).toMatchObject({ steps: 1, calls: 9, errors: 1 })
 })
 
 test("callEnded hashes an error at the ledger boundary so alternate callers cannot leak text", async () => {
@@ -460,11 +470,17 @@ test("targets name what a call touched without contents or secrets", () => {
   expect(commandHead("/usr/bin/python3 script.py")).toBe("python3")
   expect(commandHead("curl -H 'Authorization: Bearer abc' https://x")).toBe("curl")
   expect(commandHead("cd only")).toBeUndefined()
-  // Only a recognized program's own subcommand is kept; a payload word is not.
+  // Only a program's recognized subcommand is kept; a payload word is not.
   expect(commandHead("git diff HEAD")).toBe("git diff")
+  expect(commandHead("cd /x && git push origin main")).toBe("git push")
   expect(commandHead("bun test test/a.ts")).toBe("bun test")
   expect(commandHead("echo FICTIONAL_SHELL_PAYLOAD_SENTINEL")).toBe("echo")
+  expect(commandHead("echo fictional_lowercase_payload_sentinel")).toBe("echo")
+  // A recognized 2-word program still refuses an unknown lower-case argument.
+  expect(commandHead("git fictional_private_payload_sentinel")).toBe("git")
+  expect(commandHead("bun fictional_private_payload_sentinel")).toBe("bun")
   expect(commandHead("curl https://x/FICTIONAL_TOKEN_SENTINEL")).toBe("curl")
+  expect(commandHead("curl -H 'Authorization: Bearer abc' https://x")).toBe("curl")
   expect(commandHead("mysterytool subcommand")).toBe("mysterytool")
   expect(targetOf("webfetch", { url: "https://example.com/path?token=abc" })).toBe("example.com")
   // A glob names files; a grep pattern names content and becomes a hash + size.
