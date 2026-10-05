@@ -162,3 +162,56 @@ At 160 columns (one line, all labelled):
  reqs: 5 · steps: 5 · in: 13.8k · read: 51.7k · write: 0 · out: 522 · reason: 568 · hit rate: 79% · misses: 0 · miss cost: $0.00 · pings: 0 · cost: $0.00
 ```
 
+### Tabs — Overview · Cache · Tools · Sessions · Steps
+
+**PASS** (each tab walked; details per tab below). The tab bar names all five and
+the active one is highlighted:
+```
+ [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]
+```
+`2`..`5` jump directly; `tab`/back-tab (`ESC[Z`) cycle. Verified `4` selects
+Sessions, `3` Tools, etc. (screen per tab below).
+
+#### Overview
+
+**PASS.** Shows the token mix, the agents in scope sorted by last activity
+newest first with every column (agent, model, steps, hit rate, misses, tokens,
+cost, last active), the top 3 misses and top 3 tools by carried tokens, and
+context now. Unstable-prefix warnings render only when the ledger has one (this
+run had none).
+
+At 160 columns:
+```
+ Token Mix & Context
+  Input: 23.4k (uncached) · Cache Read: 121k · Cache Write: 0
+  Output: 2.2k · Reasoning: 3.5k · Hit Rate: 84%
+  Context Size: 8.8k tokens
+  Keep-alive Pings: 0 sent · Cost: $0.00 · Subsequent: 0 hits, 0 misses
+
+ Top Cache Misses                          Top Tools by Carried Tokens
+  No cache misses recorded                  #1 execute: 5k carried
+                                               5 calls · result 816 · avg 24ms
+                                            #2 read: 2.3k carried
+                                            #3 glob: 1.9k carried
+
+ Agents in Scope
+  Agent           Model             Steps   Hit Rate  Misses  Tokens    Cost      Active
+  build-seat      cliproxyapi/deeps…5       79%       0       66.6k     $0.00     17:30:20
+  scout           cliproxyapi/deeps…12      88%       0       83.1k     $0.00     17:30:10
+```
+At 80 columns the model column drops before the labels; every number keeps its
+heading (`In / Read / Write / Out / R / Hit`, `Agent / Steps / Hit Rate / Misses
+/ Tokens / Cost / Active`):
+```
+ Token Mix & Context
+  In: 23.4k · Read: 121k · Write: 0 · Out: 2.2k · R: 3.5k · Hit: 84%
+  Context Size: 8.8k tokens
+  Keep-alive Pings: 0 sent · Cost: $0.00 · Subsequent: 0 hits, 0 misses
+ Top Misses                        Top Tools
+  No cache misses recorded          #1 execute: 5k carried
+ Agents in Scope
+  Agent           Steps   Hit Rate  Misses  Tokens    Cost      Active
+  build-seat      5       79%       0       66.6k     $0.00     17:30:20
+  scout           12      88%       0       83.1k     $0.00     17:30:10
+```
+
