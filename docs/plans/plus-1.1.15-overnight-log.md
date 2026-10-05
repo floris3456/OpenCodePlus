@@ -16,6 +16,7 @@
 - 2026-10-05: Start B1 first while independent A3 (T5 expectations), A6, and B6 test repairs run. Defer A3 RPC declarations until all four branch merges land.
 - 2026-10-05: Log did not exist at start; created before implementation. Existing prepared branches are inputs, not worktrees to change.
 - 2026-10-05 03:02 local: watchdog inspection found T83 had no commit or changed file for 35 minutes; stopped force and delegated fresh same-kind T87 at current HEAD. No provider failure reported, so Flash-C remains the only coder. Other runs had recent changes or started less than 30 minutes ago. T83 made no source/evidence changes and claimed no acceptance.
+- 2026-10-05 03:22 local: T84 had no new commit/file for over 30 minutes and no report; stopped force. Its read-only Brief could not checkpoint evidence (orchestrator scope mistake), so the fresh B1 run receives a scoped evidence document. Preserve its actual isolated ledger and partial observations; do not infer complete acceptance from counts.
 
 ## Progress and verification
 
@@ -201,6 +202,7 @@
 ## Live evidence
 
 - T81 had no commit or changed worktree file for 35 minutes and no report: stopped force per watchdog, not accepted as complete. Its named PTY was in a rename dialog at 160×48 (no busy indicator); owned SQLite showed one idle session, no compaction and 12 completed/zero unfinished requests. Kernel cwd/fds established owned test PIDs 2623601/2623736 and isolated log/database paths. Parent exited via palette; PTY exit 0, `/proc` confirms both PIDs gone. `pilotty kill` then reports SESSION_EXITED. Partial evidence retained in the old dev home, no source/state deletion. A fresh A1 acceptance run is required; no end-state claim from incomplete evidence.
+- T84 cleanup: named PTY `overnight-b1-live` snapshot reports `outcome: exited`, exit 0, `killed_by_client: true`; `pilotty kill` confirms SESSION_EXITED. A `/proc` cwd/fd/maps scan for exact dev home `run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t84524a-20261005-0236` finds **no matches**. The only worktree-cwd match was the immutable release worker CLI, not a test runtime, and was not touched. Read-only owned ledger has 11 completed/1 errored ping, 15 completed steps and 1 completed title; ping totals input 644/cache read 92928/cache write 0/output 22. These are preserved partial facts, not proof of prescribed screen/status sequence or final acceptance. An initial totals query used legacy column `cache_read` and failed; corrected against actual `cache_read_tokens` schema. No store/config migration or mutation.
 
 ## Open findings for morning
 
