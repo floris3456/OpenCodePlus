@@ -220,4 +220,67 @@ Either that record takes effect for the member's chain, or the tool answers with
 the member row to use (refusing the flat row naming the right id). One behaviour,
 consistent, documented.
 
-_Pending live run._
+### Result: PASS (refuses with the member row named, and the member row works)
+
+The documented choice is the **refuse-and-name** form, stated in
+`packages/plus/README.md` (line 108) and `packages/plus/SPEC.md` (lines 125–137):
+*"[a] flat owner model id names nothing: the row grammar
+`item:<level>:<member>:model:…` and the legacy log target
+`model:<level>:<member>:<provider>/<model>` both resolve to no row. A tool call
+on either (`set`, `show`, `reset`, `delete`) refuses with `row.unknown` and names
+the member row to use instead (`item:<level>:<team>/:<member>:model:…`)."*
+
+**Reproduction with this build's real Global team member `Sweep`/`Sweep-Only`**
+(an agent that exists only as a team member: its only stored record is the
+`link` at line 214 and the member `model` row at line 243; there is no
+stand-alone `agent:global:Sweep-Only` node and no agent file). Through the real
+tool actor:
+
+- Flat row grammar `set`:
+  `instructions.set [id=item:global:Sweep-Only:model:cliproxyapi/gpt-6.1-sol, active=true]`
+  → ✗ `row.unknown: Unknown row "item:global:Sweep-Only:model:cliproxyapi/
+  gpt-6.1-sol"; "Sweep-Only" is a member of team "Sweep": use
+  "item:global:Sweep/:Sweep-Only:model:cliproxyapi/gpt-6.1-sol"`.
+- Legacy log-target form `set`:
+  `instructions.set [id=model:global:Sweep-Only:cliproxyapi/gpt-6.1-sol,
+  active=true]` → ✗ `row.unknown: Unknown row
+  "model:global:Sweep-Only:cliproxyapi/gpt-6.1-sol"; "Sweep-Only" is a member
+  of team "Sweep": use "item:global:Sweep/:Sweep-Only:model:cliproxyapi/
+  gpt-6.1-sol"`.
+- `show` on the flat grammar row → ✗ the same `row.unknown` with the same named
+  member row.
+
+**The named member row then really works.** `set` on
+`item:global:Sweep/:Sweep-Only:model:cliproxyapi/gpt-6.1-sol` returned
+`{"id":"item:global:Sweep/:Sweep-Only:model:cliproxyapi/gpt-6.1-sol","status":
+"Activated \"cliproxyapi/gpt-6.1-sol\"","revision":0,"globalRevision":496}` and
+`show` on it returned `"assembled":"cliproxyapi/gpt-6.1-sol"`,
+`"enabled":true`, `"from":"set here"`. Store line 243 kept `active:true` with
+`basedOn:"cliproxyapi/gpt-6-luna"`; log `mutate
+model:global:Sweep-Only:cliproxyapi/gpt-6.1-sol`, revision **496**, actor
+tool/build.
+
+**Literal `Planner`/`Basic`:** this dev home ships `Basic` disabled
+(`{"type":"team","level":"global","team":"Basic","enabled":false}`), so its
+members are not registered and the flat `Planner` id computes no member note
+(`row.unknown` with no hint). The member-only mechanism itself is proven above
+on the real member `Sweep-Only`, which is the same code path
+(`memberRowNote`/`memberModelRows`, `packages/plus/src/tools.ts`). The focused
+test `test/member-model-activation.test.ts` covers the exact `Planner` shape:
+`tool activation … flat-id guidance` and
+`tool activation of a member-only agent's model row writes a flat record its
+member chain reads` (58 pass / 0 fail, run below).
+
+**Line 3 result: PASS** — the tool refuses the flat row and names the member row,
+matching README/SPEC; the named member row activates.
+
+## Focused tests
+
+From `packages/plus` at this HEAD:
+
+- `bun test test/model.test.ts test/member-model-activation.test.ts` →
+  **58 pass / 0 fail, 246 expect() calls**. Named cases include
+  `activateModel flips active within one (level, agent) pair only`,
+  `re-adding a tombstoned candidate clears its tombstone and never steals
+  active`, `tool activation of a member-only agent's model row writes a flat
+  record its member chain reads`, and the flat-id guidance case.
