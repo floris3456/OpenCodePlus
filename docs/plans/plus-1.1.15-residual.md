@@ -142,15 +142,15 @@ Then tell the user briefly:
 
 ## Start prompt
 
-A chat runs in the folder its TUI was started from, and its team run lands
-there. So start the TUI from
-`/home/bliss/OpenCodePlus/worktrees/plus-1.1.15_overnight/opencode`, not from
-`plus-1.1.15`. Then pick `Simple-Orchestrator` and send:
+Open a new chat from any TUI, pick `Simple-Orchestrator` and send the prompt
+below. If the chat starts in another folder, the orchestrator moves it himself
+before his first team call.
 
 ```text
-You are the only orchestrator, in worktree plus-1.1.15_overnight of release
-plus-1.1.15. First run pwd: if it does not end in
-plus-1.1.15_overnight/opencode, make no team call, say so in one line and stop.
+You are the only orchestrator of release plus-1.1.15, in worktree
+/home/bliss/OpenCodePlus/worktrees/plus-1.1.15_overnight/opencode. Before any
+team call, run pwd. If you are elsewhere, move this chat there with
+session_move, alone in its own call, and run pwd again.
 Do docs/plans/plus-1.1.15-residual.md, R1 to R6 in its Order, by its rules and
 your role, until its Done holds. Read docs/plans/plus-1.1.15-halt-report.md
 first. R1 and the R2 reviews are done (see "## Residual run" in
@@ -160,8 +160,14 @@ docs/plans/plus-1.1.15-overnight-log.md under "## Residual run". Do not merge
 into plus-1.1.15.
 ```
 
-**2026-10-05, first attempt:** the chat was opened from the TUI in
-`plus-1.1.15`. Its role says to tell the user before delegating from a
-`<version>` checkout, so it delegated nothing: it did R1 and the R2 reviews by
-hand in this worktree and stopped. That was correct. Workers would have
-branched from `plus-1.1.15`, and `team_integrate` would have landed there.
+**2026-10-05, first attempt:** the chat was opened in `plus-1.1.15`. It
+delegated nothing: it did R1 and the R2 reviews by hand in this worktree, then
+stopped to ask.
+- **Why it could not just switch folder:**
+  - `session_move` was off for Simple-Orchestrator.
+  - Its first step called `team_get_context` alongside `pwd`, which tied its
+    team run to `plus-1.1.15` before it looked.
+- **Tested:** a chat that moves after its first team call keeps the old run
+  and branch. A chat that moves before it gets its run in the new folder.
+- **Since then:** `session_move` is on, and the role's Worktrees section says
+  to check the folder and move before any team call.
