@@ -222,6 +222,12 @@
 - Weight: external model-route availability, not established Instructions/Monitor source regression. Corrected DeepSeek model requests complete. B1 DeepSeek has real cache fields, so prescribed B4 does not need this failing fallback. No shared relay/provider config inspection or mutation is authorized.
 - Plan: preserve exact sanitized refusal/identity and correct T86's classification; continue acceptance on valid cheap model, report route failure for morning provider owner. No speculative source fix or catalogue hiding; final sweep records this already-known operational finding if it recurs. Initial SQL status predicate used a double-quoted identifier, returning no rows; corrected to a bound value and verified the above actual row.
 
+### #17 — bare uppercase rename binding shadows lowercase reset (open; T82 draft fix)
+
+- T82 live iteration changed `InstructionsRoute` rename binding `shift+r,R` to `shift+r` and added route regression. Parent confirmed installed `@opentui/keymap` normalizes bare binding token names by trim/toLowerCase; bare `R` is consequently another unshifted `r`, not a Shift+R alias. This can win over field reset's `r`, breaking T7 key behavior despite correct reset API.
+- Weight: real T6/T7 routing collision, separate from #6 field-resolution semantics. T6 Shift+R remains the right rename key; help may display R, but binding must explicitly carry shift.
+- Plan: retain explicit `shift+r` only, real-key regression proves lowercase reset and shifted rename both work, including live field reset at80/160. T82 owns fix and live; T90 category route worker notified to preserve the one-line overlap. No source acceptance yet.
+
 ## Live evidence
 
 - T81 had no commit or changed worktree file for 35 minutes and no report: stopped force per watchdog, not accepted as complete. Its named PTY was in a rename dialog at 160×48 (no busy indicator); owned SQLite showed one idle session, no compaction and 12 completed/zero unfinished requests. Kernel cwd/fds established owned test PIDs 2623601/2623736 and isolated log/database paths. Parent exited via palette; PTY exit 0, `/proc` confirms both PIDs gone. `pilotty kill` then reports SESSION_EXITED. Partial evidence retained in the old dev home, no source/state deletion. A fresh A1 acceptance run is required; no end-state claim from incomplete evidence.
