@@ -259,3 +259,37 @@ difference is query timing, not a contradiction or a claimed defect.
   bug, so none is made here (source is out of this evidence-only task's scope);
   it is left for the parent to assign if wanted.
 - Own log for this run: see the Run log classification section below.
+
+## Parent review (residual run, 2026-10-05)
+
+The worker stopped before writing its run-log section or any Basic team result,
+so the line above points at nothing. The parent checked every cited request,
+fingerprint, context fact and log line read-only against the owned home's
+`monitor.db` and `opencode-local.log`. Ledger values (tokens, statuses, start
+times, the 439062 ms gap, body hashes, the two `monitor.query` calls) match.
+What holds and what does not:
+
+- **Case 1 holds, with one wrong label.** The toggle removed the last system
+  part and the analyzer named it (PARTIAL, prefix-changed, certain). But
+  `BASELINE-TWO` (`da91778f`) was not a hit: the in-chat tool lists it as
+  miss/unknown (expected 12851, read 5026). The part is named by position
+  (`system remainder:0:17`), not by its source row.
+- **Case 2 holds.** The `model_switch` fact is stamped 08:59:19, after the
+  request; it is the hook time, not the moment of the switch.
+- **Case 3 holds.** The same applies to `agent_switch` at 09:09:32.986Z, which
+  is after the request at 09:09:31.537Z. Times written `11:xxZ` are local time.
+- **Case 4: cause holds, warming state does not.** The 7.3 m gap and
+  cache-expired (likely) are real. The last ping before the gap was at
+  09:17:34Z, not 09:13:31Z. The detail and the tool say `Warming: on`, but
+  warming was off: no ping fired in the gap and core logged no new schedule.
+  This is issue #26 (see the overnight log): the Monitor records core's
+  proposed warming settings before Plus decides them.
+- **Case 5 is not shown.** `33594a72` is the second step after the
+  compaction; its previous request `3b486a9b` is already after the
+  compaction, so prefix-changed is right for that pair. The first step after
+  the compaction (`3b486a9b`) is absent from the in-chat misses list, which
+  suggests it was not counted as a miss, but its verdict and cause were never
+  read. The compacted/cold-start cause stays unverified.
+- **monitor.query equality holds** for `33594a72`.
+- **#25:** the WARN line and its surroundings are as quoted. The parent
+  disposition is in the overnight log.
