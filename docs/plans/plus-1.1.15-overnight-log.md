@@ -528,3 +528,14 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - `set` with `warming:` on a field row is refused with `"Warming" takes text …` and no write. That matches the README ("a model field row … takes `text`"), so it is not an issue.
   - Log: 0 ERROR, 6 expected WARN. Child stopped.
 - 17:17: Monitor T3 delegated (T129, `w-5d2b4f502b297c71`). Its Brief tells it to make a first commit in the scratch project before delegating (#27).
+- **Monitor T2 swept** (T123, landed as 13 evidence commits ending in the cherry-pick of `a43ee1b`). It ran on `claude-opus-5-5`; the default `claude-fable-5-1` is rejected by the route, which is the log's one ERROR, as before.
+  - **PASS**: all five verdicts live; expected prefix and thresholds; causes compacted, model/variant (`ctrl+t`), agent, prefix-changed (with the coinciding instruction update named), cache-expired and unknown; signals for unstable prefix, pings, miss cost and context; and the agent tools matching the page (`monitor.query` misses and detail, scope/tree/since/view, `monitor.mark`).
+  - **#26 live re-check PASS**: warming switched off for the chat (`ctrl+x k`), a 7.9 m gap, and the detail says `Warming: off` (the T112 case used Defaults › Models; both go through `decideWarmingFor`).
+  - **T112's open compaction case closed**: the first request after `ctrl+x c` is `[COLD] compacted (certain)`, not a miss.
+  - **NOT LIVE**: account-changed and unread writes, covered by the named `monitor-cache` tests. The instruction-row toggle was not repeated; T112 case 1 showed it live.
+  - Child stopped.
+- **#28 fixed** (wrong behaviour; seen by T112 and T123): a request still `running` with no usage was judged against the expected prefix, so it was a miss/partial with 0 tokens. An agent calling `monitor.query` in its own chat always saw its current step as a miss.
+  - Decision: a running request that is not a cold start gets verdict `none`, cause and confidence `unknown`, and evidence `Request still running; no usage reported yet`. It counts as no miss. The analysis cache invalidates on completion, so the real verdict follows.
+  - Fix in `src/monitor/cache.ts` `causeStep`. Two `monitor-cache` tests asserted the old `miss` baseline before checking invalidation; their baseline now expects `none`, 0 miss tokens and 0 misses. Both fail against the old code.
+  - Checks: monitor tests 119 pass, 0 fail; Plus typecheck passes.
+  - Monitor T3's sweep, already running at `012caf2267`, may still show the old behaviour on an in-flight row. The live re-check goes into the final re-sweep of the tasks this touches (Monitor T2/T3).
