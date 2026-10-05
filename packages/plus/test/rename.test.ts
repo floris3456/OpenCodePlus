@@ -107,7 +107,8 @@ test("rename a member moves its records and the Delegate-to rows that name it", 
   const teamRef = { level: "global" as const, team: "crew" }
   await seed(project, [
     { type: "customization", level: "global", agent: "alice", team: teamRef, item: "tool:bash", section: null, basedOn: "fp", updated: UPDATED },
-    { type: "model", level: "global", agent: "alice", team: teamRef, providerID: "anthropic", modelID: "claude", updated: UPDATED },
+    { type: "model", level: "global", agent: "alice", team: teamRef, providerID: "anthropic", modelID: "claude", warming: "30m", interval: "3.5m", prompt: "keep-warm sentinel", updated: UPDATED },
+    { type: "split", level: "global", agent: "alice", team: teamRef, item: "system:role", boundaries: [{ id: "s1", name: "One", start: 0 }], updated: UPDATED },
     { type: "rule", level: "global", agent: "alice", team: teamRef, tool: "bash", id: "r1", label: "R", patterns: ["*"], keywords: [], updated: UPDATED },
     { type: "link", level: "global", agent: "alice", team: teamRef, preset: { kind: "agent", id: "planner" }, updated: UPDATED },
     // A peer's "Delegate to alice" row must follow the member id.
@@ -125,7 +126,9 @@ test("rename a member moves its records and the Delegate-to rows that name it", 
   const carolOwn = records.filter(
     (record) => "agent" in record && record.agent === "carol" && "team" in record && record.team?.team === "crew",
   )
-  expect(carolOwn.map((record) => record.type).toSorted()).toEqual(["customization", "link", "model", "rule"])
+  expect(carolOwn.map((record) => record.type).toSorted()).toEqual(["customization", "link", "model", "rule", "split"])
+  expect(carolOwn.find((record) => record.type === "split")).toMatchObject({ boundaries: [{ id: "s1", name: "One", start: 0 }] })
+  expect(carolOwn.find((record) => record.type === "model")).toMatchObject({ warming: "30m", interval: "3.5m", prompt: "keep-warm sentinel" })
   const delegate = records.find((record) => record.type === "customization" && record.agent === "bob" && record.team?.team === "crew")
   expect(delegate?.type === "customization" ? delegate.item : undefined).toBe("perm:team_delegate:to.carol")
 
