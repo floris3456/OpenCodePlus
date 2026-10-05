@@ -6,7 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B2 source merge/review complete; repair its page gaps (#7) before live acceptance.
 - Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 T79 and #3 T80 running. A3 T76 landed `ae09701991`, A6 T77 landed `2f7287ee59`, both stopped. B6 fixture landed `1047b1e5df` and stopped.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, T79 stopped. B1 live T84 and #3 T80 running. A3 T76 landed `ae09701991`, A6 T77 landed `2f7287ee59`, both stopped. B6 fixture landed `1047b1e5df` and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -26,6 +26,7 @@
 - Reviewed input changes in core generation/title/transport hooks, plugin session contract, Plus monitor ledger/fingerprints/collector/cache/report/query/tools, quota facts, team identity and tests. Identified #2/#3 below; landing the combined source before targeted repairs, not claiming acceptance yet.
 - Checks at merge: core focused five files **45 pass**, core/plugin/plus typechecks pass. Monitor files **49 pass / 5 fail**: all five are the pre-B2 view expecting old session-plus-descendants semantics; repair belongs to B2 (#4). Warnings in monitor refusal controls deliberately exercise containment; monitor-plugin fixture registration warnings need follow-up inspection.
 - Live acceptance pending: short warming, two messages, three pings, usage and stable warming status, cache read on next message.
+- #2 repair reviewed and landed `de7c1952bf`: transport-only kind override preserves primary content hooks and labels model/HTTP/WS as generate. Core real HTTP middleware and Plus real hook regressions prove one completed fingerprinted row, warming relabel in place, pinned identities, hashed failure and unrelated-step refusal. Parent core five files **46 pass**, Plus requests **18 pass**, core/plugin/plus typechecks pass. T79 stopped; T84 `w-524a6a474852446e` live report running at this HEAD.
 
 ### A3/A6/B6 — pending independent repairs
 
@@ -126,6 +127,7 @@
 - Weight: breaks Monitor T3 controls, open-session scope, intuitive narrow layout and story/real-contract reconciliation.
 - Plan: repair minimal existing seams in page/route/settings/tabs/query and fixtures/story; preserve compact capabilities, temporary drill-downs and persisted settings. Add actual-ledger tests for compact drill, M open/back, filters/selected detail, session/tree ownership, polling and narrow columns/scroll. Live every tab/scope/window and M via both composer tabs at 80/160. Keep optional RPC additions and privacy.
 - Worker T83 `w-d97ad6d4f18f9ee2` running from `2f7287ee59`. #1/#6 worker T82 `w-b932eadad70bb911` running from `ae09701991`.
+- Root preflight `bun run check` stopped at lint (before typechecks): story `monitor.tsx:466/473` uses restricted `Reflect.get`, two errors. T83 notified to replace these at the typed fixture boundary; canonical final gate remains pending.
 
 ### #8 — derived Monitor report loses unknowns/state and window semantics (open)
 
