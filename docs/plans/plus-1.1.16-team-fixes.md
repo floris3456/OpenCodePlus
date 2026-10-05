@@ -218,7 +218,15 @@ row; edit the row and see it in the sections.
    - **They only mark changes.** They never push anything into a running chat's
      prompt (item 5).
 
-6. **Search: use the hosted Tavily and Exa servers (user, 2026-10-05).**
+6. **Search: hosted Tavily and Exa servers. On hold (user, 2026-10-05).**
+   - **For now:** keep Plus's own search server and its three tools as they
+     are.
+   - **Why:** for the same three tools, the hosted servers cost 528 more tokens
+     per request. Nearly all of it is Tavily search's parameters, which
+     Instructions cannot edit yet. Revisit after item 6; the findings below
+     stay for then.
+   - **Meanwhile:** items 4.1–4.5 limit the search processes, because a stopped
+     worker's folder unloads, and its search server goes with it.
    - **Why the change:** Plus ships its own search server
      (`packages/plus/src/search/`, about 300 lines). It calls the Tavily and Exa
      web APIs directly and offers three tools.
@@ -280,8 +288,7 @@ row; edit the row and see it in the sections.
 
 **Tests:**
 - An event for a dropped folder does not reopen it.
-- With the hosted search servers, no search process runs; search, extract and
-  code search answer, and other tools are off until switched on.
+- After `team_stop`, the worker's search server process is gone.
 - `team_stop` unloads the worker's folder.
 - No MCP process exists before the first message, and one exists after it.
 - `/refresh` and the tool reload a changed skill and report the cost.
@@ -393,10 +400,70 @@ same input always gives the same bytes, so they do not disturb the cache.
 4. After a compaction, the system text holds the change and the next message
    reads the new prefix.
 
+## 6. Tools: a Parameters section in each tool row
+
+**Why (user, 2026-10-05):** a tool reaches the model as its description *and*
+its parameters. Instructions shows and edits only the description, so the
+larger part is invisible and cannot be changed.
+- **Measured:**
+  - Hosted `tavily_search` has a 145-character description and a
+    2,913-character parameter schema.
+  - Plus's own `exa_code_search` has 225 and 991.
+- **Code Mode:** the parameters become the signature, 900 tokens for hosted
+  `tavily_search`.
+
+**What:**
+1. **A Parameters section** under every tool row (native, MCP and Code Mode).
+   It has one entry per parameter: name, type, required or not, and its
+   description.
+2. **Edit a parameter's description** like any text row; reset brings back the
+   tool's own.
+3. **Switch off an optional parameter:** the model no longer sees it, and the
+   tool uses its own default.
+   - A required parameter cannot be switched off.
+   - A call that still passes a hidden parameter is passed on unchanged. A
+     refusal would be extra machinery for a rare case; ask the user before
+     adding one.
+4. **Review:** when a tool changes a parameter's description or adds a
+   parameter, the row is marked for review, as descriptions are today.
+
+**Where it applies** (line numbers at `86054c38be`):
+- **Native tools:** Plus's `context` hook already receives each tool's JSON
+  schema (`plugin/src/effect/session.ts:43`, `{ description, input }`).
+  - Rewrite parameter descriptions there, next to the description override.
+  - Drop switched-off parameters there too.
+- **Code Mode:** the catalogue override replaces only `description` and
+  `pinned`. It passes `signature` through unchanged
+  (`core/src/codemode/catalog.ts:186-216`).
+  - The signature is rendered from the schema
+    (`codemode/src/tool-runtime.ts`, `describeTool`).
+  - So the schema must be overridden before rendering. Then the catalogue line
+    and `search()` results show the edited parameters.
+  - First check whether `ToolEditor.update` can change the schema at its
+    source. That would cover both forms at once.
+- **Cache:** a parameter edit changes a tool definition, so it follows item 5.
+  - An unchanged chat stays byte-identical.
+  - A native change applies at a rebuild moment.
+  - A Code Mode change goes through the catalogue update message.
+
+**Tests:**
+- An edited parameter description reaches the native definition and the
+  Code Mode line; reset brings back the tool's own.
+- A switched-off optional parameter is absent from both forms.
+- A required parameter refuses to be switched off.
+- With no edits, tool definitions are byte-identical to today.
+- A changed upstream parameter description marks the row for review.
+
+**Live** (on `claude-opus-5-5`):
+1. Edit one parameter description of `search_tavily_search`.
+2. Switch off its `include_domains` parameter.
+3. After a rebuild moment, the request's tool definition shows both changes.
+4. The next message reads the prefix from cache.
+
 ## Open questions for the user
 
 None. Settled on 2026-10-05:
 - "cache input" means cache writes (item 2).
 - A compaction and a model switch apply pending changes (item 5).
-- Search uses the hosted Tavily and Exa servers instead of Plus's own
-  (item 4.6).
+- Search stays on Plus's own server for now; the switch to hosted servers waits
+  for parameter rows (items 4.6 and 6).
