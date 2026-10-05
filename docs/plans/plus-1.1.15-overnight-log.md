@@ -561,3 +561,9 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Live `meta.schema=2`. v1→v2 migration, 90-day retention and idempotent writes are covered by `monitor-ledger` (10 pass).
   - Log: the one ERROR is the deliberate fable request. Child stopped.
 - 17:49: Instructions T8 delegated (T133, `w-87b53f7ed5c42025`, base `fc01edb5b8`). Remaining: Instructions T1 and T5, and Monitor T4.
+- **Instructions T4 swept: PASS on all four lines** (T132, landed as five evidence commits ending in the cherry-pick of `b8dfe0a`, with the A5 workaround in place).
+  - An activation for `build` moved the composer to the new model in about 0.9 s, in an open chat and in a new chat, with no restart.
+  - The next message ran on it (`/monitor` Steps `gemini…sh-high`).
+  - An activation overrode an earlier manual pick in a reopened chat in about 1.1 s, and a manual pick made after the activation held for that chat.
+  - Focused: `agent-model-refresh` 2 pass, `active-team` 13 pass. Log: 0 ERROR, 30 expected WARN. Child stopped.
+- #29 (note, open): `ctrl+x n` (`session.new`, upstream `packages/tui/src/app.tsx:726-745`, not changed in this release) copies the current composer model into the new chat. So a new chat opened from a chat holding a post-activation manual pick starts on that pick, not on the activation. T4's "a pick … wins for that chat" can be read as excluding this. Upstream behaviour, outside Plus; left for a decision in plus-1.1.16.
