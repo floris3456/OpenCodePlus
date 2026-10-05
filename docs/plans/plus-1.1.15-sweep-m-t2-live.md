@@ -123,6 +123,34 @@ tokens: 0`; `First diverging segment: system part base template`; evidence
 
 ### B4. prefix changed (certain), first diverging segment named
 
-Did: toggled a project instruction (the notes' recipe) and asked again.
+Did: observed the request right after a warming ping (the ping appends a private
+tail, then the next real step replaces it) and, separately, the first request of
+the chat (which had an option removed and instruction updates).
 
-PLACEHOLDER_B4
+- `16:35:47 step [HIT] prefix-changed 12.9k message 7...e) changed`; Detail
+  (`067e607d-c921-4eb5-9579-ab32f46abc19`): `[HIT] Cause: prefix-changed
+  (certain) · Expected prefix: 13.7k · Cache read: 12.9k · Miss tokens: 0`,
+  `First diverging segment: message 7 (message)`, evidence
+  `message 7 (message) changed`, and
+  `Expected reusable prefix: 13693 tokens (segment-size estimate); actual cache read: ...`.
+- `16:25:40 step [NONE] prefix-changed 0 option pr...l-guidance`; Detail
+  (`f8ed15c9-9721-47bb-ab96-0ff8f5067b9a`):
+  `[NONE] Cause: prefix-changed (certain) · Expected prefix: 0 · Cache read: 0`,
+  `First diverging segment: option prompt_cache_key`, evidence
+  `option prompt_cache_key removed; instruction update: core/environment,
+  core/date, core/codemode, core/instructions/home/bliss/opencodeplus/agents.[c]`.
+
+Both name the first diverging segment; the second also names the coinciding
+instruction update, exactly as the contract requires. Toggling an instruction row
+was attempted but the Project level shows no instruction-source row reachable in
+this build's Defaults/dev home (the instruction-update naming is shown live by
+the first request above), so the recipe was not needed.
+
+**PASS** (cause `prefix-changed`, confidence certain, first diverging segment
+named, instruction update named).
+
+### B5. cache expired (likely)
+
+Did: pending warming off + wait past the 5 m lifetime. Below.
+
+PLACEHOLDER_B5
