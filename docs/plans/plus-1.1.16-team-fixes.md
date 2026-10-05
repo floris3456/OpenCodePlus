@@ -494,9 +494,80 @@ instead of `plus-1.1.15_overnight`. It could not just switch folder.
 3. Move the chat to a `plus-1.1.16_<purpose>` worktree.
 4. Delegate and land one small task: it lands in the purpose worktree.
 
+## 8. A followup after a stop, and a nudge that arrives in time
+
+**Why (2026-10-05):** the residual orchestrator force-stopped T126 after 16
+minutes without an evidence file, though its screen showed progress. Its
+unsaved work was lost, and the task had to be briefed again in two parts. A
+nudge would have kept it going. He sent none because:
+- Plus refuses a followup from the parent that stopped the run (`E_STOPPED`,
+  `teams/api-followup.ts:121`), while `team_stop`'s description said "a
+  followup resumes it";
+- a followup to a working child waits for the end of the child's turn
+  (`followupQueue` puts it in the inbox, `onSessionIdle` delivers it).
+  - Of the 76 sent to working children since 2026-10-04 12:00Z, 56 arrived:
+    median 20 min, 17 within 10 min, 23 after more than 30 min, the last after
+    162 min.
+  - The other 20 never arrived, because the child was stopped first.
+
+The Simple team's rules changed the same day (Instructions revisions
+479–489):
+- nudge freely;
+- never stop a run to get a message through;
+- start a fresh run only for a Brief far too big or a confused worker;
+- workers ask early with `needs_context`.
+
+**Change (user):**
+1. **Plus knows whether a child's cache is still warm:** its warming window is
+   open, or its last request or warming ping is younger than the warming
+   interval (`WarmingStatus` `active`, `expires`, `lastWarm`, `interval` in
+   `packages/plus/src/rpc.ts`). If no warming is enabled for the child's model,
+   it always counts as warm.
+2. **A warm child takes a followup after a stop:** `E_STOPPED` applies only to
+   a cold child. A warm stopped child resumes like an idle one, with its
+   context and its cache.
+3. **A cold child compacts first:** `team_followup` gets `compactWith`, a model
+   (for now `cliproxyapi/deepseek-v4.1-flash-cheap`). On a cold stopped child:
+   - the chat compacts with that model through the `compaction.decide` hook,
+     the way a CPA account switch does (`quota/controller.ts` `decide` sets
+     `compact`, `portable` and `compactionModel`);
+   - then the child continues on its own model, with the followup as its next
+     message.
+
+   A followup to a cold stopped child without `compactWith` is refused, and
+   the refusal names the parameter. With item 2 this makes
+   `team_followup({ run, prompt?, budget?, reason?, compactWith? })`.
+4. **Rules follow:** the role's "team_stop is final" line and the `team_stop`
+   description change to "a followup after a stop needs `compactWith` once the
+   child is cold".
+
+**Proposed by the build seat, waiting for your OK:** deliver a followup to a
+working child at its next step, not at the end of its turn. Core already
+delivers a steered message at the next safe step boundary
+(`delivery: "steer"`, used for the quota notice in `quota/register.ts`). This
+would make a nudge reach a child that sits in one long turn within a minute.
+
+**Tests:**
+- Warm stopped child: the followup is admitted with no compaction, and the
+  next request reads the cache.
+- Cold stopped child with `compactWith`: exactly one compaction by that model,
+  then the next step runs on the child's own model with the followup last.
+- Cold stopped child without `compactWith`: refused, the message names the
+  parameter, and nothing reaches the child.
+- No warming for the child's model: it counts as warm.
+
+**Live:** one owned run on Flash-C-Worker.
+1. Stop it and send a followup at once: it goes on, with a cache hit.
+2. Stop another, wait until it is cold, and follow up with `compactWith`: the
+   monitor shows one compaction on `deepseek-v4.1-flash-cheap`, then the
+   child's next step on its own model.
+
 ## Open questions for the user
 
-None. Settled on 2026-10-05:
+- Item 8: should a followup to a working child arrive at its next step
+  (steered) instead of at the end of its turn?
+
+Settled on 2026-10-05:
 - "cache input" means cache writes (item 2).
 - A compaction and a model switch apply pending changes (item 5).
 - Search stays on Plus's own server for now; the switch to hosted servers waits
