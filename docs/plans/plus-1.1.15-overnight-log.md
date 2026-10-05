@@ -5,9 +5,9 @@
 - Branch/worktree: `plus-1.1.15_overnight`; initial HEAD `75a8d9e20f`.
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B3 review/issue repairs alongside B1/A1 acceptance; repair B2 page gaps (#7) before live acceptance.
-- Pending: A1/A2/B2 acceptance, #1/#6/#7/#8/#10/#13/#14/#15/#17 repairs, A4/A5/B4 and F. B1 complete; #16 external fallback availability is recorded. A3/A6/B6 source tests complete; B6 live is in the page acceptance.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; their source workers stopped. B1 fresh live T88 evidence landed `fe583672d8`, worker stopped. #1/#6/#15/#17 T82 (draft9c042ef57e), A1 evidence T86 (correcting83be5a5a2c), #7 T87 (draft3902b7cf1a), #8/#13 T89 (draftb55900bc52), #14 T90 running. None of these drafts landed. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
-- A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
+- Pending: A2/B2 acceptance, #1/#6/#7/#8/#10/#13/#14/#15/#17 repairs, T3 flat-row review gap#18, A4/A5/B4 and F. A1/B1 complete; #16 external fallback availability is recorded. A3/A6/B6 source tests complete; B6 live is in the page acceptance.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; their source workers stopped. B1 fresh live T88 evidence landed `fe583672d8`, A1 T86 evidence landed `c0fb032385`; both workers stopped. #1/#6/#15/#17 T82 (draft9c042ef57e), #7 T87 (draft3902b7cf1a), #8/#13 T89 (draftb55900bc52), #14 T90 running. None of these source drafts landed. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
+- A1 source landed `24a1a1115f`; owned live and source regressions accepted. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
 ## Decisions
@@ -17,6 +17,7 @@
 - 2026-10-05: Log did not exist at start; created before implementation. Existing prepared branches are inputs, not worktrees to change.
 - 2026-10-05 03:02 local: watchdog inspection found T83 had no commit or changed file for 35 minutes; stopped force and delegated fresh same-kind T87 at current HEAD. No provider failure reported, so Flash-C remains the only coder. Other runs had recent changes or started less than 30 minutes ago. T83 made no source/evidence changes and claimed no acceptance.
 - 2026-10-05 03:22 local: T84 had no new commit/file for over 30 minutes and no report; stopped force. Its read-only Brief could not checkpoint evidence (orchestrator scope mistake), so the fresh B1 run receives a scoped evidence document. Preserve its actual isolated ledger and partial observations; do not infer complete acceptance from counts.
+- 2026-10-05 04:52 local: start the independent T3 member-provider-use slice now that A1 acceptance frees a slot. A2's source merge `7ef9b0159f` is already landed; T3 activation/primary execution does not depend on T82's unlanded field-reset repair. Give it its own actual tool/API/provider proof and minimal flat-row diagnostics repair if reproduced; do not certify #1/#6/#17 or full A2 yet. Final sweep still reruns everything at one corrected HEAD. A4/A5 remain sequenced after relevant repairs land.
 
 ## Progress and verification
 
@@ -42,7 +43,7 @@
 - A6: inspect shell description and registration-count expectations before choosing test or code fix.
 - B6: inspect warming test-harness failure; preserve `/tools`, extend `/monitor` checks after B2.
 
-### A1 — source reviewed/landed, live T86 running
+### A1 — complete (source regressions and owned live verified)
 
 - Input `team/Flash-Implementer/t58b343-20261004-1306` merges cleanly. Reviewed all source/docs/test additions: file/member/team API paths, record rewrites, tools/RPC, rename selection/help.
 - Reproduced known ancestor refusal failure: rename test **5 pass / 1 fail** (`legacy` called built-in rather than ancestor). Actual cause is #5, not refusal order.
@@ -130,6 +131,7 @@
 - Files: `packages/plus/src/instructions/discover.ts`.
 - Decision/fix: remove the `current === globalParent` stop; the actual global directory exclusion and realpath/symlink checks still prevent treating global files as project files. This matches V2 upward discovery to filesystem root.
 - Focused proof passed within A1's 185-test check, including refusal and symlink controls; Plus typecheck passes. Live A1 ancestor refusal in isolated home still pending.
+- Final T86 evidence diff reviewed and landed `c0fb032385`; run stopped immediately. Parent rename regression **6 pass/49expects**, Plus typecheck passes at landed HEAD. All renamable owner kinds, file/record/selection/history follow, palette and real tool paths, no-write collision/validation/refusal controls, wide and narrow surfaces observed. Final evidence distinguishes parent source member-split proof from old fixture tests. ShippedDefaults refusal remains honestly unit-covered because production has no such shipped row; no fabricated live fixture. Known external #16 remains open; all owned runtimes independently confirmed gone above. A1 complete, final combined-head sweep still required.
 - T86 attempt1 reported `done_with_concerns` at `afb108803d`: real R/palette/tools rename, all Project/Global owner kinds, classes/delegate/warming/enablement, no-write validation/collision/refusals and immutable history evidence. Current attempt2 handles queued sanitation/corrections; not landed yet. Remove all environment-variable/environ descriptions and inaccurate claim that the plan requires them; use exact owned cwd/fd/log/kernel absence. Member split is unit-only and needs an exact assertion or tiny live followup; shippedDefaults registry absent live, actual preset refusal + injected real implementation tests are distinguished. Source tests6pass/Plus-typecheck reported, not parent re-run yet.
 - Parent found the claimed existing member-split unit coverage was inaccurate: `rename.test.ts` member fixture seeded only customization/model/rule/link. Small test adjustment now seeds the real team-scoped split plus warming/interval/prompt, asserts moved split boundaries and unchanged keep-alive fields through actual `renameAgent`. **6 pass/49expects**, Plus typecheck passes; no production edit. Existing fixture `plus permission hook not installed` warnings remain and are not live rename errors. T86 notified to distinguish this NEW parent regression from its earlier HEAD, or close the live member-split gap.
 - T86 corrected evidence `83be5a5a2c` personally reviewed: exact owned cwd/fd/maps paths; separate real rename over seeded valid records; live member-split and narrow built-in refusal now closed; #16 correctly actual HTTP400 relay rejection, not host/variant/mis-pick dismissal. Attempt4 only corrects old-vs-new parent unit-coverage provenance. Parent independently confirms ALL15 listed test PIDs absent, no cwd/fd/maps in exact A1 home; final actual log1542INFO/49WARN/1ERROR, zero non-refusal warnings. One ERROR is #16, no unexplained rename error. ShippedDefaults live registry is absent; injected actual implementation refusal controls remain unit-covered. Wait final report/clean doc before landing, then stop T86.
@@ -230,6 +232,12 @@
 - T82 live iteration changed `InstructionsRoute` rename binding `shift+r,R` to `shift+r` and added route regression. Parent confirmed installed `@opentui/keymap` normalizes bare binding token names by trim/toLowerCase; bare `R` is consequently another unshifted `r`, not a Shift+R alias. This can win over field reset's `r`, breaking T7 key behavior despite correct reset API.
 - Weight: real T6/T7 routing collision, separate from #6 field-resolution semantics. T6 Shift+R remains the right rename key; help may display R, but binding must explicitly carry shift.
 - Plan: retain explicit `shift+r` only, real-key regression proves lowercase reset and shifted rename both work, including live field reset at80/160. T82 owns fix and live; T90 category route worker notified to preserve the one-line overlap. No source acceptance yet.
+
+### #18 — T3 member-only flat-row activation proof is incomplete (open review gap)
+
+- Parent source re-review: `model.test.ts` case labelled tool activation uses `activateModelRow` on a **member** row, then proves its flat stored record reaches the member chain. It does not actually call the tool on the plan's flat `model:global:Planner:…` row. Current lazy tree exposes `item:global:Basic/:Planner:model:…`; generic tool unknown-row path only says Unknown row, with no member-id guidance. No actual next-provider-request evidence exists yet.
+- Weight: missing T3 evidence case/diagnostic coverage, not yet a demonstrated primary model-routing failure. Either flat activation takes effect or refusal must name the member row to use, consistently documented; a stale id is not a license to silently claim the case proved.
+- Plan: independent worker reproduces actual tool set/create/flat/member ids against a Global Basic team whose Planner exists only as a member. Add actual-boundary no-write/refusal or applied-model proof, repair minimal diagnostic if necessary, prove active:true and bare set then the real next primary request's model/agent through owned live metadata/Monitor ledger. Preserve T82 reset/owner guards and all primary/warming identity. Scope separate new test/evidence; no full A2 acceptance claim until both slices pass.
 
 ## Live evidence
 
