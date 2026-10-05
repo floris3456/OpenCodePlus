@@ -39,8 +39,9 @@ Path shorthand used below (both are exact absolute paths):
       tool actor, collision. Shipped Defaults team/member refusal is
       **unit-only** at this HEAD (see D1) because no Defaults team ships.
 - [x] Cleanup with kernel proof (cwd/fd and final owned-PID absence).
-- [x] `bun test test/rename.test.ts` 6 pass / 0 fail; `bun typecheck` in
-      `packages/plus` passes.
+- [x] `bun test test/rename.test.ts` at my HEAD 6 pass / 0 fail (47 expects);
+      `bun typecheck` in `packages/plus` passes. Parent's member-split
+      boundary proof is `8cfe8f149b` (49 expects), not in my HEAD.
 
 ## Fixtures vs real actions
 
@@ -69,8 +70,17 @@ direct append skipped that.
 - Spawned `pilotty spawn --name overnight-a1-live-retry opencodeplus-dev .`
   from this worktree. PTY session id `d245882b-751e-4de4-901d-981624cffea4`.
 - Terminal resized 160×48 for wide passes (also 80×24 later).
-- Unit baseline at this HEAD: `bun test test/rename.test.ts` from
-  `packages/plus` → **6 pass / 0 fail, 47 expect() calls**.
+- Unit baseline at **my** HEAD (`83be5a5`, which does **not** contain the
+  parent's later `8cfe8f149b`): `bun test test/rename.test.ts` from
+  `packages/plus` → **6 pass / 0 fail, 47 expect() calls**. This baseline's
+  member test seeds only customization/model/rule/link — it does **not** seed
+  a member `split`, so it does not by itself cover the member-split case.
+- Parent boundary regression at `8cfe8f149b` (not in my HEAD): the member test
+  now seeds a team-scoped `split` plus `warming`/`interval`/`prompt` and
+  asserts the moved set is
+  `["customization","link","model","rule","split"]`, the split `boundaries`
+  and the warming fields, at **6 pass / 49 expect() calls**. That is the
+  source-level member-split proof; I did not run it in my worktree.
 - **Real action** — created a Project user agent through the UI create flow
   (`a` → name `ren-a1` → preset `Build`), then renamed it with `R`:
   - Prompt prefilled exactly the row's current id (`Rename ren-a1`, value
@@ -244,7 +254,8 @@ actions**; records are labelled fixtures.
 - **Member `split` record follows (real rename over a fixture split)**: a
   fixture `split` record for member `m1z`; team rename `squad2` → `squadx`
   moved its `team.team`; member rename `m1z` → `m1w` moved its `agent`; the
-  member file moved too.
+  member file moved too. This is my live member-split evidence; the source
+  regression for the same case is the parent's `8cfe8f149b` (see below).
 - **Global agent records follow**: a **fixture** set (customization, model,
   rule) for `g-a2`, then **real rename** `g-a2` → `g-a4`: all three records
   moved to `agent:"g-a4"`; `config/opencode/agents/g-a2.md` → `g-a4.md`; log
@@ -267,7 +278,7 @@ actions**; records are labelled fixtures.
 | Renamable: Project/Global teams | live: `crew`→`squad`→`squad2`→`squad3`→`squadx` (project), `gcrew`→`gcrew2` (global) |
 | Collision: choose another free key, update help/hints | live refusals `Agent m2 already exists …` and `Team squad2 already exists`; no writes; `R rename` hint in wide and narrow footers |
 | File/team directory follows | live: agent `.md` and team dir moved in every run |
-| Customizations, splits, models, rules, links follow | live: agent set incl. agent `split`; member set incl. a live member `split` (real rename over a fixture split, run 3); global agent + global member sets. Unit proofs: `test/rename.test.ts` "rename an agent moves its file and records of every kind and keeps resolution" asserts `["customization","link","model","rule","split"]`; "rename a member moves its records and the Delegate-to rows that name it" asserts `["customization","link","model","rule"]` for the member |
+| Customizations, splits, models, rules, links follow | live: agent set incl. agent `split`; member set incl. a live member `split` (real rename over a fixture split, run 3, and a team rename moving the split's `team.team`); global agent + global member sets. Unit proofs: `test/rename.test.ts` "rename an agent moves its file and records of every kind and keeps resolution" asserts `["customization","link","model","rule","split"]`; the member-split assertion is the parent's `8cfe8f149b` (member test now asserts `["customization","link","model","rule","split"]`, split `boundaries`, and warming/interval/prompt, 49 expects) — not in my HEAD |
 | Warming rows follow | live: `m1y`→`m1z` kept warming/interval/prompt |
 | `team_delegate` "Delegate to" rows follow | live: `to.m1`→`to.m1x`→`to.m1y`→`to.m1z`→`to.m1w` |
 | Team-scoped records + team enablement follow | live: enablement record and every scoped row followed team renames; enable toggle is real |
@@ -336,12 +347,20 @@ After exiting each run through the palette `exit`:
 - **D2 — narrow refusal toast: closed.** A small owned followup run captured
   the built-in refusal at 80×24:
   `Agent explore is built in and cannot be renamed`. No deferral remains.
+- **D4 — member `split` coverage.** Live: closed in my run 3 over a fixture
+  split (team rename `squad2`→`squadx` moved the split's `team.team`; member
+  rename `m1z`→`m1w` moved its `agent`). Source: my HEAD's member test
+  (47 expects) seeds only customization/model/rule/link and does **not** cover
+  the member split; the source regression is the parent's `8cfe8f149b`
+  (member test now seeds a team-scoped split plus warming and asserts the
+  moved set, split boundaries and warming fields, 49 expects). No remaining
+  live deferral; the final sweep re-runs the case at the parent HEAD.
 - **D3 — `cliproxyapi/claude-fable-5-1` relay rejection (open operational
   finding, parent logs it).** One `level=ERROR`; a genuine release-provided
   catalog model with a real wire request (owned ledger row
   `0d434120-52eb-4cb1-8e8b-a85a378c0fe6`, `provider.invalid-request` HTTP 400,
   hash `0dd35a2328c29e26`) was rejected by the CLIProxyAPI relay. Not a T6
-  defect and not fixable from this worktree (provider config / shared relay).
+  defect and not fixable from this worktree (provider config / relay).
   Correcting the composer to `cliproxyapi/deepseek-v4.1-flash-cheap` completed
   every subsequent request.
 - **Note — no source edits.** This run only created
