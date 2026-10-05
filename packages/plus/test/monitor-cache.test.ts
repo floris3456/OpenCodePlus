@@ -427,6 +427,119 @@ test("mixed v1 steps and recorded requests keep legacy usage without double-coun
   expect(report.totals).toMatchObject({ steps: 2, requests: 1, input: 3100, cacheRead: 900, output: 120, cost: 0.51 })
 })
 
+// Issue #3: an in-place update of an existing request row (completion, a
+// corrected final wire fingerprint, a kind relabel) keeps the row id and the
+// fact timestamps, so the analysis cache must key on the ledger write revision.
+test("in-place request completion invalidates the cached query-time analysis", async () => {
+  const db = await ledger()
+  const named = [
+    { name: "base", text: "base".repeat(1600) },
+    { name: "AGENTS.md", text: "rules" },
+  ]
+  request(db, "completion", "warm", 1000)
+  db.requestStarted({
+    id: "open",
+    sessionID: "completion",
+    messageID: "open",
+    started: 2000,
+    kind: "step",
+    provider: "openai",
+    model: "gpt-4o",
+    agent: "build",
+  })
+  db.requestFingerprint({
+    requestID: "open",
+    sessionID: "completion",
+    created: 2000,
+    ...fingerprintWireBody(body({ append: true }), { namedSystemParts: named }),
+  })
+
+  const read = () =>
+    queryMonitor(db, { scope: "session", sessionID: "completion", view: "cache", id: "open" }, { now: 3000 })
+  const openRow = read().requests?.find((r) => r.id === "open")
+  expect(openRow).toMatchObject({ input: 0, cacheRead: 0, verdict: "miss" })
+  // A second poll with no write still reads the cached analysis.
+  expect(read().requests?.find((r) => r.id === "open")).toEqual(openRow)
+
+  db.requestEnded("open", {
+    ended: 2100,
+    status: "completed",
+    usage: { input: 400, output: 100, reasoning: 10, cacheRead: 3600, cacheWrite: 0, cost: 0.01 },
+  })
+
+  const done = read()
+  expect(done.requests?.find((r) => r.id === "open")).toMatchObject({ input: 400, cacheRead: 3600, verdict: "hit" })
+  expect(done.totals).toMatchObject({ requests: 2, input: 3400, cacheRead: 3600 })
+})
+
+test("a corrected final wire fingerprint changes evidence without changing the request or fact count", async () => {
+  const db = await ledger()
+  request(db, "final", "a", 1000)
+  db.requestStarted({
+    id: "b",
+    sessionID: "final",
+    messageID: "b",
+    started: 2000,
+    kind: "step",
+    provider: "openai",
+    model: "gpt-4o",
+    agent: "build",
+  })
+  db.requestFingerprint({
+    requestID: "b",
+    sessionID: "final",
+    created: 2000,
+    ...fingerprintWireBody(body({ system: "first rules" })),
+  })
+  db.requestEnded("b", {
+    ended: 2100,
+    status: "completed",
+    usage: { input: 3000, output: 100, reasoning: 10, cacheRead: 2000, cacheWrite: 1000, cost: 0.01 },
+  })
+
+  const read = () => queryMonitor(db, { scope: "session", sessionID: "final", view: "cache", id: "b" }, { now: 3000 })
+  const before = read().requests?.find((r) => r.id === "b")
+  expect(before?.cause).toBe("prefix-changed")
+
+  // The final wire body corrects the earlier draft: the prefix is unchanged.
+  db.requestFingerprint({
+    requestID: "b",
+    sessionID: "final",
+    created: 2000,
+    ...fingerprintWireBody(body({ append: true }), {
+      namedSystemParts: [
+        { name: "base", text: "base".repeat(1600) },
+        { name: "AGENTS.md", text: "rules" },
+      ],
+    }),
+  })
+
+  const after = read()
+  const afterRow = after.requests?.find((r) => r.id === "b")
+  expect(after.requests?.length).toBe(2)
+  expect(db.getContextFacts("final").length).toBe(0)
+  expect(afterRow?.cause).not.toBe("prefix-changed")
+  expect(afterRow?.evidence).not.toBe(before?.evidence)
+  expect(afterRow?.verdict).toBe("partial")
+})
+
+test("relabelling a generate request to ping invalidates its kind and the ping counts", async () => {
+  const db = await ledger()
+  request(db, "relabel", "real", 1000)
+  request(db, "relabel", "g", 2000, { kind: "generate", read: 0, write: 1000 })
+
+  const before = queryMonitor(db, { scope: "session", sessionID: "relabel", view: "cache" }, { now: 3000 })
+  expect(before.requests?.find((r) => r.id === "g")?.kind).toBe("generate")
+  expect(before.pings?.sent).toBe(0)
+
+  db.relabelLatestRequest("relabel", "generate", "ping")
+
+  const after = queryMonitor(db, { scope: "session", sessionID: "relabel", view: "cache" }, { now: 3000 })
+  expect(after.requests?.find((r) => r.id === "g")?.kind).toBe("ping")
+  expect(after.pings?.sent).toBe(1)
+  expect(after.totals.requests).toBe(2)
+})
+
 test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message prefixes", async () => {
   const db = await ledger()
   const rawDb = db.db

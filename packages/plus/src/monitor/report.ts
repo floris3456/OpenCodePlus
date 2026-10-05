@@ -28,10 +28,7 @@ interface LegacyStep {
 }
 
 interface CachedSessionAnalysis {
-  readonly lastRequestId: string | undefined
-  readonly rowsCount: number
-  readonly lastFactAt: number | undefined
-  readonly factsCount: number
+  readonly revision: number
   readonly analysis: ReturnType<typeof analyzeSession>
 }
 
@@ -44,28 +41,15 @@ function getSessionAnalysis(ledger: Ledger, id: string, rows: readonly RequestRo
     sessionAnalysisCache.set(ledger, cache)
   }
 
-  const lastReq = rows.at(-1)
-  const lastFact = facts.at(-1)
+  // The analysis folds in-place facts (request completion, a corrected final
+  // wire fingerprint, a kind relabel) that leave row ids and fact timestamps
+  // unchanged. Key on the ledger's write revision so none of them is masked.
+  const revision = ledger.revision()
   const cached = cache.get(id)
-
-  if (
-    cached &&
-    cached.lastRequestId === lastReq?.id &&
-    cached.rowsCount === rows.length &&
-    cached.lastFactAt === lastFact?.at &&
-    cached.factsCount === facts.length
-  ) {
-    return cached.analysis
-  }
+  if (cached && cached.revision === revision) return cached.analysis
 
   const analysis = analyzeSession(ledger, rows, facts)
-  cache.set(id, {
-    lastRequestId: lastReq?.id,
-    rowsCount: rows.length,
-    lastFactAt: lastFact?.at,
-    factsCount: facts.length,
-    analysis,
-  })
+  cache.set(id, { revision, analysis })
   return analysis
 }
 

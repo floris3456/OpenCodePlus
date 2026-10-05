@@ -409,6 +409,12 @@ export interface Ledger {
   mark(label: string, at: number): number
   prune(before: number): void
   close(): void
+  /**
+   * Monotonic counter of every write through this handle. Query-time analysis
+   * caches key on it so an in-place update (request completion, a corrected
+   * final wire fingerprint, a kind relabel) invalidates stale reads.
+   */
+  revision(): number
   requestStarted(req: RequestStart): void
   requestEnded(id: string, end: RequestEnd): void
   requestFingerprint(fp: RequestFingerprintData): void
@@ -575,6 +581,10 @@ export function createLedger(file: string): Ledger {
   const findContextFacts = db.query<Record<string, unknown>, [string]>(
     "select * from context_fact where session_id = ? order by at asc",
   )
+  // SQLite's own change counter for this connection: every write through any
+  // statement (including the rollup triggers and the few direct writes outside
+  // this module) advances it. Query-time caches key on it.
+  const totalChanges = db.query<{ n: number }, []>("select total_changes() as n")
 
   const writeCallTokens = db.transaction((updates: readonly CallTokens[]) => {
     updates.forEach((update) =>
@@ -751,6 +761,7 @@ export function createLedger(file: string): Ledger {
     },
     getFingerprints: (sessionID) => findSessionFingerprints.all(sessionID).map(toFingerprintData),
     getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
+    revision: () => totalChanges.get()?.n ?? 0,
     close: () => {
       open.delete(file)
       db.close()
