@@ -161,7 +161,56 @@ row, an agent preset, a member preset, and a real Global team member.
 used. The next request of that agent (stand-alone or team member) runs with it,
 the inspector shows it active/effective, and `show` reports it.
 
-_Pending live run._
+### Result: PASS (tool actor `set`, real use by the `build` agent)
+
+All tool calls below were made by the chat's model (`build`) through the real
+Code Mode `instructions.*` namespace; the log actor is `tool/agent build`.
+
+**Activation through `set`.**
+
+- Prompted: *call `tools.instructions.set` with id
+  `item:global:general:model:cliproxyapi/deepseek-v4.1-flash-cheap@max` and
+  active true*. Transcript result:
+  `{"id":"item:global:general:model:cliproxyapi/deepseek-v4.1-flash-cheap@max",
+  "status":"Activated \"cliproxyapi/deepseek-v4.1-flash-cheap@max\"",
+  "revision":0,"globalRevision":492}`. Store line 231 gained `"active":true`
+  with `"basedOn":"cliproxyapi/gpt-6.1-sol"` and the previous active
+  `claude-opus-5-5` (line 218) lost `active`. Log:
+  `mutate 2 rows (global): model:global:general:cliproxyapi/claude-opus-5-5,
+  model:global:general:…deepseek-v4.1-flash-cheap@max`, revision **492**, one
+  line.
+- The agent is `build`; `set` on `build`'s own rows was also driven. Prompted
+  create `gpt-6-luna` then `set` id `item:global:build:model:cliproxyapi/
+  gpt-6-luna` active true. Transcript:
+  `{"id":"item:global:build:model:cliproxyapi/gpt-6-luna","status":
+  "Activated \"cliproxyapi/gpt-6-luna\"","revision":0,"globalRevision":495}`
+  and `instructions.list where=agent:build item:model` → `gpt-6-luna: active`,
+  `gpt-6.1-sol: inactive`. Store: line 240 `gpt-6-luna active:true
+  basedOn:"cliproxyapi/claude-opus-5-5@xhigh"`; line 244 `gpt-6.1-sol` no
+  active. Logs: `model.add` revision 494 and
+  `mutate 2 rows (global): …gpt-6-luna, …gpt-6.1-sol` revision **495**, both
+  actor tool/build.
+
+**The composer reflects it.** After that `set`, the composer model line read
+`Build · gpt-6-luna CLIProxyAPI` (no manual pick). It had read
+`Build · claude-opus-5-5 CLIProxyAPI · high` before activation.
+
+**The next request really ran on it.** Sent `Reply with exactly: PONG. Use no
+tools.`; reply `PONG.` rendered under `Build · gpt-6-luna · 1.3s · 5.4 tok/s`.
+`/monitor` → `5 Steps` shows the new step at `17:07:22  step  gpt-6-luna  924
+9.7k  0  7  $0.00  1.3s  stop`. So the request's row carried
+model `gpt-6-luna`, not the previous `claude-opus-5-5`.
+
+**`show` reports it.** The same transcript: `instructions.show
+[id=item:global:build:model:cliproxyapi/gpt-6-luna]` returned
+`"assembled":"cliproxyapi/gpt-6-luna"`, `"enabled":true`, `"from":"set here"`.
+The inspector in the Instructions TUI likewise marked the row
+`active ◆` / `source  active model: set here (Global)` in line 1.
+
+**Line 2 result: PASS.** Tool `set` (and tool `create kind:"model"`) from the
+real tool actor activated the row; the composer switched with no manual pick;
+the very next request was served by the activated model (`/monitor` Steps); and
+`show`/`list` report the row active.
 
 ## Line 3 — Flat `model:global:Planner:…` member-only case
 
