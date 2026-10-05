@@ -114,3 +114,59 @@ that chat until the agent's model changes again — which Line 2 then exercised
 
 **Result: PASS** — a composer pick made after the activation wins for that
 chat.
+
+## Focused tests (supplementary)
+
+Run from this worktree at this HEAD:
+
+- `packages/tui`: `bun test test/agent-model-refresh.test.tsx` → **2 pass / 0
+  fail, 9 expect() calls**. Test names:
+  `an agent model change replaces the new-session pick for that agent` and
+  `an agent model change replaces the per-session pick for that agent` — these
+  cover exactly Line 1 (new chat / open chat) and Line 3 (an activation
+  replaces the remembered pick).
+- `packages/plus`: `bun test test/active-team.test.tsx` → **13 pass / 0 fail,
+  97 expect() calls**, including
+  `an instructions change re-syncs the core agent list so the composer can
+  follow a new model` and
+  `enabling a team from the server side activates it and selects its first
+  installed member; a later normal-agent pick sticks` — the latter covers
+  Line 4 (a later pick sticks).
+
+(The tests emit `plus permission hook not installed` WARNs to the test
+process's own stdout; they are unrelated to the sweep and are not server-log
+lines.)
+
+## Server log — every ERROR and WARN line
+
+`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **178 lines**,
+**0 `level=ERROR`**, **6 `level=WARN`** — every WARN is the expected
+`executor-controlled plugin source refused` refusal control, and there is no
+other WARN text:
+
+```
+timestamp=2026-10-05T15:32:58.053Z level=WARN run=6ee61aa9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=117 role=server
+timestamp=2026-10-05T15:32:58.053Z level=WARN run=6ee61aa9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=117 role=server
+timestamp=2026-10-05T15:32:59.537Z level=WARN run=6ee61aa9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=52 role=server
+timestamp=2026-10-05T15:32:59.537Z level=WARN run=6ee61aa9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=52 role=server
+timestamp=2026-10-05T15:32:59.537Z level=WARN run=6ee61aa9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t132c0ec-20261005-1731/.opencode/opencode.jsonc type=document http.span=52 role=server
+timestamp=2026-10-05T15:32:59.537Z level=WARN run=6ee61aa9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t132c0ec-20261005-1731/.opencode type=directory http.span=52 role=server
+```
+
+`run=6ee61aa9` is the single standalone server the TUI started on first start.
+
+## Result
+
+All four end-state lines verified **PASS** against this worktree's own build:
+
+1. **PASS** — activating `deepseek-v4.1-flash-cheap` for `build` in Instructions
+   moved the composer within ~0.9 s in the open chat and in a new chat, no
+   restart.
+2. **PASS** — the next message with `build` was served by the activated model
+   (`/monitor [5 Steps]` step row `deepse…h-cheap`, reply footer
+   `deepseek-v4.1-flash-cheap`).
+3. **PASS** — the activation overrode the earlier manual
+   `claude-opus-5-5@xhigh` pick within ~1.2 s.
+4. **PASS** — a manual pick made after the activation stayed for that chat.
+
+No source file was changed; only this evidence file.
