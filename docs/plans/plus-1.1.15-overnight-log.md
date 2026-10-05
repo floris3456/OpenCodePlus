@@ -6,7 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B3 review/issue repairs alongside B1/A1 acceptance; repair B2 page gaps (#7) before live acceptance.
 - Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`; T79/T80 stopped. B1 live T84, #1/#6 T82, #9 privacy T85, A1 live T86 and #7 fresh T87 running. A3/A6/B6 tests landed and stopped.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`; T79/T80 stopped. B1 fresh live T88, #1/#6/#15 T82, #9 privacy receipt T85, A1 live T86 and #7 fresh T87 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -30,6 +30,7 @@
 - Live acceptance pending: short warming, two messages, three pings, usage and stable warming status, cache read on next message.
 - #2 repair reviewed and landed `de7c1952bf`: transport-only kind override preserves primary content hooks and labels model/HTTP/WS as generate. Core real HTTP middleware and Plus real hook regressions prove one completed fingerprinted row, warming relabel in place, pinned identities, hashed failure and unrelated-step refusal. Parent core five files **46 pass**, Plus requests **18 pass**, core/plugin/plus typechecks pass. T79 stopped; T84 `w-524a6a474852446e` live report running at this HEAD.
 - Runtime evidence decision: the private source server actually opens `opencode-local.log` (kernel fd proof from T81), not necessarily the plan's `opencode.log`; live workers notified to read the actual file(s), never treat the missing alternate filename as no errors.
+- Fresh B1 live T88 `w-b9c40c8bc0aa8b1d` at `89a86fac9a`; evidence-only scope `docs/plans/plus-1.1.15-b1-live.md`, owned PTY `overnight-b1-live-retry`. T84 stopped, partial facts/cleanup below; full two-message/three-ping/stable-status/next-read sequence still required.
 
 ### A3/A6/B6 — pending independent repairs
 
@@ -160,6 +161,7 @@
 - T85 `w-c7c1ed13b4ed9214` repairing privacy from `339c6e2f36`; owns collector/attribution/ledger and non-cache Monitor tests, not page/query/report or Instructions. Also reconciles stale monitor-plugin hook fixture warnings without weakening failure controls.
 - Early T85 diff correctly hashes call errors at the persistence boundary and removes arbitrary inner-argument attribution. Proposed program-arity check still retains `git fictional_private_payload_sentinel`; requested recognized-subcommand-only control. Also require lowercase echo sentinel (uppercase alone would not discriminate old regex). No final verdict/landing yet.
 - T85 attempt 1 reported source `44970b598a` and README `f130f6cf2d`, green focused checks and isolated failed-tool/search privacy evidence; queued correction is now attempt 2 working, so not landed/stopped yet. Its report identified four existing `tools.test.ts` failures; parent reproduced and recorded #15 rather than ignoring them.
+- T85 attempt 2 source correction `77eeb9397b` personally read: explicit known subcommands, lowercase arbitrary git/echo refusal assertions over every table, useful git diff/push and bun test controls, updated README. Reported focused checks/live lowercase controls pass. Receipt followup is attempt 3 working (exact log/owned cleanup proof and allowed-path vs content-sentinel distinction), still not landed.
 
 ### #10 — navigation still reads the provider catalogue through base classification (open)
 
