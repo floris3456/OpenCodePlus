@@ -251,6 +251,12 @@
 - Plan: independent worker reproduces actual tool set/create/flat/member ids against a Global Basic team whose Planner exists only as a member. Add actual-boundary no-write/refusal or applied-model proof, repair minimal diagnostic if necessary, prove active:true and bare set then the real next primary request's model/agent through owned live metadata/Monitor ledger. Preserve T82 reset/owner guards and all primary/warming identity. Scope separate new test/evidence; no full A2 acceptance claim until both slices pass.
 - T91 `w-575a8867c4a6e3f3` started at `b342d05c19`: actual tool/API regression in NEW `member-model-activation.test.ts`, evidence `plus-1.1.15-member-model-live.md`, owned PTY `overnight-member-model`. T82 notified of separate Tools diagnostic boundary. Parent corrected one Brief interface typo (`test/fixture.ts` absent; actual shared fixture `test/harness.ts`) promptly; no permission bypass or test weakening.
 
+### #19 — Monitor detail renders unavailable timings and diffs as known facts (open)
+
+- Parent source review at actual page boundary: Cache detail uses `formatMs(d.timing.lifetimeMs ?? 0)` and `gapMs ?? 0`, so DeepSeek's deliberately unknown lifetime becomes **0ms** and a first request's absent gap becomes0ms. Steps uses `durationMs ?? 0` for an unfinished/missing duration. Its empty-segment fallback says **Prefix is identical to previous request** even when there is no previous request or no fingerprint evidence. The schema intentionally omits unknown optional fields, so none of those claims follows from the input.
+- Weight: T2 honest unknown evidence and T3 detail/metrics correctness; not a provider failure or a request-ledger content issue.
+- Plan: minimal existing Cache/Steps render fixes in T87's UI scope: explicit labelled unknown/— for absent timings (retain actual zero); empty diff describes only what is recorded, not proven identity. Production render controls for first/no-fingerprint/known-zero/positive/unknown-TTL detail at80/160, and owned cheap-model detail re-check. No new durable fact or RPC schema required. T89 keeps backend omission/lifetime evidence; final sweep repeats real detail.
+
 ## Live evidence
 
 - T81 had no commit or changed worktree file for 35 minutes and no report: stopped force per watchdog, not accepted as complete. Its named PTY was in a rename dialog at 160×48 (no busy indicator); owned SQLite showed one idle session, no compaction and 12 completed/zero unfinished requests. Kernel cwd/fds established owned test PIDs 2623601/2623736 and isolated log/database paths. Parent exited via palette; PTY exit 0, `/proc` confirms both PIDs gone. `pilotty kill` then reports SESSION_EXITED. Partial evidence retained in the old dev home, no source/state deletion. A fresh A1 acceptance run is required; no end-state claim from incomplete evidence.
@@ -258,4 +264,4 @@
 
 ## Open findings for morning
 
-Issues #1/#6/#7/#8/#10/#13/#14/#15/#17/#18 and the acceptance/gates above remain pending. #16 is an external relay availability finding. Final sweep has not run; no final acceptance claim.
+Issues #1/#6/#7/#8/#10/#13/#14/#15/#17/#18/#19 and the acceptance/gates above remain pending. #16 is an external relay availability finding. Final sweep has not run; no final acceptance claim.
