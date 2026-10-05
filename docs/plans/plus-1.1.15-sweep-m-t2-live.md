@@ -47,3 +47,30 @@ Screen (`/monitor` Cache at 80×24): `16:25:40 step [NONE] prefix-changed 0`;
 
 **PASS** (all five verdicts; hit / miss / none / cold shown live, partial by the
 named focused test).
+
+### A2. Expected reusable prefix, and the miss / partial thresholds
+
+Did: read the second and third request's Cache Detail in the same chat.
+
+- Second request (`16:28:10`, `4bfc60bf-5719-430d-b9fd-3d39c59a3595`) Detail:
+  `Cause: unknown (unknown) · Expected prefix: 12.9k · Cache read: 5k · Miss
+  tokens: 7.8k`, evidence
+  `Reusable prefix unchanged, within cache lifetime; provider-side eviction or routing`,
+  expected-line `12889 tokens (previous real prompt usage)`, actual cache read
+  `5000`. Verdict `[MISS]` because expected 12889 ≥ 1024 and read 5000 < 6444
+  (50 %).
+- Third request (`16:31:29`, `1804a187-d3ba-45f7-8ee2-2e952d31cda8`) Detail:
+  `Cause: none (certain) · Expected prefix: 12.9k · Cache read: 12.9k · Miss
+  tokens: 0`, evidence `Cache read 12885; expected reusable prefix 12889 tokens`
+  and `Expected reusable prefix: 12889 tokens (previous real prompt usage);
+  actual cache read: 12885`. Verdict `[HIT]` (read ≥ 90 %).
+- The measured-from-real-prompt-tokens path is the one exercised: a pure append
+  of the previous request of the same session/provider/model, so expected is
+  `previous real prompt usage`. The segment-size-estimate path (changed prefix)
+  and the exact 1024 / 50 % / 90 % boundaries are covered by
+  `test/monitor-cache.test.ts` "append uses measured prompt tokens; changed
+  prefixes estimate segments; thresholds are exact": read 1999 → `miss`,
+  2000 → `partial`, 3600 → `hit`, all with `expected: 4000`; a changed system
+  part estimates `expected` 2560. `bun test test/monitor-cache.test.ts`: 14 pass.
+
+**PASS**.
