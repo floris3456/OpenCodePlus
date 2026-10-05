@@ -214,6 +214,7 @@
 - Where: `packages/plus/src/tui/instructions/route.tsx:1028–1033` and its key handling; category add also needs live verification in Models where the direct add path may bypass the generic Category choice.
 - Plan: only an explicit category header targets category deletion; other rows retain their original delete path. Real route/key regression and live category/model delete plus header delete/refusal control, at 80/160; include T8 move/reset/edit preservation and help/hints.
 - Fresh T90 `w-5ee4faa735c62d4b` started at `89476bd21c` for #14 route/dialog/help/workspace plus NEW actual-key category route regression and owned80/160 acceptance. No backend/model-field edits; T82 notified of boundary. Requires explicit category-header delete reachability and Category choice from Models list without restoring whole-row editor. No sixth child.
+- 2026-10-05 04:57 local watchdog: T90 still clean, no new commit/source/evidence and **no changed file within30min** (including initial setup files); stoppedforce. No provider/quota error reported, so replace with same kind Flash-C. Named `overnight-category-routing` PTY is SESSION_NOT_FOUND; exact owned-home cwd/fd/maps scan finds no process. No candidate code/evidence to preserve or acceptance claimed. Other children have recent commits/material files. Fresh replacement required; no closed-run followup.
 
 ### #15 — four old model tool tests contradict landed activation/edit semantics (open)
 
