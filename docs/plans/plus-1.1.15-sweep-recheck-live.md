@@ -248,7 +248,30 @@ reported as a miss (see `plus-1.1.15-sweep-m-t2-live.md` E1). **PASS.**
 
 ### B4. `/monitor` Cache tab shows the real verdict after completion
 
-_Pending._
+Did: `/monitor` → `2` (Cache). After the step finished, the Cache tab lists the
+same request under the same id with a real verdict. The rows:
+
+```
+ Time     Kind      Verdict   Cause             Agent/Model     In       Read     Cost     Evidence
+ 18:53:57 step      [NONE]    prefix-changed    claude-opus-5-5 18.2k    0        $0.00    option prompt_cache_key removed...
+ 18:55:28 step      [PARTIAL] unknown           claude-opus-5-5 9k       9.3k     $0.00    Reusable prefix unchanged, with...rovider-side eviction or
+ 18:55:43 step      [HIT]     —                 claude-opus-5-5 60       18.2k    $0.00    Cache read 18239; expected reusable prefix 18243 tokens
+ 18:55:44 step      [HIT]     —                 claude-opus-5-5 2k       18.3k    $0.00    Cache read 18295; expected reusable prefix 18299 tokens
+ 18:58:46 step      [HIT]     —                 claude-opus-5-5 614      20.3k    $0.00    Cache read 20296; expected reusable prefix 20298 tokens
+```
+
+Opening request `eedc1942-f963-4b80-8d1c-4df5698f9e52` (the id the still-running
+row had) shows its Detail:
+
+```
+Request Detail: eedc1942-f963-4b80-8d1c-4df5698f9e52 · step at 18:55:43
+[HIT] Cause: none (certain) · Expected prefix: 18.2k tokens · Cache read: 18.2k · Miss tokens: 0
+```
+
+The Overview also reads `reqs: 5 · ... · hit rate: 69% · misses: 1`, i.e. the
+still-running request is no longer counted as a miss once it completes. **PASS**
+(the same request id now shows its real completed verdict, from `none` to
+`[HIT]`).
 
 ## Server log — every ERROR and WARN line
 
