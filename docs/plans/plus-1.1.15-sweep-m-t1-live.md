@@ -104,11 +104,75 @@ passed in the run recorded under L6. **PASS**.
 
 ### L4. Context facts (account switch/handoff, instruction updates, compactions, agent/model switches, reverts)
 
-_TODO_
+Did: within the same chat, sent prompts, compacted (`Ctrl+X c`), switched
+agent (`Ctrl+X a` → Plan) and model with it, then reverted a message
+(`Ctrl+X g` → the sentinel prompt → Message Actions → Revert). Read
+`context_fact`:
+
+```
+1  instruction_update {"keys":["core/environment","core/date","core/codemode",
+   "core/instructions/home/bliss/opencodeplus/agents.md-3bc15f0e6a06",
+   "core/instructions/…/config/opencode/opencodeplus/instructions/opencodeplus.md-b129a6b0603a",
+   "core/skill-guidance"]}
+5  compaction_started {}
+7  compaction {"epoch":1,"tokens":{…},"model":{"id":"claude-opus-5-5",…}}
+16 agent_switch {"from":"build","to":"plan"}
+17 model_switch {"from":"cliproxyapi/claude-opus-5-5","to":"cliproxyapi/claude-fable-5-1"}
+18 revert {"to":"msg_10cb511c7001Qy5DOlujlJtsVp"}
+19 instruction_update {"keys":[…]}
+21 agent_switch {"from":"plan","to":"build"}
+22 model_switch {"from":"cliproxyapi/claude-fable-5-1","to":"cliproxyapi/claude-opus-5-5"}
+```
+
+Instruction updates (with the changed source keys), compactions (with epoch and
+tokens), agent/model switches and a revert are all recorded live. The revert
+names the boundary message id exactly (`session.revert.committed` →
+`packages/plus/src/monitor/collector.ts:468-477`).
+
+CLIProxyAPI **account switches and quota handoffs** cannot be provoked from the
+TUI in a bounded sweep; they are written by `monitorFact` from
+`src/quota/controller.ts`. They are covered by the focused test
+`test/monitor-requests.test.ts` "context facts recorded and idempotent across
+multiple observations", which inserts a real `account_switch` and a
+`quota_handoff` fact and asserts them present exactly once (the run's result is
+recorded under L6). **PASS (account switch/handoff NOT LIVE: covered by the
+named focused test)**.
 
 ### L5. Privacy: no contents stored, only hashes/sizes/names/ids/timings
 
-_TODO_
+Did: sent unique sentinels in the wire prompts
+(`zqxjwvmonitort1sentinel`, `OK2`, `POSTCOMPACT`, `PLANAGENT`, `AFTERREVERT`),
+then scanned every column of every table of the owned `monitor.db` read-only for
+each sentinel and listed every text column:
+
+```
+session 1 sentinels: none
+step 6 sentinels: none
+call 0 sentinels: none
+call_hour 0 sentinels: none
+epoch 2 sentinels: none
+mark 0 sentinels: none
+meta 1 sentinels: none
+request 11 sentinels: none
+request_fingerprint 11 sentinels: none
+context_fact 23 sentinels: none
+```
+
+Stored text columns are only ids, kinds, agents, providers, models, variants,
+paths/targets, statuses, hashed fingerprints (`body_hash`, per-part/tool hashes,
+rolling message hashes), option-key hashes, cache key hash, and the JSON
+hash/size records — no message or prompt text. The provider error row stores a
+hash, not the message:
+
+```
+request 0a2223d8-…: status "error",
+ error "{\"type\":\"provider.invalid-request\",\"status\":400,\"hash\":"0dd35a2328c29e26\",\"chars\":43}"
+```
+
+The focused test `test/monitor-requests.test.ts` "privacy: no content stored
+(asserting on stored columns)" additionally asserts the forbidden column names
+and a secret user prompt/API key absent from `request`, `request_fingerprint`
+and `context_fact` (passed, recorded under L6). **PASS**.
 
 ### L6. Schema v2 migrates v1 in place; retention 90 days; idempotent writes
 
