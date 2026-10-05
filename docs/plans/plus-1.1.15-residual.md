@@ -142,14 +142,26 @@ Then tell the user briefly:
 
 ## Start prompt
 
-Open one TUI in this worktree, pick `Simple-Orchestrator`, and send:
+A chat runs in the folder its TUI was started from, and its team run lands
+there. So start the TUI from
+`/home/bliss/OpenCodePlus/worktrees/plus-1.1.15_overnight/opencode`, not from
+`plus-1.1.15`. Then pick `Simple-Orchestrator` and send:
 
 ```text
 You are the only orchestrator, in worktree plus-1.1.15_overnight of release
-plus-1.1.15. Do docs/plans/plus-1.1.15-residual.md, R1 to R6 in its Order, by
-its rules and your role, until its Done holds. Read
-docs/plans/plus-1.1.15-halt-report.md first. Do R1 and the reviews yourself;
-delegate only the Briefs the plan names, as written. Log in
+plus-1.1.15. First run pwd: if it does not end in
+plus-1.1.15_overnight/opencode, make no team call, say so in one line and stop.
+Do docs/plans/plus-1.1.15-residual.md, R1 to R6 in its Order, by its rules and
+your role, until its Done holds. Read docs/plans/plus-1.1.15-halt-report.md
+first. R1 and the R2 reviews are done (see "## Residual run" in
+docs/plans/plus-1.1.15-overnight-log.md): do not redo them. Delegate only the
+Briefs the plan names, as written. Log in
 docs/plans/plus-1.1.15-overnight-log.md under "## Residual run". Do not merge
 into plus-1.1.15.
 ```
+
+**2026-10-05, first attempt:** the chat was opened from the TUI in
+`plus-1.1.15`. Its role says to tell the user before delegating from a
+`<version>` checkout, so it delegated nothing: it did R1 and the R2 reviews by
+hand in this worktree and stopped. That was correct. Workers would have
+branched from `plus-1.1.15`, and `team_integrate` would have landed there.
