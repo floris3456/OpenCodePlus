@@ -139,7 +139,7 @@ lines.)
 
 ## Server log — every ERROR and WARN line
 
-`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **178 lines**,
+`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **229 lines**,
 **0 `level=ERROR`**, **6 `level=WARN`** — every WARN is the expected
 `executor-controlled plugin source refused` refusal control, and there is no
 other WARN text:
@@ -170,3 +170,27 @@ All four end-state lines verified **PASS** against this worktree's own build:
 4. **PASS** — a manual pick made after the activation stayed for that chat.
 
 No source file was changed; only this evidence file.
+
+## Cleanup
+
+After the checks, a new chat opened at `1791215012818` still read
+`Build · deepseek-v4.1-flash-cheap CLIProxyAPI` — the post-Line-4 manual pick
+was confined to chat `ses_ef3464`, while new chats continue to follow the
+activation.
+
+`pilotty list-sessions` before kill (mine is `sweep-i-t4`; the others are not
+mine):
+
+```
+w-f15454a0a1ed9809-b  w-1e01-story  sweep-i-t7a  sweep-m-t1  sweep-m-t3
+sweep-i-t4  w-f15454a0a1ed9809-a  sweep-i-t6  ux1  rt-t6
+```
+
+Killed only `sweep-i-t4` (`Session 26c468e4-… killed`). After:
+
+```
+w-f15454a0a1ed9809-b  w-1e01-story  sweep-i-t7a  sweep-m-t1  sweep-m-t3
+w-f15454a0a1ed9809-a  sweep-i-t6  ux1  rt-t6
+```
+
+Every remaining session is one I did not start.
