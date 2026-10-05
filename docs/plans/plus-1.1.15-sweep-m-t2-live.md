@@ -82,10 +82,12 @@ Did: read the second and third request's Cache Detail in the same chat.
 
 ### B1. compacted — expected
 
-Did: pending compaction; the notes require compacting and reading the FIRST
-request's verdict (cold start, not miss). Recorded in the compaction line below.
+Did: `Ctrl+X c` compacted the chat and the next prompt was the first request
+after it. Row `17:10:49 step [COLD] compacted 0 First req...t expected`; Detail
+`[COLD] Cause: compacted (certain) · Expected prefix: 0 · Cache read: 0 · Miss
+tokens: 0`, evidence `First request after compaction; cold start expected`.
 
-PLACEHOLDER_B1
+**PASS** (cold start, cause `compacted`, confidence certain).
 
 ### B2. model / variant switch
 
@@ -278,9 +280,19 @@ by the named focused test.
 
 ## D. Compaction cold start (notes recipe)
 
-Did: pending. Below.
+Did: `Ctrl+X c` (`session.compact`) compacted the chat (footer `compacted`), then
+sent a plain prompt. The FIRST request after the compaction is
+`17:10:49 step [COLD] compacted 0 First req...t expected`.
 
-PLACEHOLDER_D
+Detail (`bc14c9af-3407-42d2-9e46-d07b0d5ff79e`):
+`[COLD] Cause: compacted (certain) · Expected prefix: 0 · Cache read: 0 · Miss
+tokens: 0`; `Gap since last request: 16.6s · Cache lifetime: 5m · Warming: off`;
+evidence `First request after compaction; cold start expected`.
+
+The verdict of the first request after the compaction is **cold start, not a
+miss**, exactly as the notes require.
+
+**PASS** (notes recipe satisfied).
 
 ## E. Agent tools (Code Mode)
 
