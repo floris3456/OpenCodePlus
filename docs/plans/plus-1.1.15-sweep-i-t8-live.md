@@ -329,7 +329,45 @@ present in the Project-level list and all other levels. PASS.
 
 ## L12 — tools: create / set / delete / list where category
 
-Pending.
+Done live in a chat on `cliproxyapi/deepseek-v4.1-flash-cheap` (the model switch is shown at the
+prompt: `Build · deepseek-v4.1-flash-cheap CLIProxyAPI`). Asked the agent to run the four calls
+and quote each raw result. It ran one `execute` batch with the four tool calls:
+
+```
+› instructions.create [kind=category, name=ToolCat]
+› instructions.set [id=item:defaults::tool:edit, category=ToolCat]
+› instructions.list [where=category:ToolCat]
+› instructions.delete [id=category:toolcat, confirm=true]
+```
+
+Raw results quoted:
+
+```
+1. instructions.create — input { kind: "category", name: "ToolCat" }
+   { "id": "category:toolcat", "item": "ToolCat", "name": "ToolCat", "revision": 0, "globalRevision": 507 }
+
+2. instructions.set — input { id: "item:defaults::tool:edit", category: "ToolCat" }
+   { "id": "item:defaults::tool:edit", "category": "ToolCat",
+     "status": "Moved \"edit\" to \"ToolCat\"", "revision": 0, "globalRevision": 508 }
+
+3. instructions.list — input { where: "category:ToolCat" }
+   { "rows": [
+       { "id": "item:project:build:tool:edit", "badges": "on", "source": "upstream", "tokens": 148 },
+       … 40 rows total: 41 (item:project/global/defaults/preset variants of tool:edit) …
+     ], "total": 41 }
+
+4. instructions.delete — input { id: "category:toolcat", confirm: true }
+   { "id": "category:toolcat", "status": "Deleted category \"ToolCat\"", "revision": 0, "globalRevision": 509 }
+```
+
+The agent's own summary: `create → set → list → delete all returned success`. Cross-checked the
+store: log gained `op":"category"` lines for `Created category "ToolCat"` (507), `Moved tool:edit
+to "ToolCat"` (508), `Deleted category "ToolCat"` (509) with `actor.type: "tool"`; the header was
+`{"version":2,"revision":509}` and no category record remains. PASS.
+
+Note (recorded, not a failure): `list({ where: "category:<name>" })` returned the `tool:edit`
+family across every owner (project/global/defaults/preset), not only `item:defaults::tool:edit`.
+That matches the display model — a category lists the row in every owner list (L3/L6).
 
 ## L13 — documented in `teaching.ts` and the skill text
 
