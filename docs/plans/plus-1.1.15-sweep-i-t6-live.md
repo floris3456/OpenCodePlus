@@ -124,6 +124,42 @@ team lines below.
 Recorded after a live chat check below (assistant/session message still names
 the old agent id). See "Line 3" section.
 
+**Member rename (Global team, on-disk member).** Created Global team `t6crew`
+(preset Basic) and added member `mate6` (preset Explore). With the member row
+selected (`Global › Teams › t6crew › mate6`, footer `shift+r rename`), sent
+`shift+r`:
+
+```
+Rename mate6
+New id; use / for nesting. .. is not allowed.
+mate6
+enter submit
+```
+
+Prefilled `mate6`. Validated live: `special` was refused (`Member id "special"
+is reserved` — the reserved Special name) and `mate6` unchanged. Then
+`mate6-renamed` succeeded; the tree selected
+`Global › Teams › t6crew › mate6-renamed`. On disk:
+
+```
+$ ls <dev-home>/config/opencode/opencodeplus/teams/t6crew/
+build-seat.md  implementer.md  mate6-renamed.md  orchestrator.md  planner.md  reviewer.md  scout.md
+```
+
+`mate6.md` gone, `mate6-renamed.md` present; the team link record followed:
+
+```
+{"type":"link","level":"global","agent":"mate6-renamed","team":{"level":"global","team":"t6crew"},"preset":{"kind":"agent","id":"explore"},"updated":"2026-10-05T15:37:54.197Z"}
+```
+
+Log: `{"op":"agent.rename","target":".../teams/t6crew/mate6-renamed.md","summary":"agent.rename mate6 to mate6-renamed (global team t6crew)","revision":497}`.
+**PASS** (member row).
+
+**Team rename (Global team).** With the `t6crew` team row selected
+(`Global › Teams › t6crew`, footer `shift+r rename`), sent `shift+r`, prefilled
+`t6crew`; renamed to `t6squad`. See the Line 2/Line 4 team sections for what
+followed.
+
 ## Server log — every ERROR and WARN line
 
 (pending)
