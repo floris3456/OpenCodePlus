@@ -342,6 +342,31 @@ and no public API expansion.
 model notifications across a scripted navigation (zero), and a picker open
 (one, then cached). Effective warming, names and variants are unchanged.
 
+## 7. Leftovers from the 1.1.15 residual run (open)
+
+Three findings from `plus-1.1.15-residual.md` R6, recorded open because that
+plan names no Brief for them and they block nothing. Full detail in
+`plus-1.1.15-overnight-log.md` under "## Residual run".
+
+- **#27 — no-commit repo shows a raw git error.** `team_delegate` in a
+  repository with no commit answers `E_INTERNAL: Cannot read HEAD … unknown
+  revision` instead of a classified refusal telling the caller to make a first
+  commit. Where: the root-run bootstrap reading HEAD,
+  `packages/plus/src/teams/tools.ts:603`. Planned: a named refusal (for example
+  `E_NO_COMMIT`) with that advice, and a test on a fresh `git init` repo.
+- **#29 — `session.new` keeps the composer's model.** `ctrl+x n` (upstream
+  `packages/tui/src/app.tsx:726-745`, unchanged in 1.1.15) copies the current
+  composer model into the new chat, so a chat opened after an Instructions
+  activation can start on an earlier manual pick. Upstream behaviour; needs a
+  decision.
+- **#31 — warming pings a renamed agent.** After an agent is renamed or deleted
+  while its chat is warm, the warming loop keeps pinging the old pinned agent
+  (`failed to warm session … AgentNotFoundError`) until the window ends. This
+  gives the transient #25 case a reproducible cause. Fix needs a decision:
+  stopping the window on `AgentNotFoundError` in `core/src/plugin/warming.ts`
+  would also drop #25's transient case where the next ping succeeded; stop only
+  when the agent is still missing on the next ping, with a core test.
+
 ## Open questions for the user
 
 None. Settled on 2026-10-05:
