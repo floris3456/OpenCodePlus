@@ -195,9 +195,8 @@ clean re-create.
 bump `499 → 500` and the line count `257 → 255` match exactly the three records
 the agent owned.
 
-**The exact agent the contract names, `deepseek-worker`.** Attributes: id
-`deepseek-worker` (a real shipped Global file). The record cascade is
-level+agent keyed and does not depend on the id's text, so the behavior is the
+**The exact agent the contract names, `deepseek-worker`.** It is a real shipped
+Global file. The record cascade is level+agent keyed and does not depend on the id's text, so the behavior is the
 same for any Global user agent — which the `sweep-agent` live run demonstrates
 for a file this sweep itself created. `deepseek-worker` was deliberately left in
 place so that no pre-existing release agent was destroyed, and its five records
