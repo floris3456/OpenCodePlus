@@ -159,3 +159,74 @@ Build-Seat · deepseek-v4.1-flash-cheap · 3.3s · 79.7 tok/s
 ```
 
 Result: step 2 passed; scout run `w-2c37ed52b53f479b` is the root's only child.
+
+## Step 3a — composer Team tab
+
+Action: in the chat, arrow-down opened the composer tabs
+(`Subagents  Shell  Terminals  Tools  Team`); `→` moved to the `Team` tab.
+
+It lists the root run and the scout run indented under it, with
+id/role/state/task:
+
+```
+┃  Subagents  Shell  Terminals  Tools  Team                                                                    esc
+┃
+┃  main-759512680ad0df59 — build-seat — idle                                                               idle
+┃    w-2c37ed52b53f479b — scout — idle — T1                                                                idle
+┃
+┃  move ↑↓  attach ⏎  active ctrl+a  tree ctrl+t  stop|resume ctrl+d  monitor M  tabs ←/→
+```
+
+`ctrl+t` switched to all-runs and the hint bar named the view:
+
+```
+┃  main-759512680ad0df59 — build-seat — idle
+┃  w-2c37ed52b53f479b — scout — idle — T1
+┃  move ↑↓  attach ⏎  active ctrl+a  all ctrl+t  stop|resume ctrl+d  monitor M  tabs ←/→
+```
+
+`ctrl+t` again restored the tree and the hint read `tree ctrl+t`.
+
+## Step 3b — /monitor
+
+Action: `ctrl+p` → `monitor` → Enter opened the full-screen Monitor page,
+filtered on this session.
+
+Scope `s` stepped to `Team tree`; the header and totals then covered both
+sessions:
+
+```
+Monitor                                                                                        tokens, cache and tools
+ Scope: Team tree [s] step · [S] session · [T] team
+ When: Since last compaction [t] step window
+ order calls
+ reqs: 15 · steps: 15 · in: 21.9k · read: 124k · write: 0 · out: 1.7k · reason: 2.2k · hit rate: 85% · misses: 0
+ miss cost: $0.00 · pings: 0 · cost: $0.00
+ [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]
+ Agents in Scope
+  Agent           Model             Steps   Hit Rate  Misses  Tokens    Cost      Active
+  build-seat      cliproxyapi/deeps…8       86%       0       108k      $0.00     15:22:04
+  scout           cliproxyapi/deeps…7       82%       0       42.2k     $0.00     15:22:02
+```
+
+Session tab (`4`) shows the delegation tree:
+
+```
+ [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]
+  Session / Role                    Agent         State     Steps   Tokens    Read      Hit Rate  Cost      Active
+  Delegate folder...listing to scoutbuild-seat    completed 8       108k      91.3k     86%       $0.00     15:22:04
+    └─ Repo top-l...ectories listingscout         completed 7       42.2k     32.8k     82%       $0.00     15:22:02
+```
+
+`T` opened the team picker (`No team filter`, `basic-live`); choosing
+`basic-live` set the header to:
+
+```
+ Scope: Team: basic-live [s] step · [S] session · [T] team
+  Session / Role                    Agent         State     Steps   Tokens    Read      Hit Rate  Cost      Active
+  Delegate folder...listing to scoutbuild-seat    completed 8       108k      91.3k     86%       $0.00     15:22:04
+    └─ Repo top-l...ectories listingscout         completed 7       42.2k     32.8k     82%       $0.00     15:22:02
+```
+
+Result: step 3 passed; both scopes list both sessions and the Sessions tab
+shows the tree.
