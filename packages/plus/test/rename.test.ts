@@ -140,6 +140,34 @@ test("rename a member moves its records and the Delegate-to rows that name it", 
   expect(crew?.agents).not.toContain("alice")
 })
 
+test("rename a member moves unteamed Delegate-to rows owned by its team", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({ directory: project, agents: [agentInfo("alice"), agentInfo("bob"), agentInfo("eve")] })
+  const api = createPlusApi(ctx, createState())
+  expect((await api.createTeam({ level: "global", team: "crew" })).ok).toBe(true)
+  expect((await api.addTeamAgent({ level: "global", team: "crew", id: "alice" })).ok).toBe(true)
+  expect((await api.addTeamAgent({ level: "global", team: "crew", id: "bob" })).ok).toBe(true)
+  // The TUI writes these per-member rows without a team field.
+  await seed(project, [
+    { type: "customization", level: "global", agent: "bob", item: "perm:team_delegate:to.alice", section: null, basedOn: "fp", updated: UPDATED },
+    { type: "customization", level: "global", agent: "alice", item: "perm:team_delegate:to.alice", section: null, basedOn: "fp", updated: UPDATED },
+    { type: "customization", level: "global", agent: "eve", item: "perm:team_delegate:to.alice", section: null, basedOn: "fp", updated: UPDATED },
+  ])
+
+  const renamed = await api.renameAgent({ scope: "global", team: "crew", from: "alice", to: "carol" })
+  expect(renamed.ok).toBe(true)
+
+  const records = (await load(project)).records
+  const customize = records.filter((record): record is Extract<StoredRecord, { type: "customization" }> => record.type === "customization")
+  const bobRow = customize.find((record) => record.agent === "bob")
+  expect(bobRow).toMatchObject({ agent: "bob", item: "perm:team_delegate:to.carol" })
+  expect("team" in (bobRow ?? {})).toBe(false)
+  const aliceRow = customize.find((record) => record.agent === "carol")
+  expect(aliceRow).toMatchObject({ agent: "carol", item: "perm:team_delegate:to.carol" })
+  const eveRow = customize.find((record) => record.agent === "eve")
+  expect(eveRow).toMatchObject({ agent: "eve", item: "perm:team_delegate:to.alice" })
+})
+
 test("rename a team moves its directory, members, records and enablement", async () => {
   const project = await tempProject()
   const ctx = fullContext({ directory: project, agents: [agentInfo("alice")] })

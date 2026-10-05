@@ -3793,9 +3793,23 @@ async function renameTeamMember(
   const target = { level: input.scope, agent: input.to, team: { level: input.scope, team: validatedTeam.team } }
   const delegateFrom = `perm:team_delegate:to.${input.from}`
   const delegateTo = `perm:team_delegate:to.${input.to}`
+  const memberIds = known.agents.map((agent) => agent.id)
   const moved = await updateRecords(directory, (current) =>
     current.map((record): StoredRecord => {
       if (!isScopedRow(record)) return record
+      // The TUI stores per-member Delegate-to rows without a team, so match
+      // them by the owner still being a member of the renamed member's team.
+      if (
+        record.type === "customization" &&
+        record.item === delegateFrom &&
+        record.team === undefined &&
+        record.level === input.scope &&
+        record.agent !== null &&
+        memberIds.includes(record.agent)
+      ) {
+        const renamed = { ...record, item: delegateTo }
+        return record.agent === input.from ? { ...renamed, agent: input.to } : renamed
+      }
       if (!sameTeam(record.team, { level: input.scope, team: validatedTeam.team })) return record
       // A "Delegate to" row naming the member (owned by a peer in the same
       // team) follows the member id; the file name and the target both move.
