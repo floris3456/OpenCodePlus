@@ -789,7 +789,9 @@ export function MonitorView(props: MonitorViewProps) {
           {(_current) => (
             <box flexDirection="column" flexGrow={1} minWidth={0}>
               <Show when={tab() === "overview"}>
-                <OverviewTab context={props.context} report={shown()} full={true} />
+                <scrollbox flexGrow={1} minWidth={0}>
+                  <OverviewTab context={props.context} report={shown()} full={true} />
+                </scrollbox>
               </Show>
               <Show when={tab() === "cache"}>
                 <CacheTab

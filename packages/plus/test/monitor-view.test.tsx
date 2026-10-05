@@ -248,6 +248,29 @@ test("narrow and wide layouts format totals line without horizontal scroll", asy
   }
 })
 
+test("the narrow Overview lays its sections out without garbled overdraw", async () => {
+  const db = await seeded()
+  const { fixture } = await render(db, {
+    width: 80,
+    height: 40,
+    settings: { ...defaultSettings, tab: "overview" },
+    customReport: () => contractFixtureReport(NOW),
+  })
+  try {
+    const frame = await fixture.waitForFrame(
+      (text) => text.includes("Token Mix") && text.includes("Top") && text.includes("Agents in Scope"),
+    )
+    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
+    // The agents table drops its model column at 80 and stays a clean row.
+    expect(frame).not.toContain("Model")
+    const agentRow = frame.split("\n").find((line) => line.trim().startsWith("build "))
+    expect(agentRow).toContain("build")
+    expect(agentRow).not.toMatch(/[a-z][A-Z][a-z]/)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("the narrow Cache keeps the ping kind and the agents table fits 80 columns", async () => {
   const db = await seeded()
   const { fixture } = await render(db, {

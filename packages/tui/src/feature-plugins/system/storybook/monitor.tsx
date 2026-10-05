@@ -79,20 +79,28 @@ function requestFor(variant: MissVariant, now: number): Plus.MonitorRequest {
 // never invented line or character positions, and optional keys are omitted
 // rather than set to undefined.
 function detailFor(variant: MissVariant, request: Plus.MonitorRequest, now: number): Plus.MonitorRequestDetail {
-  const prefix = variant === "prefix"
+  // Only the miss request has a prefix divergence; other requests keep an
+  // honest empty detail rather than borrowing the miss's segments.
+  const prefix = variant === "prefix" && request.id === "req_miss"
+  const isMiss = request.id === "req_miss"
   return {
     request,
-    previous: { id: "req_prev", at: now - 420_000 },
-    lines: prefix
-      ? [
-          "system part AGENTS.md changed: chars 3200 → 3800",
-          "expected prefix: 18.5k tokens, cache read: 500 tokens",
-          "warming was inactive for this session",
-        ]
+    ...(request.id === "req_miss" ? { previous: { id: "req_prev", at: now - 420_000 } } : {}),
+    lines: isMiss
+      ? prefix
+        ? [
+            "system part AGENTS.md changed: chars 3200 → 3800",
+            "expected prefix: 18.5k tokens, cache read: 500 tokens",
+            "warming was inactive for this session",
+          ]
+        : [
+            "gap 420s exceeds provider cache lifetime (300s)",
+            "expected prefix: 18.5k tokens, cache read: 0 tokens",
+            "prefix identical to the previous request; warming was inactive",
+          ]
       : [
-          "gap 420s exceeds provider cache lifetime (300s)",
-          "expected prefix: 18.5k tokens, cache read: 0 tokens",
-          "prefix identical to the previous request; warming was inactive",
+          `Session ${request.sessionID}; request ${request.id}`,
+          request.cause === undefined ? "No cache cause recorded for this request" : `Cause: ${request.cause}`,
         ],
     segments: prefix
       ? [
@@ -120,47 +128,47 @@ function detailFor(variant: MissVariant, request: Plus.MonitorRequest, now: numb
       : [],
     // Expiry is a gap, not a divergence: no firstDivergence, no segment change.
     ...(prefix ? { firstDivergence: "system: AGENTS.md" } : {}),
-    timing: {
-      gapMs: 420_000,
-      lifetimeMs: 300_000,
-      warming: "off",
-    },
+    timing: isMiss
+      ? { gapMs: 420_000, lifetimeMs: 300_000, warming: "off" }
+      : { warming: "off" },
     pings: [],
     accounts: [],
-    instructions: [{ at: now - 130_000, keys: ["AGENTS.md"] }],
+    instructions: [],
     reverts: [],
-    actualCacheRead: prefix ? 500 : 0,
-    expectedTokens: 18500,
-    calls: [
-      {
-        sessionID: "ses_lead",
-        callID: "call_1",
-        agent: "build",
-        tool: "read",
-        target: "packages/plus/src/rpc.ts",
-        status: "ok",
-        started: now - 118_000,
-        ended: now - 117_500,
-        callTokens: 45,
-        resultTokens: 2400,
-        measured: true,
-        carried: 9600,
-      },
-      {
-        sessionID: "ses_lead",
-        callID: "call_2",
-        agent: "build",
-        tool: "grep",
-        target: "MonitorReport",
-        status: "ok",
-        started: now - 117_400,
-        ended: now - 117_100,
-        callTokens: 35,
-        resultTokens: 850,
-        measured: true,
-        carried: 3400,
-      },
-    ],
+    actualCacheRead: request.cacheRead,
+    ...(request.expected === undefined ? {} : { expectedTokens: request.expected }),
+    calls: isMiss
+      ? [
+          {
+            sessionID: "ses_lead",
+            callID: "call_1",
+            agent: "build",
+            tool: "read",
+            target: "packages/plus/src/rpc.ts",
+            status: "ok",
+            started: now - 118_000,
+            ended: now - 117_500,
+            callTokens: 45,
+            resultTokens: 2400,
+            measured: true,
+            carried: 9600,
+          },
+          {
+            sessionID: "ses_lead",
+            callID: "call_2",
+            agent: "build",
+            tool: "grep",
+            target: "MonitorReport",
+            status: "ok",
+            started: now - 117_400,
+            ended: now - 117_100,
+            callTokens: 35,
+            resultTokens: 850,
+            measured: true,
+            carried: 3400,
+          },
+        ]
+      : [],
   }
 }
 

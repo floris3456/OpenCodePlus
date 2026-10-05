@@ -3,7 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
-import { formatClock, formatCost, formatTokens } from "../format.js"
+import { formatClock, formatCost, formatTokens, pad } from "../format.js"
 
 export interface OverviewTabProps {
   readonly context: Plugin.Context
@@ -55,12 +55,12 @@ export function OverviewTab(props: OverviewTabProps) {
       {/* Unstable prefix warnings */}
       <Show when={(current()?.unstable?.length ?? 0) > 0}>
         <box flexDirection="column" marginBottom={1} paddingLeft={1} backgroundColor={theme().background.raised.base}>
-          <text fg={theme().text.feedback.warning.base} attributes={TextAttributes.BOLD}>
+          <text fg={theme().text.feedback.warning.base} attributes={TextAttributes.BOLD} flexShrink={0}>
             ⚠ Unstable Prefix Detected
           </text>
           <For each={current()?.unstable}>
             {(u) => (
-              <text fg={theme().text.feedback.warning.base}>
+              <text fg={theme().text.feedback.warning.base} flexShrink={0}>
                 {`  • Segment “${u.segment}” diverged across ${u.streak} consecutive requests`}
               </text>
             )}
@@ -70,28 +70,37 @@ export function OverviewTab(props: OverviewTabProps) {
 
       {/* Token Mix & Context */}
       <box flexDirection="column" marginBottom={1}>
-        <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
+        <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
           Token Mix &amp; Context
         </text>
         <Show when={current()?.totals}>
           {(totals) => (
-            <box flexDirection="column" paddingLeft={1}>
-              <text fg={theme().text.base}>
-                {`Input: ${formatTokens(totals().input)} (uncached) · Cache Read: ${formatTokens(totals().cacheRead)} · Cache Write: ${formatTokens(totals().cacheWrite)}`}
-              </text>
-              <text fg={theme().text.base}>
-                {`Output: ${formatTokens(totals().output)} · Reasoning: ${formatTokens(totals().reasoning)} · Hit Rate: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
-              </text>
+            <box flexDirection="column" paddingLeft={1} minWidth={0} flexShrink={0}>
+              <Show
+                when={dimensions().width >= 100}
+                fallback={
+                  <text fg={theme().text.base} wrapMode="none" truncate>
+                    {`In: ${formatTokens(totals().input)} · Read: ${formatTokens(totals().cacheRead)} · Write: ${formatTokens(totals().cacheWrite)} · Out: ${formatTokens(totals().output)} · R: ${formatTokens(totals().reasoning)} · Hit: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
+                  </text>
+                }
+              >
+                <text fg={theme().text.base} wrapMode="none" truncate>
+                  {`Input: ${formatTokens(totals().input)} (uncached) · Cache Read: ${formatTokens(totals().cacheRead)} · Cache Write: ${formatTokens(totals().cacheWrite)}`}
+                </text>
+                <text fg={theme().text.base} wrapMode="none" truncate>
+                  {`Output: ${formatTokens(totals().output)} · Reasoning: ${formatTokens(totals().reasoning)} · Hit Rate: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
+                </text>
+              </Show>
               <Show when={contextInfo()}>
                 {(ctx) => (
-                  <text fg={theme().text.muted}>
+                  <text fg={theme().text.muted} wrapMode="none" truncate>
                     {`Context Size: ${formatTokens(ctx().now)} tokens${ctx().atCompaction ? ` (at last compaction: ${formatTokens(ctx().atCompaction!)})` : ""}`}
                   </text>
                 )}
               </Show>
               <Show when={current()?.pings}>
                 {(p) => (
-                  <text fg={theme().text.muted}>
+                  <text fg={theme().text.muted} wrapMode="none" truncate>
                     {`Keep-alive Pings: ${p().sent} sent · Cost: ${formatCost(p().cost) ?? "$0.00"} · Subsequent: ${p().followedByHit} hits, ${p().followedByMiss} misses`}
                   </text>
                 )}
@@ -105,20 +114,20 @@ export function OverviewTab(props: OverviewTabProps) {
       <box flexDirection="row" marginBottom={1} minWidth={0}>
         {/* Top 3 Misses */}
         <box flexDirection="column" flexGrow={1} minWidth={0} marginRight={1}>
-          <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
-            Top Cache Misses
+          <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0} wrapMode="none" truncate>
+            {dimensions().width >= 100 ? "Top Cache Misses" : "Top Misses"}
           </text>
           <Show
             when={topMisses().length > 0}
-            fallback={<text fg={theme().text.muted}>  No cache misses recorded</text>}
+            fallback={<text fg={theme().text.muted} flexShrink={0}>  No cache misses recorded</text>}
           >
             <For each={topMisses()}>
               {(miss, index) => (
-                <box flexDirection="column" paddingLeft={1}>
-                  <text fg={theme().text.feedback.error.base}>
+                <box flexDirection="column" paddingLeft={1} minWidth={0} flexShrink={0}>
+                  <text fg={theme().text.feedback.error.base} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {`#${index() + 1} [${miss.verdict.toUpperCase()}] ${miss.cause ?? "miss"}${miss.confidence ? ` (${miss.confidence})` : ""}: ${miss.evidence ?? "cache miss"}`}
                   </text>
-                  <text fg={theme().text.muted}>
+                  <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {`   missed ${formatTokens(miss.missTokens ?? miss.input)} · ${formatCost(miss.missCost ?? miss.cost) ?? "$0.00"} · ${miss.model ?? miss.agent ?? ""}`}
                   </text>
                 </box>
@@ -129,20 +138,20 @@ export function OverviewTab(props: OverviewTabProps) {
 
         {/* Top 3 Carried Tools */}
         <box flexDirection="column" flexGrow={1} minWidth={0}>
-          <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
-            Top Tools by Carried Tokens
+          <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0} wrapMode="none" truncate>
+            {dimensions().width >= 110 ? "Top Tools by Carried Tokens" : "Top Tools"}
           </text>
           <Show
             when={topTools().length > 0}
-            fallback={<text fg={theme().text.muted}>  No tool calls in scope</text>}
+            fallback={<text fg={theme().text.muted} flexShrink={0}>  No tool calls in scope</text>}
           >
             <For each={topTools()}>
               {(tool, index) => (
-                <box flexDirection="column" paddingLeft={1}>
-                  <text fg={theme().text.base}>
+                <box flexDirection="column" paddingLeft={1} minWidth={0} flexShrink={0}>
+                  <text fg={theme().text.base} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {`#${index() + 1} ${tool.label}: ${formatTokens(tool.carried)} carried`}
                   </text>
-                  <text fg={theme().text.muted}>
+                  <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {`   ${tool.calls} calls · result ${formatTokens(tool.resultTokens)} · avg ${tool.avgMs}ms`}
                   </text>
                 </box>
@@ -155,40 +164,47 @@ export function OverviewTab(props: OverviewTabProps) {
       {/* Agents in Scope Table */}
       <Show when={agents().length > 0}>
         <box flexDirection="column" flexGrow={1} minWidth={0}>
-          <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
+          <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
             Agents in Scope
           </text>
           <box flexDirection="row" flexShrink={0} paddingLeft={1}>
-            <text fg={theme().text.muted} width={16} attributes={TextAttributes.BOLD}>Agent</text>
+            <text fg={theme().text.muted} width={16} attributes={TextAttributes.BOLD}>{pad("Agent", 16)}</text>
             <Show when={showModel()}>
-              <text fg={theme().text.muted} width={18} attributes={TextAttributes.BOLD}>Model</text>
+              <text fg={theme().text.muted} width={18} attributes={TextAttributes.BOLD}>{pad("Model", 18)}</text>
             </Show>
-            <text fg={theme().text.muted} width={8} attributes={TextAttributes.BOLD}>Steps</text>
-            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Hit Rate</text>
-            <text fg={theme().text.muted} width={8} attributes={TextAttributes.BOLD}>Misses</text>
-            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Tokens</text>
-            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Cost</text>
-            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Active</text>
+            <text fg={theme().text.muted} width={8} attributes={TextAttributes.BOLD}>{pad("Steps", 8)}</text>
+            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>{pad("Hit Rate", 10)}</text>
+            <text fg={theme().text.muted} width={8} attributes={TextAttributes.BOLD}>{pad("Misses", 8)}</text>
+            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>{pad("Tokens", 10)}</text>
+            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>{pad("Cost", 10)}</text>
+            <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>{pad("Active", 10)}</text>
           </box>
           <For each={agents()}>
-            {(agent) => (
-              <box flexDirection="row" flexShrink={0} paddingLeft={1}>
-                <text fg={theme().text.base} width={16} wrapMode="none" truncate>{agent.agent}</text>
-                <Show when={showModel()}>
-                  <text fg={theme().text.muted} width={18} wrapMode="none" truncate>{agent.model ?? "—"}</text>
-                </Show>
-                <text fg={theme().text.base} width={8}>{String(agent.steps)}</text>
-                <text fg={agent.hitRate < 0.5 ? theme().text.feedback.warning.base : theme().text.base} width={10}>
-                  {`${Math.round(agent.hitRate * 100)}%`}
-                </text>
-                <text fg={agent.misses > 0 ? theme().text.feedback.error.base : theme().text.muted} width={8}>
-                  {String(agent.misses)}
-                </text>
-                <text fg={theme().text.base} width={10}>{formatTokens(agent.tokens)}</text>
-                <text fg={theme().text.base} width={10}>{formatCost(agent.cost) ?? "$0.00"}</text>
-                <text fg={theme().text.muted} width={10}>{formatClock(agent.lastActive)}</text>
-              </box>
-            )}
+            {(agent) => {
+              // Fixed-width cells are padded to their exact widths so the
+              // renderer never wraps or overdraws a narrow row.
+              const cells = () => [
+                { text: pad(agent.agent, 16), width: 16 },
+                ...(showModel() ? [{ text: pad(agent.model ?? "—", 18), width: 18 }] : []),
+                { text: pad(String(agent.steps), 8), width: 8 },
+                { text: pad(`${Math.round(agent.hitRate * 100)}%`, 10), width: 10 },
+                { text: pad(String(agent.misses), 8), width: 8 },
+                { text: pad(formatTokens(agent.tokens), 10), width: 10 },
+                { text: pad(formatCost(agent.cost) ?? "$0.00", 10), width: 10 },
+                { text: pad(formatClock(agent.lastActive), 10), width: 10 },
+              ]
+              return (
+                <box flexDirection="row" flexShrink={0} paddingLeft={1} minWidth={0}>
+                  <For each={cells()}>
+                    {(cell) => (
+                      <text fg={theme().text.base} width={cell.width} wrapMode="none">
+                        {cell.text}
+                      </text>
+                    )}
+                  </For>
+                </box>
+              )
+            }}
           </For>
         </box>
       </Show>
