@@ -121,7 +121,34 @@ was back at the same rows. PASS.
 
 ## Step 3 — edit one field
 
-_(pending)_
+Done: on the Global `build` candidate `cliproxyapi/claude-opus-5-5@high` (`row ... warming
+32m · opencode.json`), put the cursor on the `Warming` field and Enter; the editor showed
+`[3]2m · opencode.json` with hint `off, on, or the total time to keep the cache warm … Empty
+inherits. Now: 32m · opencode.json.` Cleared it (Ctrl+A) and typed `20m`, Enter. The field row
+then showed:
+
+```
+▌▾ cliproxyapi/claude-opus-5-5@high                          active · warm 20m ◆
+▎    Warming                                                    20m ◆
+```
+
+and the inspector `field warming / value 20m`.
+
+Store line before (records.jsonl line 215):
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-fable-5-1@xhigh","updated":"2026-09-29T10:13:12.020Z"}
+```
+
+Store line after (still line 215, line count 246 unchanged):
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-fable-5-1@xhigh","warming":"20m","updated":"2026-10-05T14:50:28.549Z"}
+```
+
+Only `warming` was added and the `updated` timestamp changed; `providerID`, `modelID`,
+`variant`, `active`, `basedOn` are byte-identical. Header revision moved `478 → 479` (one
+edit = one revision). PASS.
 
 ## Step 4 — reset and repeat reset
 
