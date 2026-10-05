@@ -63,6 +63,48 @@ This is an **evidence-only** task: no production file is changed.
   separate `session.instructions.updated` context fact was not surfaced on this
   page for the toggle; the divergence itself is real and named.
 
-Status of other cases: **in progress** (model switch, agent switch, warming-off
-delay, compaction). The `monitor.query` in-chat Code Mode equality proof and the
-basic Project team delegation are recorded further below when observed.
+## Case 2 — model switch between two requests (observed)
+
+- Deliberate change: composer `Switch model` → `deepseek-v4.1-flash-cheap`
+  (variant `Default`), `2026-10-05T08:59:10Z`.
+- Next message `AFTER-MODEL-SWITCH` request
+  `98529009-1a15-409d-a52a-80a21a19b096` at `08:59:17Z`
+  (screen: `AFTER-MODEL-SWITCH`, `Build · deepseek-v4.1-flash-cheap · 1.6s`).
+- Ledger row: step, build, cliproxyapi/deepseek-v4.1-flash-cheap@default,
+  completed, input 8384, cache_read 0, cache_write 0, output 9.
+- Context fact: `model_switch {"from":"cliproxyapi/claude-opus-5-5",
+  "to":"cliproxyapi/deepseek-v4.1-flash-cheap"}` at 08:59:19Z.
+- Cache-tab row: `10:59:17 step [COLD] model-switch 0 Model / v...ap/default`.
+- Detail (`98529009-…`): `Cause: model-switch (certain)`, `Cache read: 0`,
+  `Miss tokens: 0`, `Gap since last request: — · Cache lifetime: — · Warming:
+  ended`, `Pings on the prefix: 1 · last at 10:58:45`, evidence
+  `Model / variant switched: cliproxyapi/claude-opus-5-5/high →
+  cliproxyapi/deepseek-v4.1-flash-cheap/default`. COLD is the expected
+  cold-start verdict, not counted as a miss.
+
+## Case 3 — agent switch between two requests (observed)
+
+- Preconditions to isolate the agent: Plan agent's model set to
+  `cliproxyapi/claude-opus-5-5@high` in Instructions (Global › Agents › plan ›
+  Models, `2026-10-05T09:07:59Z`), then two same-agent Plan messages:
+  - `PLAN-BASE` request `64e5f88e-ddec-4a6c-aceb-e9f2e695e5fb` at 11:05:46Z,
+    agent plan, opus@default, cache read 13410.
+  - `BUILD-BEFORE-AGENT` request `16f87478-7935-48b7-96a6-2de5626e3d9d` at
+    11:08:31Z, agent build, opus@high, cache read 5026.
+- Deliberate change: composer agent toggled `build → plan` (back-tab) at
+  `2026-10-05T09:09:32.986Z` (`agent_switch {"from":"build","to":"plan"}`).
+- Next message `PLAN-AGENT-ONE` request
+  `d4b8ba29-79b3-49a5-9813-335ed010df7a` at `11:09:31Z`, agent plan,
+  opus@high, cache read 13437.
+- Cache-tab row: `11:09:31 step [COLD] agent-switch 13.4k Agent swi...ild → plan`.
+- Detail (`d4b8ba29-…`): `Cause: agent-switch (certain)`, `Expected prefix: 0`,
+  `Cache read: 13.4k`, `Miss tokens: 0`,
+  `Gap since last request: 59.9s · Cache lifetime: 5m · Warming: on`,
+  `First diverging segment: system part base template`, evidence
+  `Agent switched: build → plan`. COLD is the expected cold-start verdict.
+- Note: the model+variant matched (opus@high) so the cause is the agent switch,
+  as the analyzer reports.
+
+Status of remaining cases: **in progress** (warming-off delay, compaction). The
+`monitor.query` in-chat Code Mode equality proof and the basic Project team
+delegation are recorded further below when observed.
