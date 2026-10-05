@@ -30,7 +30,36 @@ including "`team_delegate` 'Delegate to' rows naming a member".
 
 ### A1. Create Global team `rc-team` from the `Basic` team preset
 
-_Pending._
+Did: `/instructions` → `@` (Global) → moved the sidebar cursor to the `Teams`
+group → `a` → typed `rc-team` → `Enter` (name) → in the `Team preset` picker
+filtered/selected `Basic` → `Enter`.
+
+Saw the tree select `Global › Teams › rc-team` with exactly the six Basic
+members (order as rendered):
+
+```
+Global › Teams › rc-team
+▌  ▾ ○ rc-team
+       ● build-seat        89
+       ● implementer       15
+       ● orchestrator      23
+       ● planner           23
+       ● reviewer          10
+       ● scout              9
+```
+
+On disk: `<dev-home>/config/opencode/opencodeplus/teams/rc-team/` holds
+`build-seat.md implementer.md orchestrator.md planner.md reviewer.md scout.md`.
+Log: `{"op":"team.create","target":"team:global:rc-team","summary":"team.create
+rc-team (global)","revision":493}` (an earlier Empty-team attempt and the stray
+user agent named `rc-team` I created by mistake were deleted; the final
+directory has the six members).
+
+**PASS** (Global team created from the Basic team preset).
+
+Note: this is the pre-fix sweep's environment only. The `Down`-then-`Enter`
+route selects `Empty team`; typing `Basic` in the filter and pressing `Enter`
+selects the Basic row.
 
 ### A2. Toggle `team_delegate › Delegate to › scout` off and quote the record
 
