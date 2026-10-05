@@ -80,6 +80,9 @@ Sessions tab under it showed the tree:
 ```
 The team run was recorded for the run (`basic-live` appears in the picker), so
 new runs carry their team; the older-run derivation path is not exercised here.
+On-disk confirmation: both `run.json` files carry `"team": "basic-live"`
+(`main-b258bf5ddae11f0a` role `build-seat`, `w-f39dd5543c695d6c` role `scout`
+with `"parent": "main-b258bf5ddae11f0a"`).
 
 Screens:
 ```
@@ -265,6 +268,12 @@ At 80 columns the Cache keeps `Kind` and drops the agent/model and cost:
   17:29:21 step      [HIT]     prefix-changed  0        option pr...l-guidance
   17:29:26 step      [HIT]     —               12.3k    Cache rea...353 tokens
 ```
+Sub-items **miss marked with the feedback token**, **cold start dim** and
+**ping visible: NOT LIVE** — this chat's ledger had 0 misses, no cold start and
+no ping (`misses: 0 · pings: 0` on every scope). The rendering paths are covered
+by `monitor-view.test.tsx` "the Cache tab shows a fixture miss with its cause,
+and detail opens and closes" (asserts `[MISS]`, `[HIT]`, `[COLD]`) and "the
+narrow Cache keeps the ping kind and the agents table fits 80 columns".
 
 #### Tools
 
@@ -470,4 +479,62 @@ Composer tab (`Down`, then `→` to Tools):
  Scope: This session (ses_ef350f) [s] step · [S] session · [T] team
  [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]
 ```
+
+### Checks (focused)
+
+`packages/plus` (this HEAD):
+`bun test test/monitor-view.test.tsx` → **33 pass / 0 fail / 1457 expects**.
+`bun test test/monitor-view.test.tsx test/monitor-analysis.test.ts test/monitor-cache.test.ts`
+→ **65 pass / 0 fail / 1699 expects**.
+
+The NOT LIVE sub-items use these named passes:
+- `monitor-view.test.tsx` "the Cache tab shows a fixture miss with its cause, and
+  detail opens and closes" (`[COLD]` and `[MISS]` present).
+- `monitor-view.test.tsx` "the narrow Cache keeps the ping kind and the agents
+  table fits 80 columns" (ping kind survives at 80).
+- `monitor-view.test.tsx` "the / text filter narrows every table but leaves the
+  totals"; "every total metric stays visible and labelled at 80, 100 and 160
+  columns"; "the Sessions tab shows a token total that includes cache and
+  reasoning".
+- `monitor-analysis.test.ts` "#8: unstable and unread honor the selection and
+  the as-of cutoff, and expiry evolves without writes" (unstable warning data);
+  `monitor-cache.test.ts` unstable assertion (`streak: 3`).
+
+## Server log — every ERROR and WARN line
+
+Home log `$DEV/data/opencode/log/opencode-local.log` (430 lines at the end):
+**0 ERROR**, 8 WARN. Every WARN is the expected
+`executor-controlled plugin source refused` for the workspace `.opencode`
+sources; no Monitor or Plus error.
+
+```
+timestamp=2026-10-05T15:20:07.612Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=110 role=server
+timestamp=2026-10-05T15:20:07.612Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=110 role=server
+timestamp=2026-10-05T15:20:08.973Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=329 role=server
+timestamp=2026-10-05T15:20:08.973Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=329 role=server
+timestamp=2026-10-05T15:20:08.973Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1295d2b-20261005-1717/.opencode/opencode.jsonc type=document http.span=329 role=server
+timestamp=2026-10-05T15:20:08.973Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1295d2b-20261005-1717/.opencode type=directory http.span=329 role=server
+timestamp=2026-10-05T15:29:25.267Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document role=server
+timestamp=2026-10-05T15:29:25.267Z level=WARN run=9ad8ebf3 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory role=server
+```
+
+## Team run used
+
+- `basic-live` created at Project from the `Basic` preset and enabled;
+  `build-seat` and `scout` each activated `cliproxyapi/deepseek-v4.1-flash-cheap`.
+- Root run `main-b258bf5ddae11f0a` (`build-seat`, team `basic-live`, parent null,
+  idle) delegated to scout `w-f39dd5543c695d6c` (`role: scout`, `parent:
+  main-b258bf5ddae11f0a`, team `basic-live`, idle). The Team tree and Team scopes
+  used these two sessions.
+
+## Final status
+
+Every end-state line PASS except these sub-items, recorded exactly as **NOT
+LIVE** (no live data) and covered by passing focused tests:
+- Overview unstable-prefix warnings.
+- Overview context `(at last compaction: …)` suffix.
+- Cache cold-start dim styling and ping row (this ledger had no cold start or
+  ping; the ping/cold rendering is covered by `monitor-view.test.tsx`).
+
+No source file was changed; only this evidence file.
 
