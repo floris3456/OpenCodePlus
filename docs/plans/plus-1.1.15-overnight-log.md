@@ -6,7 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B2 source merge/review complete; repair its page gaps (#7) before live acceptance.
 - Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 T79 and #3 T80 running. A3 T76 ready to land, A6 T77 running; B6 fixture landed `1047b1e5df` and stopped.
+- B1 source merged as `26eacdfc14`; #2 T79 and #3 T80 running. A3 T76 landed `ae09701991`, A6 T77 landed `2f7287ee59`, both stopped. B6 fixture landed `1047b1e5df` and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -56,8 +56,20 @@
 
 ### A3/B6 — partial source verified
 
-- T76 diff reviewed: only two T5 expectation repairs, plus rule/pattern assertions; no enforcement change. Landing next after B2 checkpoint. Worker checks permissions 15 pass, walkthrough 9 pass and Plus typecheck.
+- T76 diff reviewed and landed `ae09701991`: only two T5 expectation repairs, plus rule/pattern assertions; no enforcement change. Parent checks **24 pass**, Plus typecheck. Stopped.
 - B6 `1047b1e5df`: reviewed test-harness-only `ui.prompt.guard` repair; production setup matches the public context. Parent command tests 2 pass, Plus typecheck pass. Worker stopped. `/monitor` plus `/tools` alias assertions remain after B2.
+- After all four merges, A3 RPC expected-method list gains `category.mutate`; B6 now asserts exact `/monitor`, `/tools` alias, title, palette and unchanged unique command id. Small parent test reconciliation, not production change.
+- Parent `bun test test/rpc-contract.test.ts test/plugin-commands.test.tsx`: **24 pass**, Plus typecheck pass. A3/B6 test repair complete; B6 live spelling/alias verification is in T83.
+
+### A6 — complete
+
+- Reviewed and landed `2f7287ee59`: two stale expectations, no production changes. Shell summary correctly describes the existing per-command allow-list; three registrations correctly include team-member enforcement. Permission/catalog assertions preserved. Full rationale in `plus-1.1.15-a6-stale-tests.md`.
+- Parent `bun test test/descriptions.test.ts test/team-query-off.test.ts`: **12 pass**, Plus typecheck pass. Stopped.
+
+### B3 — review in progress
+
+- T1/T2 source reviewed at the actual request/collector/fingerprint/analysis boundaries; migration/idempotency/retention and protocol evidence covered by 59 focused tests. #2/#3 remain active, plus new #8/#9 below. Real Instructions update uses key-indexed `delta`; collector's Object.keys matches core.
+- T4 reviewed: `buildRunTree` lifts member to topmost root with sibling/deep traversal; UI defaults tree, shows `ctrl+t`, keeps active/inactive and attach/stop behavior, explicit no-team state. Existing focused tests and pending B4/final live establish acceptance; M gap is #7.
 
 ## Issues
 
@@ -84,6 +96,7 @@
 - Weight: wrong live behavior / Monitor T1–T3 facts must reach page.
 - Plan: invalidate analysis on real ledger mutation using an existing cheap seam or explicit per-ledger revision, with two-query regression for outcome, final fingerprint, and relabel. Preserve measured query caching where useful; no speculative framework. Live repeat page polling once B2 lands.
 - Fix/verification: queued after #2 (same monitor tests/source).
+- T80 first repair reviewed: connection-local `total_changes()` fixes local writes and three discriminating regressions, but misses another SQLite handle/process writing the shared file. Sent one correction: combine `PRAGMA data_version` with local changes; two-handle/direct-write regressions, retain no-write polling cache. Not landed yet.
 
 ### #4 — pre-page view still assumes old session scope (open, expected B2 integration gap)
 
@@ -112,6 +125,20 @@
 - Other concrete gaps: narrow Cache hides the kind (pings indistinguishable), agents table width 82+ even after dropping model at 80, full-row selection never scrolls into view, and top-tools overview uses whichever grouped/top-limited tool query was last selected. Detail fixtures invent exact line/character changes impossible from hashed segments, include explicit `undefined`, and story ignores request id/scope/view; inherited member field issues are separate #6.
 - Weight: breaks Monitor T3 controls, open-session scope, intuitive narrow layout and story/real-contract reconciliation.
 - Plan: repair minimal existing seams in page/route/settings/tabs/query and fixtures/story; preserve compact capabilities, temporary drill-downs and persisted settings. Add actual-ledger tests for compact drill, M open/back, filters/selected detail, session/tree ownership, polling and narrow columns/scroll. Live every tab/scope/window and M via both composer tabs at 80/160. Keep optional RPC additions and privacy.
+- Worker T83 `w-d97ad6d4f18f9ee2` running from `2f7287ee59`. #1/#6 worker T82 `w-b932eadad70bb911` running from `ae09701991`.
+
+### #8 — derived Monitor report loses unknowns/state and window semantics (open)
+
+- Actual isolated-ledger reproduction: an unknown-pricing miss omits request `missCost` but `queryMonitor` totals return `missCost: 0`, because T3's new baseline zero is merged under T2's deliberate omission. Same sessions response has no `state` at all; production has no assignment anywhere, so it always displays `—` despite T3's state requirement. Legacy v1 sessions/agents breakdown also uses only request rows despite retained step totals.
+- Source review: windowed ping `sent`/cost use filtered requests but followedByHit/Miss, unstable and unread reuse entire session analysis. Out-of-window signals can exceed sent or describe another period. Agent tokens omit reasoning; Sessions UI token total omits cache reads/writes/reasoning.
+- Weight: inaccurate Monitor T2 signals / T3 metrics, not unknown provider-routing behavior.
+- Plan: after #3 lands, correct report aggregation/omission and per-session real state using existing query/event/run seams; filtered signals honor the requested window, retain history only as evidence/predecessors. Focused actual-ledger regressions for unknown vs known pricing, windowed pings/unstable/unread, legacy breakdown, running/completed/error states and reasoning/cache-inclusive totals. T83 handles visible Sessions token total; avoid new durable derived state. Re-check page scopes/windows live.
+
+### #9 — legacy call attribution persists content-bearing errors/targets (open)
+
+- Actual collector reproduction writes fictional `FICTIONAL_PRIVATE_ERROR_SENTINEL` unchanged to `call.error` (`tool: …`). Request errors correctly hash through `errorFingerprint`, but callEnded does not. `innerTarget` also writes the first arbitrary string argument of unknown Code Mode tools, and targetOf stores raw search text; commandHead treats any lower-case second argument as a subcommand (e.g. echo's payload).
+- Weight: violates T1 no-content ledger privacy; existing request-only privacy assertions miss call columns. No real secret read or printed; reproduction used a fictional sentinel and isolated temp ledger.
+- Plan: reuse hashed errors for call persistence and restrict targets to recognized identifiers/names/paths/hosts or hashed query summaries; remove arbitrary-string fallback and only retain known command subcommands. Keep target grouping and useful names, no content redaction framework. Focused tests inspect every stored column with sentinel refusal/control cases; old stores remain readable, no touching/migrating shared live ledger. Owned live check one failed tool/query and inspect isolated ledger.
 
 ## Live evidence
 

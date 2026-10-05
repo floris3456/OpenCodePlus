@@ -118,7 +118,7 @@ test("<leader>p opens Instructions and no plus.project command exists", async ()
   }
 })
 
-test("the tools command is exposed as the lowercase slash command /tools", async () => {
+test("the Monitor command exposes /monitor with the lowercase /tools alias", async () => {
   const harness = createHarness()
   const cleanup = await plusPlugin.setup(harness.context)
   harness.mountSlot()
@@ -126,9 +126,10 @@ test("the tools command is exposed as the lowercase slash command /tools", async
     const commands = harness.commands()
     const open = commands.find((command) => command.id === "plus.monitor.open")
     expect(open).toBeDefined()
-    // Slash names are lowercase and matched exactly, so it is typed and shown as /tools.
-    expect(open?.slash?.name).toBe("tools")
-    expect(open?.title).toBe("Tools: calls and tokens")
+    // The old spelling remains an alias of the same command, not a duplicate.
+    expect(open?.slash?.name).toBe("monitor")
+    expect(open?.slash?.aliases).toEqual(["tools"])
+    expect(open?.title).toBe("Monitor: tokens, cache and tools")
     expect(open?.palette).toBe(true)
     // The command id stays stable so existing configs keep binding it.
     expect(commands.filter((command) => command.id === "plus.monitor.open")).toHaveLength(1)
