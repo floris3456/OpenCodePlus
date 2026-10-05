@@ -144,4 +144,32 @@ and selecting `gmember` switched TUI two's composer to
 `Gmember · claude-fable-5-1 CLIProxyAPI · xhigh` with footer `· team gcrew`.
 **Enable PASS.**
 
-_Remaining: remove member and disable team._
+**2d. Remove a member.** With TUI two's `Select team` picker **open**, TUI one
+deleted `gmember3` (`d` → `Delete team member gmember3?` → confirm) at
+`1791212284137`. TUI two's open picker dropped the `gmember3` row:
+`+5ms still shows gmember3; +209ms still shows; +414ms gone`. **Remove-member
+PASS** (within ~0.5 s).
+
+**2e. Disable a team.** In TUI one, `gcrew` toggled off at `1791212307478`
+(header `state off`). TUI two's composer, which had been on
+`Gmember2 · claude-fable-5-1`, fell back to
+`Build · claude-opus-5-5 CLIProxyAPI · high` by `+434ms`; TUI two's
+`Select team` picker then read `No items available` (no `gcrew` group), and
+TUI two's Instructions tree showed `▾ ○ gcrew` (`state` off). **Disable PASS**
+(within ~0.5 s, tree included). Re-enabling at `1791212355147` restored
+`state on` in TUI two's tree (`contains 3 rows · 1 on · 1 off`) with
+`gmember`/`gmember2` and no `gmember3`, confirming the removal had followed.
+
+**2f. Instructions tree** is covered throughout 2a–2e: both TUIs' trees showed
+the new team row, each added member, the removed member and the on/off state
+without a restart. **Line 2 PASS.** The team-creation sub-case "just created
+and filled shows its members immediately, without toggling off and on" is
+2b (`gmember3` appeared in TUI two's picker at **+506 ms** while `gcrew`
+stayed enabled).
+
+### Line 3 — disabled agents never linger in `shift+tab`
+
+Covered by 1a and its controlled re-run at `1791211441165`: disabling `build`
+in TUI one, the very first `shift+tab` probe in TUI two (`+613 ms`) already
+lacked `Build`, and 40 probes over 6.1 s never showed it. In TUI one itself the
+post-disable cycle was `T2-Live / T2-Live2 / Plan` with no `Build`. **PASS.**
