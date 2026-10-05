@@ -267,4 +267,100 @@ records are project+team-scoped links, the global store and Defaults are
 untouched, and the same-name / different-case collision writes nothing to
 Defaults.
 
+## Focused tests (supplementary)
+
+Run from `packages/plus` in this worktree at this HEAD:
+
+- `bun test test/tree.test.ts` → **58 pass / 0 fail, 726 expect() calls**
+  (9.41 s). Includes the team-member tree tests named
+  `team member rows expand to full agent subtrees with team-prefixed groups`,
+  `a team member's own rows list under the tools they govern, rows for absent
+  tools under Other permissions, and team tools never reach the Agents
+  catalogue`, `a team member's own rows survive the snapshot boundary into the
+  Policy group`, and `nested agent id and team member group ids never collide`.
+- `bun test test/agents.test.ts` → **16 pass / 0 fail, 103 expect() calls**
+  (95 ms) — the agent file / path confinement tests unaffected by team writes.
+- `bun test test/plus-instructions-propagation.test.ts` → **5 pass / 0 fail,
+  31 expect() calls**. The direct T5 cover is
+  **`T5: a Global Basic team with preset-linked members writes no Defaults
+  entry and lists no Defaults agent`**: it writes a Global `Basic` team whose
+  members link to the shipped `basic` member presets, then asserts
+  `snapshot.entries` is empty, each member has a `team:global:Basic:<member>`
+  node, no `agent:defaults:<member>` node exists, and no
+  `team:defaults:Basic` / `team:defaults:basic` node exists — the exact
+  end-state line, also on the tree the live TUI renders.
+
+(The tests emit `plus permission hook not installed` WARN lines to the test
+process's own stdout; they are unrelated to the sweep and are not server-log
+lines.)
+
+## Server log — every ERROR and WARN line
+
+`$DEV/data/opencode/log/opencode-local.log` at cleanup: **175 lines — 169
+INFO, 6 WARN, 0 ERROR.** There is no `level=ERROR` line; every WARN is the
+expected `executor-controlled plugin source refused` refusal control (the only
+distinct WARN message), one server run `3b156bf9`, six lines:
+
+```
+timestamp=2026-10-05T16:13:28.437Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=105 role=server
+timestamp=2026-10-05T16:13:28.437Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=105 role=server
+timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=1620 role=server
+timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=1620 role=server
+timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t136f068-20261005-1811/.opencode/opencode.jsonc type=document http.span=1620 role=server
+timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t136f068-20261005-1811/.opencode type=directory http.span=1620 role=server
+```
+
+`grep -E 'level=(ERROR|WARN)' … | grep -v "executor-controlled plugin source
+refused"` returns nothing (0 lines).
+
+## Result
+
+The end-state line verified **PASS** against this worktree's own build, with the
+name-collision case exercised in both directions:
+
+1. **PASS** — Global team `BASIC` (name differing only in case from the
+   release-copied `Basic`) created from the Basic preset wrote only
+   `teams/BASIC/*.md` and seven `team:global:BASIC`-scoped link records; its
+   members show only under `Global › Teams › BASIC`; Defaults › Agents and
+   Defaults › Teams show none of them and the `"level":"defaults"` count stayed
+   10.
+2. **PASS** — Project team `basic` (exact same name as the shipped Basic preset
+   team) created empty and filled one member at a time from
+   Presets › Teams › Basic members wrote only `project/.opencodeplus/teams/basic/*.md`
+   and six `team:project:basic`-scoped links; its members show only under
+   `Project › Teams › basic`; the global store was byte-stable (revision 493,
+   262 lines) across the whole Project half; Defaults is unchanged.
+3. **PASS (same-tree focused test)** — `T5: a Global Basic team with
+   preset-linked members writes no Defaults entry and lists no Defaults agent`
+   asserts the exact T5 end-state (no Defaults entry, no `agent:defaults:*`
+   node, no `team:defaults:*` node) on the real rendered tree.
+
+No source file was changed; only this evidence file.
+
+## Cleanup
+
+`pilotty list-sessions` before killing (mine is `sweep-i-t5`; the others are not
+mine):
+
+```
+['sweep-recheck', 'w-f15454a0a1ed9809-b', 'sweep-m-t4', 'sweep-i-t8',
+ 'w-1e01-story', 'sweep-i-t7a', 'sweep-i-t5', 'w-f15454a0a1ed9809-a', 'ux1',
+ 'rt-t6']
+```
+
+Killed only `sweep-i-t5` (`Session e421d7c5-0547-4310-9fc0-eefabbf1d5fb killed`).
+After:
+
+```
+['sweep-recheck', 'w-f15454a0a1ed9809-b', 'sweep-m-t4', 'sweep-i-t8',
+ 'w-1e01-story', 'sweep-i-t7a', 'w-f15454a0a1ed9809-a', 'ux1', 'rt-t6']
+```
+
+`sweep-i-t5 present: False`; every remaining session is one I did not start and
+was left alone. A kernel scan of `/proc/<pid>/environ` and `/proc/<pid>/cwd` for
+processes bound to this run's dev home returned no match: the only cwd hits were
+the tool shell itself and an unrelated release `opencodeplus search-mcp`
+process, neither of them a server for this run. No owned server or launcher
+survived.
+
 
