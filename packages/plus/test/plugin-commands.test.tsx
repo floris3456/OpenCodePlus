@@ -57,6 +57,11 @@ function createHarness(): CommandsHarness {
         slotRenders.push(options.render)
         return () => {}
       },
+      // The warming footer registers a send guard at setup (warming.tsx); the
+      // harness only needs the registration to succeed, not the guard to run.
+      prompt: {
+        guard: () => () => {},
+      },
       dialog: { clear: () => {} },
       toast: { show: () => {} },
       agents: {
