@@ -249,9 +249,34 @@ row; edit the row and see it in the sections.
        review.
    - **Remove** `packages/plus/src/search/`, the `search` server registration
      and the `search-mcp` CLI subcommand.
-   - **Check:** the hosted tools' descriptions cost tokens in every prompt.
-     Measure them, and shorten them with Instructions text overrides where
-     needed.
+   - **Measured 2026-10-05** with Anthropic's token count, through CLIProxyAPI:
+
+     | Same three tools | Code Mode catalogue line | Native tool definition |
+     |---|---|---|
+     | Ours | 801 tokens | 1,510 tokens |
+     | Hosted | 1,329 tokens | 2,077 tokens |
+     | Hosted, all 8 tools | (not measured) | 4,430 tokens |
+
+     - Nearly all of the difference is Tavily search: its schema has many
+       parameters, so its Code Mode line is 900 tokens against 250 for ours.
+     - Exa code search is smaller hosted: 175 tokens against 341.
+     - Instructions can replace a description, but not the schema, so
+       overrides barely shrink this.
+     - In Code Mode the inline catalogue has a fixed 2,000-token budget
+       (`core/src/codemode/catalog.ts`). If the cost matters, leave
+       `tavily_search` unpinned: agents then find it through `search()`.
+   - **Keys, tested 2026-10-05 with a wrong key, which costs nothing:**
+     - Tavily answers 401 without a valid `Authorization: Bearer` header.
+     - Exa reads `Authorization: Bearer` or `x-api-key` (it suggests these
+       itself) as well as the `exaApiKey` URL parameter. Use a header, so the
+       key never appears in a URL.
+     - Without a key, Exa code search still works, on Exa's anonymous free
+       tier.
+     - Core's `{file:…}` substitution trims and escapes the key file
+       (`core/src/config/variable.ts`), so it fits in a header value.
+     - Use an absolute key path: a dev home has a different `~`.
+     - Exa's Cloudflare front blocks clients without a normal User-Agent
+       (error 1010). Check that core's MCP client sends one.
 
 **Tests:**
 - An event for a dropped folder does not reopen it.
@@ -296,6 +321,16 @@ row; edit the row and see it in the sections.
 **Must not change:** a chat without mid-chat changes sends byte-identical tool
 definitions and system text to today.
 
+**Cost of applying overrides on every request** (measured 2026-10-05, with the
+real `apply()` and `context` hook in a temporary benchmark):
+- the setup is 40 tools (20 overridden, 5 removed), 10 permission rules
+  scrubbed, and a 44 KB system prompt;
+- building the plans once, per Instructions change: 5.2 ms;
+- applying them per request: 0.79 ms median, 1.05 ms p99.
+
+Overrides add no noticeable latency next to a model's response time, and the
+same input always gives the same bytes, so they do not disturb the cache.
+
 **Decisions (user):**
 - Changes apply automatically and seamlessly. No refresh step is needed in
   normal use.
@@ -315,7 +350,9 @@ definitions and system text to today.
      message, and a one-line System note says so. The tool's definition and
      description stay in the prompt unchanged until the next rebuild moment, so
      nothing cached is lost.
-   - **Code Mode tools** (catalogue text): a note with the change.
+   - **Code Mode tools:** core already sends a changed catalogue as an update
+     message instead of rewriting the prefix (`core/src/codemode/instructions.ts`,
+     `update`). Check that Plus's `catalog` hook changes go through it.
    - **A native tool switched on, a new MCP server, or a changed native tool
      description:** these sit in the tool definitions, which come first, so
      they wait for the next rebuild (item 3 below).
