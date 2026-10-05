@@ -63,7 +63,37 @@ selects the Basic row.
 
 ### A2. Toggle `team_delegate › Delegate to › scout` off and quote the record
 
-_Pending._
+Did: enabled the team (`rc-team` Space on its row: detail `Enabled ○` → `Enabled
+●`, record `{"type":"team","level":"global","team":"rc-team","enabled":true,...}`),
+then navigated `rc-team › build-seat › Tools › OpenCodePlus › delegate ›
+Permissions › Delegate to › scout` and pressed `Space`.
+
+The row reads `○ scout` and the detail pane:
+
+```
+scout                                   permission
+Global › Teams › rc-team › build-seat › Tools ›
+OpenCodePlus › delegate › Permissions › Delegate
+to › scout
+state       off
+source      state: set here (Global) · text: from
+            preset Basic › build-seat
+rule        team_delegate · to.scout
+message     build-seat may not delegate to scout
+address     Global · build-seat · catalogue: teams
+            · perm:team_delegate:to.scout
+```
+
+Record written
+(`<dev-home>/config/opencode/opencodeplus/instructions/records.jsonl:120`):
+
+```
+{"type":"customization","level":"global","agent":"build-seat","item":"perm:team_delegate:to.scout","section":null,"state":"off","basedOn":"3608e4bd0e693177369e17f48cdf750eb962b86aaac1bf6b50c7a46d52f7d94b","basedOnState":"on","updated":"2026-10-05T16:41:42.929Z"}
+```
+
+**It has NO `team` field.** This is the shape the pre-fix sweep found failing:
+the TUI writes the "Delegate to" override without a `team` ref. PASS (setup
+step recorded; the fix's behaviour is judged in A3/A4).
 
 ### A3. Rename member `scout` → `scout-rn` with `shift+r`
 
