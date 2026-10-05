@@ -207,6 +207,25 @@ model `gpt-6-luna`, not the previous `claude-opus-5-5`.
 The inspector in the Instructions TUI likewise marked the row
 `active ◆` / `source  active model: set here (Global)` in line 1.
 
+**A bare `set` (id only) also activates and is really used.**
+`instructions.set` with only `id:
+item:global:build:model:cliproxyapi/gpt-6.1-sol` (no `active`, no other field)
+returned `{"id":"item:global:build:model:cliproxyapi/gpt-6.1-sol","status":
+"Activated \"cliproxyapi/gpt-6.1-sol\"","revision":0,"globalRevision":497}`.
+The composer switched (`Switched model to gpt-6.1-sol`, then
+`Build · gpt-6.1-sol CLIProxyAPI`); the reply `PONG2.` rendered under
+`Build · gpt-6.1-sol · 2.5s · 3.2 tok/s`; `/monitor` → `5 Steps` shows the step
+`17:18:10  step  gpt-6.1-sol  16.2k …  stop`. Store line 244 `gpt-6.1-sol
+active:true basedOn:"cliproxyapi/claude-opus-5-5@xhigh"`; log `mutate 2 rows
+(global): …gpt-6-luna, …gpt-6.1-sol`, revision **497**, actor tool/build. So the
+bare `set` is activation-equivalent and the very next request ran on it.
+
+**The member row is really used too:** the focused test
+`member row activates exclusively through set active:true and a bare set`
+(`test/member-model-activation.test.ts`) resolves the member chain with its own
+owner path; the live member row `item:global:Sweep/:Sweep-Only:…` activated with
+revision 496 (Line 3).
+
 **Line 2 result: PASS.** Tool `set` (and tool `create kind:"model"`) from the
 real tool actor activated the row; the composer switched with no manual pick;
 the very next request was served by the activated model (`/monitor` Steps); and
@@ -283,4 +302,49 @@ From `packages/plus` at this HEAD:
   `activateModel flips active within one (level, agent) pair only`,
   `re-adding a tombstoned candidate clears its tombstone and never steals
   active`, `tool activation of a member-only agent's model row writes a flat
-  record its member chain reads`, and the flat-id guidance case.
+  record its member chain reads`, and
+  `both flat model id forms for a member-only agent refuse and name the member
+  row` (the exact `Planner` shape: `item:global:Planner:model:acme/nova-2` and
+  `item:global:Basic/:Planner:model:acme/nova-2`).
+- `bun typecheck` from `packages/plus` → clean (`tsgo --noEmit -p
+  tsconfig.test.json`, no diagnostics).
+
+## Server log
+
+The owned log `<dev-home>/data/opencode/log/opencode-local.log` has **0 lines at
+`level=ERROR`**. Its `level=WARN` lines are **6**, every one of them the
+expected:
+
+```
+level=WARN run=c98c35e1 message="executor-controlled plugin source refused"
+  path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document
+  path=/home/bliss/OpenCodePlus/.opencode type=directory
+  path=<worktree>/.opencode/opencode.jsonc type=document
+  path=<worktree>/.opencode type=directory
+```
+
+(4 warnings at `2026-10-05T14:26:05.167Z` and 2 more at `14:26:07.002Z`, all
+`executor-controlled plugin source refused`; no other WARN or ERROR anywhere in
+the 295-line log.)
+
+## Store revisions (owned home)
+
+- revision 478 at load → 479 first TUI add, 480 second, 481 Defaults, 482 member
+  preset, 487 Defaults exclusive, 488 agent preset + team.create, 489
+  team.addAgent, 490 a system toggle, 491 team-member add, 492/493/494/495/496
+  the tool-actor adds/sets. Each add/set was exactly one revision and one
+  `model.add`/`mutate` log line.
+
+## Cleanup
+
+- `pilotty list-sessions` before kill and after kill recorded below.
+
+### 2026-10-05 — line results summary
+
+- **Line 1: PASS** (TUI `a` on agent, Defaults, agent preset, member preset,
+  real team member; exclusive active, one revision, one log line).
+- **Line 2: PASS** (tool `set`/`create`, composer follows, `/monitor` shows the
+  next request on the activated model, `show`/`list` report it).
+- **Line 3: PASS** (flat id refused naming the member row; named member row
+  activates; literal `Planner`/Basic disabled in this home, mechanism proven on
+  the real member and by `test/member-model-activation.test.ts`).
