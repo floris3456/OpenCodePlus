@@ -270,8 +270,8 @@ the override, source returns to `· opencode.json`).
 
 ## Runtime log and cleanup
 
-- Server log `<dev-home>/data/opencode/log/opencode-local.log`: **238 lines,
-  0 ERROR, 6 WARN**.
+- Server log `<dev-home>/data/opencode/log/opencode-local.log`: **289 lines
+  (final, after the chat turn), 0 ERROR, 6 WARN**.
 - Every WARN is the expected `executor-controlled plugin source refused`:
   - line 31: `path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document`
   - line 32: `path=/home/bliss/OpenCodePlus/.opencode type=directory`
@@ -286,3 +286,6 @@ the override, source returns to `· opencode.json`).
   `w-1e01-story`, `w-f15454a0a1ed9809-a`, `sweep-i-t7a`, `ux1`, `rt-t6`) — none
   of them mine.
 - No source file was changed; the diff is this evidence file only.
+- Per the Brief, only the build field row was reset; the Defaults › Models
+  `…@xhigh` field row set in step 6d was deliberately left at `warming:"25m"`
+  (the Brief resets only the build field row). The dev home is disposable.
