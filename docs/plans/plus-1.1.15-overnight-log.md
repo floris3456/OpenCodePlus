@@ -560,3 +560,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Five sentinels appear in no table.
   - Live `meta.schema=2`. v1→v2 migration, 90-day retention and idempotent writes are covered by `monitor-ledger` (10 pass).
   - Log: the one ERROR is the deliberate fable request. Child stopped.
+- 17:49: Instructions T8 delegated (T133, `w-87b53f7ed5c42025`, base `fc01edb5b8`). Remaining: Instructions T1 and T5, and Monitor T4.
