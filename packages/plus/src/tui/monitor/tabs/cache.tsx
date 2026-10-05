@@ -3,7 +3,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
-import { formatClock, formatCost, formatMs, formatTokens } from "../format.js"
+import { formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
 
 export interface CacheTabProps {
   readonly context: Plugin.Context
@@ -183,7 +183,7 @@ export function CacheTab(props: CacheTabProps) {
               {/* Timing */}
               <box flexDirection="column" flexShrink={0} marginBottom={1}>
                 <text fg={theme().text.muted}>
-                  {`Gap since last request: ${formatMs(d.timing.gapMs ?? 0)} · Cache lifetime: ${formatMs(d.timing.lifetimeMs ?? 0)} · Warming: ${d.timing.warming ?? "n/a"}`}
+                  {`Gap since last request: ${formatMsLabel(d.timing.gapMs)} · Cache lifetime: ${formatMsLabel(d.timing.lifetimeMs)} · Warming: ${d.timing.warming ?? "—"}`}
                 </text>
                 <text fg={theme().text.muted}>
                   {`Pings on the prefix: ${d.pings.length}${d.timing.lastPingAt === undefined ? "" : ` · last at ${formatClock(d.timing.lastPingAt)}`}`}

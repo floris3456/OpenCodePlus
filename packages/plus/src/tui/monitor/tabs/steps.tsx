@@ -3,7 +3,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
-import { formatClock, formatCost, formatMs, formatTokens } from "../format.js"
+import { formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
 
 export interface StepsTabProps {
   readonly context: Plugin.Context
@@ -102,7 +102,7 @@ export function StepsTab(props: StepsTabProps) {
                         <Show when={showCost()}>
                           <text fg={fg()} width={8}>{formatCost(req.cost) ?? "$0.00"}</text>
                         </Show>
-                        <text fg={fg()} width={8}>{formatMs(req.durationMs ?? 0)}</text>
+                        <text fg={fg()} width={8}>{formatMsLabel(req.durationMs)}</text>
                         <Show when={showFinish()}>
                           <text fg={theme().text.muted} width={10} wrapMode="none" truncate>{req.finish ?? "—"}</text>
                         </Show>
@@ -185,7 +185,13 @@ export function StepsTab(props: StepsTabProps) {
                 </Show>
                 <Show
                   when={d.segments.length > 0}
-                  fallback={<text fg={theme().text.muted}>  Prefix is identical to previous request.</text>}
+                  fallback={
+                    <text fg={theme().text.muted}>
+                      {d.previous === undefined
+                        ? "  No earlier request to compare."
+                        : "  No segment changes recorded."}
+                    </text>
+                  }
                 >
                   <For each={d.segments}>
                     {(seg) => (

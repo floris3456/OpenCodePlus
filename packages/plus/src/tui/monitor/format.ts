@@ -257,6 +257,16 @@ export function formatMs(ms: number): string {
   return `${trim(ms / 60_000)}m`
 }
 
+/**
+ * A timing that never invents a zero: an omitted value is explicitly unknown
+ * (`—`), while a real zero stays a real zero (`0ms`).
+ */
+export function formatMsLabel(ms: number | undefined): string {
+  if (ms === undefined) return "—"
+  if (ms <= 0) return "0ms"
+  return formatMs(ms)
+}
+
 export function formatClock(at: number): string {
   const date = new Date(at)
   return [date.getHours(), date.getMinutes(), date.getSeconds()].map((part) => String(part).padStart(2, "0")).join(":")
@@ -310,8 +320,10 @@ export function totalsLines(totals: Plus.MonitorTotals, width = 120): string[] {
   const hr = totals.hitRate === undefined ? "—" : `${Math.round(totals.hitRate * 100)}%`
   const cost = formatCostLabel(totals.cost)
   const missCost = formatCostLabel(totals.missCost)
+  // steps is required; requests, misses and pings are optional and must show
+  // — when the RPC omitted them rather than an invented zero.
   const metrics = [
-    `reqs: ${totals.requests ?? totals.steps}`,
+    `reqs: ${totals.requests ?? "—"}`,
     `steps: ${totals.steps}`,
     `in: ${formatTokens(totals.input)}`,
     `read: ${formatTokens(totals.cacheRead)}`,
@@ -321,7 +333,7 @@ export function totalsLines(totals: Plus.MonitorTotals, width = 120): string[] {
     `hit rate: ${hr}`,
     `misses: ${totals.misses ?? "—"}`,
     `miss cost: ${missCost}`,
-    `pings: ${totals.pings ?? 0}`,
+    `pings: ${totals.pings ?? "—"}`,
     `cost: ${cost}`,
   ]
   // The page insets its content by one column on each side, so wrap to the
@@ -351,7 +363,7 @@ export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
   const cost = formatCostLabel(totals.cost)
   if (width < 90) {
     return [
-      `reqs: ${totals.requests ?? totals.steps}`,
+      `reqs: ${totals.requests ?? "—"}`,
       `steps: ${totals.steps}`,
       `read: ${formatTokens(totals.cacheRead)}`,
       `hit rate: ${hr}`,
@@ -360,7 +372,7 @@ export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
     ].join(" · ")
   }
   return [
-    `reqs: ${totals.requests ?? totals.steps}`,
+    `reqs: ${totals.requests ?? "—"}`,
     `steps: ${totals.steps}`,
     `in: ${formatTokens(totals.input)}`,
     `read: ${formatTokens(totals.cacheRead)}`,
@@ -370,7 +382,7 @@ export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
     `hit rate: ${hr}`,
     `misses: ${totals.misses ?? "—"}`,
     `miss cost: ${formatCostLabel(totals.missCost)}`,
-    `pings: ${totals.pings ?? 0}`,
+    `pings: ${totals.pings ?? "—"}`,
     `cost: ${cost}`,
   ].join(" · ")
 }

@@ -34,14 +34,26 @@ all-metric totals) plus the query text/facets/top-tools repairs.
 | Overview top miss substituted the whole request cost | `overview.tsx` uses `formatCostLabel(miss.missCost)` only; unknown is `—`, never `miss.cost` or `$0.00` | "the overview top miss shows an unknown miss cost as — and never the request cost" |
 | Totals suppressed miss cost when ≤0/absent | `formatCostLabel` keeps known-0 as `$0.00` and unknown as `—`; totals always label `miss cost` | "known zero, known positive and omitted miss cost each render distinctly" |
 | Totals dropped input/write/output/reasoning/pings at narrow or when 0 | `totalsLines` wraps every labelled metric; full page renders the wrapped lines | "every total metric stays visible and labelled at 80, 100 and 160 columns" |
+| Optional `requests`/`pings` fabricated as steps/0 | omitted renders `—`; known zero stays `0`; required `steps` kept | "omitted requests/pings totals render — while known zero stays 0" |
+
+### #19 (newly found) timing/diff honesty, UI only
+
+| Item | Fix | Regression |
+| --- | --- | --- |
+| Cache detail formatted `gapMs`/`lifetimeMs` `?? 0` | `formatMsLabel` shows `—` when omitted, `0ms` for a real zero | "Cache detail labels omitted timings — and keeps a real zero as 0ms" |
+| Steps detail formatted `durationMs` `?? 0` | same `formatMsLabel` | covered by the same helper and the Steps render |
+| Empty segment diff claimed an identical prefix | honest "No earlier request to compare." / "No segment changes recorded." | "a step with no earlier request says so instead of claiming an identical prefix" |
 
 ## New actual-ledger query regressions (`test/monitor-ledger.test.ts`)
 
-Seven tests read a real temporary `monitor.db` through `queryMonitor` (no mock):
+Eight tests read a real temporary `monitor.db` through `queryMonitor` (no mock):
 scope (session/tree/project/all, fail-closed), agent/tool/model filters with
 unfiltered facets, failed-only, tool-grouped `topTools` independent of the
-requested grouping, `id` detail only in scope, `missesOnly` totals invariance,
-and ping kind/usage survival.
+requested grouping, real-request `id` detail only in scope, title
+included/excluded, `missesOnly` totals invariance, and ping kind/usage survival.
+Request rows are seeded through the actual ledger boundary
+(`requestStarted` + `requestFingerprint` + `requestEnded`), not the legacy
+step-only script path.
 
 ## Reviewed draft corrections applied
 
@@ -78,6 +90,12 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
   window all · order tokens`; `M` opens the page at `Scope: This session`.
   Team tab hints `move attach active tree stop|resume monitor M`; `M` opens the
   page and `Escape` returns to the chat.
+- Cache detail on the real deepseek route (TTL reported by the provider): the
+  `[MISS] unknown` detail reads `Gap since last request: 1.4m · Cache lifetime:
+  5m · Warming: on`; a step whose warming was not recorded reads `Warming: —`
+  (never `n/a` or `0ms`). Steps detail at 80 renders the segment diff
+  (`[ADDED] system "system part AGENTS.md" (0 → 2.7k tokens)` etc.) and a
+  step with no earlier request reads `No earlier request to compare.`
 - Story `OPENCODE_STORY=monitor opencodeplus-dev .`: real page with contract
   fixtures; at 80 columns the totals wrap to
   `reqs: 4 · steps: 3 · in: 17.1k · read: 37.5k · write: 15.8k · out: 925` /
@@ -98,7 +116,7 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
   immutable worker MCP (`releases/2.0.18-plus-1.1.14/bin/opencodeplus
   search-mcp`), which is not a runtime I started and is left running.
 - Log `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t8752d5-20261005-0302/data/opencode/log/opencode-local.log`
-  (690 000 bytes, 2 717 lines): **0 ERROR**, 78 WARN — every WARN is
+  (746 653 bytes, 2 932 lines): **0 ERROR**, 84 WARN — every WARN is
   `executor-controlled plugin source refused` for the workspace `.opencode`
   sources (the confinement rule), and 11 INFO `InterruptError: All fibers
   interrupted without error` lines, one per normal TUI shutdown. No Monitor or
@@ -106,12 +124,18 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
 
 ## Unresolved / new findings
 
-- `packages/plus` whole suite: 8 failures in `test/ops.test.ts` (2),
-  `test/tools.test.ts` (4), `test/route.test.tsx` (2) — the Instructions A2/#6
-  model-row field editing/reset/refusal area. Command `bun test test/ops.test.ts
-  test/tools.test.ts test/route.test.tsx` fails with the same names at the parent
-  base `254fcbcccc6231bda5469d66907d399269670470` (reproduced by stashing this
-  branch's changes). Four of the `tools.test.ts` names are T82's `#15`; the rest
-  are not yet validated by the parent. Not touched here.
+- `packages/plus` parent test at `7c128c7733`:
+  `bun test test/ops.test.ts test/route.test.tsx test/teams/worktree.test.ts`
+  reports 146 pass / 2 existing skips / 4 fail / 1 route timeout / 834 expects.
+  The four failures are the Instructions A2/#6 model-row area and the parent
+  test, not this source: `test/ops.test.ts` "editModelRow plants a local record
+  for an inherited row, active for the effective upstream" and "editModelRow
+  replaces the candidate and keeps the effective model active" (tombstone vs
+  visible row); `test/route.test.tsx` "enter on a model row edits model, variant,
+  warming, interval and prompt; w is no longer bound" (removed whole-row editor)
+  and "enter on a model row refuses a model outside the host catalog" (invalid
+  text pick; this one times out). T82's draft already reconciles all four; do not
+  fix. `test/teams/worktree.test.ts` passes all 18 at the parent and at this HEAD
+  — it is **not** a failing baseline.
 - `packages/tui` whole suite is not authorized by the plan (focused TUI tests
   only); no Monitor/story test lives there and none is newly broken.

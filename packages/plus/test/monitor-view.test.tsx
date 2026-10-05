@@ -755,6 +755,103 @@ test("the overview top miss shows an unknown miss cost as — and never the requ
   }
 })
 
+test("omitted requests/pings totals render — while known zero stays 0", async () => {
+  const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const omitted: Plus.MonitorTotals = { ...base.totals, steps: 3 }
+  delete (omitted as { requests?: number }).requests
+  delete (omitted as { pings?: number }).pings
+  const cases: { totals: Plus.MonitorTotals; requests: string; pings: string }[] = [
+    { totals: omitted, requests: "reqs: —", pings: "pings: —" },
+    { totals: { ...base.totals, requests: 0, pings: 0, steps: 0 }, requests: "reqs: 0", pings: "pings: 0" },
+    { totals: { ...base.totals, requests: 5, pings: 2, steps: 4 }, requests: "reqs: 5", pings: "pings: 2" },
+  ]
+  for (const width of [80, 100, 160]) {
+    for (const item of cases) {
+      const { fixture } = await render(db, {
+        width,
+        height: 40,
+        settings: { ...defaultSettings, tab: "overview" },
+        customReport: () => ({ ...base, totals: item.totals }),
+      })
+      try {
+        const frame = await fixture.waitForFrame((text) => text.includes("steps:"))
+        expect(frame).toContain(item.requests)
+        expect(frame).toContain(item.pings)
+        frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
+      } finally {
+        fixture.destroy()
+      }
+    }
+  }
+})
+
+test("Cache detail labels omitted timings — and keeps a real zero as 0ms", async () => {
+  const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const cases: { timing: Plus.MonitorRequestDetail["timing"]; gap: string; lifetime: string }[] = [
+    { timing: { warming: "on" }, gap: "Gap since last request: —", lifetime: "Cache lifetime: —" },
+    { timing: { gapMs: 0, lifetimeMs: 0, warming: "off" }, gap: "Gap since last request: 0ms", lifetime: "Cache lifetime: 0ms" },
+    { timing: { gapMs: 420_000, lifetimeMs: 300_000, warming: "off" }, gap: "Gap since last request: 7m", lifetime: "Cache lifetime: 5m" },
+  ]
+  for (const item of cases) {
+    const { fixture } = await render(db, {
+      width: 120,
+      height: 40,
+      settings: { ...defaultSettings, tab: "cache" },
+      customReport: () => ({
+        ...base,
+        detail: { ...base.detail!, timing: item.timing },
+      }),
+    })
+    try {
+      // Drill into the first request to open the detail.
+      await fixture.waitForFrame((text) => text.includes("[MISS]") || text.includes("[COLD]"))
+      dispatch(fixture, "return")
+      const frame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
+      expect(frame).toContain(item.gap)
+      expect(frame).toContain(item.lifetime)
+    } finally {
+      fixture.destroy()
+    }
+  }
+})
+
+test("a step with no earlier request says so instead of claiming an identical prefix", async () => {
+  const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const first = base.requests![0]!
+  const { fixture } = await render(db, {
+    width: 120,
+    height: 40,
+    settings: { ...defaultSettings, tab: "steps" },
+    customReport: () => ({
+      ...base,
+      requests: [first],
+      detail: {
+        request: first,
+        lines: [],
+        segments: [],
+        timing: { warming: "off" },
+        pings: [],
+        accounts: [],
+        instructions: [],
+        reverts: [],
+        actualCacheRead: 0,
+      },
+    }),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Tools Called"))
+    dispatch(fixture, "return")
+    const frame = await fixture.waitForFrame((text) => text.includes("Step Detail:"))
+    expect(frame).toContain("No earlier request to compare.")
+    expect(frame).not.toContain("Prefix is identical to previous request.")
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("the / text filter narrows every table but leaves the totals", async () => {
   const db = await seeded()
   const { fixture, queries } = await render(db, {
