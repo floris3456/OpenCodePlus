@@ -150,6 +150,7 @@
 - Root preflight `bun run check` stopped at lint (before typechecks): story `monitor.tsx:466/473` uses restricted `Reflect.get`, two errors. T83 notified to replace these at the typed fixture boundary; canonical final gate remains pending.
 - Parent broader focused check also finds two stale active-team expectations after new M: hint list misses monitor/M and commands expect 6 instead of 7. T83 notified; action assertions must remain and actual M open/back regression added.
 - Additional full-page totals source review sent to T87: width<90 drops input/write/output/reasoning/pings, while wider totals hide zero reasoning/pings. T3 requires all labelled totals; wrapped/multiple readable totals lines must retain them without horizontal clipping, and body/selection-scroll height must adapt. Test actual 80/100/160 rendering; compact remains compact.
+- Early T87 source review: Sessions Enter/space/click first call `change(scope)` before pushing a drill, mutating the saved/parent settings and preventing Esc from restoring original scope. Require push-only temporary settings and original all/project+filters/storage regression. Revised request-last polling still uses `feed[0] ?? request-last`, so an old existing tool feed masks a recent ping; require max timestamp and old-feed/new-ping control. Sent under existing #7 temporary-drill/polling contract, not accepted yet.
 
 ### #8 — derived Monitor report loses unknowns/state and window semantics (open)
 
@@ -204,6 +205,7 @@
 - Source review: Instructions `remove()` first handles an explicit category header, then unconditionally deletes the selected user category even when `current()` is a model/item/agent row. Moving a deletable model into a category means d now asks to delete the category instead of the model; sidebar deletion is similarly hijacked. T8 says categories are display-only and editing stays unchanged; T7 model d must remain.
 - Where: `packages/plus/src/tui/instructions/route.tsx:1028–1033` and its key handling; category add also needs live verification in Models where the direct add path may bypass the generic Category choice.
 - Plan: only an explicit category header targets category deletion; other rows retain their original delete path. Real route/key regression and live category/model delete plus header delete/refusal control, at 80/160; include T8 move/reset/edit preservation and help/hints.
+- Fresh T90 `w-5ee4faa735c62d4b` started at `89476bd21c` for #14 route/dialog/help/workspace plus NEW actual-key category route regression and owned80/160 acceptance. No backend/model-field edits; T82 notified of boundary. Requires explicit category-header delete reachability and Category choice from Models list without restoring whole-row editor. No sixth child.
 
 ### #15 — four old model tool tests contradict landed activation/edit semantics (open)
 
