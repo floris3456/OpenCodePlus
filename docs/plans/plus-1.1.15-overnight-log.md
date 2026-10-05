@@ -6,7 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: **continuation requested09:27local**. Retry permitted worker availability with fresh Flash-C runs; historical #21/#23 refusals are not evidence that quota has now reset. B2 page/analysis accuracy/#22 polling and T3 member proof are landed. All29previous children stay closed; never resume them. New runs/observations are recorded below.
 - Pending: final A2/B2 acceptance, #1/#6/#10/#14/#15/#17 repairs, A4/A5/B4 and fresh combined-head F sweeps. #7/#8/#13/#18/#19 source/accuracy slices and #22 polling landed with qualified owned acceptance; #24 interrupted-row timing observation is open. A1/B1 complete. External findings #16/#20/#21/#23 require provider availability, not speculative source/config changes.
-- Latest source HEAD `abccd456f3cf354aa8f422207e6e7e43a3745181`: B1 `26eacdfc14`, transport `de7c1952bf`, shared-cache `339c6e2f36`, privacy `4588c190a2`, B1 live `fe583672d8`, A1 live `c0fb032385`, B2 page `5193f3e45f`, analysis `fd5ba64537`, member `33ab76c062`, polling `abccd456f3`. T100/T101/T103 drafts are **not landed or accepted**; preserved source inputs and review gaps are below. T105 partial live is not B4 acceptance. No allowed provider remains to finish implementation/live tests this run.
+- Latest source HEAD `abccd456f3cf354aa8f422207e6e7e43a3745181`: B1 `26eacdfc14`, transport `de7c1952bf`, shared-cache `339c6e2f36`, privacy `4588c190a2`, B1 live `fe583672d8`, A1 live `c0fb032385`, B2 page `5193f3e45f`, analysis `fd5ba64537`, member `33ab76c062`, polling `abccd456f3`. T100/T101/T103 drafts are **not landed or accepted**; preserved source inputs and review gaps are below. T105 partial live is not B4 acceptance. Fresh default-worker T106–T110 now continue at parent`b6835471ee`; current observations, not historical quota errors, decide availability.
 - A1 source landed `24a1a1115f`; owned live and source regressions accepted. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -365,7 +365,20 @@
 | MonitorT3 lines210–277 | Landed production story/page/query contracts and T87 owned80/100/160 entrypoints/tabs/scopes/windows/detail; T99/T104 actual state/detail/polling. Final real-miss cases and fresh combined all-controls sweep pending. |
 | MonitorT4 lines300–310 | Tree/topmost-root/fail-closed/query and composer source regressions pass. Actual basic-team delegation, all/tree/attach/active/stop-resume controls still require B4/final owned live acceptance. |
 
-## Completion boundary
+### Requested continuation — 09:27–09:35local
+
+- User asks to continue because quotas may have reset. Clean branch inspected at`1e66a60c7d`; continuation decision committed`b6835471ee`. Source unchanged. Old closed worker/provider runs remain permanently closed; no session/service restart, configuration change or secret inspection.
+- Five independent **fresh Flash-C** jobs started at`b6835471ee`, preserving the maximum5limit:
+  - **T106** `w-cab5839840e3b9d6`: interrupted final field/owner #1/#6/#15/#17 correction, attached126473byte T100input; coherent original metadata/independent resets, eight stale tests, owned80/160 fields. #6 gets only the exact corrections already issued before quota failure, no renewed repair round; if final coherence fails, retain it open.
+  - **T107** `w-807276a2d50b936a`: T101 category routing/input, actual inactive-remove/header-return/sidebar/narrow controls and corrected receipt; separate source/tests/dialog route scope.
+  - **T108** `w-24462d02608b8fe4`: T103 catalogue/speed input, REAL host lifecycle/effective provider+model metadata and valid first/three timing predicates; Core scope allows actual-boundary tests/minimal existing seam, not unapproved public API or broad architecture.
+  - **T109** `w-37af30f5d99f76c1`: #24 actual physical-attempt/step interruption diagnosis, new real-boundary regression and owned receipt; source repair only if a concrete small defect is established, no guessed end/outcome/identity.
+  - **T110** `w-991fa576b6036a90`: evidence-only B4 allfive deliberate cache cases, actual tool/page request-detail agreement and basic Project team delegation/tree/scopes; real wallclock expiry wait and honest unknownTTL/coldstart qualification.
+- 09:36 status: allfive `working/streaming`, no `retrying` error; T106/T107 already have dirty authored input/source. This is evidence of renewed worker activity, not proof that every provider quota or every live model route has reset. Flash-B remains fallback only if a new authoritative C provider failure arrives.
+- Every Brief names focused package checks/typechecks, source interfaces, exact isolation command`pilotty spawn --name <owned-name> opencodeplus-dev .`, no shared40375/dev:live/dev, real terminal controls, actual-log classification and cwd/fd/maps/PID cleanup. No source acceptance inferred from starting a run.
+- Parent next: review/land coherent field/category/catalogue/#24 results, focused tests/typechecks and stop each child immediately. B4 may overlap independent source work but final sweep reruns at corrected combined HEAD. **A5 waits relevant field/source landing**; then native composer refresh without workaround and earlier/later picks across two chats/Locations. Finally repeat required Plus/core/TUI/typecheck/root gates and two fresh final live sweeps. Old8fail gate remains failed until observed replacement.
+
+## Completion boundary at 07:25 (historical; continuation above)
 
 **Done does not hold.** Both allowed worker providers refused after retries; source typechecks/root lint pass but the Plus suite fails8known cases, final field/category/catalogue repairs are unaccepted, A5/B4 and the two fresh final sweeps are missing. Preserve this branch and the reviewed inputs for a later authorized continuation; do not merge/push/promote it as verified. Changing provider/run must not reset the #6 three-round limit or revive closed workers. Log and preserved evidence are the handoff, not a release verdict.
 
@@ -376,4 +389,4 @@
 
 ## Open findings for morning
 
-Source/acceptance issues #1/#6/#10/#14/#15/#17 and interruption observation#24 remain open. #22 is repaired and verified at`abccd456f3`. #16/#20/#21/#23 are external availability findings; #21 and#23 leave no authorized worker provider for this run. Whole Plus suite fails8known cases; A5/B4 and both final combined-head live sweeps are missing. No final acceptance or morning-merge readiness claim.
+Source/acceptance issues #1/#6/#10/#14/#15/#17 and interruption observation#24 remain open. #22 is repaired and verified at`abccd456f3`. #16/#20/#21/#23 are external availability findings; fresh T106–T110 now retry work under the explicit user continuation, with no current reported provider error. Last whole Plus suite still fails8known cases; A5/B4 and both final combined-head live sweeps are not yet accepted. No final acceptance or merge-readiness claim.
