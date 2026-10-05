@@ -363,7 +363,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
           const node = findRow(memo, input.id)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id))
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (input.category !== undefined) {
@@ -423,7 +423,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
           const node = findRow(memo, input.id)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id))
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (isModelFieldRowId(input.id)) return yield* resetModelField(api, snapshot, memo, input.id, actor)
@@ -453,7 +453,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
           const node = findRow(memo, input.id)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id))
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           const op = computeSplit(memo, input)
@@ -502,7 +502,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             return { output: { id: input.id, status: `Deleted category "${removed.value.name}"`, revision: removed.value.revision, globalRevision: removed.value.globalRevision } }
           }
           const node = findRow(memo, input.id)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id))
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
           if (isModelSettingRowId(input.id) || isModelFieldRowId(input.id))
@@ -557,8 +557,74 @@ function actorFrom(context: Tool.Context): Plus.Actor {
   }
 }
 
-function unknownError(id: string): Tool.Error {
-  return new Tool.Error({ message: `row.unknown: ${unknownRowRefusal(id)}` })
+function unknownError(id: string, memo?: MemoInput): Tool.Error {
+  return new Tool.Error({ message: `row.unknown: ${unknownRowRefusal(id)}${memo === undefined ? "" : memberRowNote(memo, id)}` })
+}
+
+// A flat owner model id names no row when that agent exists only as a team
+// member: the member's rows live under its `<team>/:<member>` owner path, so
+// the flat id resolves to nothing. Two flat forms are recognized:
+//
+//   - the row grammar `item:<level>:<owner>:model:<provider>/<model>[@variant]`;
+//   - the legacy log target `model:<level>:<owner>:<provider>/<model>[@variant]`
+//     that `model.add`/`mutate` wrote before the member owner path existed
+//     (docs/plans/plus-1.1.12-instructions.md T3 evidence).
+//
+// Either form only earns a hint when the exact candidate row already exists
+// under a real member: the note never invents a candidate, an owner, or a team,
+// and when several teams hold the same member it lists every matching row
+// instead of choosing one. A genuinely unknown row keeps the plain refusal.
+function memberRowNote(memo: MemoInput, id: string): string {
+  const flat = flatModelOwner(id)
+  if (flat === undefined) return ""
+  const rows = memberModelRows(memo, flat)
+  if (rows.length === 0) return ""
+  if (rows.length === 1) return `; "${flat.owner}" is a member of team "${rows[0]!.team}": use "${rows[0]!.rowId}"`
+  return (
+    `; "${flat.owner}" is a member of teams ${rows.map((row) => `"${row.team}"`).join(", ")}: ` +
+    `use ${rows.map((row) => `"${row.rowId}"`).join(" or ")}`
+  )
+}
+
+// The (level, owner, item) a flat model id names, or undefined when the id is
+// not a flat model address (a member-scoped owner path, another row kind, or a
+// malformed id).
+function flatModelOwner(
+  id: string,
+): { level: "project" | "global" | "defaults"; owner: string; item: string } | undefined {
+  const parts = id.split(":")
+  const level = parts[1]
+  const owner = parts[2]
+  if (!isOwnerLevel(level) || owner === undefined || owner.length === 0) return undefined
+  // A member-scoped owner (`<team>/:<member>`) or a colon owner is not flat.
+  if (owner.endsWith("/") || owner.includes(":")) return undefined
+  if (parts[0] === "item") {
+    if (parts.length < 4) return undefined
+    const item = parts.slice(3).join(":")
+    return item.startsWith("model:") ? { level, owner, item } : undefined
+  }
+  if (parts[0] === "model") {
+    if (parts.length < 4) return undefined
+    return { level, owner, item: `model:${parts.slice(3).join(":")}` }
+  }
+  return undefined
+}
+
+// Every `<team>/:<member>` model row that holds the flat owner's exact
+// candidate at that level, in team order. Empty when no member row exists.
+function memberModelRows(
+  memo: MemoInput,
+  flat: { level: "project" | "global" | "defaults"; owner: string; item: string },
+): { team: string; rowId: string }[] {
+  return (memo.teams ?? []).flatMap((team) => {
+    if (team.level !== flat.level || !team.agents.includes(flat.owner)) return []
+    const rowId = `item:${flat.level}:${team.team}/:${flat.owner}:${flat.item}`
+    return findRow(memo, rowId) === undefined ? [] : [{ team: team.team, rowId }]
+  })
+}
+
+function isOwnerLevel(value: string | undefined): value is "project" | "global" | "defaults" {
+  return value === "project" || value === "global" || value === "defaults"
 }
 
 // The category a delete id names: a `category:<slug>` id or any category group
@@ -1437,7 +1503,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const snapshot = yield* snapshotOrFail(api)
     const memo = memoFromSnapshot(snapshot)
     const node = findRow(memo, id)
-    if (node === undefined) return yield* Effect.fail(unknownError(id))
+    if (node === undefined) return yield* Effect.fail(unknownError(id, memo))
     // A model row's field row renders one effective value with its source.
     const modelField = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
     if (modelField !== undefined) {

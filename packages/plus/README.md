@@ -97,6 +97,8 @@ Each agent subtree has a `Models` group after Settings (`[a: add model]` from th
 
 Editing a model row's **Model** or **Effort** replaces that row in place and carries its active flag and keep-alive fields. If the old candidate is inherited, Plus hides it at the edited level, so one row never becomes two. Re-adding that old candidate later restores it (and activates it like any added model).
 
+An agent that exists only as a team member has no stand-alone Agents row, so a flat owner model id names nothing: the row grammar `item:<level>:<member>:model:…` and the legacy log target `model:<level>:<member>:<provider>/<model>` both resolve to no row. A tool call on either (`set`, `show`, `reset`, `delete`) refuses with `row.unknown` and names the member row to use instead (`item:<level>:<team>/:<member>:model:…`), the id the tree shows under the team; when the same member id is in several teams every matching row is listed rather than one being chosen. Creating a model for such an agent needs its `team` (otherwise `model.invalid: unknown model owner`), and the write is the member's own per-agent record, which its member chain reads.
+
 ## Permissions
 
 Every tool row in `/instructions` — OpenCode, OpenCodePlus, MCP and Code Mode alike — expands into two children (the host-owned `execute` row has only Permissions, and a tool that lists no permission row has no Permissions group):
