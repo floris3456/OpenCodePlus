@@ -236,9 +236,49 @@ the API path passes while the TUI-written shape fails live.
 
 **FAIL.** Recorded exactly; no source changed.
 
+### Line 3 — session history keeps the old name
+
+Live chat check. Started a new chat session on the worktree server, switched it
+to the user agent `t6-palette` (created by the palette rename below) and sent
+`say READY`; the assistant reply rendered as `T6-Palette · claude-opus-5-5`.
+Session storage (read-only from `<dev-home>/data/opencode/opencode-local.db`)
+then held:
+
+```
+session_v2: {"id":"ses_ef3328fd6ffeR3jnwgXNQrlvRE","agent":"t6-palette","title":"READY confirmation request"}
+session_message: assistant row with "agent":"t6-palette" (seq 27)
+```
+
+Then the agent was renamed (palette rename) and the same rows re-read: they kept
+the old `agent` value `t6-palette` — session history was not rewritten. See
+below for the exact after values. **PASS.**
+
+### Line 6 — the palette command `plus.agent.rename` uses the same path
+
+In the chat, `Ctrl+P` → typed `rename agent` → the palette listed
+`Rename agent   OpenCodePlus`. Running it opened the same
+`Rename agent / Select an agent to rename` picker (the `build` built-in and
+defaults rows disabled, user agents listed with their scope/path), then
+`Rename <id>` prompt prefilled with the id and the same validation. Renaming
+`t6-renamed` → `t6-palette` wrote
+`.../config/opencode/agents/t6-palette.md` and logged
+`{"op":"agent.rename","target":".../agents/t6-palette.md","summary":"agent.rename t6-renamed to t6-palette (global)","revision":503}`.
+**PASS** (palette uses the same RPC path).
+
 ### Line 5 — refusals: built-in agent, shipped Defaults team/member, ancestor-backed, `protectedAgents`
 
-(recorded below)
+**Built-in agent — PASS.** Selected the Global OpenCode `build` row (footer
+shows no rename hint on a built-in) and pressed `shift+r`. A toast appeared:
+
+```
+Agent build is built in and cannot be renamed
+```
+
+No prompt, no file/record change. **PASS.**
+
+**Shipped Defaults team and member — recorded below.**
+
+**Ancestor-backed agent and `protectedAgents` (tool actor) — recorded below.**
 
 ## Server log — every ERROR and WARN line
 
