@@ -174,4 +174,97 @@ Defaults.
 `Global › Teams › BASIC`, files land only in `teams/BASIC/`, records are
 team-scoped links, and Defaults (Agents, Teams, records) is untouched.
 
+### Check 2 — Project team `basic` created empty, members added one by one
+
+**What was done.** Alias `!` → `Project › Teams` (empty at baseline: no
+`.opencodeplus/` at all). Pressed `a`, typed `basic`, Enter; at the team-preset
+dialog I chose **Empty team** (the third option) so members are added one by one,
+not copied from a preset. The screen toasted `Created team basic` and the tree
+showed `Project › Teams › basic` with `preset No preset`, `contains 1 rows` (the
+Special group only) and the `Project › Teams › basic/Special` rows.
+
+Then, for each of the six Basic members in Presets order (`planner`,
+`orchestrator`, `implementer`, `reviewer`, `scout`, `build-seat`), on the
+`basic` row I pressed `a`, typed the member id, Enter, and in the preset dialog
+picked **Team preset members → `Basic › <id>`**, Enter. Each time the tree
+grew a member row and on the final pass it read:
+
+```
+Project › Teams › basic
+  ▾ ○ basic
+      ● build-seat        89
+      ● implementer       15
+      ● orchestrator      23
+      ● planner           23
+      ● reviewer          10
+      ● scout              9
+    ▾ Special
+```
+
+The first member's creation toasted the exact path:
+`Created agent planner in team basic at …/project/.opencodeplus/teams/basic/planner.md`.
+
+**What was written (project files).** Only inside the project store:
+
+```
+$ find "$DEV/project/.opencodeplus"
+.../project/.opencodeplus
+.../project/.opencodeplus/instructions
+.../project/.opencodeplus/instructions/log.jsonl
+.../project/.opencodeplus/instructions/records.jsonl
+.../project/.opencodeplus/teams
+.../project/.opencodeplus/teams/basic
+.../project/.opencodeplus/teams/basic/build-seat.md
+.../project/.opencodeplus/teams/basic/implementer.md
+.../project/.opencodeplus/teams/basic/orchestrator.md
+.../project/.opencodeplus/teams/basic/planner.md
+.../project/.opencodeplus/teams/basic/reviewer.md
+.../project/.opencodeplus/teams/basic/scout.md
+```
+
+**What was written (project records).** The project store's `records.jsonl`
+first line `{"version":2,"revision":6}`, then **six** records, every one a
+project+team-scoped link, none `defaults`:
+
+```
+{"type":"link","level":"project","agent":"build-seat","team":{"level":"project","team":"basic"},"preset":{"kind":"member","team":"basic","id":"build-seat"}, ...}
+{"type":"link","level":"project","agent":"implementer","team":{"level":"project","team":"basic"}, ...}
+{"type":"link","level":"project","agent":"orchestrator","team":{"level":"project","team":"basic"}, ...}
+{"type":"link","level":"project","agent":"planner","team":{"level":"project","team":"basic"}, ...}
+{"type":"link","level":"project","agent":"reviewer","team":{"level":"project","team":"basic"}, ...}
+{"type":"link","level":"project","agent":"scout","team":{"level":"project","team":"basic"}, ...}
+```
+
+**Global store untouched by the Project team.** The global store is byte-stable
+across the whole Project half: revision still `493`, line count still `262`,
+`grep -c '"level":"defaults"'` still **10**, and
+`grep '"project"' …/instructions/records.jsonl` returns nothing (no project
+record leaks into the global store).
+
+**Defaults unchanged — explicit check after the Project team.** On the
+`Defaults` level (`#`):
+
+- **Defaults › Teams** reports `contains 1 rows`; the only row is
+  `Every member`. Neither `basic` nor `BASIC` nor `Basic` nor any member
+  appears.
+- **Defaults › Agents** already reported `contains 4 rows` in Check 1 and the
+  sidebar lists only `Every agent`, the OpenCode agents, `Special`, `Plus`,
+  `User` — no `basic` team member.
+- `grep -c '"level":"defaults"'` is **10 after**, exactly the 10 baseline lines
+  (all `model`/`modelSettings`); `grep -c '"type":"entry"'` is still 0; no
+  `"level":"defaults"` team record exists.
+
+**Name-collision case.** The new Project team is `basic`, the exact name (same
+case) of the shipped Basic preset team; the new Global team is `BASIC`, which
+differs from the release-copied Global team `Basic` only by case. Both were
+created and populated without touching the shipped preset, the release-copied
+`Global/Basic` team (still `enabled:false`) or Defaults. There is therefore no
+path from a same-named or same-name-different-case team to a Defaults row.
+
+**Result: PASS** for the Project team half: members appear only under
+`Project › Teams › basic`, files land only in `project/.opencodeplus/teams/basic/`,
+records are project+team-scoped links, the global store and Defaults are
+untouched, and the same-name / different-case collision writes nothing to
+Defaults.
+
 
