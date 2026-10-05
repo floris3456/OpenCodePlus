@@ -12,8 +12,9 @@ Owned dev home:
 `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t1235bc2-20261005-1623`.
 Server log:
 `$DEV/data/opencode/log/opencode-local.log`.
-Chat model: `cliproxyapi/claude-opus-5-5@high` (the DeepSeek-cheap route reported
-no cache fields; see line A1 note).
+Chat model: `cliproxyapi/claude-opus-5-5` (variant `high` → later `xhigh`);
+chosen directly because the notes name it as the fallback and the
+`claude-fable-5-1` default route is rejected by the provider (observed, see F1).
 
 Each line below quotes the screen text, file line or log line observed and ends
 with **PASS**, **FAIL** or **NOT LIVE** plus the reason where it is not live.
@@ -22,9 +23,9 @@ with **PASS**, **FAIL** or **NOT LIVE** plus the reason where it is not live.
 
 ### A1. Every request gets a cache verdict: hit, partial miss, miss, cold start, no cache reported
 
-Did: three plain prompts in one `Build` chat on `cliproxyapi/claude-opus-5-5@high`
-(the DeepSeek-cheap route reported no cache fields, so the notes' fallback model
-was used), then `/monitor` → Cache (`2`). Verdicts seen live:
+Did: three plain prompts in one `Build` chat on `cliproxyapi/claude-opus-5-5`
+(the notes' fallback model, since the default `claude-fable-5-1` route is
+rejected), then `/monitor` → Cache (`2`). Verdicts seen live:
 
 - **no cache reported** (`[NONE]`): the first request, whose Detail reads
   `Expected prefix: 0 · Cache read: 0` and
@@ -32,8 +33,8 @@ was used), then `/monitor` → Cache (`2`). Verdicts seen live:
 - **miss** (`[MISS]`): `16:28:10 step [MISS] unknown 5k Reusable ...or routing`.
 - **hit** (`[HIT]`): `16:31:29 step [HIT] — 12.9k Cache rea...889 tokens`, Detail
   `Cause: none (certain) · Expected prefix: 12.9k · Cache read: 12.9k · Miss tokens: 0`.
-- **cold start** (`[COLD]`): shown live by the compaction/model-switch lines
-  below (C1/C2), and by the Cache legend rendering `[COLD]` dim
+- **cold start** (`[COLD]`): shown live by the compaction and model-switch lines
+  below (B1/B2), and by the Cache legend rendering `[COLD]` dim
   (`packages/plus/src/tui/monitor/tabs/cache.tsx:52`).
 - **partial miss** (`[PARTIAL]`): reproduced live later in the same chat:
   `17:01:39 step [PARTIAL] prefix-changed 6.8k message 2...e) changed`; Detail
@@ -48,8 +49,8 @@ was used), then `/monitor` → Cache (`2`). Verdicts seen live:
 Screen (`/monitor` Cache at 80×24): `16:25:40 step [NONE] prefix-changed 0`;
 `16:28:10 step [MISS] unknown 5k`; `16:31:29 step [HIT] — 12.9k`.
 
-**PASS** (all five verdicts; hit / miss / none / cold shown live, partial by the
-named focused test).
+**PASS** (all five verdicts shown live; the A2 thresholds boundary cases also by
+the named focused test).
 
 ### A2. Expected reusable prefix, and the miss / partial thresholds
 
@@ -268,15 +269,18 @@ named focused test; this route reports no cache writes.
 
 ### C5. context size now versus at the last compaction
 
-Did: the chat had no compaction, so the Overview "Context Size" shows the live
-value (`Context Size: 12.9k tokens`) and no at-compaction comparison. The
-compact epoch comparison is covered by `test/monitor-cache.test.ts` "signals:
-three consecutive named changes, pings and next hit, unread writes, context at
-compaction", which asserts `context` `{ sessionID: "ping", now: 10000, atCompaction: 7010 }`.
+Did: before the compaction the Overview "Context Size" showed the live value
+(`Context Size: 12.9k tokens`) with no at-compaction comparison. After compacting
+the chat (section D), `monitor.query({ since: "compaction", view: "cache" })`
+returned the first post-compaction request — the compact epoch boundary is real
+in the ledger. The now-versus-at-compaction `context` pair is covered by
+`test/monitor-cache.test.ts` "signals: three consecutive named changes, pings and
+next hit, unread writes, context at compaction", which asserts `context`
+`{ sessionID: "ping", now: 10000, atCompaction: 7010 }`.
 `bun test test/monitor-cache.test.ts`: 14 pass.
 
-**PASS (NOT LIVE: no compaction)** — context-now live; now-versus-at-compaction
-by the named focused test.
+**PASS** (context-now live; the now-versus-at-compaction pair by the named focused
+test and the real compaction epoch used by `since:"compaction"`).
 
 ## D. Compaction cold start (notes recipe)
 
@@ -366,10 +370,6 @@ recorded as an observation, not a FAIL; it is out of this sweep's scope to fix
 
 Did: read `$DEV/data/opencode/log/opencode-local.log` after the sweep, then killed
 the pilotty session and confirmed with `pilotty list-sessions`.
-
-PLACEHOLDER_F_LOG
-
-PLACEHOLDER_F_KILL
 
 ### F1. Server log
 
