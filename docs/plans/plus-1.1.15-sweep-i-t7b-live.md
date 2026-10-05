@@ -163,3 +163,28 @@ record is deleted):
 
 **PASS** — `d` on the inactive local deepseek row deletes its local record
 (one revision, line count 246 → 245).
+
+### Step 5 — no whole-row editor; Enter opens fields (PASS)
+
+With the cursor on the `cliproxyapi/claude-opus-5-5@high` model row, Enter
+expanded it in place to the five field rows (no dialog):
+
+```
+▌▾ cliproxyapi/claude-opus-5-5@high                                active ◆
+     Model                               cliproxyapi/claude-opus-5-5@high ◆
+     Effort                                                          high ◆
+     Warming                                            32m · opencode.json
+     Ping every                                               4m · defaults
+     Keep-...romptThis is a keep-alive reques...with exactly: OK · built-in
+ ▸ cliproxyapi/claude-opus-5-5@xhighfrom default build...arm 30m · every 4m
+```
+
+Then `?` opened the help. Its "Change" column lists for a row: `space turn a
+row, agent or team on/off`, `ctrl+space make an enabled primary agent the
+current agent`, `enter edit text · edit a rule's patterns or a limit · edit a
+model · cycle Mode/Strategy · review`, `e edit text full width …`. There is no
+whole-row "editor" entry; the word `editor` does not appear in the help text at
+all. The footer confirms `enter open fields`.
+
+**PASS** — Enter opens the model row's field rows; the old whole-row editor
+dialog is gone and the help lists no editor entry.
