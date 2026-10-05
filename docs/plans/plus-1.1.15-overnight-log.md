@@ -603,3 +603,8 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Focused: `tree` 58, `agents` 16 and `plus-instructions-propagation` 5 pass (including the T5 test).
   - Log: 0 ERROR. Child stopped.
 - **Gates repeated at `bbf9425577`** (source includes #26, #28 and #30): whole Plus suite **2270 pass, 14 skip, 0 fail** across 150 files (receipt `run/plus/tmp/opencodeplus/final-plus-suite.log`). `bun typecheck` passes in core, plugin, plus, tui and client. Root `bun run check` passes, 36 of 36. The core and TUI focused tests are unchanged since R5: no core or TUI source changed after it.
+- **Instructions T8 swept: PASS on all thirteen lines** (T133, landed as evidence commits ending in the cherry-pick of `48da73d`).
+  - `a` → Category asks a name. The tab appears for every owner and level, and `[`/`]` plus digits reach it. `m` opens the picker on all eight row kinds, and moved rows and their children list under the category, gone from home. The inspector shows `category: <name> (home: <cat>)` with state and actions unchanged.
+  - `R` renames. The empty category says `No rows yet · m on a row moves it here`. `d` on its header row confirms and sends rows home. The `category:<name>` filter works.
+  - One global record per change, revisioned and logged. Tool `create kind:"category"`, `set {category}`, `list where:"category:…"` and `delete` work live with `actor.type: tool`. `teaching.ts` and the skill text are current (focused 16 pass). The 80-column layout is fine.
+  - Log: 0 ERROR. Child stopped.
