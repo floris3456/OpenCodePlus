@@ -430,3 +430,45 @@ Superseded by the 12:00 halt disposition below: #1/#15/#17 and queued #6 correct
 - Final team status: every direct child is stopped or superseded, none idle/working/starting/stopping. T113 has no source changes and remains permanently stopped. No A5 or catalogue replacement was delegated. Do not revive closed runs; any future authorized work uses fresh Briefs and preserves #6's exhausted repair limit.
 - **Still undone:** legacy Effort repeat reset #6, real catalogue lifecycle/performance #10/A4, native composer refresh A5, completed/reviewed B4 plus basic team proof and log diagnosis, fresh remaining package/root gates and both combined-head final live sweeps. Full disposition is in `plus-1.1.15-halt-report.md`.
 - No merge into `plus-1.1.15`, remote push, release build/promotion, shared-service access or live-configuration mutation. Preserve the task branch; **Done does not hold**.
+
+## Residual run
+
+Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c341`.
+
+### Start: the chat is in the wrong worktree
+
+- The orchestrator chat was opened in the `plus-1.1.15` checkout. Its team run is bound to branch `plus-1.1.15` (head `23a4c3d85c`). Workers would start from that branch, and `team_integrate` would land their commits in `plus-1.1.15`, which this run forbids.
+- Decision: no delegation from this chat. R1 and the R2 reviews do not need a worker, so they are done directly in the `plus-1.1.15_overnight` worktree with plain git. R2's live test, R3, R4 and R6 wait until the chat is reopened in `plus-1.1.15_overnight`, as the plan's start prompt says.
+
+### R1 (#6 legacy Effort repeat reset): fixed
+
+- Commit `700b2fce36`. In `resetModelFieldRow`, a local row with a variant and no `originalCandidate` now drops the variant itself instead of calling `setModelFieldRow(…, "")`. Warming, interval, prompt and `active` carry over.
+- Decision: the old candidate is tombstoned rather than only removed, as `editModelRow` does. Without it, a legacy row that is also inherited (for example a Global candidate activated at Project) would show twice after the reset.
+- Test in `test/ops.test.ts` on an active local `acme/nova@high`: the first reset leaves one live row with no variant, no `originalCandidate`, still active. The second reset refuses with `"Effort" has no override to reset` and returns no records. With the old `ops.ts` the test fails (`originalCandidate` is set).
+- Checks from `packages/plus`: `ops`, `model-settings`, `model` and `tools` tests 203 pass, 1 skip, 0 fail. `bun typecheck` passes.
+
+### R2 review: T112's real-cache evidence
+
+- Landed the four evidence commits as `07afd95556`, `29c300b220`, `f6bc2a8f7d` and `7b1d1929de`, then added a parent review section to `plus-1.1.15-real-cache-live.md` (`0e90f36fb2`).
+- Every cited request, fingerprint, context fact and log line was checked read-only against the owned home's `monitor.db` and log. The ledger values match.
+- Holds: case 1 (instruction toggle, PARTIAL, prefix-changed), case 2 (model switch), case 3 (agent switch), case 4's cache-expired cause, and the in-chat `monitor.query` equality.
+- Does not hold, or is not shown: `BASELINE-TWO` was a miss, not a hit. Case 4's `Warming: on` is wrong (#26). Case 5 never read the verdict of the first step after the compaction, so the compacted cause is unverified. Some times are mislabelled. The worker never wrote the run-log section or the Basic team result.
+- No Basic team acceptance comes from T112. It stays with R2's live test.
+
+### R2: T112's ERROR (09:47:25Z): not a source defect
+
+- `Failed to drain Session` for `ses_ef48a07a0ffePah0xMcSHPy651`, the Basic-Probe team's `scout` member (run `w-cc9d65f8422669c9`). Its step and title requests ran on `cliproxyapi/claude-fable-5-1` and the provider answered 400 `unknown provider for model claude-fable-5-1`. The ledger shows the same two errors (`provider.invalid-request`).
+- Cause: the scout had no model of its own and fell back to the owned home's default `cliproxyapi/claude-fable-5-1#xhigh`, copied from the release config. The route does not serve that model. This is route availability, like #16 and #20. Core logs the failed drain as designed.
+- Consequence for R2's live test: the team member must run on a model the route serves (`cliproxyapi/deepseek-v4.1-flash-cheap`).
+
+### R2: #25 warming WARN (T110, 07:55:46Z): no defect established
+
+- The line is as recorded: `failed to warm session`, cause `Session.AgentNotFoundError: Agent not found: "build"`, from the pinned agent in `warming.ts`. Before it: `link.set` returned 400 at 07:53:24, and provider/model updates arrived at 07:54:40 and 07:54:50. After it: another reload at 07:59:40, and the next ping on the same pin succeeded at 07:59:46.
+- Disposition: the pinned agent was missing from the Location's agent registry for one ping while the test home's own configuration was changing. The warming loop logged the failure and carried on, which is its designed failure control. What removed `build` for that window was not isolated. A fallback for a missing pinned agent would be a design change, not a fix. It did not recur. #25 is closed as no defect, with that qualification.
+
+### #26: the Monitor records warming as on when Plus turned it off (open)
+
+- Seen in T112 case 4: Defaults › Models set `cliproxyapi/claude-opus-5-5` warming to off at 09:18:15Z. After that no ping fired and core logged no new schedule, yet the `warming` facts at 09:18:35 and 09:25:54 say `state: on` with an `until`. The cache detail and `monitor.query` then report `Warming: on` for the expired miss.
+- Where: `packages/plus/src/index.ts:212-213`. `watchMonitor` registers its `warming` hook before `decideWarmingFor`, and core runs hooks in registration order (`core/src/plugin/hooks.ts:88-95`). So the monitor stores core's proposed settings before Plus clears them. The quota hook in the cliproxyapi plugin (`quota/register.ts:81`) can also clear them later.
+- Weight: wrong behaviour. It breaks Monitor T2's line that a cache-expired miss names whether warming was off, ended or failed.
+- Planned fix: register `decideWarmingFor` before `watchMonitor` in `src/index.ts`. Test: a monitor hook test where a later decision clears the settings and the stored fact says `off`. Live re-check: case 4 again (warming off, wait past 5 m), and the detail says `Warming: off`. This is not yet delegated: the plan names no Brief for it, and this chat cannot delegate.
