@@ -7,6 +7,7 @@ import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { prefixDiff } from "../src/monitor/cache.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import type { Ledger } from "../src/monitor/ledger.js"
+import { createLedger } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger } from "./monitor-fixture.js"
 import { inferRunTeam, loadRun, saveRun, type RunRecord } from "../src/teams/run.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
@@ -425,6 +426,71 @@ test("mixed v1 steps and recorded requests keep legacy usage without double-coun
   request(db, "migrated", "new", 2000)
   const report = queryMonitor(db, { scope: "session", sessionID: "migrated" }, { now: 3000 })
   expect(report.totals).toMatchObject({ steps: 2, requests: 1, input: 3100, cacheRead: 900, output: 120, cost: 0.51 })
+})
+
+test("a completion written by a second handle invalidates the first handle's cache", async () => {
+  const db = await ledger()
+  // A second connection (the shared ledger serves every Plus instance, and any
+  // other process pointed at the same file), opened before the baseline read.
+  const other = createLedger(db.path)
+  const named = [
+    { name: "base", text: "base".repeat(1600) },
+    { name: "AGENTS.md", text: "rules" },
+  ]
+  request(db, "two", "warm", 1000)
+  db.requestStarted({
+    id: "open",
+    sessionID: "two",
+    messageID: "open",
+    started: 2000,
+    kind: "step",
+    provider: "openai",
+    model: "gpt-4o",
+    agent: "build",
+  })
+  db.requestFingerprint({
+    requestID: "open",
+    sessionID: "two",
+    created: 2000,
+    ...fingerprintWireBody(body({ append: true }), { namedSystemParts: named }),
+  })
+
+  const read = () => queryMonitor(db, { scope: "session", sessionID: "two", view: "cache", id: "open" }, { now: 3000 })
+  const openRow = read().requests?.find((r) => r.id === "open")
+  expect(openRow).toMatchObject({ input: 0, cacheRead: 0, verdict: "miss" })
+
+  // The other handle/process completes the existing row: the first handle's
+  // own total_changes never moves, so only data_version can reveal it.
+  other.requestEnded("open", {
+    ended: 2100,
+    status: "completed",
+    usage: { input: 400, output: 100, reasoning: 10, cacheRead: 3600, cacheWrite: 0, cost: 0.01 },
+  })
+
+  const done = read()
+  expect(done.requests?.find((r) => r.id === "open")).toMatchObject({ input: 400, cacheRead: 3600, verdict: "hit" })
+  expect(done.requests?.length).toBe(2)
+  expect(db.getContextFacts("two").length).toBe(0)
+  other.close()
+})
+
+test("a direct database update invalidates the cached analysis with row and fact counts unchanged", async () => {
+  const db = await ledger()
+  request(db, "direct", "real", 1000)
+  request(db, "direct", "g", 2000, { kind: "generate", read: 0, write: 1000 })
+
+  const read = () => queryMonitor(db, { scope: "session", sessionID: "direct", view: "cache" }, { now: 3000 })
+  const before = read()
+  expect(before.requests?.find((r) => r.id === "g")?.kind).toBe("generate")
+  expect(before.pings?.sent).toBe(0)
+
+  db.db.query("update request set kind = 'ping' where id = 'g'").run()
+
+  const after = read()
+  expect(after.requests?.find((r) => r.id === "g")?.kind).toBe("ping")
+  expect(after.pings?.sent).toBe(1)
+  expect(after.requests?.length).toBe(2)
+  expect(db.getContextFacts("direct").length).toBe(0)
 })
 
 // Issue #3: an in-place update of an existing request row (completion, a

@@ -28,7 +28,7 @@ interface LegacyStep {
 }
 
 interface CachedSessionAnalysis {
-  readonly revision: number
+  readonly revision: string
   readonly analysis: ReturnType<typeof analyzeSession>
 }
 
@@ -43,7 +43,9 @@ function getSessionAnalysis(ledger: Ledger, id: string, rows: readonly RequestRo
 
   // The analysis folds in-place facts (request completion, a corrected final
   // wire fingerprint, a kind relabel) that leave row ids and fact timestamps
-  // unchanged. Key on the ledger's write revision so none of them is masked.
+  // unchanged. Key on the ledger's change revision, which covers writes from
+  // this handle and from another connection or process on the same file, so
+  // none of them is masked.
   const revision = ledger.revision()
   const cached = cache.get(id)
   if (cached && cached.revision === revision) return cached.analysis
