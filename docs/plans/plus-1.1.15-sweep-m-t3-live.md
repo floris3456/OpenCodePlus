@@ -58,3 +58,41 @@ Screen (`M` from the composer Team tab):
  When: All [t] step window
 ```
 
+### Scope line (always visible on the first header line; `s` steps through)
+
+**PASS.** In the `build-seat` chat with the team run active, `s` stepped through
+every scope in order and each stayed visible on the first header line:
+
+- `Scope: This session (ses_ef350f)` — the open chat only (5 reqs / 13.8k in).
+- `Scope: Team tree` — `reqs: 17 · steps: 17 · in: 23.4k · read: 121k` (root +
+  the scout child at any depth; the count covers both sessions).
+- `Scope: Team` — before `T` picks one, `reqs: 0` (no team selected).
+- `Scope: Project` — `reqs: 17`.
+- `Scope: Everything` — `reqs: 17`.
+
+`T` opened the team picker (`No team filter`, `basic-live`); choosing
+`basic-live` set `Scope: Team: basic-live` and the same 17 requests. The
+Sessions tab under it showed the tree:
+```
+  Session / Role                    State     Steps   Tokens    Read      Hit Rate  Active
+  Scout report task: top-level filescompleted 5       66.6k     51.7k     79%       17:30:20
+    └─ Listing to... and directoriescompleted 12      83.1k     68.9k     88%       17:30:10
+```
+The team run was recorded for the run (`basic-live` appears in the picker), so
+new runs carry their team; the older-run derivation path is not exercised here.
+
+Screens:
+```
+ Scope: Team tree [s] step · [S] session · [T] team
+ ...
+ reqs: 17 · steps: 17 · in: 23.4k · read: 121k · write: 0 · out: 2.2k · reason: 3.5k
+```
+```
+ Scope: Team [s] step · [S] session · [T] team
+ ...
+ reqs: 0 · steps: 0 · in: 0 · read: 0 · write: 0 · out: 0 · reason: 0 · hit rate: 0% · misses: 0
+```
+```
+ Scope: Team: basic-live [s] step · [S] session · [T] team
+```
+
