@@ -132,11 +132,17 @@ Spawned owned TUI via `pilotty spawn --name continuation-category opencodeplus-d
 - Case K (sidebar owner at 80): created `Gamma Cat` and `disposable-agent`;
   sidebar `d` on the disposable owner confirmed `Delete agent disposable-agent?`
   and removed the owner, leaving `Gamma Cat`.
-- Case L (help & filter): `?` opened the help with `shift+r` in the Change
-  group; Escape returned. `/` + `category:Gamma` reported `No matches` because
-  `Gamma Cat` held no rows — the populated `category:<name>` reachability is
-  covered by the route test; number keys and `[ ]` reached `Gamma Cat` live.
-- Case M: Escape from help returned to the composer (`Ask anything…`).
+- Case L (help & reachability): `?` opened the help with `shift+r` in the
+  Change group; Escape returned. With the active model moved into `Gamma Cat`,
+  the number key `7` opened `Project › Agents › OpenCode › build › Gamma Cat`,
+  `]`/`[` cycled to and back from it, and a text filter (`cliproxyapi`) matched
+  the moved row under `Gamma Cat`. `category:Gamma` and `category:Gamma Cat`
+  both reported `No matches` because filter terms are whitespace-split and the
+  whole category name must be one term without a literal space; the grammar
+  matches the stored name exactly (the route test proves the populated
+  `category:<name>` path for a space-free name). This is the existing filter
+  grammar, not a routing defect.
+- Case M: Escape from help and dialogs returned to the composer (`Ask anything…`).
 
 ## Ownership and cleanup
 
@@ -153,10 +159,12 @@ Spawned owned TUI via `pilotty spawn --name continuation-category opencodeplus-d
   unrelated: PID `3650531` is an immutable `opencodeplus search-mcp` release
   binary, and the `continuation-real-cache` PTY belongs to another run; both
   were left untouched.
-- Final server log `opencode-local.log`: **428 lines / 416 INFO / 12 WARN / 0 ERROR**.
-  All 12 WARN lines are the expected `executor-controlled plugin source refused`
-  notices (`/home/bliss/OpenCodePlus/.opencode`, the worktree `.opencode`);
-  no ERROR line was recorded.
+- Final server log `opencode-local.log` after all four owned PTYs (the three
+  routing PTYs plus the reachability PTY): **840 lines / 816 INFO / 24 WARN / 0
+  ERROR**. All 24 WARN lines are the expected `executor-controlled plugin
+  source refused` notices (`/home/bliss/OpenCodePlus/.opencode` and the
+  worktree `.opencode`); no ERROR line was recorded. (`continuation-real-cache`
+  and `continuation-fields` remain owned by other runs and were untouched.)
 
 ## Scope
 

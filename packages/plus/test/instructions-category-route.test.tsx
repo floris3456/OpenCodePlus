@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test"
-import fs from "node:fs/promises"
 import { createSnapshot, renderInstructionsRoute, type TestFixture } from "./tui.js"
 import {
   binds,
@@ -15,13 +14,11 @@ import {
   toSidebar,
 } from "./instructions-nav.js"
 
-const e2eRoots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
-afterEach(async () => {
+afterEach(() => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
-  await Promise.all(e2eRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
 async function until(fixture: TestFixture, predicate: (frame: string) => boolean, timeout = 4000): Promise<string> {
