@@ -74,3 +74,36 @@ Did: read the second and third request's Cache Detail in the same chat.
   part estimates `expected` 2560. `bun test test/monitor-cache.test.ts`: 14 pass.
 
 **PASS**.
+
+## B. Cause, with a confidence, checked in this order
+
+### B1. compacted — expected
+
+Did: pending compaction; the notes require compacting and reading the FIRST
+request's verdict (cold start, not miss). Recorded in the compaction line below.
+
+PLACEHOLDER_B1
+
+### B2. model / variant switch
+
+Did: `Ctrl+T` (`variant.cycle`, `packages/tui/src/config/keybind.ts:174`) cycled
+`high` → `xhigh` for the same model in the same chat, then asked a prompt.
+
+Screen: footer before `Build · claude-opus-5-5 CLIProxyAPI · high`, after
+`Build · claude-opus-5-5 CLIProxyAPI · xhigh`.
+
+Cache row: `16:37:25 step [COLD] model-switch 12.9k Model / v...-5-5/xhigh`.
+
+Detail (`0446e913-117a-472c-8c29-31919e3c5967`):
+`[COLD] Cause: model-switch (certain) · Expected prefix: 0 · Cache read: 12.9k ·
+Miss tokens: 0`; `First diverging segment: option reasoning.effort`;
+evidence `Model / variant switched: cliproxyapi/claude-opus-5-5/high →
+cliproxyapi/claude-opus-5-5/xhigh`.
+
+**PASS** (cold start, cause `model-switch`, confidence certain, named option).
+
+### B3. agent switch
+
+Did: pending — switch the chat agent then ask. Below.
+
+PLACEHOLDER_B3
