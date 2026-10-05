@@ -95,4 +95,83 @@ Existing (release-copied) Global teams in the store: `global/Basic`
 decision, the new Global team is named `BASIC` (different case from the shipped
 `Basic`).
 
+### Check 1 — Global team `BASIC` created from the Basic preset
+
+**What was done.** Palette `ctrl+p` → `Instructions` → Enter. With level alias
+`@` I went to `Global › Teams`, pressed `a`, typed the team name `BASIC`, Enter;
+the team-preset dialog showed `Plus / Basic / Empty team`; Enter on `Basic`
+created the team. The screen toasted `Created team BASIC` and the tree rendered:
+
+```
+Global › Teams › BASIC
+  state       off
+  preset      Basic (Plus)
+  contains    7 rows · 6 on · 0 off
+ ▾  ○ BASIC
+      ● build-seat        89
+      ● implementer       15
+      ● orchestrator      23
+      ● planner           23
+      ● reviewer          10
+      ● scout              9
+    ▾ Special
+      ● com...ionh...n  90
+      ● title   hidden  90
+      ● summary hidden  90
+```
+
+**What was written (team files).** Only the new team directory exists:
+
+```
+$ ls -R "$DEV/config/opencode/opencodeplus/teams/"
+.../opencodeplus/teams/:
+BASIC
+.../opencodeplus/teams/BASIC:
+build-seat.md  implementer.md  orchestrator.md  planner.md  reviewer.md  scout.md
+$ head -4 .../teams/BASIC/build-seat.md
+---
+description: "Coordinates the team from the chat and may delegate to every member"
+mode: primary
+---
+```
+
+(The other five files carry the matching member descriptions. No member file
+was written anywhere else.)
+
+**What was written (records).** The store advanced revision `492 → 493` and
+255 → 262 lines, adding **seven** records — the team link plus one link per
+member — all team-scoped to `{"level":"global","team":"BASIC"}`, never
+`defaults`:
+
+```
+222:{"type":"link","level":"global","agent":"build-seat","team":{"level":"global","team":"BASIC"}, ...}
+224:{"type":"link","level":"global","agent":"implementer","team":{"level":"global","team":"BASIC"}, ...}
+225:{"type":"link","level":"global","agent":null,"team":{"level":"global","team":"BASIC"},"preset":{"kind":"team","id":"basic"}, ...}
+226:{"type":"link","level":"global","agent":"orchestrator","team":{"level":"global","team":"BASIC"}, ...}
+227:{"type":"link","level":"global","agent":"planner","team":{"level":"global","team":"BASIC"}, ...}
+228:{"type":"link","level":"global","agent":"reviewer","team":{"level":"global","team":"BASIC"}, ...}
+229:{"type":"link","level":"global","agent":"scout","team":{"level":"global","team":"BASIC"}, ...}
+```
+
+**Defaults unchanged.** `grep -c '"level":"defaults"'` is **10 before and 10
+after** — the same lines (all `model`/`modelSettings` rows at 223/226/227/234/
+237/240/246/251/252/253). No new Defaults record, entry or overlay was written;
+`grep -c '"type":"entry"'` is still 0 and there is still no `"type":"team"`
+record with `"level":"defaults"`.
+
+**Defaults › Agents.** `#` to Defaults, then `End` to `Defaults › Agents` (the
+group row); it reports `contains 4 rows` and lists only the built-in agents
+(`Every agent`, `OpenCode › build/general/explore/plan`, `Special`). None of
+`build-seat`, `implementer`, `orchestrator`, `planner`, `reviewer`, `scout`
+appears.
+
+**Defaults › Teams.** `Left` to the `Teams` group in the sidebar, `Right` into
+it; the inspector reads `Defaults › Teams` / `contains 1 rows` and the only row
+is `Every member`. Neither `BASIC` nor `Basic` nor any member appears under
+Defaults.
+
+**Result: PASS** for the Global team half: members appear only under
+`Global › Teams › BASIC`, files land only in `teams/BASIC/`, records are
+team-scoped links, and Defaults (Agents, Teams, records) is untouched.
+
 
