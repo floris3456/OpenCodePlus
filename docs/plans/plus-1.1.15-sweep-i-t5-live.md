@@ -95,17 +95,25 @@ Existing (release-copied) Global teams in the store: `global/Basic`
 decision, the new Global team is named `BASIC` (different case from the shipped
 `Basic`).
 
-### Check 1 — Global team `BASIC` created from the Basic preset
+### Check 1 — Global team `BASIC`, members added one by one
 
 **What was done.** Palette `ctrl+p` → `Instructions` → Enter. With level alias
 `@` I went to `Global › Teams`, pressed `a`, typed the team name `BASIC`, Enter;
-the team-preset dialog showed `Plus / Basic / Empty team`; Enter on `Basic`
-created the team. The screen toasted `Created team BASIC` and the tree rendered:
+the team-preset dialog showed `Plus / Basic / Empty team`; I chose **Empty
+team** (the third option) so no preset copy is involved. The screen toasted
+`Created team BASIC` and the tree showed `Global › Teams › BASIC` with
+`preset No preset`, `state off`, `contains 1 rows` (the `Special` group only).
+
+Then, for each of the six Basic members in Presets order (`planner`,
+`orchestrator`, `implementer`, `reviewer`, `scout`, `build-seat`), on the team
+row I pressed `a`, typed the member id, Enter, and in the preset dialog picked
+**Team preset members → `Basic › <id>`**, Enter. Each pass grew one member row;
+the final tree rendered:
 
 ```
 Global › Teams › BASIC
   state       off
-  preset      Basic (Plus)
+  preset      No preset
   contains    7 rows · 6 on · 0 off
  ▾  ○ BASIC
       ● build-seat        89
@@ -128,9 +136,9 @@ $ ls -R "$DEV/config/opencode/opencodeplus/teams/"
 BASIC
 .../opencodeplus/teams/BASIC:
 build-seat.md  implementer.md  orchestrator.md  planner.md  reviewer.md  scout.md
-$ head -4 .../teams/BASIC/build-seat.md
+$ head -4 .../teams/BASIC/planner.md
 ---
-description: "Coordinates the team from the chat and may delegate to every member"
+description: "Turns goals into exact task plans with paths and checks"
 mode: primary
 ---
 ```
@@ -138,19 +146,19 @@ mode: primary
 (The other five files carry the matching member descriptions. No member file
 was written anywhere else.)
 
-**What was written (records).** The store advanced revision `492 → 493` and
-255 → 262 lines, adding **seven** records — the team link plus one link per
-member — all team-scoped to `{"level":"global","team":"BASIC"}`, never
-`defaults`:
+**What was written (records).** The global store advanced to revision `502`,
+261 lines, adding **six** records — one `link` per member, all team-scoped to
+`{"level":"global","team":"BASIC"}`, never `defaults` (with an Empty team there
+is no team-preset link, unlike the earlier preset-copy pass recorded under
+"Method note" below):
 
 ```
-222:{"type":"link","level":"global","agent":"build-seat","team":{"level":"global","team":"BASIC"}, ...}
-224:{"type":"link","level":"global","agent":"implementer","team":{"level":"global","team":"BASIC"}, ...}
-225:{"type":"link","level":"global","agent":null,"team":{"level":"global","team":"BASIC"},"preset":{"kind":"team","id":"basic"}, ...}
-226:{"type":"link","level":"global","agent":"orchestrator","team":{"level":"global","team":"BASIC"}, ...}
-227:{"type":"link","level":"global","agent":"planner","team":{"level":"global","team":"BASIC"}, ...}
-228:{"type":"link","level":"global","agent":"reviewer","team":{"level":"global","team":"BASIC"}, ...}
-229:{"type":"link","level":"global","agent":"scout","team":{"level":"global","team":"BASIC"}, ...}
+222:{"type":"link","level":"global","agent":"build-seat","team":{"level":"global","team":"BASIC"},"preset":{"kind":"member","team":"basic","id":"build-seat"}, ...}
+224:{"type":"link","level":"global","agent":"implementer","team":{"level":"global","team":"BASIC"},"preset":{"kind":"member","team":"basic","id":"implementer"}, ...}
+225:{"type":"link","level":"global","agent":"orchestrator","team":{"level":"global","team":"BASIC"},"preset":{"kind":"member","team":"basic","id":"orchestrator"}, ...}
+226:{"type":"link","level":"global","agent":"planner","team":{"level":"global","team":"BASIC"},"preset":{"kind":"member","team":"basic","id":"planner"}, ...}
+227:{"type":"link","level":"global","agent":"reviewer","team":{"level":"global","team":"BASIC"},"preset":{"kind":"member","team":"basic","id":"reviewer"}, ...}
+228:{"type":"link","level":"global","agent":"scout","team":{"level":"global","team":"BASIC"},"preset":{"kind":"member","team":"basic","id":"scout"}, ...}
 ```
 
 **Defaults unchanged.** `grep -c '"level":"defaults"'` is **10 before and 10
@@ -158,6 +166,42 @@ after** — the same lines (all `model`/`modelSettings` rows at 223/226/227/234/
 237/240/246/251/252/253). No new Defaults record, entry or overlay was written;
 `grep -c '"type":"entry"'` is still 0 and there is still no `"type":"team"`
 record with `"level":"defaults"`.
+
+**`ls -R` of the global Plus location, repeated after this team's members.**
+The location that was `instructions` only at baseline now holds exactly one
+added directory, the new team — no Defaults overlay/entries directory appears:
+
+```
+$ ls -R "$DEV/config/opencode/opencodeplus/"
+.../opencodeplus/:
+instructions
+teams
+
+.../opencodeplus/instructions:
+OPENCODEPLUS.md
+linked-projects.json
+log.jsonl
+records.jsonl
+
+.../opencodeplus/teams:
+BASIC
+
+.../opencodeplus/teams/BASIC:
+build-seat.md  implementer.md  orchestrator.md  planner.md  reviewer.md  scout.md
+$ find "$DEV/config/opencode" -iname '*default*'
+(no output)
+```
+
+**Method note (first pass, preset copy).** The very first pass created `BASIC`
+*from* the Basic preset (option 2), which wrote seven records — the six member
+links plus a team-preset link
+`{"type":"link","level":"global","agent":null,"team":{...BASIC},"preset":{"kind":"team","id":"basic"}}`
+— at revision `493`, with the same Defaults count of 10. To exercise the
+Brief's literal one-by-one member flow at Global as well, I then deleted that
+team (`Global › Teams › BASIC`, `d` → Confirm; revision `494`, `teams/` empty,
+0 `BASIC` records) and rebuilt it Empty with members added individually as
+above. The final state is the one recorded; the preset-copy pass produced the
+same "no Defaults write" outcome.
 
 **Defaults › Agents.** `#` to Defaults, then `End` to `Defaults › Agents` (the
 group row); it reports `contains 4 rows` and lists only the built-in agents
@@ -235,11 +279,13 @@ project+team-scoped link, none `defaults`:
 {"type":"link","level":"project","agent":"scout","team":{"level":"project","team":"basic"}, ...}
 ```
 
-**Global store untouched by the Project team.** The global store is byte-stable
-across the whole Project half: revision still `493`, line count still `262`,
-`grep -c '"level":"defaults"'` still **10**, and
-`grep '"project"' …/instructions/records.jsonl` returns nothing (no project
-record leaks into the global store).
+**Global store untouched by the Project team.** At the point the Project team
+half finished, the global store was byte-stable across that whole half:
+revision still `493`, line count still `262`, `grep -c '"level":"defaults"'`
+still **10**, and `grep '"project"' …/instructions/records.jsonl` returns
+nothing (no project record leaks into the global store). (The later Global
+`BASIC` rebuild, recorded under Check 1's method note, was a Global action and
+moved the global revision on its own; it never touched the project store.)
 
 **Defaults unchanged — explicit check after the Project team.** On the
 `Defaults` level (`#`):
@@ -254,12 +300,39 @@ record leaks into the global store).
   (all `model`/`modelSettings`); `grep -c '"type":"entry"'` is still 0; no
   `"level":"defaults"` team record exists.
 
+**Global location `ls -R`, repeated after the Project team's members.** The
+global Plus location is the same as after Check 1 — no Defaults overlay/entries
+directory, and no project team leaked into it (the `BASIC` directory is the
+Check 1 Global team; `basic` lives only under the project store):
+
+```
+$ ls -R "$DEV/config/opencode/opencodeplus/"
+.../opencodeplus/:
+instructions
+teams
+
+.../opencodeplus/instructions:
+OPENCODEPLUS.md
+linked-projects.json
+log.jsonl
+records.jsonl
+
+.../opencodeplus/teams:
+BASIC
+
+.../opencodeplus/teams/BASIC:
+build-seat.md  implementer.md  orchestrator.md  planner.md  reviewer.md  scout.md
+$ find "$DEV/config/opencode" -iname '*default*'
+(no output)
+```
+
 **Name-collision case.** The new Project team is `basic`, the exact name (same
 case) of the shipped Basic preset team; the new Global team is `BASIC`, which
 differs from the release-copied Global team `Basic` only by case. Both were
-created and populated without touching the shipped preset, the release-copied
-`Global/Basic` team (still `enabled:false`) or Defaults. There is therefore no
-path from a same-named or same-name-different-case team to a Defaults row.
+created and populated one member at a time without touching the shipped preset,
+the release-copied `Global/Basic` team (still `enabled:false`) or Defaults.
+There is therefore no path from a same-named or same-name-different-case team
+to a Defaults row.
 
 **Result: PASS** for the Project team half: members appear only under
 `Project › Teams › basic`, files land only in `project/.opencodeplus/teams/basic/`,
@@ -296,10 +369,11 @@ lines.)
 
 ## Server log — every ERROR and WARN line
 
-`$DEV/data/opencode/log/opencode-local.log` at cleanup: **175 lines — 169
-INFO, 6 WARN, 0 ERROR.** There is no `level=ERROR` line; every WARN is the
+`$DEV/data/opencode/log/opencode-local.log` at cleanup: **381 lines — 369
+INFO, 12 WARN, 0 ERROR.** There is no `level=ERROR` line; every WARN is the
 expected `executor-controlled plugin source refused` refusal control (the only
-distinct WARN message), one server run `3b156bf9`, six lines:
+distinct WARN message). Two TUI starts (before and after the Global team was
+rebuilt): run `3b156bf9` and run `695f9519`, six lines each:
 
 ```
 timestamp=2026-10-05T16:13:28.437Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=105 role=server
@@ -308,6 +382,12 @@ timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-con
 timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=1620 role=server
 timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t136f068-20261005-1811/.opencode/opencode.jsonc type=document http.span=1620 role=server
 timestamp=2026-10-05T16:13:31.105Z level=WARN run=3b156bf9 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t136f068-20261005-1811/.opencode type=directory http.span=1620 role=server
+timestamp=2026-10-05T16:33:17.805Z level=WARN run=695f9519 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=165 role=server
+timestamp=2026-10-05T16:33:17.805Z level=WARN run=695f9519 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=165 role=server
+timestamp=2026-10-05T16:33:19.048Z level=WARN run=695f9519 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=234 role=server
+timestamp=2026-10-05T16:33:19.048Z level=WARN run=695f9519 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=234 role=server
+timestamp=2026-10-05T16:33:19.048Z level=WARN run=695f9519 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t136f068-20261005-1811/.opencode/opencode.jsonc type=document http.span=234 role=server
+timestamp=2026-10-05T16:33:19.048Z level=WARN run=695f9519 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t136f068-20261005-1811/.opencode type=directory http.span=234 role=server
 ```
 
 `grep -E 'level=(ERROR|WARN)' … | grep -v "executor-controlled plugin source
@@ -316,20 +396,23 @@ refused"` returns nothing (0 lines).
 ## Result
 
 The end-state line verified **PASS** against this worktree's own build, with the
-name-collision case exercised in both directions:
+name-collision case exercised in both directions and both levels using the
+member-by-member flow:
 
 1. **PASS** — Global team `BASIC` (name differing only in case from the
-   release-copied `Basic`) created from the Basic preset wrote only
-   `teams/BASIC/*.md` and seven `team:global:BASIC`-scoped link records; its
-   members show only under `Global › Teams › BASIC`; Defaults › Agents and
-   Defaults › Teams show none of them and the `"level":"defaults"` count stayed
-   10.
+   release-copied `Basic`) created Empty, members added one by one from
+   Presets › Teams › Basic members; it wrote only `teams/BASIC/*.md` and six
+   `team:global:BASIC`-scoped link records; its members show only under
+   `Global › Teams › BASIC`; Defaults › Agents and Defaults › Teams show none of
+   them and the `"level":"defaults"` count stayed 10. (The initial preset-copy
+   pass produced the same outcome plus one team-preset link; it was deleted and
+   rebuilt Empty — see the Check 1 method note.)
 2. **PASS** — Project team `basic` (exact same name as the shipped Basic preset
-   team) created empty and filled one member at a time from
+   team) created Empty and filled one member at a time from
    Presets › Teams › Basic members wrote only `project/.opencodeplus/teams/basic/*.md`
    and six `team:project:basic`-scoped links; its members show only under
-   `Project › Teams › basic`; the global store was byte-stable (revision 493,
-   262 lines) across the whole Project half; Defaults is unchanged.
+   `Project › Teams › basic`; Defaults is unchanged; the two teams coexist with
+   the release-copied Global `Basic` and `Simple`.
 3. **PASS (same-tree focused test)** — `T5: a Global Basic team with
    preset-linked members writes no Defaults entry and lists no Defaults agent`
    asserts the exact T5 end-state (no Defaults entry, no `agent:defaults:*`
@@ -339,21 +422,23 @@ No source file was changed; only this evidence file.
 
 ## Cleanup
 
-`pilotty list-sessions` before killing (mine is `sweep-i-t5`; the others are not
-mine):
+Two TUI sessions were started as `sweep-i-t5`: the first (`e421d7c5-…`) was
+killed after the initial pass; the Brief's one-by-one Global flow needed a
+second TUI (`a003904a-…`), also named `sweep-i-t5` (the name was free by then),
+and that one was killed at the end. Both are mine; `pilotty list-sessions`
+before the final kill:
 
 ```
-['sweep-recheck', 'w-f15454a0a1ed9809-b', 'sweep-m-t4', 'sweep-i-t8',
- 'w-1e01-story', 'sweep-i-t7a', 'sweep-i-t5', 'w-f15454a0a1ed9809-a', 'ux1',
- 'rt-t6']
+['sweep-recheck', 'w-f15454a0a1ed9809-b', 'sweep-m-t4', 'w-1e01-story',
+ 'sweep-i-t7a', 'sweep-i-t5', 'w-f15454a0a1ed9809-a', 'ux1', 'rt-t6']
 ```
 
-Killed only `sweep-i-t5` (`Session e421d7c5-0547-4310-9fc0-eefabbf1d5fb killed`).
+Killed only `sweep-i-t5` (`Session a003904a-3a95-4435-b1ec-c38f582cab88 killed`).
 After:
 
 ```
-['sweep-recheck', 'w-f15454a0a1ed9809-b', 'sweep-m-t4', 'sweep-i-t8',
- 'w-1e01-story', 'sweep-i-t7a', 'w-f15454a0a1ed9809-a', 'ux1', 'rt-t6']
+['sweep-recheck', 'w-f15454a0a1ed9809-b', 'sweep-m-t4', 'w-1e01-story',
+ 'sweep-i-t7a', 'w-f15454a0a1ed9809-a', 'ux1', 'rt-t6']
 ```
 
 `sweep-i-t5 present: False`; every remaining session is one I did not start and
