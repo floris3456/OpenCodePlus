@@ -9,319 +9,307 @@ no credentials, no raw private prompts.
   `team/Flash-C-Worker/t86bee9-20261005-0258`).
 - Launched exactly: `pilotty spawn --name overnight-a1-live-retry opencodeplus-dev .`
   from this worktree; own dev home, never shared port 40375, never `bun dev`.
-- Dev home: `run/plus-dev/run-plus-data-...-t86bee9-.../`.
+- Owned dev home (full path):
+  `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258`
+- Actual log the server opens (full path):
+  `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258/data/opencode/log/opencode-local.log`
+  — proven by kernel fd below.
+  `<dev-home>/data/opencode/opencode.log` does not exist; that name is the
+  non-local/released channel.
+- Owned SQLite (history check): `<dev-home>/data/opencode/opencode-local.db`.
 - Model: `cliproxyapi/deepseek-v4.1-flash-cheap` where a model call is needed.
-- Source log actually opened by the server: `data/opencode/log/opencode-local.log`
-  (kernel fd proof recorded below); the plan's `opencode.log` is the
-  non-local/released channel name.
+
+Path shorthand used below (both are exact absolute paths):
+
+- `<dev-home>` =
+  `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258`
+- `<worktree>` =
+  `/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t86bee9-20261005-0258`
 
 ## Status
 
 - [x] Build started, home initialized.
-- [x] Setup rows created (Project user agent, Global agent, Project + Global
-      teams/members, representative records).
-- [x] R prefill + validation + rename + selection.
+- [x] Fixture rows created (explicitly marked below) and real UI/RPC rows
+      created through supported paths.
+- [x] R prefill + validation + rename + selection (Project and Global).
 - [x] Files/records follow; history unchanged.
 - [x] Palette `plus.agent.rename` (same path).
 - [x] Tool `instructions.set({id,rename})` for agent/member/team.
-- [x] Refusals: built-in, Special, shipped Defaults team/member (unit-only,
-      see below), ancestor, protected tool actor.
-- [x] Cleanup with kernel proof.
+- [x] Refusals live: built-in OpenCode, Special, ancestor-backed, protected
+      tool actor, collision. Shipped Defaults team/member refusal is
+      **unit-only** at this HEAD (see D1) because no Defaults team ships.
+- [x] Cleanup with kernel proof (cwd/fd and final owned-PID absence).
 - [x] `bun test test/rename.test.ts` 6 pass / 0 fail; `bun typecheck` in
       `packages/plus` passes.
 
+## Fixtures vs real actions
+
+Two kinds of setup appear below and are labelled:
+
+- **Real action** — done through the running build: the TUI create/rename
+  flows, the palette, or `instructions.*`/RPC calls executed by the model in a
+  real `execute` tool call. These are the acceptance evidence.
+- **Fixture** — a file or store record written directly into the owned home to
+  put a representative record in place before a real rename. A fixture only
+  seeds state; the rename that moves it is the observed action.
+
+Fixture limitation found and classified: appending records to
+`records.jsonl` out of band does **not** bump the store revision or emit a
+store-change event, so the first snapshot after a seed can be stale. This is an
+**invalid-fixture artifact, not a product issue**: the seeded crew enablement
+(`enabled:true`) first read as `state off`, and became `state on` as soon as
+the next real store write (the member rename) bumped the revision and
+reloaded. Product writes always bump the revision and emit events; only my
+direct append skipped that.
+
 ## Evidence log
 
-### 2026-10-05 02:59–03:14 — build, home, setup
+### 2026-10-05 02:59–03:14 — build, home, setup (run `overnight-a1-live-retry`)
 
-- Spawned: `pilotty spawn --name overnight-a1-live-retry opencodeplus-dev .`
+- Spawned `pilotty spawn --name overnight-a1-live-retry opencodeplus-dev .`
   from this worktree. PTY session id `d245882b-751e-4de4-901d-981624cffea4`.
-- Own dev home (verified from `/proc/<server>/environ`, which the plan says to
-  trust over any registration file):
-  - `XDG_CONFIG_HOME=…/t86bee9-…/config`, `XDG_DATA_HOME=…/data`,
-    `XDG_STATE_HOME=…/state`, `XDG_CACHE_HOME=…/cache`.
-  - `OPENCODE_TUI_CHANNEL=plus`.
-  - Server cmdline `…/packages/cli/src/index.ts serve --stdio --port 0`
-    (private stdio server; not the shared 40375 service).
-- Kernel fd proof the actual log is `opencode-local.log` (not the plan's
-  `opencode.log`): `readlink /proc/2702207/fd/9` →
-  `…/data/opencode/log/opencode-local.log`; fd 11–13 → `opencode-local.db*`.
-- Terminal resized 160×48 for wide passes (also will do 80×24).
-- Unit baseline at this HEAD: `bun test test/rename.test.ts` from `packages/plus`
-  → **6 pass / 0 fail, 47 expect() calls** (the known ancestor failure is
-  fixed at this HEAD; ancestor refusal message is "inherited from an ancestor
-  directory and cannot be renamed").
-- Created a Project user agent through the real UI create flow (a → name
-  `ren-a1` → preset `Build`), then renamed it with `R`:
-  - Prompt prefilled exactly the row's current id (`Rename ren-a1` … value
+- Terminal resized 160×48 for wide passes (also 80×24 later).
+- Unit baseline at this HEAD: `bun test test/rename.test.ts` from
+  `packages/plus` → **6 pass / 0 fail, 47 expect() calls**.
+- **Real action** — created a Project user agent through the UI create flow
+  (`a` → name `ren-a1` → preset `Build`), then renamed it with `R`:
+  - Prompt prefilled exactly the row's current id (`Rename ren-a1`, value
     `ren-a1`).
-  - Renamed to `new-a1` through the same dialog → tree selected the renamed row
-    `new-a1` and the header followed `Project › Agents › User › new-a1`.
-  - On disk: `project/.opencode/agent/ren-a1.md` gone,
-    `project/.opencode/agent/new-a1.md` present; the link record followed to
-    `agent:"new-a1"`; `log.jsonl` holds `agent.create ren-a1` then
-    `agent.rename ren-a1 to new-a1 (project)` at revisions 1→2. Session
-    history of those messages is separate (checked later).
-- Seeded representative on-disk inputs in the owned home (no other home
-  touched):
-  - Global user agent `config/opencode/agents/g-a1.md`.
-  - Global team `config/opencode/opencodeplus/teams/gcrew/` member `gm1.md`
-    (note: global teams root is `<config>/opencodeplus/teams`, not
-    `<config>/teams`).
-  - Project team `project/.opencodeplus/teams/crew/` members `m1.md`, `m2.md`.
-  - Representative records for agent `new-a1` (customization, split, model,
-    rule, link), for member `m1` (customization, model, rule, link), plus a
-    peer `m2` `perm:team_delegate:to.m1` row and a `team:project:crew` enable
-    row, appended to the project `records.jsonl` (revision 2).
-- Tree showed `Teams › crew` with members `m1`, `m2` after reload, and
-  `state off` on the crew row (enablement is read from records; the seeded
-  team record's enabled:true is a defaults/global/project-disk nuance to
-  verify against the live enable flow).
+  - Renamed to `new-a1`: tree selected `new-a1`, header followed
+    `Project › Agents › User › new-a1`.
+  - On disk `project/.opencode/agent/ren-a1.md` gone, `new-a1.md` present; the
+    link record followed to `agent:"new-a1"`; log `agent.create ren-a1` then
+    `agent.rename ren-a1 to new-a1 (project)` revisions 1→2.
+- **Fixtures** (owned home only): Global user agent
+  `config/opencode/agents/g-a1.md`; Global team
+  `config/opencode/opencodeplus/teams/gcrew/` member `gm1.md`; Project team
+  `project/.opencodeplus/teams/crew/` members `m1.md`, `m2.md`; representative
+  records for agent `new-a1` (customization, split, model, rule, link), member
+  `m1` (customization, model, rule, link), a peer `m2`
+  `perm:team_delegate:to.m1` row, and a `team:project:crew` enable record.
+  Global teams root is `<config>/opencodeplus/teams`, not `<config>/teams`.
 
-### 2026-10-05 03:14–03:20 — R rename agent and member + selection
+### 2026-10-05 03:14–03:32 — R agent/member/team rename (run 1)
 
-- **Project user agent rename via `R`** (tree list): prompt `Rename ren-a1`,
-  prefilled `ren-a1`; renamed to `new-a1`. Tree header followed
-  `Project › Agents › User › new-a1`; the selected row became `new-a1`.
-- **Member rename via `R`** on `Project › Teams › crew › m1`:
-  - Prompt `Rename m1`, prefilled `m1`. Invalid id `bad:name` refused in-dialog
-    with toast `Invalid agent id "bad:name": colons are not allowed (colons
-    separate the fields of instruction row ids)`; no file or record change
-    (m1.md still present, records count unchanged, revision still 2).
-  - Collision to `m2` refused: toast `Agent m2 already exists at
+- **Real action, member rename via `R`** on `Project › Teams › crew › m1`:
+  - Invalid id `bad:name` refused in-dialog:
+    `Invalid agent id "bad:name": colons are not allowed (colons separate the
+    fields of instruction row ids)`; no file or record change.
+  - Collision to `m2` refused: `Agent m2 already exists at
     …/project/.opencodeplus/teams/crew/m2.md`; no change.
-  - Renamed `m1` → `m1x` (free id): tree header followed
-    `Project › Teams › crew › m1x`, selected row `m1x`; on disk `m1.md` gone,
-    `m1x.md` present; all member records moved to `agent:"m1x"`; peer
-    `perm:team_delegate:to.m1` became `perm:team_delegate:to.m1x`; log
+  - Renamed `m1` → `m1x`: header followed, selected row `m1x`; `m1.md` gone,
+    `m1x.md` present; member records moved to `agent:"m1x"`; peer
+    `perm:team_delegate:to.m1` became `…to.m1x`; log
     `agent.rename m1 to m1x (project team crew)` revision 3.
-- **Palette `plus.agent.rename`**: `ctrl+p` → `Rename agent` → agent picker
-  listed file-backed agents (disabled/described), picked `g-a1`, prompt
-  `Rename g-a1` prefilled `g-a1`; renamed to `g-a2`. Toast/close and on disk
+- **Real action, team rename via `R`** on `Project › Teams › crew`:
+  - Invalid name `bad/name` refused: `Invalid team name "bad/name": team names
+    are single path segments (no slashes)`; no change.
+  - Renamed `crew` → `squad`: header followed; directory moved to
+    `…/teams/squad`; every team-scoped record's `team.team` moved
+    `crew`→`squad`; enablement followed; log
+    `team.rename crew to squad (project)` revision 4.
+- **Real action, palette `plus.agent.rename`**: `ctrl+p` → `Rename agent` →
+  picker → `g-a1`; prompt `Rename g-a1` prefilled `g-a1`; renamed to `g-a2`.
   `config/opencode/agents/g-a1.md` → `g-a2.md`; log
   `agent.rename g-a1 to g-a2 (global)` revision 466. Same path as `R`.
+- **Real action, refusals through `R`**:
+  - Built-in `build` (shown at Project): `Agent build is built in and cannot
+    be renamed`.
+  - Special `compaction`: `Agent compaction is built in and cannot be
+    renamed`.
+  - Ancestor-backed fixture `<dev-home>/.opencode/agent/legacy.md` above the
+    session's `project/`, shown at `Project › Agents › User › legacy`:
+    `Agent legacy is inherited from an ancestor directory and cannot be
+    renamed`. No file or record change.
 
-### 2026-10-05 03:24–03:32 — Team rename via R
+### 2026-10-05 03:40–04:10 — tools, refusals, warming, history (run 1)
 
-- **Team rename via `R`** on `Project › Teams › crew`:
-  - Prompt `Rename crew`, prefilled `crew`.
-  - Invalid name `bad/name` refused in-dialog:
-    `Invalid team name "bad/name": team names are single path segments (no
-    slashes)`; no change.
-  - Renamed `crew` → `squad`: header followed `Project › Teams › squad`,
-    selected row `squad`; team directory moved to `…/teams/squad`, member
-    files `m1x.md`/`m2.md` inside; every team-scoped record's
-    `team.team` moved `crew`→`squad`; enablement record followed; log
-    `team.rename crew to squad (project)` revision 4.
+Composer model `cliproxyapi/deepseek-v4.1-flash-cheap`, agent `New-B`. Each is
+a **real action** in a real `execute` tool call; the model printed the raw
+result.
 
-### 2026-10-05 03:32–03:40 — Refusals through `R` (live)
-
-- **Built-in OpenCode agent** (`Defaults › Agents › OpenCode › build`, also
-  shown at Project): toast
-  `Agent build is built in and cannot be renamed` (live screen, row `build`).
-- **Special agent** (`… › Special › compaction`): toast
-  `Agent compaction is built in and cannot be renamed`.
-- **Ancestor-backed agent**: wrote `…/<dev-home>/.opencode/agent/legacy.md`
-  (above the session's `project/`), reloaded the tree; row appeared under
-  `Project › Agents › User › legacy` with `no tools`. `R` produced the
-  full-screen toast (ANSI output captured):
-  `Agent legacy is inherited from an ancestor directory and cannot be
-  renamed`. No file or record change.
-
-### 2026-10-05 03:40–03:56 — Tool `instructions.set({id,rename})` (live)
-
-Session model switched to `cliproxyapi/deepseek-v4.1-flash-cheap`; agent
-`New-B`. Each call ran in a real `execute` tool call and the model printed the
-raw result.
-
-- **Agent row**: `instructions.set({id:"agent:project:new-a1",rename:"new-b"})`
-  →
-  `{"id":"agent:project:new-b","to":"new-b","path":"…/project/.opencode/agent/new-b.md","status":"Renamed new-a1 to new-b"}`.
+- **Agent**: `instructions.set({id:"agent:project:new-a1",rename:"new-b"})` →
+  `{"id":"agent:project:new-b","to":"new-b","path":"<dev-home>/project/.opencode/agent/new-b.md","status":"Renamed new-a1 to new-b"}`.
   On disk `new-b.md`; records (customization/split/model/rule/link) moved to
   `agent:"new-b"`; log actor `{type:"tool",agent:"build"}`
   `agent.rename new-a1 to new-b (project)` revision 5.
-- **Member row**:
-  `instructions.set({id:"team:project:squad:m1x",rename:"m1y"})` →
-  `{"id":"team:project:squad:m1y","to":"m1y","path":"…/teams/squad/m1y.md","status":"Renamed member m1x to m1y"}`.
-  Member records and the peer `perm:team_delegate:to.m1x` →
-  `…to.m1y`; log `agent.rename m1x to m1y (project team squad)` revision 6.
-- **Team row**:
-  `instructions.set({id:"team:project:squad",rename:"squad2"})` →
-  `{"id":"team:project:squad2","to":"squad2","path":"…/teams/squad2","status":"Renamed team squad to squad2"}`.
+- **Member**: `instructions.set({id:"team:project:squad:m1x",rename:"m1y"})` →
+  `{"id":"team:project:squad:m1y","to":"m1y","path":"<dev-home>/project/.opencodeplus/teams/squad/m1y.md","status":"Renamed member m1x to m1y"}`.
+  Member records and the peer `perm:team_delegate:to.m1x` → `…to.m1y`; log
+  `agent.rename m1x to m1y (project team squad)` revision 6.
+- **Team**: `instructions.set({id:"team:project:squad",rename:"squad2"})` →
+  `{"id":"team:project:squad2","to":"squad2","path":"<dev-home>/project/.opencodeplus/teams/squad2","status":"Renamed team squad to squad2"}`.
   Directory and every team-scoped record followed; log
   `team.rename squad to squad2 (project)` revision 7.
-- **Built-in refusal via tool**:
-  `instructions.set({id:"agent:project:build",rename:"builder"})` →
-  `✗ instructions.set … ↳ agent.invalid: Agent build is built in and cannot
-  be renamed`.
-- Composer chip followed each rename (`M1x` → `New-B` agent selection) and the
-  session-history transcript kept the old names in the already-sent user
-  messages (messages are immutable; only the tree/composer changed).
-- **Protected agent (tool actor)**:
-  wrote `.opencodeplus/project.json` with `protectedAgents: ["new-b"]` in the
-  owned project, reselected agent `New-B`, then
-  `instructions.set({id:"agent:project:new-b",rename:"new-c"})` →
-  `✗ instructions.set … ↳ agent.protected: row belongs to protected agent
-  "new-b"`. No file/record change. (Removed the fixture after: see below.)
-- **Shipped Defaults team row**: live this build has **no** shipped Defaults
-  team row — the shipped teams are presets (`Basic`) and `Defaults › Teams`
-  lists only `Every member`. `instructions.set({id:"team:defaults:basic",
-  rename:"fleet"})` → `row.unknown: Unknown row "team:defaults:basic"`.
-  The shipped-Defaults refusal (`… is shipped and cannot be renamed`) is
-  therefore **unit-only** here, proved by
-  `test/rename.test.ts` "instructions.set rename covers agent, member and team
-  rows and refuses Defaults rows" with an injected `builtins:[{name:"ship"}]`
-  registry. The live shipped team is a preset row:
-  `instructions.set({id:"team:preset:basic",rename:"fleet"})` →
-  `rename.invalid: "Basic" is a preset row and cannot be renamed`.
+- **Refusals via tools**:
+  - Built-in `agent:project:build`:
+    `agent.invalid: Agent build is built in and cannot be renamed`.
+  - Special `agent:project:compaction`:
+    `agent.invalid: Agent compaction is built in and cannot be renamed`.
+    (The `Defaults` id `agent:defaults:compaction` is not a tree row:
+    `rename.invalid: "compaction" is not a renamable row`.)
+  - Ancestor-backed `agent:project:legacy`:
+    `agent.invalid: Agent legacy is inherited from an ancestor directory and
+    cannot be renamed`.
+  - Protected agent (tool actor), after a **fixture**
+    `.opencodeplus/project.json` with `protectedAgents:["new-b"]`:
+    `agent.protected: row belongs to protected agent "new-b"`.
+  - Shipped Defaults team id `team:defaults:basic`:
+    `row.unknown: Unknown row "team:defaults:basic"` — no live Defaults team
+    exists; the shipped `Basic` is a preset, and
+    `team:preset:basic` → `rename.invalid: "Basic" is a preset row and cannot
+    be renamed`.
+- **Warming row follows (real action, fixture record)**: a **fixture**
+  team-scoped warming model record for member `m1y`
+  (`warming:"30 minutes", interval:"3.5 minutes", prompt:"keep-warm
+  sentinel"`) then **real rename** `m1y` → `m1z`: the record's `agent` moved to
+  `"m1z"` with warming/interval/prompt intact, `perm:team_delegate:to.m1y`
+  moved to `…to.m1z`, file moved to `…/squad2/m1z.md`. Member Models showed
+  `▎▸ cliproxyapi/deep…-v4.1-flash-cheapwarm 30 minutes …ery 3.5 minutes ◆`.
+- **Session history keeps old names (real, read from owned SQLite)**:
+  `session_message` rows sent while the row was `new-a1` still carry that
+  text; rows after the rename carry `new-b`; assistant rows recorded before
+  the rename keep `agent:"m1x"`. Nothing rewrites old messages.
+- **Runtime log**: the only `level=ERROR` in
+  `<dev-home>/data/opencode/log/opencode-local.log` is a harness mis-pick —
+  switching the composer to `claude-fable-5-1` produced
+  `Failed to drain Session … AI.Error.InvalidRequest: unknown provider for
+  model claude-fable-5-1` (that model has no route in this home). Not a T6
+  defect; renames then ran on `deepseek-v4.1-flash-cheap`. No rename-related
+  ERROR/WARN.
 
-### 2026-10-05 03:58–04:10 — Refusals via tools + history proof
+### 2026-10-05 04:10 — narrow (80×24) pass (run 1)
 
-Tool-actor refusals, each in a real `execute` call:
+- `Project › Teams › squad2 › m1z`, `R` opened the prefilled prompt
+  `Rename m1z` with `m1z`.
+- Team row footer narrow reads `… space toggle   a add   l link   R rename
+  d delete …`; the R hint is present at 80 columns.
+- No layout break; Instructions is already a narrow two-page layout. Refusal
+  toasts were captured wide; narrow verified prefill, hint and layout only.
 
-- Built-in agent `agent:project:build`:
-  `agent.invalid: Agent build is built in and cannot be renamed`.
-- Special agent `agent:project:compaction` (Special row shown at Project):
-  `agent.invalid: Agent compaction is built in and cannot be renamed`.
-  (The `Defaults`-level id `agent:defaults:compaction` is not a tree row:
-  `rename.invalid: "compaction" is not a renamable row`.)
-- Ancestor-backed `agent:project:legacy`:
-  `agent.invalid: Agent legacy is inherited from an ancestor directory and
-  cannot be renamed`.
-- Protected agent (tool actor), after re-adding
-  `protectedAgents:["new-b"]`:
-  `agent.protected: row belongs to protected agent "new-b"`.
+### 2026-10-05 04:18–04:22 — Global rename (run `overnight-a1-live-retry2`)
 
-**Warming row follows a member rename (live).** Appended a real
-team-scoped warming model record for member `m1y`
-(`warming:"30 minutes", interval:"3.5 minutes", prompt:"keep-warm sentinel"`),
-then renamed the member `m1y` → `m1z` via
-`instructions.set({id:"team:project:squad2:m1y",rename:"m1z"})`. The record's
-`agent` moved to `"m1z"` with `warming`/`interval`/`prompt` intact, the peer
-`perm:team_delegate:to.m1y` moved to `…to.m1z`, and the member file moved to
-`…/teams/squad2/m1z.md`. This is the warming-row-follows fact live, not just
-in `rename.test.ts`. The member's Models screen also showed the followed row
-at 160 columns: `▎▸ cliproxyapi/deep…-v4.1-flash-cheapwarm 30 minutes …ery
-3.5 minutes ◆`.
+Same worktree, own dev home, second owned PTY. All **real actions**:
 
-**Session history keeps the old name (live, read from the owned SQLite).**
-Read `data/opencode/opencode-local.db` `session_message` read-only. Messages
-sent while the row was `new-a1` still carry that text
-(`…instructions.set({ id: "agent:project:new-a1", …`), messages sent after the
-rename carry `new-b`, and assistant messages recorded before the rename keep
-`agent:"m1x"`. Nothing rewrites old messages.
-
-**Runtime errors in the log.** The only `level=ERROR` in
-`opencode-local.log` is the intentional failure when I switched the composer to
-`claude-fable-5-1` (a model variant not registered for the `cliproxyapi`
-provider): `Failed to drain Session … AI.Error.InvalidRequest: unknown provider
-for model claude-fable-5-1`. This is a harness mis-pick, not a T6 defect; the
-T6 renames then ran on `deepseek-v4.1-flash-cheap`. No other ERROR/WARN
-attributable to rename exists in the log (WARNs are only
-`executor-controlled plugin source refused`).
-
-### 2026-10-05 04:18–04:22 — Global team/member rename (live)
-
-A second owned run (`overnight-a1-live-retry2`, own dev home, same worktree)
-confirmed the Global path:
-
-- `Global › Teams › gcrew` → `R`, prefilled `gcrew`, renamed to `gcrew2`:
-  header followed `Global › Teams › gcrew2`, team directory moved to
-  `config/opencode/opencodeplus/teams/gcrew2`, log
+- `Global › Teams › gcrew` → `R`, prefilled `gcrew`, renamed `gcrew2`: header
+  followed; directory moved to
+  `<dev-home>/config/opencode/opencodeplus/teams/gcrew2`; log
   `team.rename gcrew to gcrew2 (global)` revision 466.
-- `Global › Teams › gcrew2 › gm1` → `R`, prefilled `gm1`, renamed to `gm1x`:
-  header followed, `gm1x.md` present, log
+- `Global › Teams › gcrew2 › gm1` → `R`, prefilled `gm1`, renamed `gm1x`:
+  header followed; `gm1x.md` present; log
   `agent.rename gm1 to gm1x (global team gcrew2)` revision 466.
-- This closes the Global half of the team/member renamable rows; the Project
-  half was covered by the first run.
 
-Cleanup of this second run: palette `exit`; kernel check shows the owned
-server PIDs gone, `pilotty status` reports `exited`, and no session remains in
-`pilotty list-sessions`.
+### 2026-10-05 04:23–04:32 — remaining lines (run `overnight-a1-live-final`)
 
-### 2026-10-05 04:10 — Narrow (80×24) pass
+Same worktree, own dev home, third owned PTY. All renames are **real
+actions**; records are labelled fixtures.
 
-Resized to 80×24 and repeated the key T6 surfaces:
-- On `Project › Teams › squad2 › m1z`, `R` opened the prefilled prompt
-  `Rename m1z` with `m1z` (member rename works narrow).
-- The team row footer narrow reads `… space toggle   a add   l link   R rename
-  d delete …`, so the R hint is present at 80 columns.
-- No layout break; the Instructions screen is already a narrow two-page
-  layout. (The refusal toasts were captured wide; narrow only verified prefill,
-  hint and layout, not a separate refusal.)
-
-## Summary
-
-All T6 end-state lines verified live at this HEAD except the two explicitly
-noted as unit-only (shipped Defaults team/member rows have no live instance in
-this build). Files, every stored record class, tree selection, palette and
-tools paths, and all four refusal classes were observed; history kept old
-names. Sanitized evidence above. Runtime cleanup is recorded separately below.
+- **Enablement is real and readable live**: toggling `Project › Teams ›
+  squad2` with Space wrote
+  `team.setEnabled squad2 disabled (project)` and later `… enabled …`, changed
+  the record's `enabled` and the inspector `state on/off`. (The earlier stale
+  `state off` from the fixture is the invalid-fixture artifact described
+  above.)
+- **Collision on team rename**: renamed a fixture team `taken` to `squad2`
+  while `squad2` existed → `Team squad2 already exists`; no change.
+- **Member `split` record follows (real rename over a fixture split)**: a
+  fixture `split` record for member `m1z`; team rename `squad2` → `squadx`
+  moved its `team.team`; member rename `m1z` → `m1w` moved its `agent`; the
+  member file moved too.
+- **Global agent records follow**: a **fixture** set (customization, model,
+  rule) for `g-a2`, then **real rename** `g-a2` → `g-a4`: all three records
+  moved to `agent:"g-a4"`; `config/opencode/agents/g-a2.md` → `g-a4.md`; log
+  `agent.rename g-a2 to g-a4 (global)` revision 469. A separate real rename
+  `DeepSeek-Build` → `g-a3` also followed its records.
+- **Global member records follow**: a **fixture** set (customization, model)
+  for `gm1x`, then **real rename** `gm1x` → `gm1z`: both records moved to
+  `agent:"gm1z"`; `gm1z.md` present; log
+  `agent.rename gm1x to gm1z (global team gcrew2)` revision 473.
+- **160×48** re-check of the Global team/member rows and the prefilled `R`
+  prompt at the end of this run (wide layout intact).
 
 ## T6 end-state line checklist
 
 | T6 line | Result |
 | --- | --- |
-| `R` on a renamable row prompts prefilled, validated like creation | live: Project agent, member, team, palette — prefilled with current id |
-| Renamable rows: Project/Global user agents | live (`ren-a1`→`new-a1` project; `g-a1`→`g-a2` global) |
-| Renamable rows: on-disk team members | live (`m1`→`m1x`→`m1y`→`m1z` project; `gm1`→`gm1x` global) |
-| Renamable rows: Project/Global teams | live (`crew`→`squad`→`squad2` project; `gcrew`→`gcrew2` global) |
-| Collision handling (choose another free key; help/hints) | live refusal `Agent m2 already exists at …`; no write; hint `R rename` in wide and narrow footers |
-| File/team directory follows | live: agent `.md` and team dir moved |
-| Customizations, splits, models, rules, links follow | live for agent; live member records (customization/model/rule/link) followed; `split` on agent followed (unit for member split) |
-| Warming rows follow | live (`m1y`→`m1z` kept warming/interval/prompt) |
-| `team_delegate` "Delegate to" rows follow | live `to.m1`→`to.m1x`→`to.m1y`→`to.m1z` |
-| Team-scoped records + team enablement follow | live (`crew`→`squad`→`squad2`, `enabled:true` followed) |
+| `R` prompts prefilled, validated like creation | live: Project + Global agent/member/team; palette — prefilled with current id; bad ids/collisions refused without writes |
+| Renamable: Project/Global user agents | live: `ren-a1`→`new-a1` (project), `g-a1`→`g-a2`, `DeepSeek-Build`→`g-a3`, `g-a2`→`g-a4` (global) |
+| Renamable: on-disk team members | live: `m1`→`m1x`→`m1y`→`m1z`→`m1w` (project), `gm1`→`gm1x`→`gm1z` (global) |
+| Renamable: Project/Global teams | live: `crew`→`squad`→`squad2`→`squad3`→`squadx` (project), `gcrew`→`gcrew2` (global) |
+| Collision: choose another free key, update help/hints | live refusals `Agent m2 already exists …` and `Team squad2 already exists`; no writes; `R rename` hint in wide and narrow footers |
+| File/team directory follows | live: agent `.md` and team dir moved in every run |
+| Customizations, splits, models, rules, links follow | live: agent set (incl. split); member set incl. a live member `split`; global agent + global member sets |
+| Warming rows follow | live: `m1y`→`m1z` kept warming/interval/prompt |
+| `team_delegate` "Delegate to" rows follow | live: `to.m1`→`to.m1x`→`to.m1y`→`to.m1z`→`to.m1w` |
+| Team-scoped records + team enablement follow | live: enablement record and every scoped row followed team renames; enable toggle is real |
 | Tree selection follows | live after every rename (header + selected row) |
-| Session history keeps the old name | live: SQLite `session_message` still holds old ids/agent |
-| Refuse built-in OpenCode agents | live (R toast and tool `agent.invalid`) |
-| Refuse Special agents | live (R toast and tool `agent.invalid`) |
-| Refuse shipped Defaults teams | **unit-only** (no live Defaults team row in this build); live preset row refused as `rename.invalid` |
-| Refuse shipped Defaults members | **unit-only** (same; `team:defaults:ship:mate` in test) |
-| Refuse ancestor-backed agents | live (R toast and tool `agent.invalid`) |
-| Refuse protected agent for a tool actor | live (`agent.protected`) |
-| Palette `plus.agent.rename` uses same path | live (picker → prefill → rename → file/log) |
+| Session history keeps the old name | live: owned SQLite `session_message` still holds old ids/agent |
+| Refuse built-in OpenCode agents | live: R toast + tool `agent.invalid` |
+| Refuse Special agents | live: R toast + tool `agent.invalid` |
+| Refuse shipped Defaults teams | **unit-only** (no live Defaults team at this HEAD; see D1); live preset row refused `rename.invalid` |
+| Refuse shipped Defaults members | **unit-only** (same; `team:defaults:ship:mate` in the test) |
+| Refuse ancestor-backed agents | live: R toast + tool `agent.invalid` |
+| Refuse protected agent for a tool actor | live: `agent.protected` |
+| Palette `plus.agent.rename` same path | live: picker → prefill → rename → file/log |
 | Tools `instructions.set({id,rename})` on agent/member/team | live for all three |
 | Documented in `teaching.ts` | source read: `teaching.ts:79,138` documents the shape and refusals |
 
 ## Runtime cleanup
 
-- Exited the TUI through the palette `exit` (not a kill).
-- Kernel proof (not a registration file): the owned server chain disappeared:
-  - PID 2702055 (dev launcher, cwd `…/project`) — gone.
-  - PID 2702207 (private `serve --stdio --port 0`) — gone.
-  - PID 2702254 / 2879171 (search children of the server) — gone.
-- `pilotty status -s overnight-a1-live-retry` reports `"state": "exited"`; the
-  session no longer appears in `pilotty list-sessions`.
-- The only remaining process with this worktree in its cwd is PID 2699280
-  `…/releases/2.0.18-plus-1.1.14/bin/opencodeplus search-mcp`, whose parent is
-  PID 2592457 (`…/2.0.18-plus-1.1.14/bin/opencodeplus serve --service`) with
-  cwd `/home/bliss`, `XDG_CONFIG_HOME=/home/bliss/.config`,
-  `XDG_DATA_HOME=/home/bliss/OpenCodePlus/run/plus/data` and no
-  `OPENCODE_DB`/`OPENCODE_TUI_CHANNEL` pointing at my home. It is **not**
-  owned by this run (it predates my spawn at 02:58:12; my spawn was 02:59);
-  it is the shared service's child and must not be killed.
-- No test process or other owned process remains.
+Owned processes were identified by kernel state (cwd under this worktree or
+the owned dev home, and the private `serve --stdio --port 0` cmdline), never
+by a registration file.
+
+Kernel proof that the server opens `opencode-local.log` (run
+`overnight-a1-live-final`, before exit), with exact paths:
+
+- Launcher PID `2982254`:
+  - cwd:
+    `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258/project`
+  - fd 9 →
+    `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258/data/opencode/log/opencode-local.log`
+- Private server PID `2982300`:
+  - cwd:
+    `/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t86bee9-20261005-0258/packages/cli`
+  - fd 9 →
+    `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258/data/opencode/log/opencode-local.log`
+  - fd 11 →
+    `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t86bee9-20261005-0258/data/opencode/opencode-local.db`
+  - fd 12 / 13 → the same path with `-wal` / `-shm`.
+
+After exiting each run through the palette `exit`:
+
+- Run 1 owned PIDs `2702055` (launcher), `2702207` (server), `2702254` and
+  `2879171` (server search children) — all gone.
+- Run 2 owned PIDs `2957618` and `2957664` — all gone.
+- Run 3 owned PIDs `2982254` (launcher), `2982300` (server), `2982447` and
+  `2982732` (search children) — all gone.
+- `pilotty status` for each of the three sessions reports `exited`; none
+  appears in `pilotty list-sessions`.
+- No live process has its cwd under the owned dev home and no live process
+  holds an fd whose target is under it (checked over every `/proc/<pid>/cwd`
+  and `/proc/<pid>/fd/*`).
+- The one remaining process with this worktree in its cwd is PID `2699280`
+  (`/home/bliss/OpenCodePlus/releases/opencodeplus/releases/2.0.18-plus-1.1.14/bin/opencodeplus
+  search-mcp`), child of the shared service PID `2592457`
+  (`…/2.0.18-plus-1.1.14/bin/opencodeplus serve --service`). Its cwd is this
+  worktree but it holds no fd under my dev home, and its start time (02:58:12)
+  precedes my first spawn (02:59). It is the shared service's child, not owned
+  by this run, and was not touched.
 
 ## Open issues / deferred
 
-- **D1 — shipped Defaults team/member refusal is unit-only live.** This build
-  ships no Defaults team (the shipped `Basic` is a preset), so the exact
-  `… is shipped and cannot be renamed` message for a Defaults team/member was
-  not observed live. It is covered by `test/rename.test.ts` with an injected
-  `builtins` registry. To observe it live one would need a build that ships a
-  Defaults team; not available at this HEAD.
-- **D2 — member `split` record follow is unit-only.** Live I followed member
-  customization/model/rule/link/warming and a peer delegate row; a member
-  `split` record was not seeded live (the agent case had one and it followed).
-  Covered by the member test's record set.
-- **D3 — narrow refusal toast not separately captured.** At 80×24 I verified
-  prefill, the R hint and layout; the refusal toasts were captured at 160×48.
-- **D4 — `claude-fable-5-1` provider error.** Switching the composer to
-  `claude-fable-5-1` produced one `Failed to drain Session … unknown provider`
-  ERROR in the log. This is the config's model entry lacking a matching
-  provider route in this home, not a T6 defect; recorded so it is not mistaken
-  for a rename regression.
+- **D1 — shipped Defaults team/member refusal is unit-only live.** No
+  Defaults team ships at this HEAD (the shipped `Basic` is a preset, and the
+  production plugin passes no builtins registry), so the exact
+  `… is shipped and cannot be renamed` message was not observed live. Covered
+  by `test/rename.test.ts` with an injected `builtins` registry. To observe it
+  live would need a build that ships a Defaults team.
+- **D2 — narrow refusal toast.** At 80×24 I verified prefill, the R hint and
+  layout; the refusal toasts were captured at 160×48.
+- **D3 — `claude-fable-5-1` provider error.** One `Failed to drain Session …
+  unknown provider` ERROR in the owned log from my composer mis-pick; not a
+  T6 defect, recorded so it is not mistaken for a rename regression.
 - **Note — no source edits.** This run only created
-  `docs/plans/plus-1.1.15-a1-live.md`; `packages/*` and the overnight log were
-  not touched.
+  `docs/plans/plus-1.1.15-a1-live.md`; `packages/*` and
+  `docs/plans/plus-1.1.15-overnight-log.md` were not touched.
