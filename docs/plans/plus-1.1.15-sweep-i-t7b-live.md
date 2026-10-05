@@ -89,3 +89,38 @@ The deepseek row dropped `"active":true`; the opus row got `"active":true`
 
 **PASS** — Space activates exclusively at this level; adding a model already
 activates it.
+
+### Step 3 — `r` clears the active flag; Space restores (PASS)
+
+Store before: `{"version":2,"revision":480}` and the `build` opus row
+`…claude-opus-5-5 variant high active:true …`.
+
+Pressed `r` on the active `cliproxyapi/claude-opus-5-5@high` row. The row lost
+`active` (the `◆` marker remained) and the inspector changed `source` from
+`active model: set here (Global)` to `candidate: set here (Global)`, `from` to
+`Global`:
+
+```
+▌▸ cliproxyapi/claude-opus-5-5@high                                       ◆
+ ▸ cliproxyapi...us-5-5@xhighfrom default build · a...· warm 30m · every 4m
+▎▸ cliproxyapi/deepseek-v4.1-flash-cheap                                  ◆
+```
+
+Store after `r`: `{"version":2,"revision":481}` and
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","updated":"2026-09-29T10:13:12.020Z"}
+```
+
+(no `active`).
+
+Then pressed Space on that row to restore. Store after: `revision 482` and
+
+```
+{"type":"model","level":"global","agent":"build","providerID":"cliproxyapi","modelID":"claude-opus-5-5","variant":"high","active":true,"basedOn":"cliproxyapi/claude-opus-5-5@xhigh","updated":"2026-09-29T10:13:12.020Z"}
+```
+
+The row again shows `active ◆`, deepseek unbadged.
+
+**PASS** — `r` on the active model row clears the active flag at this level and
+writes one revision; Space restores it.
