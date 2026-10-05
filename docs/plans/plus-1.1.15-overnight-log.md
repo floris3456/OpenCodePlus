@@ -5,8 +5,8 @@
 - Branch/worktree: `plus-1.1.15_overnight`; initial HEAD `75a8d9e20f`.
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B3 review/issue repairs alongside B1/A1 acceptance; repair B2 page gaps (#7) before live acceptance.
-- Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; all workers stopped. B1 fresh live T88, #1/#6/#15 T82, A1 live T86 and #7 fresh T87 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
+- Pending: B1/A1/A2/B2 live, #1/#6/#7/#8/#10/#13/#14/#15 repairs, A4/A5/B4 and F. A3/A6/B6 source tests complete; B6 live is in the page acceptance.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; their source workers stopped. B1 fresh live T88, #1/#6/#15 T82, A1 live T86, #7 fresh T87, #8/#13 T89 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -32,13 +32,13 @@
 - Runtime evidence decision: the private source server actually opens `opencode-local.log` (kernel fd proof from T81), not necessarily the plan's `opencode.log`; live workers notified to read the actual file(s), never treat the missing alternate filename as no errors.
 - Fresh B1 live T88 `w-b9c40c8bc0aa8b1d` at `89a86fac9a`; evidence-only scope `docs/plans/plus-1.1.15-b1-live.md`, owned PTY `overnight-b1-live-retry`. T84 stopped, partial facts/cleanup below; full two-message/three-ping/stable-status/next-read sequence still required.
 
-### A3/A6/B6 — pending independent repairs
+### A3/A6/B6 — initial repair scope (results below)
 
 - A3: no Defaults echo for team members; preserve instructions_show refusal evidence on member run-scope rows.
 - A6: inspect shell description and registration-count expectations before choosing test or code fix.
 - B6: inspect warming test-harness failure; preserve `/tools`, extend `/monitor` checks after B2.
 
-### A1 — merge/review in progress
+### A1 — source reviewed/landed, live T86 running
 
 - Input `team/Flash-Implementer/t58b343-20261004-1306` merges cleanly. Reviewed all source/docs/test additions: file/member/team API paths, record rewrites, tools/RPC, rename selection/help.
 - Reproduced known ancestor refusal failure: rename test **5 pass / 1 fail** (`legacy` called built-in rather than ancestor). Actual cause is #5, not refusal order.
@@ -64,7 +64,7 @@
 - T76 diff reviewed and landed `ae09701991`: only two T5 expectation repairs, plus rule/pattern assertions; no enforcement change. Parent checks **24 pass**, Plus typecheck. Stopped.
 - B6 `1047b1e5df`: reviewed test-harness-only `ui.prompt.guard` repair; production setup matches the public context. Parent command tests 2 pass, Plus typecheck pass. Worker stopped. `/monitor` plus `/tools` alias assertions remain after B2.
 - After all four merges, A3 RPC expected-method list gains `category.mutate`; B6 now asserts exact `/monitor`, `/tools` alias, title, palette and unchanged unique command id. Small parent test reconciliation, not production change.
-- Parent `bun test test/rpc-contract.test.ts test/plugin-commands.test.tsx`: **24 pass**, Plus typecheck pass. A3/B6 test repair complete; B6 live spelling/alias verification is in T83.
+- Parent `bun test test/rpc-contract.test.ts test/plugin-commands.test.tsx`: **24 pass**, Plus typecheck pass. A3/B6 test repair complete; B6 live spelling/alias verification is now in fresh T87.
 
 ### A6 — complete
 
@@ -113,7 +113,7 @@
 - T80 first repair reviewed: connection-local `total_changes()` fixes local writes and three discriminating regressions, but misses another SQLite handle/process writing the shared file. Sent one correction: combine `PRAGMA data_version` with local changes; two-handle/direct-write regressions, retain no-write polling cache. Not landed yet.
 - Correction reviewed and landed `339c6e2f36`: composite local-change/data-version revision, completion through second WAL handle and direct update regressions plus original three. Parent cache **14 pass**, ledger/requests/plugin **34 pass**, Plus typecheck passes. Benchmark repeat session/tree/all 0.84/4.15/87.49 ms; cold Everything still 10.34 s (recorded, not speed acceptance). T80 stopped; live page polling acceptance pending T83.
 
-### #4 — pre-page view still assumes old session scope (open, expected B2 integration gap)
+### #4 — pre-page view still assumes old session scope (source reconciliation complete; compact live pending #7)
 
 - Observed merge check: five `monitor-view.test.tsx` failures, including expected `scope this chat + delegated`, four calls versus two, missing `explore` facet and absent child groups. T2 intentionally makes `session` exactly one session; compact Tools must default to tree in T3.
 - Plan: reconcile B2 production compact/full view and tests against T2 tree/session contract; run every monitor file and Plus/TUI typechecks; live /monitor, /tools and M at 80/160 columns.
@@ -152,6 +152,7 @@
 - Weight: inaccurate Monitor T2 signals / T3 metrics, not unknown provider-routing behavior.
 - Plan: after #3 lands, correct report aggregation/omission and per-session real state using existing query/event/run seams; filtered signals honor the requested window, retain history only as evidence/predecessors. Focused actual-ledger regressions for unknown vs known pricing, windowed pings/unstable/unread, legacy breakdown, running/completed/error states and reasoning/cache-inclusive totals. T83 handles visible Sessions token total; avoid new durable derived state. Re-check page scopes/windows live.
 - Further review: unread writes are counted even before their expiry (analysis has no as-of time), and later out-of-window reads can change historical-window signals. Session `agent` is overwritten by title/generate hook identities; derive/enrich Sessions from real host active/outcome/agent when available, not the last auxiliary request. `ctx.session.active()` and `Session.Info.outcome` are existing authoritative seams.
+- T89 `w-0064570ccf6aa2d2` started at `312d72c725` for #8 and #13 together (shared cache.ts). Owns report/cache/host enrichment, only query totals/state integration; T87 retains query filters/top-tools and all UI. Requires new actual-ledger `monitor-analysis.test.ts`, existing cache/requests/plugin/RPC controls, Plus typecheck and owned live RPC/state/metrics evidence. Full B4 deliberate misses/scopes wait for the combined corrected page/analysis HEAD. Refused first delegation scope was corrected to source/test directories plus exact README/evidence files; no permission bypass.
 
 ### #9 — legacy call attribution persists content-bearing errors/targets (fixed; source and owned live verified)
 
