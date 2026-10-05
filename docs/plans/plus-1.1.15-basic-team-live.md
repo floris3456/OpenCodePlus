@@ -102,3 +102,60 @@ and the two `{"type":"model","level":"project","agent":"build-seat"|"scout","pro
 records.
 
 Result: step 1 passed.
+
+## Step 2 — delegate a small report task to scout
+
+Action: switched the chat agent to the team's `build-seat` member (composer
+badge `Build-Seat · deepseek-v4.1-flash-cheap CLIProxyAPI`, status line
+`…/project:master · team basic-live`), then sent:
+
+```
+Use team_delegate to give the scout member a report task: list the top-level files of this folder. Then end your turn.
+```
+
+build-seat called `team_delegate` and ended its turn:
+
+```
+✓ team_delegate [objective=List the top-level files and directories of this repository's folder. Report their exact names and kinds, compactly., reason=A quick read-only lookup of the folder's top-level contents is a scout's job and needs no edits., requestID=scout-top-level-files-1, role=scout]
+
+Delegated to scout (run w-2c37ed52b53f479b). Ended turn to await its settlement.
+
+Build-Seat · deepseek-v4.1-flash-cheap · 20.9s · 75.2 tok/s
+```
+
+After the scout settled, the child's `child.settled` item woke build-seat in
+the same chat:
+
+```
+[team] w-2c37ed52b53f479b (scout, T1) settled: done — attempt 1 succeeded.
+Top-level listing of the repo folder (worktree root): exactly one entry.
+
+- `.git` — file (gitdir pointer file, contents: `gitdir: .../project/.git/worktrees/t12c37-20261005-1521`)
+
+No other top-level files or directories exist. The working tree has no checked-out files; directory read and glob
+(including hidden) both return only `.git`.
+Findings:
+- note .git: Only top-level entry; it is a file, not a directory, containing a gitdir pointer to the main
+  worktree metadata outside this checkout.
+- note .: Worktree working directory is empty apart from .git; no tracked files are checked out here.
+next: use the result; there is nothing to land.
+```
+
+and build-seat's own second-turn summary:
+
+```
+Scout run w-2c37ed52b53f479b settled with the report:
+
+Top-level entries of the worktree root (scout's checkout):
+
+- .git — file (gitdir pointer to the main worktree metadata)
+- nothing else
+
+Note: in my own (build-seat) checkout I also saw an untracked .opencodeplus/ directory (teams/, instructions/),
+which the scout's isolated worktree did not contain — likely a worktree isolation difference, not a contradiction
+to land. No commit or integration was needed; the task was read-only.
+
+Build-Seat · deepseek-v4.1-flash-cheap · 3.3s · 79.7 tok/s
+```
+
+Result: step 2 passed; scout run `w-2c37ed52b53f479b` is the root's only child.
