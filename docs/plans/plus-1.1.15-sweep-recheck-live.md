@@ -57,9 +57,9 @@ directory has the six members).
 
 **PASS** (Global team created from the Basic team preset).
 
-Note: this is the pre-fix sweep's environment only. The `Down`-then-`Enter`
-route selects `Empty team`; typing `Basic` in the filter and pressing `Enter`
-selects the Basic row.
+Note on the picker: `Down`-then-`Enter` selects `Empty team`; typing `Basic` in
+the filter and pressing `Enter` selects the Basic row. The team has to be
+enabled before its per-member `Delegate to` rows resolve (done in A2).
 
 ### A2. Toggle `team_delegate › Delegate to › scout` off and quote the record
 
