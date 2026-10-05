@@ -257,3 +257,208 @@ At 80 columns the Cache keeps `Kind` and drops the agent/model and cost:
   17:29:26 step      [HIT]     —               12.3k    Cache rea...353 tokens
 ```
 
+#### Tools
+
+**PASS** (kept every capability). Grouped by **tool, agent, model, target,
+session, config** (`g` cycled through all six headers); `o` cycled
+**tokens · carried · calls · errors · time**; `a`/`f`/`F` opened the agent,
+tool and model filters (dialog `Show one agent` / `Show one tool` / `Show one
+model`); `x` toggled `failed only` (read filter showed `read 7 7 …`); `/`
+narrowed to `filter “read”`; Enter drilled a target row and ⌫ came back.
+
+At 160 columns by tool:
+```
+ tools: call 1.8k · result 2.8k · carried 12.9k
+ tool                                              calls fail   call  result carried    avg
+ execute                                               5    ·    507     816      5k   24ms
+ read                                                 11    7    386     443    2.3k   17ms
+ glob                                                  6    ·    380     297    1.9k   74ms
+ team_delegate                                         1    ·    200     451    1.8k   1.4s
+ team_finish                                           1    ·    240     377     377   18ms
+ grep                                                  2    ·     64     340    1.5k   23ms
+ shell                                                 1    ·     61      33      33   55ms
+ fetch                                              0+2    1      0       0       0      ·
+ team.get_context                                   0+1    ·      0       0       0      ·
+ latest calls
+ 17:30:20 build-seat       shell            ls                                                 61      33   55ms
+ 17:30:10 scout            team_finish                                                       240     377   18ms
+ 17:30:04 scout            read             ./scripts                                          28      28   16ms ✗
+```
+Failed-only (`x`):
+```
+ failed only · misses only · order tokens
+ tools: call 285 · result 205 · carried 814
+ tool                                              calls fail   call  result carried    avg
+ read                                                  7    7    285     205     814   15ms
+```
+Group-by headers seen: `tool`, `agent`, `model`, `target`, `session`, `config`.
+Target drill:
+```
+ tools: call 1.8k · result 2.8k · carried 12.9k
+ target                                              calls fail   call  result carried    avg
+ execute team.get_context                              1    ·     58     678    4.1k   13ms
+ team_delegate scout                                   1    ·    200     451    1.8k   1.4s
+```
+Compare (`c` → `compare previous 15m` / `compare before/after “sweep mark”`) added
+`Δcalls Δresult` columns:
+```
+ session                                              calls fail   call  result carried    avg  Δcalls Δresult
+ Listing top-level repo files and directories             0    ·      0       0       0      ·   -100%   -100%
+```
+
+#### Sessions
+
+**PASS.** Sessions in scope as a tree with per-session totals, last activity and
+state. Enter scoped the page to that session (`drilled 1`); `space` scoped it to
+that session's tree; Esc restored the stored scope.
+
+At 160 columns:
+```
+  Session / Role                    Agent         State     Steps   Tokens    Read      Hit Rate  Cost      Active
+  Scout report task: top-level filesbuild-seat    completed 5       66.6k     51.7k     79%       $0.00     17:30:20
+    └─ Listing to... and directoriesscout         completed 12      83.1k     68.9k     88%       $0.00     17:30:10
+```
+Enter on the child:
+```
+ Scope: This session (ses_ef350e) [s] step · [S] session · [T] team
+ ...
+ [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]                drilled 1 (⌫ back)
+```
+
+#### Steps
+
+**PASS.** Every request with all token fields (`In`, `Read`, `Write`, `Out`,
+`Reason`), duration (`Time`), finish, and the tools called. Enter showed that
+step's calls with attributed tokens (`team_delegate scout 200 451 1.8k complete`)
+and the fingerprint change against the previous request (`[REMOVED]`/`[ADDED]`
+segment lines).
+
+At 160 columns:
+```
+  Time      Kind      Agent/Model     In      Read    Write   Out     Reason  Cost    Time    Finish    Tools Called
+  17:29:21  step      deepse...h-cheap12.4k   0       0       200     35      $0.00   4.7s    tool-callsteam_delegate
+  17:29:26  step      deepse...h-cheap716     12.3k   0       45      0       $0.00   2.3s    stop      —
+  17:29:27  step      deepse...h-cheap199     4.9k    0       86      43      $0.00   2.2s    tool-callsglob, execute
+```
+Enter detail:
+```
+  Step Detail: 1963b786-… (step) at 17:29:21 · Finish: tool-calls                Press ⌫ or esc to return to list
+  Tools Called          Call Tokens  Result Tokens  Carried  Status
+  team_delegate scout   200          451            1.8k     complete
+  Fingerprint changes:
+    • [REMOVED] option “option prompt_cache_key” (0 → 0 tokens)
+    • [REMOVED] marker “cache markers” (0 → 0 tokens)
+    • [REMOVED] system “system part base template” (848 → 0 tokens)
+    • [ADDED] system “system part system:remainder:0:1” (0 → 1 tokens)
+    ...
+```
+
+### Keys
+
+**PASS.** All keys honoured live:
+
+- `o` order — cycled `tokens → carried → calls → errors → time`.
+- `a` / `f` / `F` — dialogs `Show one agent` / `Show one tool` / `Show one model`
+  with a `● Every …` row; picking `build-seat` set ` agent build-seat`, picking
+  `Every agent` cleared it.
+- `/` — `Filter by text` prompt; `read` set ` filter “read”` and narrowed the
+  tables (totals unchanged), Enter with empty text cleared it.
+- `m` mark — `Mark this moment` prompt; toast `Marked “sweep mark” at 17:45:19`.
+- `c` compare — `order tokens · compare previous 15m` then
+  `compare before/after “sweep mark”`, adding `Δcalls Δresult`.
+- Enter drill, `⌫` / esc back — Cache/Steps/Sessions/Tools details opened and
+  `Backspace`/`Escape` returned (drill counter `drilled 1 (⌫ back)`).
+- esc closes — from the top level Escape returned to the chat.
+- `?` lists every key — `Monitor Keys & Help` (quoted below).
+- Settings persist; drill-downs do not — after Escape/reopen the full page kept
+  the stored `Project` scope and `order carried`; the Sessions `Enter` drill and
+  the `S` pick showed `drilled 1` and reset on `⌫`.
+
+`?` help (excerpt):
+```
+ Monitor Keys & Help                                                    Press ? or esc to return
+ Navigation & Scope
+  1 – 5             Switch tab (Overview, Cache, Tools, Sessions, Steps)
+  tab / shift+tab   Next / previous tab
+  s                 Step scope (This session · Team tree · Team · Project · Everything)
+  S                 Open session picker (grouped by team tree, sorted by activity)
+  T                 Pick team (scope to a chosen Plus team)
+  t                 Step window (All · Since last compaction · 15m · 1h · 24h · 7d · 30d)
+  /                 Filter rows by text
+  ?                 Toggle this help view
+  esc               Back out of drill-down / close monitor
+ Cache Tab
+  Enter             Open request detail (cause, evidence, segment diff, timing)
+  x                 Toggle misses only
+ Tools Tab
+  g / o             Group by / Sort by
+  a / f / F         Filter by agent / tool / model
+  x / c / m         failed only / compare / mark
+ Sessions Tab
+  Enter             Scope monitor to this session (temporary; ⌫ restores)
+  space             Scope monitor to this session's tree (temporary; ⌫ restores)
+ Steps Tab
+  Enter             View step calls with attributed tokens & fingerprint diff
+```
+
+#### Hint bar (one line, every tab)
+
+**PASS.** A one-line hint bar is always present at the bottom and changes per
+tab; at narrow widths it shortens labels instead of clipping to a broken line.
+
+100 columns:
+```
+ [1-5] tabs · [s] scope · [t] window · [S] session · [T] team · [?] help · [esc] close
+ [↑↓] select · [⏎] detail · [x] misses only · [s] scope · [t] window · [?] help · [esc] close
+ [↑↓] select · [⏎] drill · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] compare · [m] mark · [?] help
+ [↑↓] select · [⏎] scope session · [space] scope tree · [s] scope · [t] window · [?] help · [esc] close
+ [↑↓] select · [⏎] step calls & diff · [s] scope · [t] window · [?] help · [esc] close
+```
+80 columns (short forms, still one line, ≤ 78 chars):
+```
+ [1-5] tabs · [s] scope · [t] window · [S] [T] · [?] help · [esc]
+ [↑↓] select · [⏎] detail · [x] misses only · [s] scope · [t] window · [?] help · [esc]
+ [↑↓] · [⏎] drill · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] [m] [?]
+ [↑↓] · [⏎] session · [space] tree · [s] scope · [t] window · [?] help · [esc]
+ [↑↓] · [⏎] calls & diff · [s] scope · [t] window · [?] help · [esc]
+```
+160 columns uses the 100-column forms.
+
+### Intuitive by construction
+
+**PASS.**
+
+- **Scope and window readable without pressing anything** — `Scope:` (first
+  header line) and `When:` (second header line) are always visible; the first
+  screenshot of the page already reads `Scope: Project` / `When: All`.
+- **Every number labelled** — for example at 80 columns:
+  `In: 23.4k · Read: 121k · Write: 0 · Out: 2.2k · R: 3.5k · Hit: 84%` and
+  `Agent / Steps / Hit Rate / Misses / Tokens / Cost / Active`.
+- **Nothing important needs horizontal scrolling at 100 columns** — every
+  rendered line at 100 columns is ≤ 100 characters (checked: max line len =
+  terminal width; verified visually across Cache, Tools, Sessions, Steps).
+- **Narrow layout drops columns before labels** — at 80 columns the Overview
+  drops the `Model` column, Cache drops `Agent/Model` and `Cost`, Sessions drops
+  `Agent`/`Read`/`Hit Rate`/`Cost`; every remaining value keeps a heading.
+
+### Composer `Tools` tab compact form
+
+**PASS.** The composer `Tools` tab keeps the compact body (filters line + totals
++ tool table) and its default scope is `tree`; `M` opened the page on its session.
+
+Composer tab (`Down`, then `→` to Tools):
+```
+ scope tree · window all · order tokens
+ reqs: 17 · steps: 17 · in: 23.4k · read: 12... · miss cost: $0.00 · pings: 0 · cost: $0.00
+ tool                                             calls fail   call  result carried    avg
+ execute                                              5    ·    507     816      5k   24ms
+ read                                                11    7    386     443    2.3k   17ms
+ ...
+ group g  scope s  window t  filter a/f  full M  tabs ←/→
+```
+`M` from there:
+```
+ Scope: This session (ses_ef350f) [s] step · [S] session · [T] team
+ [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]
+```
+
