@@ -249,9 +249,17 @@ session_v2: {"id":"ses_ef3328fd6ffeR3jnwgXNQrlvRE","agent":"t6-palette","title":
 session_message: assistant row with "agent":"t6-palette" (seq 27)
 ```
 
-Then the agent was renamed (palette rename) and the same rows re-read: they kept
-the old `agent` value `t6-palette` — session history was not rewritten. See
-below for the exact after values. **PASS.**
+Then the agent was renamed (`t6-palette` → `t6-history`, log
+`agent.rename t6-palette to t6-history (global), revision 504`) and the same
+rows re-read:
+
+```
+sessions after rename: {"id":"ses_ef3328fd6ffeR3jnwgXNQrlvRE","agent":"t6-palette","title":"READY confirmation request"}
+assistant agents after rename: seq 27 "t6-palette", seq 15 "t6-palette", seq 9 agent-switched "t6-palette"
+```
+
+Every stored session row kept the old name `t6-palette`; the rename touched no
+session storage. **PASS.**
 
 ### Line 6 — the palette command `plus.agent.rename` uses the same path
 
