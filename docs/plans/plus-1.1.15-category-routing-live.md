@@ -13,7 +13,9 @@ claims, and no old `attempt1done` is treated as acceptance.
 - Branch: `team/Flash-C-Worker/t1078072-20261005-0930`
 - Task: T107 (fresh continuation after the Flash-C quota run; preserved T101 input applied locally)
 - Base commit: `b6835471ee1b6b088d717ebff565d345c4da430f`
-- Owned PTY sessions: `continuation-category`, `continuation-category2`, `continuation-category3`
+- Commits: `bbb0da353e` (source + tests), `f31b2344b1` (corrected receipt)
+- Owned PTY sessions: `continuation-category`, `continuation-category2`,
+  `continuation-category3`, `continuation-category4`
 - Shared service port 40375: untouched.
 
 ## Owned test home
