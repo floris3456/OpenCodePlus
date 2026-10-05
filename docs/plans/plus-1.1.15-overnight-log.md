@@ -527,3 +527,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Tool `set`/`show`/`reset` on build's Warming field row and the same `set` on a Defaults › Models field row change only `warming`.
   - `set` with `warming:` on a field row is refused with `"Warming" takes text …` and no write. That matches the README ("a model field row … takes `text`"), so it is not an issue.
   - Log: 0 ERROR, 6 expected WARN. Child stopped.
+- 17:17: Monitor T3 delegated (T129, `w-5d2b4f502b297c71`). Its Brief tells it to make a first commit in the scratch project before delegating (#27).
