@@ -74,10 +74,14 @@
 - Personally read T1/T2/T4/T5 initial commits and current source: real config directory and cascade, process-wide store notifications + Location publish, registered team members/Defaults filtering, local model newest-wins reseeding. Found #11 cascade isolation and fixed it; A5 workaround evaluation still pending. T8 source/category/tree/key review found #12 and #14.
 - Current focused five files: **95 pass / 2 fail**; both failures are post-B2 active-team hint/count expectations (new M), sent to T83 under #7. The other four files (agents/tree/categories/propagation) pass. TUI real local model refresh tests **2 pass**, TUI typecheck passes. Source tests are not multi-TUI live acceptance.
 
-### B3 — review in progress
+### B3 — initial end-state source review complete; corrections/acceptance pending
 
 - T1/T2 source reviewed at the actual request/collector/fingerprint/analysis boundaries; migration/idempotency/retention and protocol evidence covered by 59 focused tests. #2/#3 remain active, plus new #8/#9 below. Real Instructions update uses key-indexed `delta`; collector's Object.keys matches core.
 - T4 reviewed: `buildRunTree` lifts member to topmost root with sibling/deep traversal; UI defaults tree, shows `ctrl+t`, keeps active/inactive and attach/stop behavior, explicit no-team state. Existing focused tests and pending B4/final live establish acceptance; M gap is #7.
+- T1 coverage: real HTTP/WS final observers and transport identity/outcome joins, pricing/usage/error rows, named hashed protocol fingerprints, instruction/compaction/switch/revert/account facts, migration, retention and idempotency reviewed in source. Actual-boundary `monitor-requests` tests cover these (including later-transform and unrelated-request refusal controls); legacy call privacy is the separately reproduced #9, not covered by the old request-only privacy test.
+- T2 coverage: common-prefix measurement, exact 1024/50%/90% thresholds, ordered cold/miss causes, confidence and detail evidence, Code Mode scope/window/detail/refusal/marks reviewed. Real-ledger `monitor-cache` and `monitor.test` cover the standard causes and tool grouping. #8 is the inaccurate aggregate/window/state seam; #13 is the real private-ping-tail cause gap. Cached pricing unknown must remain omitted; do not equate a zero total with known free processing.
+- T3/T4 coverage: full/compact command/open/back route, header/window/totals/tabs, facet/text/drill keys, persisted settings, narrow/wide layout, Team tree and no-team controls, story production component, README Monitor and Team sections personally read. #7 records gaps; README additionally claimed Sessions `space`/`t` both tree while `t` is window, sent to T87 for one consistent key. The README's separate `## Tools` at line 159 describes Instructions agent tools, not the old Monitor section, and is retained.
+- Initial source review is not live acceptance. Re-read repair diffs against these end states, then B4 and the fresh final sweeps must establish the actual live claims.
 
 ## Issues
 
