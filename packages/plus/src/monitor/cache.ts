@@ -534,6 +534,12 @@ export interface SessionAnalysis {
   readonly reads: readonly UnreadRead[]
 }
 
+export interface CompatibleRead {
+  readonly at: number
+  readonly gained: number
+  readonly isTitle: boolean
+}
+
 interface UnreadWrite {
   readonly at: number
   readonly tokens: number
@@ -544,6 +550,7 @@ interface UnreadWrite {
   readonly agent: string | undefined
   readonly isTitle: boolean
   readonly fp: RequestFingerprintData | undefined
+  readonly reads: readonly CompatibleRead[]
 }
 
 interface UnreadRead {
@@ -554,6 +561,20 @@ interface UnreadRead {
   readonly agent: string | undefined
   readonly isTitle: boolean
   readonly fp: RequestFingerprintData | undefined
+}
+
+function findFirstReadAfter(reads: readonly UnreadRead[], time: number): number {
+  let low = 0
+  let high = reads.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (reads[mid]!.at <= time) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+  return low
 }
 
 // The analysis is a pure fold of the session's rows and facts; it never depends
@@ -695,29 +716,6 @@ export function analyzeSession(
     earlier.push(r)
   }
 
-  // Unread writes and the reads that may clear them, as plain data. The report
-  // applies the as-of cutoff: a write enters only once its lifetime has passed
-  // by the cutoff, and only a read at or before the cutoff can clear it, so a
-  // later request cannot retroactively change a historical report.
-  const writes: UnreadWrite[] = []
-  for (const r of rows) {
-    if (r.cacheWriteTokens <= 0) continue
-    const fp = fingerprints.get(r.id)
-    const lifetime = cacheLifetime(r, fp)
-    if (lifetime === undefined) continue
-    writes.push({
-      at: r.started,
-      tokens: r.cacheWriteTokens,
-      cacheRead: r.cacheReadTokens,
-      lifetime,
-      provider: r.provider,
-      model: r.model,
-      agent: r.agent,
-      isTitle: r.isTitle,
-      fp,
-    })
-  }
-
   const reads: UnreadRead[] = []
   for (const r of rows) {
     if (r.cacheReadTokens <= 0) continue
@@ -729,6 +727,48 @@ export function analyzeSession(
       agent: r.agent,
       isTitle: r.isTitle,
       fp: fingerprints.get(r.id),
+    })
+  }
+
+  // Precompute immutable write/read compatibility and token gains inside the
+  // revision fold. Report-time windowedSessionSignals applies cutoff, window,
+  // title inclusion, and identity filters cheaply over these numeric records.
+  const writes: UnreadWrite[] = []
+  for (const r of rows) {
+    if (r.cacheWriteTokens <= 0) continue
+    const fp = fingerprints.get(r.id)
+    const lifetime = cacheLifetime(r, fp)
+    if (lifetime === undefined) continue
+
+    const compatibleReads: CompatibleRead[] = []
+    const startIdx = findFirstReadAfter(reads, r.started)
+    for (let i = startIdx; i < reads.length; i++) {
+      const read = reads[i]!
+      if (read.at > r.started + lifetime) break
+      if (read.provider !== r.provider || read.model !== r.model) continue
+      const gained = read.cacheRead - r.cacheReadTokens
+      if (gained <= 0) continue
+      if (prefixDiff(fp, read.fp).reusable) {
+        compatibleReads.push({
+          at: read.at,
+          gained,
+          isTitle: read.isTitle,
+        })
+        if (!read.isTitle && gained >= r.cacheWriteTokens) break
+      }
+    }
+
+    writes.push({
+      at: r.started,
+      tokens: r.cacheWriteTokens,
+      cacheRead: r.cacheReadTokens,
+      lifetime,
+      provider: r.provider,
+      model: r.model,
+      agent: r.agent,
+      isTitle: r.isTitle,
+      fp,
+      reads: compatibleReads,
     })
   }
 
@@ -776,16 +816,11 @@ export function windowedSessionSignals(
     // Not yet expired by the cutoff: it may still be read, so it is not unread.
     if (write.at + write.lifetime > window.until) continue
     let maxRead = 0
-    for (const read of analysis.reads) {
-      if (read.at <= write.at || read.at > write.at + write.lifetime) continue
+    for (const read of write.reads) {
       if (read.at >= window.until) break
       if (!included(read.isTitle)) continue
-      if (read.provider !== write.provider || read.model !== write.model) continue
-      if (prefixDiff(write.fp, read.fp).reusable) {
-        const gained = read.cacheRead - write.cacheRead
-        if (gained > maxRead) maxRead = gained
-        if (maxRead >= write.tokens) break
-      }
+      if (read.gained > maxRead) maxRead = read.gained
+      if (maxRead >= write.tokens) break
     }
     unread += Math.max(0, write.tokens - maxRead)
   }

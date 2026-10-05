@@ -755,4 +755,26 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
 
   console.log("SYNTHETIC BENCHMARK RESULTS (first query):", JSON.stringify(firstTimes, null, 2))
   console.log("SYNTHETIC BENCHMARK RESULTS (repeat poll):", JSON.stringify(repeatTimes, null, 2))
+
+  // Assert retained performance across repeat queries (repairing #22: previously 8155–8206ms)
+  expect(repeatTimes["all overview"]!).toBeLessThan(1000)
+  expect(repeatTimes["all cache"]!).toBeLessThan(1000)
+
+  // Advancing-clock repeat polls on the 200×200 ledger: prove cold+3 repeat polls cheap
+  const advancingPolls = [baseTime + 310_000, baseTime + 330_000, baseTime + 360_000]
+  const advancingTimes: number[] = []
+  const advancingUnread: number[] = []
+  for (const now of advancingPolls) {
+    const t0 = performance.now()
+    const res = queryMonitor(db, { scope: "all", view: "overview" }, { directory: "/project", now })
+    const elapsed = performance.now() - t0
+    advancingTimes.push(elapsed)
+    advancingUnread.push(res.unread ?? 0)
+    expect(res.totals.requests).toBe(40000)
+  }
+  console.log("SYNTHETIC BENCHMARK ADVANCING POLLS:", { advancingTimes, advancingUnread })
+  for (const t of advancingTimes) {
+    expect(t).toBeLessThan(1000)
+  }
+  expect(advancingUnread).toEqual([1_100_000, 3_100_000, 6_100_000])
 }, 30_000)

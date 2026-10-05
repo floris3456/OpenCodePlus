@@ -1,5 +1,5 @@
 import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorSessionRow, MonitorTotals } from "../rpc.js"
-import { analyzeSession, isMiss, prefixDiff, promptTokens, windowedSessionSignals, type SessionAnalysis } from "./cache.js"
+import { analyzeSession, isMiss, promptTokens, windowedSessionSignals, type SessionAnalysis } from "./cache.js"
 import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
 
