@@ -214,25 +214,25 @@ routing" plus the gap/lifetime/expected-versus-actual evidence).
 
 ### C1. unstable prefix: a segment changing on 3+ consecutive requests is flagged with its name
 
-Did: not reproduced on the wire in this sweep (would need three consecutive
-requests each changing the same segment). Covered by the focused test
-`test/monitor-cache.test.ts` "signals: three consecutive named changes, pings and
-next hit, unread writes, context at compaction": four requests each with a
-changed `system` part yield
+Did: reproduced live through the agent tool. The chat's Build agent called
+`monitor.query` and reported, at 160×45:
+`The tool marks one segment as unstable: "system part base template", with a
+streak of 3.` The Overview tab renders the warning from the same
+`report.unstable`. Separately covered by `test/monitor-cache.test.ts` "signals:
+three consecutive named changes, pings and next hit, unread writes, context at
+compaction": four requests each with a changed `system` part yield
 `expect(report.unstable).toContainEqual({ sessionID: "unstable", segment: "system
-part AGENTS.md", streak: 3 })`. The Overview/Cache page renders the warning from
-that same `report.unstable`. `bun test test/monitor-cache.test.ts`: 14 pass.
+part AGENTS.md", streak: 3 })`; `test/monitor-cache.test.ts`: 14 pass.
 
-**PASS (NOT LIVE: not reproduced on the wire)** — flag plus segment name verified
-by the named focused test.
+**PASS** (segment named with streak 3, live and by the named focused test).
 
 ### C2. ping effectiveness: pings sent, their cost, and whether the next real request hit
 
-Did: the owned chat sent a warming ping at `16:35:29` (`ping [HIT] — 12.9k Cache
-rea...917 tokens`); the Overview totals read `pings: 1 · cost: $0.00`. The Cache
-detail of the ping (`448774c5-71e7-4d18-932d-7a92f6c12ed2`) reads
-`Pings on the prefix: 0` (this request *is* the ping). The cache analysis
-attributes the next real request's outcome to a ping
+Did: the owned chat sent warming pings (rows `16:35:29`, `16:47:20`, `16:51:22`,
+`16:55:24`, `16:59:26`), all `ping [HIT]`. The Overview totals read
+`pings: 5 · cost: $0.00`, and the agent's `monitor.query` reported the same
+signal live: `Pings: 5 sent, 1 followed by a hit, 4 followed by a miss`. The
+cache analysis attributes the next real request's outcome to a ping
 (`WindowedPings.followedByHit/Miss`, `packages/plus/src/monitor/cache.ts:840-849`)
 and the focused test
 `test/monitor-cache.test.ts` "signals: three consecutive named changes, pings and
@@ -240,7 +240,7 @@ next hit, unread writes, context at compaction" asserts
 `report.pings` `{ sent: 3, cost: 0.03, followedByHit: 1, followedByMiss: 1 }`.
 `bun test test/monitor-cache.test.ts`: 14 pass.
 
-**PASS** (live ping count and cost; follow-by-hit/miss by the named focused
+**PASS** (live ping count, cost and follow-by-hit/miss; plus the named focused
 test).
 
 ### C3. miss cost: tokens re-written or re-read uncached because of misses, and their cost when pricing is known
@@ -339,8 +339,67 @@ Did: asked the chat's `Build` agent (its own Code Mode tools present) to call
 **PASS** (agent tools shown live; scope/since/view/mark and description wording
 by the named focused tests and the source lines).
 
+Extra live calls (same chat, one `execute`): `monitor.query({ scope: "tree",
+view: "sessions" })` returned the one-session tree (`There is only one session in
+the tree, the root, so this session has no child sessions.`) with
+`sessionID depth rootID title agent state requests steps misses hitRate`;
+`monitor.query({ since: "compaction", view: "cache" })` returned 6 requests
+starting `bc14c9af-… cold compacted ("First request after compaction")` — i.e.
+`since:"compaction"` starts at the first post-compaction request — and
+`monitor.mark({ label: "sweep-verify" })` returned
+`{ "id": 1, "at": 1791213464950, "label": "sweep-verify" }`.
+
+### E1. In-progress request judged as a miss (found, not fixed)
+
+The agent observed, at 160×45: `The tool appears to count the request still in
+progress as a cache miss: … This turn: the new request in progress, 532be9b9…, is
+again a miss with 0 tokens and missTokens 0.` The page's Cache row for the same
+request reads `17:13:22 step [PARTIAL] unknown … 6.5k 9.8k`. `causeStep`
+(`packages/plus/src/monitor/cache.ts:436-444`) computes a verdict from the
+previous request's expected prefix even when the current row has no usage yet, so
+a still-running request can be shown as a miss/partial until its usage arrives.
+This is not a stated end-state line (every request does get a verdict), so it is
+recorded as an observation, not a FAIL; it is out of this sweep's scope to fix
+(evidence file only) and is raised as a concern to the parent.
+
 ## F. Log and cleanup
 
-Did: pending. Below.
+Did: read `$DEV/data/opencode/log/opencode-local.log` after the sweep, then killed
+the pilotty session and confirmed with `pilotty list-sessions`.
 
-PLACEHOLDER_F
+PLACEHOLDER_F_LOG
+
+PLACEHOLDER_F_KILL
+
+### F1. Server log
+
+`$DEV/data/opencode/log/opencode-local.log`: 311 lines total — 304 INFO, 6 WARN,
+1 ERROR.
+
+Every WARN (6 lines, 4 distinct) is the expected confinement warning; every
+occurrence is `message="executor-controlled plugin source refused"`:
+`path=/home/bliss/OpenCodePlus/.opencode type=directory`;
+`path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document`;
+`path=<worktree>/.opencode type=directory`;
+`path=<worktree>/.opencode/opencode.jsonc type=document`.
+
+The single ERROR (line 215, `2026-10-05T14:40:09.477Z`, run `1f246ad6`):
+`message="Failed to drain Session" cause="AI.Error: unknown provider for model
+claude-fable-5-1 … [cause]: AI.Error.InvalidRequest: unknown provider for model
+claude-fable-5-1" role=server sessionID=ses_ef38b413cffe4fV3VMSrX9L7Up`.
+This is the one deliberately attempted `fable-5-1` request (the notes say that
+route is rejected), surfaced in the TUI as `Error: unknown provider for model
+claude-fable-5-1`; it is not a Monitor error.
+
+No Monitor or Plus ERROR/WARN in the log.
+
+### F2. Cleanup
+
+Killed only the session I started:
+`pilotty kill -s sweep-m-t2` → `Session 77aae261-9102-4402-bd2e-28a3a65ce736
+killed`. `pilotty list-sessions` afterwards:
+`['sweep-i-t3', 'w-f15454a0a1ed9809-b', 'w-1e01-story',
+'w-f15454a0a1ed9809-a', 'sweep-i-t7a', 'ux1', 'rt-t6']` — `sweep-m-t2` is gone;
+every remaining session belongs to another run and was left alone. A kernel scan
+for `bun` processes whose cwd or file descriptors point into the owned dev home
+found 0, so no owned launcher or server survived.
