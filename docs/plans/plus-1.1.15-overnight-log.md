@@ -589,3 +589,9 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - The worker ran before #28, so in-flight rows were not checked here; that goes to the post-fix re-check.
   - Log: 0 ERROR. Child stopped.
 - 18:17: Monitor T4 delegated (T137, `w-35334871d9956043`, base `59b0029be1`), the last of the twelve sweeps.
+- **Instructions T6 swept** (T130, landed as eight evidence commits ending in the cherry-pick of `aa4b766`, swept at `97b1f52e2a`). The rename key is `shift+r` (help and footer).
+  - PASS: a prefilled, validated prompt on a user agent, an on-disk member and a Global team. The file, team directory, links, row edits, models, enablement and tree selection follow. Session history keeps the old id. The built-in refusal shows live ("Agent build is built in and cannot be renamed"). The palette `Rename agent` uses the same path. `teaching.ts` documents `set({id, rename})`.
+  - NOT LIVE: the shipped Defaults team/member, ancestor-backed and `protectedAgents` refusals, covered by `rename.test.ts`.
+  - FAIL: the unteamed Delegate-to row (#30), fixed since in `5e76f0c97f`; the live re-check is pending.
+  - Log: one ERROR (a chat on Scout's default `claude-fable-5-1`, route availability) and two #31 WARNs. Child stopped.
+- #31 (cosmetic, open, for plus-1.1.16): after an agent is renamed (or deleted) while its chat is warm, the warming loop keeps pinging with the old pinned agent. Each ping logs `failed to warm session … AgentNotFoundError: Agent not found: "t6-palette"` (T6: 16:09:41 and 16:13:41) until the window ends. This gives #25 a reproducible cause. Not fixed here: stopping the window on `AgentNotFoundError` in `core/src/plugin/warming.ts` would also drop the transient #25 case, where the next ping succeeded. The fix needs a decision (for example, stop only when the agent is still missing on the next ping) and a core test.
