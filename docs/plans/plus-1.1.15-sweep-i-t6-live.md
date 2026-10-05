@@ -156,9 +156,89 @@ Log: `{"op":"agent.rename","target":".../teams/t6crew/mate6-renamed.md","summary
 **PASS** (member row).
 
 **Team rename (Global team).** With the `t6crew` team row selected
-(`Global › Teams › t6crew`, footer `shift+r rename`), sent `shift+r`, prefilled
-`t6crew`; renamed to `t6squad`. See the Line 2/Line 4 team sections for what
-followed.
+(`Global › Teams › t6crew`, footer `shift+r rename`), sent `shift+r`:
+
+```
+Rename t6crew
+New team name; members and records follow.
+t6crew
+enter submit
+```
+
+Prefilled `t6crew`. Submitted `t6squad`:
+
+```
+Global › Teams › t6squad
+▌  ▾ ● t6squad
+       ● build-seat        89
+       ● implementer       15
+       ● mat...amedsu...t  90
+       ● orchestrator      23
+       ● planner           23
+       ● reviewer          10
+       ● scout              9
+```
+
+- **Team directory follows:** `<dev-home>/config/opencode/opencodeplus/teams/t6crew`
+  no longer exists; `.../teams/t6squad/` holds all seven member files
+  (`build-seat.md implementer.md mate6-renamed.md orchestrator.md planner.md reviewer.md scout.md`).
+- **Team-scoped records follow:** every link that named the team now names
+  `t6squad` (`grep -c '"t6crew"' records.jsonl` → `0`); the team's own
+  enablement row became
+  `{"type":"team","level":"global","team":"t6squad","enabled":true,...}`.
+- **Tree selection follows:** the tree selected `Global › Teams › t6squad`.
+
+Log: `{"op":"team.rename","target":"team:global:t6squad","summary":"team.rename t6crew to t6squad (global)","revision":500}`.
+**PASS** (team row: prefilled, validated, directory/records/selection follow).
+
+### Line 4 — `team_delegate` "Delegate to" rows naming a member follow — **FAIL**
+
+Setup: in the team `t6squad`, the member `build-seat` carries a stored
+"Delegate to" override for the member `mate6-renamed`. I toggled that row off on
+screen (`Global › Teams › t6squad › build-seat › Tools › OpenCodePlus ›
+delegate › Permissions › Delegate to › mate6-renamed`, `state off`,
+`source: state: set here (Global)`), producing the stored record:
+
+```
+records.jsonl:120
+{"type":"customization","level":"global","agent":"build-seat","item":"perm:team_delegate:to.mate6-renamed","section":null,"state":"off","basedOn":"d8cb06ab32...","basedOnState":"on","updated":"2026-10-05T15:46:30.057Z"}
+```
+
+Then I renamed the member `mate6-renamed` → `mate6-final` with `shift+r`
+(prefilled `mate6-renamed`; the tree selected
+`Global › Teams › t6squad › mate6-final`). The member file moved
+(`mate6-renamed.md` → `mate6-final.md`) and its link moved, and the log recorded
+`agent.rename mate6-renamed to mate6-final (global team t6squad), revision 502`.
+
+What did **not** follow: the stored "Delegate to" row still names the old id.
+
+```
+$ grep -n '"agent":"build-seat"' records.jsonl | grep team_delegate
+120:{"type":"customization","level":"global","agent":"build-seat","item":"perm:team_delegate:to.mate6-renamed",...}
+$ grep -c 'to.mate6-final' records.jsonl
+0
+```
+
+The screen confirms the override was orphaned: the row
+`Delegate to › mate6-final` now reads `state on`, `source: from preset Basic ›
+build-seat` — the stored `off` no longer applies, because the stored row names
+the old id. Expected: the row would have become
+`perm:team_delegate:to.mate6-final` with `state off` (`set here`).
+
+Likely cause (source, not fixed): `renameTeamMember` (index.ts ~3794–3808)
+rewrites a delegate row only when `sameTeam(record.team, { level, team })`,
+i.e. the record must carry a `team` ref. The live TUI wrote the "Delegate to"
+override **without** a `team` field (the detail pane addresses it
+`Global · build-seat · catalogue: teams · perm:team_delegate:to.…`, no team),
+so the filter skips it. The unit test
+`packages/plus/test/rename.test.ts` seeds the row **with** `team: teamRef`, so
+the API path passes while the TUI-written shape fails live.
+
+**FAIL.** Recorded exactly; no source changed.
+
+### Line 5 — refusals: built-in agent, shipped Defaults team/member, ancestor-backed, `protectedAgents`
+
+(recorded below)
 
 ## Server log — every ERROR and WARN line
 
