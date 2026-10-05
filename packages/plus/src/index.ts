@@ -43,10 +43,11 @@ import {
   setModelSettingsRecord,
   settingsFor,
   warmingFieldsOf,
+  type HostModel,
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
-import { catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
+import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type CategoryRecord, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
@@ -125,6 +126,12 @@ export interface PlusState {
   discoveredTools?: ReadonlySet<string>
   /** The tools each MCP server registered when last connected (mcp-tools.ts). */
   knownMcpTools?: KnownMcpTools
+  /**
+   * The provider catalogue (models, variants, host warming) cached from the
+   * first read. Navigation, snapshots and pickers reuse it instead of calling
+   * `ctx.model.list()` each time; a host config/agent/skill refresh clears it.
+   */
+  hostModels?: readonly HostModel[]
 }
 
 export function createState(): PlusState {
@@ -1383,7 +1390,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const host =
         key.providerID === undefined
           ? undefined
-          : (await hostModelsOf(ctx)).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)?.warming
+          : (await hostModelsFor(ctx, state)).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)?.warming
       const write = async () => {
         const current = await load(directory)
         const merged = setModelSettingsRecord(modelSettingsOf(current.records), key, fields, updated)
@@ -1816,26 +1823,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       return { ok: true as const, value: result }
     },
     catalogModels: async () => {
-      const directory = await activationDirectory(ctx.location.directory)
-      const catalog = await Effect.runPromise(
-        ctx.model.list().pipe(
-          Effect.catchCause(() =>
-            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-          ),
-        ),
-      )
-      const models = catalog.data.flatMap((entry): Plus.CatalogModel[] => {
-        const providerID = String(entry.providerID)
-        const modelID = String(entry.id)
-        const name = String(entry.name ?? entry.id)
+      const models = (await hostModelsFor(ctx, state)).flatMap((entry): Plus.CatalogModel[] => {
+        const providerID = entry.providerID
+        const modelID = entry.modelID
+        const name = entry.name ?? modelID
         const base: Plus.CatalogModel = { providerID, modelID, name }
-        const variants = (entry.variants ?? []).map(
-          (variant): Plus.CatalogModel => ({
-            providerID,
-            modelID,
-            variant: String(variant.id),
-            name,
-          }),
+        const variants = entry.variants.map(
+          (variant): Plus.CatalogModel => ({ providerID, modelID, variant, name }),
         )
         return [base, ...variants]
       })
@@ -1897,35 +1891,43 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { level: input.level, agent: input.agent, providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }) },
           },
         }
-      const next: ModelRecord = {
-        type: "model",
+      const target = { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }) }
+      const address = {
         level: input.level,
         agent: input.agent,
         ...(input.team !== undefined ? { team: input.team } : {}),
-        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
-        providerID: validated.providerID,
-        modelID: validated.modelID,
-        ...(validated.variant === undefined ? {} : { variant: validated.variant }),
-        updated: new Date().toISOString(),
+        ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
       }
-      // Re-adding at this level clears a tombstone for the same candidate.
-      const withoutTombstones = loaded.records.filter(
-        (record) =>
-          !(
-            record.type === "model" &&
-            record.removed === true &&
-            record.level === input.level &&
-            record.agent === input.agent &&
-            sameTeam(record.team, input.team) &&
-            catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
-            record.providerID === validated.providerID &&
-            record.modelID === validated.modelID &&
-            record.variant === validated.variant
-          ),
-      )
-      const saved = await saveModelRecords(directory, loaded, [...withoutTombstones, next])
+      // Adding a model always makes it the active one at this level for this
+      // owner: the new row is planted (clearing a tombstone for the same
+      // candidate) and activated exclusively, so the previously active row at
+      // the same (level, agent[, team]) stops being active. One save, one
+      // revision, one log line.
+      const models = modelsOf(loaded.records)
+      const activated = activateModel(addModelRecord(models, address, target, new Date().toISOString()), address, target)
+      const records = [...loaded.records.filter((record) => record.type !== "model"), ...activated]
+      const saved = await saveModelRecords(directory, loaded, records)
       if (!saved.ok) {
         const reason = `Model ${validated.providerID}/${validated.modelID} changed concurrently; retry`
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      const next = records.find(
+        (record): record is ModelRecord =>
+          record.type === "model" &&
+          record.removed !== true &&
+          record.level === input.level &&
+          record.agent === input.agent &&
+          sameTeam(record.team, input.team) &&
+          catalogueMatches(input.agent, record.catalogue, input.catalogue) &&
+          record.providerID === validated.providerID &&
+          record.modelID === validated.modelID &&
+          record.variant === validated.variant,
+      )
+      if (next === undefined) {
+        const reason = `Model ${validated.providerID}/${validated.modelID} was not saved`
         return {
           ok: false as const,
           error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
@@ -4605,6 +4607,16 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
     .filter((template): template is BaseTemplate => template !== undefined)
 }
 
+// One provider-catalogue read per Plus instance. The catalogue is the slow
+// part of building a snapshot (an Instructions navigation), so cache it here
+// and let the pickers and Defaults › Models share it. `refreshFromHost` clears
+// the cache when the host's config, agents or skills change, which is when the
+// catalogue can move.
+async function hostModelsFor(ctx: Context, state: PlusState): Promise<readonly HostModel[]> {
+  if (state.hostModels === undefined) state.hostModels = await hostModelsOf(ctx)
+  return state.hostModels
+}
+
 async function discoverAll(
   ctx: Context,
   loaded: LoadedStores,
@@ -4647,6 +4659,7 @@ async function discoverAll(
     agentUpstream: state.agentUpstream,
     splits: splitsOf(loaded.records),
     knownMcpTools: state.knownMcpTools,
+    hostModels: await hostModelsFor(ctx, state),
   })
   const memberControls = (await Promise.all(teams.flatMap((team) => team.agents.map(async (member) => {
     // Member installation overlays host agents, so omitted file fields inherit
@@ -6072,6 +6085,10 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
 
 function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.gen(function* () {
+    // A host agent/skill/config change can change the provider catalogue
+    // (providers, models, warming), so the cached read is dropped and the
+    // publish below reads it once more. Navigation between refreshes reuses it.
+    state.hostModels = undefined
     // Same resolution as activate: a host refresh in a run's worktree refreshes
     // the recorded project, not the worktree (see activationDirectory).
     const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))

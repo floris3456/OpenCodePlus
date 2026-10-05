@@ -18,9 +18,11 @@ import {
   findRow,
   isModelRowId,
   isPermRowId,
+  parseModelText,
   removalPlan,
   removeModelRow,
   reset,
+  resetModelFieldRow,
   resetModelRow,
   resolveRefusalForLabel,
   resolveReview,
@@ -28,6 +30,7 @@ import {
   saveText,
   setEnabled,
   setAgentMode,
+  setModelFieldRow,
   setModelWarmingRow,
   setPin,
   setRequires,
@@ -65,11 +68,13 @@ import {
   everySettings,
   hostModelOf,
   isModelDefaultRowId,
+  isModelFieldRowId,
   isModelSettingRowId,
   modelDefaultValue,
   modelDefaultView,
   modelSettingEffective,
   parseModelDefaultItemId,
+  parseModelFieldItemId,
   parseModelSettingItemId,
   settingsFor,
   type ModelSettingsField,
@@ -380,6 +385,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
+          if (isModelFieldRowId(input.id)) return yield* setModelField(api, snapshot, memo, input.id, actor, input)
           if (isModelSettingRowId(input.id)) {
             const field = settingOf(node)?.field
             if (field === undefined) return yield* Effect.fail(unknownError(input.id))
@@ -420,6 +426,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (isModelFieldRowId(input.id)) return yield* resetModelField(api, snapshot, memo, input.id, actor)
           if (isModelSettingRowId(input.id)) {
             const field = settingOf(node)?.field
             if (field === undefined) return yield* Effect.fail(unknownError(input.id))
@@ -498,7 +505,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (isModelSettingRowId(input.id))
+          if (isModelSettingRowId(input.id) || isModelFieldRowId(input.id))
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a field of its model row: reset clears it` }))
           if (isModelDefaultRowId(input.id)) {
             if (node.actions?.remove !== true)
@@ -957,24 +964,6 @@ function mutateModelsWithRetry(
   })
 }
 
-// A model row's text replaces the candidate: "provider/model" or
-// "provider/model#variant" (the form the compaction model and the README use).
-// variant and warming may also come as their own fields.
-function parseModelText(text: string): { providerID: string; modelID: string; variant?: string } | undefined {
-  const trimmed = text.trim()
-  if (trimmed.length === 0) return undefined
-  const hash = trimmed.indexOf("#")
-  const ref = hash === -1 ? trimmed : trimmed.slice(0, hash)
-  const variant = hash === -1 ? undefined : trimmed.slice(hash + 1).trim()
-  const slash = ref.indexOf("/")
-  if (slash === -1) return undefined
-  const providerID = ref.slice(0, slash).trim()
-  const modelID = ref.slice(slash + 1).trim()
-  if (providerID.length === 0 || modelID.length === 0) return undefined
-  if (hash !== -1 && (variant === undefined || variant.length === 0)) return undefined
-  return { providerID, modelID, ...(variant === undefined ? {} : { variant }) }
-}
-
 // The candidate a model row addresses: `model:<provider>/<model>[@variant]`.
 function modelTargetOfAddress(node: TreeNode | undefined): { providerID: string; modelID: string; variant?: string } | undefined {
   const item = node?.address?.item
@@ -1065,6 +1054,61 @@ function setModel(
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
       const retry = activateModelRow(memoFromSnapshot(fresh), id)
+      if ("refusal" in retry) return retry
+      return { models: retry.models, status: retry.status }
+    })
+    return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+  })
+}
+
+// One field row under an agent/member/preset model row edits that field alone
+// at the row's level, mirroring a Defaults › Models field row. Model replaces
+// the candidate (keeping the variant unless the text names one); Effort
+// replaces the variant; Warming / Ping every / Keep-alive prompt set or clear
+// that field on the candidate's local record. The field row's parent model row
+// is the edit target, so an inherited row plants a local record like the TUI.
+function setModelField(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+  input: { text?: string },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const node = findRow(memo, id)
+    if (node === undefined) return yield* Effect.fail(unknownError(id))
+    if (input.text === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes text: its value, or "" to inherit` }))
+    const text = input.text
+    const op = setModelFieldRow(memo, id, text)
+    if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
+      const retry = setModelFieldRow(memoFromSnapshot(fresh), id, text)
+      if ("refusal" in retry) return retry
+      return { models: retry.models, status: retry.status }
+    })
+    return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+  })
+}
+
+// r on a field row clears that field at the row's level. Model has no field
+// below it to fall back to, so it refuses; Effort drops the row's variant;
+// the warming fields clear and inherit again.
+function resetModelField(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const node = findRow(memo, id)
+    if (node === undefined) return yield* Effect.fail(unknownError(id))
+    const op = resetModelFieldRow(memo, id)
+    if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
+      const retry = resetModelFieldRow(memoFromSnapshot(fresh), id)
       if ("refusal" in retry) return retry
       return { models: retry.models, status: retry.status }
     })
@@ -1394,6 +1438,25 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const memo = memoFromSnapshot(snapshot)
     const node = findRow(memo, id)
     if (node === undefined) return yield* Effect.fail(unknownError(id))
+    // A model row's field row renders one effective value with its source.
+    const modelField = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
+    if (modelField !== undefined) {
+      if (view === "record") {
+        const address = node.address!
+        const record = modelsOfMemo(memo).find(
+          (entry) =>
+            entry.level === address.level &&
+            entry.agent === address.agent &&
+            entry.providerID === modelField.target.providerID &&
+            entry.modelID === modelField.target.modelID &&
+            entry.variant === modelField.target.variant,
+        )
+        return { output: { id, view, record: record ?? null } }
+      }
+      if (view !== "resolved")
+        return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view is not available for a model field row (got ${id})` }))
+      return { output: { id, view, label: node.label, field: modelField.field, value: node.badges.value ?? null } }
+    }
     // Presets and Defaults entries carry no text of their own: resolved and
     // record render what the row is and what it is linked to.
     const owner = node.owner

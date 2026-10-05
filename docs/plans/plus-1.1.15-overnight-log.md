@@ -7,6 +7,7 @@
 - Current phase: B1 merge/review. No task newly landed yet.
 - Pending: B1, A1, A2, B2; A3/A6/B6 repairs; A4/A5/B3/B4; F.
 - B1 source merged as `26eacdfc14`; #2/#3 fixes running. A1 merge/review in progress. Independent repairs running in T76/T77/T78; #2 T79 and #3 T80 (five children).
+- A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
 ## Decisions
@@ -37,6 +38,13 @@
 - Input `team/Flash-Implementer/t58b343-20261004-1306` merges cleanly. Reviewed all source/docs/test additions: file/member/team API paths, record rewrites, tools/RPC, rename selection/help.
 - Reproduced known ancestor refusal failure: rename test **5 pass / 1 fail** (`legacy` called built-in rather than ancestor). Actual cause is #5, not refusal order.
 - Small discovery-boundary fix retained symlink confinement and the real global-config-directory exclusion, but removed premature stop at its arbitrary parent directory. Verification: `bun test test/rename.test.ts test/discover.test.ts test/model.test.ts test/rpc.test.ts test/categories.test.ts test/monitor-requests.test.ts test/active-team.test.tsx` **185 pass, 5 pre-existing skips, 0 fail**; Plus typecheck passes. Live pending a worker slot.
+
+### A2 — source landing, acceptance pending
+
+- Input `team/Flash-Implementer/t6086e7-20261004-1347` reviewed. Resolved tools conflict keeping category + rename routing before new field routing; dialogs keep category and rename functions and return `editModelField`, not removed `editModel`.
+- Documented closed editing decision in README: Model/Effort replace in place, inherited old candidate hidden at this level, re-add restores/activates.
+- `bun test test/model.test.ts test/rpc.test.ts test/model-settings.test.ts test/instructions-panes.test.tsx test/categories.test.ts test/rename.test.ts` **151 pass, 3 pre-existing skips, 0 fail**; Plus typecheck passes.
+- #1 and #6 corrections, T3 member provider-use evidence, every T7 field live, A4 speed and A5 workaround evaluation still pending.
 
 ## Issues
 
@@ -76,6 +84,14 @@
 - Files: `packages/plus/src/instructions/discover.ts`.
 - Decision/fix: remove the `current === globalParent` stop; the actual global directory exclusion and realpath/symlink checks still prevent treating global files as project files. This matches V2 upward discovery to filesystem root.
 - Focused proof passed within A1's 185-test check, including refusal and symlink controls; Plus typecheck passes. Live A1 ancestor refusal in isolated home still pending.
+
+### #6 — model field inheritance/reset breaks T7 (open)
+
+- Source review: `lazyModelField` ignores inherited agent/member warming/interval/prompt whenever the source level is not the current level and instead displays Defaults values. An inherited explicit variant reports `own: true` without its source. `resetModelFieldRow` explicitly refuses Model reset even though T7 says `r` resets each field; the new test incorrectly blesses this refusal. `show view:record` does not match team/catalogue, risking another owner's record.
+- Where: `instructions/tree.ts`, `instructions/ops.ts`, `tools.ts`, model-field tests/docs.
+- Weight: breaks Instructions T7 effective values/provenance/field reset and owner identity.
+- Plan: field display follows real resolved chain and includes its actual source; reset Model restores the inherited candidate at this level while preserving unrelated fields (closed editing semantics), reset Effort inherits correctly; record lookup matches full scope. Cover Global→Project, team/preset/catalogue identity, every individual edit/reset and preservation. Update inaccurate refusal expectation; live every field after correction at 80/160 columns.
+- Additional review note for A4: catalogue is cached but first snapshot still calls `ctx.model.list()`; verify T7's catalogue-only-in-pickers rule in measured speed work, not only timings.
 
 ## Live evidence
 

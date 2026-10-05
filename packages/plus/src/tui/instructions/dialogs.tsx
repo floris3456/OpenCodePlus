@@ -1,12 +1,14 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
-import { parseModelItemId, parsePermItemId } from "../../instructions/model.js"
+import { parsePermItemId } from "../../instructions/model.js"
 import {
   fromWords,
   isEvery,
   isModelSettingRowId,
   modelSettingEffective,
+  MODEL_FIELD_LABELS,
   MODEL_SETTING_LABELS,
+  parseModelFieldItemId,
   parseModelSettingItemId,
   type ModelSettingsField,
 } from "../../instructions/model-settings.js"
@@ -15,7 +17,6 @@ import { homeCategoryLabel, orderedCategories } from "../../instructions/categor
 import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
-import { displayLevel } from "./detail-pane.js"
 import type { InstructionsState } from "./state.js"
 
 export interface InstructionsDialogsOptions {
@@ -144,101 +145,88 @@ export function createInstructionsDialogs(
     await state.editModelSettings(node, { [field]: raw.trim().length === 0 ? null : raw.trim() })
   }
 
-  // enter on a model row: the model (prefilled, validated against the host
-// catalog), the variant/effort (prefilled, empty = none), and cache warming
-// (off, on, a total time, or blank to inherit — the inherited value shows as
-// the placeholder). Saving replaces or plants the record at the row's level:
-// an inherited or upstream row becomes a local record, editing the effective
-// model keeps it effective, and a local record's active flag moves with the
-// replaced candidate.
-async function editModel(node: TreeNode): Promise<void> {
-  if (disposed) return
-  const address = node.address
-  if (address === undefined || !address.item.startsWith("model:")) {
-    context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
-    return
-  }
-  const parsed = parseModelItemId(address.item)
-  if (parsed === undefined) {
-    context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
-    return
-  }
-  let catalog: { providerID: string; modelID: string; variant?: string; name: string }[]
-  try {
-    const output = await plus["catalog.models"](undefined, { location: context.location })
+  // Enter on one field row under an agent/member/preset model row: edit that
+  // one value. Model and Effort pick from the host catalogue (the field row's
+  // variants); the warming fields prompt like a Defaults › Models field. Empty
+  // inherits; the effective value shows as the placeholder.
+  async function editModelField(node: TreeNode): Promise<void> {
     if (disposed) return
-    catalog = [...output.models]
-  } catch (error: unknown) {
-    if (disposed) return
-    context.ui.toast.show({ variant: "error", message: errorMessage(error) })
-    return
+    const parsed = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
+    if (parsed === undefined) {
+      context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
+      return
+    }
+    const current = await currentSnapshot()
+    if (disposed || current === undefined) return
+    const field = parsed.field
+    if (field === "model") {
+      const raw = await pickCatalogModel()
+      if (disposed || raw === undefined) return
+      await state.editModelField(node, raw)
+      return
+    }
+    const variants =
+      (current.hostModels ?? []).find((entry) => entry.providerID === parsed.target.providerID && entry.modelID === parsed.target.modelID)?.variants ?? []
+    if (field === "effort") {
+      const picked = await context.ui.dialog.select<string>({
+        title: `Effort · ${node.label}`,
+        placeholder: "The variant this row runs with",
+        options: [
+          { title: "(inherit / none)", value: "", description: "No variant of its own" },
+          ...variants.toSorted().map((variant) => ({ title: variant, value: variant })),
+        ],
+      })
+      if (disposed || picked === undefined) return
+      await state.editModelField(node, picked)
+      return
+    }
+    const now = node.badges.value ?? ""
+    const raw = await context.ui.dialog.prompt({
+      title: `${MODEL_FIELD_LABELS[field]} · ${node.label}`,
+      description: `${fieldHelp(field, variants)} Empty inherits.${now === "" ? "" : ` Now: ${now}.`}`,
+      value: "",
+      placeholder: now,
+    })
+    if (disposed || raw === undefined) return
+    await state.editModelField(node, raw.trim())
   }
-  if (catalog.length === 0) {
-    context.ui.toast.show({ variant: "error", message: "No models in the host catalog" })
-    return
+
+  // The catalogue picker for a field row's Model field: provider, then model.
+  async function pickCatalogModel(): Promise<string | undefined> {
+    let catalog: { providerID: string; modelID: string; name: string }[]
+    try {
+      const output = await plus["catalog.models"](undefined, { location: context.location })
+      if (disposed) return undefined
+      catalog = [...output.models]
+    } catch (error: unknown) {
+      if (disposed) return undefined
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+      return undefined
+    }
+    if (catalog.length === 0) {
+      context.ui.toast.show({ variant: "error", message: "No models in the host catalog" })
+      return undefined
+    }
+    const providers = [...new Set(catalog.map((entry) => entry.providerID))].toSorted()
+    const provider = await context.ui.dialog.select<string>({
+      title: "Model provider",
+      placeholder: "Select a provider",
+      options: providers.map((entry) => ({ title: entry, value: entry })),
+    })
+    if (disposed || provider === undefined) return undefined
+    const forProvider = catalog.filter((entry) => entry.providerID === provider)
+    const modelIds = [...new Set(forProvider.map((entry) => entry.modelID))].toSorted()
+    const modelID = await context.ui.dialog.select<string>({
+      title: "Model",
+      placeholder: "Select a model",
+      options: modelIds.map((id) => {
+        const name = forProvider.find((entry) => entry.modelID === id)?.name ?? id
+        return { title: name === id ? id : `${name} (${id})`, value: id }
+      }),
+    })
+    if (disposed || modelID === undefined) return undefined
+    return `${provider}/${modelID}`
   }
-  const rawModel = await context.ui.dialog.prompt({
-    title: "Model",
-    description: "provider/model from the host catalog",
-    value: `${parsed.providerID}/${parsed.modelID}`,
-  })
-  if (disposed) return
-  if (rawModel === undefined) return
-  const slash = rawModel.indexOf("/")
-  const providerID = slash === -1 ? "" : rawModel.slice(0, slash).trim()
-  const modelID = slash === -1 ? "" : rawModel.slice(slash + 1).trim()
-  if (providerID.length === 0 || modelID.length === 0 || !catalog.some((entry) => entry.providerID === providerID && entry.modelID === modelID)) {
-    context.ui.toast.show({ variant: "error", message: `"${rawModel.trim()}" is not a model in the host catalog` })
-    return
-  }
-  const rawVariant = await context.ui.dialog.prompt({
-    title: "Variant",
-    description: "Empty keeps no variant",
-    value: parsed.variant ?? "",
-  })
-  if (disposed) return
-  if (rawVariant === undefined) return
-  const variant = rawVariant.trim()
-  const localWarming = node.badges.warmingFrom === address.level ? node.badges.warming : undefined
-  const inherited = localWarming === undefined && node.badges.warming !== undefined
-  const warmingHelp = "off, on, or the total time to keep the cache warm after the last reply (45m, 2h, 1h30m; 1m to 24h). Blank inherits."
-  const rawWarming = await context.ui.dialog.prompt({
-    title: `Cache warming · ${node.label}`,
-    description: inherited ? `${warmingHelp} Inherits ${node.badges.warming} from ${displayLevel(node.badges.warmingFrom ?? "project")}.` : warmingHelp,
-    value: localWarming ?? "",
-    placeholder: node.badges.warming ?? "",
-  })
-  if (disposed) return
-  if (rawWarming === undefined) return
-  const localInterval = node.badges.intervalFrom === address.level ? node.badges.interval : undefined
-  const rawInterval = await context.ui.dialog.prompt({
-    title: `Ping every · ${node.label}`,
-    description: `Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT. Blank inherits${
-      node.badges.interval === undefined || localInterval !== undefined ? "" : ` ${node.badges.interval} from ${displayLevel(node.badges.intervalFrom ?? "project")}`
-    }.`,
-    value: localInterval ?? "",
-    placeholder: node.badges.interval ?? "",
-  })
-  if (disposed) return
-  if (rawInterval === undefined) return
-  const localPrompt = node.badges.promptFrom === address.level ? node.badges.prompt : undefined
-  const rawPrompt = await context.ui.dialog.prompt({
-    title: `Keep-alive prompt · ${node.label}`,
-    description: `The text of the keep-alive request. Blank inherits${localPrompt !== undefined || node.badges.prompt === undefined ? "" : " the value below"}.`,
-    value: localPrompt ?? "",
-    placeholder: node.badges.prompt ?? "",
-  })
-  if (disposed) return
-  if (rawPrompt === undefined) return
-  await state.editModel(node, {
-    providerID,
-    modelID,
-    ...(variant.length === 0 ? {} : { variant }),
-    warming: rawWarming,
-    interval: rawInterval,
-    prompt: rawPrompt,
-  })
-}
 
 // a on an item row appends a section to that item: prompt for the name and
   // body, reuse the manual splitter boundary path in state.addSection, then
@@ -1293,7 +1281,7 @@ async function editModel(node: TreeNode): Promise<void> {
     await state.deleteCategory(node)
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModel, editModelSetting, addRule, editRule, relink, when, move, renameCategory, renameRow, deleteCategory, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModelField, editModelSetting, addRule, editRule, relink, when, move, renameCategory, renameRow, deleteCategory, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

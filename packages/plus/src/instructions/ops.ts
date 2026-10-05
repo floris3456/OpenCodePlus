@@ -1,5 +1,6 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
+import { parseModelFieldItemId, type ModelFieldName } from "./model-settings.js"
 import {
   acknowledgeActiveModel,
   activateModel,
@@ -14,6 +15,7 @@ import {
   formatWarming,
   hasModelRecordAt,
   merge,
+  modelItemId,
   modelKey,
   modelRuntimeScope,
   ownAndAbove,
@@ -1497,11 +1499,23 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   const targetChanged = !sameModelCandidate(from, to)
   const upstream = modelUpstreamOf(found.memo, address)
   const context = { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) }
+  // A replaced candidate carries its record's keep-alive fields to the new one,
+  // and the old candidate is hidden at this level with a tombstone. So editing
+  // Model/Effort changes THAT row (one row becomes the new candidate), never
+  // leaving the old candidate listed beside the new one — whether the old row
+  // was a local record, inherited, or the agent's upstream model.
+  const carried: ModelWarmingFields = local === undefined
+    ? {}
+    : {
+        ...(local.warming === undefined ? {} : { warming: local.warming }),
+        ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
+      }
   const swapped = targetChanged
-    ? addModelRecord(removeModelRecord(models, addr, from), addr, to, now())
+    ? addModelRecord(tombstoneModelRecord(models, addr, from, now()), addr, to, now())
     : addModelRecord(models, addr, to, now())
   // Re-activate only when the active flag has to be carried over: a replaced
-  // record loses it, and an inherited/upstream edit plants it. A same-target
+  // record keeps it, and an inherited/upstream edit plants it. A same-target
   // local active record is left exactly as it is.
   const withActive = staysActive && (targetChanged || local === undefined || local.active !== true)
     ? activateModel(swapped, addr, to, context)
@@ -1518,13 +1532,96 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
     ...(fields.interval === undefined ? {} : { interval: interval === undefined ? null : formatDuration(interval.interval) }),
     ...(fields.prompt === undefined ? {} : { prompt: prompt === undefined ? null : prompt.prompt }),
   }
-  const next = fieldsSet ? setModelSettings(withActive, addr, to, settings, now()) : withActive
+  const merged: ModelWarmingFields = { ...(targetChanged ? carried : {}), ...settings }
+  const next = fieldsSet || Object.keys(merged).length > 0 ? setModelSettings(withActive, addr, to, merged, now()) : withActive
   if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
   const onlySettings = fieldsSet && JSON.stringify(withActive) === JSON.stringify(models)
   const status = onlySettings
     ? `Cache warming for "${node.label}": ${warmingSummaryOf(settings)}`
     : `Updated "${node.label}"`
   return { models: next, status, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
+}
+
+// One field row under an agent/member/preset model row. `setModelFieldRow`
+// edits that field alone at the row's level; `resetModelFieldRow` clears it so
+// the level below (or Defaults › Models) decides. Both reuse editModelRow on
+// the parent model row, so an inherited field plants a local record like the
+// TUI and a local one keeps its active flag.
+export function parentModelRowId(rowId: string, target: { providerID: string; modelID: string; variant?: string }): string | undefined {
+  const at = rowId.indexOf("modelfield:")
+  if (at === -1) return undefined
+  return `${rowId.slice(0, at)}${modelItemId(target)}`
+}
+
+export function modelFieldEdit(
+  field: ModelFieldName,
+  target: { providerID: string; modelID: string; variant?: string },
+  text: string,
+): { readonly fields: ModelEditFields } | { readonly error: string } {
+  if (field === "model") {
+    const parsed = parseModelText(text)
+    if (parsed === undefined) return { error: `takes provider/model or provider/model#variant (got "${text}")` }
+    const variant = parsed.variant ?? target.variant
+    return {
+      fields: {
+        providerID: parsed.providerID,
+        modelID: parsed.modelID,
+        ...(variant === undefined ? {} : { variant }),
+      },
+    }
+  }
+  if (field === "effort") {
+    const variant = text.trim()
+    return {
+      fields: {
+        providerID: target.providerID,
+        modelID: target.modelID,
+        ...(variant.length === 0 ? {} : { variant }),
+      },
+    }
+  }
+  const base = { providerID: target.providerID, modelID: target.modelID, ...(target.variant === undefined ? {} : { variant: target.variant }) }
+  if (field === "warming") return { fields: { ...base, warming: text } }
+  if (field === "interval") return { fields: { ...base, interval: text } }
+  return { fields: { ...base, prompt: text } }
+}
+
+// A model row's text replaces the candidate: "provider/model" or
+// "provider/model#variant" (the form the compaction model and the README use).
+export function parseModelText(text: string): { providerID: string; modelID: string; variant?: string } | undefined {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return undefined
+  const hash = trimmed.indexOf("#")
+  const ref = hash === -1 ? trimmed : trimmed.slice(0, hash)
+  const variant = hash === -1 ? undefined : trimmed.slice(hash + 1).trim()
+  const slash = ref.indexOf("/")
+  if (slash === -1) return undefined
+  const providerID = ref.slice(0, slash).trim()
+  const modelID = ref.slice(slash + 1).trim()
+  if (providerID.length === 0 || modelID.length === 0) return undefined
+  if (hash !== -1 && (variant === undefined || variant.length === 0)) return undefined
+  return { providerID, modelID, ...(variant === undefined ? {} : { variant }) }
+}
+
+export function setModelFieldRow(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const parsed = found.node.address === undefined ? undefined : parseModelFieldItemId(found.node.address.item)
+  if (parsed === undefined) return { refusal: `"${found.node.label}" is not a model field` }
+  const parent = parentModelRowId(found.node.id, parsed.target)
+  if (parent === undefined) return { refusal: `"${found.node.label}" is not a model field` }
+  const edit = modelFieldEdit(parsed.field, parsed.target, text)
+  if ("error" in edit) return { refusal: edit.error }
+  return editModelRow(input, parent, edit.fields, sharedMemo)
+}
+
+export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const parsed = found.node.address === undefined ? undefined : parseModelFieldItemId(found.node.address.item)
+  if (parsed === undefined) return { refusal: `"${found.node.label}" is not a model field` }
+  if (parsed.field === "model") return { refusal: `"${found.node.label}" cannot be reset; activate another model or delete the row` }
+  return setModelFieldRow(input, rowId, "", sharedMemo)
 }
 
 export function isModelRowId(rowId: string): boolean {

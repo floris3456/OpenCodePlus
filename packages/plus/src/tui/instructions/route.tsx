@@ -6,7 +6,7 @@ import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { isModelDefaultRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseModelFieldItemId } from "../../instructions/model-settings.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -1107,7 +1107,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       state.setStatus(node.badges.disabled)
       return
     }
-    // A Defaults › Models field is one value, not text: it edits in its prompt.
+    // A models field is one value, not text: it edits in its prompt.
+    if (isModelFieldRowId(node.id)) {
+      void dialogs.editModelField(node)
+      return
+    }
     if (isModelSettingRowId(node.id)) {
       void dialogs.editModelSetting(node)
       return
@@ -1118,7 +1122,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   // Rows whose text is prose (items, sections), where a diff says something.
   function comparable(node: TreeNode | undefined): boolean {
     const item = node?.address?.item
-    return item !== undefined && controlKind(item) === undefined && !item.startsWith("perm:") && !item.startsWith("model:")
+    return item !== undefined && controlKind(item) === undefined && !item.startsWith("perm:") && !item.startsWith("model:") && !item.startsWith("modelfield:")
   }
 
   function compare() {
@@ -1192,20 +1196,19 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       openMode("diff", node)
       return
     }
-    // Enter on a model row edits the candidate and its warming; an inherited
-    // row plants a local record, like activation. A Defaults › Models row
-    // opens into its fields like → does; each field edits on its own
-    // through modelSettings.set.
+    // Enter on a model field row edits that one field. A model row (an
+    // agent/member/preset candidate or a Defaults › Models row) opens into its
+    // fields like → does; each field edits on its own.
+    if (isModelFieldRowId(node.id)) {
+      void dialogs.editModelField(node)
+      return
+    }
     if (isModelSettingRowId(node.id)) {
       void dialogs.editModelSetting(node)
       return
     }
-    if (isModelDefaultRow(node)) {
+    if (isModelDefaultRow(node) || isModelRow(node)) {
       if (row?.expandable === true) setOpen(row, !row.expanded)
-      return
-    }
-    if (isModelRow(node)) {
-      void dialogs.editModel(node)
       return
     }
     if (control === "toggle") {
@@ -1411,7 +1414,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       else if (control === "cycle") hints.push(["enter", "cycle"])
       else if (isReview(node)) hints.push(["enter", "review"])
       else if (control === "toggle") hints.push(["enter", "toggle"])
-      else if (isModelRow(node)) hints.push(["enter", "edit model"])
+      else if (node !== undefined && isModelFieldRowId(node.id)) hints.push(["enter", "edit field"])
+      else if (isModelRow(node)) hints.push(["enter", "open fields"])
       else if (perm !== undefined && isValueRow(perm)) hints.push(["enter", "edit number"])
       else if (perm !== undefined && (perm.patterns ?? []).length > 0) hints.push(["enter", "edit rule"])
       else if (isEditable(node)) hints.push(["enter", "edit"])

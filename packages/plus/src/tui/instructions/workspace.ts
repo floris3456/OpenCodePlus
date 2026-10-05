@@ -10,7 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -239,12 +239,11 @@ function listRow(node: TreeNode, base: number, open: ReadonlySet<string>): Row {
   }
 }
 
-/** Rows that can hold children: sections, models, rule rows, controls and Defaults › Models fields are leaves. */
+/** Rows that can hold children: a model row opens into its field rows; sections, rule rows, controls and field rows are leaves. */
 export function canExpand(node: TreeNode): boolean {
   if (node.kind === "section") return false
-  if (isModelSettingRowId(node.id)) return false
+  if (isModelSettingRowId(node.id) || isModelFieldRowId(node.id)) return false
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
-  if (node.address?.item.startsWith("model:") === true) return false
   if (node.address?.item.startsWith("perm:") === true) return false
   return true
 }
