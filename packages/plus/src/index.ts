@@ -3710,6 +3710,7 @@ async function removeAgentRecords(
   // The agent's own link goes with it: an agent created later under the same
   // id starts from the preset it is created from, not this one's.
   return removeRecordsAt(directory, loaded, level, (record) => {
+    if (isScopedRow(record) && record.team !== undefined) return false
     if (record.type === "customization" || record.type === "split") return record.agent === agent && record.level === level
     if (record.type === "model" || record.type === "rule")
       return record.agent === agent && record.level === level && record.team === undefined

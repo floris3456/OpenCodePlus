@@ -144,6 +144,19 @@
 - Plan: reuse hashed errors for call persistence and restrict targets to recognized identifiers/names/paths/hosts or hashed query summaries; remove arbitrary-string fallback and only retain known command subcommands. Keep target grouping and useful names, no content redaction framework. Focused tests inspect every stored column with sentinel refusal/control cases; old stores remain readable, no touching/migrating shared live ledger. Owned live check one failed tool/query and inspect isolated ledger.
 - T85 `w-c7c1ed13b4ed9214` repairing privacy from `339c6e2f36`; owns collector/attribution/ledger and non-cache Monitor tests, not page/query/report or Instructions. Also reconciles stale monitor-plugin hook fixture warnings without weakening failure controls.
 
+### #10 — navigation still reads the provider catalogue through base classification (open)
+
+- Source review: `discoverAll` calls `resolveBaseTemplates` on every discovery; it unconditionally calls `ctx.model.list()` before the separately cached `hostModelsFor`. The latter also loads on navigation's first snapshot and is cleared by host agent/skill events. Thus cached host Models alone does not establish T7's catalogue-only-in-pickers rule.
+- Where: `packages/plus/src/index.ts:4529–4555,4610–4662`, `instructions/discover.ts`; A4.
+- Plan: profile actual first/repeat Defaults and agent Models opens, correct measured catalogue work at existing registry/cache seams without stale base-family classification or dropping host warming/variants, prove navigation makes no catalogue fetch and pickers load/cache it. Measure live before/after with prescribed clock method, record every number; targets 1.5 s/300 ms.
+
+### #11 — deleting a standalone agent erases same-id team edits (open)
+
+- Source review: `removeAgentRecords` scopes model/rule/link removal by absent `team`, but customization/split branches match only level + agent. Deleting a Global user agent whose id also names a Global team member removes that independent member's edits/splits.
+- Where: `packages/plus/src/index.ts:3713`; violates T1/T5 owner isolation.
+- Plan: one-line team-owner exclusion before cascade branches; extend actual `agent.delete` regression with same-id team customization/split controls. Parent handles this small fix, Plus propagation/RPC/Monitor-focused checks and typecheck; final Instructions live sweep covers delete and preserved member owner.
+- Actual `agent.delete` regression failed before repair: expected two member-owned records, received `[]`; standalone records correctly deleted. One-line exclusion applied; propagation/RPC/Monitor plugin+requests **84 pass, 3 pre-existing skips, 0 fail**, Plus typecheck passes. Member controls survive, standalone re-create starts clean, single revision preserved. Live final sweep still pending.
+
 ## Live evidence
 
 None yet.

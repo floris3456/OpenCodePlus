@@ -102,24 +102,32 @@ test("T1: deleting a global agent cascades its stored records in one store revis
       { type: "model", level: "global", agent: "deepseek-worker", providerID: "acme", modelID: "nova-1", active: true, updated: UPDATED },
       { type: "rule", level: "global", agent: "deepseek-worker", tool: "shell", id: "guard", label: "Guard", patterns: ["rm *"], keywords: [], updated: UPDATED },
       { type: "link", level: "global", agent: "deepseek-worker", preset: { kind: "agent", id: "build" }, updated: UPDATED },
+      { type: "customization", level: "global", agent: "deepseek-worker", team: { level: "global", team: "Basic" }, item: "system:role", section: null, text: "member custom", basedOn: "", updated: UPDATED },
+      { type: "split", level: "global", agent: "deepseek-worker", team: { level: "global", team: "Basic" }, item: "tool:bash", boundaries: [{ id: "member", name: "Member", start: 0 }], updated: UPDATED },
     ],
   })
   expect(saved.ok).toBe(true)
   if (!saved.ok) return
 
+  const memberRecords = (await load(project)).records.filter((record) => "agent" in record && record.agent === "deepseek-worker" && "team" in record && record.team)
+  expect(memberRecords).toHaveLength(2)
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const removed = await Effect.runPromise(handlers["agent.delete"]({ scope: "global", id: "deepseek-worker" }, throwing))
   expect(removed.path).toBe(created.path)
 
   const after = await load(project)
-  expect(after.records.filter((record) => "agent" in record && record.agent === "deepseek-worker" && record.level === "global")).toEqual([])
+  expect(after.records.filter((record) => "agent" in record && record.agent === "deepseek-worker" && record.level === "global" && !("team" in record && record.team))).toEqual([])
+  // A same-id team member is a different owner and must retain its edits/splits.
+  expect(after.records.filter((record) => "agent" in record && record.agent === "deepseek-worker" && "team" in record && record.team)).toEqual(
+    memberRecords,
+  )
   // One revision: the file delete and the whole cascade share one save.
   expect(after.globalRevision).toBe(saved.globalRevision + 1)
 
   const again = await create({ scope: "global", projectDirectory: "", id: "deepseek-worker", prompt: "fresh" })
   expect(again.ok).toBe(true)
   const recreated = await load(project)
-  expect(recreated.records.filter((record) => "agent" in record && record.agent === "deepseek-worker" && record.level === "global")).toEqual([])
+  expect(recreated.records.filter((record) => "agent" in record && record.agent === "deepseek-worker" && record.level === "global" && !("team" in record && record.team))).toEqual([])
 })
 
 // T5: a Global team whose members link to shipped `basic` member presets must
