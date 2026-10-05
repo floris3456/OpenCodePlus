@@ -22,13 +22,14 @@ export function CacheTab(props: CacheTabProps) {
   const detail = () => props.report?.detail
 
   // Narrow terminals drop whole columns, keeping time, kind (so pings stay
-  // distinguishable), verdict, cause and evidence.
+  // distinguishable), verdict, cause and evidence; the agent/model column goes
+  // first, then input and cost.
   const available = () => dimensions().width - 2
   const showInput = () => available() >= 96
   const showCost = () => available() >= 110
   const showAgent = () => available() >= 84
   const compact = () => available() < 86
-  const causeWidth = () => (compact() ? 14 : 18)
+  const causeWidth = () => (compact() ? 16 : 18)
   const kindWidth = () => 10
   const kindLabel = (kind: Plus.MonitorRequest["kind"]) => kind
 

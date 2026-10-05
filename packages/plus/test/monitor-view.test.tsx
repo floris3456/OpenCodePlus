@@ -415,6 +415,40 @@ test("keys change grouping, scope, window and filters, and the choice persists",
   }
 })
 
+test("the composer M opens the full page on this chat's session", async () => {
+  const db = await seeded()
+  let opened: string | undefined
+  const fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 90,
+    height: 30,
+    render: (context) => (
+      <MonitorView
+        context={context}
+        sessionID={() => "ses_chat"}
+        active={() => true}
+        full={false}
+        mode="composer"
+        onClose={() => {}}
+        onOpenFull={() => {
+          opened = "ses_chat"
+        }}
+      />
+    ),
+    rpc: {
+      "monitor.query": async (input: Plus.MonitorQueryInput) =>
+        queryMonitor(db, input, { directory: "/work/project", now: NOW }),
+    },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())))
+    dispatch(fixture, "M")
+    expect(opened).toBe("ses_chat")
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("the composer defaults to the tree scope and drills Tools even when its stored tab is Overview", async () => {
   const db = await seeded()
   const { fixture, queries } = await render(db, {
@@ -443,6 +477,75 @@ test("the composer defaults to the tree scope and drills Tools even when its sto
     expect(fresh.queries[0]).toMatchObject({ view: "tools", scope: "tree" })
   } finally {
     fresh.fixture.destroy()
+  }
+})
+
+test("full and compact keep separate persisted settings", async () => {
+  const db = await seeded()
+  // The full page's stored tab is Cache; the compact body has its own store and
+  // still renders Tools without overwriting the full page's choice.
+  const full = await render(db, {
+    width: 100,
+    height: 30,
+    settings: { ...defaultSettings, tab: "cache" },
+    settingsKey: "monitor",
+  })
+  try {
+    await full.fixture.waitForFrame((text) => text.includes("[MISS]") || text.includes("[COLD]"))
+    expect(full.queries[0]?.view).toBe("cache")
+    expect((full.fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.tab).toBe("cache")
+    expect(full.fixture.storeValue("monitor-composer")).toBeUndefined()
+  } finally {
+    full.fixture.destroy()
+  }
+
+  const compact = await render(db, { full: false, width: 90, height: 30 })
+  try {
+    await compact.fixture.waitForFrame((text) => text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())))
+    expect(compact.queries[0]).toMatchObject({ view: "tools", scope: "tree" })
+    // Changing a compact setting writes only the composer's own key.
+    dispatch(compact.fixture, "s")
+    await compact.fixture.waitForFrame((text) => text.includes("scope team"))
+    expect((compact.fixture.storeValue("monitor-composer") as { settings: MonitorSettings }).settings.scope).toBe("team")
+    expect(compact.fixture.storeValue("monitor")).toBeUndefined()
+  } finally {
+    compact.fixture.destroy()
+  }
+})
+
+test("the Cache selection scrolls its full row into view", async () => {
+  const db = await seeded()
+  const requests: Plus.MonitorRequest[] = Array.from({ length: 20 }, (_, index) => ({
+    id: `req_${index}`,
+    sessionID: "ses_chat",
+    kind: "step",
+    at: NOW - (20 - index) * 1_000,
+    agent: "build",
+    provider: "anthropic",
+    model: "claude-3-7-sonnet",
+    input: 100,
+    output: 10,
+    reasoning: 0,
+    cacheRead: index % 2 === 0 ? 900 : 0,
+    cacheWrite: index % 2 === 0 ? 0 : 900,
+    cost: 0.001,
+    verdict: index % 2 === 0 ? "hit" : "miss",
+    evidence: `row-${String(index).padStart(2, "0")}`,
+  }))
+  const { fixture } = await render(db, {
+    width: 100,
+    height: 18,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...contractFixtureReport(NOW), requests }),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("row-00"))
+    for (let step = 0; step < 19; step++) dispatch(fixture, "down")
+    const frame = await fixture.waitForFrame((text) => text.includes("row-19"))
+    // The selected full row scrolled into view rather than staying above the fold.
+    expect(frame).toContain("row-19")
+  } finally {
+    fixture.destroy()
   }
 })
 

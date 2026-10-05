@@ -80,9 +80,6 @@ function requestFor(variant: MissVariant, now: number): Plus.MonitorRequest {
 // rather than set to undefined.
 function detailFor(variant: MissVariant, request: Plus.MonitorRequest, now: number): Plus.MonitorRequestDetail {
   const prefix = variant === "prefix"
-  const previousHash = prefix ? "h_old" : request.id
-  const before = { hash: previousHash, chars: prefix ? 3200 : 0, tokens: prefix ? 800 : 0 }
-  const after = { hash: prefix ? "h_new" : "h_same", chars: request.cacheWrite, tokens: request.expected ?? 0 }
   return {
     request,
     previous: { id: "req_prev", at: now - 420_000 },
@@ -95,7 +92,7 @@ function detailFor(variant: MissVariant, request: Plus.MonitorRequest, now: numb
       : [
           "gap 420s exceeds provider cache lifetime (300s)",
           "expected prefix: 18.5k tokens, cache read: 0 tokens",
-          "warming was inactive for this session",
+          "prefix identical to the previous request; warming was inactive",
         ],
     segments: prefix
       ? [
@@ -120,16 +117,9 @@ function detailFor(variant: MissVariant, request: Plus.MonitorRequest, now: numb
             after: { hash: "t_grep", chars: 450, tokens: 110 },
           },
         ]
-      : [
-          {
-            name: "message 14 (tool result)",
-            kind: "message",
-            change: "changed",
-            before: { hash: "m_14a", chars: 900, tokens: 225 },
-            after: { hash: "m_14b", chars: 900, tokens: 225 },
-          },
-        ],
-    firstDivergence: prefix ? "system: AGENTS.md" : "message 14 (tool result)",
+      : [],
+    // Expiry is a gap, not a divergence: no firstDivergence, no segment change.
+    ...(prefix ? { firstDivergence: "system: AGENTS.md" } : {}),
     timing: {
       gapMs: 420_000,
       lifetimeMs: 300_000,
