@@ -52,3 +52,47 @@ the same case.
 
 (Each result is added below the moment it is observed; checkpoints follow.)
 
+### Baseline before the first change
+
+Session spawned and resized; TUI came up on `Build · claude-opus-5-5
+CLIProxyAPI · high`. Pre-existing store and the Defaults location:
+
+```
+$ grep -c '"level":"defaults"' "$DEV/config/opencode/opencodeplus/instructions/records.jsonl"
+10
+$ head -1 "$DEV/config/opencode/opencodeplus/instructions/records.jsonl"
+{"version":2,"revision":492}
+$ wc -l "$DEV/config/opencode/opencodeplus/instructions/records.jsonl"
+255
+```
+
+The Defaults overlay/entries location on disk is the global instruction store
+itself — there is **no** on-disk Defaults overlay or entries directory in this
+build (the old `teams-defaults/` overlay is not read; `teams.ts:8-13`). An
+`ls -R` of the only global Plus location, `$DEV/config/opencode/opencodeplus/`:
+
+```
+$ ls -R "$DEV/config/opencode/opencodeplus/"
+.../opencodeplus/:
+instructions
+
+.../opencodeplus/instructions:
+OPENCODEPLUS.md
+linked-projects.json
+log.jsonl
+records.jsonl
+```
+
+No `teams/`, no `skills/`, no `teams-defaults/`, no `entries/` directory exists
+at baseline. The 10 `"level":"defaults"` lines are all `model` /
+`modelSettings` rows (lines 223, 226, 227, 234, 237, 240, 246, 251, 252, 253);
+there is **no** `"type":"entry"` record at all (`grep -c '"type":"entry"'` = 0)
+and no `"type":"team"` record with `"level":"defaults"` (the two team records
+are `global/Basic` and `global/Simple`).
+
+Existing (release-copied) Global teams in the store: `global/Basic`
+(`enabled:false`) and `global/Simple` (`enabled:true`). Per the Brief's
+decision, the new Global team is named `BASIC` (different case from the shipped
+`Basic`).
+
+
