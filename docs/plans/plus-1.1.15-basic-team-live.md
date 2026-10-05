@@ -230,3 +230,77 @@ Session tab (`4`) shows the delegation tree:
 
 Result: step 3 passed; both scopes list both sessions and the Sessions tab
 shows the tree.
+
+## Step 4 — stop the idle scout run and see it stopped
+
+Action: with the composer Team tab open, arrow-down selected the scout row and
+`ctrl+d` stopped it. The active view then showed only the idle root:
+
+```
+┃  Subagents  Shell  Terminals  Tools  Team                                                                    esc
+┃  main-759512680ad0df59 — build-seat — idle                                                               idle
+┃  move ↑↓  attach ⏎  active ctrl+a  tree ctrl+t  stop|resume ctrl+d  monitor M  tabs ←/→
+```
+
+`ctrl+a` switched to the inactive view, which shows the stopped scout:
+
+```
+┃  Subagents  Shell  Terminals  Tools  Team                                                                    esc
+┃    w-2c37ed52b53f479b — scout — stopped — T1                                                            stopped
+┃  move ↑↓  attach ⏎  inactive ctrl+a  tree ctrl+t  stop|resume ctrl+d  monitor M  tabs ←/→
+```
+
+On-disk confirmation (`<dev-home>/data/opencode/opencodeplus/teams/runs`):
+`w-2c37ed52b53f479b/run.json` has `"state": "stopped"`, `"role": "scout"`,
+`"parent": "main-759512680ad0df59"`; the root `main-759512680ad0df59/run.json`
+stays `"state": "idle"` with `parent: null`.
+
+Result: step 4 passed.
+
+## Server log — every ERROR and WARN line
+
+The server log at `<dev-home>/data/opencode/log/opencode-local.log` (350
+lines at the end of the run) contains **no** `level=ERROR` line. The only WARN
+lines are the eight expected `executor-controlled plugin source refused`
+warnings (paths under the checkout's own `.opencode` and the worktree root):
+
+```
+timestamp=2026-10-05T13:15:17.648Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=106 role=server
+timestamp=2026-10-05T13:15:17.648Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=106 role=server
+timestamp=2026-10-05T13:15:19.401Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=100 role=server
+timestamp=2026-10-05T13:15:19.401Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=100 role=server
+timestamp=2026-10-05T13:15:19.401Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1168a8f-20261005-1513/.opencode/opencode.jsonc type=document http.span=100 role=server
+timestamp=2026-10-05T13:15:19.401Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t1168a8f-20261005-1513/.opencode type=directory http.span=100 role=server
+timestamp=2026-10-05T13:21:39.566Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document role=server
+timestamp=2026-10-05T13:21:39.566Z level=WARN run=7a4d81f0 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory role=server
+```
+
+`level=` counts across the log: `342 level=INFO`, `8 level=WARN`, `0 level=ERROR`.
+The path was proven by kernel fd: the server process (pid 7614) holds fd 9 on
+`…/t1168a8f-20261005-1513/data/opencode/log/opencode-local.log`.
+
+`<dev-home>/data/opencode/opencodeplus/teams/audit.log` has 5 entries and no
+`error`/`warn` text. Its first entry records one failed `team_delegate`
+(`"ok":false,"code":"E_INTERNAL","durationMs":6`) at 13:21:24, 14 seconds
+before the successful delegation; it never surfaced in the chat and did not
+block the run.
+
+## Result
+
+All four steps passed against this worktree's own build:
+
+- Step 1: `basic-live` created from the `Basic` preset at Project, enabled;
+  `build-seat` and `scout` both activated
+  `cliproxyapi/deepseek-v4.1-flash-cheap` at Project.
+- Step 2: `build-seat` delegated a report task to `scout`
+  (`w-2c37ed52b53f479b`) and ended its turn; the child settled `done` with the
+  top-level listing and the parent reported it back into the same chat.
+- Step 3: composer Team tab showed the root with the scout run indented under
+  it and `ctrl+t` switched tree/all with the hint bar naming the view;
+  `/monitor` scope `Team tree` and scope `Team: basic-live` each listed both
+  sessions, and the Sessions tab showed the tree.
+- Step 4: `ctrl+d` on the idle scout run stopped it; `ctrl+a` (inactive view)
+  showed `w-2c37ed52b53f479b — scout — stopped — T1`, matching on-disk state.
+
+No source file was changed; only this evidence file.
+
