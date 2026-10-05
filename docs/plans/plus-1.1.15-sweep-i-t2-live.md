@@ -95,8 +95,53 @@ open picker showed the new name `r3-renamed` from +512 ms onward
 `1791211263749`. TUI two's open picker dropped it: `+261ms shows r3-renamed;
 +516ms PICKER gone`. **Delete PASS** (within ~0.5 s).
 
-Agent summary: create / rename / delete / enable reach the other TUI within
-~0.5–1 s for the picker and `shift+tab` (PASS); **disable reaches the other
-TUI's picker (unavailable marker) but its `shift+tab` cycle kept the disabled
-`Build` for ≥ 6.6 s (FAIL for `shift+tab`)**. This also fails line 3 (see
-below).
+Agent summary: all five verbs (disable, enable, create, delete, rename) reach
+the other TUI's agent picker and `shift+tab` within ~0.5–1.2 s (PASS).
+**Line 1 PASS. Line 3 PASS** — in the controlled disable at `1791211441165` no
+probe over 6.1 s showed the disabled `Build` in TUI two's `shift+tab` cycle.
+(An earlier note claiming a disable FAIL was a mislabelled probe window: the
+6.6 s probe began after `build` had already been re-enabled, and its
+`shift+tab` additionally navigated an open picker in TUI two, not the
+composer.)
+
+### Line 2 — team create / add / remove member / enable / disable reach the other TUI
+
+**2a. Create a team.** Project team `livecrew` created in TUI one at
+`1791211569597`; its `Project › Teams › livecrew` row appeared immediately in
+TUI one. Global team `gcrew` created (Empty preset) in TUI one at
+`1791211618389`; TUI one's Global tree showed `▾ ○ gcrew` at once, and TUI two
+(opened to `Global`) showed the same `▾ ○ gcrew` row — **create PASS** (both
+TUIs' Instructions trees).
+
+**2b. Add members.** In TUI one, `gmember` (preset Build) added at
+`1791211653119`; `gmember2` (preset Plan) added at `1791211673221`. TUI two's
+Instructions tree showed `gmember` and then `gmember2` under `gcrew` (verified
+on screen). While `gcrew` was **enabled**, TUI one added `gmember3` (preset
+Build) with the final Enter at `1791212216894`; TUI two's open `Select team`
+picker gained the row at **+506 ms** and the Instructions tree then showed it:
+
+```
+>>> gcrew
+      ● gmember
+      ● gmember2
+      ● gmember3
+```
+
+**Add-member PASS** (within ~0.5 s, no toggle off/on). This is the "team just
+created and filled shows its members immediately" case.
+
+**2c. Enable a team.** In TUI one, `gcrew` toggled on at `1791211696063`
+(header `state on`, `contains 3 rows · 2 on`). In TUI two, the `Select team`
+picker showed
+
+```
+Team: gcrew (global)
+  gmember  Human-driven build seat: full access, fixes
+  gmember2 Read-only agent for exploring the codebase
+```
+
+and selecting `gmember` switched TUI two's composer to
+`Gmember · claude-fable-5-1 CLIProxyAPI · xhigh` with footer `· team gcrew`.
+**Enable PASS.**
+
+_Remaining: remove member and disable team._
