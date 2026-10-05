@@ -134,6 +134,14 @@ without weakening refusal controls:
     one local `…@xhigh` row with its remaining local warming only.
   - The edits and resets produced exactly one owned-store revision each (rev 5–11), visible
     as one live local record, never a second visible row.
+- **Delete and re-add.** In a third pass the inherited `…@xhigh` row's `d` opened the
+  remove confirmation and, confirmed, wrote a tombstone (one revision; `…@xhigh` no longer
+  listed), while `a` in the Models group opened the `Model provider` → `Model` → `Variant`
+  pickers. Adding `cliproxyapi/claude-opus-5-5@xhigh` (the hidden candidate) cleared its
+  tombstone and activated it exclusively: after the add the group showed
+  `…@high` (unbadged) beside `…@xhigh` `active · warm 30m · every 4m`, with the owned store
+  holding exactly one live `…@high` row and one active `…@xhigh` row — one visible row per
+  candidate, no tombstone left (revision 15). This closes the live re-add control.
 - **Model picker.** Enter on the Model field opens `Model provider`, then the model list;
   selecting an entry replaces the candidate in place (one visible row + tombstone), and a
   later `r` restores the original candidate.
@@ -147,18 +155,18 @@ No request was needed for these field claims; the composer stayed on the observe
 
 ## Runtime classification and cleanup
 
-- Actual `opencode-local.log` (second, clean live pass): **642 lines / 624 INFO / 18 WARN /
-  0 ERROR**; all 18 WARNs are the expected `executor-controlled plugin source refused`
-  refusals, zero other warnings/errors. The first pass logged 436/424/12/0 with the same
+- Actual `opencode-local.log` (final pass): **1056 lines / 1026 INFO / 30 WARN / 0 ERROR**;
+  all 30 WARNs are the expected `executor-controlled plugin source refused` refusals, zero
+  other warnings/errors. Earlier passes logged 436/424/12/0 and 642/624/18/0 with the same
   all-refusal classification.
 - Owned PIDs (kernel cwd/fd proven), first pass:
   - launcher `3823121`: cwd `<dev-home>/project`, fd 9 → `<dev-home>/data/opencode/log/opencode-local.log`;
   - server `3823152`: cwd `<worktree>/packages/cli`, fd 9 → the log, fds 11/12/13 → the owned `opencode-local.db` (+`-wal`/`-shm`);
   - search `3823220`: cwd `<dev-home>/project`.
-- Exited the owned TUI through the palette (`Ctrl+P` → `exit` → Enter) in both passes;
+- Exited the owned TUI through the palette (`Ctrl+P` → `exit` → Enter) in every pass;
   pilotty status `exited`, exit code `0`, `killed_by_client:false`.
 - Parent-verifiable cleanup: the first-pass PIDs are absent; a full `/proc` cwd/fd/maps scan
-  for the exact owned home finds **no matches** after both passes. No test PTY or owned
+  for the exact owned home finds **no matches** after every pass. No test PTY or owned
   runtime remains. No environment/credential material was read or printed.
 
 ## Checked at HEAD
