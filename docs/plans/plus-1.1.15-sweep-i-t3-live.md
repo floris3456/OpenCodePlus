@@ -129,9 +129,30 @@ press `a`, pick provider → model → variant, and watch the store and log.
 All four levels: the added row is the only `active` row at that level for that
 owner, and each add is exactly one revision and one `model.add` log line.
 
-**Not yet shown in this line:** a *real* (file-backed) Global team member's
-Models group; a member-preset group was shown instead. To be completed below
-with team `Sweep`.
+**5. Real file-backed Global team member `Sweep`/`Sweep-Only`.**
+
+Created team `Sweep` through the TUI (`Global › Teams`, `a` → `Sweep`, empty
+team; log `team.create Sweep (global)`, revision 488), then added member
+`Sweep-Only` from member preset `Basic › implementer` (`a` on the team →
+Member name `Sweep-Only` → preset `Basic › implementer`; toast
+`Created agent Sweep-Only in team Sweep at …/config/opencode/opencodeplus/teams/Sweep/Sweep-Only.md`,
+log `team.addAgent Sweep-Only to Sweep (global) from member:basic/implementer`,
+revision 489).
+
+On `Global › Teams › Sweep › Sweep-Only › Models` the inherited candidate read
+`▸ cliproxyapi/gpt-6-luna from preset Basic › implementer · active (preset)`.
+`a` there → `cliproxyapi/gpt-6.1-sol` (no variant): toast
+`Added model cliproxyapi/gpt-6.1-sol`, new row
+`▸ cliproxyapi/gpt-6.1-sol  active ◆`, and the inherited gpt-6-luna row lost the
+`active` badge (`from preset Basic › implementer` with no marker). Store line
+242 `{"type":"model","level":"global","agent":"Sweep-Only","providerID":
+"cliproxyapi","modelID":"gpt-6.1-sol","active":true,...}`; log
+`model.add cliproxyapi/gpt-6.1-sol (global)` target
+`model:global:Sweep-Only:cliproxyapi/gpt-6.1-sol`, revision **491**. One
+revision, one log line, previously-active row no longer active.
+
+**Line 1 result: PASS** for TUI `a` on a Global agent, a Defaults catalogue
+row, an agent preset, a member preset, and a real Global team member.
 
 ## Line 2 — Tool `set({ id, active: true })` activation and real use
 
