@@ -205,10 +205,6 @@ annotation added. Every moved row keeps its own actions: `edit` still toggles wi
 record's value — the only writes were the category record itself. Inheritance/enforcement
 unchanged (the move only edits the category record's `items`). PASS.
 
-## L7 — categories display only; inspector shows `category: <name> (home: <category>)`
-
-Pending.
-
 ## L8 — `R` renames a user category
 
 Done: with the cursor on the `SweepCat` category header row (in its own list, first row) pressed
@@ -407,28 +403,103 @@ which still lacks the `categories` mention (the dev script copies the release's 
 first start). The build's own skill content is correct, as quoted. This is the dev-home seed, not
 this worktree's `teaching.ts`.
 
+## Layouts at 80 columns
+
+Resized to 80×48 (`pilotty resize -s sweep-i-t8 80 48`). The category tab strip is clipped on the
+right by the `…  ? help` overflow marker but all tabs and the user categories are still counted
+and reachable; the breadcrumb still names the selected tab:
+
+**Tab strip (80 wide, two user categories EmptyCat + P80 last):**
+
+```
+Settings  Models  Compaction  Tools 0  Base  System  MCP  EmptyCat  P80
+```
+
+**Empty-category body (80 wide):**
+
+```
+▾ Agents       │ Every agent                                │ EmptyCat        group
+Every agent    │ no tools on · link a preset (l) or turn tools on (4)
+▾ OpenCode     │ Settings  Models  Compaction  Tools 0  Base  System  MCP  EmptyCat  P80
+● build  77    │
+               │No rows yet · m on a row moves it here
+```
+
+**User-category list (80 wide, P80 holding `edit`):**
+
+```
+▾ P80
+  ▾ ○ edit      off by default
+      ○ Description  off by default
+    ▸ Permissions
+```
+
+**Move picker (80 wide):**
+
+```
+   ▾ ○ edit                       Move "edit"            esc
+       ○ Description              [P]ick a category
+     ▸ Permissions                Back to Tools (home)
+   ▾ ○ execute                    EmptyCat
+       ○ Description              P80
+```
+
+All three are legible and usable at 80 columns; the tab counts and breadcrumbs are unchanged
+from 160. PASS.
+
 ## Server log
 
-Pending.
+`$DEV/data/opencode/log/opencode-local.log`: 230 lines, **0 ERROR / 6 WARN**. Every WARN is the
+expected `executor-controlled plugin source refused` (refusing `OpenCodePlus/.opencode` and this
+worktree's `.opencode`); no other WARN message occurs:
+
+```
+timestamp=2026-10-05T15:50:09.885Z level=WARN run=8cf44599 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=109 role=server
+timestamp=2026-10-05T15:50:09.885Z level=WARN run=8cf44599 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=109 role=server
+timestamp=2026-10-05T15:50:11.205Z level=WARN run=8cf44599 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=270 role=server
+timestamp=2026-10-05T15:50:11.205Z level=WARN run=8cf44599 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=270 role=server
+timestamp=2026-10-05T15:50:11.205Z level=WARN run=8cf44599 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t13387b5-20261005-1749/.opencode/opencode.jsonc type=document http.span=270 role=server
+timestamp=2026-10-05T15:50:11.205Z level=WARN run=8cf44599 message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t13387b5-20261005-1749/.opencode type=directory http.span=270 role=server
+```
+
+No `ERROR` line exists. PASS.
 
 ## Cleanup
 
-Pending.
+Killed the one session I started:
+
+```
+pilotty kill -s sweep-i-t8
+→ Session 7a37db28-69e0-4be4-9708-f58165778fc8 killed
+pilotty list-sessions | grep -c sweep-i-t8
+→ 0
+```
+
+Other sessions in `list-sessions` (`sweep-recheck`, `sweep-m-t4`, `sweep-i-t5`, `sweep-i-t7a`,
+worker and story sessions) belong to other runs and were left alone. A `/proc` scan of `cwd` and
+`environ` across all PIDs for this dev home found no process (`found=0`).
+
+No shared service (port 40375), no `~/.config/opencodeplus`, no `bun run dev:live` or
+`bun run dev` was used, and configuration was changed only inside `$DEV`. All test categories
+were deleted at the end (0 `category` records, `{"version":2,"revision":513}`); `[`/`]` on the
+inventory then shows only the built-in tabs again.
 
 ## Result per line
 
 | Line | Result |
 | --- | --- |
-| L1 | Pending |
-| L2 | Pending |
-| L3 | Pending |
-| L4 | Pending |
-| L5 | Pending |
-| L6 | Pending |
-| L7 | Pending |
-| L8 | Pending |
-| L9 | Pending |
-| L10 | Pending |
-| L11 | Pending |
-| L12 | Pending |
-| L13 | Pending |
+| L1 | PASS |
+| L2 | PASS |
+| L3 | PASS |
+| L4 | PASS |
+| L5 | PASS |
+| L6 | PASS |
+| L7 | PASS |
+| L8 | PASS |
+| L9 | PASS |
+| L10 | PASS |
+| L11 | PASS |
+| L12 | PASS |
+| L13 | PASS |
+| 80-column layouts | PASS |
+| Server log | PASS (0 ERROR / 6 expected WARN) |
