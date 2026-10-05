@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { addModelRecord, fingerprint, resolveResolution } from "../src/instructions/model.js"
 import type { CustomizationRecord, ModelRecord } from "../src/instructions/model.js"
+import { modelFieldItemId } from "../src/instructions/model-settings.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput } from "../src/instructions/tree.js"
 import {
@@ -11,6 +12,7 @@ import {
   removalPlan,
   removeModelRow,
   reset,
+  resetModelFieldRow,
   resetModelRow,
   resolveReview,
   saveSplit,
@@ -1055,4 +1057,26 @@ test("editModelRow validates warming and refuses an empty edit", () => {
   const noop = editModelRow(input, rowIdOf("project", "acme/mine"), { providerID: "acme", modelID: "mine" })
   if (!("refusal" in noop)) throw new Error("expected no-change refusal")
   expect(noop.refusal).toBe('"acme/mine" has no changes to save')
+})
+
+// #6: a plain local row with a variant and no originalCandidate (written
+// before field resets recorded originals). Its Effort reset drops the variant
+// in place without recording the old one, so a second reset has nothing left
+// to restore and refuses.
+test("resetModelFieldRow drops a legacy row's Effort once, then refuses with no write", () => {
+  const input = buildInput([modelRecord({ variant: "high", active: true })])
+  const first = resetModelFieldRow(input, `item:project:build:${modelFieldItemId({ providerID: "acme", modelID: "nova", variant: "high" }, "effort")}`)
+  if ("refusal" in first) throw new Error(`expected success, got ${first.refusal}`)
+  const live = first.models.filter((record) => record.level === "project" && record.agent === "build" && record.removed !== true)
+  expect(live).toHaveLength(1)
+  expect(live[0]).toMatchObject({ providerID: "acme", modelID: "nova", active: true })
+  expect(live[0]?.variant).toBeUndefined()
+  expect(live[0]?.originalCandidate).toBeUndefined()
+
+  const after = buildInput(first.models)
+  const second = resetModelFieldRow(after, `item:project:build:${modelFieldItemId({ providerID: "acme", modelID: "nova" }, "effort")}`)
+  if (!("refusal" in second)) throw new Error("expected the second reset to refuse")
+  expect(second.refusal).toBe(`"Effort" has no override to reset`)
+  expect("models" in second).toBe(false)
+  expect(after.records).toEqual(first.models)
 })

@@ -1773,7 +1773,28 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
       }
     }
     if (local.variant !== undefined) {
-      return setModelFieldRow(input, rowId, "", sharedMemo)
+      // A plain local row (no originalCandidate) drops its variant in place.
+      // Going through editModelRow would record this reset as an Effort edit
+      // of the old variant, so a second reset would bring it back instead of
+      // refusing. Like editModelRow, the old candidate is hidden at this level
+      // so one row never becomes two when it is also inherited.
+      const target = { providerID: local.providerID, modelID: local.modelID }
+      const carried: ModelWarmingFields = {
+        ...(local.warming === undefined ? {} : { warming: local.warming }),
+        ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
+      }
+      const added = addModelRecord(tombstoneModelRecord(models, addr, local, now()), addr, target, now())
+      const withSettings = Object.keys(carried).length > 0 ? setModelSettings(added, addr, target, carried, now()) : added
+      const upstream = modelUpstreamOf(found.memo, address)
+      const next = local.active === true
+        ? activateModel(withSettings, addr, target, { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) })
+        : withSettings
+      return {
+        models: next,
+        status: `Reset "${found.node.label}" to "none"`,
+        retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
+      }
     }
     return { refusal: `"${found.node.label}" has no override to reset` }
   }
