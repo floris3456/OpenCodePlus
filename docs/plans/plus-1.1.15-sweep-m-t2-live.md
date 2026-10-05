@@ -12,9 +12,11 @@ Owned dev home:
 `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t1235bc2-20261005-1623`.
 Server log:
 `$DEV/data/opencode/log/opencode-local.log`.
-Chat model: `cliproxyapi/claude-opus-5-5` (variant `high` → later `xhigh`);
-chosen directly because the notes name it as the fallback and the
-`claude-fable-5-1` default route is rejected by the provider (observed, see F1).
+Chat model: `cliproxyapi/claude-opus-5-5` (variant `high` → later `xhigh`),
+the notes' fallback. It was chosen directly without first exercising
+`cliproxyapi/deepseek-v4.1-flash-cheap`: this sweep needs real cache reads to
+produce verdicts, and the regular cache-live work covers the DeepSeek route. The
+default `claude-fable-5-1` route is rejected by the provider (observed, see F1).
 
 Each line below quotes the screen text, file line or log line observed and ends
 with **PASS**, **FAIL** or **NOT LIVE** plus the reason where it is not live.
