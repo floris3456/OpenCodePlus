@@ -282,15 +282,21 @@ test("titles are excluded by default and included with titles: true", async () =
   expect(included.totals.requests).toBe(2)
 })
 
-test("missesOnly narrows the request list without changing totals", async () => {
-  const { db, clock } = await tree()
-  const now = clock.now
-  const all = queryMonitor(db, { scope: "all", view: "cache" }, { now })
-  const missesOnly = queryMonitor(db, { scope: "all", view: "cache", missesOnly: true }, { now })
+test("missesOnly narrows the request list to the miss without changing totals", async () => {
+  const db = await ledger()
+  // A warm predecessor that reads the cache, then a miss: the filtered list
+  // must be non-empty and hold exactly the miss, with totals unchanged.
+  request(db, "ses_m", "req_seed", 50, { input: 2_000, read: 0 })
+  request(db, "ses_m", "req_hit", 100, { input: 400, read: 6_000 })
+  request(db, "ses_m", "req_miss", 200, { input: 4_000, read: 0 })
+  const now = 300
+  const all = queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache" }, { now })
+  expect(all.requests?.map((entry) => entry.id)).toEqual(["req_seed", "req_hit", "req_miss"])
+  expect(all.requests?.map((entry) => entry.verdict)).toEqual(["cold", "hit", "miss"])
+  const missesOnly = queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache", missesOnly: true }, { now })
   expect(missesOnly.totals).toEqual(all.totals)
-  expect((missesOnly.requests ?? []).every((request) => request.verdict === "miss" || request.verdict === "partial")).toBe(
-    true,
-  )
+  expect(missesOnly.requests?.map((entry) => entry.id)).toEqual(["req_miss"])
+  expect(missesOnly.requests?.every((entry) => entry.verdict === "miss" || entry.verdict === "partial")).toBe(true)
 })
 
 test("a ping is listed with its kind and its usage survives the query", async () => {

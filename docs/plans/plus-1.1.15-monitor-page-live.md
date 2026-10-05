@@ -40,9 +40,9 @@ all-metric totals) plus the query text/facets/top-tools repairs.
 
 | Item | Fix | Regression |
 | --- | --- | --- |
-| Cache detail formatted `gapMs`/`lifetimeMs` `?? 0` | `formatMsLabel` shows `—` when omitted, `0ms` for a real zero | "Cache detail labels omitted timings — and keeps a real zero as 0ms" |
-| Steps detail formatted `durationMs` `?? 0` | same `formatMsLabel` | covered by the same helper and the Steps render |
-| Empty segment diff claimed an identical prefix | honest "No earlier request to compare." / "No segment changes recorded." | "a step with no earlier request says so instead of claiming an identical prefix" |
+| Cache detail formatted `gapMs`/`lifetimeMs` `?? 0` | `formatMsLabel` shows `—` when omitted, `0ms` for a real zero | "Cache detail labels omitted timings — and keeps a real zero as 0ms" (80/160) |
+| Steps detail formatted `durationMs` `?? 0` | same `formatMsLabel` | "Steps detail is honest about duration and a missing/empty fingerprint diff" (80/160) |
+| Empty segment diff claimed an identical prefix | honest "No earlier request to compare." (no previous) / "No segment changes recorded." (previous, no changes) | same Steps test |
 
 ## New actual-ledger query regressions (`test/monitor-ledger.test.ts`)
 
@@ -50,8 +50,9 @@ Eight query tests read a real temporary `monitor.db` through `queryMonitor` (no
 mock): scope (session/tree/project/all, fail-closed), agent/tool/model filters
 with unfiltered facets, failed-only, tool-grouped `topTools` independent of the
 requested grouping, real-request `id` detail only in scope, title
-included/excluded, `missesOnly` totals invariance, and ping kind/usage survival.
-Request rows are seeded through the actual ledger boundary
+included/excluded, `missesOnly` on a real cold→hit→miss sequence (asserts the
+filtered ids are exactly the miss, non-empty, totals unchanged), and ping
+kind/usage survival. Request rows are seeded through the actual ledger boundary
 (`requestStarted` + `requestFingerprint` + `requestEnded`), not the legacy
 step-only script path. Two raw ledger controls that no other file owns are kept:
 an older `monitor.db` migrating in place, and two handles sharing facts with the
@@ -67,8 +68,10 @@ idempotency/attribution/privacy raw coverage.
   window key, `space` is the tree key. Help tab matches.
 - The legitimate `## Tools` section at README line 159 is the agent Instructions
   tools; it was not renamed or touched.
-- Temporary-drill preservation and the max-poll-timestamp fix are landed.
-- All-labelled totals and unknown-miss-cost rendering are landed.
+- Temporary-drill preservation and the max-poll-timestamp fix are committed on
+  this worker branch (the parent lands them).
+- All-labelled totals and unknown-miss-cost rendering are committed on this
+  worker branch.
 
 ## Live evidence
 
@@ -93,12 +96,21 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
   window all · order tokens`; `M` opens the page at `Scope: This session`.
   Team tab hints `move attach active tree stop|resume monitor M`; `M` opens the
   page and `Escape` returns to the chat.
-- Cache detail on the real deepseek route (TTL reported by the provider): the
-  `[MISS] unknown` detail reads `Gap since last request: 1.4m · Cache lifetime:
-  5m · Warming: on`; a step whose warming was not recorded reads `Warming: —`
-  (never `n/a` or `0ms`). Steps detail at 80 renders the segment diff
-  (`[ADDED] system "system part AGENTS.md" (0 → 2.7k tokens)` etc.) and a
-  step with no earlier request reads `No earlier request to compare.`
+- Cache detail on the observed owned ledger: the selected `[MISS] unknown`
+  request is `ff4cc19d-f5f1-44c9-b12f-2ad4a998b767`,
+  provider/model `cliproxyapi/claude-opus-5-5`, fingerprint protocol
+  `openai-responses` (bound from the owned `monitor.db`). Its detail reads
+  `Gap since last request: 1.4m · Cache lifetime: 5m · Warming: on`. The 5m is
+  the conservative lifetime `cacheLifetime` derives for the OpenAI/CLIProxy
+  branch (`/openai|cliproxy|cpa/` or an `openai*` protocol), **not** a TTL
+  reported by the provider. A DeepSeek request takes the earlier
+  `/deepseek|gemini|google|zai|mistral/` branch and returns `undefined`, so its
+  detail shows `Cache lifetime: —` with no inferred TTL. A step whose warming
+  was not recorded reads `Warming: —` (never `n/a` or `0ms`). Steps detail at
+  80/160 renders the segment diff (`[ADDED] system "system part AGENTS.md"
+  (0 → 2.7k tokens)` etc.); a step with no earlier request reads `No earlier
+  request to compare.`, and a step with a previous but no recorded segment
+  changes reads `No segment changes recorded.`
 - Story `OPENCODE_STORY=monitor opencodeplus-dev .`: real page with contract
   fixtures; at 80 columns the totals wrap to
   `reqs: 4 · steps: 3 · in: 17.1k · read: 37.5k · write: 15.8k · out: 925` /
@@ -112,18 +124,29 @@ worker worktree. Terminal 80×30, 100×30 and 160×40. Owned home:
 
 ### Owned runtime and log
 
-- Launcher PTY `overnight-monitor-page` and `overnight-monitor-story` both report
-  `Session … killed`; `pilotty list-sessions` no longer lists either name.
-- Kernel check: no `opencode*` process has this worktree as cwd after cleanup.
-  The only remaining `opencode` process with this cwd is PID 2707728, the
-  immutable worker MCP (`releases/2.0.18-plus-1.1.14/bin/opencodeplus
-  search-mcp`), which is not a runtime I started and is left running.
+- Owned launcher/server, captured by kernel state before stop:
+  - PID 3275924 `bun` (the pilotty launcher), cwd
+    `…/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t8752d5-20261005-0302/project`,
+    fd holds the owned `data/opencode/log/opencode-local.log`; its maps include
+    the worktree's `@opentui/core-linux-arm64/libopentui.so`.
+  - PID 3275988 `bun` (the server), cwd the worktree `packages/cli`, fd holds
+    the owned `data/opencode/opencodeplus/monitor.db` (3 descriptors) and the
+    owned `opencode-local.log`; maps include the worktree's
+    `@ff-labs/fff-bin-linux-arm64-gnu/libfff_c.so`.
+- After `pilotty kill -s overnight-monitor-page` (`Session … killed`), a kernel
+  cwd scan finds no launcher/server with this cwd or the owned home. The only
+  remaining `opencode` process is PID 2707728, the immutable worker MCP
+  (`releases/2.0.18-plus-1.1.14/bin/opencodeplus search-mcp`, PPid 2592457),
+  which is not a runtime I started and is left running.
 - Log `/home/bliss/OpenCodePlus/run/plus-dev/run-plus-data-opencodeplus-teams-worktrees-opencode-Flash-C-Worker-t8752d5-20261005-0302/data/opencode/log/opencode-local.log`
-  (746 653 bytes, 2 932 lines): **0 ERROR**, 84 WARN — every WARN is
+  (796 777 bytes, 3 136 lines): **0 ERROR**, 90 WARN, 3 046 INFO. Every WARN is
   `executor-controlled plugin source refused` for the workspace `.opencode`
-  sources (the confinement rule), and 11 INFO `InterruptError: All fibers
-  interrupted without error` lines, one per normal TUI shutdown. No Monitor or
-  Plus error or warning.
+  sources (the confinement rule). INFO is dominated by `watcher subscribe` (915),
+  `watcher started/stopped` (690 each), `spawning process` (378), `plugin
+  reconciliation started/completed` (61 each), `mcp connected`, `location
+  services booted` and `cli starting` (30 each), plus 15 `InterruptError: All
+  fibers interrupted without error` lines, one per normal TUI shutdown. No
+  Monitor or Plus error or warning.
 
 ## Unresolved / new findings
 

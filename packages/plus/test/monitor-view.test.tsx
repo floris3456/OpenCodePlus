@@ -794,42 +794,58 @@ test("Cache detail labels omitted timings — and keeps a real zero as 0ms", asy
     { timing: { gapMs: 0, lifetimeMs: 0, warming: "off" }, gap: "Gap since last request: 0ms", lifetime: "Cache lifetime: 0ms" },
     { timing: { gapMs: 420_000, lifetimeMs: 300_000, warming: "off" }, gap: "Gap since last request: 7m", lifetime: "Cache lifetime: 5m" },
   ]
-  for (const item of cases) {
-    const { fixture } = await render(db, {
-      width: 120,
-      height: 40,
-      settings: { ...defaultSettings, tab: "cache" },
-      customReport: () => ({
-        ...base,
-        detail: { ...base.detail!, timing: item.timing },
-      }),
-    })
-    try {
-      // Drill into the first request to open the detail.
-      await fixture.waitForFrame((text) => text.includes("[MISS]") || text.includes("[COLD]"))
-      dispatch(fixture, "return")
-      const frame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
-      expect(frame).toContain(item.gap)
-      expect(frame).toContain(item.lifetime)
-    } finally {
-      fixture.destroy()
+  for (const width of [80, 160]) {
+    for (const item of cases) {
+      const { fixture } = await render(db, {
+        width,
+        height: 40,
+        settings: { ...defaultSettings, tab: "cache" },
+        customReport: () => ({
+          ...base,
+          detail: { ...base.detail!, timing: item.timing },
+        }),
+      })
+      try {
+        // Drill into the first request to open the detail.
+        await fixture.waitForFrame((text) => text.includes("[MISS]") || text.includes("[COLD]"))
+        dispatch(fixture, "return")
+        const frame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
+        expect(frame).toContain(item.gap)
+        expect(frame).toContain(item.lifetime)
+        frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
+      } finally {
+        fixture.destroy()
+      }
     }
   }
 })
 
-test("a step with no earlier request says so instead of claiming an identical prefix", async () => {
+test("Steps detail is honest about duration and a missing/empty fingerprint diff", async () => {
   const db = await seeded()
   const base = contractFixtureReport(NOW)
-  const first = base.requests![0]!
-  const { fixture } = await render(db, {
-    width: 120,
-    height: 40,
-    settings: { ...defaultSettings, tab: "steps" },
-    customReport: () => ({
-      ...base,
-      requests: [first],
+  const step = base.requests!.find((entry) => entry.kind === "step")!
+  const cases: {
+    name: string
+    request: Plus.MonitorRequest
+    detail: Plus.MonitorRequestDetail
+    list: string
+    expect: string[]
+    absent: string[]
+  }[] = [
+    {
+      name: "missing duration and no earlier request",
+      request: { ...step, durationMs: undefined } as unknown as Plus.MonitorRequest,
+      detail: { request: step, lines: [], segments: [], timing: { warming: "off" }, pings: [], accounts: [], instructions: [], reverts: [], actualCacheRead: 0 },
+      list: "—",
+      expect: ["No earlier request to compare."],
+      absent: ["Prefix is identical to previous request."],
+    },
+    {
+      name: "existing previous with no fingerprint changes",
+      request: { ...step, durationMs: 0 },
       detail: {
-        request: first,
+        request: step,
+        previous: { id: "req_prev", at: NOW - 420_000 },
         lines: [],
         segments: [],
         timing: { warming: "off" },
@@ -839,16 +855,36 @@ test("a step with no earlier request says so instead of claiming an identical pr
         reverts: [],
         actualCacheRead: 0,
       },
-    }),
-  })
-  try {
-    await fixture.waitForFrame((text) => text.includes("Tools Called"))
-    dispatch(fixture, "return")
-    const frame = await fixture.waitForFrame((text) => text.includes("Step Detail:"))
-    expect(frame).toContain("No earlier request to compare.")
-    expect(frame).not.toContain("Prefix is identical to previous request.")
-  } finally {
-    fixture.destroy()
+      list: "0ms",
+      expect: ["No segment changes recorded."],
+      absent: ["Prefix is identical to previous request."],
+    },
+  ]
+  for (const width of [80, 160]) {
+    for (const item of cases) {
+      const { fixture } = await render(db, {
+        width,
+        height: 40,
+        settings: { ...defaultSettings, tab: "steps" },
+        customReport: () => ({
+          ...base,
+          requests: [item.request],
+          detail: { ...item.detail, request: item.request },
+        }),
+      })
+      try {
+        // The list row shows the duration cell (— omitted, 0ms real zero).
+        const list = await fixture.waitForFrame((text) => /^(Time|Kind)\b/.test(text.split("\n").map((l) => l.trim()).find((l) => /^Time\b/.test(l)) ?? ""))
+        expect(list).toContain(item.list)
+        dispatch(fixture, "return")
+        const frame = await fixture.waitForFrame((text) => text.includes("Step Detail:"))
+        item.expect.forEach((value) => expect(frame).toContain(value))
+        item.absent.forEach((value) => expect(frame).not.toContain(value))
+        frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
+      } finally {
+        fixture.destroy()
+      }
+    }
   }
 })
 
