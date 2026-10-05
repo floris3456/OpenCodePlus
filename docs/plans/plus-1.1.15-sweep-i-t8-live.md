@@ -211,7 +211,33 @@ Pending.
 
 ## L8 — `R` renames a user category
 
-Pending.
+Done: with the cursor on the `SweepCat` category header row (in its own list, first row) pressed
+`shift+r`. The footer hint `shift+r rename` is shown there (and on any row when a user category
+is selected). Dialog:
+
+```
+   Rename category                                      esc
+   The category's rows follow; the home categories never
+   change.
+   SweepCat[ ]
+   enter submit
+```
+
+`Ctrl+A` moved the field cursor to the start (it did not select-and-clear), typing `SweepRenamed`
+prepended, and `Enter` committed the name `SweepRenamedSweepCat`. Record line 2 became:
+
+```
+{"type":"category","level":"global","name":"SweepRenamedSweepCat","order":0,"items":["tool:edit","setting:mode","base:claude","system:role","system:tools-and-rules","mcp:search","model:cliproxyapi/claude-opus-5-5@high","perm:shell:directories.outside","skill:opencode"],"updated":"2026-10-05T16:19:18.905Z"}
+```
+
+`items` and `order` are unchanged; `log.jsonl` gained:
+
+```
+{"ts":"2026-10-05T16:19:18.905Z","actor":{"type":"tui"},"op":"category","target":"category:sweeprenamedsweepcat","summary":"Renamed category to \"SweepRenamedSweepCat\"","revision":503}
+```
+
+The tab row updated to the new name and the rows followed (the list still holds all 8).
+PASS.
 
 ## L9 — `d` deletes after confirmation; its rows go home; empty category text
 
