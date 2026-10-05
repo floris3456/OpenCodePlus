@@ -15,8 +15,31 @@ claims, and no old `attempt1done` is treated as acceptance.
 - Base commit: `b6835471ee1b6b088d717ebff565d345c4da430f`
 - Commits: `bbb0da353e` (source + tests) then receipt-correction commits at HEAD
 - Owned PTY sessions: `continuation-category`, `continuation-category2`,
-  `continuation-category3`, `continuation-category4`
+  `continuation-category3`, `continuation-category4`, `continuation-provenance`
 - Shared service port 40375: untouched.
+
+### Source/build provenance of the observed screen
+
+Every live observation above ran the candidate source in this worktree, not the
+installed `2.0.18-plus-1.1.14` release:
+
+- `opencodeplus-dev .` runs this worktree's `packages/cli/src/index.ts`; the
+  owned server PID's actual `cmdline` was
+  `…/t1078072-20261005-0930/packages/cli/src/index.ts serve --stdio --port 0`.
+- `@opencode/plus` resolves from this worktree to
+  `…/t1078072-20261005-0930/packages/plus/src/index.ts` (verified with
+  `bun -e 'require.resolve("@opencode/plus")'` from `packages/core`), i.e. the
+  candidate `packages/plus/src` in this worktree, not the immutable release.
+- The live `a` dialog listed `Model` and `Category` (the candidate
+  `dialogs.tsx` change), which the installed release does not implement.
+- The only other worktree source PIDs are the owned `packages/plus/src/search/bin.ts`
+  children; the immutable `2.0.18-plus-1.1.14` `opencodeplus search-mcp` and the
+  other-run PTYs are not part of this build.
+
+A fresh `continuation-provenance` session at HEAD `47cb20c748` re-opened
+`Project › Agents › OpenCode › build › Models` and `a` again showed
+`Add / [S]elect what to add / Model / Category`, binding the observed behavior
+to the candidate source.
 
 ## Owned test home
 
@@ -161,12 +184,13 @@ Spawned owned TUI via `pilotty spawn --name continuation-category opencodeplus-d
   unrelated: PID `3650531` is an immutable `opencodeplus search-mcp` release
   binary, and the `continuation-real-cache` PTY belongs to another run; both
   were left untouched.
-- Final server log `opencode-local.log` after all four owned PTYs (the three
-  routing PTYs plus the reachability PTY): **840 lines / 816 INFO / 24 WARN / 0
-  ERROR**. All 24 WARN lines are the expected `executor-controlled plugin
-  source refused` notices (`/home/bliss/OpenCodePlus/.opencode` and the
-  worktree `.opencode`); no ERROR line was recorded. (`continuation-real-cache`
-  and `continuation-fields` remain owned by other runs and were untouched.)
+- Final server log `opencode-local.log` after all five owned PTYs (the three
+  routing PTYs, the reachability PTY and the provenance PTY): **1046 lines /
+  1016 INFO / 30 WARN / 0 ERROR**. All 30 WARN lines are the expected
+  `executor-controlled plugin source refused` notice (the worktree and
+  `/home/bliss/OpenCodePlus/.opencode` sources); no ERROR line was recorded.
+  (`continuation-real-cache` and `continuation-fields` remain owned by other
+  runs and were untouched.)
 
 ## Scope
 
