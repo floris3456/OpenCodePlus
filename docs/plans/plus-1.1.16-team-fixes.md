@@ -523,6 +523,16 @@ The Simple team's rules changed the same day (Instructions revisions
    interval (`WarmingStatus` `active`, `expires`, `lastWarm`, `interval` in
    `packages/plus/src/rpc.ts`). If no warming is enabled for the child's model,
    it always counts as warm.
+   - **Today a stop ends warming at once:** Plus refuses warming for a
+     stopping, stopped, dead, superseded or reaped run (`decideWarmingFor`,
+     `packages/plus/src/index.ts:3197-3207`).
+   - The stop does not unload the run's workspace. Core unloads a workspace
+     after 60 idle minutes (`core/src/location-activity.ts:25`).
+   - So today a stopped child stays warm only while its last request is younger
+     than the provider's cache lifetime.
+   - **Proposed (open question below):** a stopped run keeps warming for one
+     more warming window (until `expires`), so a followup soon after a stop
+     finds the cache warm.
 2. **A warm child takes a followup after a stop:** `E_STOPPED` applies only to
    a cold child. A warm stopped child resumes like an idle one, with its
    context and its cache.
@@ -566,6 +576,8 @@ would make a nudge reach a child that sits in one long turn within a minute.
 
 - Item 8: should a followup to a working child arrive at its next step
   (steered) instead of at the end of its turn?
+- Item 8: should a stopped run keep warming for one more window, or should a
+  stop end warming at once, as today?
 
 Settled on 2026-10-05:
 - "cache input" means cache writes (item 2).
