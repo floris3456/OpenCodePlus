@@ -3,7 +3,7 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Session } from "@opencode/schema/session"
-import { Effect, Scope, Stream } from "effect"
+import { Effect, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/paths.js"
 import type { MonitorMark, MonitorQueryInput, MonitorReport } from "../rpc.js"
@@ -131,7 +131,12 @@ export function watchMonitor(
         })
 
         const l = open()
-        l.session({ id: sessionID, agent, directory: ctx.location.directory }, started)
+        // Only a primary request's agent is the chat's shown agent; a title or
+        // throwaway generate call shares the session but must not rewrite it.
+        l.session(
+          { id: sessionID, ...(kind === "step" ? { agent } : {}), directory: ctx.location.directory },
+          started,
+        )
         l.requestStarted({
           id: requestID,
           sessionID,
@@ -177,7 +182,10 @@ export function watchMonitor(
         })
 
         const l = open()
-        l.session({ id: sessionID, agent, directory: ctx.location.directory }, started)
+        l.session(
+          { id: sessionID, ...(kind === "step" ? { agent } : {}), directory: ctx.location.directory },
+          started,
+        )
         l.requestStarted({
           id: requestID,
           sessionID,
@@ -254,7 +262,9 @@ export function watchMonitor(
         const l = open()
         const kind = event.kind ?? "generate"
         const at = event.ended ?? Date.now()
-        l.session({ id: sessionID, agent: String(event.agent), directory: ctx.location.directory }, at)
+        // A generate or title outcome is auxiliary: it must never rewrite the
+        // chat's shown agent with the side call's identity.
+        l.session({ id: sessionID, directory: ctx.location.directory }, at)
         const usage = event.usage
           ? {
               input: event.usage.input,
@@ -326,7 +336,60 @@ export async function monitorQuery(ctx: Context, input: MonitorQueryInput, ledge
     union select s.id, i.team from session s join inherited i on s.parent_id = i.id where s.team is null
   ) update session set team = (select team from inherited where inherited.id = session.id)
     where team is null and id in (select id from inherited)`)
-  return queryMonitor(ledger, input, { directory: ctx.location.directory })
+  const facts = input.view === "sessions" ? await hostSessionFacts(ctx, ledger) : undefined
+  return queryMonitor(ledger, input, {
+    directory: ctx.location.directory,
+    ...(facts === undefined ? {} : { states: facts.states, agents: facts.agents }),
+  })
+}
+
+interface HostSessionFacts {
+  readonly states: ReadonlyMap<string, string>
+  readonly agents: ReadonlyMap<string, string>
+}
+
+// Real per-session state and agent, derived at query time from the host with the
+// ledger as fallback, never persisted. A session's state is "running" when the
+// host reports it active, else the last execution's recorded outcome; its agent
+// comes from the host's session info, because a title or generate call's
+// identity must not overwrite the chat's shown primary agent.
+async function hostSessionFacts(ctx: Context, ledger: Ledger): Promise<HostSessionFacts> {
+  const ids = ledger.db.query<{ id: string }, []>("select id from session").all().map((row) => row.id)
+  const states = new Map<string, string>()
+  const agents = new Map<string, string>()
+  // A session is running while the host reports it active, or—on a host that
+  // does not expose the live set—while it has an open request of its own. Both
+  // are current facts and must beat the last completed execution's outcome.
+  const active = activeSessions(ctx)
+  if (active) {
+    const running = await Effect.runPromise(active).catch(() => undefined)
+    for (const id of Object.keys(running ?? {})) states.set(id, "running")
+  }
+  for (const id of ids) {
+    if (!states.has(id) && ledger.getRequests(id).some((row) => row.ended === undefined)) states.set(id, "running")
+  }
+  // The outcome vocabulary is the host's; show its meaning plainly.
+  const label = (outcome: string) =>
+    outcome === "succeeded" ? "completed" : outcome === "failed" ? "error" : outcome
+  await Promise.all(
+    ids.map(async (id) => {
+      // Ledger session ids can pre-date host validation; only a well-formed one
+      // is looked up in the host.
+      const decoded = Schema.decodeUnknownOption(Session.ID)(id)
+      if (Option.isNone(decoded)) return
+      const info = await Effect.runPromise(ctx.session.get({ sessionID: decoded.value })).catch(() => undefined)
+      if (info?.agent !== undefined) agents.set(id, String(info.agent))
+      if (!states.has(id) && info?.outcome !== undefined) states.set(id, label(info.outcome))
+    }),
+  )
+  return { states, agents }
+}
+
+// The host's live active set is a later host capability; a build without it
+// reports no states through this seam rather than guessing.
+function activeSessions(ctx: Context): Effect.Effect<Record<string, { readonly type: string }>> | undefined {
+  const active = (ctx.session as { active?: () => Effect.Effect<Record<string, { readonly type: string }>> }).active
+  return typeof active === "function" ? active.call(ctx.session) : undefined
 }
 
 export function monitorMark(label: string, ledger: Ledger = ledgerAt()): MonitorMark {

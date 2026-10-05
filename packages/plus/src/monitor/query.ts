@@ -34,6 +34,14 @@ export interface QueryContext {
   /** The Location's directory, for project scope. */
   readonly directory?: string
   readonly now?: number
+  /**
+   * Real per-session state from the host: "running" from the live active set,
+   * otherwise the last execution's outcome (succeeded/failed/interrupted). A
+   * session absent from the map has no recorded execution state.
+   */
+  readonly states?: ReadonlyMap<string, string>
+  /** Real per-session agent from the host, overriding the ledger's last write. */
+  readonly agents?: ReadonlyMap<string, string>
 }
 
 type Bindings = Record<string, string | number | null>
@@ -54,10 +62,18 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   const read = (target: Window) => {
     const groups = groupsOf(db, input, context, target, group)
     const totals = totalsOf(db, input, context, target, groups)
-    return {
-      totals: { ...totals, ...(target === window ? requests.totals : requestReport(ledger, input, context, target).totals), steps: totals.steps },
-      groups: groups.slice(0, top).map((entry) => entry.group),
+    const analysis = target === window ? requests.totals : requestReport(ledger, input, context, target).totals
+    // Unknown pricing is omitted everywhere, never merged to a free zero: the
+    // baseline zero is dropped unless the request analysis supplies a cost.
+    const { missCost: _baseline, ...baseline } = totals
+    const { missCost, ...analysisRest } = analysis
+    const merged: MonitorTotals = {
+      ...baseline,
+      ...analysisRest,
+      steps: totals.steps,
+      ...(missCost === undefined ? {} : { missCost }),
     }
+    return { totals: merged, groups: groups.slice(0, top).map((entry) => entry.group) }
   }
   return {
     now,

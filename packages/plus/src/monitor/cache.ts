@@ -94,9 +94,66 @@ function segments(fp: RequestFingerprintData): Segment[] {
   ]
 }
 
+// The cache-breakpoint message boundary named by the wire body's markers. The
+// part of a request up to (and including) this message is the reusable prefix
+// the provider was told to cache; whatever follows is the uncached tail.
+function markedMessageBoundary(fp: RequestFingerprintData): number {
+  let max = -1
+  for (const marker of fp.cacheControl ?? []) {
+    const match = /messages\[(\d+)\]/.exec(marker.target)
+    if (match) max = Math.max(max, Number(match[1]))
+  }
+  return max
+}
+
+function messageIndex(name: string): number | undefined {
+  const match = /^message (\d+) /.exec(name)
+  return match ? Number(match[1]) - 1 : undefined
+}
+
+function hasSegment(list: Segment[], part: Segment): boolean {
+  return list.some((entry) => entry.name === part.name && entry.hash === part.hash)
+}
+
+// Cache-control markers and prompt-cache key that belong to the reusable
+// prefix (non-message markers and messages at or before the boundary). A
+// change to these is a real cache-prefix change; the tail's own markers are
+// replaced with the tail and must not be counted.
+function reusableMarkerSignature(fp: RequestFingerprintData, boundary: number): string {
+  const relevant = (fp.cacheControl ?? []).filter((marker) => {
+    const match = /messages\[(\d+)\]/.exec(marker.target)
+    return match === null || Number(match[1]) <= boundary
+  })
+  return canonicalJson([fp.cacheKey ?? null, relevant])
+}
+
+// Everything the provider caches: non-message parts except the aggregate marker
+// segment, and messages at or before the last common breakpoint. The reusable
+// marker metadata is compared separately so a marker change is never masked.
+function reusablePrefixEqual(a: Segment[], b: Segment[], boundary: number): boolean {
+  const keep = (part: Segment) => {
+    const index = messageIndex(part.name)
+    if (index !== undefined) return index <= boundary
+    return part.name !== "cache markers"
+  }
+  const ap = a.filter(keep)
+  const bp = b.filter(keep)
+  return ap.length === bp.length && ap.every((part, index) => part.name === bp[index]!.name && part.hash === bp[index]!.hash)
+}
+
+function tokensThroughBoundary(a: Segment[], boundary: number): number {
+  let total = 0
+  for (const part of a) {
+    const index = messageIndex(part.name)
+    if (index !== undefined && index > boundary) break
+    total += part.tokens
+  }
+  return total
+}
+
 export function prefixDiff(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined) {
   if (!before || !after) {
-    return { known: false, append: false, common: 0, changes: [] as MonitorRequestDetail["segments"] }
+    return { known: false, append: false, reusable: false, common: 0, changes: [] as MonitorRequestDetail["segments"] }
   }
   const aInfo = getSegmentInfo(before)
   const bInfo = getSegmentInfo(after)
@@ -104,7 +161,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
   const b = bInfo.segments
 
   if (before.previousResponseId && !after.previousResponseId) {
-    return { known: true, append: false, common: 0, changes: [{
+    return { known: true, append: false, reusable: false, common: 0, changes: [{
       name: "previous_response_id", kind: "marker" as const, change: "removed" as const,
       before: { hash: before.previousResponseId, chars: 0, tokens: 0 },
     }] }
@@ -115,13 +172,42 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
       const prefix = a.filter((part) => part.kind !== "message")
       const next = b.filter((part) => part.kind !== "message")
       if (prefix.length === next.length && prefix.every((part, index) => part.name === next[index]?.name && part.hash === next[index]?.hash))
-        return { known: true, append: true, common: aInfo.totalTokens, changes: [] }
+        return { known: true, append: true, reusable: true, common: aInfo.totalTokens, changes: [] }
     } else {
-      return { known: true, append: false, common: 0, changes: [{
+      return { known: true, append: false, reusable: false, common: 0, changes: [{
         name: "previous_response_id", kind: "marker" as const, change: "changed" as const,
         ...(before.previousResponseId ? { before: { hash: before.previousResponseId, chars: 0, tokens: 0 } } : {}),
         after: { hash: after.previousResponseId, chars: 0, tokens: 0 },
       }] }
+    }
+  }
+
+  // #13: a warming ping appends a private prompt after the history's last cache
+  // breakpoint; the next real step replaces that uncached tail with its own
+  // user input. When only the tail past the marked boundary differs, the
+  // reusable prefix is unchanged and this is not a certain prefix change.
+  if (before.protocol === "anthropic-messages" && after.protocol === "anthropic-messages") {
+    const boundary = Math.min(markedMessageBoundary(before), markedMessageBoundary(after))
+    if (boundary >= 0) {
+      const tailChanged =
+        a.some((part) => {
+          const index = messageIndex(part.name)
+          return index !== undefined && index > boundary && !hasSegment(b, part)
+        }) ||
+        b.some((part) => {
+          const index = messageIndex(part.name)
+          return index !== undefined && index > boundary && !hasSegment(a, part)
+        })
+      const markersEqual = reusableMarkerSignature(before, boundary) === reusableMarkerSignature(after, boundary)
+      if (tailChanged && markersEqual && reusablePrefixEqual(a, b, boundary)) {
+        return {
+          known: true,
+          append: false,
+          reusable: true,
+          common: tokensThroughBoundary(a, boundary),
+          changes: [],
+        }
+      }
     }
   }
 
@@ -146,6 +232,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
     return {
       known: true,
       append: true,
+      reusable: true,
       common: aInfo.totalTokens,
       changes,
     }
@@ -191,6 +278,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
   return {
     known: true,
     append: false,
+    reusable: false,
     common,
     changes,
   }
@@ -226,7 +314,12 @@ function diffStep(
     ? undefined
     : diff.append && previous && promptTokens(previous) > 0
       ? promptTokens(previous)
-      : diff.common
+      : // A reused prefix measured by the earlier request's actual cache read is
+        // the honest size when its uncached tail (a ping's private prompt) was
+        // replaced: the provider cached exactly that much.
+        diff.reusable && previous && previous.cacheReadTokens > 0
+        ? previous.cacheReadTokens
+        : diff.common
   return { diff, expected }
 }
 
@@ -246,25 +339,24 @@ function timingStep(
   fp: RequestFingerprintData | undefined,
   facts: readonly ContextFactRow[],
   previous: RequestRow | undefined,
-  previousAppend: boolean,
 ): TimingStep {
   const pings = earlier.slice(lastRealIndex + 1).filter((p) => p.kind === "ping")
+  // Only a genuinely completed, successful request of the same provider, model,
+  // variant and agent can have refreshed the reusable prefix. A running
+  // (unfinished) or error ping, or one under a different identity, cannot.
+  const healthyCompatible = (p: RequestRow) =>
+    p.status === "completed" &&
+    p.ended !== undefined &&
+    p.provider === r.provider &&
+    p.model === r.model &&
+    p.variant === r.variant &&
+    p.agent === r.agent
   const goodPing =
     pings.length > 0
-      ? pings.findLast(
-          (p) => p.status !== "error" && p.cacheReadTokens > 0 && prefixDiff(fingerprints.get(p.id), fp).append,
-        )
+      ? pings.findLast((p) => healthyCompatible(p) && p.cacheReadTokens > 0 && prefixDiff(fingerprints.get(p.id), fp).reusable)
       : undefined
-  const refreshed =
-    previous && previous.status !== "error" && previousAppend
-      ? previous
-      : earlier.findLast(
-          (p) =>
-            p.status !== "error" &&
-            p.provider === r.provider &&
-            p.model === r.model &&
-            prefixDiff(fingerprints.get(p.id), fp).append,
-        )
+  const refreshes = (p: RequestRow) => healthyCompatible(p) && prefixDiff(fingerprints.get(p.id), fp).reusable
+  const refreshed = previous && refreshes(previous) ? previous : earlier.findLast(refreshes)
   const gap = previous
     ? r.started - Math.max(refreshed?.started ?? previous.started, goodPing?.started ?? 0)
     : undefined
@@ -360,7 +452,7 @@ function causeStep(
         : diff.changes.length
           ? "prefix-changed"
           : !cold &&
-              diff.append &&
+              diff.reusable &&
               timing.gap !== undefined &&
               timing.lifetime !== undefined &&
               timing.gap > timing.lifetime
@@ -424,14 +516,61 @@ function costStep(
   return { missing, missCost }
 }
 
-export function analyzeSession(ledger: Ledger, rows: readonly RequestRow[], facts: readonly ContextFactRow[]) {
+export interface UnstableStreak {
+  readonly segment: string
+  readonly streak: number
+  readonly at: number
+  readonly requestID: string
+  readonly agent?: string
+  readonly provider?: string
+  readonly model?: string
+}
+
+export interface SessionAnalysis {
+  readonly details: MonitorRequestDetail[]
+  readonly unstable: readonly UnstableStreak[]
+  readonly fingerprints: Map<string, RequestFingerprintData | undefined>
+  readonly writes: readonly UnreadWrite[]
+  readonly reads: readonly UnreadRead[]
+}
+
+interface UnreadWrite {
+  readonly at: number
+  readonly tokens: number
+  readonly cacheRead: number
+  readonly lifetime: number
+  readonly provider: string | undefined
+  readonly model: string | undefined
+  readonly agent: string | undefined
+  readonly isTitle: boolean
+  readonly fp: RequestFingerprintData | undefined
+}
+
+interface UnreadRead {
+  readonly at: number
+  readonly cacheRead: number
+  readonly provider: string | undefined
+  readonly model: string | undefined
+  readonly agent: string | undefined
+  readonly isTitle: boolean
+  readonly fp: RequestFingerprintData | undefined
+}
+
+// The analysis is a pure fold of the session's rows and facts; it never depends
+// on the query window, so it can be cached on the ledger revision alone and the
+// windowed signals below are applied at report time.
+export function analyzeSession(
+  ledger: Ledger,
+  rows: readonly RequestRow[],
+  facts: readonly ContextFactRow[],
+): SessionAnalysis {
   const sessionFps = rows[0] ? ledger.getFingerprints(rows[0].sessionID) : []
   const fingerprints = sessionFps.length
     ? new Map(sessionFps.map((fp) => [fp.requestID, fp]))
     : new Map(rows.map((r) => [r.id, ledger.getFingerprint(r.id)]))
   const details: MonitorRequestDetail[] = []
   const streaks = new Map<string, number>()
-  const unstable = new Map<string, number>()
+  const unstable: UnstableStreak[] = []
   const earlier: RequestRow[] = []
 
   for (const r of rows) {
@@ -449,7 +588,7 @@ export function analyzeSession(ledger: Ledger, rows: readonly RequestRow[], fact
     const { diff, expected } = diffStep(previous, previous ? fingerprints.get(previous.id) : undefined, fp)
 
     // 2. Timing: compute gap, cache lifetime, pings and warming status
-    const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, facts, previous, diff.append)
+    const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, facts, previous)
 
     // 3. Cause: determine cache verdict, root cause, confidence and evidence
     const cause = causeStep(r, previous, last, earlier, between, diff, expected, timing)
@@ -490,7 +629,7 @@ export function analyzeSession(ledger: Ledger, rows: readonly RequestRow[], fact
 
     const lines = [
       request.evidence ?? cause.evidence,
-      `Expected reusable prefix: ${expected ?? "unknown"} tokens (${diff.append ? "previous real prompt usage" : "segment-size estimate"}); actual cache read: ${r.cacheReadTokens}`,
+      `Expected reusable prefix: ${expected ?? "unknown"} tokens (${diff.append ? "previous real prompt usage" : diff.reusable ? "measured through the marked cache boundary" : "segment-size estimate"}); actual cache read: ${r.cacheReadTokens}`,
       `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
       `Gap ${timing.gap ?? "unknown"}ms; lifetime ${timing.lifetime ?? "unknown"}ms; warming ${timing.warming ?? "not recorded"}`,
       cost.missCost === undefined
@@ -538,7 +677,17 @@ export function analyzeSession(ledger: Ledger, rows: readonly RequestRow[], fact
         for (const name of new Set([...streaks.keys(), ...changed])) {
           const count = changed.has(name) ? (streaks.get(name) ?? 0) + 1 : 0
           streaks.set(name, count)
-          if (count >= 3) unstable.set(name, count)
+          if (count >= 3) {
+            unstable.push({
+              segment: name,
+              streak: count,
+              at: r.started,
+              requestID: r.id,
+              ...(r.agent === undefined ? {} : { agent: r.agent }),
+              ...(r.provider === undefined ? {} : { provider: r.provider }),
+              ...(r.model === undefined ? {} : { model: r.model }),
+            })
+          }
         }
       }
     }
@@ -546,54 +695,141 @@ export function analyzeSession(ledger: Ledger, rows: readonly RequestRow[], fact
     earlier.push(r)
   }
 
-  const qualifying = rows.filter((r) => r.cacheWriteTokens > 0)
-  let unread = 0
-  for (const r of qualifying) {
+  // Unread writes and the reads that may clear them, as plain data. The report
+  // applies the as-of cutoff: a write enters only once its lifetime has passed
+  // by the cutoff, and only a read at or before the cutoff can clear it, so a
+  // later request cannot retroactively change a historical report.
+  const writes: UnreadWrite[] = []
+  for (const r of rows) {
+    if (r.cacheWriteTokens <= 0) continue
     const fp = fingerprints.get(r.id)
     const lifetime = cacheLifetime(r, fp)
     if (lifetime === undefined) continue
-    let maxRead = 0
-    for (const later of rows) {
-      if (later.started <= r.started) continue
-      if (later.started > r.started + lifetime) break
-      if (later.cacheReadTokens <= 0 || later.provider !== r.provider || later.model !== r.model) continue
-      if (prefixDiff(fp, fingerprints.get(later.id)).append) {
-        const read = later.cacheReadTokens - r.cacheReadTokens
-        if (read > maxRead) maxRead = read
-        if (maxRead >= r.cacheWriteTokens) break
-      }
-    }
-    unread += Math.max(0, r.cacheWriteTokens - maxRead)
+    writes.push({
+      at: r.started,
+      tokens: r.cacheWriteTokens,
+      cacheRead: r.cacheReadTokens,
+      lifetime,
+      provider: r.provider,
+      model: r.model,
+      agent: r.agent,
+      isTitle: r.isTitle,
+      fp,
+    })
   }
 
-  const pingRows = rows.filter((r) => r.kind === "ping")
-  let pingsFollowedByHit = 0
-  let pingsFollowedByMiss = 0
-  let pingCost = 0
-  for (const p of pingRows) {
-    pingCost += p.cost
-    const next = rows.find((r) => r.started > p.started && r.kind !== "ping" && !r.isTitle)
-    if (next) {
-      const nextDetail = details.find((d) => d.request.id === next.id)
-      if (nextDetail?.request.verdict === "hit") pingsFollowedByHit++
-      else if (nextDetail && isMiss(nextDetail.request)) pingsFollowedByMiss++
-    }
+  const reads: UnreadRead[] = []
+  for (const r of rows) {
+    if (r.cacheReadTokens <= 0) continue
+    reads.push({
+      at: r.started,
+      cacheRead: r.cacheReadTokens,
+      provider: r.provider,
+      model: r.model,
+      agent: r.agent,
+      isTitle: r.isTitle,
+      fp: fingerprints.get(r.id),
+    })
   }
 
   return {
     details,
-    unstable: [...unstable].map(([segment, streak]) => ({
-      sessionID: rows[0]!.sessionID,
-      segment,
-      streak,
-    })),
+    unstable,
     fingerprints,
+    writes,
+    reads,
+  }
+}
+
+export interface WindowedPings {
+  readonly sent: number
+  readonly cost: number
+  readonly followedByHit: number
+  readonly followedByMiss: number
+}
+
+// Windowed signals over a cached session analysis: which pings this window sent
+// and whether the next request inside the window hit; and how many written
+// tokens were never read before expiry by the as-of cutoff. Agent and model
+// selections only count a ping or write whose own request matches them, so a
+// filtered query never reports another identity's signal.
+export function windowedSessionSignals(
+  analysis: SessionAnalysis,
+  window: { since: number; until: number },
+  filter: { readonly agents?: readonly string[]; readonly models?: readonly string[]; readonly titles?: boolean } = {},
+): {
+  readonly unread: number
+  readonly unstable: readonly { readonly segment: string; readonly streak: number }[]
+  readonly pings: WindowedPings
+} {
+  const selectedModel = (provider: string | undefined, model: string | undefined) =>
+    !filter.models?.length || filter.models.includes(`${provider ?? ""}/${model ?? ""}`)
+  const selectedAgent = (agent: string | undefined) => !filter.agents?.length || filter.agents.includes(agent ?? "")
+  // Titles are excluded unless asked for: an auxiliary title's writes and reads
+  // must not inject unread counts for the main conversation.
+  const included = (isTitle: boolean) => filter.titles === true || !isTitle
+  let unread = 0
+  for (const write of analysis.writes) {
+    if (write.at < window.since || write.at >= window.until) continue
+    if (!included(write.isTitle)) continue
+    if (!selectedModel(write.provider, write.model) || !selectedAgent(write.agent)) continue
+    // Not yet expired by the cutoff: it may still be read, so it is not unread.
+    if (write.at + write.lifetime > window.until) continue
+    let maxRead = 0
+    for (const read of analysis.reads) {
+      if (read.at <= write.at || read.at > write.at + write.lifetime) continue
+      if (read.at >= window.until) break
+      if (!included(read.isTitle)) continue
+      if (read.provider !== write.provider || read.model !== write.model) continue
+      if (prefixDiff(write.fp, read.fp).reusable) {
+        const gained = read.cacheRead - write.cacheRead
+        if (gained > maxRead) maxRead = gained
+        if (maxRead >= write.tokens) break
+      }
+    }
+    unread += Math.max(0, write.tokens - maxRead)
+  }
+
+  const inWindow = analysis.details.filter(
+    (d) =>
+      d.request.at >= window.since &&
+      d.request.at < window.until &&
+      (filter.titles === true || d.request.kind !== "title") &&
+      selectedModel(d.request.provider, d.request.model) &&
+      selectedAgent(d.request.agent),
+  )
+  const pings = inWindow.filter((d) => d.request.kind === "ping")
+  let followedByHit = 0
+  let followedByMiss = 0
+  let cost = 0
+  for (const ping of pings) {
+    cost += ping.request.cost
+    // Only a next request inside this window under the same selection describes
+    // the ping's effect; an excluded request belongs to another query.
+    const next = inWindow.find(
+      (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
+    )
+    if (next?.request.verdict === "hit") followedByHit++
+    else if (next && isMiss(next.request)) followedByMiss++
+  }
+
+  // Unstable prefix: a segment changing on 3+ consecutive requests.
+  // We retain each qualifying request's streak and identity, and for each
+  // segment select the latest matching entry inside the selected window,
+  // so future requests cannot overwrite or erase historical streaks.
+  const latestUnstable = new Map<string, { segment: string; streak: number; at: number }>()
+  for (const entry of analysis.unstable) {
+    if (entry.at < window.since || entry.at >= window.until) continue
+    if (!selectedModel(entry.provider, entry.model) || !selectedAgent(entry.agent)) continue
+    const existing = latestUnstable.get(entry.segment)
+    if (!existing || entry.at >= existing.at) {
+      latestUnstable.set(entry.segment, { segment: entry.segment, streak: entry.streak, at: entry.at })
+    }
+  }
+
+  return {
     unread,
-    pings: {
-      sent: pingRows.length,
-      cost: pingCost,
-      followedByHit: pingsFollowedByHit,
-      followedByMiss: pingsFollowedByMiss,
-    },
+    unstable: [...latestUnstable.values()].map((entry) => ({ segment: entry.segment, streak: entry.streak })),
+    pings: { sent: pings.length, cost, followedByHit, followedByMiss },
   }
 }

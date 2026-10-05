@@ -1,5 +1,5 @@
 import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorSessionRow, MonitorTotals } from "../rpc.js"
-import { analyzeSession, cacheLifetime, isMiss, prefixDiff, promptTokens } from "./cache.js"
+import { analyzeSession, isMiss, prefixDiff, promptTokens, windowedSessionSignals, type SessionAnalysis } from "./cache.js"
 import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
 
@@ -15,6 +15,7 @@ interface SessionRow {
 }
 
 interface LegacyStep {
+  session_id: string
   started: number
   agent: string | null
   provider: string | null
@@ -29,12 +30,16 @@ interface LegacyStep {
 
 interface CachedSessionAnalysis {
   readonly revision: string
-  readonly analysis: ReturnType<typeof analyzeSession>
+  readonly analysis: SessionAnalysis
 }
 
 const sessionAnalysisCache = new WeakMap<Ledger, Map<string, CachedSessionAnalysis>>()
-
-function getSessionAnalysis(ledger: Ledger, id: string, rows: readonly RequestRow[], facts: readonly ContextFactRow[]) {
+function getSessionAnalysis(
+  ledger: Ledger,
+  id: string,
+  rows: readonly RequestRow[],
+  facts: readonly ContextFactRow[],
+): SessionAnalysis {
   let cache = sessionAnalysisCache.get(ledger)
   if (!cache) {
     cache = new Map()
@@ -45,7 +50,8 @@ function getSessionAnalysis(ledger: Ledger, id: string, rows: readonly RequestRo
   // wire fingerprint, a kind relabel) that leave row ids and fact timestamps
   // unchanged. Key on the ledger's change revision, which covers writes from
   // this handle and from another connection or process on the same file, so
-  // none of them is masked.
+  // none of them is masked. The analysis never depends on the query window, so
+  // it stays reusable across window changes and polling.
   const revision = ledger.revision()
   const cached = cache.get(id)
   if (cached && cached.revision === revision) return cached.analysis
@@ -94,7 +100,7 @@ export function requestReport(
   if (hasLegacySteps > 0) {
     const rawLegacy = ledger.db
       .query<
-        LegacyStep & { session_id: string },
+        LegacyStep,
         [typeof scope.bindings]
       >(`${scope.cte} select s.* from step s where not exists (select 1 from request r where r.session_id = s.session_id and r.message_id = s.message_id) ${scope.cte ? "and s.session_id in (select id from scope)" : ""}`)
       .all(scope.bindings)
@@ -119,6 +125,11 @@ export function requestReport(
         (!input.models?.length || input.models.includes(`${s.provider}/${s.model}`)),
     )
     const analysis = getSessionAnalysis(ledger, id, rows, facts)
+    const signals = windowedSessionSignals(
+      analysis,
+      { since, until: window.until },
+      { agents: input.agents, models: input.models, titles: input.titles },
+    )
     const details = analysis.details.filter(
       (d) =>
         d.request.at >= since &&
@@ -137,10 +148,10 @@ export function requestReport(
       rows,
       details,
       legacy,
-      unstable: analysis.unstable,
+      unstable: signals.unstable.map((entry) => ({ ...entry, sessionID: id })),
       fingerprints: analysis.fingerprints,
-      unread: analysis.unread,
-      pings: analysis.pings,
+      unread: signals.unread,
+      pings: signals.pings,
       context: {
         sessionID: id,
         now: current ? promptTokens(current) : 0,
@@ -199,7 +210,6 @@ export function requestReport(
   const legacy = analyses.flatMap((a) => a.legacy)
   const legacyTotal = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
     legacy.reduce((n, s) => n + s[key], 0)
-
   const totals: Partial<MonitorTotals> = {
     ...(requests.length ? totalsFor(requests) : { requests: 0, hitRate: 0, misses: 0 }),
     pings: pingRows.length,
@@ -364,37 +374,57 @@ export function requestReport(
         cacheRead: number
         cacheWrite: number
         output: number
+        reasoning: number
         cost: number
         lastActive: number
       }
     >()
-    for (let i = 0; i < requests.length; i++) {
-      const r = requests[i]!
-      const key = `${r.agent ?? "?"}\0${r.provider ?? ""}/${r.model ?? ""}`
+    const agentEntry = (agent: string, provider: string, model: string) => {
+      const key = `${agent}\0${provider}/${model}`
       let entry = agentMap.get(key)
       if (!entry) {
         entry = {
-          agent: r.agent ?? "?",
-          model: `${r.provider ?? ""}/${r.model ?? ""}`,
+          agent,
+          model: `${provider}/${model}`,
           steps: 0,
           misses: 0,
           input: 0,
           cacheRead: 0,
           cacheWrite: 0,
           output: 0,
+          reasoning: 0,
           cost: 0,
           lastActive: 0,
         }
         agentMap.set(key, entry)
       }
+      return entry
+    }
+    for (let i = 0; i < requests.length; i++) {
+      const r = requests[i]!
+      const entry = agentEntry(r.agent ?? "?", r.provider ?? "", r.model ?? "")
       if (r.kind === "step") entry.steps++
       if (isMiss(r)) entry.misses++
       entry.input += r.input
       entry.cacheRead += r.cacheRead
       entry.cacheWrite += r.cacheWrite
       entry.output += r.output
+      entry.reasoning += r.reasoning
       entry.cost += r.cost
       if (r.at > entry.lastActive) entry.lastActive = r.at
+    }
+    // v1 step rows carry their own agent/model and tokens; a mixed ledger must
+    // show them in the agents table too, not only in the totals line.
+    for (const step of legacy) {
+      const entry = agentEntry(step.agent ?? "?", step.provider ?? "", step.model ?? "")
+      entry.steps++
+      entry.input += step.input
+      entry.cacheRead += step.cache_read
+      entry.cacheWrite += step.cache_write
+      entry.output += step.output
+      entry.reasoning += step.reasoning
+      entry.cost += step.cost
+      if (step.started > entry.lastActive) entry.lastActive = step.started
     }
     sections.agents = [...agentMap.values()]
       .map((e) => ({
@@ -403,7 +433,7 @@ export function requestReport(
         steps: e.steps,
         hitRate: e.cacheRead / Math.max(1, e.input + e.cacheRead),
         misses: e.misses,
-        tokens: e.input + e.cacheRead + e.cacheWrite + e.output,
+        tokens: e.input + e.cacheRead + e.cacheWrite + e.output + e.reasoning,
         cost: e.cost,
         lastActive: e.lastActive,
       }))
@@ -419,18 +449,37 @@ export function requestReport(
         chain.push(parent)
       }
       const rs = requests.filter((r) => r.sessionID === s.id)
+      const sessionLegacy = analyses.find((a) => a.id === s.id)?.legacy ?? []
+      const base = totalsFor(rs)
+      const legacySum = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
+        sessionLegacy.reduce((n, step) => n + step[key], 0)
+      const input = base.input + legacySum("input")
+      const cacheRead = base.cacheRead + legacySum("cache_read")
+      // The host is authoritative for the agent; the ledger's last write is the
+      // fallback, which can have been overwritten by a title or generate call.
+      const agent = context.agents?.get(s.id) ?? s.agent
       return {
         sessionID: s.id,
         rootID: chain.at(-1)!,
         depth: chain.length - 1,
         ...(s.parent_id ? { parentID: s.parent_id } : {}),
         ...(s.title ? { title: s.title } : {}),
-        ...(s.agent ? { agent: s.agent } : {}),
+        ...(agent ? { agent } : {}),
         ...(s.run_id ? { runID: s.run_id } : {}),
         ...(s.role ? { role: s.role } : {}),
         ...(s.team ? { team: s.team } : {}),
-        lastActive: rs.at(-1)?.at ?? s.last_seen,
-        ...totalsFor(rs),
+        ...(context.states?.get(s.id) === undefined ? {} : { state: context.states.get(s.id)! }),
+        lastActive: Math.max(rs.at(-1)?.at ?? 0, sessionLegacy.at(-1)?.started ?? 0) || s.last_seen,
+        input,
+        output: base.output + legacySum("output"),
+        reasoning: base.reasoning + legacySum("reasoning"),
+        cacheRead,
+        cacheWrite: base.cacheWrite + legacySum("cache_write"),
+        cost: base.cost + legacySum("cost"),
+        hitRate: cacheRead / Math.max(1, input + cacheRead),
+        requests: base.requests,
+        steps: base.steps + sessionLegacy.length,
+        misses: base.misses,
       }
     })
 
