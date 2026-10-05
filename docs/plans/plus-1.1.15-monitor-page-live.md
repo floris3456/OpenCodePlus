@@ -46,14 +46,17 @@ all-metric totals) plus the query text/facets/top-tools repairs.
 
 ## New actual-ledger query regressions (`test/monitor-ledger.test.ts`)
 
-Eight tests read a real temporary `monitor.db` through `queryMonitor` (no mock):
-scope (session/tree/project/all, fail-closed), agent/tool/model filters with
-unfiltered facets, failed-only, tool-grouped `topTools` independent of the
+Eight query tests read a real temporary `monitor.db` through `queryMonitor` (no
+mock): scope (session/tree/project/all, fail-closed), agent/tool/model filters
+with unfiltered facets, failed-only, tool-grouped `topTools` independent of the
 requested grouping, real-request `id` detail only in scope, title
 included/excluded, `missesOnly` totals invariance, and ping kind/usage survival.
 Request rows are seeded through the actual ledger boundary
 (`requestStarted` + `requestFingerprint` + `requestEnded`), not the legacy
-step-only script path.
+step-only script path. Two raw ledger controls that no other file owns are kept:
+an older `monitor.db` migrating in place, and two handles sharing facts with the
+revision tracking the other's writes. `test/monitor.test.ts` still owns the
+idempotency/attribution/privacy raw coverage.
 
 ## Reviewed draft corrections applied
 
