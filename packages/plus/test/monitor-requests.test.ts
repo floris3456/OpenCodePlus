@@ -8,12 +8,14 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
-import { Effect, Stream } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
-import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
-import { watchMonitor } from "../src/monitor/plugin.js"
+import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
+import { monitorFact, watchMonitor } from "../src/monitor/plugin.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 import { context } from "./harness.js"
+import { createState, decideWarmingFor } from "../src/index.js"
+import { prefixDiff } from "../src/monitor/cache.js"
 
 const priorData = process.env.XDG_DATA_HOME
 const roots: string[] = []
@@ -21,6 +23,173 @@ const opened: string[] = []
 
 const modelRef = (p: string, m: string) =>
   Model.Ref.make({ providerID: Provider.ID.make(p), id: Model.ID.make(m) })
+
+test("joined Responses instructions and chat content arrays retain AGENTS.md as the changed source", () => {
+  for (const protocol of ["openai-responses", "openai-chat"] as const) {
+    const make = (rules: string) => {
+      const parts = [{ name: "base template", text: "Base instructions" }, { name: "AGENTS.md", text: rules }]
+      return { requestID: "r", sessionID: "s", ...fingerprintWireBody(protocol === "openai-responses"
+        ? { instructions: parts.map((p) => p.text).join("\n\n"), input: [] }
+        : { messages: [{ role: "system", content: parts.map((p) => ({ type: "text", text: p.text })) }] },
+      { protocol, namedSystemParts: parts }) }
+    }
+    const diff = prefixDiff(make("old rules"), make("new rules"))
+    expect(diff.changes.map((part) => part.name)).toEqual(["system part AGENTS.md"])
+    expect(diff.append).toBe(false)
+  }
+})
+
+test("cache-affecting tool choices, context management, chat cache markers and marker ttl are fingerprinted", () => {
+  for (const protocol of ["openai-responses", "openai-chat", "anthropic-messages"] as const) {
+    const original = { input: [], messages: [{ role: "system", content: [{ type: "text", text: "rules", cache_control: { type: "ephemeral", ttl: "5m" } }] }], tool_choice: "auto", context_management: { edits: [] } }
+    const a = fingerprintWireBody(original, { protocol })
+    const b = fingerprintWireBody({ ...original, tool_choice: "none" }, { protocol })
+    expect(a.optionsKeys.tool_choice).not.toBe(b.optionsKeys.tool_choice)
+    if (protocol === "openai-chat") expect(a.cacheControl).toContainEqual({ target: "messages[0].content[0]", type: "ephemeral", ttl: "5m" })
+    if (protocol === "anthropic-messages") {
+      expect(a.optionsKeys.context_management).toBeDefined()
+      const c = fingerprintWireBody({ ...original, cache_control: { type: "ephemeral", ttl: "1h" } }, { protocol })
+      expect(c.cacheControl).toContainEqual({ target: "top", type: "ephemeral", ttl: "1h" })
+      expect(c.cacheControl).toContainEqual({ target: "messages[0].content[0]", type: "ephemeral", ttl: "5m" })
+    }
+  }
+})
+
+test("warmed is only a notification and leaves Plus warming state and settings unchanged", async () => {
+  const state = createState()
+  const before = JSON.stringify(state)
+  const event: SessionHooks["warming"] = { sessionID: Session.ID.make("ses_warmed"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o"), phase: "warmed", now: 2000, since: 1000, settings: { prompt: "ping", interval: 100, duration: 1000 } }
+  await Effect.runPromise(decideWarmingFor(context(), state, event))
+  expect(JSON.stringify(state)).toBe(before)
+  expect(event.settings).toEqual({ prompt: "ping", interval: 100, duration: 1000 })
+})
+
+test("delayed step A outcomes cannot consume request B; retries and both collectors are idempotent", async () => {
+  const db = await ledger()
+  const clock = { now: 9000 }
+  const one = collect(db, clock)
+  const two = collect(db, clock)
+  const start = (id: string, at: number) => ({ type: "session.step.started", created: at, data: { sessionID: "s", assistantMessageID: id, started: at } })
+  const end = (id: string, at: number) => ({ type: "session.step.ended", created: at, data: { sessionID: "s", assistantMessageID: id, finish: "stop", tokens: usage(100, 10) } })
+  const events = [start("A", 100), start("B", 300), end("A", 200), end("B", 400)]
+  one.observe(events[0]!)
+  db.requestStarted({ id: "a1", sessionID: "s", kind: "step", started: 110 })
+  db.requestStarted({ id: "a2", sessionID: "s", kind: "step", started: 150 })
+  // Wire B can precede delivery of either durable event to the subscriber.
+  db.requestStarted({ id: "b", sessionID: "s", kind: "step", started: 310 })
+  one.observe(events[1]!)
+  one.observe(events[2]!)
+  expect(db.getRequest("b")?.ended).toBeUndefined()
+  one.observe(events[3]!)
+  const before = db.getRequests("s")
+  expect(before.map((r) => [r.id, r.messageID, r.error, r.inputTokens])).toEqual([["a1", undefined, "retried", 0], ["a2", "A", undefined, 100], ["b", "B", undefined, 100]])
+  for (const observer of [one, two]) events.forEach((event) => observer.observe(event))
+  expect(db.getRequests("s")).toEqual(before)
+})
+
+test("compaction totals go to the final attempt, failures end requests, and replay changes nothing", async () => {
+  const db = await ledger()
+  const one = collect(db, { now: 9000 })
+  const two = collect(db, { now: 9000 })
+  const start = { type: "session.compaction.started", created: 100, data: { sessionID: "s" } }
+  const end = { type: "session.compaction.ended", created: 200, data: { sessionID: "s", tokens: usage(700, 30) } }
+  db.requestStarted({ id: "c1", sessionID: "s", kind: "compaction", started: 110 })
+  db.requestStarted({ id: "c2", sessionID: "s", kind: "compaction", started: 120 })
+  one.observe(start)
+  one.observe(end)
+  const failureStart = { ...start, created: 300 }
+  const failure = { type: "session.compaction.failed", created: 400, data: { sessionID: "s", tokens: usage(10, 2), error: { type: "ProviderError", message: "PRIVATE COMPACTION TEXT" } } }
+  one.observe(failureStart)
+  db.requestStarted({ id: "c3", sessionID: "s", kind: "compaction", started: 310 })
+  one.observe(failure)
+  expect(db.getRequest("c1")?.error).toBe("retried")
+  expect(db.getRequest("c1")?.inputTokens).toBe(0)
+  expect(db.getRequest("c2")?.inputTokens).toBe(700)
+  expect(db.getRequest("c3")?.status).toBe("error")
+  expect(db.getRequest("c3")?.error).not.toContain("PRIVATE")
+  const before = [db.getRequests("s"), db.getContextFacts("s"), db.db.query("select * from step").all()]
+  for (const observer of [one, two]) [start, end, failureStart, failure].forEach((event) => observer.observe(event))
+  expect([db.getRequests("s"), db.getContextFacts("s"), db.db.query("select * from step").all()]).toEqual(before)
+})
+
+test("final wire observers capture later HTTP and WebSocket transforms and hashed response lineage", async () => {
+  const db = await ledger()
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({ event: { subscribe: () => Stream.empty as never }, session: { hook: hookFn as never } })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, () => db)
+    const common = { sessionID: Session.ID.make("ses_final"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o"), kind: "primary" as const }
+    const http: SessionHooks["http.request"] = { ...common, requestID: "http", started: 100, request: new Request("https://example.test/responses", { method: "POST", body: '{"input":[]}' }) }
+    for (const cb of hooks["http.request"] ?? []) yield* cb(http)
+    const final = '{"input":[],"instructions":"later plugin","tool_choice":"none"}'
+    http.request = new Request(http.request.url, { method: "POST", body: final })
+    for (const observe of http.observers ?? []) yield* observe(http.request)
+    expect(db.getFingerprint("http")?.bodyHash).toBe(sha256(final))
+    const response: SessionHooks["http.response"] = { ...common, request: http.request, response: new Response('data: {"type":"response.created","response":{"id":"private-response-id"}}\n\n') }
+    for (const cb of hooks["http.response"] ?? []) yield* cb(response)
+    yield* Effect.promise(() => response.response.text())
+    expect(db.getFingerprint("http")?.responseId).toBe(sha256("private-response-id"))
+    const ws: SessionHooks["experimental.ws.send"] = { ...common, requestID: "ws", started: 200, frame: '{"input":[]}' }
+    for (const cb of hooks["experimental.ws.send"] ?? []) yield* cb(ws)
+    ws.frame = '{"input":[],"previous_response_id":"private-response-id"}'
+    for (const observe of ws.observers ?? []) yield* observe(ws.frame)
+    for (const cb of hooks["experimental.ws.receive"] ?? []) yield* cb({ ...common, frame: '{"type":"response.created","response":{"id":"next-private-id"}}' })
+    expect(db.getFingerprint("ws")?.bodyHash).toBe(sha256(ws.frame))
+    expect(db.getFingerprint("ws")?.previousResponseId).toBe(sha256("private-response-id"))
+    expect(db.getFingerprint("ws")?.responseId).toBe(sha256("next-private-id"))
+    expect(JSON.stringify(db.getFingerprints("ses_final"))).not.toContain("private")
+    // A denied monitor write must not break either transport at its final boundary.
+    db.db.exec("pragma query_only = ON")
+    for (const observe of http.observers ?? []) yield* observe(http.request)
+    for (const observe of ws.observers ?? []) yield* observe(ws.frame)
+    db.db.exec("pragma query_only = OFF")
+  })))
+})
+
+test("title and generate outcomes choose oldest request inside their window and replay across instances is inert", async () => {
+  const db = await ledger()
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({ event: { subscribe: () => Stream.empty as never }, session: { hook: hookFn as never } })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, () => db)
+    yield* watchMonitor(ctx, () => undefined, () => db)
+    const common = { sessionID: Session.ID.make("ses_aux"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o") }
+    for (const kind of ["title", "generate"] as const) {
+      const event: SessionHooks["http.request"] = { ...common, kind, started: 110, requestID: kind, request: new Request("https://example.test/responses", { method: "POST", body: '{"input":[]}' }) }
+      for (const cb of hooks["http.request"] ?? []) yield* cb(event)
+      db.requestStarted({ id: `${kind}-later`, sessionID: "ses_aux", kind, started: 310 })
+      for (let replay = 0; replay < 2; replay++) for (const cb of hooks.generated ?? []) yield* cb({ ...common, kind, started: 100, ended: 200, usage: usage(100, 20, 500), cost: 0.01 })
+      expect(db.getRequest(kind)).toMatchObject({ inputTokens: 100, cacheReadTokens: 500, cost: 0.01, status: "completed", isTitle: kind === "title" })
+      expect(db.getRequest(`${kind}-later`)?.ended).toBeUndefined()
+      for (const cb of hooks.generated ?? []) yield* cb({ ...common, kind, started: 300, ended: 400, error: "secret rejected prompt" })
+      expect(db.getRequest(`${kind}-later`)?.status).toBe("error")
+      expect(JSON.parse(db.getRequest(`${kind}-later`)!.error!)).toMatchObject({ hash: sha256("secret rejected prompt"), chars: 22 })
+    }
+    expect(db.getRequests("ses_aux")).toHaveLength(4)
+    for (const cb of hooks.warming ?? []) yield* cb({ ...common, phase: "warmed", now: 400, since: 100, settings: undefined })
+    expect(db.getRequest("generate-later")?.kind).toBe("ping")
+    expect(db.getRequest("generate")?.kind).toBe("generate")
+  })))
+})
+
+test("HTTP failures identify their own wire request and refuse to consume unrelated open rows", async () => {
+  const db = await ledger()
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({ event: { subscribe: () => Stream.empty as never }, session: { hook: hookFn as never } })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, () => db)
+    const common = { sessionID: Session.ID.make("ses_http_failure"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o"), kind: "primary" as const }
+    db.requestStarted({ id: "older", sessionID: common.sessionID, kind: "step", started: 50 })
+    const event: SessionHooks["http.request"] = { ...common, started: 100, requestID: "failure", request: new Request("https://example.test/responses", { method: "POST", body: '{"input":[]}' }) }
+    for (const cb of hooks["http.request"] ?? []) yield* cb(event)
+    for (const observe of event.observers ?? []) yield* observe(event.request)
+    for (const cb of hooks["http.response"] ?? []) yield* cb({ ...common, request: event.request, response: new Response("PRIVATE ERROR BODY", { status: 429 }) })
+    expect(JSON.parse(db.getRequest("failure")!.error!)).toMatchObject({ type: "HttpError", status: 429, hash: sha256(""), chars: 0 })
+    for (const cb of hooks["http.response"] ?? []) yield* cb({ ...common, request: new Request("https://example.test/unknown"), response: new Response("PRIVATE ERROR BODY", { status: 500 }) })
+    expect(db.getRequest("older")?.ended).toBeUndefined()
+    expect(JSON.stringify(db.getRequests(common.sessionID))).not.toContain("PRIVATE")
+  })))
+})
 
 afterEach(async () => {
   cleanupLedgers()
@@ -61,6 +230,48 @@ function makeHookRegistry() {
   return { hooks, hookFn }
 }
 
+test("every provider-path monitor hook and reusable fact writer contain ledger failures", async () => {
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({ event: { subscribe: () => Stream.empty as never }, session: { hook: hookFn as never } })
+  const refuse = () => { throw new Error("read-only file system") }
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, refuse)
+    const common = { sessionID: Session.ID.make("ses_fail"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o") }
+    for (const cb of hooks["http.request"] ?? []) yield* cb({ ...common, kind: "primary", request: new Request("https://example.test/chat/completions", { method: "POST", body: '{"messages":[]}' }) })
+    for (const cb of hooks["http.response"] ?? []) yield* cb({ ...common, kind: "primary", request: new Request("https://example.test"), response: new Response("", { status: 500 }) })
+    for (const cb of hooks.context ?? []) yield* cb({ ...common, system: [], messages: [], options: {}, tools: {} })
+    for (const cb of hooks.context ?? []) yield* cb({ ...common, get system(): SessionHooks["context"]["system"] { throw new Error("context failed") }, messages: [], options: {}, tools: {} })
+    for (const cb of hooks["experimental.ws.send"] ?? []) yield* cb({ ...common, kind: "primary", frame: '{"input":[]}' })
+    for (const cb of hooks.generated ?? []) yield* cb({ ...common, error: "test error" })
+    for (const cb of hooks.warming ?? []) yield* cb({ ...common, phase: "warmed", now: 1000, since: 0, settings: undefined })
+    expect(hooks.context?.length).toBe(1)
+    expect(hooks["http.request"]?.length).toBe(1)
+  })))
+  expect(() => monitorFact({ sessionID: "ses_fail", at: 1000, kind: "account_switch" }, refuse)).not.toThrow()
+})
+
+test("request hooks record model pricing once per change for historical miss costs", async () => {
+  const db = await ledger()
+  const { hooks, hookFn } = makeHookRegistry()
+  const ctx = context({
+    event: { subscribe: () => Stream.empty as never },
+    session: { hook: hookFn as never },
+    model: { ...context().model, list: () => Effect.succeed({ location: { directory: "/fixture" }, data: [{
+      ...Model.Info.default(Provider.ID.make("openai"), Model.ID.make("gpt-4o")),
+      cost: [Schema.decodeUnknownSync(Model.Cost)({ input: 2, output: 5, cache: { read: 0.1, write: 3 } })],
+    }] }) as never },
+  })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* watchMonitor(ctx, () => undefined, () => db)
+    for (let i = 0; i < 2; i++) for (const cb of hooks["http.request"] ?? []) yield* cb({
+      sessionID: Session.ID.make("ses_pricing"), agent: Agent.ID.make("build"), model: modelRef("openai", "gpt-4o"), kind: "primary",
+      request: new Request("https://example.test/chat/completions", { method: "POST", body: '{"messages":[]}' }),
+    })
+  })))
+  expect(db.getContextFacts("ses_pricing").filter((f) => f.kind === "pricing")).toHaveLength(1)
+  expect(db.getContextFacts("ses_pricing")[0]?.detail).toMatchObject({ provider: "openai", model: "gpt-4o", rates: [{ input: 2, output: 5, cache: { read: 0.1, write: 3 } }] })
+})
+
 test("fingerprints from real request bodies for each protocol with short hashes", async () => {
   // 1. OpenAI Responses
   const openaiResponsesBody = {
@@ -96,7 +307,7 @@ test("fingerprints from real request bodies for each protocol with short hashes"
   expect(fpResponses.tools[0]?.descHash.length).toBe(16)
   expect(fpResponses.tools[0]?.schemaHash.length).toBe(16)
   expect(fpResponses.tools[0]?.descHash).not.toBe(fpResponses.tools[0]?.schemaHash)
-  expect(fpResponses.cacheKey).toBe("ses_resp_123")
+  expect(fpResponses.cacheKey).toBe(sha256("ses_resp_123"))
   expect(fpResponses.optionsKeys["prompt_cache_key"]?.length).toBe(16)
   expect(fpResponses.optionsKeys["reasoning"]?.length).toBe(16)
   expect(fpResponses.optionsKeys["temperature"]?.length).toBe(16)
@@ -194,7 +405,7 @@ test("fingerprints from real request bodies for each protocol with short hashes"
   expect(fpAnthropic.optionsKeys["output_config"]?.length).toBe(16)
   expect(fpAnthropic.cacheControl).toBeDefined()
   expect(fpAnthropic.cacheControl?.some((cc) => cc.target === "system[0]")).toBe(true)
-  expect(fpAnthropic.cacheControl?.some((cc) => cc.target === "tool:bash")).toBe(true)
+  expect(fpAnthropic.cacheControl?.some((cc) => cc.target === "tools[0]")).toBe(true)
   expect(fpAnthropic.messagePrefixes.length).toBe(2)
 
   // 4. Fallback for non-JSON or other formats
@@ -287,6 +498,7 @@ test("privacy: no content stored (asserting on stored columns)", async () => {
   const sensitiveUserPrompt = "My secret banking password is password123"
   const wire = {
     model: "gpt-4o",
+    prompt_cache_key: secretKey,
     messages: [{ role: "user", content: `${sensitiveUserPrompt} with key ${secretKey}` }],
   }
   const fp = fingerprintWireBody(wire, { url: "/v1/chat/completions" })
@@ -302,6 +514,8 @@ test("privacy: no content stored (asserting on stored columns)", async () => {
     sessionID: "ses_sec",
     ...fp,
   })
+  db.requestEnded("req_sec", { ended: 1001, status: "error", error: { type: "ProviderError", status: 400, message: sensitiveUserPrompt } })
+  expect(JSON.parse(db.getRequest("req_sec")!.error!)).toEqual({ type: "ProviderError", status: 400, hash: sha256(sensitiveUserPrompt), chars: sensitiveUserPrompt.length })
   db.contextFact({
     sessionID: "ses_sec",
     at: 1000,
@@ -424,7 +638,8 @@ test("hook path and event ordering in both orders yields exactly one row per req
             agent: Agent.ID.make("build"),
             model: modelRef("openai", "gpt-4o"),
             kind: "primary",
-            request: req1,
+             request: req1,
+            started: 1_000,
           })
         }
         const c1 = collect(ledgerAt(), clock)
@@ -455,10 +670,11 @@ test("hook path and event ordering in both orders yields exactly one row per req
             agent: Agent.ID.make("build"),
             model: modelRef("openai", "gpt-4o"),
             kind: "primary",
-            request: req2,
+             request: req2,
+            started: 2_000,
           })
         }
-        c2.observe({ type: "session.step.ended", data: { sessionID: "ses_ord2", assistantMessageID: "m2", tokens: { input: 200, output: 40, reasoning: 0, cache: { read: 80, write: 0 } }, finish: "stop" } })
+        c2.observe({ type: "session.step.ended", created: 2_100, data: { sessionID: "ses_ord2", assistantMessageID: "m2", tokens: { input: 200, output: 40, reasoning: 0, cache: { read: 80, write: 0 } }, finish: "stop" } })
 
         // Assert Order 2 has exactly 1 row
         const ord2Requests = ledgerAt().getRequests("ses_ord2")
@@ -481,7 +697,8 @@ test("hook path and event ordering in both orders yields exactly one row per req
             agent: Agent.ID.make("build"),
             model: modelRef("openai", "gpt-4o"),
             kind: "primary",
-            request: reqRetry1,
+             request: reqRetry1,
+            started: 3_000,
           })
         }
         // Second attempt arrives before step ends
@@ -496,12 +713,13 @@ test("hook path and event ordering in both orders yields exactly one row per req
             agent: Agent.ID.make("build"),
             model: modelRef("openai", "gpt-4o"),
             kind: "primary",
-            request: reqRetry2,
+             request: reqRetry2,
+            started: 3_001,
           })
         }
         const cRetry = collect(ledgerAt(), clock)
         cRetry.observe({ type: "session.step.started", data: { sessionID: "ses_retry", assistantMessageID: "m_retry", started: 3_000 } })
-        cRetry.observe({ type: "session.step.ended", data: { sessionID: "ses_retry", assistantMessageID: "m_retry", tokens: { input: 350, output: 60, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop" } })
+        cRetry.observe({ type: "session.step.ended", created: 3_100, data: { sessionID: "ses_retry", assistantMessageID: "m_retry", tokens: { input: 350, output: 60, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop" } })
 
         const retryRequests = ledgerAt().getRequests("ses_retry")
         expect(retryRequests.length).toBe(2)
@@ -514,7 +732,7 @@ test("hook path and event ordering in both orders yields exactly one row per req
   )
 })
 
-test("generate usage hook records request and warming warmed relabels it to ping, clipping errors to 160 chars", async () => {
+test("generate usage hook records request and warming warmed relabels it to ping, hashing errors without text", async () => {
   await dataHome()
   const { hooks, hookFn } = makeHookRegistry()
 
@@ -621,7 +839,7 @@ test("generate usage hook records request and warming warmed relabels it to ping
         expect(errRequests[0]?.kind).toBe("ping")
         expect(errRequests[0]?.status).toBe("error")
         expect(errRequests[0]?.error?.length).toBeLessThanOrEqual(160)
-        expect(errRequests[0]?.error).toBe("E".repeat(160))
+        expect(JSON.parse(errRequests[0]!.error!)).toEqual({ type: "Error", hash: sha256("E".repeat(300)), chars: 300 })
       }),
     ),
   )

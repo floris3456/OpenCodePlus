@@ -171,7 +171,9 @@ export function pad(text: string, width: number, align: "left" | "right" = "left
 }
 
 export const scopeWords: Readonly<Record<Plus.MonitorScope, string>> = {
-  session: "this chat + delegated",
+  session: "this chat",
+  tree: "team tree",
+  team: "team",
   project: "this project",
   all: "everywhere",
 }

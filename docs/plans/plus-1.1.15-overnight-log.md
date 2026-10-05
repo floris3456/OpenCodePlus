@@ -20,6 +20,9 @@
 
 - Input branch: `team/Heavy-Implementer/t54a9ef-20261004-1204`.
 - Must preserve pinned warming agent/model, `durable: false`, cache policy and private prompt; add generated kind/error, reconcile core tests and Plus index/API.
+- Merge conflicts resolved by retaining loaded/pinned `primary` preparation plus generated outcome timing, both core test imports via `ID`/`Ref`, warmed early-return, and existing team retry-status helper.
+- Reviewed input changes in core generation/title/transport hooks, plugin session contract, Plus monitor ledger/fingerprints/collector/cache/report/query/tools, quota facts, team identity and tests. Identified #2/#3 below; landing the combined source before targeted repairs, not claiming acceptance yet.
+- Checks at merge: core focused five files **45 pass**, core/plugin/plus typechecks pass. Monitor files **49 pass / 5 fail**: all five are the pre-B2 view expecting old session-plus-descendants semantics; repair belongs to B2 (#4). Warnings in monitor refusal controls deliberately exercise containment; monitor-plugin fixture registration warnings need follow-up inspection.
 - Live acceptance pending: short warming, two messages, three pings, usage and stable warming status, cache read on next message.
 
 ### A3/A6/B6 — pending independent repairs
@@ -37,6 +40,27 @@
 - Weight: wrong behavior / Instructions T3 owner identity boundary.
 - Plan: refuse owner-segment `agent` with actionable `agent` + `team` instructions before any write; cover store revision/record refusal and valid member create in focused model/tool tests; live re-check in isolated dev home. Leave the existing live-store record untouched.
 - Fix/verification: pending A2 reconciliation.
+
+### #2 — auxiliary generation transport is mislabeled after preserving primary transforms (open)
+
+- Seen in source review: `SessionGenerate.generate` correctly uses non-durable primary/context transforms to preserve the real request cache prefix. HTTP hook consequently says `primary`, which Monitor stores as `step`; generated outcome matches only `generate`, creates another row and warming relabels only that duplicate to ping. Wire fingerprint remains on an unfinished step row.
+- Where: core `session/generate.ts`, `session/model-request.ts`, Plus `monitor/plugin.ts` and `ledger.ts`.
+- Weight: breaks Monitor T1 every-request identity/kind/fingerprint/usage, B1 ping acceptance.
+- Plan: distinguish transport request identity/kind without changing primary content hooks/cache policy, propagate generate outcome correctly; actual core HTTP middleware + Plus hook regression must assert exactly one completed fingerprinted generate/ping and no orphan step, pinned identities and durable state unchanged. Live B1 re-check two messages/three pings.
+- Fix/verification: pending worker after merge checkpoint.
+
+### #3 — request analysis cache serves stale in-place outcomes (open)
+
+- Seen in source review: report cache key is last request id/count + last fact timestamp/count only. `requestEnded`, final wire fingerprint updates and generate→ping relabel mutate existing rows with those keys unchanged. Polling an open request then its completion can forever show zero usage / old verdict / old kind until another row/fact appears.
+- Where: `packages/plus/src/monitor/report.ts:30–69`, ledger writes.
+- Weight: wrong live behavior / Monitor T1–T3 facts must reach page.
+- Plan: invalidate analysis on real ledger mutation using an existing cheap seam or explicit per-ledger revision, with two-query regression for outcome, final fingerprint, and relabel. Preserve measured query caching where useful; no speculative framework. Live repeat page polling once B2 lands.
+- Fix/verification: queued after #2 (same monitor tests/source).
+
+### #4 — pre-page view still assumes old session scope (open, expected B2 integration gap)
+
+- Observed merge check: five `monitor-view.test.tsx` failures, including expected `scope this chat + delegated`, four calls versus two, missing `explore` facet and absent child groups. T2 intentionally makes `session` exactly one session; compact Tools must default to tree in T3.
+- Plan: reconcile B2 production compact/full view and tests against T2 tree/session contract; run every monitor file and Plus/TUI typechecks; live /monitor, /tools and M at 80/160 columns.
 
 ## Live evidence
 

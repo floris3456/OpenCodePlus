@@ -52,7 +52,8 @@ export const layer = Layer.effect(
       readonly model: SessionRunnerModel.Resolved
     }) {
       const chunks: string[] = []
-      let failed = false
+      const started = Date.now()
+      let error: string | undefined
       let usage: SessionUsage.Recorded | undefined
       const recordUsage = Effect.suspend(() =>
         usage
@@ -71,9 +72,19 @@ export const layer = Layer.effect(
         messages: [Message.user(input.text)],
       })
       if (prepared.event.result !== undefined) return prepared.event.result
+      const notify = () => context.hooks.trigger("session", "generated", {
+        sessionID: input.session.id,
+        agent: input.agent.id,
+        model: input.model.ref,
+        kind: "title",
+        started,
+        ended: Date.now(),
+        ...(usage ? { usage: usage.tokens, cost: usage.cost } : {}),
+        ...(error ? { error } : {}),
+      }).pipe(Effect.asVoid, Effect.catchCause(() => Effect.logWarning("session title generated hook failed")))
       yield* llm.stream(prepared.request, prepared.options).pipe(
         Stream.runForEach((event) => {
-          if (LLMEvent.is.providerError(event)) failed = true
+          if (LLMEvent.is.providerError(event)) error = event.message
           if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
           if (LLMEvent.is.stepFinish(event)) {
             const step = SessionUsage.record(event.usage, input.model.cost)
@@ -81,15 +92,20 @@ export const layer = Layer.effect(
           }
           return Effect.void
         }),
-        Effect.catchTag("AI.Error", () =>
+        Effect.catchTag("AI.Error", (cause) =>
           Effect.sync(() => {
-            failed = true
+            error = cause.message
           }),
         ),
-        Effect.onInterrupt(() => recordUsage.pipe(Effect.asVoid)),
+        Effect.onInterrupt(() => Effect.gen(function* () {
+          error = "Interrupted"
+          yield* recordUsage
+          yield* notify()
+        })),
       )
       yield* recordUsage
-      if (failed) return
+      yield* notify()
+      if (error) return
       return chunks
         .join("")
         .split("\n")

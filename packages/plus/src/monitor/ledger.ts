@@ -9,6 +9,7 @@
 import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import path from "node:path"
+import { errorFingerprint } from "./fingerprint.js"
 import { teamsDataDir } from "../instructions/paths.js"
 import type {
   CacheControlMarker,
@@ -199,6 +200,7 @@ create table if not exists request (
   created integer not null
 );
 create index if not exists request_session on request(session_id, started);
+create index if not exists request_message on request(session_id, message_id);
 create index if not exists request_started on request(started);
 create index if not exists request_kind on request(kind);
 
@@ -238,6 +240,7 @@ export interface SessionFacts {
   readonly directory?: string
   readonly runID?: string
   readonly role?: string
+  readonly team?: string
 }
 
 export interface StepStart {
@@ -316,7 +319,8 @@ export interface RequestEnd {
   readonly ended: number
   readonly duration?: number
   readonly status: "completed" | "error"
-  readonly error?: string
+  readonly finish?: string
+  readonly error?: unknown
   readonly usage?: Usage
   readonly messageID?: string
 }
@@ -334,6 +338,7 @@ export interface RequestRow {
   readonly ended?: number
   readonly duration?: number
   readonly status: string
+  readonly finish?: string
   readonly error?: string
   readonly inputTokens: number
   readonly outputTokens: number
@@ -355,6 +360,8 @@ export interface RequestFingerprintData {
   readonly optionsKeys: Record<string, string>
   readonly messagePrefixes: readonly MessagePrefixFingerprint[]
   readonly cacheKey?: string
+  readonly previousResponseId?: string
+  readonly responseId?: string
   readonly cacheControl?: readonly CacheControlMarker[]
   readonly bodyHash: string
   readonly created?: number
@@ -365,6 +372,23 @@ export interface ContextFact {
   readonly at: number
   readonly kind: string
   readonly detail?: Record<string, unknown>
+}
+
+/** Correlate event publication time, not subscriber arrival order. */
+export function endRequestWindow(ledger: Ledger, start: RequestStart, end: RequestEnd, oldest = false): RequestRow | undefined {
+  return ledger.db.transaction(() => {
+    const rows = ledger.getRequests(start.sessionID)
+    const existing = rows.find((row) => row.messageID === start.messageID && row.ended !== undefined)
+    if (existing) return existing
+    const candidates = rows.filter((row) => row.kind === start.kind && (row.messageID === undefined || row.messageID === start.messageID) && row.started >= start.started && row.started <= end.ended)
+    const chosen = oldest ? candidates.find((row) => row.ended === undefined) ?? candidates.at(-1) : candidates.at(-1)
+    if (!chosen) ledger.requestStarted(start)
+    // Compaction Ended.tokens is the aggregate of its attempts, not per-attempt usage.
+    // Attribute that total to the last attempt; earlier wire requests are retried.
+    if (!oldest) candidates.filter((row) => row.id !== chosen?.id).forEach((row) => ledger.requestEnded(row.id, { ended: end.ended, status: "error", error: "retried" }))
+    ledger.requestEnded(chosen?.id ?? start.id, { ...end, messageID: start.messageID })
+    return ledger.getRequest(chosen?.id ?? start.id)
+  })()
 }
 
 export interface ContextFactRow extends ContextFact {
@@ -389,12 +413,11 @@ export interface Ledger {
   requestEnded(id: string, end: RequestEnd): void
   requestFingerprint(fp: RequestFingerprintData): void
   contextFact(fact: ContextFact): void
-  oldestOpenRequest(sessionID: string, kind: string): RequestRow | undefined
-  retireOpenRequests(sessionID: string, kind: string, exceptId?: string): void
   relabelLatestRequest(sessionID: string, fromKind: string, toKind: string): void
   getRequest(id: string): RequestRow | undefined
   getRequests(sessionID: string): readonly RequestRow[]
   getFingerprint(requestID: string): RequestFingerprintData | undefined
+  getFingerprints(sessionID: string): readonly RequestFingerprintData[]
   getContextFacts(sessionID: string): readonly ContextFactRow[]
 }
 
@@ -422,13 +445,25 @@ export function createLedger(file: string): Ledger {
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")
   db.exec(schema)
+  if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "finish")) db.exec("alter table request add column finish text")
+  const fingerprintColumns = db.query<{ name: string }, []>("pragma table_info(request_fingerprint)").all()
+  for (const name of ["previous_response_id", "response_id"]) {
+    if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} text`)
+  }
+  if (
+    !db
+      .query<{ name: string }, []>("pragma table_info(session)")
+      .all()
+      .some((c) => c.name === "team")
+  )
+    db.exec("alter table session add column team text")
   db.query(
     "insert into meta (key, value) values ('schema', ?) on conflict(key) do update set value = excluded.value",
   ).run(String(SCHEMA_VERSION))
 
   const upsertSession = db.query(`
-    insert into session (id, parent_id, agent, title, directory, run_id, role, first_seen, last_seen)
-    values ($id, $parent, $agent, $title, $directory, $run, $role, $now, $now)
+    insert into session (id, parent_id, agent, title, directory, run_id, role, team, first_seen, last_seen)
+    values ($id, $parent, $agent, $title, $directory, $run, $role, $team, $now, $now)
     on conflict(id) do update set
       parent_id = coalesce(excluded.parent_id, session.parent_id),
       agent = coalesce(excluded.agent, session.agent),
@@ -436,6 +471,7 @@ export function createLedger(file: string): Ledger {
       directory = coalesce(excluded.directory, session.directory),
       run_id = coalesce(excluded.run_id, session.run_id),
       role = coalesce(excluded.role, session.role),
+      team = coalesce(excluded.team, session.team),
       last_seen = max(session.last_seen, excluded.last_seen)`)
   const insertStep = db.query(`
     insert into step (session_id, message_id, kind, idx, epoch, agent, provider, model, variant, config, started)
@@ -495,6 +531,7 @@ export function createLedger(file: string): Ledger {
       duration = case when $duration is not null then $duration else ($ended - started) end,
       status = $status,
       error = $error,
+      finish = $finish,
       input_tokens = coalesce($input, input_tokens),
       output_tokens = coalesce($output, output_tokens),
       reasoning_tokens = coalesce($reasoning, reasoning_tokens),
@@ -504,8 +541,8 @@ export function createLedger(file: string): Ledger {
       message_id = coalesce($message, message_id)
     where id = $id`)
   const upsertFingerprint = db.query(`
-    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, cache_key, cache_control, body_hash, created)
-    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $cacheKey, $cacheControl, $bodyHash, $created)
+    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, cache_key, cache_control, body_hash, created, previous_response_id, response_id)
+    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $cacheKey, $cacheControl, $bodyHash, $created, $previousResponse, $response)
     on conflict(request_id) do update set
       protocol = excluded.protocol,
       system_parts = excluded.system_parts,
@@ -515,31 +552,25 @@ export function createLedger(file: string): Ledger {
       message_prefixes = excluded.message_prefixes,
       cache_key = excluded.cache_key,
       cache_control = excluded.cache_control,
-      body_hash = excluded.body_hash`)
+      body_hash = excluded.body_hash,
+      previous_response_id = excluded.previous_response_id,
+      response_id = coalesce(excluded.response_id, request_fingerprint.response_id)`)
   const insertContextFact = db.query(`
     insert into context_fact (session_id, at, kind, detail)
     values ($session, $at, $kind, $detail)
     on conflict do nothing`)
-  const findOldestOpenRequest = db.query<Record<string, unknown>, [string, string]>(
-    "select * from request where session_id = ? and kind = ? and ended is null order by started asc limit 1",
+  const updateLatestKind = db.query<void, [string, string, string, string]>(
+    "update request set kind = ? where id = (select id from request where session_id = ? and kind in (?, ?) order by started desc, rowid desc limit 1)",
   )
-  const retireEarlierOpenRequests = db.query<void, [number, number, string, string, string]>(
-    "update request set ended = ?, status = 'error', error = 'retried', duration = (? - started) where session_id = ? and kind = ? and ended is null and id != ?",
-  )
-  const retireAllOpenRequests = db.query<void, [number, number, string, string]>(
-    "update request set ended = ?, status = 'error', error = 'retried', duration = (? - started) where session_id = ? and kind = ? and ended is null",
-  )
-  const updateLatestKind = db.query<void, [string, string, string]>(
-    "update request set kind = ? where id = (select id from request where session_id = ? and kind = ? order by started desc limit 1)",
-  )
-  const findRequest = db.query<Record<string, unknown>, [string]>(
-    "select * from request where id = ?",
-  )
+  const findRequest = db.query<Record<string, unknown>, [string]>("select * from request where id = ?")
   const findSessionRequests = db.query<Record<string, unknown>, [string]>(
-    "select * from request where session_id = ? order by started asc",
+    "select * from request where session_id = ? order by started asc, rowid asc",
   )
   const findFingerprint = db.query<Record<string, unknown>, [string]>(
     "select * from request_fingerprint where request_id = ?",
+  )
+  const findSessionFingerprints = db.query<Record<string, unknown>, [string]>(
+    "select * from request_fingerprint where session_id = ? order by created asc",
   )
   const findContextFacts = db.query<Record<string, unknown>, [string]>(
     "select * from context_fact where session_id = ? order by at asc",
@@ -585,6 +616,7 @@ export function createLedger(file: string): Ledger {
         $directory: facts.directory ?? null,
         $run: facts.runID ?? null,
         $role: facts.role ?? null,
+        $team: facts.team ?? null,
         $now: now,
       }),
     stepStarted: (step) => startStep(step),
@@ -644,7 +676,9 @@ export function createLedger(file: string): Ledger {
         db.query("delete from request_fingerprint where created < ?").run(before)
         db.query("delete from context_fact where at < ?").run(before)
         db.query("delete from mark where at < ?").run(before)
-        db.query("delete from session where last_seen < ? and id not in (select session_id from step) and id not in (select session_id from request)").run(before)
+        db.query(
+          "delete from session where last_seen < ? and id not in (select session_id from step) and id not in (select session_id from request)",
+        ).run(before)
         db.query("delete from epoch where session_id not in (select distinct session_id from step)").run()
         db.query("delete from call_hour where calls = 0 and inner = 0 and running = 0").run()
       })()
@@ -669,7 +703,8 @@ export function createLedger(file: string): Ledger {
         $ended: end.ended,
         $duration: end.duration ?? null,
         $status: end.status,
-        $error: end.error ? end.error.slice(0, 160) : null,
+        $finish: end.finish ?? null,
+        $error: end.error ? end.error === "retried" ? "retried" : errorFingerprint(end.error) : null,
         $input: end.usage?.input ?? null,
         $output: end.usage?.output ?? null,
         $reasoning: end.usage?.reasoning ?? null,
@@ -689,6 +724,8 @@ export function createLedger(file: string): Ledger {
         $optionsKeys: JSON.stringify(fp.optionsKeys),
         $messagePrefixes: JSON.stringify(fp.messagePrefixes),
         $cacheKey: fp.cacheKey ?? null,
+        $previousResponse: fp.previousResponseId ?? null,
+        $response: fp.responseId ?? null,
         $cacheControl: fp.cacheControl ? JSON.stringify(fp.cacheControl) : null,
         $bodyHash: fp.bodyHash,
         $created: fp.created ?? Date.now(),
@@ -700,20 +737,8 @@ export function createLedger(file: string): Ledger {
         $kind: fact.kind,
         $detail: JSON.stringify(fact.detail ?? {}),
       }),
-    oldestOpenRequest: (sessionID, kind) => {
-      const row = findOldestOpenRequest.get(sessionID, kind)
-      return row ? toRequestRow(row) : undefined
-    },
-    retireOpenRequests: (sessionID, kind, exceptId) => {
-      const now = Date.now()
-      if (exceptId) {
-        retireEarlierOpenRequests.run(now, now, sessionID, kind, exceptId)
-      } else {
-        retireAllOpenRequests.run(now, now, sessionID, kind)
-      }
-    },
     relabelLatestRequest: (sessionID, fromKind, toKind) => {
-      updateLatestKind.run(toKind, sessionID, fromKind)
+      updateLatestKind.run(toKind, sessionID, fromKind, toKind)
     },
     getRequest: (id) => {
       const row = findRequest.get(id)
@@ -724,6 +749,7 @@ export function createLedger(file: string): Ledger {
       const row = findFingerprint.get(requestID)
       return row ? toFingerprintData(row) : undefined
     },
+    getFingerprints: (sessionID) => findSessionFingerprints.all(sessionID).map(toFingerprintData),
     getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
     close: () => {
       open.delete(file)
@@ -746,6 +772,7 @@ function toRequestRow(row: Record<string, unknown>): RequestRow {
     ended: row.ended !== null && row.ended !== undefined ? Number(row.ended) : undefined,
     duration: row.duration !== null && row.duration !== undefined ? Number(row.duration) : undefined,
     status: String(row.status ?? "completed"),
+    finish: typeof row.finish === "string" ? row.finish : undefined,
     error: typeof row.error === "string" ? row.error : undefined,
     inputTokens: Number(row.input_tokens ?? 0),
     outputTokens: Number(row.output_tokens ?? 0),
@@ -769,6 +796,8 @@ function toFingerprintData(row: Record<string, unknown>): RequestFingerprintData
     optionsKeys: JSON.parse(String(row.options_keys || "{}")),
     messagePrefixes: JSON.parse(String(row.message_prefixes || "[]")),
     cacheKey: typeof row.cache_key === "string" ? row.cache_key : undefined,
+    previousResponseId: typeof row.previous_response_id === "string" ? row.previous_response_id : undefined,
+    responseId: typeof row.response_id === "string" ? row.response_id : undefined,
     cacheControl: typeof row.cache_control === "string" ? JSON.parse(row.cache_control) : undefined,
     bodyHash: String(row.body_hash || ""),
     created: Number(row.created ?? 0),

@@ -1084,7 +1084,9 @@ export const WarmingChanged = Schema.Struct({
 
 // The tool and token monitor (monitor/): what a query asks and what it answers.
 export type MonitorScope = typeof MonitorScope.Type
-export const MonitorScope = Schema.Literals(["session", "project", "all"]).annotate({ identifier: "Plus.MonitorScope" })
+export const MonitorScope = Schema.Literals(["session", "tree", "team", "project", "all"]).annotate({ identifier: "Plus.MonitorScope" })
+
+export const MonitorView = Schema.Literals(["overview", "cache", "tools", "sessions", "steps"])
 
 export type MonitorGroupBy = typeof MonitorGroupBy.Type
 export const MonitorGroupBy = Schema.Literals(["tool", "agent", "model", "session", "config", "target"]).annotate({
@@ -1100,8 +1102,14 @@ export const MonitorWindow = Schema.Struct({
 export interface MonitorQueryInput extends Schema.Schema.Type<typeof MonitorQueryInput> {}
 export const MonitorQueryInput = Schema.Struct({
   scope: MonitorScope,
-  /** Session scope: this session and every session it delegated to. */
+  /** Session scope is only this session; tree includes its root and descendants. */
   sessionID: Schema.optionalKey(Schema.String),
+  team: Schema.optionalKey(Schema.String),
+  sinceCompaction: Schema.optionalKey(Schema.Boolean),
+  view: Schema.optionalKey(MonitorView),
+  id: Schema.optionalKey(Schema.String),
+  missesOnly: Schema.optionalKey(Schema.Boolean),
+  titles: Schema.optionalKey(Schema.Boolean),
   since: Schema.optionalKey(Schema.Number),
   until: Schema.optionalKey(Schema.Number),
   agents: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -1118,6 +1126,13 @@ export const MonitorQueryInput = Schema.Struct({
 
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
+  requests: Schema.optionalKey(Schema.Number),
+  pings: Schema.optionalKey(Schema.Number),
+  pingCost: Schema.optionalKey(Schema.Number),
+  misses: Schema.optionalKey(Schema.Number),
+  missTokens: Schema.optionalKey(Schema.Number),
+  missCost: Schema.optionalKey(Schema.Number),
+  hitRate: Schema.optionalKey(Schema.Number),
   steps: Schema.Number,
   calls: Schema.Number,
   errors: Schema.Number,
@@ -1180,9 +1195,73 @@ export const MonitorMarkInput = Schema.Struct({
   label: Schema.String,
 }).annotate({ identifier: "Plus.MonitorMarkInput" })
 
+export type MonitorRequest = typeof MonitorRequest.Type
+export const MonitorRequest = Schema.Struct({
+  id: Schema.String, sessionID: Schema.String, messageID: Schema.optionalKey(Schema.String),
+  kind: Schema.Literals(["step", "compaction", "ping", "generate", "title"]), at: Schema.Number,
+  durationMs: Schema.optionalKey(Schema.Number), finish: Schema.optionalKey(Schema.String), error: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(Schema.String), provider: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String), variant: Schema.optionalKey(Schema.String),
+  input: Schema.Number, output: Schema.Number, reasoning: Schema.Number,
+  cacheRead: Schema.Number, cacheWrite: Schema.Number, cost: Schema.Number,
+  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none"]),
+  cause: Schema.optionalKey(Schema.Literals(["compacted", "model-switch", "agent-switch", "prefix-changed", "cache-expired", "account-changed", "unknown"])),
+  confidence: Schema.optionalKey(Schema.Literals(["certain", "likely", "unknown"])),
+  evidence: Schema.optionalKey(Schema.String), expected: Schema.optionalKey(Schema.Number),
+  missTokens: Schema.optionalKey(Schema.Number), missCost: Schema.optionalKey(Schema.Number),
+  tools: Schema.optionalKey(Schema.Array(Schema.String)),
+})
+
+const MonitorSegmentValue = Schema.Struct({ hash: Schema.String, chars: Schema.Number, tokens: Schema.Number })
+export type MonitorRequestDetail = typeof MonitorRequestDetail.Type
+export const MonitorRequestDetail = Schema.Struct({
+  request: MonitorRequest,
+  previous: Schema.optionalKey(Schema.Struct({ id: Schema.String, at: Schema.Number, messageID: Schema.optionalKey(Schema.String) })),
+  lines: Schema.Array(Schema.String),
+  segments: Schema.Array(Schema.Struct({
+    name: Schema.String, kind: Schema.Literals(["system", "tool", "option", "message", "marker"]),
+    change: Schema.Literals(["changed", "added", "removed"]),
+    before: Schema.optionalKey(MonitorSegmentValue), after: Schema.optionalKey(MonitorSegmentValue),
+  })),
+  firstDivergence: Schema.optionalKey(Schema.String),
+  timing: Schema.Struct({ gapMs: Schema.optionalKey(Schema.Number), lifetimeMs: Schema.optionalKey(Schema.Number),
+    lastPingAt: Schema.optionalKey(Schema.Number), warming: Schema.optionalKey(Schema.Literals(["on", "off", "ended", "failed"])) }),
+  pings: Schema.Array(Schema.Struct({ at: Schema.Number, cacheRead: Schema.Number, cost: Schema.Number, error: Schema.optionalKey(Schema.String) })),
+  accounts: Schema.Array(Schema.Struct({ at: Schema.Number, kind: Schema.String, from: Schema.optionalKey(Schema.String), to: Schema.optionalKey(Schema.String) })),
+  instructions: Schema.Array(Schema.Struct({ at: Schema.Number, keys: Schema.Array(Schema.String) })),
+  reverts: Schema.Array(Schema.Struct({ at: Schema.Number })),
+  expectedTokens: Schema.optionalKey(Schema.Number), actualCacheRead: Schema.Number,
+  calls: Schema.optionalKey(Schema.Array(MonitorCall)),
+})
+
+export type MonitorAgentRow = typeof MonitorAgentRow.Type
+export const MonitorAgentRow = Schema.Struct({
+  agent: Schema.String, model: Schema.optionalKey(Schema.String), steps: Schema.Number, hitRate: Schema.Number,
+  misses: Schema.Number, tokens: Schema.Number, cost: Schema.Number, lastActive: Schema.Number,
+})
+export type MonitorSessionRow = typeof MonitorSessionRow.Type
+export const MonitorSessionRow = Schema.Struct({
+  sessionID: Schema.String, parentID: Schema.optionalKey(Schema.String), rootID: Schema.String, depth: Schema.Number,
+  title: Schema.optionalKey(Schema.String), agent: Schema.optionalKey(Schema.String), runID: Schema.optionalKey(Schema.String),
+  role: Schema.optionalKey(Schema.String), team: Schema.optionalKey(Schema.String), lastActive: Schema.Number,
+  state: Schema.optionalKey(Schema.String), requests: Schema.Number, steps: Schema.Number,
+  input: Schema.Number, cacheRead: Schema.Number, cacheWrite: Schema.Number,
+  output: Schema.Number, reasoning: Schema.Number, cost: Schema.Number, hitRate: Schema.Number, misses: Schema.Number,
+})
+
 export interface MonitorReport extends Schema.Schema.Type<typeof MonitorReport> {}
 export const MonitorReport = Schema.Struct({
   now: Schema.Number,
+  requests: Schema.optionalKey(Schema.Array(MonitorRequest)),
+  detail: Schema.optionalKey(MonitorRequestDetail),
+  agents: Schema.optionalKey(Schema.Array(MonitorAgentRow)),
+  topMisses: Schema.optionalKey(Schema.Array(MonitorRequest)),
+  unstable: Schema.optionalKey(Schema.Array(Schema.Struct({ sessionID: Schema.String, segment: Schema.String, streak: Schema.Number }))),
+  context: Schema.optionalKey(Schema.Array(Schema.Struct({ sessionID: Schema.String, now: Schema.Number, atCompaction: Schema.optionalKey(Schema.Number) }))),
+  sessions: Schema.optionalKey(Schema.Array(MonitorSessionRow)),
+  pings: Schema.optionalKey(Schema.Struct({ sent: Schema.Number, cost: Schema.Number, followedByHit: Schema.Number, followedByMiss: Schema.Number })),
+  unread: Schema.optionalKey(Schema.Number),
+  teams: Schema.optionalKey(Schema.Array(Schema.String)),
   totals: MonitorTotals,
   groups: Schema.Array(MonitorGroup),
   feed: Schema.Array(MonitorCall),

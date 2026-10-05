@@ -12,6 +12,8 @@ import { teamsDataDir } from "../src/instructions/paths.js"
 import { defaultLedgerPath, ledgerAt } from "../src/monitor/ledger.js"
 import { watchMonitor } from "../src/monitor/plugin.js"
 import { registerMonitorTools } from "../src/monitor/tools.js"
+import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
+import type { MonitorReport } from "../src/rpc.js"
 import { context, fullContext, toolHarness } from "./harness.js"
 import { script, usage } from "./monitor-fixture.js"
 
@@ -150,8 +152,22 @@ test("the monitor tools answer for the calling chat and record marks", async () 
           Effect.catchTag("Tool.Error", (error) => Effect.succeed(error)),
         ),
     )
-  const own = (await call("monitor_query", {})) as { totals: { calls: number } }
+  const fp = fingerprintWireBody({ messages: [{ role: "user", content: "unchanged".repeat(1000) }] })
+  for (const [id, offset, read] of [["cache-a", 100, 4000], ["cache-b", 50, 0]] as const) {
+    ledgerAt().requestStarted({ id, sessionID: "ses_live", kind: "step", started: Date.now() - offset, provider: "openai", model: "gpt-4o", agent: "build", messageID: id })
+    ledgerAt().requestFingerprint({ requestID: id, sessionID: "ses_live", ...fp })
+    ledgerAt().requestEnded(id, { ended: Date.now() - offset + 1, status: "completed", usage: { input: 100, output: 10, reasoning: 0, cacheRead: read, cacheWrite: 0, cost: 0 } })
+  }
+  const own = (await call("monitor_query", {})) as MonitorReport
   expect(own.totals.calls).toBe(1)
+  expect(own.requests?.find((r) => r.id === "cache-b")).toMatchObject({ verdict: "miss", cause: "unknown", confidence: "unknown" })
+  expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("provider-side eviction or routing")
+  const detail = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
+  expect(detail.detail?.previous?.id).toBe("cache-a")
+  expect(detail.detail?.expectedTokens).toBe(4100)
+  expect((await call("monitor_query", { view: "cache", id: "cache-b" }, "ses_other") as MonitorReport).detail).toBeUndefined()
+  ledgerAt().contextFact({ sessionID: "ses_live", kind: "compaction", at: ledgerAt().getRequest("cache-b")!.started - 1 })
+  expect((await call("monitor_query", { since: "compaction", view: "cache" }) as MonitorReport).requests?.map((r) => r.id)).toEqual(["cache-b"])
   // Another chat sees nothing of this one in its own (default) session scope.
   const other = (await call("monitor_query", {}, "ses_other")) as { totals: { calls: number } }
   expect(other.totals.calls).toBe(0)

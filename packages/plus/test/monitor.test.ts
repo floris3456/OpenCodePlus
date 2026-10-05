@@ -233,7 +233,7 @@ test("a malformed call that fails without being called is still recorded", async
   expect(call(db, "c1")).toMatchObject({ tool: "edit", status: "error", error: "tool: Invalid input for tool edit" })
 })
 
-test("session scope covers the chat and everything it delegated, and nothing else", async () => {
+test("session scope is only the chat; tree reaches the topmost root and all descendants", async () => {
   const db = await ledger()
   const clock = { now: 1 }
   // A team run is created without a host parent; the resolver names its delegating session.
@@ -268,14 +268,12 @@ test("session scope covers the chat and everything it delegated, and nothing els
   await collector.settle()
   const ids = (report: ReturnType<typeof queryMonitor>) => report.feed.map((entry) => entry.callID).sort()
   expect(ids(queryMonitor(db, { scope: "session", sessionID: "ses_root", feed: 20 }, { now: clock.now }))).toEqual([
-    "c_child",
     "c_root",
-    "c_run",
   ])
   expect(ids(queryMonitor(db, { scope: "session", sessionID: "ses_child", feed: 20 }, { now: clock.now }))).toEqual([
     "c_child",
-    "c_run",
   ])
+  expect(ids(queryMonitor(db, { scope: "tree", sessionID: "ses_run", feed: 20 }, { now: clock.now }))).toEqual(["c_child", "c_root", "c_run"])
   expect(ids(queryMonitor(db, { scope: "project", feed: 20 }, { directory: "/work/project", now: clock.now }))).toEqual(
     ["c_child", "c_other", "c_root", "c_run"],
   )

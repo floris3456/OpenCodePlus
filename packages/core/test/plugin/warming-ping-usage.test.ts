@@ -52,12 +52,6 @@ describe("warming ping usage seam", () => {
           seenWarming.push({ ...event })
         }),
       )
-      const seenGenerated: Array<SessionHooks["generated"]> = []
-      yield* hooks.register("session", "generated", (event) =>
-        Effect.sync(() => {
-          seenGenerated.push({ ...event })
-        }),
-      )
 
       const plugin = yield* Plugin.Service
       const sessions = yield* Session.Service
@@ -69,16 +63,7 @@ describe("warming ping usage seam", () => {
           Session.Service,
           Session.Service.of({
             ...sessions,
-            generate: (input) =>
-              Effect.gen(function* () {
-                yield* hooks.trigger("session", "generated", {
-                  sessionID: input.sessionID,
-                  agent: Agent.ID.make("build"),
-                  model: ref("alpha", "m1"),
-                  usage: { input: 15, output: 5, reasoning: 0, cache: { read: 50, write: 0 } },
-                })
-                return ""
-              }),
+            generate: () => Effect.succeed(""),
           }),
         ),
       )
@@ -108,10 +93,6 @@ describe("warming ping usage seam", () => {
       expect(warmed[0]?.sessionID).toBe(parent.id)
       expect(warmed[0]?.agent).toBe(Agent.ID.make("build"))
       expect(warmed[0]?.model).toEqual(ref("alpha", "m1"))
-
-      expect(seenGenerated.length).toBeGreaterThan(0)
-      expect(seenGenerated[0]?.sessionID).toBe(parent.id)
-      expect(seenGenerated[0]?.usage?.input).toBe(15)
     }),
   )
 })

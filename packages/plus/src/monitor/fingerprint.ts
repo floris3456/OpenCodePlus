@@ -45,6 +45,7 @@ export interface WireFingerprint {
   readonly optionsKeys: Record<string, string>
   readonly messagePrefixes: readonly MessagePrefixFingerprint[]
   readonly cacheKey?: string
+  readonly previousResponseId?: string
   readonly cacheControl?: readonly CacheControlMarker[]
   readonly bodyHash: string
 }
@@ -65,16 +66,66 @@ export function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16)
 }
 
+/** Provider errors may echo prompts, URLs or credentials. Never persist their text. */
+export function errorFingerprint(error: unknown): string {
+  const value = error !== null && typeof error === "object" ? error as Record<string, unknown> : {}
+  const message = typeof error === "string" ? error : String(value.message ?? "")
+  const name = String(value.type ?? value.name ?? "Error")
+  return JSON.stringify({
+    type: /^[\w.:-]{1,64}$/.test(name) ? name : "Error",
+    ...(typeof value.status === "number" ? { status: value.status } : {}),
+    hash: sha256(message), chars: message.length,
+  })
+}
+
+function systemFingerprints(text: string, idx: number, namedParts?: ReadonlyArray<NamedSystemPart>): SystemPartFingerprint[] {
+  const parts: SystemPartFingerprint[] = []
+  const add = (text: string, source: string) => {
+    if (text.length) parts.push({ source, hash: sha256(text), chars: text.length, estimatedTokens: estimateTokens(text.length) })
+  }
+  let offset = 0
+  for (const part of namedParts ?? []) {
+    if (!part.text) continue
+    const start = text.indexOf(part.text, offset)
+    if (start < 0) continue
+    add(text.slice(offset, start), `system remainder:${idx}:${parts.length}`)
+    add(part.text, part.name)
+    offset = start + part.text.length
+  }
+  add(text.slice(offset), parts.length ? `system remainder:${idx}:${parts.length}` : nameSystemPart(text, idx))
+  return parts
+}
+
+function cacheMarkers(body: Record<string, unknown>): CacheControlMarker[] {
+  const markers: CacheControlMarker[] = []
+  const visit = (value: unknown, target: string) => {
+    if (!value || typeof value !== "object") return
+    if (Array.isArray(value)) return value.forEach((part, i) => visit(part, `${target}[${i}]`))
+    const obj = value as Record<string, unknown>
+    const cc = obj.cache_control as { type?: unknown; ttl?: unknown } | undefined
+    if (cc && typeof cc === "object") markers.push({ target, type: String(cc.type ?? "ephemeral"), ...(typeof cc.ttl === "string" ? { ttl: cc.ttl } : {}) })
+    Object.entries(obj).filter(([key]) => key !== "cache_control").forEach(([key, child]) => visit(child, target === "top" ? key : `${target}.${key}`))
+  }
+  visit(body, "top")
+  return markers
+}
+
+function optionFingerprints(body: Record<string, unknown>, keys: readonly string[]) {
+  const result: Record<string, string> = {}
+  const visit = (key: string, value: unknown) => {
+    if (value === undefined) return
+    result[key] = sha256(canonicalJson(value))
+    if (value !== null && typeof value === "object" && !Array.isArray(value))
+      Object.entries(value).forEach(([name, child]) => visit(`${key}.${name}`, child))
+  }
+  keys.forEach((key) => visit(key, body[key]))
+  return result
+}
+
 function nameSystemPart(
   text: string,
   idx: number,
-  namedParts?: ReadonlyArray<NamedSystemPart>,
 ): string {
-  if (namedParts && namedParts.length > 0) {
-    const match = namedParts.find((p) => p.text === text || sha256(p.text) === sha256(text))
-    if (match) return match.name
-    if (namedParts[idx] && namedParts.length === 1) return namedParts[0]!.name
-  }
   if (text.includes("<env>") || text.includes("<environment>") || text.includes("Today's date:") || text.includes("Platform:")) {
     return "date/environment block"
   }
@@ -188,43 +239,19 @@ function fingerprintAnthropic(
   namedParts?: ReadonlyArray<NamedSystemPart>,
 ): WireFingerprint {
   const systemParts: SystemPartFingerprint[] = []
-  const cacheControls: CacheControlMarker[] = []
 
   // System parts
   const rawSystem = body.system
   if (typeof rawSystem === "string") {
-    systemParts.push({
-      source: nameSystemPart(rawSystem, 0, namedParts),
-      hash: sha256(rawSystem),
-      chars: rawSystem.length,
-      estimatedTokens: estimateTokens(rawSystem.length),
-    })
+    systemParts.push(...systemFingerprints(rawSystem, 0, namedParts))
   } else if (Array.isArray(rawSystem)) {
     rawSystem.forEach((part, idx) => {
       if (typeof part === "string") {
-        systemParts.push({
-          source: nameSystemPart(part, idx, namedParts),
-          hash: sha256(part),
-          chars: part.length,
-          estimatedTokens: estimateTokens(part.length),
-        })
+        systemParts.push(...systemFingerprints(part, idx, namedParts))
       } else if (part && typeof part === "object") {
         const textPart = (part as { text?: unknown }).text
         const textStr = typeof textPart === "string" ? textPart : JSON.stringify(part)
-        systemParts.push({
-          source: nameSystemPart(textStr, idx, namedParts),
-          hash: sha256(textStr),
-          chars: textStr.length,
-          estimatedTokens: estimateTokens(textStr.length),
-        })
-        const cc = (part as { cache_control?: unknown }).cache_control
-        if (cc && typeof cc === "object") {
-          cacheControls.push({
-            target: `system[${idx}]`,
-            type: String((cc as { type?: unknown }).type ?? "ephemeral"),
-            ttl: typeof (cc as { ttl?: unknown }).ttl === "string" ? String((cc as { ttl?: unknown }).ttl) : undefined,
-          })
-        }
+        systemParts.push(...systemFingerprints(textStr, idx, namedParts))
       }
     })
   }
@@ -246,24 +273,11 @@ function fingerprintAnthropic(
       chars: toolChars,
       estimatedTokens: estimateTokens(toolChars),
     })
-    const cc = t.cache_control
-    if (cc && typeof cc === "object") {
-      cacheControls.push({
-        target: `tool:${name}`,
-        type: String((cc as { type?: unknown }).type ?? "ephemeral"),
-        ttl: typeof (cc as { ttl?: unknown }).ttl === "string" ? String((cc as { ttl?: unknown }).ttl) : undefined,
-      })
-    }
   })
 
   // Options
-  const optionKeys = ["thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k", "service_tier", "container"]
-  const optionsKeys: Record<string, string> = {}
-  optionKeys.forEach((key) => {
-    if (body[key] !== undefined) {
-      optionsKeys[key] = sha256(canonicalJson(body[key]))
-    }
-  })
+  const optionKeys = ["thinking", "output_config", "max_tokens", "temperature", "top_p", "top_k", "service_tier", "container", "tool_choice", "context_management"]
+  const optionsKeys = optionFingerprints(body, optionKeys)
   const optionsHash = sha256(canonicalJson(optionsKeys))
 
   // Messages with rolling prefix hash
@@ -284,21 +298,6 @@ function fingerprintAnthropic(
     prevHash = prefixHash
     const chars = JSON.stringify(m).length
 
-    // Check message content for cache_control
-    if (Array.isArray(m.content)) {
-      m.content.forEach((block, bIdx) => {
-        if (block && typeof block === "object") {
-          const cc = (block as { cache_control?: unknown }).cache_control
-          if (cc && typeof cc === "object") {
-            cacheControls.push({
-              target: `message[${idx}].content[${bIdx}]`,
-              type: String((cc as { type?: unknown }).type ?? "ephemeral"),
-            })
-          }
-        }
-      })
-    }
-
     messagePrefixes.push({
       idx,
       role,
@@ -310,14 +309,6 @@ function fingerprintAnthropic(
     })
   })
 
-  const topCacheControl = body.cache_control
-  if (topCacheControl && typeof topCacheControl === "object") {
-    cacheControls.push({
-      target: "top",
-      type: String((topCacheControl as { type?: unknown }).type ?? "ephemeral"),
-    })
-  }
-
   return {
     protocol: "anthropic-messages",
     systemParts,
@@ -325,7 +316,7 @@ function fingerprintAnthropic(
     optionsHash,
     optionsKeys,
     messagePrefixes,
-    cacheControl: cacheControls.length > 0 ? cacheControls : undefined,
+    cacheControl: cacheMarkers(body),
     bodyHash,
   }
 }
@@ -339,12 +330,7 @@ function fingerprintOpenAIResponses(
 
   // System parts from instructions
   if (typeof body.instructions === "string") {
-    systemParts.push({
-      source: nameSystemPart(body.instructions, 0, namedParts),
-      hash: sha256(body.instructions),
-      chars: body.instructions.length,
-      estimatedTokens: estimateTokens(body.instructions.length),
-    })
+    systemParts.push(...systemFingerprints(body.instructions, 0, namedParts))
   }
 
   // Tools
@@ -369,6 +355,8 @@ function fingerprintOpenAIResponses(
   // Options
   const optionKeys = [
     "prompt_cache_key",
+    "prompt_cache_retention",
+    "prompt_cache_options",
     "reasoning",
     "temperature",
     "top_p",
@@ -378,13 +366,9 @@ function fingerprintOpenAIResponses(
     "service_tier",
     "text",
     "parallel_tool_calls",
+    "tool_choice",
   ]
-  const optionsKeys: Record<string, string> = {}
-  optionKeys.forEach((key) => {
-    if (body[key] !== undefined) {
-      optionsKeys[key] = sha256(canonicalJson(body[key]))
-    }
-  })
+  const optionsKeys = optionFingerprints(body, optionKeys)
   const optionsHash = sha256(canonicalJson(optionsKeys))
 
   // Messages from body.input
@@ -411,7 +395,7 @@ function fingerprintOpenAIResponses(
     })
   })
 
-  const cacheKey = typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : undefined
+  const cacheKey = typeof body.prompt_cache_key === "string" ? sha256(body.prompt_cache_key) : undefined
 
   return {
     protocol: "openai-responses",
@@ -421,6 +405,7 @@ function fingerprintOpenAIResponses(
     optionsKeys,
     messagePrefixes,
     cacheKey,
+    ...(typeof body.previous_response_id === "string" ? { previousResponseId: sha256(body.previous_response_id) } : {}),
     bodyHash,
   }
 }
@@ -439,12 +424,10 @@ function fingerprintOpenAIChat(
     const m = (msg && typeof msg === "object" ? msg : {}) as Record<string, unknown>
     const role = String(m.role ?? "user")
     if (role === "system" || role === "developer") {
-      const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "")
-      systemParts.push({
-        source: nameSystemPart(text, systemParts.length, namedParts),
-        hash: sha256(text),
-        chars: text.length,
-        estimatedTokens: estimateTokens(text.length),
+      const parts = Array.isArray(m.content) ? m.content : [m.content ?? ""]
+      parts.forEach((part) => {
+        const text = typeof part === "string" ? part : typeof part?.text === "string" ? part.text : canonicalJson(part)
+        systemParts.push(...systemFingerprints(text, systemParts.length, namedParts))
       })
     } else {
       chatMessages.push(m)
@@ -483,13 +466,9 @@ function fingerprintOpenAIChat(
     "reasoning_effort",
     "service_tier",
     "prompt_cache_key",
+    "tool_choice",
   ]
-  const optionsKeys: Record<string, string> = {}
-  optionKeys.forEach((key) => {
-    if (body[key] !== undefined) {
-      optionsKeys[key] = sha256(canonicalJson(body[key]))
-    }
-  })
+  const optionsKeys = optionFingerprints(body, [...optionKeys, "prompt_cache_retention", "prompt_cache_options"])
   const optionsHash = sha256(canonicalJson(optionsKeys))
 
   // Rolling prefix hashes per non-system message
@@ -514,10 +493,11 @@ function fingerprintOpenAIChat(
     })
   })
 
-  const cacheKey = typeof body.prompt_cache_key === "string" ? body.prompt_cache_key : undefined
+  const cacheKey = typeof body.prompt_cache_key === "string" ? sha256(body.prompt_cache_key) : undefined
 
   return {
     protocol: "openai-chat",
+    cacheControl: cacheMarkers(body),
     systemParts,
     tools,
     optionsHash,

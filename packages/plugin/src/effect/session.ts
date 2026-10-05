@@ -9,7 +9,7 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { SessionError } from "@opencode/schema/session-error"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
-import type { JsonSchema, Types } from "effect"
+import type { Effect, JsonSchema, Types } from "effect"
 import type { ModelHooks } from "./registration.js"
 
 export interface SessionPrompt {
@@ -58,6 +58,10 @@ export interface SessionCompaction extends SessionContext {
 export interface SessionGenerate extends SessionContext {}
 
 export interface SessionGenerated {
+  readonly kind?: "generate" | "title"
+  /** Epoch-ms request window, independent of when a subscriber observes the outcome. */
+  readonly started?: number
+  readonly ended?: number
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
@@ -87,6 +91,11 @@ export interface SessionModelRequest {
 }
 
 export interface SessionHttpRequest {
+  /** Identity and start time of this physical transport attempt, shared by all hook observers. */
+  readonly requestID?: string
+  readonly started?: number
+  /** Observers run after every request transform, immediately before transport. */
+  observers?: Array<(request: Request) => Effect.Effect<void>>
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
@@ -122,6 +131,11 @@ export interface SessionWebSocketHandshake {
  * provider's replies, so a rewrite that changes protocol meaning is on the plugin. Experimental.
  */
 export interface SessionWebSocketSend {
+  /** Identity and start time of this physical transport attempt, shared by all hook observers. */
+  readonly requestID?: string
+  readonly started?: number
+  /** Observers run after every frame transform, immediately before transport. */
+  observers?: Array<(frame: string) => Effect.Effect<void>>
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
@@ -164,6 +178,7 @@ export interface SessionWarmingSettings {
  * window (`activity`) and again before each warming request (`warm`). `settings` starts as the
  * configured value (for `warm`, the settings in force); set it to undefined to stop warming, or
  * change it. At `warm` a changed duration re-times the window from `since`.
+ * `warmed` is an outcome notification only; changes to its settings are ignored.
  */
 export interface SessionWarming {
   readonly sessionID: Session.ID
