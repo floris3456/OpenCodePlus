@@ -168,18 +168,22 @@ export function MonitorView(props: MonitorViewProps) {
       .then(
         (next) => {
           if (generation !== flight.generation) return
-          setReport(next)
-          setFailure(undefined)
+          // Compute maxIdx from the FILTERED view so the selection always points
+          // at an actually-visible row; the text filter drops rows independently
+          // of the server query and must not leave the selector past the end.
+          const shown = filterReport(next, settings().filterText)
           const maxIdx = Math.max(
             0,
             (!props.full || tab() === "tools"
-              ? next.groups.length
+              ? shown.groups.length
               : tab() === "cache"
-                ? (next.requests?.length ?? 0)
+                ? (shown.requests?.length ?? 0)
                 : tab() === "sessions"
-                  ? (next.sessions?.length ?? 0)
-                  : (next.requests?.length ?? 0)) - 1,
+                  ? (shown.sessions?.length ?? 0)
+                  : (shown.requests?.length ?? 0)) - 1,
           )
+          setReport(next)
+          setFailure(undefined)
           setSelected((index) => Math.min(index, maxIdx))
         },
         (error: unknown) => setFailure(error instanceof Error ? error.message : String(error)),
