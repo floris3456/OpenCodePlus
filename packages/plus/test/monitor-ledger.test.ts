@@ -3,12 +3,66 @@
 // through queryMonitor, never a mock. Raw ledger/attribution coverage lives in
 // monitor.test.ts; this file owns the query seams the page depends on.
 import { afterEach, expect, test } from "bun:test"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { Database } from "bun:sqlite"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
-import type { Ledger, SessionFacts } from "../src/monitor/ledger.js"
+import { createLedger, type Ledger, type SessionFacts } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
+
+const dirs: string[] = []
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })))
+})
+
+async function tempFile(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-monitor-ledger-"))
+  dirs.push(dir)
+  return path.join(dir, "monitor.db")
+}
+
+// An older monitor.db: the pre-migration shape, missing the columns later
+// releases added. createLedger must add them in place and keep every row.
+function writeOlder(file: string): void {
+  const db = new Database(file, { create: true })
+  db.exec(`
+    create table session (id text primary key, parent_id text, agent text, title text, directory text, run_id text, role text, first_seen integer not null, last_seen integer not null);
+    create table step (session_id text not null, message_id text not null, kind text not null, idx integer not null, epoch integer not null, agent text, provider text, model text, variant text, config text, started integer not null, ended integer, finish text, input integer not null default 0, output integer not null default 0, reasoning integer not null default 0, cache_read integer not null default 0, cache_write integer not null default 0, cost real not null default 0, primary key (session_id, message_id));
+    create table call (session_id text not null, call_id text not null, message_id text not null, parent_call text, idx integer not null, epoch integer not null, agent text, model text, config text, tool text not null, target text, status text not null, error text, started integer not null, ended integer, input_chars integer not null default 0, result_chars integer not null default 0, call_tokens integer not null default 0, result_tokens integer not null default 0, measured integer not null default 0, primary key (session_id, call_id));
+    create table epoch (session_id text not null, epoch integer not null, last_idx integer not null, primary key (session_id, epoch));
+    create table mark (id integer primary key autoincrement, at integer not null, label text not null);
+    create table meta (key text primary key, value text not null);
+    create table request (id text primary key, session_id text not null, kind text not null, is_title integer not null default 0, agent text, provider text, model text, variant text, started integer not null, ended integer, duration integer, status text not null default 'completed', error text, input_tokens integer not null default 0, output_tokens integer not null default 0, reasoning_tokens integer not null default 0, cache_read_tokens integer not null default 0, cache_write_tokens integer not null default 0, cost real not null default 0, message_id text, created integer not null);
+    create table request_fingerprint (request_id text primary key, session_id text not null, protocol text not null, system_parts text not null default '[]', tools text not null default '[]', options_hash text not null default '', options_keys text not null default '{}', message_prefixes text not null default '[]', cache_key text, cache_control text, body_hash text not null, created integer not null);
+    create table context_fact (id integer primary key autoincrement, session_id text not null, at integer not null, kind text not null, detail text not null default '{}', unique (session_id, at, kind, detail));
+  `)
+  db.query("insert into session (id, agent, title, first_seen, last_seen) values (?, ?, ?, ?, ?)").run(
+    "ses_old",
+    "build",
+    "Old chat",
+    1,
+    1,
+  )
+  db.query(
+    "insert into step (session_id, message_id, kind, idx, epoch, agent, provider, model, started, ended, finish, input, output, cache_read) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run("ses_old", "m1", "step", 0, 0, "build", "p", "m1", 1, 2, "stop", 100, 10, 50)
+  db.query("insert into request (id, session_id, kind, started, created) values (?, ?, ?, ?, ?)").run(
+    "req_old",
+    "ses_old",
+    "step",
+    1,
+    1,
+  )
+  db.query(
+    "insert into request_fingerprint (request_id, session_id, protocol, body_hash, created) values (?, ?, ?, ?, ?)",
+  ).run("req_old", "ses_old", "anthropic", "bodyhash", 1)
+  db.query("insert into meta (key, value) values ('schema', '1')").run()
+  db.close()
+}
 
 function ids(report: ReturnType<typeof queryMonitor>): string[] {
   return report.feed.map((entry) => entry.callID).sort()
@@ -253,4 +307,60 @@ test("a ping is listed with its kind and its usage survives the query", async ()
   expect(ping).toMatchObject({ kind: "ping", cacheRead: 8_000, output: 4, cost: 0.002 })
   expect(report.totals.pings).toBe(1)
   expect(report.totals.pingCost).toBeCloseTo(0.002)
+})
+
+test("an older monitor.db migrates in place and keeps its rows readable", async () => {
+  const file = await tempFile()
+  writeOlder(file)
+  const migrated = createLedger(file)
+  try {
+    // The added columns exist; nothing the old file stored was dropped.
+    expect(
+      migrated.db.query<{ name: string }, []>("pragma table_info(session)").all().some((c) => c.name === "team"),
+    ).toBe(true)
+    expect(
+      migrated.db.query<{ name: string }, []>("pragma table_info(request)").all().some((c) => c.name === "finish"),
+    ).toBe(true)
+    expect(
+      migrated.db
+        .query<{ name: string }, []>("pragma table_info(request_fingerprint)")
+        .all()
+        .some((c) => c.name === "response_id"),
+    ).toBe(true)
+    const report = queryMonitor(migrated, { scope: "all", view: "steps" }, { now: 10 })
+    expect(report.totals.steps).toBe(1)
+    expect(report.totals.input).toBe(100)
+    expect(report.requests?.find((entry) => entry.id === "req_old")).toMatchObject({ sessionID: "ses_old" })
+    expect(migrated.getFingerprint("req_old")?.bodyHash).toBe("bodyhash")
+    expect(migrated.db.query<{ value: string }, []>("select value from meta where key = 'schema'").get()?.value).toBe("2")
+  } finally {
+    migrated.close()
+  }
+})
+
+test("two handles share the same durable facts and the revision tracks the other's writes", async () => {
+  const file = await tempFile()
+  const first = createLedger(file)
+  const second = createLedger(file)
+  try {
+    const clock = { now: 10 }
+    const s = script("ses_shared", clock)
+    s.step("m1")
+    s.end("m1", "stop", usage(10, 5, 100))
+    collect(first, clock).observe(s.events[0]!)
+    collect(first, clock).observe(s.events[1]!)
+    const before = queryMonitor(second, { scope: "all", view: "steps" }, { now: 20 })
+    expect(before.totals.steps).toBe(1)
+    const revision = second.revision()
+    const t = script("ses_shared", clock)
+    t.step("m2")
+    t.end("m2", "stop", usage(10, 5, 200))
+    collect(first, clock).observe(t.events[0]!)
+    collect(first, clock).observe(t.events[1]!)
+    expect(second.revision()).not.toBe(revision)
+    expect(queryMonitor(second, { scope: "all", view: "steps" }, { now: 30 }).totals.steps).toBe(2)
+  } finally {
+    first.close()
+    second.close()
+  }
 })
