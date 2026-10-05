@@ -551,3 +551,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Line 2: tool-actor `set {id, active:true}`, a bare `set` and `create kind:"model"` activate the model, and the next request ran on it (`/monitor` Steps). `show`/`list` report it active.
   - Line 3: the flat and legacy member-only ids refuse with `row.unknown` naming the member row (`item:global:Sweep/:Sweep-Only:model:…`), and the named row activates and is used, as README/SPEC document. The literal `Planner`/`Basic` instance is NOT LIVE here, because Basic ships disabled in this home; the focused test covers it (`model.test.ts` and `member-model-activation.test.ts`: 58 pass).
   - Log: 0 ERROR. The run survived the provider restart via a followup. Child stopped.
+- 17:31: Instructions T4 delegated (T132, `w-c0ecd03b294a9261`, base `9c6b6f9c3d`, with the A5 workaround in place). Remaining: Instructions T1, T5 and T8, and Monitor T4.
