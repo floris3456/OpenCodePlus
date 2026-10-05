@@ -157,6 +157,13 @@
 - Plan: one-line team-owner exclusion before cascade branches; extend actual `agent.delete` regression with same-id team customization/split controls. Parent handles this small fix, Plus propagation/RPC/Monitor-focused checks and typecheck; final Instructions live sweep covers delete and preserved member owner.
 - Actual `agent.delete` regression failed before repair: expected two member-owned records, received `[]`; standalone records correctly deleted. One-line exclusion applied; propagation/RPC/Monitor plugin+requests **84 pass, 3 pre-existing skips, 0 fail**, Plus typecheck passes. Member controls survive, standalone re-create starts clean, single revision preserved. Live final sweep still pending.
 
+### #12 — punctuation-equivalent category names collide on row identity (open)
+
+- Source review: category create/rename checks names case-insensitively, but row ids use `categorySlug`; `One Two` and `One-Two` both produce `category:one-two`. Creation can return the same id twice; id-based rename/delete then selects the first category and one tab hides the other.
+- Where: `packages/plus/src/index.ts:1465,1494`, `instructions/categories.ts`; breaks T8 category identity/rename/delete.
+- Plan: reuse the handler's existing name-or-slug `find` for create/rename collision validation, before any write. Actual API regression proves refusal leaves revision/records unchanged, unique names and same-category punctuation/case rename still work. Parent handles two-line repair/test; final live categories sweep includes refusal.
+- Actual create regression failed before repair (`ok:true` instead of refusal). Both name/slug checks now reuse `find`; parent category/RPC/Monitor plugin+requests **85 pass, 3 pre-existing skips, 0 fail**, Plus typecheck passes. No-write refusal controls and same-id rename pass; live pending final sweep.
+
 ## Live evidence
 
 None yet.

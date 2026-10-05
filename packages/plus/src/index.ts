@@ -1462,7 +1462,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           const name = input.name?.trim() ?? ""
           const invalid = validName(name)
           if (invalid !== undefined) return { ok: false, reason: invalid }
-          if (categoryByName(all, name) !== undefined) return { ok: false, reason: `category "${name}" already exists` }
+          if (find(name) !== undefined) return { ok: false, reason: `category "${name}" already exists` }
           return write(createCategoryRecord(all, name, updated), {
             id: `category:${categorySlug(name)}`,
             name,
@@ -1491,7 +1491,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           if (invalid !== undefined) return { ok: false, reason: invalid }
           const existing = find(from)
           if (existing === undefined) return { ok: false, reason: `category "${from}" does not exist` }
-          const collision = categoryByName(all, to)
+          const collision = find(to)
           if (collision !== undefined && collision.name !== existing.name)
             return { ok: false, reason: `category "${to}" already exists` }
           const next = renameCategoryRecord(all, existing.name, to, updated)

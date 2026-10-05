@@ -203,6 +203,35 @@ test("the workspace shows the user category tab and lists its rows", () => {
 
 // ---- the instruction tools -------------------------------------------------
 
+test("category create and rename refuse another category's row id without a write", async () => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-category-identity-"))
+  roots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  const first = await api.category({ action: "create", name: "One Two" })
+  expect(first.ok).toBe(true)
+  const beforeCreate = await load(project)
+  const duplicate = await api.category({ action: "create", name: "One-Two" })
+  expect(duplicate.ok).toBe(false)
+  if (!duplicate.ok) expect(duplicate.error.message).toContain("already exists")
+  expect(await load(project)).toEqual(beforeCreate)
+
+  const second = await api.category({ action: "create", name: "Other" })
+  expect(second.ok).toBe(true)
+  const beforeRename = await load(project)
+  const collision = await api.category({ action: "rename", name: "Other", to: "One_Two" })
+  expect(collision.ok).toBe(false)
+  if (!collision.ok) expect(collision.error.message).toContain("already exists")
+  expect(await load(project)).toEqual(beforeRename)
+
+  // Renaming the same category's punctuation/case retains its unambiguous id.
+  const renamed = await api.category({ action: "rename", name: "category:one-two", to: "ONE-TWO" })
+  expect(renamed.ok).toBe(true)
+  if (renamed.ok) expect(renamed.value.id).toBe("category:one-two")
+  expect((await load(project)).records.filter((record) => record.type === "category").map((record) => record.name)).toEqual(["ONE-TWO", "Other"])
+})
+
 function toolContext(): Tool.Context {
   return {
     sessionID: Session.ID.make("ses_categories_test"),
