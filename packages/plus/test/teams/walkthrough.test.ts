@@ -457,12 +457,12 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "text", "badges", "source"] }
       const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_list"), scopeQuery, parent)
       call("instructions_list", scopeQuery, scopeRows)
-      // One produced row at two addresses: the member is listed under the
-      // project team it belongs to and again as the Defaults agent the host
-      // reports once it is installed.
+      // T5: a project team member never appears under Defaults. The run
+      // edit-scope row is produced once, at the member's own `<team>/:<member>`
+      // path; the host's Defaults echo of the installed member is not a
+      // Defaults agent row and must not list there.
       expect(scopeRows.rows.map((row) => row.id)).toEqual([
         `item:project:${TEAM}/:implementer:perm:edit:run:${childRun}`,
-        `item:defaults:implementer:perm:edit:run:${childRun}`,
       ])
       const scopeRow = scopeRows.rows.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
       expect(scopeRow).toBeDefined()
