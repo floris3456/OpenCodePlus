@@ -119,10 +119,7 @@ fields, now owned by `t6-renamed`):
 `team_delegate` "Delegate to" / team-enablement rows are covered under the
 team lines below.
 
-### Line 3 — session history keeps the old name
-
-Recorded after a live chat check below (assistant/session message still names
-the old agent id). See "Line 3" section.
+### Line 1 (continued) — on-disk team member and team rows also prompt, prefilled and validated
 
 **Member rename (Global team, on-disk member).** Created Global team `t6crew`
 (preset Basic) and added member `mate6` (preset Explore). With the member row
@@ -191,7 +188,7 @@ Global › Teams › t6squad
 Log: `{"op":"team.rename","target":"team:global:t6squad","summary":"team.rename t6crew to t6squad (global)","revision":500}`.
 **PASS** (team row: prefilled, validated, directory/records/selection follow).
 
-### Line 4 — `team_delegate` "Delegate to" rows naming a member follow — **FAIL**
+### Line 2 (continued) — the team directory and team-scoped records follow; the `team_delegate` row does not — **FAIL on that row only**
 
 Setup: in the team `t6squad`, the member `build-seat` carries a stored
 "Delegate to" override for the member `mate6-renamed`. I toggled that row off on
@@ -234,9 +231,15 @@ so the filter skips it. The unit test
 `packages/plus/test/rename.test.ts` seeds the row **with** `team: teamRef`, so
 the API path passes while the TUI-written shape fails live.
 
-**FAIL.** Recorded exactly; no source changed.
+**FAIL** (that stored row). Recorded exactly; no source changed.
 
-### Line 3 — session history keeps the old name
+### Line 2 (continued) — member file, team directory, team enablement and selection all followed
+
+The team rename above moved the whole directory and every team-scoped link and
+enablement row. The member rename moved the member file and its link. Only the
+`team_delegate` "Delegate to" stored row failed to follow.
+
+### Line 3 — session history keeps the old name — PASS
 
 Live chat check. Started a new chat session on the worktree server, switched it
 to the user agent `t6-palette` (created by the palette rename below) and sent
@@ -261,19 +264,7 @@ assistant agents after rename: seq 27 "t6-palette", seq 15 "t6-palette", seq 9 a
 Every stored session row kept the old name `t6-palette`; the rename touched no
 session storage. **PASS.**
 
-### Line 6 — the palette command `plus.agent.rename` uses the same path
-
-In the chat, `Ctrl+P` → typed `rename agent` → the palette listed
-`Rename agent   OpenCodePlus`. Running it opened the same
-`Rename agent / Select an agent to rename` picker (the `build` built-in and
-defaults rows disabled, user agents listed with their scope/path), then
-`Rename <id>` prompt prefilled with the id and the same validation. Renaming
-`t6-renamed` → `t6-palette` wrote
-`.../config/opencode/agents/t6-palette.md` and logged
-`{"op":"agent.rename","target":".../agents/t6-palette.md","summary":"agent.rename t6-renamed to t6-palette (global)","revision":503}`.
-**PASS** (palette uses the same RPC path).
-
-### Line 5 — refusals: built-in agent, shipped Defaults team/member, ancestor-backed, `protectedAgents`
+### Line 4 — not offered / refused: built-in agent, shipped Defaults team/member, ancestor-backed, `protectedAgents`
 
 **Built-in agent — PASS.** Selected the Global OpenCode `build` row (footer
 shows no rename hint on a built-in) and pressed `shift+r`. A toast appeared:
@@ -284,14 +275,117 @@ Agent build is built in and cannot be renamed
 
 No prompt, no file/record change. **PASS.**
 
-**Shipped Defaults team and member — recorded below.**
+**Shipped Defaults team and member — NOT LIVE (no shipped Defaults team row exists).** The Defaults tree in this build lists only the `Every member` inventory under Teams (`Defaults › Every member`, no team rows); the one shipped team `basic` appears only as a **Plus preset** (`Presets › Teams › Plus › Basic`). Pressing `shift+r` on `Presets › Teams › Plus › Basic › planner` opened **`Rename category`** (the category rename), not a row rename, and its footer showed no `shift+r rename` — preset rows are not renamable. There is no shipped Defaults team/member row to exercise live. The refusal is covered by the focused test `packages/plus/test/rename.test.ts` → *"instructions.set rename covers agent, member and team rows and refuses Defaults rows"*, which asserts `team:defaults:ship` and `team:defaults:ship:mate` fail with a message containing `shipped`. Ran `bun test test/rename.test.ts`: **6 pass, 0 fail** (see log below). NOT LIVE (covered by test).
 
-**Ancestor-backed agent and `protectedAgents` (tool actor) — recorded below.**
+**Ancestor-backed agent — NOT LIVE (not constructed live); covered by test.**
+Test `rename.test.ts` → *"rename refuses built-in and ancestor-backed agents"* creates an agent file in the parent directory and asserts `renameAgent` fails with `agent.invalid` and a message containing `ancestor`. Included in the 6 passing tests.
+
+**`protectedAgents` for a tool actor — NOT LIVE (no tool actor in the TUI); covered by test.**
+Test `rename.test.ts` → *"a tool actor may not rename a protected agent"* writes `protectedAgents: ["alice"]` in `.opencodeplus/project.json` and asserts `instructions_set` with `rename` fails with `agent.protected` and the file is untouched. Included in the 6 passing tests.
+
+Focused test run, from `packages/plus`:
+
+```
+$ bun test test/rename.test.ts
+(pass) rename an agent moves its file and records of every kind and keeps resolution
+(pass) rename a member moves its records and the Delegate-to rows that name it
+(pass) rename a team moves its directory, members, records and enablement
+(pass) rename refuses built-in and ancestor-backed agents
+(pass) instructions.set rename covers agent, member and team rows and refuses Defaults rows
+(pass) a tool actor may not rename a protected agent
+ 6 pass
+ 0 fail
+ 49 expect() calls
+Ran 6 tests across 1 file.
+```
+
+**Line 4 summary:** live built-in agent refusal **PASS**; shipped Defaults team/member, ancestor-backed agent and `protectedAgents` tool-actor refusal **NOT LIVE** in the TUI (no shipped Defaults team row exists; the others need a constructed tree or a tool actor) and each is covered by a passing focused test above.
+
+### Line 5 — the palette command `plus.agent.rename` uses the same path — PASS
+
+In the chat, `Ctrl+P` → typed `rename agent` → the palette listed
+`Rename agent   OpenCodePlus`. Running it opened the same
+`Rename agent / Select an agent to rename` picker (the `build` built-in and
+defaults rows disabled, user agents listed with their scope/path), then the
+`Rename <id>` prompt prefilled with the id and the same validation. Renaming
+`t6-renamed` → `t6-palette` wrote
+`.../config/opencode/agents/t6-palette.md` and logged
+`{"op":"agent.rename","target":".../agents/t6-palette.md","summary":"agent.rename t6-renamed to t6-palette (global)","revision":503}`.
+**PASS** (palette uses the same RPC path).
+
+### Line 6 — Tools: `instructions.set({ id, rename: "<new>" })` on agent, member and team rows; documented in `teaching.ts`
+
+Documentation: `packages/plus/src/instructions/teaching.ts` line 79 documents
+`set({ id, rename: "<new name>" })` renaming a Project/Global user agent, an
+on-disk team member or a Project/Global team, listing the moved file/records and
+the refusals; line 138 lists the `rename.invalid` error. Quoted:
+
+```
+set({ id, rename: "<new name>" }) renames a Project/Global user agent, an on-disk team member or a Project/Global team (TUI `R`). The agent file or team directory moves and every stored record that names the thing ... moves to the new name in one revision; an open tree selection follows it. Session history keeps the old name. Built-ins ..., shipped Defaults teams and members, ancestor-backed agents, and (for a tool actor) protected agents' rows refuse with `rename.invalid`/`agent.protected`.
+```
+
+Behaviour: focus of the passing test
+*"instructions.set rename covers agent, member and team rows and refuses Defaults rows"*
+(part of the 6 passing `bun test test/rename.test.ts` above): `instructions_set`
+with `{ id: "agent:project:alice", rename: "bob" }`, `{ id:
+"team:project:crew:m1", rename: "m2" }` and `{ id: "team:project:crew",
+rename: "squad" }` all succeed and return the new row id; Defaults rows refuse
+with `shipped`. **PASS** (documented and covered by the passing test). The tool
+was not driven from a live model chat in this sweep; that limitation is noted.
+
+## Remaining contract line — key/help/hints sub-line
+
+Recorded at the top of Results: rename is on `shift+r` (help Change group and
+the row footer both say so); `r` alone is reset. PASS.
 
 ## Server log — every ERROR and WARN line
 
-(pending)
+`<dev-home>/data/opencode/log/opencode-local.log` at cleanup: **225 lines, 1
+ERROR, 7 WARN.** Full lines:
+
+**The one ERROR** (my own chat attempt while the session was briefly on the
+`Scout` team member, whose `claude-fable-5-1` has no provider route in this dev
+home — a test-setup error, not a rename failure):
+
+```
+timestamp=2026-10-05T16:02:32.905Z level=ERROR run=a6e9eeef message="Failed to drain Session" cause="AI.Error: unknown provider for model claude-fable-5-1 ..." role=server sessionID=ses_ef3328fd6ffeR3jnwgXNQrlvRE
+```
+
+The retry after switching to the user agent `t6-palette` (model
+`cliproxyapi/claude-opus-5-5`) succeeded and returned `READY`.
+
+**Six WARNs** are the expected `executor-controlled plugin source refused`
+refusal control (workspace root and this worktree's `.opencode`):
+
+```
+timestamp=2026-10-05T15:28:02.082Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=98 role=server
+timestamp=2026-10-05T15:28:02.082Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=98 role=server
+timestamp=2026-10-05T15:28:03.771Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode/opencode.json type=document http.span=70 role=server
+timestamp=2026-10-05T15:28:03.771Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/.opencode type=directory http.span=70 role=server
+timestamp=2026-10-05T15:28:03.771Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t130dc70-20261005-1726/.opencode/opencode.jsonc type=document http.span=70 role=server
+timestamp=2026-10-05T15:28:03.771Z level=WARN run=a6e9eeef message="executor-controlled plugin source refused" path=/home/bliss/OpenCodePlus/run/plus/data/opencodeplus/teams/worktrees/opencode/Flash-C-Worker/t130dc70-20261005-1726/.opencode type=directory http.span=70 role=server
+```
+
+**One further WARN** is a direct consequence of the rename contract (session
+history keeps the old name): after `t6-palette` was renamed to `t6-history`, the
+still-open chat session was pinned to the old id, so a warming ping could not
+find the agent under its new name:
+
+```
+timestamp=2026-10-05T16:09:41.463Z level=WARN run=a6e9eeef message="failed to warm session" sessionID=ses_ef3328fd6ffeR3jnwgXNQrlvRE cause="Cause([Fail(Session.AgentNotFoundError: Agent not found: \"t6-palette\")])" role=server
+```
 
 ## Result
 
-(pending)
+End-state lines verified against this worktree's own build (the six contract
+lines from the attached brief):
+
+- **Line 1** (`shift+r` on a renamable row prompts prefilled, validated like creation, and renames: Project/Global user agents, on-disk team members, Project/Global teams; another free key with help and hints if `R` collides): **PASS** — key is `shift+r`, in help and the row footer; agent, member and team all renamed live with prefilled prompts and validation/collision refusals.
+- **Line 2** (its file or team directory; every stored record — customizations, splits, models, rules, links, warming rows, team-scoped records, `team_delegate` "Delegate to" rows naming a member, team enablement; the tree selection — all follow): **PASS for everything except the `team_delegate` "Delegate to" stored row, which is a FAIL.** Agent file/records/selection, member file/link, team directory/links/enablement all followed.
+- **Line 3** (session history keeps the old name): **PASS** — the stored `session_v2`/`session_message` rows kept `t6-palette` after the rename.
+- **Line 4** (not offered and refused with a clear message: built-in OpenCode/Special agents, shipped Defaults teams and members, ancestor-backed agents, and rows of a `protectedAgents` agent for a tool actor): built-in agent **PASS** live; shipped Defaults team/member, ancestor-backed agent and `protectedAgents` tool actor **NOT LIVE** live (no shipped Defaults team row exists; the others need a constructed tree/tool actor) but covered by 6 passing focused tests.
+- **Line 5** (palette `plus.agent.rename` uses the same path): **PASS**.
+- **Line 6** (Tools `instructions.set({ id, rename })` on agent, member and team rows; documented in `teaching.ts`): **PASS** (documented; covered by the passing tool test) — not driven from a live model chat.
+
+**One live defect found (the `team_delegate` "Delegate to" row does not follow a
+member rename); no source file changed.** Only this evidence file was written.
