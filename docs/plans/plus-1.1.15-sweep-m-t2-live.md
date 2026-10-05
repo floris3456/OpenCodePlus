@@ -154,3 +154,122 @@ named, instruction update named).
 Did: pending warming off + wait past the 5 m lifetime. Below.
 
 PLACEHOLDER_B5
+
+### B6. provider account changed (likely)
+
+Did: a CPA account switch/handoff mid-chat cannot be driven from this UI in a
+bounded sweep. The cause path is covered by the focused test
+`test/monitor-cache.test.ts` "each named cause is derived from real
+fingerprints, usage and facts, with ordered confidence": a real
+`account_switch` context fact between the two requests yields `cause:
+account-changed`, `confidence: likely`, evidence `Provider account changed`, and
+`detail.accounts[0]` `{ from: "account-a", to: "account-b" }`. The ordered check
+places it after expiry. `bun test test/monitor-cache.test.ts`: 14 pass.
+
+**PASS (NOT LIVE: not reproduced on the wire)** — the cause, confidence and
+account evidence are verified by the named focused test; no CPA handoff was
+provoked in this sweep.
+
+### B7. unknown: prefix identical and within lifetime → "provider-side eviction or routing" with all evidence
+
+Did: the second request (`16:28:10`) had an identical reusable prefix and a gap of
+2.5 m, within the 5 m lifetime.
+
+Cache row: `16:28:10 step [MISS] unknown 5k Reusable ...or routing`.
+
+Detail (`4bfc60bf-5719-430d-b9fd-3d39c59a3595`):
+`[MISS] Cause: unknown (unknown) · Expected prefix: 12.9k · Cache read: 5k · Miss
+tokens: 7.8k`; `Gap since last request: 2.5m · Cache lifetime: 5m · Warming: on`;
+`Pings on the prefix: 0`; evidence
+`Reusable prefix unchanged, within cache lifetime; provider-side eviction or routing`
+and `Expected reusable prefix: 12889 tokens (previous real prompt usage); actual
+cache read: 5000`.
+
+**PASS** (cause `unknown`, confidence unknown, "provider-side eviction or
+routing" plus the gap/lifetime/expected-versus-actual evidence).
+
+## C. Extra signals
+
+### C1. unstable prefix: a segment changing on 3+ consecutive requests is flagged with its name
+
+Did: not reproduced on the wire in this sweep (would need three consecutive
+requests each changing the same segment). Covered by the focused test
+`test/monitor-cache.test.ts` "signals: three consecutive named changes, pings and
+next hit, unread writes, context at compaction": four requests each with a
+changed `system` part yield
+`expect(report.unstable).toContainEqual({ sessionID: "unstable", segment: "system
+part AGENTS.md", streak: 3 })`. The Overview/Cache page renders the warning from
+that same `report.unstable`. `bun test test/monitor-cache.test.ts`: 14 pass.
+
+**PASS (NOT LIVE: not reproduced on the wire)** — flag plus segment name verified
+by the named focused test.
+
+### C2. ping effectiveness: pings sent, their cost, and whether the next real request hit
+
+Did: the owned chat sent a warming ping at `16:35:29` (`ping [HIT] — 12.9k Cache
+rea...917 tokens`); the Overview totals read `pings: 1 · cost: $0.00`. The Cache
+detail of the ping (`448774c5-71e7-4d18-932d-7a92f6c12ed2`) reads
+`Pings on the prefix: 0` (this request *is* the ping). The cache analysis
+attributes the next real request's outcome to a ping
+(`WindowedPings.followedByHit/Miss`, `packages/plus/src/monitor/cache.ts:840-849`)
+and the focused test
+`test/monitor-cache.test.ts` "signals: three consecutive named changes, pings and
+next hit, unread writes, context at compaction" asserts
+`report.pings` `{ sent: 3, cost: 0.03, followedByHit: 1, followedByMiss: 1 }`.
+`bun test test/monitor-cache.test.ts`: 14 pass.
+
+**PASS** (live ping count and cost; follow-by-hit/miss by the named focused
+test).
+
+### C3. miss cost: tokens re-written or re-read uncached because of misses, and their cost when pricing is known
+
+Did: the second request is the one live miss:
+`16:28:10 step [MISS] unknown 5k ...`, Detail
+`Miss tokens: 7.8k`, and the totals read `miss cost: —` (unknown), which is the
+honest omission (pricing was not recorded for this model). The known-pricing and
+known-zero cases are covered by `test/monitor-cache.test.ts`
+"miss cost uses recorded pricing, failed pings cannot renew cache lifetime, and
+cause priority is stable". `bun test test/monitor-cache.test.ts`: 14 pass.
+
+**PASS** (live miss tokens 7.8k and omitted unknown miss cost; pricing and
+conflict by the named focused test).
+
+### C4. cache writes never read before expiry
+
+Did: the owned chat recorded `write: 0` throughout, so no unread-write signal
+could arise live. Covered by `test/monitor-analysis.test.ts` "#8: unstable and
+unread honor the selection and the as-of cutoff, and expiry evolves without
+writes". `bun test test/monitor-analysis.test.ts`: 18 pass.
+
+**PASS (NOT LIVE: no cache writes)** — the unread signal is verified by the
+named focused test; this route reports no cache writes.
+
+### C5. context size now versus at the last compaction
+
+Did: the chat had no compaction, so the Overview "Context Size" shows the live
+value (`Context Size: 12.9k tokens`) and no at-compaction comparison. The
+compact epoch comparison is covered by `test/monitor-cache.test.ts` "signals:
+three consecutive named changes, pings and next hit, unread writes, context at
+compaction", which asserts `context` `{ sessionID: "ping", now: 10000, atCompaction: 7010 }`.
+`bun test test/monitor-cache.test.ts`: 14 pass.
+
+**PASS (NOT LIVE: no compaction)** — context-now live; now-versus-at-compaction
+by the named focused test.
+
+## D. Compaction cold start (notes recipe)
+
+Did: pending. Below.
+
+PLACEHOLDER_D
+
+## E. Agent tools (Code Mode)
+
+Did: pending. Below.
+
+PLACEHOLDER_E
+
+## F. Log and cleanup
+
+Did: pending. Below.
+
+PLACEHOLDER_F
