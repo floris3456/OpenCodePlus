@@ -27,6 +27,7 @@
 - Checks at merge: core focused five files **45 pass**, core/plugin/plus typechecks pass. Monitor files **49 pass / 5 fail**: all five are the pre-B2 view expecting old session-plus-descendants semantics; repair belongs to B2 (#4). Warnings in monitor refusal controls deliberately exercise containment; monitor-plugin fixture registration warnings need follow-up inspection.
 - Live acceptance pending: short warming, two messages, three pings, usage and stable warming status, cache read on next message.
 - #2 repair reviewed and landed `de7c1952bf`: transport-only kind override preserves primary content hooks and labels model/HTTP/WS as generate. Core real HTTP middleware and Plus real hook regressions prove one completed fingerprinted row, warming relabel in place, pinned identities, hashed failure and unrelated-step refusal. Parent core five files **46 pass**, Plus requests **18 pass**, core/plugin/plus typechecks pass. T79 stopped; T84 `w-524a6a474852446e` live report running at this HEAD.
+- Runtime evidence decision: the private source server actually opens `opencode-local.log` (kernel fd proof from T81), not necessarily the plan's `opencode.log`; live workers notified to read the actual file(s), never treat the missing alternate filename as no errors.
 
 ### A3/A6/B6 — pending independent repairs
 
@@ -66,6 +67,11 @@
 
 - Reviewed and landed `2f7287ee59`: two stale expectations, no production changes. Shell summary correctly describes the existing per-command allow-list; three registrations correctly include team-member enforcement. Permission/catalog assertions preserved. Full rationale in `plus-1.1.15-a6-stale-tests.md`.
 - Parent `bun test test/descriptions.test.ts test/team-query-off.test.ts`: **12 pass**, Plus typecheck pass. Stopped.
+
+### Additional Instructions review
+
+- Personally read T1/T2/T4/T5 initial commits and current source: real config directory and cascade, process-wide store notifications + Location publish, registered team members/Defaults filtering, local model newest-wins reseeding. Found #11 cascade isolation and fixed it; A5 workaround evaluation still pending. T8 source/category/tree/key review found #12 and #14.
+- Current focused five files: **95 pass / 2 fail**; both failures are post-B2 active-team hint/count expectations (new M), sent to T83 under #7. The other four files (agents/tree/categories/propagation) pass. TUI real local model refresh tests **2 pass**, TUI typecheck passes. Source tests are not multi-TUI live acceptance.
 
 ### B3 — review in progress
 
@@ -129,6 +135,7 @@
 - Plan: repair minimal existing seams in page/route/settings/tabs/query and fixtures/story; preserve compact capabilities, temporary drill-downs and persisted settings. Add actual-ledger tests for compact drill, M open/back, filters/selected detail, session/tree ownership, polling and narrow columns/scroll. Live every tab/scope/window and M via both composer tabs at 80/160. Keep optional RPC additions and privacy.
 - Worker T83 `w-d97ad6d4f18f9ee2` running from `2f7287ee59`. #1/#6 worker T82 `w-b932eadad70bb911` running from `ae09701991`.
 - Root preflight `bun run check` stopped at lint (before typechecks): story `monitor.tsx:466/473` uses restricted `Reflect.get`, two errors. T83 notified to replace these at the typed fixture boundary; canonical final gate remains pending.
+- Parent broader focused check also finds two stale active-team expectations after new M: hint list misses monitor/M and commands expect 6 instead of 7. T83 notified; action assertions must remain and actual M open/back regression added.
 
 ### #8 — derived Monitor report loses unknowns/state and window semantics (open)
 
@@ -136,6 +143,7 @@
 - Source review: windowed ping `sent`/cost use filtered requests but followedByHit/Miss, unstable and unread reuse entire session analysis. Out-of-window signals can exceed sent or describe another period. Agent tokens omit reasoning; Sessions UI token total omits cache reads/writes/reasoning.
 - Weight: inaccurate Monitor T2 signals / T3 metrics, not unknown provider-routing behavior.
 - Plan: after #3 lands, correct report aggregation/omission and per-session real state using existing query/event/run seams; filtered signals honor the requested window, retain history only as evidence/predecessors. Focused actual-ledger regressions for unknown vs known pricing, windowed pings/unstable/unread, legacy breakdown, running/completed/error states and reasoning/cache-inclusive totals. T83 handles visible Sessions token total; avoid new durable derived state. Re-check page scopes/windows live.
+- Further review: unread writes are counted even before their expiry (analysis has no as-of time), and later out-of-window reads can change historical-window signals. Session `agent` is overwritten by title/generate hook identities; derive/enrich Sessions from real host active/outcome/agent when available, not the last auxiliary request. `ctx.session.active()` and `Session.Info.outcome` are existing authoritative seams.
 
 ### #9 — legacy call attribution persists content-bearing errors/targets (open)
 
@@ -164,9 +172,21 @@
 - Plan: reuse the handler's existing name-or-slug `find` for create/rename collision validation, before any write. Actual API regression proves refusal leaves revision/records unchanged, unique names and same-category punctuation/case rename still work. Parent handles two-line repair/test; final live categories sweep includes refusal.
 - Actual create regression failed before repair (`ok:true` instead of refusal). Both name/slug checks now reuse `find`; parent category/RPC/Monitor plugin+requests **85 pass, 3 pre-existing skips, 0 fail**, Plus typecheck passes. No-write refusal controls and same-id rename pass; live pending final sweep.
 
+### #13 — private ping tail is falsely described as a changed cache prefix (open)
+
+- Actual isolated-ledger reproduction used real Anthropic wire fingerprints: unchanged long system + user history, assistant cache marker before the ping's private last user prompt; next primary preserves that marked prefix and replaces the uncached private tail with new user input. Report says `miss / prefix-changed`, `firstDivergence: message 3 (text)`, expected 9193, gap 10000 ms, lifetime 300000 ms, healthy ping at 390000. It names normal private→real input replacement as the certain miss cause although the reusable marked prefix is unchanged.
+- Where: `monitor/cache.ts` full-message comparison/cause selection. Breaks T2 honest cause/evidence, is the real B1 warming shape, not relay-account conjecture.
+- Plan: compare/report changes of the reusable prefix, not the known uncached ping tail; preserve exact final-wire fingerprint and show real divergence elsewhere. Minimal existing ping kind/cache-marker seams; regressions for healthy/failed/different-model pings, normal next user input, and a genuinely changed marked system/message. Within lifetime an unchanged reusable prefix must remain unknown/provider-side; over lifetime only successful compatible pings refresh it. Owned B4/final live re-check.
+
+### #14 — category selection changes what Delete does to content rows (open)
+
+- Source review: Instructions `remove()` first handles an explicit category header, then unconditionally deletes the selected user category even when `current()` is a model/item/agent row. Moving a deletable model into a category means d now asks to delete the category instead of the model; sidebar deletion is similarly hijacked. T8 says categories are display-only and editing stays unchanged; T7 model d must remain.
+- Where: `packages/plus/src/tui/instructions/route.tsx:1028–1033` and its key handling; category add also needs live verification in Models where the direct add path may bypass the generic Category choice.
+- Plan: only an explicit category header targets category deletion; other rows retain their original delete path. Real route/key regression and live category/model delete plus header delete/refusal control, at 80/160; include T8 move/reset/edit preservation and help/hints.
+
 ## Live evidence
 
-None yet.
+- T81 had no commit or changed worktree file for 35 minutes and no report: stopped force per watchdog, not accepted as complete. Its named PTY was in a rename dialog at 160×48 (no busy indicator); owned SQLite showed one idle session, no compaction and 12 completed/zero unfinished requests. Kernel cwd/fds established owned test PIDs 2623601/2623736 and isolated log/database paths. Parent exited via palette; PTY exit 0, `/proc` confirms both PIDs gone. `pilotty kill` then reports SESSION_EXITED. Partial evidence retained in the old dev home, no source/state deletion. A fresh A1 acceptance run is required; no end-state claim from incomplete evidence.
 
 ## Open findings for morning
 
