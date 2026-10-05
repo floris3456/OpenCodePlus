@@ -5,8 +5,8 @@
 - Branch/worktree: `plus-1.1.15_overnight`; initial HEAD `75a8d9e20f`.
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B3 review/issue repairs alongside B1/A1 acceptance; repair B2 page gaps (#7) before live acceptance.
-- Pending: B1/A1/A2/B2 live, #1/#6/#7/#8/#10/#13/#14/#15 repairs, A4/A5/B4 and F. A3/A6/B6 source tests complete; B6 live is in the page acceptance.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; their source workers stopped. B1 fresh live T88, #1/#6/#15 T82, A1 live T86, #7 fresh T87, #8/#13 T89 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
+- Pending: A1/A2/B2 live, #1/#6/#7/#8/#10/#13/#14/#15 repairs, A4/A5/B4 and F. B1 complete; A3/A6/B6 source tests complete; B6 live is in the page acceptance.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`, #9 landed `4588c190a2`; their source workers stopped. B1 fresh live T88 evidence landed `fe583672d8`, worker stopped. #1/#6/#15 T82, A1 live T86, #7 fresh T87, #8/#13 T89 running. T81/T83/T84 stopped for no material worktree activity. A3/A6/B6 tests landed and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -20,7 +20,7 @@
 
 ## Progress and verification
 
-### B1 — in progress
+### B1 — complete (source regressions and owned live verified)
 
 - Input branch: `team/Heavy-Implementer/t54a9ef-20261004-1204`.
 - Must preserve pinned warming agent/model, `durable: false`, cache policy and private prompt; add generated kind/error, reconcile core tests and Plus index/API.
@@ -32,6 +32,9 @@
 - Runtime evidence decision: the private source server actually opens `opencode-local.log` (kernel fd proof from T81), not necessarily the plan's `opencode.log`; live workers notified to read the actual file(s), never treat the missing alternate filename as no errors.
 - Fresh B1 live T88 `w-b9c40c8bc0aa8b1d` at `89a86fac9a`; evidence-only scope `docs/plans/plus-1.1.15-b1-live.md`, owned PTY `overnight-b1-live-retry`. T84 stopped, partial facts/cleanup below; full two-message/three-ping/stable-status/next-read sequence still required.
 - T88 attempt 1 ended `no_report`, with only setup checkpoint `9d79f74ea2`: four core files 33 pass, Plus requests 18 pass, core/Plus typechecks; actual Defaults › Models shows saved `warm 4m · every 1m`. No provider failure was reported. Resumed the still-needed idle run immediately as attempt 2 to complete the existing owned test rather than repeat setup; required to append observations and explicitly `team_finish`. No ping/provider-use/status/cleanup acceptance inferred from the setup checkpoint.
+- T88 attempt 2 checkpoint `088c5d1534` proved two messages/three real pings/status/next-cache-read/pinned composer-only controls, but ended `no_report` with cleanup not yet observed. Attempt 3 explicitly finished with corrected phase totals, encoded-fingerprint-column labels, actual log classification and cleanup; full evidence diff reviewed and landed `fe583672d8`, run stopped immediately. Parent core five focused files **46 pass**, Plus requests **18 pass**, core/Plus typechecks pass. No source or tests weakened.
+- Actual owned live at `89a86fac9a`: Defaults saved `warm 4m · every 1m`; two messages returned OK. Exactly three completed fingerprinted ping rows with pinned `build/cliproxyapi/deepseek-v4.1-flash-cheap/default`, each input49/cacheRead8448/output2; zero unfinished requests/steps, one wire fingerprint each. `monitor.query` shows them as ping/hit with usage/detail. Footer single countdown `3:08→2:11→1:31→0:56`, not reset by pings. Next real message cacheRead8448. Composer-only claude pick left later pings on DeepSeek. Durable history three user/three assistant, no private ping prompt/inbox. This proves observed reuse after pings, **not** causal DeepSeek cache-lifetime refresh (route lifetime unknown). Failed auxiliary path remains unit-covered, not safely injected live.
+- Evidence `plus-1.1.15-b1-live.md` names exact owned home/actual `opencode-local.log`: final259INFO/6WARN/0ERROR, all six warnings expected executor-controlled plugin-source refusals. PTY palette exit0; SESSION_EXITED, later aged out. Parent independently confirms test PIDs2775307/2775428/2775570/2775612 absent and no cwd/fd/maps match in exact dev home. Immutable release worker MCP process is not a test server and remains untouched.
 
 ### A3/A6/B6 — initial repair scope (results below)
 
@@ -96,13 +99,14 @@
 - Plan: refuse owner-segment `agent` with actionable `agent` + `team` instructions before any write; cover store revision/record refusal and valid member create in focused model/tool tests; live re-check in isolated dev home. Leave the existing live-store record untouched.
 - Fix/verification: pending A2 reconciliation.
 
-### #2 — auxiliary generation transport is mislabeled after preserving primary transforms (source fixed, live pending)
+### #2 — auxiliary generation transport is mislabeled after preserving primary transforms (fixed; B1 live verified)
 
 - Seen in source review: `SessionGenerate.generate` correctly uses non-durable primary/context transforms to preserve the real request cache prefix. HTTP hook consequently says `primary`, which Monitor stores as `step`; generated outcome matches only `generate`, creates another row and warming relabels only that duplicate to ping. Wire fingerprint remains on an unfinished step row.
 - Where: core `session/generate.ts`, `session/model-request.ts`, Plus `monitor/plugin.ts` and `ledger.ts`.
 - Weight: breaks Monitor T1 every-request identity/kind/fingerprint/usage, B1 ping acceptance.
 - Plan: distinguish transport request identity/kind without changing primary content hooks/cache policy, propagate generate outcome correctly; actual core HTTP middleware + Plus hook regression must assert exactly one completed fingerprinted generate/ping and no orphan step, pinned identities and durable state unchanged. Live B1 re-check two messages/three pings.
 - Fix/verification: `de7c1952bf`; parent focused tests/typechecks and exact discriminating assertions recorded under B1. T84 live pending.
+- T88 owned live verifies exactly one completed fingerprinted row per real ping, correct pinned identity/usage and no orphan step, recorded under B1. The old T84 partial run is not acceptance.
 
 ### #3 — request analysis cache serves stale in-place outcomes (source fixed, live pending)
 
