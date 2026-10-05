@@ -16,11 +16,15 @@ export function OverviewTab(props: OverviewTabProps) {
   const dimensions = useTerminalDimensions()
   const current = () => props.report
   // The agent table drops its model column before it would clip on narrow terminals.
-  const showModel = () => dimensions().width - 2 >= 90
+  // Columns keep Time/agent 16, Steps 8, Hit 10, Misses 8, Tokens 10, Cost 10,
+  // Active 10 = 72; the model column adds 18, so it needs 90 + padding + margins.
+  const showModel = () => dimensions().width - 4 >= 95
 
   const topTools = () => {
-    const groups = current()?.groups ?? []
-    return [...groups].sort((a, b) => b.carried - a.carried).slice(0, 3)
+    const r = current()
+    if (!r) return []
+    if (r.topTools && r.topTools.length > 0) return r.topTools.slice(0, 3)
+    return []
   }
 
   const topMisses = () => {

@@ -1387,6 +1387,8 @@ export const MonitorReport = Schema.Struct({
   detail: Schema.optionalKey(MonitorRequestDetail),
   agents: Schema.optionalKey(Schema.Array(MonitorAgentRow)),
   topMisses: Schema.optionalKey(Schema.Array(MonitorRequest)),
+  /** Overview's top tools by carried tokens, always tool-grouped. */
+  topTools: Schema.optionalKey(Schema.Array(MonitorGroup)),
   unstable: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

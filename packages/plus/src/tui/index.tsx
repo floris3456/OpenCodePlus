@@ -19,9 +19,9 @@ export default Plugin.define({
       events: context.client.rpc(Definition).events,
     })
     const agents = createAgentActions(context, snapshots)
-    const activeTeam = createActiveTeam(context)
     const warming = createWarming(context)
     const monitor = createMonitor(context)
+    const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",

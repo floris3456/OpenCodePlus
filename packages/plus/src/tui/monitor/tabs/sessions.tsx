@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
@@ -13,6 +13,7 @@ export interface SessionsTabProps {
   readonly onScopeSession: (sessionID: string) => void
   readonly onScopeTree: (sessionID: string) => void
   readonly active: boolean
+  readonly onScrollRef?: (ref: ScrollBoxRenderable) => void
 }
 
 export function SessionsTab(props: SessionsTabProps) {
@@ -58,7 +59,7 @@ export function SessionsTab(props: SessionsTabProps) {
           </box>
         }
       >
-        <scrollbox flexGrow={1}>
+        <scrollbox flexGrow={1} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
           <For each={sessions()}>
             {(s, index) => {
               const isSelected = () => index() === props.selectedIndex && props.active
@@ -86,7 +87,9 @@ export function SessionsTab(props: SessionsTabProps) {
                   </Show>
                   <text fg={theme().text.muted} width={10} wrapMode="none" truncate>{s.state ?? "—"}</text>
                   <text fg={fg()} width={8}>{String(s.steps)}</text>
-                  <text fg={fg()} width={10}>{formatTokens(s.input + s.output)}</text>
+                  <text fg={fg()} width={10}>
+                    {formatTokens(s.input + s.output + s.reasoning + s.cacheRead + s.cacheWrite)}
+                  </text>
                   <Show when={showRead()}>
                     <text fg={fg()} width={10}>{formatTokens(s.cacheRead)}</text>
                   </Show>

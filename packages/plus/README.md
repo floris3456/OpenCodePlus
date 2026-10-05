@@ -670,7 +670,7 @@ One page for chat metrics: reasoning, cache reads and writes, uncached input, ou
 
 - **Where**:
   - Full-screen `/monitor` (palette: "Monitor: tokens, cache and tools"; `/tools` is an alias, and `M` in composer `Tools` and `Team` tabs opens it). It opens filtered on the session it was opened from.
-  - A compact `Tools` tab in the session composer, next to Subagents, Shell, Terminals and Team, defaulting to the current team tree.
+  - A compact `Tools` tab in the session composer, next to Subagents, Shell, Terminals and Team, defaulting to the current team tree. It always shows Tools and drills from the selected row even while the full page remembers another tab; the compact and full page keep their own persisted settings.
 - **Scope** (header line 1, `s` steps through):
   - **This session**: only that session.
   - **Team tree**: root of this session's delegation tree + all descendants at any depth.
@@ -688,7 +688,7 @@ One page for chat metrics: reasoning, cache reads and writes, uncached input, ou
   - **Tools**: keeps every tool capability: group by tool, agent, model, target, session, or config (`g`), sort (`o`), filters for agent (`a`), tool (`f`), model (`F`), failed-only (`x`), compare (`c`), mark (`m`), drill-down (`Enter`) and feed.
   - **Sessions**: delegation tree with per-session totals, state, and activity. `Enter` scopes page to that session; `space`/`t` scopes to its tree.
   - **Steps**: every request with all token fields, duration, finish reason, and tools called. `Enter` opens step detail showing calls with attributed tokens and fingerprint change vs previous request.
-- **Keys**: `g` group, `s` scope, `S` session picker, `T` team picker, `t` window, `o` order, `a`/`f`/`F` filters, `/` text filter, `x` toggle filter, `c` compare, `m` mark, `Enter` drill/detail, `⌫`/`esc` back, `?` help popup. Settings persist; drill-downs do not.
+- **Keys**: `g` group, `s` scope, `S` session picker, `T` team picker, `t` window, `o` order, `a`/`f`/`F` filters, `/` text filter, `x` toggle filter, `c` compare, `m` mark, `Enter` drill/detail, `⌫`/`esc` back, `?` help popup. Settings persist; drill-downs do not. `/` narrows the rendered rows on every tab (groups, feed, requests, sessions and agents) while the totals keep describing the real query.
 - **Tokens per call** are attributed, because providers bill per step (one LLM call), never per tool:
   - `call` — the step's visible output tokens, split across its text and each call's input by size.
   - `result` — what the result added to the next prompt: the next step's prompt growth minus this step's own output, split across its results by size. When no clean next step exists (a user message, compaction or instruction update in between, or the last step) it is estimated at 2.5 characters per token and marked `~`; on this workspace's real sessions 96 % of results are measured.

@@ -82,6 +82,8 @@ async function render(
     height?: number
     dialogs?: DialogScript
     settings?: MonitorSettings
+    /** Which durable store key the settings seed; defaults to the view's. */
+    settingsKey?: string
     /** Render a marker line under the view to measure how many rows it took. */
     marker?: boolean
     /** Keep every monitor.query pending to observe the Loading state. */
@@ -98,7 +100,11 @@ async function render(
     ...(options.dialogs === undefined ? {} : { dialogs: options.dialogs }),
     ...(options.settings === undefined
       ? {}
-      : { storage: new Map<string, unknown>([["monitor", { settings: options.settings }]]) }),
+      : {
+          storage: new Map<string, unknown>([
+            [options.settingsKey ?? (options.full ?? true ? "monitor" : "monitor-composer"), { settings: options.settings }],
+          ]),
+        }),
     rpc: {
       "monitor.query": async (input: Plus.MonitorQueryInput) => {
         queries.push(input)
@@ -204,7 +210,7 @@ test("the Cache tab shows a fixture miss with its cause, and detail opens and cl
     expect(detailFrame).toContain("Cause: prefix-changed (certain)")
     expect(detailFrame).toContain("system: AGENTS.md")
     expect(detailFrame).toContain("Fingerprint Segments:")
-    expect(detailFrame).toContain("diverged on line 24")
+    expect(detailFrame).toContain("chars 2500 → 2900")
 
     // Close detail with backspace
     dispatch(fixture, "backspace")
@@ -239,6 +245,71 @@ test("narrow and wide layouts format totals line without horizontal scroll", asy
     expect(narrowFrame).toContain("cost: $0.00")
   } finally {
     narrow.fixture.destroy()
+  }
+})
+
+test("the narrow Cache keeps the ping kind and the agents table fits 80 columns", async () => {
+  const db = await seeded()
+  const { fixture } = await render(db, {
+    width: 80,
+    height: 40,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => contractFixtureReport(NOW),
+  })
+  try {
+    const frame = await fixture.waitForFrame((text) => text.includes("[MISS]"))
+    // The kind column survives at 80 columns so pings stay distinguishable.
+    expect(frame).toContain("Kind")
+    expect(frame).toContain("compaction")
+    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
+  } finally {
+    fixture.destroy()
+  }
+
+  const overview = await render(db, {
+    width: 80,
+    height: 40,
+    settings: { ...defaultSettings, tab: "overview" },
+    customReport: () => contractFixtureReport(NOW),
+  })
+  try {
+    const frame = await overview.fixture.waitForFrame((text) => text.includes("Agents in Scope"))
+    // The model column is gone, so the table width fits without clipping.
+    expect(frame).not.toContain("Model")
+    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
+  } finally {
+    overview.fixture.destroy()
+  }
+})
+
+test("the Overview top tools ignore the tab's last grouping", async () => {
+  const db = await seeded()
+  // With the persisted grouping on target, the overview still ranks by tool.
+  const report = queryMonitor(
+    db,
+    { scope: "session", sessionID: "ses_chat", view: "overview", group: "target", sort: "tokens", top: 20, feed: 0 },
+    { directory: "/work/project", now: NOW },
+  )
+  expect(report.topTools?.map((group) => group.key)).toEqual(["read", "shell"])
+  expect(report.groups.map((group) => group.key)).toEqual(["read src/a.ts", "shell bun test"])
+})
+
+test("the Sessions tab shows a token total that includes cache and reasoning", async () => {
+  const db = await seeded()
+  const report = contractFixtureReport(NOW)
+  const row = report.sessions![0]!
+  const expected = row.input + row.output + row.reasoning + row.cacheRead + row.cacheWrite
+  const { fixture } = await render(db, {
+    settings: { ...defaultSettings, tab: "sessions" },
+    customReport: () => report,
+  })
+  try {
+    const frame = await fixture.waitForFrame((text) => text.includes("Session / Role"))
+    expect(frame).toContain(formatTokens(expected))
+    // The old bug summed only input + output.
+    expect(frame).not.toContain(formatTokens(row.input + row.output))
+  } finally {
+    fixture.destroy()
   }
 })
 
@@ -339,6 +410,66 @@ test("keys change grouping, scope, window and filters, and the choice persists",
     dispatch(fixture, "t")
     await fixture.waitForFrame((text) => text.includes("When: Since last compaction"))
     expect(queries.at(-1)?.sinceCompaction).toBe(true)
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("the composer defaults to the tree scope and drills Tools even when its stored tab is Overview", async () => {
+  const db = await seeded()
+  const { fixture, queries } = await render(db, {
+    full: false,
+    width: 90,
+    height: 30,
+    settings: { ...defaultSettings, tab: "overview" },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())))
+    // The compact body renders Tools, not the stored Overview tab.
+    expect(queries[0]?.view).toBe("tools")
+    dispatch(fixture, "return")
+    const drilled = await fixture.waitForFrame((text) => text.includes("tool read"))
+    expect(drilled).toContain("read src/a.ts")
+    dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => !text.includes("drilled"))
+  } finally {
+    fixture.destroy()
+  }
+
+  // A fresh compact store defaults its scope to the team tree, not session.
+  const fresh = await render(db, { full: false, width: 90, height: 30 })
+  try {
+    await fresh.fixture.waitForFrame((text) => text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())))
+    expect(fresh.queries[0]).toMatchObject({ view: "tools", scope: "tree" })
+  } finally {
+    fresh.fixture.destroy()
+  }
+})
+
+test("the / text filter narrows every table but leaves the totals", async () => {
+  const db = await seeded()
+  const { fixture, queries } = await render(db, {
+    settings: { ...defaultSettings, tab: "tools" },
+    dialogs: { prompts: ["shell"] },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("latest calls"))
+    dispatch(fixture, "/")
+    await fixture.waitForFrame((text) => text.includes("filter “shell”"))
+    const filtered = await fixture.waitForFrame((text) => {
+      const rows = text.split("\n").map((line) => line.trim())
+      return rows.some((line) => line.startsWith("shell ")) && !rows.some((line) => line.startsWith("read "))
+    })
+    // The filter is applied to rendered rows only: the request keeps the same
+    // scope and carries no text key (the RPC has none).
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    expect(queries.at(-1)).not.toHaveProperty("filterText")
+    // Totals still describe the real query.
+    expect(filtered).toContain("reqs: 2")
+
+    dispatch(fixture, "2")
+    await fixture.waitForFrame((text) => text.includes("Verdict") || text.includes("Kind"))
+    expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.filterText).toBe("shell")
   } finally {
     fixture.destroy()
   }
@@ -559,4 +690,8 @@ test("the view polls every second while calls are live and every five when quiet
   expect(refreshInterval(report(0, 90_000))).toBe(1_000)
   expect(refreshInterval(report(0, 10_000))).toBe(5_000)
   expect(refreshInterval(report(0, undefined))).toBe(5_000)
+  // requests are oldest-first: the freshest activity is the last row, not the
+  // first. A view reading requests[0] would poll idle here.
+  const oldest = { now: 100_000, totals: { running: 0 }, feed: [], requests: [{ at: 10_000 }, { at: 99_500 }] }
+  expect(refreshInterval(oldest as unknown as Plus.MonitorReport)).toBe(1_000)
 })

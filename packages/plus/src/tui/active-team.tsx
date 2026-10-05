@@ -14,7 +14,10 @@ export interface ActiveTeamInfo {
   readonly members: readonly string[]
 }
 
-export function createActiveTeam(context: Plugin.Context) {
+export function createActiveTeam(
+  context: Plugin.Context,
+  options: { readonly openMonitor?: (sessionID: string) => void } = {},
+) {
   const plus = context.client.rpc(Definition)
 
   return createRoot((disposeRoot) => {
@@ -247,6 +250,7 @@ export function createActiveTeam(context: Plugin.Context) {
           setShowInactive={setShowInactiveSignal}
           treeView={treeViewSignal}
           setTreeView={setTreeViewSignal}
+          {...(options.openMonitor === undefined ? {} : { onOpenMonitor: options.openMonitor })}
         />
       ),
     }) ?? (() => {})
@@ -279,6 +283,8 @@ export interface TeamMonitorTabProps {
   setShowInactive?: (val: boolean | ((prev: boolean) => boolean)) => void
   treeView?: () => boolean
   setTreeView?: (val: boolean | ((prev: boolean) => boolean)) => void
+  /** Opens the full Monitor page remembering how to return; defaults to a direct navigate. */
+  onOpenMonitor?: (sessionID: string) => void
 }
 
 /**
@@ -524,6 +530,10 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
         bind: "shift+m,M",
         run() {
           props.close()
+          if (props.onOpenMonitor) {
+            props.onOpenMonitor(props.sessionID)
+            return
+          }
           props.context.ui.dialog.clear()
           props.context.ui.router.navigate({
             type: "plugin",

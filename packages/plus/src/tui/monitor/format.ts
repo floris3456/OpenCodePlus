@@ -158,6 +158,79 @@ export function drillInto(settings: MonitorSettings, group: Plus.MonitorGroup): 
   return undefined
 }
 
+/** True when the text filter is off or one of the values contains it. */
+export function textMatches(filter: string | undefined, values: readonly (string | undefined)[]): boolean {
+  if (filter === undefined || filter === "") return true
+  const needle = filter.toLowerCase()
+  return values.some((value) => value !== undefined && value.toLowerCase().includes(needle))
+}
+
+/**
+ * Apply the `/` text filter to the rendered rows only. Totals still answer the
+ * real query; the tables drop rows whose identifiers do not contain the text.
+ */
+export function filterReport(report: Plus.MonitorReport, filter: string | undefined): Plus.MonitorReport {
+  if (filter === undefined || filter === "") return report
+  return {
+    ...report,
+    groups: report.groups.filter((group) => textMatches(filter, [group.key, group.label])),
+    feed: report.feed.filter((call) =>
+      textMatches(filter, [call.agent, call.model, call.tool, call.target, call.error]),
+    ),
+    ...(report.requests === undefined
+      ? {}
+      : {
+          requests: report.requests.filter((request) =>
+            textMatches(filter, [
+              request.id,
+              request.agent,
+              request.model,
+              request.kind,
+              request.cause,
+              request.evidence,
+              ...(request.tools ?? []),
+            ]),
+          ),
+        }),
+    ...(report.sessions === undefined
+      ? {}
+      : {
+          sessions: report.sessions.filter((session) =>
+            textMatches(filter, [
+              session.sessionID,
+              session.title,
+              session.agent,
+              session.role,
+              session.team,
+              session.state,
+              session.runID,
+            ]),
+          ),
+        }),
+    ...(report.agents === undefined
+      ? {}
+      : { agents: report.agents.filter((agent) => textMatches(filter, [agent.agent, agent.model])) }),
+    ...(report.topMisses === undefined
+      ? {}
+      : {
+          topMisses: report.topMisses.filter((request) =>
+            textMatches(filter, [request.id, request.agent, request.model, request.cause, request.evidence]),
+          ),
+        }),
+    ...(report.topTools === undefined
+      ? {}
+      : { topTools: report.topTools.filter((group) => textMatches(filter, [group.key, group.label])) }),
+    ...(report.compare === undefined
+      ? {}
+      : {
+          compare: {
+            ...report.compare,
+            groups: report.compare.groups.filter((group) => textMatches(filter, [group.key, group.label])),
+          },
+        }),
+  }
+}
+
 export function formatTokens(value: number): string {
   const n = Math.round(value)
   if (Math.abs(n) < 1_000) return String(n)

@@ -10,6 +10,7 @@ import {
   cycle,
   defaultSettings,
   drillInto,
+  filterReport,
   formatClock,
   formatTokens,
   GROUPS,
@@ -44,7 +45,8 @@ const LIVE_FOR_MS = 60_000
 
 export function refreshInterval(report: Plus.MonitorReport | undefined): number {
   if (report === undefined) return REFRESH_MS
-  const latest = report.feed[0]?.started ?? report.requests?.[0]?.at ?? 0
+  // requests are oldest-first: the newest is the last row, not the first.
+  const latest = report.feed[0]?.started ?? report.requests?.at(-1)?.at ?? 0
   return report.totals.running > 0 || report.now - latest < LIVE_FOR_MS ? REFRESH_MS : IDLE_REFRESH_MS
 }
 
@@ -61,9 +63,13 @@ export interface MonitorViewProps {
   readonly onOpenFull?: () => void
 }
 
-export function createMonitorSettings(context: Plugin.Context, defaultScope: Plus.MonitorScope = "session") {
+export function createMonitorSettings(
+  context: Plugin.Context,
+  defaultScope: Plus.MonitorScope = "session",
+  storageKey = "monitor",
+) {
   const initial = { ...defaultSettings, scope: defaultScope }
-  const [stored, update] = context.storage.store<{ settings: MonitorSettings }>("monitor", {
+  const [stored, update] = context.storage.store<{ settings: MonitorSettings }>(storageKey, {
     initial: { settings: initial },
   })
   const [local, setLocal] = createSignal<MonitorSettings>({
@@ -97,13 +103,17 @@ export function MonitorView(props: MonitorViewProps) {
   const plus = props.context.client.rpc(Definition)
   const dimensions = useTerminalDimensions()
   const defaultScope = props.full ? "session" : "tree"
-  const store = createMonitorSettings(props.context, defaultScope)
+  const store = createMonitorSettings(props.context, defaultScope, props.full ? "monitor" : "monitor-composer")
   const [drills, setDrills] = createSignal<readonly Drill[]>([])
   const [helpOpen, setHelpOpen] = createSignal(false)
 
   // Drill-downs are temporary and do not rewrite stored settings.
   const settings = () => drills().at(-1)?.settings ?? store.settings()
   const activeDrill = () => drills().at(-1)
+
+  // The compact composer body always renders Tools, whatever tab the shared
+  // full-page settings happen to hold.
+  const tab = () => (props.full ? settings().tab : "tools")
 
   const sessionID = () => {
     const drilled = drills().findLast((drill) => drill.sessionID !== undefined)
@@ -113,7 +123,7 @@ export function MonitorView(props: MonitorViewProps) {
   const [report, setReport] = createSignal<Plus.MonitorReport | undefined>()
   const [failure, setFailure] = createSignal<string | undefined>()
   const [selected, setSelected] = createSignal(0)
-  let scroll: ScrollBoxRenderable | undefined
+  const scrolls: Partial<Record<TabName, ScrollBoxRenderable>> = {}
 
   const [rows, setRows] = createStore<{
     groups: readonly Plus.MonitorGroup[]
@@ -139,7 +149,7 @@ export function MonitorView(props: MonitorViewProps) {
     }
     flight.busy = true
     const generation = ++flight.generation
-    const query = queryOf(props.full ? settings() : { ...settings(), tab: "tools" }, {
+    const query = queryOf({ ...settings(), tab: tab() }, {
       sessionID: sessionID(),
       now: Date.now(),
       marks: report()?.marks ?? [],
@@ -155,11 +165,11 @@ export function MonitorView(props: MonitorViewProps) {
           setFailure(undefined)
           const maxIdx = Math.max(
             0,
-            (!props.full || settings().tab === "tools"
+            (!props.full || tab() === "tools"
               ? next.groups.length
-              : settings().tab === "cache"
+              : tab() === "cache"
                 ? (next.requests?.length ?? 0)
-                : settings().tab === "sessions"
+                : tab() === "sessions"
                   ? (next.sessions?.length ?? 0)
                   : (next.requests?.length ?? 0)) - 1,
           )
@@ -200,13 +210,20 @@ export function MonitorView(props: MonitorViewProps) {
     store.set(next)
   }
 
-  const setTab = (tab: TabName) => {
+  const setTab = (next: TabName) => {
+    if (!props.full) return
     setSelected(0)
-    change({ ...settings(), tab })
+    change({ ...settings(), tab: next })
   }
 
-  const groups = createMemo((): readonly Plus.MonitorGroup[] => {
+  // Every rendered table follows the text filter; totals stay the real query.
+  const shown = createMemo(() => {
     const current = report()
+    return current === undefined ? undefined : filterReport(current, settings().filterText)
+  })
+
+  const groups = createMemo((): readonly Plus.MonitorGroup[] => {
+    const current = shown()
     if (current === undefined) return []
     const seen = new Set(current.groups.map((group) => group.key))
     const gone = (current.compare?.groups ?? [])
@@ -227,11 +244,20 @@ export function MonitorView(props: MonitorViewProps) {
   })
 
   createEffect(() => setRows("groups", reconcile(groups(), { key: "key" })))
-  createEffect(() => setRows("feed", reconcile(report()?.feed ?? [], { key: "callID" })))
+  createEffect(() => setRows("feed", reconcile(shown()?.feed ?? [], { key: "callID" })))
 
   createEffect(() => {
-    const index = Math.min(selected(), Math.max(0, rows.groups.length - 1))
-    if (props.full || scroll === undefined) return
+    const count =
+      tab() === "tools"
+        ? rows.groups.length
+        : tab() === "cache" || tab() === "steps"
+          ? (shown()?.requests?.length ?? 0)
+          : tab() === "sessions"
+            ? (shown()?.sessions?.length ?? 0)
+            : 0
+    const scroll = scrolls[tab()]
+    if (scroll === undefined || count === 0) return
+    const index = Math.min(selected(), count - 1)
     if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
     if (index < scroll.scrollTop) scroll.scrollTo(index)
   })
@@ -326,8 +352,8 @@ export function MonitorView(props: MonitorViewProps) {
   }
 
   const drill = () => {
-    const tab = settings().tab
-    if (tab === "tools") {
+    const current = tab()
+    if (current === "tools") {
       const group = groups()[selected()]
       if (group === undefined) return
       const next = drillInto(settings(), group)
@@ -336,22 +362,22 @@ export function MonitorView(props: MonitorViewProps) {
       setDrills((stack) => [...stack, { ...next, kind: "tools" }])
       return
     }
-    if (tab === "cache") {
-      const requests = report()?.requests ?? []
+    if (current === "cache") {
+      const requests = shown()?.requests ?? []
       const req = requests[selected()]
       if (req === undefined) return
       setDrills((stack) => [...stack, { kind: "cache", settings: settings(), requestID: req.id }])
       return
     }
-    if (tab === "steps") {
-      const requests = report()?.requests ?? []
+    if (current === "steps") {
+      const requests = shown()?.requests ?? []
       const req = requests[selected()]
       if (req === undefined) return
       setDrills((stack) => [...stack, { kind: "steps", settings: settings(), requestID: req.id }])
       return
     }
-    if (tab === "sessions") {
-      const s = report()?.sessions?.[selected()]
+    if (current === "sessions") {
+      const s = shown()?.sessions?.[selected()]
       if (s === undefined) return
       change({ ...settings(), scope: "session" })
       setDrills((stack) => [...stack, { settings: settings(), sessionID: s.sessionID }])
@@ -393,13 +419,13 @@ export function MonitorView(props: MonitorViewProps) {
         run: () => {
           const maxIdx = Math.max(
             0,
-            (!props.full || settings().tab === "tools"
+            (!props.full || tab() === "tools"
               ? groups().length
-              : settings().tab === "cache"
-                ? (report()?.requests?.length ?? 0)
-                : settings().tab === "sessions"
-                  ? (report()?.sessions?.length ?? 0)
-                  : (report()?.requests?.length ?? 0)) - 1,
+              : tab() === "cache"
+                ? (shown()?.requests?.length ?? 0)
+                : tab() === "sessions"
+                  ? (shown()?.sessions?.length ?? 0)
+                  : (shown()?.requests?.length ?? 0)) - 1,
           )
           setSelected((index) => Math.min(maxIdx, index + 1))
         },
@@ -496,7 +522,7 @@ export function MonitorView(props: MonitorViewProps) {
         title: "Toggle filter",
         group: "Monitor",
         run: () => {
-          if (settings().tab === "cache") {
+          if (tab() === "cache") {
             change({ ...settings(), missesOnly: !settings().missesOnly })
           } else {
             change({ ...settings(), errors: !settings().errors })
@@ -508,8 +534,8 @@ export function MonitorView(props: MonitorViewProps) {
         title: "Scope to session tree",
         group: "Monitor",
         run: () => {
-          if (settings().tab === "sessions") {
-            const s = report()?.sessions?.[selected()]
+          if (tab() === "sessions") {
+            const s = shown()?.sessions?.[selected()]
             if (s !== undefined) {
               change({ ...settings(), scope: "tree" })
               setDrills((stack) => [...stack, { settings: settings(), sessionID: s.sessionID }])
@@ -641,7 +667,7 @@ export function MonitorView(props: MonitorViewProps) {
                 active={props.active()}
                 groups={rows.groups}
                 feed={rows.feed}
-                onScrollRef={(ref) => (scroll = ref)}
+                onScrollRef={(ref) => (scrolls.tools = ref)}
               />
             </box>
           )}
@@ -762,24 +788,25 @@ export function MonitorView(props: MonitorViewProps) {
         >
           {(_current) => (
             <box flexDirection="column" flexGrow={1} minWidth={0}>
-              <Show when={settings().tab === "overview"}>
-                <OverviewTab context={props.context} report={report()} full={true} />
+              <Show when={tab() === "overview"}>
+                <OverviewTab context={props.context} report={shown()} full={true} />
               </Show>
-              <Show when={settings().tab === "cache"}>
+              <Show when={tab() === "cache"}>
                 <CacheTab
                   context={props.context}
-                  report={report()}
+                  report={shown()}
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   detailID={activeDrill()?.requestID}
                   missesOnly={settings().missesOnly}
                   active={props.active()}
+                  onScrollRef={(ref) => (scrolls.cache = ref)}
                 />
               </Show>
-              <Show when={settings().tab === "tools"}>
+              <Show when={tab() === "tools"}>
                 <ToolsTab
                   context={props.context}
-                  report={report()}
+                  report={shown()}
                   settings={settings()}
                   selectedIndex={selected()}
                   onSelect={setSelected}
@@ -787,13 +814,13 @@ export function MonitorView(props: MonitorViewProps) {
                   active={props.active()}
                   groups={rows.groups}
                   feed={rows.feed}
-                  onScrollRef={(ref) => (scroll = ref)}
+                  onScrollRef={(ref) => (scrolls.tools = ref)}
                 />
               </Show>
-              <Show when={settings().tab === "sessions"}>
+              <Show when={tab() === "sessions"}>
                 <SessionsTab
                   context={props.context}
-                  report={report()}
+                  report={shown()}
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   onScopeSession={(sid) => {
@@ -805,16 +832,18 @@ export function MonitorView(props: MonitorViewProps) {
                     setDrills((stack) => [...stack, { settings: settings(), sessionID: sid }])
                   }}
                   active={props.active()}
+                  onScrollRef={(ref) => (scrolls.sessions = ref)}
                 />
               </Show>
-              <Show when={settings().tab === "steps"}>
+              <Show when={tab() === "steps"}>
                 <StepsTab
                   context={props.context}
-                  report={report()}
+                  report={shown()}
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   detailID={activeDrill()?.requestID}
                   active={props.active()}
+                  onScrollRef={(ref) => (scrolls.steps = ref)}
                 />
               </Show>
             </box>

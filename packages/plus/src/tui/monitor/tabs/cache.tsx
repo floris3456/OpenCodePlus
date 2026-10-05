@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
@@ -13,6 +13,7 @@ export interface CacheTabProps {
   readonly detailID: string | undefined
   readonly missesOnly: boolean
   readonly active: boolean
+  readonly onScrollRef?: (ref: ScrollBoxRenderable) => void
 }
 
 export function CacheTab(props: CacheTabProps) {
@@ -20,12 +21,16 @@ export function CacheTab(props: CacheTabProps) {
   const dimensions = useTerminalDimensions()
   const detail = () => props.report?.detail
 
-  // Narrow terminals drop whole columns, keeping time, verdict, cause and evidence.
+  // Narrow terminals drop whole columns, keeping time, kind (so pings stay
+  // distinguishable), verdict, cause and evidence.
   const available = () => dimensions().width - 2
-  const showKind = () => available() >= 90
   const showInput = () => available() >= 96
   const showCost = () => available() >= 110
+  const showAgent = () => available() >= 84
   const compact = () => available() < 86
+  const causeWidth = () => (compact() ? 14 : 18)
+  const kindWidth = () => 10
+  const kindLabel = (kind: Plus.MonitorRequest["kind"]) => kind
 
   const requests = () => {
     const list = props.report?.requests ?? []
@@ -58,13 +63,13 @@ export function CacheTab(props: CacheTabProps) {
           <box flexDirection="column" flexGrow={1} minWidth={0}>
             {/* Header row */}
             <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
-              <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Time</text>
-              <Show when={showKind()}>
-                <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Kind</text>
-              </Show>
+              <text fg={theme().text.muted} width={9} attributes={TextAttributes.BOLD}>Time</text>
+              <text fg={theme().text.muted} width={kindWidth()} attributes={TextAttributes.BOLD}>Kind</text>
               <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Verdict</text>
-              <text fg={theme().text.muted} width={18} attributes={TextAttributes.BOLD}>Cause</text>
-              <text fg={theme().text.muted} width={16} attributes={TextAttributes.BOLD}>Agent/Model</text>
+              <text fg={theme().text.muted} width={causeWidth()} attributes={TextAttributes.BOLD}>Cause</text>
+              <Show when={showAgent()}>
+                <text fg={theme().text.muted} width={16} attributes={TextAttributes.BOLD}>Agent/Model</text>
+              </Show>
               <Show when={showInput()}>
                 <text fg={theme().text.muted} width={9} attributes={TextAttributes.BOLD}>In</text>
               </Show>
@@ -85,7 +90,7 @@ export function CacheTab(props: CacheTabProps) {
                 </box>
               }
             >
-              <scrollbox flexGrow={1}>
+              <scrollbox flexGrow={1} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
                 <For each={requests()}>
                   {(req, index) => {
                     const isSelected = () => index() === props.selectedIndex && props.active
@@ -104,21 +109,21 @@ export function CacheTab(props: CacheTabProps) {
                         backgroundColor={bg()}
                         onMouseUp={() => props.onSelect(index())}
                       >
-                        <text fg={fg()} width={10}>{formatClock(req.at)}</text>
-                        <Show when={showKind()}>
-                          <text fg={req.kind === "ping" ? theme().text.muted : fg()} width={10}>
-                            {req.kind}
-                          </text>
-                        </Show>
+                        <text fg={fg()} width={9}>{formatClock(req.at)}</text>
+                        <text fg={req.kind === "ping" ? theme().text.muted : fg()} width={kindWidth()} wrapMode="none" truncate>
+                          {kindLabel(req.kind)}
+                        </text>
                         <text fg={isSelected() ? fg() : verdictFg(req.verdict)} width={10} attributes={TextAttributes.BOLD}>
                           {`[${req.verdict.toUpperCase()}]`}
                         </text>
-                        <text fg={req.cause ? theme().text.feedback.warning.base : theme().text.muted} width={18} wrapMode="none" truncate>
+                        <text fg={req.cause ? theme().text.feedback.warning.base : theme().text.muted} width={causeWidth()} wrapMode="none" truncate>
                           {req.cause ?? "—"}
                         </text>
-                        <text fg={fg()} width={16} wrapMode="none" truncate>
-                          {req.model ?? req.agent ?? "—"}
-                        </text>
+                        <Show when={showAgent()}>
+                          <text fg={fg()} width={16} wrapMode="none" truncate>
+                            {req.model ?? req.agent ?? "—"}
+                          </text>
+                        </Show>
                         <Show when={showInput()}>
                           <text fg={fg()} width={9}>{formatTokens(req.input)}</text>
                         </Show>

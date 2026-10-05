@@ -157,6 +157,24 @@ export function contractFixtureReport(now = 1_800_000_000_000): import("../src/r
     tools: ["read"],
   }
 
+  const pingReq: import("../src/rpc.js").Plus.MonitorRequest = {
+    id: "req_ping_1",
+    sessionID: "ses_chat",
+    kind: "ping",
+    at: now - 70_000,
+    durationMs: 400,
+    agent: "build",
+    provider: "anthropic",
+    model: "claude-3-7-sonnet",
+    input: 0,
+    output: 5,
+    reasoning: 0,
+    cacheRead: 15000,
+    cacheWrite: 0,
+    cost: 0.001,
+    verdict: "hit",
+  }
+
   const coldReq: import("../src/rpc.js").Plus.MonitorRequest = {
     id: "req_cold_1",
     sessionID: "ses_chat",
@@ -181,9 +199,9 @@ export function contractFixtureReport(now = 1_800_000_000_000): import("../src/r
     request: missReq,
     previous: { id: "req_hit_1", at: now - 50_000 },
     lines: [
-      "system part AGENTS.md changed at char 840",
+      "system part AGENTS.md changed: chars 2500 → 2900",
       "expected prefix: 15.0k tokens, actual cache read: 400 tokens",
-      "prefix diverged on line 24 of AGENTS.md",
+      "system part hash h1 → h2",
     ],
     segments: [
       {
@@ -305,9 +323,37 @@ export function contractFixtureReport(now = 1_800_000_000_000): import("../src/r
       models: ["claude-3-7-sonnet"],
     },
     marks: [],
-    requests: [coldReq, hitReq, missReq],
+    requests: [coldReq, pingReq, hitReq, missReq],
     detail,
     topMisses: [missReq],
+    topTools: [
+      {
+        key: "read",
+        label: "read",
+        calls: 2,
+        inner: 0,
+        errors: 0,
+        running: 0,
+        callTokens: 80,
+        resultTokens: 2000,
+        carried: 6000,
+        estimated: 0,
+        avgMs: 250,
+      },
+      {
+        key: "shell",
+        label: "shell",
+        calls: 1,
+        inner: 0,
+        errors: 0,
+        running: 0,
+        callTokens: 40,
+        resultTokens: 500,
+        carried: 1500,
+        estimated: 0,
+        avgMs: 800,
+      },
+    ],
     unstable: [],
     context: [{ sessionID: "ses_chat", now: 18200, atCompaction: 12300 }],
     agents: [

@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
@@ -12,6 +12,7 @@ export interface StepsTabProps {
   readonly onSelect: (index: number) => void
   readonly detailID: string | undefined
   readonly active: boolean
+  readonly onScrollRef?: (ref: ScrollBoxRenderable) => void
 }
 
 export function StepsTab(props: StepsTabProps) {
@@ -67,7 +68,7 @@ export function StepsTab(props: StepsTabProps) {
                 </box>
               }
             >
-              <scrollbox flexGrow={1}>
+              <scrollbox flexGrow={1} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
                 <For each={requests()}>
                   {(req, index) => {
                     const isSelected = () => index() === props.selectedIndex && props.active

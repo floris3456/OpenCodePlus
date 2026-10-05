@@ -63,6 +63,16 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
     now,
     ...read(window),
     ...requests.sections,
+    ...(input.view === "overview"
+      ? {
+          // The Overview tab's top tools must not depend on whichever grouping
+          // the Tools tab last selected, so compute them tool-grouped here.
+          topTools: groupsOf(db, input, context, window, "tool")
+            .map((entry) => entry.group)
+            .sort((a, b) => b.carried - a.carried || b.resultTokens - a.resultTokens)
+            .slice(0, 3),
+        }
+      : {}),
     feed: feedOf(db, input, context, window, clamp(input.feed ?? DEFAULT_FEED)),
     ...(input.compare === undefined
       ? {}

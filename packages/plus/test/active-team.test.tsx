@@ -482,10 +482,70 @@ test("createActiveTeam registers composer tab and hints, cleans up on dispose", 
     { label: "active", shortcut: "ctrl+a" },
     { label: "tree", shortcut: "ctrl+t" },
     { label: "stop|resume", shortcut: "ctrl+d" },
+    { label: "monitor", shortcut: "M" },
   ])
 
   manager.dispose()
   expect(tabUnregistered).toBe(true)
+})
+
+test("Team M routes through the remembered Monitor open and closes the composer", async () => {
+  let commands: any[] = []
+  let closeCalled = 0
+  const opened: string[] = []
+
+  const white = RGBA.fromHex("#ffffff")
+  const gray = RGBA.fromHex("#888888")
+  const black = RGBA.fromHex("#000000")
+  const testTheme = {
+    text: { base: white, muted: gray, action: { primary: { base: white, selected: white, focused: white } } },
+    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
+  }
+
+  const context: any = {
+    location: { directory: "/my/project" },
+    theme: testTheme,
+    data: {
+      location: { default: () => ({ directory: "/my/project" }) },
+      listen: () => () => {},
+    },
+    client: {
+      rpc: () => ({
+        "team.runs.list": async () => ({ runs: [] }),
+        events: { on: () => () => {} },
+      }),
+    },
+    keymap: {
+      layer: (factory: any) => {
+        const layer = factory()
+        if (layer.commands) commands = layer.commands
+      },
+    },
+    ui: { toast: { show: () => {} }, router: { navigate: () => {} } },
+  }
+
+  const output = await createTestRenderer({ width: 100, height: 20 })
+  render(
+    () => (
+      <TeamMonitorTab
+        sessionID="ses_root"
+        active={() => true}
+        close={() => closeCalled++}
+        context={context}
+        onOpenMonitor={(sessionID) => opened.push(sessionID)}
+      />
+    ),
+    output.renderer,
+  )
+  await output.renderOnce()
+  const monitor = commands.find((c) => c.id === "composer.team.monitor")
+  expect(monitor).toBeDefined()
+  expect(monitor?.bind).toBe("shift+m,M")
+  monitor.run()
+  // The callback owns the route memory; the tab hands it the session and closes.
+  expect(opened).toEqual(["ses_root"])
+  expect(closeCalled).toBe(1)
+  output.renderer.destroy()
 })
 
 test("TeamMonitorTab renders active runs by default, toggles to inactive with ctrl+a, and navigates with select", async () => {
@@ -587,6 +647,7 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
     },
     ui: {
       toast: { show: (t: any) => toasts.push(t) },
+      dialog: { clear: () => {} },
       router: {
         navigate: (dest: any) => {
           navigated = dest
@@ -621,19 +682,26 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   expect(defaultFrame).not.toContain("w-run-stopped")
   expect(defaultFrame).not.toContain("w-run-dead")
 
-  expect(commands.length).toBe(6)
+  expect(commands.length).toBe(7)
   const upCmd = commands.find((c) => c.id === "composer.team.up")
   const downCmd = commands.find((c) => c.id === "composer.team.down")
   const selectCmd = commands.find((c) => c.id === "composer.team.select")
   const toggleCmd = commands.find((c) => c.id === "composer.team.toggle_activity")
   const toggleTreeCmd = commands.find((c) => c.id === "composer.team.toggle_tree")
   const actionCmd = commands.find((c) => c.id === "composer.team.action")
+  const monitorCmd = commands.find((c) => c.id === "composer.team.monitor")
   expect(toggleTreeCmd).toBeDefined()
+  expect(monitorCmd?.bind).toBe("shift+m,M")
 
   // Enter on index 0 (w-run-active) navigates to its sessionID
   selectCmd.run()
   expect(navigated).toEqual({ type: "session", sessionID: "ses_active" })
   expect(closeCalled).toBe(1)
+
+  // M closes the composer and opens the page on this session's route.
+  monitorCmd.run()
+  expect(navigated).toEqual({ type: "plugin", name: "monitor", data: { sessionID: "ses_root" } })
+  expect(closeCalled).toBe(2)
 
   // 2. Toggle to inactive runs with ctrl+a
   toggleCmd.run()
@@ -649,7 +717,7 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   // Enter on inactive row (w-run-stopped) attaches to its session
   selectCmd.run()
   expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
-  expect(closeCalled).toBe(2)
+  expect(closeCalled).toBe(3)
 
   // 3. Toggle back to active
   toggleCmd.run()
