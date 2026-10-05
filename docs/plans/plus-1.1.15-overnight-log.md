@@ -6,7 +6,7 @@
 - Read this log first after a break, then `plus-1.1.15-overnight.md`.
 - Current phase: B2 source merge/review complete; repair its page gaps (#7) before live acceptance.
 - Pending acceptance: B1/A1/A2/B2; A3 RPC/A6/B6 post-page assertions; A4/A5/B3/B4; F.
-- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, T79 stopped. B1 live T84 and #3 T80 running. A3 T76 landed `ae09701991`, A6 T77 landed `2f7287ee59`, both stopped. B6 fixture landed `1047b1e5df` and stopped.
+- B1 source merged as `26eacdfc14`; #2 landed `de7c1952bf`, #3 landed `339c6e2f36`; T79/T80 stopped. B1 live T84 and #9 privacy T85 running. A3 T76 landed `ae09701991`, A6 T77 landed `2f7287ee59`, both stopped. B6 fixture landed `1047b1e5df` and stopped.
 - A1 source landed `24a1a1115f`; live acceptance pending. A2 source merge/review complete, focused tests passing, newly found field gaps #6 await correction.
 - No merge into `plus-1.1.15`, push, release build/promotion, shared-service access, or live-config mutation.
 
@@ -98,6 +98,7 @@
 - Plan: invalidate analysis on real ledger mutation using an existing cheap seam or explicit per-ledger revision, with two-query regression for outcome, final fingerprint, and relabel. Preserve measured query caching where useful; no speculative framework. Live repeat page polling once B2 lands.
 - Fix/verification: queued after #2 (same monitor tests/source).
 - T80 first repair reviewed: connection-local `total_changes()` fixes local writes and three discriminating regressions, but misses another SQLite handle/process writing the shared file. Sent one correction: combine `PRAGMA data_version` with local changes; two-handle/direct-write regressions, retain no-write polling cache. Not landed yet.
+- Correction reviewed and landed `339c6e2f36`: composite local-change/data-version revision, completion through second WAL handle and direct update regressions plus original three. Parent cache **14 pass**, ledger/requests/plugin **34 pass**, Plus typecheck passes. Benchmark repeat session/tree/all 0.84/4.15/87.49 ms; cold Everything still 10.34 s (recorded, not speed acceptance). T80 stopped; live page polling acceptance pending T83.
 
 ### #4 — pre-page view still assumes old session scope (open, expected B2 integration gap)
 
@@ -141,6 +142,7 @@
 - Actual collector reproduction writes fictional `FICTIONAL_PRIVATE_ERROR_SENTINEL` unchanged to `call.error` (`tool: …`). Request errors correctly hash through `errorFingerprint`, but callEnded does not. `innerTarget` also writes the first arbitrary string argument of unknown Code Mode tools, and targetOf stores raw search text; commandHead treats any lower-case second argument as a subcommand (e.g. echo's payload).
 - Weight: violates T1 no-content ledger privacy; existing request-only privacy assertions miss call columns. No real secret read or printed; reproduction used a fictional sentinel and isolated temp ledger.
 - Plan: reuse hashed errors for call persistence and restrict targets to recognized identifiers/names/paths/hosts or hashed query summaries; remove arbitrary-string fallback and only retain known command subcommands. Keep target grouping and useful names, no content redaction framework. Focused tests inspect every stored column with sentinel refusal/control cases; old stores remain readable, no touching/migrating shared live ledger. Owned live check one failed tool/query and inspect isolated ledger.
+- T85 `w-c7c1ed13b4ed9214` repairing privacy from `339c6e2f36`; owns collector/attribution/ledger and non-cache Monitor tests, not page/query/report or Instructions. Also reconciles stale monitor-plugin hook fixture warnings without weakening failure controls.
 
 ## Live evidence
 
