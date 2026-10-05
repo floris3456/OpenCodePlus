@@ -131,6 +131,7 @@
 - Weight: breaks Instructions T7 effective values/provenance/field reset and owner identity.
 - Plan: field display follows real resolved chain and includes its actual source; reset Model restores the inherited candidate at this level while preserving unrelated fields (closed editing semantics), reset Effort inherits correctly; record lookup matches full scope. Cover Global→Project, team/preset/catalogue identity, every individual edit/reset and preservation. Update inaccurate refusal expectation; live every field after correction at 80/160 columns.
 - Additional review note for A4: catalogue is cached but first snapshot still calls `ctx.model.list()`; verify T7's catalogue-only-in-pickers rule in measured speed work, not only timings.
+- Early T82 diff review: a proposed Model reset used the upstream active model, which is not necessarily the edited candidate (inherited active A, inactive B edited to C). Sent a discriminating B→C→reset regression and required restoring this row's original identity while preserving unrelated fields/effort and activation intent. No verdict/landing yet. A delayed provider-stream error message from 00:46 UTC was read; current run is streaming, not retrying, and has later source changes, so it recovered and stays assigned.
 
 ### #7 — T3 page controls/layout do not fully match real behavior (open)
 
@@ -156,6 +157,7 @@
 - Weight: violates T1 no-content ledger privacy; existing request-only privacy assertions miss call columns. No real secret read or printed; reproduction used a fictional sentinel and isolated temp ledger.
 - Plan: reuse hashed errors for call persistence and restrict targets to recognized identifiers/names/paths/hosts or hashed query summaries; remove arbitrary-string fallback and only retain known command subcommands. Keep target grouping and useful names, no content redaction framework. Focused tests inspect every stored column with sentinel refusal/control cases; old stores remain readable, no touching/migrating shared live ledger. Owned live check one failed tool/query and inspect isolated ledger.
 - T85 `w-c7c1ed13b4ed9214` repairing privacy from `339c6e2f36`; owns collector/attribution/ledger and non-cache Monitor tests, not page/query/report or Instructions. Also reconciles stale monitor-plugin hook fixture warnings without weakening failure controls.
+- Early T85 diff correctly hashes call errors at the persistence boundary and removes arbitrary inner-argument attribution. Proposed program-arity check still retains `git fictional_private_payload_sentinel`; requested recognized-subcommand-only control. Also require lowercase echo sentinel (uppercase alone would not discriminate old regex). No final verdict/landing yet.
 
 ### #10 — navigation still reads the provider catalogue through base classification (open)
 
