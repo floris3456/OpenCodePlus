@@ -539,3 +539,4 @@ Plan: `plus-1.1.15-residual.md`, worktree `plus-1.1.15_overnight`, from `29d250c
   - Fix in `src/monitor/cache.ts` `causeStep`. Two `monitor-cache` tests asserted the old `miss` baseline before checking invalidation; their baseline now expects `none`, 0 miss tokens and 0 misses. Both fail against the old code.
   - Checks: monitor tests 119 pass, 0 fail; Plus typecheck passes.
   - Monitor T3's sweep, already running at `012caf2267`, may still show the old behaviour on an in-flight row. The live re-check goes into the final re-sweep of the tasks this touches (Monitor T2/T3).
+- 17:26: Instructions T6 delegated (T130, `w-dc70dc8bf94200fe`, base `97b1f52e2a`). Sweeps started from now on include #28. The tasks swept at `012caf2267` that #28 does not touch stay valid.
