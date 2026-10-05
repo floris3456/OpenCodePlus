@@ -80,14 +80,21 @@ text; missing check file refused with no run created; existing files pass.
      interrupts a running step.
    - **The child is not told:** nothing is sent to it, so its cache stays
      intact.
-3. **New tool** `team_budget({ run, tokens?, turns?, wallMs?, reason })`.
-   - `reason` is required, 1–300 chars, like `team_stop`.
-   - It records `{ at, by, from, to, reason }` in the run's history, and
-     `team_status` and the run report show it.
-   - Pings stop until the new budget is passed.
-   - `team_followup` loses its `budget` input.
-4. **Nudge** is `team_followup`: a message only, so the child stays over budget
-   and the pings continue. **Stop** is `team_stop` with its reason, as today.
+3. **No new tool: `team_followup` does both.** Today it requires `prompt`, and
+   its `budget` input replaces the whole budget without a reason
+   (`teams/schema.ts:796`). Change it to
+   `team_followup({ run, prompt?, budget?, reason? })`:
+   - **`prompt` only:** a nudge, as today. The child stays over budget, so the
+     pings continue.
+   - **`budget` only:** raises the budget and does not message the child.
+     `reason` is required (1–300 chars, like `team_stop`). Only the dimensions
+     given change.
+   - **Both:** raises the budget and tells the child.
+   - **Recorded:** a budget change writes `{ at, by, from, to, reason }` to the
+     run's history, and `team_status` and the run report show it. Pings stop
+     until the new budget is passed.
+4. **Stop** is `team_stop` with its reason, as today. So there are two tools
+   for a running child: act on it (`team_followup`) or end it (`team_stop`).
 5. Turns and wall-clock budgets use the same mechanism.
 6. Recalibrate the effort defaults (small/medium/large) for the new count, from
    the 1.1.15 night's runs. The Brief's budget line names what is counted.
@@ -98,11 +105,13 @@ text; missing check file refused with no run created; existing files pass.
 - **Notification:** the first one fires at the limit, repeats after the
   interval, and is merged into one message for several children. It is never
   sent to the child.
-- `team_budget`:
+- `team_followup` with a budget:
   - refuses an empty reason;
+  - with no prompt, sends nothing to the child;
+  - changes only the dimensions given;
   - writes the history entry;
   - ends the pings until the new limit.
-- A nudge does not end the pings.
+- A prompt-only followup does not end the pings.
 
 **Live:** one owned team run with a tiny token budget. The parent gets the
 ping, raises the budget with a reason, and the pings stop. In a second run the
@@ -182,29 +191,40 @@ row; edit the row and see it in the sections.
 
    The fix: nothing opens a folder just to deliver an event or a ping. Only
    loaded folders get events, and a folder loaded later reads fresh state.
-2. **Load on the first message.** A folder's MCP servers, file watchers and
-   plugin loops start at the first message of a session there. Opening a TUI
-   or listing sessions reads only cheap config (agents, models).
+2. **Load on the first message.** A folder's MCP servers and plugin loops start
+   at the first message of a session there. Opening a TUI or listing sessions
+   reads only cheap config (agents, models).
 3. **Unload on stop.** A team worker's folder unloads as soon as its run is
    stopped, without waiting 60 minutes.
-4. **Refresh.** A `/refresh` command (with a palette entry) and a Code Mode
-   tool, for example `tools.opencode.refresh({ parts? })`.
-   - It reloads this session's folder: config, agents, skills, commands and MCP
-     servers.
-   - It reuses the host's existing reloads
+4. **Refresh.** One command, `/refresh` (with a palette entry), and the same
+   as a Code Mode tool, for example `tools.opencode.refresh()`, with its own
+   permission row, on by default.
+   - **One meaning:** rebuild what this chat sends from the current settings
+     and files.
+   - **What it reloads:** this folder's config, agents, skills, commands and MCP
+     servers. It also applies the chat's pending Instructions changes
+     (item 5).
+   - **It reuses existing reloads:** the host already has them
      (`packages/core/src/plugin/host.ts`: agents, providers, models, commands,
      mcp, discovery).
-   - It has its own permission row, on by default.
-5. **No per-folder file watchers.** File changes inside a folder (skills,
-   agent files, a project `opencode.json`) show after `/refresh` or in the next
-   session.
+   - **It names the cost first:** for example, "re-reads about 48k tokens
+     without cache", from the chat's last request.
+5. **No per-folder file watchers.** File changes inside a folder (skills, agent
+   files, a project `opencode.json`) apply in the next chat or after
+   `/refresh`.
+   - **Keep one service-wide watcher** for the global config and one for the
+     Instructions store. They are cheap and keep the pickers, the tree and new
+     chats current (Instructions T2).
+   - **They only mark changes.** They never push anything into a running chat's
+     prompt (item 5).
 
 **Tests:**
 - An event for a dropped folder does not reopen it.
 - `team_stop` unloads the worker's folder.
 - No MCP process exists before the first message, and one exists after it.
-- The refresh tool and command reload a changed skill.
-- Instructions edits still reach a loaded folder.
+- `/refresh` and the tool reload a changed skill and report the cost.
+- Pickers and the tree still update within 2 s after an Instructions change
+  (T2).
 
 **Live:**
 1. Run one owned team with two workers and stop them.
@@ -212,13 +232,84 @@ row; edit the row and see it in the sections.
 3. The worker folders and their processes are gone and stay gone.
 4. Instructions writes take as long as with no workers.
 
+## 5. A running chat keeps its prompt until a refresh
+
+**What happens today:**
+- A Plus Instructions change rewrites a running chat's system prompt and tool
+  list at its next request.
+- Measured in the 1.1.15 cache test (T112, 2026-10-05 08:54Z):
+  - turning off build's "Tools and rules" row removed the last system part of
+    the next request;
+  - it read 5,026 of about 12,700 tokens from cache.
+- A change earlier in the prompt misses everything. Providers cache by prefix,
+  and the request order is tool definitions, then system, then messages. A tool
+  or role change therefore costs the whole conversation, for Anthropic, OpenAI,
+  DeepSeek and Gemini alike.
+- Without such changes, caching on 1.1.14 has been flawless in daily use. The
+  only misses are about 10 tokens per turn on Gemini, provider-side and
+  harmless.
+
+**Must not change:** a chat without mid-chat changes sends byte-identical tool
+definitions and system text to today.
+
+**Decisions (user):**
+- An explicit `/refresh` keeps this simple and makes the cache cost a
+  deliberate choice.
+- Changes that cannot affect the cache must not need a refresh.
+
+**Change:**
+1. **A chat keeps its prompt.** It keeps the Plus-rendered system parts and
+   tool definitions it started with, stored with the session, until one of:
+   - `/refresh`;
+   - a compaction, which rebuilds the cache anyway (core already moves its
+     instruction epoch there);
+   - a model switch, which starts a new cache anyway.
+
+   A new chat always starts from the current settings.
+2. **What waits is computed, not listed.** After an Instructions write, render
+   each running chat's tools and system from the new settings and compare them
+   with what it sends now, using the Monitor's segment fingerprints.
+   - Equal: nothing to do.
+   - Different: the change is pending for that chat.
+3. **Everything outside the prompt applies at once.** That includes model
+   activation, keep-alive, budgets, team members, delegate permissions and
+   colours. When such a change also shows in a tool description (for example a
+   worker list), only that description waits.
+4. **Safety first.** A permission that turns something off is enforced at once
+   at the call, refusing with its message, even while the old tool description
+   is still in the prompt. Turning a tool on waits for the refresh.
+5. **Visible.** The TUI shows pending changes in that chat's footer, for
+   example "Instructions changed · /refresh re-reads ~48k tokens". An agent
+   that changes Instructions gets the same note in the tool's result, so it can
+   call refresh when it wants the change now.
+6. **Instruction files are untouched.** Core's own instruction files
+   (`AGENTS.md` and the like) already add changes as messages without touching
+   the prefix. They stay as they are.
+
+**Tests:**
+- **Unchanged chat:** the tool and system fingerprints are identical to today,
+  over several turns.
+- **Pending:** set only when the rendered prefix differs; a keep-alive or
+  model-activation change sets none.
+- **Applying:** `/refresh`, a compaction and a model switch each apply pending
+  changes and clear them. A new chat gets the new prompt.
+- **Deny:** a turned-off tool is refused at once while still listed.
+
+**Live** (on `claude-opus-5-5`):
+1. Send two messages.
+2. Turn off a system row.
+3. The next message still reads the whole prefix from cache, and the footer
+   shows the pending change.
+4. Run `/refresh`: the next message rebuilds the cache once, and the one after
+   reads it again.
+5. Change a keep-alive time: nothing is shown as pending.
+
 ## Open questions for the user
 
 1. Item 2: "cache input" is read as cache writes. If it meant cache reads, the
    count changes by little (T92: 10.0M of 10.4M were cache reads).
-2. Item 4: keep two process-wide watchers, one for the global config and one
-   for the Instructions store? They are cheap, and they keep Instructions edits
-   live without `/refresh`. Without them, every edit needs a refresh.
-3. Item 4: folder-independent MCP servers such as `search-mcp` could run once
-   for the whole service instead of once per folder. That alone would have
-   turned 51 processes into 1.
+2. Item 4: run folder-independent MCP servers such as `search-mcp` once for the
+   whole service instead of once per folder? That alone would have turned 51
+   processes into 1.
+3. Item 5: should a compaction and a model switch apply pending changes by
+   themselves, since the cache is rebuilt then anyway? Or only `/refresh`?
