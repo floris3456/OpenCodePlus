@@ -158,6 +158,7 @@
 - Plan: reuse hashed errors for call persistence and restrict targets to recognized identifiers/names/paths/hosts or hashed query summaries; remove arbitrary-string fallback and only retain known command subcommands. Keep target grouping and useful names, no content redaction framework. Focused tests inspect every stored column with sentinel refusal/control cases; old stores remain readable, no touching/migrating shared live ledger. Owned live check one failed tool/query and inspect isolated ledger.
 - T85 `w-c7c1ed13b4ed9214` repairing privacy from `339c6e2f36`; owns collector/attribution/ledger and non-cache Monitor tests, not page/query/report or Instructions. Also reconciles stale monitor-plugin hook fixture warnings without weakening failure controls.
 - Early T85 diff correctly hashes call errors at the persistence boundary and removes arbitrary inner-argument attribution. Proposed program-arity check still retains `git fictional_private_payload_sentinel`; requested recognized-subcommand-only control. Also require lowercase echo sentinel (uppercase alone would not discriminate old regex). No final verdict/landing yet.
+- T85 attempt 1 reported source `44970b598a` and README `f130f6cf2d`, green focused checks and isolated failed-tool/search privacy evidence; queued correction is now attempt 2 working, so not landed/stopped yet. Its report identified four existing `tools.test.ts` failures; parent reproduced and recorded #15 rather than ignoring them.
 
 ### #10 — navigation still reads the provider catalogue through base classification (open)
 
@@ -191,10 +192,16 @@
 - Where: `packages/plus/src/tui/instructions/route.tsx:1028–1033` and its key handling; category add also needs live verification in Models where the direct add path may bypass the generic Category choice.
 - Plan: only an explicit category header targets category deletion; other rows retain their original delete path. Real route/key regression and live category/model delete plus header delete/refusal control, at 80/160; include T8 move/reset/edit preservation and help/hints.
 
+### #15 — four old model tool tests contradict landed activation/edit semantics (open)
+
+- Parent `bun test test/tools.test.ts`: **66 pass, 1 existing skip, 4 fail**. Worker T85 reproduced them at its base before privacy edits. One replacement test at line 1329 expects one stored model record but receives two (candidate plus hiding tombstone); three delete flows at lines 2455/2557/3070 try to delete a model immediately after create, which now correctly activates it exclusively and refuses deleting the effective model.
+- Weight: failing Instructions regression gate; contracts T3 auto-activation and A2 closed in-place editing are not to be weakened.
+- Plan: reconcile these actual tool tests after validating each failure against the contract: assert exactly one visible edited row plus the correctly scoped tombstone, preserved active/unrelated fields; preserve the effective-model deletion refusal, explicitly activate another candidate/reset the local active flag before deletion/hiding as appropriate. Retain returned-level/owner id and re-add/refusal assertions. T82 already owns model/tool tests; include this in its focused check and later live model sweep. Fixture permission-hook warnings are separate from these four demonstrated assertion/refusal failures.
+
 ## Live evidence
 
 - T81 had no commit or changed worktree file for 35 minutes and no report: stopped force per watchdog, not accepted as complete. Its named PTY was in a rename dialog at 160×48 (no busy indicator); owned SQLite showed one idle session, no compaction and 12 completed/zero unfinished requests. Kernel cwd/fds established owned test PIDs 2623601/2623736 and isolated log/database paths. Parent exited via palette; PTY exit 0, `/proc` confirms both PIDs gone. `pilotty kill` then reports SESSION_EXITED. Partial evidence retained in the old dev home, no source/state deletion. A fresh A1 acceptance run is required; no end-state claim from incomplete evidence.
 
 ## Open findings for morning
 
-Issues #1/#6/#7/#8/#9/#10/#13/#14 and the acceptance/gates above remain pending. Final sweep has not run; no final acceptance claim.
+Issues #1/#6/#7/#8/#9/#10/#13/#14/#15 and the acceptance/gates above remain pending. Final sweep has not run; no final acceptance claim.
