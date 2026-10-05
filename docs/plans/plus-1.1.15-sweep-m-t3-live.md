@@ -122,3 +122,43 @@ Screen after picking the child:
  [1 Overview] [2 Cache] [3 Tools] [4 Sessions] [5 Steps]                drilled 1 (⌫ back)
 ```
 
+### When (second header line; `t` steps through)
+
+**PASS.** With the page open, `t` stepped the second header line through the
+full list and wrapped:
+
+`All → Since last compaction → 15m → 1h → 24h → 7d → 30d → All`.
+
+Screens (`When:` line):
+```
+ When: All [t] step window
+ When: Since last compaction [t] step window
+ When: 15m [t] step window
+ When: 1h [t] step window
+ When: 24h [t] step window
+ When: 7d [t] step window
+ When: 30d [t] step window
+```
+
+### Totals line (always visible)
+
+**PASS.** The totals block is always visible under the filters line, with every
+metric labelled: requests and steps (`reqs`/`steps`), uncached input (`in`),
+cache read (`read`), cache write (`write`), output (`out`), reasoning
+(`reason`), `hit rate`, `misses` and `miss cost`, `pings`, and `cost`.
+
+At 100 columns:
+```
+ reqs: 5 · steps: 5 · in: 13.8k · read: 51.7k · write: 0 · out: 522 · reason: 568 · hit rate: 79%
+ misses: 0 · miss cost: $0.00 · pings: 0 · cost: $0.00
+```
+At 80 columns (same metrics, wrapped):
+```
+ reqs: 0 · steps: 0 · in: 0 · read: 0 · write: 0 · out: 0 · reason: 0
+ hit rate: 0% · misses: 0 · miss cost: $0.00 · pings: 0 · cost: $0.00
+```
+At 160 columns (one line, all labelled):
+```
+ reqs: 5 · steps: 5 · in: 13.8k · read: 51.7k · write: 0 · out: 522 · reason: 568 · hit rate: 79% · misses: 0 · miss cost: $0.00 · pings: 0 · cost: $0.00
+```
+
