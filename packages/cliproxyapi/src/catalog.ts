@@ -13,6 +13,9 @@ import { Schema, type Types } from "effect"
  * Fallback for CPA builds without it: the Codex model catalogue
  * (`/models?client_version=…`). It fills unknown models with template levels,
  * so its levels are marked approximate.
+ *
+ * Last fallback: the plain OpenAI model list (`/models`), IDs and owners only.
+ * A CPA without the details catalogue answers `details=true` with that list.
  */
 export const DETAILS_SCHEMA = "cliproxyapi.model-details/1"
 export const CODEX_CLIENT_VERSION = "0.300.0"
@@ -34,7 +37,7 @@ export interface CatalogModel {
 }
 
 export interface Catalogue {
-  readonly source: "details" | "codex"
+  readonly source: "details" | "codex" | "plain"
   readonly hash: string
   readonly models: readonly CatalogModel[]
 }
@@ -71,6 +74,10 @@ const CodexModel = Schema.Struct({
   service_tiers: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String })))),
 })
 const Codex = Schema.Struct({ models: Schema.Array(CodexModel) })
+
+const Plain = Schema.Struct({
+  data: Schema.Array(Schema.Struct({ id: Schema.String, owned_by: Schema.optional(Schema.NullOr(Schema.String)) })),
+})
 
 /** Effort names OpenCode variants are created for, in display order. */
 export const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const
@@ -148,6 +155,29 @@ export function parseCodexCatalogue(raw: unknown, hash: string): Catalogue | und
     }
   })
   return { source: "codex", hash, models }
+}
+
+/**
+ * The plain list states no levels, limits or modalities: chat models get text
+ * in and out with reasoning passed through, and Core's defaults for the rest.
+ */
+export function parsePlainList(raw: unknown, hash: string): Catalogue | undefined {
+  const decoded = Schema.decodeUnknownOption(Plain)(raw)
+  if (decoded._tag === "None" || decoded.value.data.length === 0) return undefined
+  const models = decoded.value.data.map((item): CatalogModel => {
+    const kind = IMAGE_SLUG.test(item.id) ? "image" : "chat"
+    return {
+      id: item.id,
+      name: item.id,
+      kind,
+      ownedBy: item.owned_by ? item.owned_by.toLowerCase() : undefined,
+      input: ["text"],
+      outputModalities: kind === "image" ? ["image"] : ["text"],
+      reasoning: kind === "image" ? { mode: "none", levels: [] } : { mode: "passthrough", levels: [] },
+      tiers: [],
+    }
+  })
+  return { source: "plain", hash, models }
 }
 
 function withInput<T extends { input?: number }>(limit: T, input: number | undefined): T {
