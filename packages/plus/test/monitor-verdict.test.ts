@@ -17,8 +17,14 @@ const MODEL = "claude-opus-5-5"
 const VARIANT = "xhigh"
 
 // Anthropic rolling breakpoints: the last message always carries the marker,
-// so every step moves it. Message bodies are static unless a case replaces one.
-const anthropicBody = (system: string, count: number, lastText?: string) => ({
+// so every step moves it. Message bodies are static unless a case replaces one
+// (a tail edit) or `edits` rewrites an earlier historical message in place.
+const anthropicBody = (
+  system: string,
+  count: number,
+  lastText?: string,
+  edits?: Readonly<Record<number, string>>,
+) => ({
   model: MODEL,
   system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
   messages: Array.from({ length: count }, (_, i) => ({
@@ -26,7 +32,7 @@ const anthropicBody = (system: string, count: number, lastText?: string) => ({
     content: [
       {
         type: "text",
-        text: i === count - 1 && lastText !== undefined ? lastText : `m${i}`,
+        text: edits?.[i] ?? (i === count - 1 && lastText !== undefined ? lastText : `m${i}`),
         ...(i === count - 1 ? { cache_control: { type: "ephemeral" } } : {}),
       },
     ],
@@ -46,6 +52,7 @@ interface Row {
   readonly system?: string
   readonly count?: number
   readonly lastText?: string
+  readonly edits?: Readonly<Record<number, string>>
   readonly provider?: string
   readonly model?: string
   readonly variant?: string
@@ -71,7 +78,7 @@ function record(db: Ledger, session: string, row: Row): string {
     requestID: id,
     sessionID: session,
     created: row.at,
-    ...fingerprintWireBody(anthropicBody(row.system ?? "sys".repeat(4000), row.count ?? 1, row.lastText), {
+    ...fingerprintWireBody(anthropicBody(row.system ?? "sys".repeat(4000), row.count ?? 1, row.lastText, row.edits), {
       protocol: "anthropic-messages",
     }),
   })
@@ -268,3 +275,124 @@ test("rotating endpoints and quota hand-offs still name their cause", async () =
   expect(detail.accounts[0]).toMatchObject({ from: "a", to: "b" })
 })
 
+test("a cold write creates the prefix; a following full rewrite is a miss", async () => {
+  const db = await ledger()
+  // First request of the session writes the whole prefix (read=0, write>=4096).
+  record(db, "coldwrite", { id: "first", at: 1000, count: 40, read: 0, write: 20000 })
+  const created = last(db, "coldwrite", "first")
+  expect(created.request.verdict).toBe("cold")
+
+  // The very next rolling-marker request reads 0 and rewrites the whole
+  // prefix: the cold write proves a prefix existed and was not reused. No
+  // model switch or compaction applies, so this is a provider-side bust.
+  record(db, "coldwrite", { id: "rewrite", at: 2000, count: 42, read: 0, write: 21000 })
+  const rewrite = last(db, "coldwrite", "rewrite")
+  expect(rewrite.request.verdict).toBe("miss")
+  expect(rewrite.request.cause).toBe("unknown")
+  expect(rewrite.request.expected).toBe(20000)
+  expect(rewrite.request.missTokens).toBe(20000)
+  expect(rewrite.request.evidence).toContain("read 0 times")
+})
+
+test("a cold write followed by a successful read is a hit", async () => {
+  const db = await ledger()
+  record(db, "coldread", { id: "first", at: 1000, count: 40, read: 0, write: 20000 })
+  record(db, "coldread", { id: "second", at: 2000, count: 42, read: 20500, write: 300 })
+  const second = last(db, "coldread", "second")
+  expect(second.request.verdict).toBe("hit")
+  expect(second.request.cause).toBeUndefined()
+})
+
+test("a write-only baseline past the TTL names expiry and counts its cost", async () => {
+  const db = await ledger()
+  const base = 1_000_000
+  record(db, "coldexpired", { id: "first", at: base, count: 40, read: 0, write: 20000 })
+  db.contextFact({
+    sessionID: "coldexpired",
+    at: base + 1_000,
+    kind: "pricing",
+    detail: { provider: PROVIDER, model: MODEL, rates: [{ input: 2, output: 5, cache: { read: 0.1, write: 3 } }] },
+  })
+  record(db, "coldexpired", { id: "late", at: base + 400_000, count: 42, read: 0, write: 21000 })
+  const late = last(db, "coldexpired", "late")
+  expect(late.request.verdict).toBe("miss")
+  expect(late.request.cause).toBe("cache-expired")
+  expect(late.request.missTokens).toBe(20000)
+  // 20000 written at the cache-write rate 3/Mtok = 0.06.
+  expect(late.request.missCost).toBeCloseTo(0.06)
+})
+
+test("a cold write does not mask a real model switch as a miss", async () => {
+  const db = await ledger()
+  record(db, "coldswitch", { id: "first", at: 1000, count: 40, read: 0, write: 20000 })
+  record(db, "coldswitch", { id: "switch", at: 2000, count: 42, read: 0, write: 21000, model: "claude-sonnet-5" })
+  const switched = last(db, "coldswitch", "switch")
+  expect(switched.request.verdict).toBe("cold")
+  expect(switched.request.cause).toBe("model-switch")
+})
+
+test("an errored request's tokens never move the hit rate but stay in totals", async () => {
+  const db = await ledger()
+  record(db, "erated", { id: "warm", at: 1000, count: 36, read: 8000, write: 0 })
+  // The error row carries a large real input count, which must not be added to
+  // the rate denominator. Old behavior: 8000 / (8000 + 2 + 8000) ≈ 0.5;
+  // correct: 8000 / (8000 + 2) ≈ 0.99975.
+  record(db, "erated", {
+    id: "failed",
+    at: 2000,
+    kind: "ping",
+    status: "error",
+    error: "overloaded_error",
+    count: 38,
+    read: 0,
+    write: 0,
+    input: 8000,
+  })
+  const report = queryMonitor(
+    db,
+    { scope: "session", sessionID: "erated", view: "overview" },
+    { now: 3000 },
+  )
+  const failed = queryMonitor(
+    db,
+    { scope: "session", sessionID: "erated", view: "cache", id: "erated-failed" },
+    { now: 3000 },
+  ).detail?.request
+  expect(failed).toMatchObject({ verdict: "error", error: expect.any(String) })
+  expect(report.totals.hitRate).toBeCloseTo(8000 / 8002, 6)
+  // Tokens and requests are unchanged: input 2 + 8000, requests 2.
+  expect(report.totals.input).toBe(8002)
+  expect(report.totals.requests).toBe(2)
+  expect(report.agents?.find((a) => a.agent === "build")?.hitRate).toBeCloseTo(8000 / 8002, 6)
+  const sessions = queryMonitor(db, { scope: "session", sessionID: "erated", view: "sessions" }, { now: 3000 })
+  expect(sessions.sessions?.find((s) => s.sessionID === "erated")?.hitRate).toBeCloseTo(8000 / 8002, 6)
+  expect(sessions.sessions?.find((s) => s.sessionID === "erated")?.input).toBe(8002)
+})
+
+test("historical-message edits are a real prefix change; tail growth and rolling markers are not", async () => {
+  const db = await ledger()
+  // An early historical message is rewritten in place while the system prompt,
+  // tools and rolling markers stay the same.
+  record(db, "hist", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
+  record(db, "hist", { id: "edit", at: 2000, count: 6, read: 0, write: 9000, edits: { 1: "EDITED" } })
+  const edited = last(db, "hist", "edit")
+  expect(edited.request.verdict).toBe("miss")
+  expect(edited.request.cause).toBe("prefix-changed")
+  expect(edited.request.evidence).toContain("message 2 (text) changed")
+
+  // Control: pure tail growth keeps the rolling-marker prefix and is not a
+  // prefix change.
+  record(db, "tail", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
+  record(db, "tail", { id: "grow", at: 2000, count: 8, read: 8100, write: 100 })
+  const grown = last(db, "tail", "grow")
+  expect(grown.request.verdict).toBe("hit")
+  expect(grown.request.cause).toBeUndefined()
+
+  // Control: replacing the last (tail) message is conversation growth, not a
+  // prefix edit.
+  record(db, "lastedit", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
+  record(db, "lastedit", { id: "replace", at: 2000, count: 6, read: 8100, write: 100, lastText: "new tail" })
+  const replaced = last(db, "lastedit", "replace")
+  expect(replaced.request.verdict).toBe("hit")
+  expect(replaced.request.cause).toBeUndefined()
+})

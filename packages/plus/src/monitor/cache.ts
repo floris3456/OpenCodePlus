@@ -301,7 +301,10 @@ export function cacheLifetime(r: RequestRow, fp?: RequestFingerprintData): numbe
 
 // A `message <n> (...)` change is conversation growth (a replacing tail) or the
 // boundary message being extended, not a reusable-prefix edit.
-const isMessageSegment = (name: string) => /^message \d+ /.test(name)
+const messageIndexIn = (name: string): number | undefined => {
+  const match = /^message (\d+) /.exec(name)
+  return match ? Number(match[1]) : undefined
+}
 
 // Cache markers are compared by shape (type, ttl) without their targets.
 // Anthropic's rolling breakpoints move the last marker to the newest message on
@@ -314,15 +317,32 @@ function markerShape(fp: RequestFingerprintData | undefined): string {
 
 // A change to a non-message, non-marker segment is a real reusable-prefix edit
 // (system part, tool, option or protocol). A genuine marker change is a shape
-// change. Anything else — the aggregate marker segment moving or a message
-// being appended or extended — is conversation growth.
+// change. For messages, rolling markers move to the newest message and a
+// growth step extends the last message, so the earliest diverging message is
+// the previous last one; an edit to an earlier message shifts every later
+// prefix hash and is a real reusable-prefix rewrite. The earliest changed
+// message index therefore decides: strictly before the last message of the
+// shorter history is a historical edit.
 function reusablePrefixChanged(
   changes: MonitorRequestDetail["segments"],
   before: RequestFingerprintData | undefined,
   after: RequestFingerprintData | undefined,
 ): boolean {
-  const structural = changes.some((c) => c.name !== "cache markers" && !isMessageSegment(c.name))
-  return structural || (changes.length > 0 && markerShape(before) !== markerShape(after))
+  if (changes.some((c) => c.name !== "cache markers" && messageIndexIn(c.name) === undefined)) return true
+  if (changes.length > 0 && markerShape(before) !== markerShape(after)) return true
+  const lastCommon = Math.min(before?.messagePrefixes.length ?? 0, after?.messagePrefixes.length ?? 0) - 1
+  return changes.some((c) => {
+    const index = messageIndexIn(c.name)
+    return index !== undefined && index < lastCommon
+  })
+}
+
+// The reusable prefix a completed request left behind: the tokens it actually
+// read back, or — when it only created the prefix (a cold write) — the tokens
+// it wrote. An errored or usage-less request leaves nothing.
+function warmPrefixTokens(previous: RequestRow | undefined): number {
+  if (!previous) return 0
+  return previous.cacheReadTokens > 0 ? previous.cacheReadTokens : previous.cacheWriteTokens
 }
 
 interface DiffStep {
@@ -338,6 +358,7 @@ function diffStep(
   previousWarm: RequestRow | undefined,
 ): DiffStep {
   const diff = prefixDiff(previous && previousFp, fp)
+  const warm = warmPrefixTokens(previousWarm)
   const expected = !diff.known
     ? undefined
     : diff.append && previous && promptTokens(previous) > 0
@@ -347,15 +368,13 @@ function diffStep(
         // replaced: the provider cached exactly that much.
         diff.reusable && previous && previous.cacheReadTokens > 0
         ? previous.cacheReadTokens
-        : diff.common > 0
-          ? diff.common
-          : // Rolling Anthropic cache markers move to the newest message on every
-            // step, so the diff names no reusable prefix and common is zero. The
-            // last request that reported cache usage is then the honest measure:
-            // the provider served that prefix from cache and can serve it again.
-            previousWarm && previousWarm.cacheReadTokens > 0
-            ? previousWarm.cacheReadTokens
-            : diff.common
+        : // The last request that reported cache usage measured the prefix the
+          // provider actually holds; a segment estimate is a lower bound. Take
+          // whichever is larger, so rolling markers (common 0) and a partial
+          // diff both report the real reusable size.
+          warm > diff.common
+          ? warm
+          : diff.common
   return { diff, expected, changed: reusablePrefixChanged(diff.changes, previousFp, fp) }
 }
 
@@ -530,10 +549,11 @@ function causeStep(
       (p) => p.provider === r.provider && p.model === r.model && (p.cacheReadTokens > 0 || p.cacheWriteTokens > 0),
     )
 
-  // The prefix the last successful request actually read. Rolling Anthropic
+  // The reusable prefix the last successful request left behind, whether it
+  // read it back or only created it with a cold write. Rolling Anthropic
   // breakpoints mean reads only ever grow along a session's prefix, so a
   // smaller read this time is prefix the provider did not reuse.
-  const warmRead = warm?.cacheReadTokens ?? 0
+  const warmRead = warm ? warmPrefixTokens(warm) : 0
   const drop = warmRead > 0 ? warmRead - r.cacheReadTokens : 0
   const expired =
     !cold && timing.gap !== undefined && timing.lifetime !== undefined && timing.gap > timing.lifetime
@@ -605,15 +625,10 @@ function causeStep(
     cause,
     confidence,
     evidence,
-    // The exact unreused prefix is the honest miss. For a partial bust it is
-    // the read drop; for a full bust it is the whole previous reusable prefix,
-    // even when a segment estimate would be smaller.
-    missOverride:
-      verdict === "partial" && drop >= 1024
-        ? drop
-        : verdict === "miss" && warmRead > 0
-          ? Math.max(warmRead, drop)
-          : undefined,
+    // A partial bust's exact unreused prefix is the read drop; the segment
+    // estimate would undercount it because the provider rewrote far less. A
+    // full bust needs no override: `expected` already carries the warm prefix.
+    missOverride: verdict === "partial" && drop >= 1024 ? drop : undefined,
   }
 }
 
