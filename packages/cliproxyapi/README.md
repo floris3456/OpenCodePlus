@@ -48,7 +48,9 @@ Hosts that do not use CPA see nothing from it.
 
 - **Off:** `"plugins": ["-opencode.plus.cliproxyapi"]` in `opencode.json` removes
   everything: the `/connect` entry, catalogue, relay, quota, Usage and the image
-  tool. Without the server half the TUI half shows no Usage UI.
+  tool. A provider you defined yourself keeps working, without them. The TUI
+  half reads the TUI's own `cli.json`: it stays loaded but shows nothing and
+  stops asking the server; the same line in `cli.json` unloads it as well.
 
 ## Features
 
