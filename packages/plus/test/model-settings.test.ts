@@ -220,7 +220,7 @@ test("a catalog model with no warming and no record still lists in Defaults › 
   const before = await load(project)
   const snapshot = (await api.snapshot()).value
   const keys = modelDefaultKeys({
-    modelSettings: snapshot.modelSettings,
+    modelSettings: snapshot.modelSettings ?? [],
     models: [],
     agents: [],
     hostModels: [

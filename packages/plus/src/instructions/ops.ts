@@ -21,14 +21,17 @@ import {
   modelRuntimeScope,
   ownAndAbove,
   parseInterval,
+  parseMemberOwnerPath,
   parseModelItemId,
   parsePrompt,
   parseWarming,
   removeModelRecord,
   resolve,
   resolveActiveModel,
+  resolutionChain,
   resolveResolution,
   resolveSplit,
+  runtimeScope,
   sameModelCandidate,
   sameTeam,
   scopedTo,
@@ -1391,6 +1394,166 @@ export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: M
   if (JSON.stringify(next) === JSON.stringify(models))
     return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
   return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
+}
+
+/** The target a completed `/models`, variant-dialog or cycle-effort pick names. */
+export interface ModelPick {
+  readonly agent: string
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+}
+
+export interface ModelPickSuccess {
+  readonly models: readonly ModelRecord[]
+  readonly status: string
+  readonly retryHint: string
+  /** The tree row id the pick addresses or wrote. */
+  readonly rowId: string
+  /** The level the pick wrote (or would no-op at). */
+  readonly level: Level
+  /** False when the pick was already the effective model and wrote nothing. */
+  readonly changed: boolean
+}
+
+export type ModelPickResult = ModelPickSuccess | OpFailure
+
+// The team a pick's agent resolves as a member of, or the flat agent. A member
+// id that names more than one team is ambiguous: the row to write would be a
+// guess, so the pick refuses instead.
+function pickOwnerOf(
+  input: MemoInput,
+  agent: string,
+): { readonly kind: "agent"; readonly level: Level } | { readonly kind: "member"; readonly level: Level; readonly team: string } | { readonly refusal: string } {
+  const teams = (input.teams ?? []).filter(
+    (team) => team.agents.includes(agent) || (team.overlay?.includes(agent) ?? false),
+  )
+  if (teams.length > 1)
+    return {
+      refusal: `"${agent}" is a member of teams ${teams.map((team) => `"${team.team}"`).join(", ")}: the model to change is ambiguous`,
+    }
+  const only = teams[0]
+  if (only !== undefined) return { kind: "member", level: only.level, team: only.team }
+  const source = input.agents.find((entry) => entry.id === agent)
+  if (source === undefined) return { refusal: `Unknown agent "${agent}"` }
+  return { kind: "agent", level: source.scope }
+}
+
+/**
+ * Decide what a completed user model pick writes, purely: the record list and
+ * the address, or a refusal. Mirrors `buildActiveModels` for the agent's
+ * effective model and write level, then reuses the tree's row operations on
+ * the agent's model rows at that level. The caller saves the returned `models`
+ * with a revision-checked write and logs once; a no-op returns the input list.
+ */
+export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Memo): ModelPickResult {
+  const memo = sharedMemo ?? memoOfInput(input)
+  const ctx = memo.ctx
+  const target = { providerID: pick.providerID, modelID: pick.modelID, ...(pick.variant === undefined ? {} : { variant: pick.variant }) }
+  const owner = pickOwnerOf(input, pick.agent)
+  if ("refusal" in owner) return owner
+  const agents = ctx.agents
+  // The agent's own model (file frontmatter, else host), the same fallback the
+  // tree and activation read.
+  const upstream =
+    agents.find((entry) => entry.id === pick.agent && entry.scope === owner.level)?.model ??
+    agents.find((entry) => entry.id === pick.agent)?.model
+  const memberOf = owner.kind === "member" ? { level: owner.level as Level, team: owner.team } : undefined
+  const catalogue = owner.kind === "member" ? ("teams" as const) : undefined
+  // Resolve the effective model exactly as buildActiveModels does.
+  const runtime = modelRuntimeScope({
+    scopes: ctx.scopes,
+    level: owner.level,
+    owner: pick.agent,
+    ...(memberOf === undefined ? {} : { team: memberOf }),
+  })
+  const effective = resolveActiveModel({
+    models: ctx.models,
+    scopes: runtime.scopes,
+    level: runtime.level,
+    agent: pick.agent,
+    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(catalogue === undefined ? {} : { catalogue }),
+    ...(upstream === undefined ? {} : { upstream }),
+  })
+  // Write level: the winner's own Project/Global row, else Global, else the
+  // agent's own tier when Global is not in its chain.
+  const winnerSource = effective?.source
+  const writeLevel: Level =
+    winnerSource === "project" || winnerSource === "global"
+      ? winnerSource
+      : runtime.scopes.global.has(pick.agent)
+        ? "global"
+        : owner.level
+  const ownerPath = owner.kind === "member" ? `${owner.team}/:${pick.agent}` : pick.agent
+  const rowId = `item:${writeLevel}:${ownerPath}:${modelItemId(target)}`
+  // The rows shown at the write level: the union down the chain from there.
+  const candidates = modelCandidates({
+    models: ctx.models,
+    scopes: ctx.scopes,
+    level: writeLevel,
+    agent: pick.agent,
+    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(catalogue === undefined ? {} : { catalogue }),
+    ...(upstream === undefined ? {} : { upstream }),
+  })
+  const label = `${pick.providerID}/${pick.modelID}${pick.variant === undefined ? "" : `@${pick.variant}`}`
+  const success = (models: readonly ModelRecord[], changed: boolean, status: string): ModelPickSuccess => ({
+    models,
+    status,
+    retryHint: `activated "${label}" against a stale revision; retry to apply`,
+    rowId,
+    level: writeLevel,
+    changed,
+  })
+  // (a) already the effective model: no write.
+  if (effective !== undefined && sameModelCandidate(effective, target))
+    return success(ctx.models, false, `Activated "${label}"`)
+  // (b) the exact candidate is present: activate it.
+  if (candidates.some((candidate) => sameModelCandidate(candidate, target))) {
+    const activated = activateModelRow(input, rowId, memo)
+    if ("refusal" in activated) return activated
+    return success(activated.models, true, activated.status)
+  }
+  // (c) the same provider/model is present with another effort: change it in
+  // place, preferring the active row, then make it active.
+  const sameModel = candidates
+    .filter((candidate) => candidate.providerID === target.providerID && candidate.modelID === target.modelID)
+    .toSorted((left, right) => {
+      const leftId = modelItemId(left)
+      const rightId = modelItemId(right)
+      return leftId < rightId ? -1 : leftId > rightId ? 1 : 0
+    })
+  const match =
+    sameModel.find((candidate) => effective !== undefined && sameModelCandidate(candidate, effective)) ?? sameModel[0]
+  if (match !== undefined) {
+    const matchRowId = `item:${writeLevel}:${ownerPath}:${modelItemId(match)}`
+    const edited = editModelRow(input, matchRowId, { ...target, editedField: "effort" }, memo)
+    if ("refusal" in edited) return edited
+    // Editing in place keeps the row active; when the match was an inactive
+    // candidate, activate it on the edited state in one more row operation.
+    const editedInput: MemoInput = {
+      ...input,
+      records: [...input.records.filter((record) => record.type !== "model"), ...edited.models],
+    }
+    const activated = activateModelRow(editedInput, rowId)
+    if ("refusal" in activated) return success(edited.models, true, edited.status)
+    return success(activated.models, true, activated.status)
+  }
+  // (d) no row for the candidate: add and activate one, with the same context
+  // activation uses. The new row carries no per-row warming/interval/prompt, so
+  // those resolve from Defaults › Models.
+  const scope = {
+    level: writeLevel,
+    agent: pick.agent,
+    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(catalogue === undefined ? {} : { catalogue }),
+  }
+  const next = ensureActivateModel(ctx.models, scope, target, now(), {
+    scopes: ctx.scopes,
+    ...(upstream === undefined ? {} : { upstream }),
+  })
+  return success(next, true, `Activated "${label}"`)
 }
 
 // w on a model row sets cache warming for this agent and model at this level:

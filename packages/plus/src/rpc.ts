@@ -1692,6 +1692,22 @@ export const ModelInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.ModelInvalid" })
 
+export interface ModelPickInput extends Schema.Schema.Type<typeof ModelPickInput> {}
+export const ModelPickInput = Schema.Struct({
+  agent: Schema.String,
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.ModelPickInput" })
+
+export interface ModelPickOutput extends Schema.Schema.Type<typeof ModelPickOutput> {}
+export const ModelPickOutput = Schema.Struct({
+  level: Level,
+  rowId: Schema.String,
+  status: Schema.String,
+  changed: Schema.Boolean,
+}).annotate({ identifier: "Plus.ModelPickOutput" })
+
 // Tool-specific permission rules (phase 3). A RuleRecord defines a user-added
 // rule; toggling any rule (curated, mined, or custom) is a CustomizationRecord
 // with state on/off on the perm item address. Patterns are CORE RESOURCE
@@ -1987,6 +2003,8 @@ const PortableCatalogModelsOutput = Schema.toStandardSchemaV1(
 const PortableModelExists = Schema.toStandardSchemaV1(ModelExists.annotate({ identifier: "Plus.ModelExists" }))
 const PortableModelMissing = Schema.toStandardSchemaV1(ModelMissing.annotate({ identifier: "Plus.ModelMissing" }))
 const PortableModelInvalid = Schema.toStandardSchemaV1(ModelInvalid.annotate({ identifier: "Plus.ModelInvalid" }))
+const PortableModelPickInput = Schema.toStandardSchemaV1(ModelPickInput.annotate({ identifier: "Plus.ModelPickInput" }))
+const PortableModelPickOutput = Schema.toStandardSchemaV1(ModelPickOutput.annotate({ identifier: "Plus.ModelPickOutput" }))
 const PortableRuleAddInput = Schema.toStandardSchemaV1(RuleAddInput.annotate({ identifier: "Plus.RuleAddInput" }))
 const PortableRuleRemoveInput = Schema.toStandardSchemaV1(
   RuleRemoveInput.annotate({ identifier: "Plus.RuleRemoveInput" }),
@@ -2235,6 +2253,13 @@ export const Definition = Rpc.define({
         "model.exists": PortableModelExists,
         "model.invalid": PortableModelInvalid,
         "agent.protected": PortableAgentProtected,
+      },
+    },
+    "model.pick": {
+      input: PortableModelPickInput,
+      output: PortableModelPickOutput,
+      errors: {
+        "model.invalid": PortableModelInvalid,
       },
     },
     "model.remove": {

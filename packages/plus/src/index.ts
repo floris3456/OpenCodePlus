@@ -36,6 +36,7 @@ import { enforcementState, type EnforcementState, type PermissionTable } from ".
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
+import { pickModelRow, type ModelPick } from "./instructions/ops.js"
 import {
   everySettings,
   MODEL_SETTINGS_FIELDS,
@@ -516,6 +517,10 @@ export type RemoveModelResult =
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
+export type PickModelResult =
+  | { ok: true; value: Plus.ModelPickOutput }
+  | { ok: false; error: { code: "model.invalid"; message: string; data: Plus.ModelInvalid } }
+
 export type CatalogModelsResult =
   | { ok: true; value: Plus.CatalogModelsOutput }
 
@@ -578,6 +583,7 @@ export interface PlusApi {
   readonly listTeams: () => Promise<ListTeamsResult>
   readonly addModel: (input: Plus.ModelAddInput & { readonly actor?: Plus.Actor }) => Promise<AddModelResult>
   readonly removeModel: (input: Plus.ModelRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveModelResult>
+  readonly pickModel: (input: Plus.ModelPickInput & { readonly actor?: Plus.Actor }) => Promise<PickModelResult>
   readonly addRule: (input: Plus.RuleAddInput & { readonly actor?: Plus.Actor }) => Promise<AddRuleResult>
   readonly removeRule: (input: Plus.RuleRemoveInput & { readonly actor?: Plus.Actor }) => Promise<RemoveRuleResult>
   readonly updateRule: (input: Plus.RuleUpdateInput & { readonly actor?: Plus.Actor }) => Promise<UpdateRuleResult>
@@ -2037,6 +2043,87 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         },
       }
     },
+    pickModel: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      const validated = validateModelRef(input.providerID, input.modelID, input.variant)
+      if (!validated.ok)
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: validated.reason, data: { providerID: input.providerID, modelID: input.modelID, ...(input.variant === undefined ? {} : { variant: input.variant }), reason: validated.reason } },
+        }
+      const catalog = await Effect.runPromise(
+        ctx.model.list().pipe(
+          Effect.catchCause(() =>
+            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+          ),
+        ),
+      )
+      if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
+        const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
+        return {
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        }
+      }
+      const pick: ModelPick = {
+        agent: input.agent,
+        providerID: validated.providerID,
+        modelID: validated.modelID,
+        ...(validated.variant === undefined ? {} : { variant: validated.variant }),
+      }
+      const invalid = (reason: string) =>
+        ({
+          ok: false as const,
+          error: { code: "model.invalid" as const, message: reason, data: { providerID: validated.providerID, modelID: validated.modelID, ...(validated.variant === undefined ? {} : { variant: validated.variant }), reason } },
+        })
+      // Decide from fresh state, save revision-checked, and on a stale write
+      // re-read, re-decide and try once more. One log line per changed save.
+      const attempt = async (): Promise<
+        | { ok: true; changed: boolean; revision: number; level: Level; rowId: string; status: string }
+        | { ok: false; refusal?: string }
+      > => {
+        const stored = await load(directory)
+        const loaded = { ...stored, protectedAgents: config.protectedAgents }
+        const teams = await snapshotTeams(directory, loaded.records, builtins)
+        const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
+        const snapshot = toSnapshot(discovered, loaded, teams, undefined, [])
+        const memo = memoInputOf(snapshot)
+        const result = pickModelRow(memo, pick)
+        if ("refusal" in result) return { ok: false, refusal: result.refusal }
+        if (!result.changed)
+          return { ok: true, changed: false, revision: stored.projectRevision, level: result.level, rowId: result.rowId, status: result.status }
+        const next = [...loaded.records.filter((record) => record.type !== "model"), ...result.models]
+        const saved = await save(directory, {
+          expectedProjectRevision: stored.projectRevision,
+          expectedGlobalRevision: stored.globalRevision,
+          records: next,
+        })
+        if (!saved.ok) return { ok: false }
+        return {
+          ok: true,
+          changed: saved.changed.project || saved.changed.global,
+          revision: result.level === "project" ? saved.projectRevision : saved.globalRevision,
+          level: result.level,
+          rowId: result.rowId,
+          status: result.status,
+        }
+      }
+      let saved = await attempt()
+      if (!saved.ok && saved.refusal === undefined) saved = await attempt()
+      if (!saved.ok) return invalid(saved.refusal ?? "the store changed concurrently; retry")
+      if (saved.changed)
+        await appendForLevel(directory, saved.level, {
+          ts: new Date().toISOString(),
+          actor: normalizeActor(input.actor),
+          op: "model.pick",
+          target: saved.rowId,
+          summary: `model.pick ${validated.providerID}/${validated.modelID} (${saved.level})`,
+          revision: saved.revision,
+        })
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
+      return { ok: true as const, value: { level: saved.level, rowId: saved.rowId, status: saved.status, changed: saved.changed } }
+    },
     addRule: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
@@ -3317,6 +3404,12 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
             return yield* Effect.fail(context.error("agent.protected", result.error.message, result.error.data))
           return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
         }
+        return result.value
+      }),
+    "model.pick": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.pickModel(input))
+        if (!result.ok) return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
         return result.value
       }),
     "rule.add": (input, context) =>
