@@ -16,14 +16,17 @@ const PROVIDER = "cliproxyapi"
 const MODEL = "claude-opus-5-5"
 const VARIANT = "xhigh"
 
-// Anthropic rolling breakpoints: the last message always carries the marker,
-// so every step moves it. Message bodies are static unless a case replaces one
-// (a tail edit) or `edits` rewrites an earlier historical message in place.
+// Anthropic rolling breakpoints: a step's last message carries the marker, so
+// every step moves it. A keep-alive ping keeps it on the history's last message
+// (`marker`) and appends its private prompt uncached after it. Message bodies
+// are static unless a case replaces one (a tail edit) or `edits` rewrites an
+// earlier historical message in place.
 const anthropicBody = (
   system: string,
   count: number,
   lastText?: string,
   edits?: Readonly<Record<number, string>>,
+  marker = count - 1,
 ) => ({
   model: MODEL,
   system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
@@ -33,7 +36,7 @@ const anthropicBody = (
       {
         type: "text",
         text: edits?.[i] ?? (i === count - 1 && lastText !== undefined ? lastText : `m${i}`),
-        ...(i === count - 1 ? { cache_control: { type: "ephemeral" } } : {}),
+        ...(i === marker ? { cache_control: { type: "ephemeral" } } : {}),
       },
     ],
   })),
@@ -53,6 +56,7 @@ interface Row {
   readonly count?: number
   readonly lastText?: string
   readonly edits?: Readonly<Record<number, string>>
+  readonly marker?: number
   readonly provider?: string
   readonly model?: string
   readonly variant?: string
@@ -78,7 +82,7 @@ function record(db: Ledger, session: string, row: Row): string {
     requestID: id,
     sessionID: session,
     created: row.at,
-    ...fingerprintWireBody(anthropicBody(row.system ?? "sys".repeat(4000), row.count ?? 1, row.lastText, row.edits), {
+    ...fingerprintWireBody(anthropicBody(row.system ?? "sys".repeat(4000), row.count ?? 1, row.lastText, row.edits, row.marker), {
       protocol: "anthropic-messages",
     }),
   })
@@ -141,6 +145,9 @@ test("a full bust after an expired TTL names the gap and the failed keep-alive p
   const base = 1_000_000
   // 12:14:38 step read 143713; two errored keep-alive pings at 12:18:38 and
   // 12:22:41; idle 8.4 min > 5-minute TTL; 12:23:05 step read 0 write 147223.
+  // As recorded, the pings mark messages[104] and append an uncached prompt at
+  // messages[105]; the step then marks messages[105], so messages[104] differs
+  // from the ping's only by its moved marker.
   record(db, "expired", { id: "warm", at: base, count: 104, read: 143713, write: 661 })
   record(db, "expired", {
     id: "ping-1",
@@ -149,6 +156,7 @@ test("a full bust after an expired TTL names the gap and the failed keep-alive p
     status: "error",
     error: "overloaded_error",
     count: 106,
+    marker: 104,
     read: 0,
     write: 0,
   })
@@ -159,6 +167,7 @@ test("a full bust after an expired TTL names the gap and the failed keep-alive p
     status: "error",
     error: "overloaded_error",
     count: 106,
+    marker: 104,
     read: 0,
     write: 0,
   })
@@ -386,6 +395,16 @@ test("historical-message edits are a real prefix change; tail growth and rolling
   expect(penultimate.request.verdict).toBe("miss")
   expect(penultimate.request.cause).toBe("prefix-changed")
   expect(penultimate.request.evidence).toContain("message 5 (text) changed")
+
+  // After a keep-alive ping (marker on the history's last message, private
+  // prompt after it), an edit before that marked message is still a rewrite.
+  record(db, "afterping", { id: "warm", at: 1000, count: 4, read: 8000, write: 0 })
+  record(db, "afterping", { id: "ping", at: 1500, kind: "ping", count: 6, marker: 4, read: 8000, write: 0 })
+  record(db, "afterping", { id: "edit", at: 2000, count: 6, read: 0, write: 9000, edits: { 3: "EDITED" } })
+  const afterPing = last(db, "afterping", "edit")
+  expect(afterPing.request.verdict).toBe("miss")
+  expect(afterPing.request.cause).toBe("prefix-changed")
+  expect(afterPing.request.evidence).toContain("message 4 (text) changed")
 
   // Control: pure tail growth keeps the rolling-marker prefix and is not a
   // prefix change.
