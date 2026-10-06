@@ -274,5 +274,19 @@ package.
      before.
 - **Evidence** goes in `run/evidence/plus-1.1.16-cliproxyapi/<run>/`. The lab
   home holds the API key, so never copy it into the tree, a document or a
-  commit.
+  commit. *As done:* `run/evidence/cliproxyapi-package/` (`baseline`, `part1`
+  to `part3`, `part4-live`).
 - **Release** goes through the `opencodeplus-release` skill.
+
+## Follow-ups (not in 1.1.16)
+
+- **Startup refresh warning.** Each plugin start logs one `CPA catalogue
+  refresh failed … has no API key` for a config-defined provider. The first
+  refresh runs before config has merged the provider's settings; the 15 s
+  retry succeeds and the restored catalogue applies meanwhile. This happens in
+  the released build too: 333 of 335 warnings in the service log of
+  2026-10-06 come within 5 s of a location start. Deferred by decision on
+  2026-10-06.
+- **Readable pattern error.** The `/connect` URL field shows the raw regex
+  when refused. Core forms have no custom message for `pattern`; adding one
+  is a public form-schema change.
