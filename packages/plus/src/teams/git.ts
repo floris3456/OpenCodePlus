@@ -1,13 +1,9 @@
-import { join } from "node:path"
-
 // Always include the standard system bin dirs so a spawned `git` resolves
 // regardless of the caller's ambient PATH (stripped PATHs caused
-// `posix_spawn 'git'` failures). A workspace that sets OCP_ROOT also puts its
-// own bin first; without it no workspace path is assumed, so an installed
-// release carries no machine-specific directory.
+// `posix_spawn 'git'` failures). Nothing machine-specific is assumed, so an
+// installed release carries no workspace directory.
 export function systemPath(): string {
-  const root = process.env.OCP_ROOT?.trim()
-  return [root && join(root, "bin"), process.env.PATH, "/usr/bin", "/bin"].filter(Boolean).join(":")
+  return [process.env.PATH, "/usr/bin", "/bin"].filter(Boolean).join(":")
 }
 
 export interface GitResult {

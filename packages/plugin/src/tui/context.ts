@@ -560,6 +560,19 @@ export interface UI {
       /** Selects a variant of the selected model, or the model default when undefined. Returns false when no model is selected or the variant is unavailable. */
       set(variant: string | undefined): boolean
     }
+    /**
+     * Calls the listener once per completed user pick: /models, the variant dialog, or the cycle-variant
+     * keybind. Not programmatic changes. Returns a function that unsubscribes.
+     */
+    onPick(
+      listener: (pick: {
+        readonly agent: string
+        readonly providerID: string
+        readonly modelID: string
+        readonly variant?: string
+        readonly location: LocationRef | undefined
+      }) => void,
+    ): () => void
   }
   readonly prompt: {
     /**

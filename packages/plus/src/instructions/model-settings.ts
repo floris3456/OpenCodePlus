@@ -442,9 +442,11 @@ function sourceSuffix(view: ModelDefaultView): string {
 }
 
 /**
- * Every Defaults › Models row: "Every model" is implicit; the rest are the
- * models Plus knows from stored records, agent models, and opencode.json
- * warming, sorted by provider/model.
+ * Every Defaults › Models row: "Every model" is implicit; the rest are every
+ * model the host catalogue offers (`hostModels`, the same list `/models`
+ * shows), stored records and agent models, sorted by provider/model. Listing
+ * a model here writes nothing: it is only the surface that names a model's
+ * keep-alive defaults (warming, interval, prompt, effort).
  */
 export function modelDefaultKeys(input: {
   readonly modelSettings: readonly ModelSettingsRecord[]
@@ -460,7 +462,7 @@ export function modelDefaultKeys(input: {
     if (record.providerID !== undefined && record.modelID !== undefined) add(record.providerID, record.modelID)
   for (const model of input.models) add(model.providerID, model.modelID)
   for (const agent of input.agents) if (agent.model !== undefined) add(agent.model.providerID, agent.model.modelID)
-  for (const host of input.hostModels) if (host.warming !== undefined) add(host.providerID, host.modelID)
+  for (const host of input.hostModels) add(host.providerID, host.modelID)
   return [...keys.values()].toSorted((left, right) => {
     if (left.providerID !== right.providerID) return left.providerID! < right.providerID! ? -1 : 1
     if (left.modelID !== right.modelID) return left.modelID! < right.modelID! ? -1 : 1

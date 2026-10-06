@@ -191,10 +191,10 @@ A safe production rollback requires a coordinated five-phase transition:
 ### Operational Status in This Source Repository
 
 **Direct Operator Rollback on a Live Service Is Unavailable**:
-This source repository (`repos/opencode`) does not contain an automated standalone local CLI command for operators to execute a fenced, drained transition directly against a live running server. Standalone unfenced symlink replacement (`ln -sfn`) combined with an uncoordinated service restart (`opencodeplus service restart`) on a live daemon is **unsafe and prohibited** by workspace standing rules.
+This source repository (`repos/opencode`) does not contain an automated standalone local CLI command for operators to execute a fenced, drained transition directly against a live running server. Standalone unfenced symlink replacement (`ln -sfn`) combined with an uncoordinated service restart (`opencodeplus service restart`) on a live daemon is **unsafe and prohibited** by the process-safety rules below.
 
 **Escalation**:
-Live rollback operations must be escalated to the **workspace controller operator**, who holds the controller signing keys and drives the authorized, fenced, and drained transition via workspace controller tooling (`bin/team`).
+Live rollback operations must be escalated to the **workspace controller operator**, who holds the controller signing keys and drives the authorized, fenced, and drained transition using the controller's own supervisor tooling.
 
 ### Cold Rollback Procedure (Service Confirmed Stopped Only)
 
@@ -369,8 +369,8 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
 
 - **Diagnostic**:
   1. **Deriving process liveness and identity strictly from kernel state**:
-     The workspace standing rules (workspace `AGENTS.md` §C "Processes") strictly govern process interactions:
-     > Derive liveness from kernel state — `/proc/<pid>/{cwd,fd,maps,environ}` — never from a registration file, which can outlive the process it describes, and never kill by name. Stop only owned, confirmed-idle test or worker runtimes.
+     The process-safety rules strictly govern process interactions:
+     > Derive liveness from kernel state — `/proc/<pid>/{cwd,fd,maps,environ}` — never from a registration file, which can outlive the process it describes, and never kill by name. Stop only owned, confirmed-idle runtimes.
 
      Do not rely on `kill -0 "$PID"` or the registration file to establish identity; operating systems recycle process IDs. If a previous daemon died and the OS assigned its PID to an unrelated user process, signaling that PID harms an innocent process.
 
@@ -449,9 +449,9 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
        ```
      - **Direct Signaling of an Unresponsive Daemon Is Unavailable and Prohibited**:
        If `opencodeplus service stop` fails and the process remains running, an operator shell cannot establish authoritative task ownership and idleness. Verifying a UID match and matching executable pathname substrings (`*opencodeplus*`) proves only that a process belongs to the current user and executes an OpenCode binary; it does **not** establish task ownership in the workspace nor that the runtime is confirmed idle.
-       Sending `SIGTERM` or `SIGKILL` without authoritative proof of task ownership and idleness violates workspace standing rules (§C Processes: *"Stop only owned, confirmed-idle test or worker runtimes. Never kill by executable name, and never restart unrelated hosts"*).
+       Sending `SIGTERM` or `SIGKILL` without authoritative proof of task ownership and idleness violates the process-safety rules (*"Stop only owned, confirmed-idle runtimes. Never kill by executable name, and never restart unrelated hosts"*).
      - **Escalation**:
-       Wedged service daemon incidents must be escalated to the **workspace controller operator** (or host supervisor). The controller operator holds supervisor context across runs, can inspect active task ownership, drain or fence dependent work, and perform an authorized, controlled process termination via workspace supervisor tooling (`bin/team`).
+       Wedged service daemon incidents must be escalated to the **workspace controller operator** (or host supervisor). The controller operator holds supervisor context across runs, can inspect active task ownership, drain or fence dependent work, and perform an authorized, controlled process termination using the controller's own supervisor tooling.
      - Once the controller operator has resolved the wedged process and kernel state confirms `/proc/$PID` is absent, remove the stale registration file and start the service:
        ```bash
        [ ! -d "/proc/$PID" ] && rm -f "$HOME/.local/state/opencodeplus/service.json"
@@ -488,7 +488,7 @@ The following procedures cover cold recovery scenarios. Each procedure pairs dia
     (Pinned by `packages/cli/test/service.test.ts` lines 290–315: *"configured managed service port overrides the channel default"*).
   - **Option 2 (Escalate for Occupant Resolution)**:
     Terminating a port occupant from an operator shell is **unavailable and prohibited**. An operator shell cannot authoritatively prove task ownership or idleness of an occupant process; matching executable paths or substrings (`*opencodeplus*`, `*bun*`, `*node*`) does not establish an owned, idle runtime.
-    If the occupant cannot be identified or if port reconfiguration (Option 1) is not viable, escalate to the **workspace controller operator** to verify task ownership across workspace runs and safely stop the occupant.
+    If the occupant cannot be identified or if port reconfiguration (Option 1) is not viable, escalate to the **workspace controller operator** to verify task ownership across runs and safely stop the occupant.
 
 ### Scenario D: Active Release Directory Is Damaged
 
@@ -719,15 +719,16 @@ Round 4 does not delete anything from the previous generation:
    - The CLI retains the non-interactive V1 execution bridge (`packages/cli/src/run/v1.ts`).
    - These entrypoints remain available for reading historical state and backward compatibility.
 
-3. **Workspace Historical Evidence**:
-   - In the workspace repository (`OpenCodePlus`), historical execution run records live under `run/team/<namespace>/runs/<run>/`:
+3. **Run Evidence**:
+   - Current evidence for a task and run is written under `run/evidence/<task>/<run>/`:
      - `owner.json`: Run status and ownership report.
-     - `checks/`: Historical check execution receipts.
+     - `checks/`: Check execution receipts.
      - `config/`: Frozen configuration and environment.
      - `data/`: Complete interaction transcript.
+   - A release's main branch (`ocp-main`) advances only by `git merge --ff-only <branch>` inside the `ocp-main` worktree, run after the release checks pass.
 
-4. **Open Item — External v1 Storage Physical Inventory**:
-   - **Open Item**: The physical filesystem storage paths, retention policies, and formal disposition schedule for historical v1 workspaces and external previous-generation bundles reside in workspace-level controller administration (outside `repos/opencode`). An operator requiring physical access or disposal of v1 historical runs must coordinate with workspace administration tooling (`bin/team`).
+4. **Historical v1 Storage**:
+   - Historical v1 workspaces and previous-generation bundles are administration records, not product state. Their physical paths, retention and disposition live outside `repos/opencode`; an operator needing access or disposal must coordinate with the workspace administrator.
 
 ---
 

@@ -164,7 +164,7 @@ function field<S extends Schema.Constraint>(
   return Schema.withDecodingDefaultType<S, never>(Effect.sync(def))(schema)
 }
 
-// Identity primitives (docs/team-v2/03-tools.md conventions).
+// Identity primitives.
 export const Head = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))
 export type Head = typeof Head.Type
 
@@ -184,11 +184,11 @@ export type ModelIdentity = typeof ModelIdentity.Type
 const E_CHECKS = "E_CHECKS"
 const CHECKS_ACCEPTED = {
   id: "plus-tests",
-  argv: ["bun", "test", "packages/plus/test/model.test.ts"],
+  argv: ["bun", "test", "test/model.test.ts"],
 } as const
 
-// Per-check rules ported from validateChecks in scripts/team/roles.ts:52-97.
-// Behaviour is verbatim: same order, same accept/reject outcomes. Array-level
+// Per-check rules: same order and accept/reject outcomes as the team role
+// checks Plus shipped before the tool moved here. Array-level
 // rules (max 12, distinct ids) live on ChecksArray below.
 export function checkViolation(check: {
   readonly id: string
@@ -206,7 +206,7 @@ export function checkViolation(check: {
       if (/[\\\*\?\[\]{}]/.test(a)) return true
       if (/[.](test|spec)[.][cm]?[jt]sx?$/.test(a)) return false
       // Otherwise it must be a directory inside the worktree (e.g. test,
-      // packages/plus/test): relative, no globs, and not a bare filename
+      // src/config): relative, no globs, and not a bare filename
       // that looks like a source file.
       const isDirLike = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*\/?$/.test(a)
       if (!isDirLike) return true
@@ -281,7 +281,7 @@ export function validateChecks(checks: readonly Check[] | Check[]): void {
   }
 }
 
-// Brief building blocks (docs/team-v2/03-tools.md §delegate).
+// Brief building blocks.
 export const Deliverable = Schema.Struct({
   kind: Schema.Literals(["commit", "report", "plan", "findings"]).annotate({
     description:
@@ -382,7 +382,7 @@ export type Brief = typeof Brief.Type
 /** A Brief whose checks are resolved to the commands they run (what a run stores). */
 export type ResolvedBrief = Omit<Brief, "checks"> & { readonly checks: readonly Check[] }
 
-// Report building blocks (docs/team-v2/03-tools.md §finish).
+// Report building blocks.
 export const Finding = Schema.Struct({
   severity: Schema.Literals(["error", "warning", "note"]).annotate({
     description: "error: a demonstrated defect. warning: a risk or missing test. note: a located fact (a scout's answer).",
@@ -431,7 +431,7 @@ export const Report = Schema.Struct({
 })
 export type Report = typeof Report.Type
 
-// State enums (docs/team-v2/02-state-machines.md).
+// State enums.
 export const RunStates = [
   "created",
   "preparing",
@@ -502,7 +502,7 @@ export const WorktreeStates = ["present", "removed", "dirty"] as const
 export const WorktreeState = Schema.Literals(WorktreeStates)
 export type WorktreeState = typeof WorktreeState.Type
 
-// Policy file front matter (docs/team-v2/05-runtime-and-storage.md §Policy file).
+// Policy file front matter.
 const EffortBudget = Schema.Struct({
   turns: field(Schema.Number, () => 0),
   tokens: field(Schema.Number, () => 0),
@@ -593,7 +593,7 @@ export const Policy = Schema.Struct({
 })
 export type Policy = typeof Policy.Type
 
-// Plan front matter (docs/team-v2/04-handoff-contract.md §3).
+// Plan front matter.
 export const PlanTask = Schema.Struct({
   id: TaskID,
   title: Schema.String,
@@ -791,7 +791,7 @@ export function parseDuration(raw: string): number {
   return Math.round(totalMs)
 }
 
-// Tool input schemas (docs/team-v2/03-tools.md). Every tool has exactly one
+// Tool input schemas. Every tool has exactly one
 // input schema, exported from here and shared between registration and handlers.
 export const FollowupInput = Schema.Struct({
   run: RunID.annotate({ description: "Your child's run id." }),

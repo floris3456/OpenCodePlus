@@ -925,6 +925,7 @@ function App() {
         category: "Agent",
         run: () => {
           local.model.variant.cycle()
+          local.model.pick()
         },
       },
       {

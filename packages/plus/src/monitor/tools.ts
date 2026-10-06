@@ -13,7 +13,7 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "monitor" } as const
 
 export const QueryDescription =
-  "One call returns the calling session's cache misses with cause, confidence and one-line evidence, plus token/cost totals and tool groups. query({view:'cache', id}) returns full evidence: named segment diff, timings, ping history, account switches, expected versus actual tokens, session/message ids and attributed calls. Verdicts: hit, partial miss, miss, cold start, no cache reported.\n" +
+  "One call returns the calling session's cache misses with cause, confidence and one-line evidence, plus token/cost totals and tool groups. query({view:'cache', id}) returns full evidence: named segment diff, timings, ping history, account switches, expected versus actual tokens, session/message ids and attributed calls. Verdicts: hit, partial miss, miss, cold start, no cache reported, failed request.\n" +
   "Tokens per call are attributed: call = share of the step's output spent writing the call, result = tokens the result added to the next prompt (measured from the next step; estimated when it cannot be), carried = result × later steps until compaction.\n" +
   "scope: session (only this chat; default), tree (topmost delegation root and all descendants), team (requires team name), project or all. since:'compaction' starts at each session's latest compaction. view: overview, cache, tools, sessions or steps; existing groupings stay available. window: 15m, 1h, 24h, 7d … or since/until epoch ms. compare: {window} reads the previous period, or use explicit {since, until}. monitor.mark records a named comparison timestamp."
 

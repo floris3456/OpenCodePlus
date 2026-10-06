@@ -61,11 +61,10 @@ async function visibleTo(root: string, all: RunRecord[], self: RunRecord, agent:
   return out
 }
 
-// Output field names follow docs/team-v2/03-tools.md §list (run IS the id,
-// task IS the task ref) plus runtime, the v1 team_list live/stopped
-// indicator: "running" for a live session in a non-terminal, non-stopped,
-// non-dead state, "stopped" for stopped/dead/superseded/reaped, else
-// "pending".
+// Output field names are the run's own list shape (run IS the id, task IS the
+// task ref) plus runtime, a live/stopped indicator: "running" for a live
+// session in a non-terminal, non-stopped, non-dead state, "stopped" for
+// stopped/dead/superseded/reaped, else "pending".
 async function entryOf(root: string, record: RunRecord) {
   // Live worktree read with a stored fallback, so a gone worktree still
   // lists (mirrors statusOf in ./api.ts).

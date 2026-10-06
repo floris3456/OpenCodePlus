@@ -2,7 +2,7 @@ import { createStore } from "solid-js/store"
 import { dedupeWith } from "effect/Array"
 import { createSimpleContext } from "./helper"
 import { batch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
-import type { AgentInfo } from "@opencode/client"
+import type { AgentInfo, LocationRef } from "@opencode/client"
 import { useEvent } from "./event"
 import path from "path"
 import { useTuiPaths } from "./runtime"
@@ -208,6 +208,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     function createModel() {
       type ModelSelection = ModelPreferenceModel & { variant?: string }
+      // One call per completed user pick (/models, the variant dialog, or the
+      // cycle-variant keybind). Programmatic changes through set/variant.set do
+      // not notify; only the UI emit sites do.
+      type ModelPick = { agent: string; providerID: string; modelID: string; variant?: string; location: LocationRef | undefined }
+      const pickListeners = new Set<(pick: ModelPick) => void>()
       const [preferences, setPreferences] = createStore<ModelPreference & { ready: boolean }>({
         ready: false,
         recent: [],
@@ -459,6 +464,28 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       return {
         current: currentModel,
         selection: currentSelection,
+        onPick(listener: (pick: ModelPick) => void) {
+          pickListeners.add(listener)
+          return () => pickListeners.delete(listener)
+        },
+        // Notify every onPick listener of one completed user pick. The UI emit
+        // sites call this after the selection has been applied; it reads the
+        // resulting selection so the payload always matches what the prompt
+        // ends up with. No-op when nothing is selected.
+        pick() {
+          const selection = currentSelection()
+          if (!selection) return
+          const current = agent.current()
+          if (!current) return
+          const pick: ModelPick = {
+            agent: current.id,
+            providerID: selection.providerID,
+            modelID: selection.modelID,
+            ...(selection.variant === undefined ? {} : { variant: selection.variant }),
+            location: location.ref,
+          }
+          for (const listener of pickListeners) listener(pick)
+        },
         remember() {
           const current = agent.current()
           const selection = currentSelection()

@@ -4,6 +4,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
 import { formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
+import { createRowStore, createRowWindow } from "../window.js"
 
 export interface StepsTabProps {
   readonly context: Plugin.Context
@@ -20,6 +21,22 @@ export function StepsTab(props: StepsTabProps) {
   const dimensions = useTerminalDimensions()
   const requests = () => props.report?.requests ?? []
   const detail = () => props.report?.detail
+
+  // Only the rows around the viewport are instantiated; the selection index
+  // still runs over the whole filtered list, and the window follows it.
+  const window = createRowWindow({
+    context: props.context,
+    items: requests,
+    selectedIndex: () => props.selectedIndex,
+  })
+  const rows = createRowStore(() => window, "id")
+
+  const position = () => {
+    const total = window.total
+    if (total === 0) return undefined
+    const index = Math.min(props.selectedIndex, total - 1)
+    return `row ${index + 1} of ${total}`
+  }
 
   // Narrow terminals drop whole columns, keeping time, kind, agent/model,
   // input, read and output (the fields that identify a step).
@@ -60,6 +77,14 @@ export function StepsTab(props: StepsTabProps) {
               <text fg={theme().text.muted} flexGrow={1} attributes={TextAttributes.BOLD}>Tools Called</text>
             </box>
 
+            <Show when={position()}>
+              {(text) => (
+                <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
+                  <text fg={theme().text.muted}>{text()}</text>
+                </box>
+              )}
+            </Show>
+
             <Show
               when={requests().length > 0}
               fallback={
@@ -68,10 +93,21 @@ export function StepsTab(props: StepsTabProps) {
                 </box>
               }
             >
-              <scrollbox flexGrow={1} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
-                <For each={requests()}>
+              <scrollbox
+                flexGrow={1}
+                id="monitor-scroll"
+                ref={(next: ScrollBoxRenderable) => {
+                  window.ref(next)
+                  props.onScrollRef?.(next)
+                }}
+              >
+                <Show when={window.start > 0}>
+                  <box height={window.start} flexShrink={0} />
+                </Show>
+                <For each={rows.items}>
                   {(req, index) => {
-                    const isSelected = () => index() === props.selectedIndex && props.active
+                    const at = () => window.start + index()
+                    const isSelected = () => at() === props.selectedIndex && props.active
                     const bg = () =>
                       isSelected()
                         ? theme().background.action.primary.focused
@@ -80,12 +116,13 @@ export function StepsTab(props: StepsTabProps) {
 
                     return (
                       <box
+                        id={`monitor-row-${req.id}`}
                         flexDirection="row"
                         flexShrink={0}
                         paddingLeft={1}
                         paddingRight={1}
                         backgroundColor={bg()}
-                        onMouseUp={() => props.onSelect(index())}
+                        onMouseUp={() => props.onSelect(at())}
                       >
                         <text fg={fg()} width={10}>{formatClock(req.at)}</text>
                         <text fg={fg()} width={10}>{req.kind}</text>
@@ -113,6 +150,9 @@ export function StepsTab(props: StepsTabProps) {
                     )
                   }}
                 </For>
+                <Show when={window.end < window.total}>
+                  <box height={window.total - window.end} flexShrink={0} />
+                </Show>
               </scrollbox>
             </Show>
           </box>

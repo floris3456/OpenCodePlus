@@ -1760,7 +1760,7 @@ refused, a requirement demands nothing, a bound is absent.
 | reviewer cannot be followed up | `perm:team_get_context:accepts.followup`, … → Corrections by followup (off: `E_NO_FOLLOWUP`) | the child |
 | Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, status, diff, list; shipped off | the caller |
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
-| read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `run-configs`, `databases`, and the curated `perm:read:env` | core rules |
+| read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `databases`, and the curated `perm:read:env` | core rules |
 | subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
 | external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots | core rule / tool hook |
 | planner edits plan files only | edit → Files it may change: `allowed.*` "Every other file" (fallback) and `allowed.plans` (allow-list) for edit, write and patch | tool hook |
@@ -1879,7 +1879,7 @@ removes the bound); `team_followup` Limits (Followups per child 5, shipped off;
 on, `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
 `E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
 `E_NOT_DONE`) and Branches it lands on (Protected branches `main`, `master`,
-`v2`, `ocp-main`, `release*`, shipped on; off refuses landing while the
+`v2`, `release*`, shipped on; off refuses landing while the
 parent's branch matches, `E_BRANCH`); `team_get_context` Contents (Sibling
 runs of the same task); `team_check` Checks it may run (the assigned check's
 family: `bun test` files or `bun run` scripts; `E_PERMISSION`). Their other
@@ -1998,7 +1998,7 @@ Error codes carrying `accepted` today:
 - `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
 - `E_MESSAGE`: conventional commit example (`"fix: apply agent filter in query"`)
-- `E_BASE`: valid base ref (`"ocp-main"`)
+- `E_BASE`: valid base ref (`"main"`)
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
 - `E_BOUNDS`: `"end your turn and delegate after a child settles"` for both bounds: `In-flight limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` and `Live team runs limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
@@ -2673,7 +2673,7 @@ the shipped limits):
 | `edit` | Files (curated; also under patch) · Protected files (rule: keys, credentials, `.opencodeplus/`, `.github/`, agent and team definitions, AGENTS.md, `release/`, tests; also under write and patch) · Where (input: fallback Outside this checkout, allow Temporary directories; also under write and patch, patch's paths read from its headers) · Parameters (`replaceAll`) · Approval |
 | `write` | Files (curated) · Protected files, Where (edit's) · Operations (input `path`: create, overwrite) · Limits (Largest file written 200000 characters, refuse) · Approval |
 | `patch` | Files, Protected files, Where (edit's) · Operations (input `patchText`: add, delete, move) · Limits (Files per patch 20, refuse) · Approval |
-| `shell` | Commands (rule; fallback Every other command, input `command`: curated rows, git working-tree changes, git refs and worktrees, file writes, stopping processes by name, inline interpreter code, registry runs, network tools, service control, database shells, GitHub CLI, printing secret files, workspace scripts) · Working directories (input `workdir`: outside) · Parameters (`background`, `timeout: 0`, `workdir`) · Environment (env: keys, tokens, passwords) · Limits (Longest timeout 600000 ms, clamp) · Approval |
+| `shell` | Commands (rule; fallback Every other command, input `command`: curated rows, git working-tree changes, git refs and worktrees, file writes, stopping processes by name, inline interpreter code, registry runs, network tools, service control, database shells, GitHub CLI, printing secret files, pilotty) · Working directories (input `workdir`: outside) · Parameters (`background`, `timeout: 0`, `workdir`) · Environment (env: keys, tokens, passwords) · Limits (Longest timeout 600000 ms, clamp) · Approval |
 | `question` | Parameters (`questions[].multiple`) · Limits (Questions per call 4, refuse) · When (approval: In delegated team runs, off) |
 | `subagent` | Agents (one row per agent id) · Team members (input `agent`, off) · Parameters (`background`, `sessionID`) · Approval |
 | `skill` | Skills (one row per skill id) · Approval |
@@ -3009,7 +3009,7 @@ The server entrypoint is `packages/plus/src/search/bin.ts`, which runs over stdi
 
 ### Tools and schemas
 
-The search server exposes three tools with the identical schemas used by the workspace build seat:
+The search server exposes three tools with the identical schemas used by the build seat:
 
 1. `exa_code_search`
    - Description: Search billions of GitHub repos, docs, Stack Overflow, and dev blogs for real, working code examples via Exa.

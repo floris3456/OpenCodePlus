@@ -123,9 +123,9 @@ export interface RunTransitionRow {
   guard?: string
 }
 
-// Every row of docs/team-v2/02-state-machines.md §1, in table order.
-// Multi-valued cells are expanded to one row per from/trigger so that
-// iterating TRANSITIONS covers the table exactly.
+// The run state machine, in table order. Multi-valued cells are expanded to
+// one row per from/trigger so that iterating TRANSITIONS covers the table
+// exactly.
 export const TRANSITIONS: RunTransitionRow[] = [
   // — → created
   { from: null, to: "created", trigger: "delegate", guard: "Brief valid; bounds ok" },
@@ -311,7 +311,7 @@ export interface AttemptTransitionRow {
   trigger: string
 }
 
-// Every path of docs/team-v2/02-state-machines.md §2:
+// The attempt state machine:
 // queued → admitted → streaming → finishing → terminal,
 // plus failed/interrupted/timed_out/stalled reachable from any non-terminal.
 export const ATTEMPT_TRANSITIONS: AttemptTransitionRow[] = [

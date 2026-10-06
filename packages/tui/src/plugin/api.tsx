@@ -304,6 +304,17 @@ export function createPluginContext(input: {
             return true
           },
         },
+        onPick(listener) {
+          const unregister = host.local.model.onPick(listener)
+          let cleaned = false
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unregister()
+          }
+          input.owned.push(async () => cleanup())
+          return cleanup
+        },
       },
       prompt: {
         guard(check) {

@@ -832,7 +832,7 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
       const pathsMessage = await runMessage(need(fixture.tools, "team_delegate"), pathsInput, ctx)
       call("team_delegate", pathsInput, pathsMessage)
       expect(pathsMessage).toBe(
-        `E_PATHS: implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+        `E_PATHS: implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["src/*","test/*"]`,
       )
 
       for (const message of [checksMessage, pathsMessage]) {

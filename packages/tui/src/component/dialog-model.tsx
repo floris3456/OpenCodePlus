@@ -129,6 +129,7 @@ export function DialogModel(props: { providerID?: string }) {
     const cur = local.model.variant.current()
     if (cur && list.includes(cur)) {
       dialog.clear()
+      local.model.pick()
       return
     }
     if (list.length > 0) {
@@ -136,6 +137,7 @@ export function DialogModel(props: { providerID?: string }) {
       return
     }
     dialog.clear()
+    local.model.pick()
   }
 
   return (

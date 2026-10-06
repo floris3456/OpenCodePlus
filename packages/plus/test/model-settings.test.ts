@@ -181,7 +181,7 @@ test("editModelRow carries the interval and prompt with the warming time", () =>
   expect("refusal" in bad && bad.refusal).toContain("not an interval")
 })
 
-test("modelDefaultKeys unions stored rows, agent models and host warming, sorted and deduped", () => {
+test("modelDefaultKeys unions stored rows, agent models and every host model, sorted and deduped", () => {
   const keys = modelDefaultKeys({
     modelSettings: [record({ providerID: "zeta", modelID: "one" }), record({})],
     models: [modelRow({}), modelRow({ providerID: "zeta", modelID: "one", variant: "high" })],
@@ -191,6 +191,7 @@ test("modelDefaultKeys unions stored rows, agent models and host warming, sorted
   expect(keys).toEqual([
     { providerID: "anthropic", modelID: "claude" },
     { providerID: "beta", modelID: "two" },
+    { providerID: "gamma", modelID: "unused" },
     { providerID: "zeta", modelID: "one" },
   ])
   expect(modelDefaultItemId({ providerID: "zeta", modelID: "one" })).toBe("modeldefault:zeta/one")
@@ -201,6 +202,44 @@ test("modelDefaultKeys unions stored rows, agent models and host warming, sorted
   expect(parseModelDefaultItemId("model:anthropic/claude")).toBeUndefined()
   expect(isModelDefaultRowId("item:defaults:/models:modeldefault:*")).toBe(true)
   expect(isModelDefaultRowId("item:defaults::models:model:anthropic/claude")).toBe(false)
+})
+
+test("a catalog model with no warming and no record still lists in Defaults › Models, writing nothing", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [
+      modelWith("anthropic", "claude", { variants: ["low", "high"] }),
+      // No `settings`: no opencode.json warming. The model must still list.
+      modelWith("deepseek", "v4-flash"),
+    ],
+    classifications: { "": "general", claude: "general", "v4-flash": "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  const before = await load(project)
+  const snapshot = (await api.snapshot()).value
+  const keys = modelDefaultKeys({
+    modelSettings: snapshot.modelSettings ?? [],
+    models: [],
+    agents: [],
+    hostModels: [
+      host({ providerID: "anthropic", modelID: "claude", warming: { on: true, interval: MINUTE } }),
+      host({ providerID: "deepseek", modelID: "v4-flash" }),
+    ],
+  })
+  expect(keys).toEqual([
+    { providerID: "anthropic", modelID: "claude" },
+    { providerID: "deepseek", modelID: "v4-flash" },
+  ])
+  // The tree row exists for the warming-less model.
+  const rows = expandedTree(memoInputOf(snapshot)).filter((row) => row.id.startsWith("item:defaults:/models:modeldefault:"))
+  expect(rows.map((row) => row.label)).toEqual(["Every model", "anthropic/claude", "deepseek/v4-flash"])
+  // Listing wrote nothing: no modelSettings rows, same revisions.
+  const after = await load(project)
+  expect(after.records.filter((record) => record.type === "modelSettings")).toHaveLength(0)
+  expect(after.projectRevision).toBe(before.projectRevision)
+  expect(after.globalRevision).toBe(before.globalRevision)
 })
 
 test("a Defaults › Models row resolves field by field: own, Every model, opencode.json, built-in", () => {

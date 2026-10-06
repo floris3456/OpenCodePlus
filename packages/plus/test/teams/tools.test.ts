@@ -684,7 +684,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         orchCtx,
       )
       expect(pathsMsg).toBe(
-        `E_PATHS: implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["packages/plus/src/*","packages/plus/test/*"]`,
+        `E_PATHS: implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).\naccepted: ["src/*","test/*"]`,
       )
 
       // 2. E_ROLE: Planner delegating to a non-orchestrator (e.g. scout)

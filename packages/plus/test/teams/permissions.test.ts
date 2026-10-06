@@ -63,7 +63,7 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
     directory: join(dir, "wt"),
     paths: ["packages/plus/src/*"],
     branch: "team/implementer/t-1",
-    base: "ocp-main",
+    base: "main",
     head: "0123456789abcdef0123456789abcdef01234567",
     state: "idle",
     attempts: [],
@@ -71,7 +71,7 @@ function makeRun(overrides?: Partial<RunRecord>): RunRecord {
     parent: null,
     children: [],
     briefSha: "abc",
-    bundle: "team2-test",
+    bundle: "test-bundle",
     budget: {},
     createdAt: now,
     lastUsed: now,
@@ -167,7 +167,6 @@ test("an implementer-preset member's rows resolve to the old implementer answers
   expect(has(permissions, "read", "*.env*", "deny")).toBe(true)
   expect(has(permissions, "read", "*/auth.json", "deny")).toBe(true)
   expect(has(permissions, "read", "*/.config/opencodeplus/opencode.json", "deny")).toBe(true)
-  expect(has(permissions, "read", "*/run/team/*/runs/*/config/*", "deny")).toBe(true)
   expect(has(permissions, "read", "*.db", "deny")).toBe(true)
   expect(has(permissions, "external_directory", "*", "deny")).toBe(true)
 })

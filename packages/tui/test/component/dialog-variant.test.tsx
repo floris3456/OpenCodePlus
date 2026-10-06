@@ -22,3 +22,39 @@ test("variant picker can explicitly reset an agent variant", async () => {
   await setup.waitFor(() => setup.dialog.stack.length === 0)
   expect(setup.local.model.variant.current()).toBeUndefined()
 })
+
+test("selecting a variant completes exactly one pick with the chosen variant", async () => {
+  await using setup = await renderLocal({
+    models: [model("first", ["low", "high"])],
+    agents: [agent("build", { providerID: "provider", id: "first", variant: "high" })],
+  })
+  const picks: unknown[] = []
+  setup.local.model.onPick((pick) => picks.push(pick))
+  setup.dialog.replace(() => <DialogVariant />)
+  await setup.waitForFrame((frame) => frame.includes("Select variant"))
+  await setup.mockInput.typeText("low")
+  await setup.renderOnce()
+  setup.mockInput.pressEnter()
+  await setup.waitFor(() => setup.dialog.stack.length === 0)
+  expect(setup.local.model.variant.current()).toBe("low")
+  expect(picks).toEqual([
+    { agent: "build", providerID: "provider", modelID: "first", variant: "low", location: undefined },
+  ])
+})
+
+test("closing the variant dialog without a selection still emits one pick", async () => {
+  await using setup = await renderLocal({
+    models: [model("first", ["low", "high"])],
+    agents: [agent("build", { providerID: "provider", id: "first", variant: "high" })],
+  })
+  const picks: unknown[] = []
+  setup.local.model.onPick((pick) => picks.push(pick))
+  setup.dialog.replace(() => <DialogVariant />)
+  await setup.waitForFrame((frame) => frame.includes("Select variant"))
+  setup.mockInput.pressEscape()
+  await setup.waitFor(() => setup.dialog.stack.length === 0)
+  // The model was set before the dialog opened; Escape keeps the variant it had.
+  expect(picks).toEqual([
+    { agent: "build", providerID: "provider", modelID: "first", variant: "high", location: undefined },
+  ])
+})

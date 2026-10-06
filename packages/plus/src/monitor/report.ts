@@ -190,7 +190,6 @@ export function requestReport(
       if (r.kind === "step" || r.kind === "compaction") stepsCount++
       if (isMiss(r)) missesCount++
     }
-    const hitRateVal = cacheReadTokens / Math.max(1, inputTokens + cacheReadTokens)
     return {
       requests: rows.length,
       steps: stepsCount,
@@ -200,16 +199,30 @@ export function requestReport(
       cacheRead: cacheReadTokens,
       cacheWrite: cacheWriteTokens,
       cost: costTotal,
-      hitRate: hitRateVal,
       misses: missesCount,
     }
   }
+
+  // The hit rate reads only requests that produced a cache verdict. An errored
+  // request's tokens are real usage but must not move the rate; its input and
+  // cache read are excluded here while remaining in the token totals above.
+  const rateOf = (rows: readonly MonitorRequest[]) =>
+    rows.reduce(
+      (acc, r) =>
+        r.verdict === "error"
+          ? acc
+          : { input: acc.input + (r.input ?? 0), cacheRead: acc.cacheRead + (r.cacheRead ?? 0) },
+      { input: 0, cacheRead: 0 },
+    )
+  const hitRateOf = (rate: { readonly input: number; readonly cacheRead: number }, legacyRead: number, legacyInput: number) =>
+    (rate.cacheRead + legacyRead) / Math.max(1, rate.cacheRead + legacyRead + rate.input + legacyInput)
 
   const pingRows = requests.filter((r) => r.kind === "ping")
   const misses = requests.filter(isMiss)
   const legacy = analyses.flatMap((a) => a.legacy)
   const legacyTotal = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
     legacy.reduce((n, s) => n + s[key], 0)
+  const rateTotals = rateOf(requests)
   const totals: Partial<MonitorTotals> = {
     ...(requests.length ? totalsFor(requests) : { requests: 0, hitRate: 0, misses: 0 }),
     pings: pingRows.length,
@@ -223,12 +236,7 @@ export function requestReport(
     cacheRead: sum(requests, "cacheRead") + legacyTotal("cache_read"),
     cacheWrite: sum(requests, "cacheWrite") + legacyTotal("cache_write"),
     cost: sum(requests, "cost") + legacyTotal("cost"),
-    hitRate:
-      (sum(requests, "cacheRead") + legacyTotal("cache_read")) /
-      Math.max(
-        1,
-        sum(requests, "cacheRead") + legacyTotal("cache_read") + sum(requests, "input") + legacyTotal("input"),
-      ),
+    hitRate: hitRateOf(rateTotals, legacyTotal("cache_read"), legacyTotal("input")),
   }
 
   const sections: { -readonly [K in keyof MonitorReport]?: MonitorReport[K] } = {
@@ -376,6 +384,8 @@ export function requestReport(
         output: number
         reasoning: number
         cost: number
+        rateInput: number
+        rateCacheRead: number
         lastActive: number
       }
     >()
@@ -394,6 +404,8 @@ export function requestReport(
           output: 0,
           reasoning: 0,
           cost: 0,
+          rateInput: 0,
+          rateCacheRead: 0,
           lastActive: 0,
         }
         agentMap.set(key, entry)
@@ -411,6 +423,10 @@ export function requestReport(
       entry.output += r.output
       entry.reasoning += r.reasoning
       entry.cost += r.cost
+      if (r.verdict !== "error") {
+        entry.rateInput += r.input
+        entry.rateCacheRead += r.cacheRead
+      }
       if (r.at > entry.lastActive) entry.lastActive = r.at
     }
     // v1 step rows carry their own agent/model and tokens; a mixed ledger must
@@ -424,6 +440,8 @@ export function requestReport(
       entry.output += step.output
       entry.reasoning += step.reasoning
       entry.cost += step.cost
+      entry.rateInput += step.input
+      entry.rateCacheRead += step.cache_read
       if (step.started > entry.lastActive) entry.lastActive = step.started
     }
     sections.agents = [...agentMap.values()]
@@ -431,7 +449,7 @@ export function requestReport(
         agent: e.agent,
         model: e.model,
         steps: e.steps,
-        hitRate: e.cacheRead / Math.max(1, e.input + e.cacheRead),
+        hitRate: e.rateCacheRead / Math.max(1, e.rateInput + e.rateCacheRead),
         misses: e.misses,
         tokens: e.input + e.cacheRead + e.cacheWrite + e.output + e.reasoning,
         cost: e.cost,
@@ -451,6 +469,7 @@ export function requestReport(
       const rs = requests.filter((r) => r.sessionID === s.id)
       const sessionLegacy = analyses.find((a) => a.id === s.id)?.legacy ?? []
       const base = totalsFor(rs)
+      const rate = rateOf(rs)
       const legacySum = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
         sessionLegacy.reduce((n, step) => n + step[key], 0)
       const input = base.input + legacySum("input")
@@ -476,7 +495,7 @@ export function requestReport(
         cacheRead,
         cacheWrite: base.cacheWrite + legacySum("cache_write"),
         cost: base.cost + legacySum("cost"),
-        hitRate: cacheRead / Math.max(1, input + cacheRead),
+        hitRate: hitRateOf(rate, legacySum("cache_read"), legacySum("input")),
         requests: base.requests,
         steps: base.steps + sessionLegacy.length,
         misses: base.misses,

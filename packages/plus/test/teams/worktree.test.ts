@@ -255,7 +255,7 @@ describe("worktree manager", () => {
       (e) => e as { code?: string; accepted?: string },
     )
     expect(err?.code).toBe("E_BASE")
-    expect(err?.accepted).toBe("ocp-main")
+    expect(err?.accepted).toBe("main")
   })
 
   test("create refuses when the directory already exists", async () => {

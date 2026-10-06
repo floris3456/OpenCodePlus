@@ -461,7 +461,7 @@ test("limitOf reads the first integer of a row's text", () => {
 test("secretFilePatterns is every secret-file pattern once", () => {
   const patterns = secretFilePatterns()
   expect(new Set(patterns).size).toBe(patterns.length)
-  for (const pattern of [".env", "*.pem", "id_rsa", "auth.json", "*/.config/opencodeplus/opencode.json", "*/run/team/*/runs/*/config/*", "*.sqlite"])
+  for (const pattern of [".env", "*.pem", "id_rsa", "auth.json", "*/.config/opencodeplus/opencode.json", "*.sqlite"])
     expect(patterns).toContain(pattern)
   // They are the grep Files rows' patterns.
   const grepFiles = catalogFor("grep").find((category) => category.id === "files")
