@@ -1,5 +1,3 @@
-import { join } from "node:path"
-
 export class InventoryError extends Error {
   constructor(message: string) {
     super(message)
@@ -49,14 +47,7 @@ interface GitCommandResult {
 }
 
 async function runGit(cwd: string, args: string[]): Promise<GitCommandResult> {
-  const envPath = [
-    process.env.OCP_ROOT ? join(process.env.OCP_ROOT, "bin") : "",
-    process.env.PATH,
-    "/usr/bin",
-    "/bin",
-  ]
-    .filter(Boolean)
-    .join(":")
+  const envPath = [process.env.PATH, "/usr/bin", "/bin"].filter(Boolean).join(":")
 
   const proc = Bun.spawn(["git", ...args], {
     cwd,
