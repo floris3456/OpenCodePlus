@@ -3414,18 +3414,21 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "model.pick": (input, context) =>
       Effect.gen(function* () {
-        // Mark the pick in flight before the first await so a session event
-        // that lands while the save runs waits for it (applySessionModel).
-        const pending = api.pickModel(input)
-        state.pendingPick = pending.then(
+        // Chain each pick onto the previous one so overlapping picks apply in
+        // order: Ctrl+T twice must end on the second effort, and a pick that
+        // lands in the gap cannot clear the later one's in-flight marker. The
+        // marker is set synchronously before any await so a session event that
+        // arrives while the save runs waits for it (applySessionModel).
+        const previous = state.pendingPick ?? Promise.resolve()
+        const run = previous.then(() => api.pickModel(input))
+        const pending = run.then(
           () => undefined,
           () => undefined,
         )
-        const result = yield* Effect.promise(() => pending)
-        if (state.pendingPick !== undefined) {
-          yield* Effect.promise(() => state.pendingPick!)
-          state.pendingPick = undefined
-        }
+        state.pendingPick = pending
+        const result = yield* Effect.promise(() => run)
+        // Clear only when no later pick has already replaced this marker.
+        if (state.pendingPick === pending) state.pendingPick = undefined
         if (!result.ok) return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
         return result.value
       }),

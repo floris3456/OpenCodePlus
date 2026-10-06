@@ -7,6 +7,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { applySessionModel, createHandlers, createState } from "../src/index.js"
+import { load, type StoredRecord } from "../src/instructions/store.js"
 import type { Model } from "@opencode/schema/model"
 import { agentInfo, context, defaultHostTemplates, fullContext, modelHarness, modelInfo, promptHarness } from "./harness.js"
 
@@ -36,9 +37,9 @@ async function tempProject(): Promise<string> {
   return path.join(root, "project")
 }
 
-function modelWith(providerID: string, id: string): Model.Info {
+function modelWith(providerID: string, id: string, variants: string[] = []): Model.Info {
   const base = modelInfo(providerID, id)
-  return { ...base, variants: [] }
+  return { ...base, variants: variants.map((variant) => ({ id: variant }) as Model.Info["variants"][number]) }
 }
 
 function throwingContext(): { error: (type: string, message: string, data?: unknown) => never } {
@@ -53,17 +54,19 @@ function throwingContext(): { error: (type: string, message: string, data?: unkn
 // every switchModel call.
 function sessionFixture(project: string, models: Model.Info[], current: { providerID: string; id: string; variant?: string }) {
   const switches: Switch[] = []
+  const classifications: Record<string, string> = { "": "general" }
+  for (const model of models) classifications[String(model.id)] = "general"
   const base = fullContext({
     directory: project,
     agents: [agentInfo("build", "Build.")],
     models,
-    classifications: { "": "general", "nova-2": "general", "nova-3": "general" },
+    classifications,
   })
   const ctx = context({
     location: base.location,
     agent: base.agent,
     model: modelHarness(models),
-    prompt: promptHarness(defaultHostTemplates, { "": "general", "nova-2": "general", "nova-3": "general" }),
+    prompt: promptHarness(defaultHostTemplates, classifications),
     session: {
       get: () => Effect.succeed({ model: current } as never),
       switchModel: (input: { sessionID: unknown; model: { providerID: unknown; id: unknown; variant?: unknown } }) =>
@@ -123,3 +126,46 @@ test("(9) a pick still in flight is awaited before applySessionModel reads the c
   expect(switches).toHaveLength(1)
   expect(String(switches[0]?.model.id)).toBe("nova-3")
 })
+
+// Fix 1: two overlapping picks (Ctrl+T twice: high -> xhigh -> max) must apply
+// in order. The final stored active row is the second pick, and an
+// applySessionModel started after the first pick resolves but before the second
+// waits for the whole chain and performs no switch.
+test("two overlapping picks end on the second, and applySessionModel waits for both", async () => {
+  const project = await tempProject()
+  const models = [modelWith("acme", "nova-2", ["high", "xhigh", "max"])]
+  const { ctx, switches } = sessionFixture(project, models, { providerID: "acme", id: "nova-2", variant: "max" })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const throwing = throwingContext()
+  // Seed the base row (one effort).
+  await Effect.runPromise(
+    handlers["model.pick"]({ agent: "build", providerID: "acme", modelID: "nova-2", variant: "high" }, throwing),
+  )
+  const pick = (variant: string) =>
+    Effect.runPromise(
+      handlers["model.pick"]({ agent: "build", providerID: "acme", modelID: "nova-2", variant }, throwing),
+    )
+  // Two picks back to back, not awaited: the second is chained after the first.
+  const first = pick("xhigh")
+  const second = pick("max")
+  await first
+  // The first pick has finished but its marker was not cleared (the second is
+  // now the pending chain). Start applySessionModel in this exact window: it
+  // must await the second pick before comparing.
+  expect(state.pendingPick).toBeDefined()
+  const running = Effect.runPromise(
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_pick", agent: "build" } }),
+  )
+  await Promise.all([second, running])
+  expect(switches).toHaveLength(0)
+  const rows = (await load(project)).records.filter(
+    (record): record is Extract<StoredRecord, { type: "model" }> =>
+      record.type === "model" && record.agent === "build" && record.modelID === "nova-2",
+  )
+  const visible = rows.filter((record) => record.removed !== true)
+  expect(visible).toHaveLength(1)
+  expect(visible[0]).toMatchObject({ variant: "max", active: true })
+  expect(state.activeModels.get("build")).toMatchObject({ providerID: "acme", modelID: "nova-2", variant: "max" })
+})
+
