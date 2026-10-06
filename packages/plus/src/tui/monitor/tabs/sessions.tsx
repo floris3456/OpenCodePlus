@@ -4,6 +4,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
 import { formatClock, formatCost, formatTokens } from "../format.js"
+import { createRowStore, createRowWindow } from "../window.js"
 
 export interface SessionsTabProps {
   readonly context: Plugin.Context
@@ -20,6 +21,22 @@ export function SessionsTab(props: SessionsTabProps) {
   const theme = () => props.context.theme
   const dimensions = useTerminalDimensions()
   const sessions = () => props.report?.sessions ?? []
+
+  // Only the rows around the viewport are instantiated; the selection index
+  // still runs over the whole filtered list, and the window follows it.
+  const window = createRowWindow({
+    context: props.context,
+    items: sessions,
+    selectedIndex: () => props.selectedIndex,
+  })
+  const rows = createRowStore(() => window, "sessionID")
+
+  const position = () => {
+    const total = window.total
+    if (total === 0) return undefined
+    const index = Math.min(props.selectedIndex, total - 1)
+    return `row ${index + 1} of ${total}`
+  }
 
   // Drop whole columns when the terminal is narrow so labels never lose their
   // values; keep the session, state, steps, tokens and last activity always.
@@ -51,6 +68,14 @@ export function SessionsTab(props: SessionsTabProps) {
         <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>Active</text>
       </box>
 
+      <Show when={position()}>
+        {(text) => (
+          <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
+            <text fg={theme().text.muted}>{text()}</text>
+          </box>
+        )}
+      </Show>
+
       <Show
         when={sessions().length > 0}
         fallback={
@@ -59,37 +84,53 @@ export function SessionsTab(props: SessionsTabProps) {
           </box>
         }
       >
-        <scrollbox flexGrow={1} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
-          <For each={sessions()}>
+        <scrollbox
+          flexGrow={1}
+          id="monitor-scroll"
+          ref={(next: ScrollBoxRenderable) => {
+            window.ref(next)
+            props.onScrollRef?.(next)
+          }}
+        >
+          <Show when={window.start > 0}>
+            <box height={window.start} flexShrink={0} />
+          </Show>
+          <For each={rows.items}>
             {(s, index) => {
-              const isSelected = () => index() === props.selectedIndex && props.active
+              const at = () => window.start + index()
+              const isSelected = () => at() === props.selectedIndex && props.active
               const bg = () =>
                 isSelected()
                   ? theme().background.action.primary.focused
                   : theme().background.action.primary.base
               const fg = () => (isSelected() ? theme().text.action.primary.focused : theme().text.base)
 
-              const indent = "  ".repeat(s.depth) + (s.depth > 0 ? "└─ " : "")
-              const name = `${indent}${s.title ?? s.role ?? s.sessionID.slice(0, 10)}`
+              // Getters so a same-id row whose fields changed updates in place
+              // rather than keeping the first render's text.
+              const name = () =>
+                `${"  ".repeat(s.depth)}${s.depth > 0 ? "└─ " : ""}${s.title ?? s.role ?? s.sessionID.slice(0, 10)}`
+              const agent = () => s.agent ?? "—"
+              const state = () => s.state ?? "—"
+              const tokens = () =>
+                formatTokens(s.input + s.output + s.reasoning + s.cacheRead + s.cacheWrite)
 
               return (
                 <box
+                  id={`monitor-row-${s.sessionID}`}
                   flexDirection="row"
                   flexShrink={0}
                   paddingLeft={1}
                   paddingRight={1}
                   backgroundColor={bg()}
-                  onMouseUp={() => props.onSelect(index())}
+                  onMouseUp={() => props.onSelect(at())}
                 >
-                  <text fg={fg()} width={34} wrapMode="none" truncate>{name}</text>
+                  <text fg={fg()} width={34} wrapMode="none" truncate>{name()}</text>
                   <Show when={showAgent()}>
-                    <text fg={fg()} width={14} wrapMode="none" truncate>{s.agent ?? "—"}</text>
+                    <text fg={fg()} width={14} wrapMode="none" truncate>{agent()}</text>
                   </Show>
-                  <text fg={theme().text.muted} width={10} wrapMode="none" truncate>{s.state ?? "—"}</text>
+                  <text fg={theme().text.muted} width={10} wrapMode="none" truncate>{state()}</text>
                   <text fg={fg()} width={8}>{String(s.steps)}</text>
-                  <text fg={fg()} width={10}>
-                    {formatTokens(s.input + s.output + s.reasoning + s.cacheRead + s.cacheWrite)}
-                  </text>
+                  <text fg={fg()} width={10}>{tokens()}</text>
                   <Show when={showRead()}>
                     <text fg={fg()} width={10}>{formatTokens(s.cacheRead)}</text>
                   </Show>
@@ -104,6 +145,9 @@ export function SessionsTab(props: SessionsTabProps) {
               )
             }}
           </For>
+          <Show when={window.end < window.total}>
+            <box height={window.total - window.end} flexShrink={0} />
+          </Show>
         </scrollbox>
       </Show>
     </box>
