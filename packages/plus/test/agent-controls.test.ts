@@ -7,6 +7,7 @@ import { Tool } from "@opencode/schema/tool"
 import type { ToolDomain, ToolHooks } from "@opencode/plugin/effect/tool"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { createPlusApi, createState, deactivate } from "../src/index.js"
 import { runRegistration } from "../src/instructions/apply.js"
@@ -33,7 +34,7 @@ afterEach(async () => {
 })
 
 async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "Global compaction instructions")]) {
-  const root = await fs.mkdtemp("/home/bliss/OpenCodePlus/run/plus/tmp/opencodeplus/agent-controls-")
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-controls-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")

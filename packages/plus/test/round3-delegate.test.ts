@@ -15,6 +15,7 @@ import {
   defaultParentRunID,
   fetchParentSession,
   hostBridge,
+  LAB_HOME_PREFIX,
   labToolContext,
   parseArgs,
   resolveLabTargets,
@@ -114,10 +115,10 @@ async function makeRepo(): Promise<string> {
 }
 
 test("lab target validation refuses the human server, non-loopback hosts and non-lab homes", async () => {
-  const labHome = "/home/bliss/OpenCodePlus/run/tmp-build/tui-lab-selfcheck"
+  const labHome = `${LAB_HOME_PREFIX}selfcheck`
   expect(() => validateLabTarget({ labHome, baseUrl: "http://127.0.0.1:40374" })).toThrow("40374")
-  expect(() => validateLabTarget({ labHome: "/home/bliss/OpenCodePlus/run/plus", baseUrl: "http://127.0.0.1:51000" })).toThrow(
-    "tmp-build",
+  expect(() => validateLabTarget({ labHome: "/not-a-lab", baseUrl: "http://127.0.0.1:51000" })).toThrow(
+    LAB_HOME_PREFIX,
   )
   expect(() => validateLabTarget({ labHome, baseUrl: "http://192.168.1.9:51000" })).toThrow("loopback")
   expect(() => validateLabTarget({ labHome, baseUrl: "http://127.0.0.1" })).toThrow("port")

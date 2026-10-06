@@ -9,6 +9,7 @@ import type { Agent } from "@opencode/schema/agent"
 import { Mcp } from "@opencode/schema/mcp"
 import { Effect, Exit, Scope } from "effect"
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { createPlusApi, createState, deactivate, watchToolRegistry } from "../src/index.js"
 import { runRegistration } from "../src/instructions/apply.js"
@@ -30,7 +31,7 @@ afterEach(async () => {
 })
 
 async function fixture(servers: [string, Mcp.ServerConfig][] = []) {
-  const root = await fs.mkdtemp("/home/bliss/OpenCodePlus/run/plus/tmp/opencodeplus/tool-registry-")
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "tool-registry-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   process.env.XDG_DATA_HOME = path.join(root, "data")

@@ -24,12 +24,7 @@ afterEach(async () => {
 })
 
 async function tempDir(): Promise<string> {
-  const preferred = "/home/bliss/OpenCodePlus/run/team/development-models/runs/main-fefb5cdf3bc86ba8/tmp/opencode"
-  const parent = process.env.TMPDIR ?? preferred
-  await fs.mkdir(parent, { recursive: true }).catch(() => undefined)
-  const root = await fs.mkdtemp(path.join(parent, "agents-test-")).catch(async () => {
-    return fs.mkdtemp(path.join(os.tmpdir(), "agents-test-"))
-  })
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "agents-test-"))
   roots.push(root)
   return root
 }
