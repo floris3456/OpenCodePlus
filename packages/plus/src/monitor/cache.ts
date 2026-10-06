@@ -316,12 +316,12 @@ function markerShape(fp: RequestFingerprintData | undefined): string {
 
 // A change to a non-message, non-marker segment is a real reusable-prefix edit
 // (system part, tool, option or protocol). A genuine marker change is a shape
-// change. For messages, rolling markers move to the newest message and a
-// growth step extends the last message, so the earliest diverging message is
-// the previous last one; an edit to an earlier message shifts every later
-// prefix hash and is a real reusable-prefix rewrite. The earliest changed
-// message index therefore decides: strictly before the last message of the
-// shorter history is a historical edit.
+// change. A message's hash covers its own cache marker, so the message the
+// previous request marked differs once the rolling marker moves on: a step's
+// last message, or the history's last message before a keep-alive ping's
+// uncached prompt. A growth step may also extend the last message. Only a
+// change strictly before both that marked message and the end of the shorter
+// history shifts the reusable prefix and is a historical edit.
 function reusablePrefixChanged(
   changes: MonitorRequestDetail["segments"],
   before: RequestFingerprintData | undefined,
@@ -329,7 +329,12 @@ function reusablePrefixChanged(
 ): boolean {
   if (changes.some((c) => c.name !== "cache markers" && messageIndexIn(c.name) === undefined)) return true
   if (changes.length > 0 && markerShape(before) !== markerShape(after)) return true
-  const lastCommon = Math.min(before?.messagePrefixes.length ?? 0, after?.messagePrefixes.length ?? 0)
+  const marked = before ? markedMessageBoundary(before) : -1
+  const lastCommon = Math.min(
+    before?.messagePrefixes.length ?? 0,
+    after?.messagePrefixes.length ?? 0,
+    ...(marked < 0 ? [] : [marked + 1]),
+  )
   return changes.some((c) => {
     const index = messageIndexIn(c.name)
     return index !== undefined && index < lastCommon
