@@ -707,9 +707,9 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 
 // Defaults › Models (model-settings.ts): the model settings every agent falls
 // back to when its own row does not set them. One "Every model" row and one
-// row per model, the models Plus knows from stored rows, agent models and
-// opencode.json warming. Rows edit through modelSettings.set, not the
-// inventory mutate: they are their own surface, not agent rows.
+// row per model the host catalog offers, plus any stored rows and agent
+// models. Listing a model writes nothing. Rows edit through modelSettings.set,
+// not the inventory mutate: they are their own surface, not agent rows.
 function lazyModelsSection(ctx: BuildContext, memo: Memo): Lazy {
   return branch(memo, {
     kind: "group",
