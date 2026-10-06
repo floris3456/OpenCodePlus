@@ -83,7 +83,7 @@ export async function readUsage(
     return {
       status: "disabled",
       message:
-        "Credential usage needs the quota-handoff plugin on this provider's CLIProxyAPI (and no \"quota\": false in ~/.config/opencodeplus/cliproxyapi.json).",
+        'Credential usage needs the quota-handoff plugin on this provider\'s CLIProxyAPI (and no "quota": false in ~/.config/opencodeplus/cliproxyapi.json).',
     }
   const raw = input.sessionID
     ? await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`)

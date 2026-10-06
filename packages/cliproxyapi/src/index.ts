@@ -3,6 +3,8 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { Form } from "@opencode/schema/form"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Queue, Ref, Schema, Stream } from "effect"
+import { probeQuota } from "./quota/probe.js"
+import { quotaEndpoint } from "./quota/protocol.js"
 import { registerQuota } from "./quota/register.js"
 import {
   applyCatalogue,
@@ -11,6 +13,7 @@ import {
   CODEX_CLIENT_VERSION,
   parseCodexCatalogue,
   parseDetails,
+  parsePlainList,
   type Catalogue,
 } from "./catalog.js"
 import { cliproxyapiConfig } from "./config.js"
@@ -62,7 +65,8 @@ export interface ConnectionRoute {
  * - `/connect` entry: connect once with the CPA URL and key; models sync without
  *   any cliproxyapi.json or provider in opencode.json;
  * - model catalogue sync (all CPA models, reasoning levels, limits, Fast aliases);
- * - quota coordination with CPA's quota-handoff plugin and the usage views.
+ * - quota coordination and the usage views, on by themselves for a CPA that runs
+ *   its quota-handoff plugin;
  * The file (~/.config/opencodeplus/cliproxyapi.json, or legacy
  * quota-handoff.json) is the advanced route: a route there overrides the
  * connection-derived one and keeps the old behaviour.
@@ -80,7 +84,6 @@ export default Plugin.define({
       )
       const storage = migratingStorage(ctx.storage)
       const scoped: Context = { ...ctx, storage }
-      yield* registerQuota(scoped, () => config?.quota ?? { routes: {} })
       const fileRoutes = config?.routes ?? {}
       const fileCatalog = config?.catalog ?? {}
       const anthropicRelay = config?.anthropicRelay
@@ -99,6 +102,39 @@ export default Plugin.define({
         return { ...fileCatalog, [current.providerID]: current.origin }
       }
       const connectionSource = () => (fileCatalog[PROVIDER_ID] ? undefined : connectionRoute.current)
+
+      // Quota follows what each CPA runs: on while its quota-handoff plugin
+      // answers, unless cliproxyapi.json forces it on or off for every route.
+      // Forced routes apply at once; probed ones after the first probe.
+      const quotaOn = (origin: string) => {
+        if (config?.quota === false) return Promise.resolve(false)
+        if (config?.quota === true) return Promise.resolve(quotaEndpoint(origin) !== undefined)
+        return probeQuota(origin, { fetch })
+      }
+      const quotaRoutes: { current: Readonly<Record<string, string>> } = {
+        current:
+          config?.quota === true
+            ? Object.fromEntries(Object.entries(fileRoutes).filter(([, origin]) => quotaEndpoint(origin) !== undefined))
+            : {},
+      }
+      const probeQuotaRoutes = Effect.fn("Cliproxyapi.probeQuota")(function* () {
+        const checked = yield* Effect.forEach(
+          Object.entries(routes()),
+          ([providerID, origin]) => Effect.promise(async () => ({ providerID, origin, on: await quotaOn(origin) })),
+          { concurrency: "unbounded" },
+        )
+        const next = Object.fromEntries(
+          checked.filter((route) => route.on).map((route) => [route.providerID, route.origin]),
+        )
+        if (JSON.stringify(next) !== JSON.stringify(quotaRoutes.current))
+          yield* Effect.logInfo("CPA quota coordination", { routes: Object.keys(next) })
+        quotaRoutes.current = next
+      })
+      yield* registerQuota(scoped, () => ({
+        routes: quotaRoutes.current,
+        ...(config?.compactionModel ? { compactionModel: config.compactionModel } : {}),
+        ...(config?.compactionFallback ? { compactionFallback: config.compactionFallback } : {}),
+      }))
 
       // Resolve the active `cliproxyapi` connection into an origin. The
       // credential's form answer (`configuration.baseURL`) is the URL requests
@@ -199,7 +235,7 @@ export default Plugin.define({
         }),
         Effect.forkScoped({ startImmediately: true }),
       )
-      yield* catalogueSync(scoped, catalogRoutes, anthropicRelay, connectionSource, wake)
+      yield* catalogueSync(scoped, catalogRoutes, anthropicRelay, connectionSource, wake, probeQuotaRoutes())
     }),
 })
 
@@ -209,6 +245,8 @@ export function catalogueSync(
   anthropicRelay?: Readonly<Record<string, boolean>>,
   connectionSource?: () => ConnectionRoute | undefined,
   wake?: Queue.Queue<void>,
+  /** Runs alongside every refresh: the quota probe follows the catalogue's schedule. */
+  alongside: Effect.Effect<void> = Effect.void,
 ) {
   return Effect.gen(function* () {
     const loaded = new Map<string, Loaded>()
@@ -301,6 +339,11 @@ export function catalogueSync(
           continue
         loaded.set(providerID, value)
         yield* ctx.storage.set(`catalog/${providerID}`, JSON.parse(JSON.stringify(value)))
+        yield* Effect.logInfo("CPA catalogue loaded", {
+          providerID,
+          source: value.catalogue.source,
+          models: value.catalogue.models.length,
+        })
         changed = true
       }
       if (changed) yield* ctx.provider.reload()
@@ -310,7 +353,13 @@ export function catalogueSync(
     // startup), then refresh every five minutes. A connection change wakes the loop.
     yield* Effect.forever(
       Effect.gen(function* () {
-        const complete = yield* refresh().pipe(Effect.catchCause(() => Effect.succeed(false)))
+        const [complete] = yield* Effect.all(
+          [
+            refresh().pipe(Effect.catchCause(() => Effect.succeed(false))),
+            alongside.pipe(Effect.catchCause((cause) => Effect.logWarning("CPA quota probe failed", { cause }))),
+          ],
+          { concurrency: 2 },
+        )
         const delay = complete ? REFRESH : RETRY
         if (wake) yield* Effect.race(Effect.sleep(delay), Queue.take(wake))
         else yield* Effect.sleep(delay)
@@ -351,22 +400,24 @@ function fetchCatalogue(ctx: Context, providerID: string, origin: string) {
           `Provider ${providerID} has no API key, or its baseURL origin is not the configured CPA route ${origin}`,
         ),
       )
-    const get = (query: string) =>
-      Effect.promise(async () => {
-        const response = await fetch(`${target.baseURL}/models?${query}`, {
-          headers: { Authorization: `Bearer ${target.key}`, Accept: "application/json" },
-          signal: AbortSignal.timeout(15_000),
-          redirect: "error",
-        })
-        if (!response.ok) throw new Error(`CPA model catalogue HTTP ${response.status}`)
-        const text = await response.text()
-        return { text, json: JSON.parse(text) as unknown }
+    const get = async (query: string) => {
+      const response = await fetch(`${target.baseURL}/models?${query}`, {
+        headers: { Authorization: `Bearer ${target.key}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(15_000),
+        redirect: "error",
       })
-    const details = parseDetails((yield* get("details=true")).json)
+      if (!response.ok) throw new Error(`CPA model catalogue HTTP ${response.status}`)
+      const text = await response.text()
+      return { json: JSON.parse(text) as unknown, hash: new Bun.CryptoHasher("sha256").update(text).digest("hex") }
+    }
+    const first = yield* Effect.promise(() => get("details=true"))
+    const details = parseDetails(first.json)
     if (details) return { catalogue: details, pkg: target.pkg } satisfies Omit<Loaded, "connectionKey">
-    const codex = yield* get(`client_version=${CODEX_CLIENT_VERSION}`)
-    const hash = new Bun.CryptoHasher("sha256").update(codex.text).digest("hex")
-    const catalogue = parseCodexCatalogue(codex.json, hash)
+    // A failed Codex request fails the refresh, which keeps the last catalogue.
+    const codex = yield* Effect.promise(() => get(`client_version=${CODEX_CLIENT_VERSION}`))
+    // A CPA without either catalogue ignores both parameters and answers with
+    // its plain model list: the last resort, so a connected CPA never shows none.
+    const catalogue = parseCodexCatalogue(codex.json, codex.hash) ?? parsePlainList(first.json, first.hash)
     return catalogue ? ({ catalogue, pkg: target.pkg } satisfies Omit<Loaded, "connectionKey">) : undefined
   })
 }

@@ -212,7 +212,11 @@ package.
    1. `details=true`: full catalogue (unchanged).
    2. Codex catalogue (unchanged; "works as today").
    3. New: plain `/v1/models`, giving IDs and `owned_by` only, with no levels or
-      limits. It is reached only when both of the above fail.
+      limits. It is reached only when neither of the above is a catalogue. A CPA
+      without them ignores both parameters and answers with this list, so the
+      `details=true` answer is reused. A *failed* Codex request (5xx, timeout)
+      still fails the refresh and keeps the last catalogue, so a brief outage never
+      swaps a catalogue with levels for the bare list.
 2. **Quota** (decision 3).
    - **Probe.** For each route whose `cliproxyapi.json` does not set `quota`:
      - send `GET <origin>/v0/resource/plugins/quota-handoff/events` with no
@@ -228,9 +232,13 @@ package.
      TUI asks again (cheap local RPC, every 30 s while off), so Usage appears
      without a restart. The plugin API has no event publish
      (`plugin/src/effect/event.ts`), so the server cannot push the change.
-   - **Transport.** Quota refuses WebSocket. While quota is on, the plugin sets
-     `settings.transport = "http"` on the provider it created. Config-defined
-     providers are left as the user set them, as today.
+   - **Transport.** Quota refuses WebSocket. *Dropped as a code change after
+     checking:* only the `openai`, `xai` and Azure plugins default to WebSocket,
+     each for its own provider ID or package
+     (`core/src/plugin/provider/{openai,xai,azure}.ts`), and an omitted transport
+     is HTTP (`core/src/model-resolver.ts:123`). The `cliproxyapi` provider is
+     therefore already HTTP. Config-defined providers are left as the user set
+     them, as today.
 
 **Tests** (stub servers):
 - the quota probe turns quota on for 200 with protocol 1;

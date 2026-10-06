@@ -1,7 +1,6 @@
 import path from "node:path"
 import { Schema } from "effect"
 import { globalConfigDir } from "./paths.js"
-import type { Config as QuotaConfig } from "./quota/protocol.js"
 
 /**
  * ~/.config/opencodeplus/cliproxyapi.json — host-owned, never project config.
@@ -10,13 +9,14 @@ import type { Config as QuotaConfig } from "./quota/protocol.js"
  *     "compactionModel": "<providerID>/<modelID>", "compactionFallback": "<providerID>/<modelID>" }
  *
  * `routes` maps OpenCode provider IDs to the CPA origin that serves them (the
- * provider's baseURL must have the same origin). `quota` enables quota
- * coordination and the usage views; `catalog` syncs CPA's model catalogue into
- * those providers. Both default to true. `compactionModel` writes the summary
- * when CPA moves a chat to another account (default: the agent's compaction
- * model); `compactionFallback` writes it when that model fails. A legacy
- * quota-handoff.json (routes only) still enables quota and usage, without the
- * catalogue.
+ * provider's baseURL must have the same origin). Quota coordination and the
+ * usage views turn on by themselves for a CPA that runs the quota-handoff
+ * plugin; `quota` forces them on (`true`) or off (`false`) for every route.
+ * `catalog` syncs CPA's model catalogue into those providers (default true).
+ * `compactionModel` writes the summary when CPA moves a chat to another account
+ * (default: the agent's compaction model); `compactionFallback` writes it when
+ * that model fails. A legacy quota-handoff.json (routes only) forces quota on,
+ * without the catalogue.
  */
 const RouteEntry = Schema.Union([
   Schema.String,
@@ -49,7 +49,10 @@ const LegacyFile = Schema.Struct({
 export interface CliproxyapiConfig {
   readonly source: "cliproxyapi.json" | "quota-handoff.json"
   readonly routes: Readonly<Record<string, string>>
-  readonly quota: QuotaConfig | undefined
+  /** Forces quota on or off; undefined follows whether the CPA runs quota-handoff. */
+  readonly quota: boolean | undefined
+  readonly compactionModel?: string
+  readonly compactionFallback?: string
   readonly catalog: Readonly<Record<string, string>>
   readonly anthropicRelay?: Readonly<Record<string, boolean>>
 }
@@ -98,14 +101,9 @@ export async function cliproxyapiConfig(directory = globalConfigDir()): Promise<
     return {
       source: "cliproxyapi.json",
       routes,
-      quota:
-        value.quota === false
-          ? undefined
-          : {
-              routes,
-              ...(value.compactionModel ? { compactionModel: value.compactionModel } : {}),
-              ...(value.compactionFallback ? { compactionFallback: value.compactionFallback } : {}),
-            },
+      quota: value.quota,
+      ...(value.compactionModel ? { compactionModel: value.compactionModel } : {}),
+      ...(value.compactionFallback ? { compactionFallback: value.compactionFallback } : {}),
       catalog: value.catalog === false ? {} : routes,
       ...(anthropicRelay ? { anthropicRelay } : {}),
     }
@@ -117,7 +115,7 @@ export async function cliproxyapiConfig(directory = globalConfigDir()): Promise<
   return {
     source: "quota-handoff.json",
     routes,
-    quota: { routes },
+    quota: true,
     catalog: {},
     ...(anthropicRelay ? { anthropicRelay } : {}),
   }

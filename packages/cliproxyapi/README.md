@@ -25,9 +25,10 @@ Hosts that do not use CPA see nothing from it.
   `routes` maps OpenCode provider IDs to the CPA origin serving them. A file
   route for a provider ID overrides the connection-derived route for the same
   ID. The provider's `baseURL` origin must equal the route, and the key is only
-  ever sent there. `quota` and `catalog` default to `true`. A legacy
-  `quota-handoff.json` (routes only) still enables quota and usage, without the
-  catalogue.
+  ever sent there. `catalog` defaults to `true`. `quota` forces quota
+  coordination on (`true`) or off (`false`) for every route, connected ones
+  included; without it, quota follows the CPA (see Features). A legacy
+  `quota-handoff.json` (routes only) forces quota on, without the catalogue.
 
   Claude models routed through CPA default to CPA's Anthropic Messages relay with
   `settings.compaction: { "type": "native" }` (see Anthropic Messages relay below).
@@ -45,9 +46,9 @@ Hosts that do not use CPA see nothing from it.
   `"compactionFallback"` (for example `"cliproxyapi/gemini-3.8-flash-high"`) writes it
   when the first model fails.
 
-- **Off:** `"plugins": ["-opencode.plus.cliproxyapi"]` in `opencode.json`, or delete
-  the file. Without the server half (or without configuration) the TUI half shows no
-  Usage UI.
+- **Off:** `"plugins": ["-opencode.plus.cliproxyapi"]` in `opencode.json` removes
+  everything: the `/connect` entry, catalogue, relay, quota, Usage and the image
+  tool. Without the server half the TUI half shows no Usage UI.
 
 ## Features
 
@@ -57,7 +58,10 @@ Hosts that do not use CPA see nothing from it.
   Core spells them for the provider package). Source: CPA's
   `GET /v1/models?details=true` (`cliproxyapi.model-details/1`); on CPA builds
   without it, the Codex model catalogue (`?client_version=`), whose levels are
-  approximate and filtered to Core's efforts. Models CPA forwards unvalidated
+  approximate and filtered to Core's efforts; on a CPA with neither, its plain
+  model list (IDs only: no levels, limits or modalities). A failing Codex request
+  keeps the last catalogue instead of falling to the plain list. The log says
+  which source each provider got. Models CPA forwards unvalidated
   (`passthrough`) get no invented variants. Each Fast-capable model (CPA lists the
   `priority` service tier) also gets a `<id>-fast` model that sends
   `service_tier: "priority"`. The plugin registers before config, so
@@ -82,5 +86,12 @@ Hosts that do not use CPA see nothing from it.
   creates an image with them and saves a PNG in the project (default
   `generated-images/`). Selecting one as a chat model fails at CPA.
 - **Quota coordination and usage** (`src/quota/`): CPA quota-handoff bindings, quota
-  notices, `/usage` and the sidebar Usage section. Bindings stored by earlier
-  versions under `opencode.plus` are migrated on first read.
+  notices, `/usage` and the sidebar Usage section. On by themselves for each routed
+  or connected CPA that runs CPA's quota-handoff plugin: the plugin asks its events
+  endpoint (no key sent) at start, on connect and with every catalogue refresh, so
+  installing or removing quota-handoff on CPA takes effect without a restart (within
+  5 minutes; the TUI asks every 30 s while quota is off). `"quota"` in
+  `cliproxyapi.json` overrides this. A provider created by `/connect` already uses
+  HTTP, which quota requires; a config-defined provider must not set
+  `settings.transport` to `"websocket"`. Bindings stored by earlier versions under
+  `opencode.plus` are migrated on first read.

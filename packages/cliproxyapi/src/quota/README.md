@@ -3,24 +3,16 @@
 Part of the `opencode.plus.cliproxyapi` plugin (enable/disable, configuration file and
 the model catalogue: [../../README.md](../../README.md)).
 
-Create `quota-handoff.json` in the host's global config directory (normally
-`~/.config/opencodeplus`, or `OPENCODE_CONFIG_DIR` when set):
+Quota turns on by itself for every CPA route (from `/connect` or
+`cliproxyapi.json`) whose CPA runs the quota-handoff plugin: an unauthenticated
+`GET <origin>/v0/resource/plugins/quota-handoff/events` answering 200 with
+`{ "protocol": 1 }`. The plugin asks at start, on connect and with every catalogue
+refresh, and the controller always reads the current routes, so no restart is
+needed. `"quota": true` or `false` in `cliproxyapi.json` forces it for every route;
+a legacy `quota-handoff.json` (routes only) forces it on. Project-local files cannot
+enable the feature. These files contain route origins only, never credentials.
 
-```json
-{
-  "routes": {
-    "YOUR_CPA_PROVIDER_ID": "https://cliproxy.boe.moe"
-  }
-}
-```
-
-Load it with the next controlled host start. Built-in plugin selectors do not
-forward options in this OpenCode version. Embedders that instantiate Plus directly
-may alternatively provide the same object as `options.quota`. Project-local files
-cannot enable the feature. This file contains route origins only, never credentials.
-
-The map uses OpenCode provider IDs; the origin must match the actual model route.
-Set the managed provider's existing `settings.transport` to `"http"`. WebSocket
+The provider must use HTTP, the default for providers this plugin creates. WebSocket
 coordination is explicitly refused in this first version.
 
 The CPA plugin controls the 20%/10% five-hour and 15%/5% seven-day thresholds.
@@ -45,7 +37,7 @@ When no replacement exists, the chat pauses. A confirmed reset can resume its
 existing binding without a needless compaction. Returning from another account
 still requires a fresh chat or a newly committed portable checkpoint.
 
-This module is disabled unless this file or explicit `quota` options are present. Changing credentials
+Without a route that has quota on, every hook is inert. Changing credentials
 never changes the model. No CPAMP API, management key, or usage queue is used.
 
 ## Account switches (compact on switch)
