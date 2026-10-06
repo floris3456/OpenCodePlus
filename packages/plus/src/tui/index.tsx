@@ -6,6 +6,7 @@ import { InstructionsRoute } from "./instructions/route.js"
 import { createActiveTeam } from "./active-team.js"
 import { createSnapshotCache } from "./snapshot-cache.js"
 import { createWarming } from "./warming.js"
+import { createModelPick } from "./model-pick.js"
 import { createMonitor } from "./monitor/index.js"
 import { openProjectChecks } from "./project-checks.js"
 
@@ -20,6 +21,7 @@ export default Plugin.define({
     })
     const agents = createAgentActions(context, snapshots)
     const warming = createWarming(context)
+    const modelPick = createModelPick(context)
     const monitor = createMonitor(context)
     const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
@@ -134,6 +136,7 @@ export default Plugin.define({
       disposeSlot()
       disposeFooter()
       warming.dispose()
+      modelPick.dispose()
       monitor.dispose()
       agents.dispose()
       activeTeam.dispose()

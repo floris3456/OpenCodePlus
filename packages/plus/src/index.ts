@@ -133,6 +133,12 @@ export interface PlusState {
    * `ctx.model.list()` each time; a host config/agent/skill refresh clears it.
    */
   hostModels?: readonly HostModel[]
+  /**
+   * The in-flight `model.pick` save in this Plus instance, if any.
+   * `applySessionModel` awaits it before comparing, so a session created right
+   * after a pick cannot be reverted by the still-running pick.
+   */
+  pendingPick?: Promise<void>
 }
 
 export function createState(): PlusState {
@@ -3408,7 +3414,18 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "model.pick": (input, context) =>
       Effect.gen(function* () {
-        const result = yield* Effect.promise(() => api.pickModel(input))
+        // Mark the pick in flight before the first await so a session event
+        // that lands while the save runs waits for it (applySessionModel).
+        const pending = api.pickModel(input)
+        state.pendingPick = pending.then(
+          () => undefined,
+          () => undefined,
+        )
+        const result = yield* Effect.promise(() => pending)
+        if (state.pendingPick !== undefined) {
+          yield* Effect.promise(() => state.pendingPick!)
+          state.pendingPick = undefined
+        }
         if (!result.ok) return yield* Effect.fail(context.error("model.invalid", result.error.message, result.error.data))
         return result.value
       }),
@@ -6129,20 +6146,28 @@ function watchSharedStoreFile(changes: Queue.Queue<void>): Effect.Effect<void, n
 
 // A session created with, or switched to, an agent adopts that agent's active
 // model via switchModel, and only when the session's current model differs.
-// Manual mid-session picks emit session.model.selected, which we never
-// subscribe to, so user choices are never overridden. The wanted model comes
-// from the publishFresh cache, refreshed cheaply when the shared stores moved
-// (another live Location may have published Global/Defaults changes that Bus
-// never delivers here, since Bus.subscribe is Location-filtered and
-// RefreshEvents covers only host agent/skill/config events). The refresh is
-// two small file reads plus a cache rebuild from the last discovery's agents:
-// no host lists, no discovery run here.
+// A user pick is saved as that agent's active row through `model.pick` (the
+// Plus TUI calls it when the pick completes), so after the save the pick and
+// the active row agree and this never reverts it. Mid-session
+// session.model.selected from other sources — commands with a model, the
+// subagent tool, team runs, quota fallback — is never subscribed to, so those
+// do not rewrite the user's rows either. The wanted model comes from the
+// publishFresh cache, refreshed cheaply when the shared stores moved (another
+// live Location may have published Global/Defaults changes that Bus never
+// delivers here, since Bus.subscribe is Location-filtered and RefreshEvents
+// covers only host agent/skill/config events). The refresh is two small file
+// reads plus a cache rebuild from the last discovery's agents: no host lists,
+// no discovery run here.
 export function applySessionModel(
   ctx: Context,
   state: PlusState,
   event: { type: string; properties?: Record<string, unknown>; data?: unknown },
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
+    // A pick in flight in this Plus instance has not yet refreshed the active
+    // model cache. Wait for it so a session created right after the pick (Ctrl+T
+    // then Enter on the home screen) sees the picked model and is not reverted.
+    if (state.pendingPick !== undefined) yield* Effect.promise(() => state.pendingPick!.catch(() => undefined))
     // Same resolution as activate: a session in a run's worktree adopts the
     // recorded project directory's active models, not the worktree's own empty
     // ancestry.
