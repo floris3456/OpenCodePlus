@@ -4,6 +4,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
 import { formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
+import { createRowStore, createRowWindow, rowWindowLog } from "../window.js"
 
 export interface CacheTabProps {
   readonly context: Plugin.Context
@@ -39,6 +40,22 @@ export function CacheTab(props: CacheTabProps) {
       return list.filter((r) => r.verdict === "miss" || r.verdict === "partial")
     }
     return list
+  }
+
+  // Only the rows around the viewport are instantiated; the selection index
+  // still runs over the whole filtered list, and the window follows it.
+  const window = createRowWindow({
+    context: props.context,
+    items: requests,
+    selectedIndex: () => props.selectedIndex,
+  })
+  const rows = createRowStore(() => window, "id")
+
+  const position = () => {
+    const total = window.total
+    if (total === 0) return undefined
+    const index = Math.min(props.selectedIndex, total - 1)
+    return `row ${index + 1} of ${total}`
   }
 
   const verdictFg = (verdict: Plus.MonitorRequest["verdict"]) => {
@@ -81,6 +98,14 @@ export function CacheTab(props: CacheTabProps) {
               <text fg={theme().text.muted} flexGrow={1} attributes={TextAttributes.BOLD}>Evidence</text>
             </box>
 
+            <Show when={position()}>
+              {(text) => (
+                <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
+                  <text fg={theme().text.muted}>{text()}</text>
+                </box>
+              )}
+            </Show>
+
             <Show
               when={requests().length > 0}
               fallback={
@@ -91,10 +116,21 @@ export function CacheTab(props: CacheTabProps) {
                 </box>
               }
             >
-              <scrollbox flexGrow={1} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
-                <For each={requests()}>
+              <scrollbox
+                flexGrow={1}
+                ref={(next: ScrollBoxRenderable) => {
+                  window.ref(next)
+                  props.onScrollRef?.(next)
+                }}
+              >
+                <Show when={window.start > 0}>
+                  <box height={window.start} flexShrink={0} />
+                </Show>
+                <For each={rows.items}>
                   {(req, index) => {
-                    const isSelected = () => index() === props.selectedIndex && props.active
+                    const at = () => window.start + index()
+                    if (rowWindowLog.enabled) rowWindowLog.keys.push(req.id)
+                    const isSelected = () => at() === props.selectedIndex && props.active
                     const bg = () =>
                       isSelected()
                         ? theme().background.action.primary.focused
@@ -108,7 +144,7 @@ export function CacheTab(props: CacheTabProps) {
                         paddingLeft={1}
                         paddingRight={1}
                         backgroundColor={bg()}
-                        onMouseUp={() => props.onSelect(index())}
+                        onMouseUp={() => props.onSelect(at())}
                       >
                         <text fg={fg()} width={9}>{formatClock(req.at)}</text>
                         <text fg={req.kind === "ping" ? theme().text.muted : fg()} width={kindWidth()} wrapMode="none" truncate>
@@ -139,6 +175,9 @@ export function CacheTab(props: CacheTabProps) {
                     )
                   }}
                 </For>
+                <Show when={window.end < window.total}>
+                  <box height={window.total - window.end} flexShrink={0} />
+                </Show>
               </scrollbox>
             </Show>
           </box>
