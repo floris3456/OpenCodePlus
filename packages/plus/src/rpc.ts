@@ -1247,7 +1247,7 @@ export const MonitorRequest = Schema.Struct({
   cacheRead: Schema.Number,
   cacheWrite: Schema.Number,
   cost: Schema.Number,
-  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none"]),
+  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none", "error"]),
   cause: Schema.optionalKey(
     Schema.Literals([
       "compacted",
