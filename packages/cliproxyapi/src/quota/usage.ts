@@ -58,7 +58,7 @@ export const UsageDefinition = Rpc.define({
       output: Schema.toStandardSchemaV1(UsageResult),
       errors: {},
     },
-    /** Whether CLIProxyAPI is configured on this host; the TUI shows nothing otherwise. */
+    /** Whether quota coordination is on for any provider now; the TUI shows nothing until it is. */
     enabled: {
       input: Schema.toStandardSchemaV1(Schema.Struct({})),
       output: Schema.toStandardSchemaV1(Schema.Struct({ enabled: Schema.Boolean })),
@@ -82,7 +82,8 @@ export async function readUsage(
   if (!origin)
     return {
       status: "disabled",
-      message: "Enable this CPA provider in ~/.config/opencodeplus/quota-handoff.json to view credential usage.",
+      message:
+        "Credential usage needs the quota-handoff plugin on this provider's CLIProxyAPI (and no \"quota\": false in ~/.config/opencodeplus/cliproxyapi.json).",
     }
   const raw = input.sessionID
     ? await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`)

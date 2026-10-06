@@ -12,10 +12,13 @@ import { installationIdentity } from "./identity.js"
 import { portableMessages } from "./portable.js"
 import { emitQuotaFact } from "../facts.js"
 
-export function registerQuota(ctx: Context, config: Config | undefined) {
+/**
+ * `config` answers the current quota routes: a provider is coordinated only
+ * while it has one, so every hook below is inert for the rest.
+ */
+export function registerQuota(ctx: Context, config: () => Config) {
   return Effect.gen(function* () {
     yield* registerUsage(ctx, config)
-    if (config === undefined) return
     // Not awaited: the identity may come from migrated storage that becomes
     // readable only after later plugins start.
     const installation = installationIdentity(ctx)

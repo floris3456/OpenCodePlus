@@ -1,7 +1,7 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, jest, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import CliproxyapiTui from "../src/tui.js"
+import CliproxyapiTui, { REPROBE } from "../src/tui.js"
 
 const cleanups: (() => void)[] = []
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()))
@@ -50,6 +50,45 @@ test("shows quota and usage UI only when the server half reports CLIProxyAPI con
   expect(off.state.slots).toEqual([])
   expect(off.state.probes).toBe(1)
 })
+
+test("Usage appears without a restart once quota turns on, and asking stops on dispose", async () => {
+  jest.useFakeTimers()
+  cleanups.push(() => jest.useRealTimers())
+  const answer = { enabled: false }
+  const later = host(async () => answer)
+  await flush()
+  expect(later.state.probes).toBe(1)
+  jest.advanceTimersByTime(REPROBE - 1)
+  await flush()
+  expect(later.state.probes).toBe(1)
+  jest.advanceTimersByTime(1)
+  await flush()
+  expect(later.state.probes).toBe(2)
+  expect(later.state.slots).toEqual([])
+
+  // CPA's quota-handoff is detected: the next answer mounts quota and Usage.
+  answer.enabled = true
+  jest.advanceTimersByTime(REPROBE)
+  await flush()
+  expect(later.state.probes).toBe(3)
+  expect(later.state.slots).toContain("sidebar.content")
+  expect(later.state.slots).toContain("session.composer.top")
+  // Once on, it stops asking.
+  jest.advanceTimersByTime(REPROBE * 3)
+  await flush()
+  expect(later.state.probes).toBe(3)
+
+  const disposed = host(async () => ({ enabled: false }))
+  await flush()
+  disposed.dispose()
+  jest.advanceTimersByTime(REPROBE * 3)
+  await flush()
+  expect(disposed.state.probes).toBe(1)
+})
+
+async function flush() {
+  for (let i = 0; i < 10; i++) await Promise.resolve()
+}
 
 test("a missing server half (plugin removed) shows nothing and stops probing on dispose", async () => {
   const missing = host(() => Promise.reject(new Error("unknown rpc")))

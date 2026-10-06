@@ -52,12 +52,20 @@ export const Config = Schema.Struct({
 export type Config = typeof Config.Type
 
 export function endpoint(base: string) {
+  const url = quotaEndpoint(base)
+  if (!url) throw new Error("Quota coordination requires an HTTPS (or loopback test) URL without credentials")
+  return url
+}
+
+/** The quota events endpoint for a CPA URL, or undefined when quota refuses that URL. */
+export function quotaEndpoint(base: string) {
+  if (!URL.canParse(base)) return undefined
   const url = new URL(base)
   if (
     url.protocol !== "https:" &&
     !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
   )
-    throw new Error("Quota coordination requires HTTPS or a loopback test endpoint")
-  if (url.username || url.password || url.search || url.hash) throw new Error("Invalid quota endpoint")
+    return undefined
+  if (url.username || url.password || url.search || url.hash) return undefined
   return new URL("/v0/resource/plugins/quota-handoff/events", url.origin).href
 }

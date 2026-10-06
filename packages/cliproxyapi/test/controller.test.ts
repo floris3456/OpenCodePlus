@@ -45,12 +45,14 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
   servers.push(server)
   const store = new Map<string, Stored>()
   const notices = new Map<string, { session: string; text: string }>()
+  // The plugin's current quota routes; a test may change them while the controller runs.
+  const live: { routes: Record<string, string> } = { routes: { proxy: server.url.href, other: server.url.href } }
   const controller = new QuotaController(
-    {
-      routes: { proxy: server.url.href, other: server.url.href },
+    () => ({
+      routes: live.routes,
       ...(compactionModel ? { compactionModel } : {}),
       ...(compactionFallback ? { compactionFallback } : {}),
-    },
+    }),
     "installation",
     {
       read: async (key) => store.get(key),
@@ -73,7 +75,7 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
     due: false,
     boundary: { fresh: false, portable: true },
   })
-  return { state, controller, event, server, store, notices }
+  return { state, controller, event, server, store, notices, live }
 }
 test("shadow enrollment and reminders never request compaction or a checkpoint", async () => {
   const f = fixture()
@@ -290,7 +292,7 @@ test("an unenrolled chat recovers from a transient bridge failure and backs off 
   const f = fixture()
   f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
   let clock = 1_000_000
-  const controller = new QuotaController({ routes: { proxy: f.server.url.href } }, "installation", {
+  const controller = new QuotaController(() => ({ routes: { proxy: f.server.url.href } }), "installation", {
     read: async (key) => f.store.get(key),
     write: async (key, value) => {
       f.store.set(key, value)
@@ -440,7 +442,7 @@ test("a pending switch survives a restart and still compacts before the next req
   await f.controller.response("ses_test", "proxy", "model", switchRefusal())
   expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
   const restarted = new QuotaController(
-    { routes: { proxy: f.server.url.href }, compactionModel: "proxy/cheap-model" },
+    () => ({ routes: { proxy: f.server.url.href }, compactionModel: "proxy/cheap-model" }),
     "installation",
     {
       read: async (key) => f.store.get(key),
@@ -504,4 +506,31 @@ test("the account-switch decision carries the fallback model; a malformed one is
   expect((await g.controller.status("ses_test"))[0]?.text).toContain(
     'compactionFallback "not a model" is not provider/model; Compacting with proxy/cheap-model first.',
   )
+})
+
+test("quota follows the current routes: a provider that loses its route is neither polled nor shown", async () => {
+  const f = fixture()
+  f.state.known = true
+  await f.controller.decide(f.event())
+  await f.controller.activity("ses_test", true)
+  f.state.status = 503
+  await f.controller.tick()
+  expect(f.controller.enabled("proxy")).toBe(true)
+  expect((await f.controller.status("ses_test")).map((notice) => notice.kind)).toEqual(["paused"])
+
+  // CPA's quota-handoff went away: the probe dropped the route.
+  const routes = f.live.routes
+  f.live.routes = { other: routes.other! }
+  const reads = f.state.reads
+  await f.controller.tick()
+  expect(f.controller.enabled("proxy")).toBe(false)
+  expect(f.state.reads).toBe(reads)
+  expect(await f.controller.status("ses_test")).toEqual([])
+
+  // It came back: the same chat is coordinated again without a restart.
+  f.live.routes = routes
+  f.state.status = 200
+  await f.controller.tick()
+  expect(f.controller.enabled("proxy")).toBe(true)
+  expect(f.state.reads).toBeGreaterThan(reads)
 })

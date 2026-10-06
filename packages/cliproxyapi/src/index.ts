@@ -80,7 +80,7 @@ export default Plugin.define({
       )
       const storage = migratingStorage(ctx.storage)
       const scoped: Context = { ...ctx, storage }
-      yield* registerQuota(scoped, config?.quota)
+      yield* registerQuota(scoped, () => config?.quota ?? { routes: {} })
       const fileRoutes = config?.routes ?? {}
       const fileCatalog = config?.catalog ?? {}
       const anthropicRelay = config?.anthropicRelay

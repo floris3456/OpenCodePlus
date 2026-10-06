@@ -3,10 +3,13 @@ import { createQuota } from "./quota/tui.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { createUsage } from "./quota/usage-view.js"
 
+/** How often the TUI asks again while quota is off, so Usage appears without a restart. */
+export const REPROBE = 30_000
+
 /**
  * TUI half of opencode.plus.cliproxyapi: quota notices and the credential usage
- * views. Nothing is shown unless the server half is running and CLIProxyAPI is
- * configured, so hosts without CPA (or with the plugin removed) see no Usage UI.
+ * views. Nothing is shown unless the server half is running and quota is on for
+ * a provider, so hosts without CPA (or with the plugin removed) see no Usage UI.
  */
 export default Plugin.define({
   id: "opencode.plus.cliproxyapi",
@@ -23,7 +26,11 @@ export default Plugin.define({
         if (attempt < 15) setTimeout(() => void probe(attempt + 1), 2000).unref?.()
         return
       }
-      if (!result.enabled) return
+      // The server cannot push the change (plugins have no event publish), so ask again.
+      if (!result.enabled) {
+        setTimeout(() => void probe(0), REPROBE).unref?.()
+        return
+      }
       disposers.push(createQuota(context), createUsage(context))
     }
     void probe(0)

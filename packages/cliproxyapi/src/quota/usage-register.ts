@@ -4,13 +4,13 @@ import type { Config } from "./protocol.js"
 import { usageKey } from "./usage-key.js"
 import { readUsage, UsageDefinition } from "./usage.js"
 
-export function registerUsage(ctx: Context, config: Config | undefined) {
+export function registerUsage(ctx: Context, config: () => Config) {
   return ctx.rpc
     .register(UsageDefinition, {
       read: (input) =>
         Effect.promise(() =>
           readUsage(
-            config,
+            config(),
             {
               read: (key) => Effect.runPromise(ctx.storage.get(key)),
               fetch,
@@ -19,7 +19,7 @@ export function registerUsage(ctx: Context, config: Config | undefined) {
             input,
           ),
         ),
-      enabled: () => Effect.succeed({ enabled: config !== undefined }),
+      enabled: () => Effect.sync(() => ({ enabled: Object.keys(config().routes).length > 0 })),
     })
     .pipe(Effect.orDie)
 }

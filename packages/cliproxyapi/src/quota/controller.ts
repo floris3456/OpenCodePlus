@@ -67,20 +67,24 @@ export class QuotaController {
   /** Writes that summary when the first model fails, within the same compaction. */
   private readonly fallback: ReturnType<typeof modelSetting>
 
+  /**
+   * `config` is read on every use: quota turns on and off per provider while
+   * the plugin runs (CPA's quota-handoff appears, a provider connects). Only
+   * the compaction models are fixed at start.
+   */
   constructor(
-    readonly config: Config,
+    private readonly config: () => Config,
     installation: string | Promise<string>,
     private readonly io: QuotaIO,
   ) {
-    Object.values(config.routes).forEach(endpoint)
     this.identity = Promise.resolve(installation)
     // Rejections surface at the first request that needs the identity.
     this.identity.catch(() => {})
-    this.summary = modelSetting("compactionModel", config.compactionModel)
-    this.fallback = modelSetting("compactionFallback", config.compactionFallback)
+    this.summary = modelSetting("compactionModel", config().compactionModel)
+    this.fallback = modelSetting("compactionFallback", config().compactionFallback)
   }
   enabled(provider: string) {
-    return this.config.routes[provider] !== undefined
+    return this.config().routes[provider] !== undefined
   }
   private key(session: string, provider: string, model: string) {
     return `${session}/${provider}/${model}`
@@ -96,7 +100,7 @@ export class QuotaController {
           session,
           provider,
           model,
-          endpoint: endpoint(this.config.routes[provider]!),
+          endpoint: endpoint(this.config().routes[provider]!),
           stored:
             raw === undefined
               ? {
@@ -424,7 +428,9 @@ export class QuotaController {
   }
   async status(session: string) {
     const routes = await Promise.all(this.routes.values())
-    return routes.filter((route) => route.session === session).flatMap((route) => route.notices)
+    return routes
+      .filter((route) => route.session === session && this.enabled(route.provider))
+      .flatMap((route) => route.notices)
   }
   async activity(session: string, active: boolean) {
     if (active) this.running.add(session)
@@ -443,6 +449,8 @@ export class QuotaController {
     const routes = await Promise.all(this.routes.values())
     await Promise.all(
       routes
+        // A provider whose quota turned off is no longer polled; its endpoint may be gone.
+        .filter((route) => this.enabled(route.provider))
         .filter((route) => route.active || this.io.now() - route.touched < 5000)
         .filter((route) => (route.unenrolledUntil ?? 0) <= this.io.now())
         .map((route) =>
