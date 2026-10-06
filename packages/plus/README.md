@@ -237,7 +237,7 @@ What the Basic member presets set (on = permitted):
 | briefs it accepts | plan files only | need a reason | commits need scope.paths | no corrections by followup | | |
 
 ¹ keys, `.env` files, credential stores, OpenCode provider config and service
-passwords, frozen team run configs and session databases.
+passwords, and session databases.
 ² edit → Files it may change: `docs/plans/` and `docs/handoffs/`.
 
 Team tools are tool rows: a planner lacks `set_checks` and `check` (it keeps
@@ -376,7 +376,7 @@ runs do not share scope. These boundaries only narrow existing permissions,
 never override denial or approval, and protect Git, paused-tool and Plus state.
 The listable `perm:edit:run:<runID>` row describes the individual boundary;
 editing that display row does not widen the admitted brief.
-Landing on a protected branch (`main`, `master`, `v2`, `ocp-main`, `release*`)
+Landing on a protected branch (`main`, `master`, `v2`, `release*`)
 is allowed until you turn that `team_integrate` row off.
 
 Status reports `attemptsUsed`, not a count of model calls. `turnsUsed` remains
@@ -605,7 +605,6 @@ Every place core changed for this feature, and why the plugin API could not do i
 - `packages/core/src/tool.ts`: `Tool.snapshot` now drops a tool when its own id is wholly denied, not only its permission group, so a single Code Mode tool can be excluded for one agent. (`packages/core/test/tool-origin.test.ts`)
 - `packages/plugin/src/effect/session.ts` + `packages/core/src/session/context.ts`: a `session.catalog` hook fired inside `SessionContext.select`, letting a plugin rewrite each agent's Code Mode catalog descriptions and pins. The registry editor is global, so `editor.update` would change one description for every agent and, because discovery reads the host back, would flip the publish fingerprint into a dispose/reinstall loop. (`packages/core/test/session-catalog.test.ts`)
 - `packages/core/test/tool-patch.test.ts` — test fixture only (a `.git` marker inside the fixture's own temp directory so `Project.root` resolves deterministically); no core source change.
-- `packages/plus/test/team2-contract.test.ts` — team2 agent-file contract: pins the agent-file format produced by an external repository's team2 agent writer.
 - Loading wiring only: `PlusPlugin` appended last in `post` (`packages/core/src/plugin/internal.ts`), `Plus` in the TUI `builtins`, workspace deps in `core`/`tui` `package.json`.
 - `patches/@opentui%2Fcore@0.5.10.patch` — the stdin parser must decode in the keyboard protocol the terminal was actually put in. opentui's native side writes the kitty query `CSI ? u` in its capability block and answers *any* reply (`CSI ? <flags> u`, measured for flags 0, 1 and 31) by pushing kitty on (`CSI > 5 u`); the reply's flags report the state *before* that push, so a fresh kitty terminal answers `0`. The patch therefore keeps the parser in the pushed protocol, follows the native `kitty_keyboard` capability up after capability replies that arrive inside the 5 s capability window (`followKittyKeyboardPush`; `capabilityTimeoutId` unregisters `capabilityHandler` after that, so a later reply is dispatched to no handler and never re-pushes — the test `a kitty answer after the downgrade re-pushes kitty, so parsing follows it back up` only exercises the inside-the-window case because its `ManualClock` advances 300 ms and never reaches 5 s), and downgrades to legacy only when the query goes unanswered for 300 ms — clearing the pushed flags with `disableKittyKeyboard()` so push and parse stay equal. It also holds a lone ESC for `stdinParserEscTimeoutMs` (default 50 ms, set by the TUI), flushes ESC-ESC immediately, and clears the ESC-recovery flag once escape dispatches. `resumePendingTimeout` unpauses unless the pending bytes are genuinely a pixel-resolution prefix (`hasPendingPixelResolutionResponse()`), instead of only when nothing is pending. This is hardening against an unguarded pause/resume: both renderer pause sites are already guarded by the same predicate and every consumption path clears the flag, so the old asymmetry is not renderer-reachable — it is not the cause of the reported lone-ESC tap failure, which remains open. Reading a zero flags reply as "no kitty" decodes every key into an empty name and takes all keyboard input away (reverted in `39cb2ade5`). Legacy parsing also accepts the kitty Escape encoding (`CSI 27 u` and `CSI 27 ; <mods> : <event> u`, press/repeat deliver, release does not), because a terminal left in kitty mode while the parser downgraded would otherwise lose Escape entirely — measured in a live pty, where the mismatch swallowed every Escape with no key event and no text leak. Upstream: `anomalyco/opencode#37692`, `anomalyco/opentui#818` / PR `#819`. (`packages/tui/test/stdin-esc.test.ts`)
 
@@ -659,7 +658,7 @@ One field resolves down, most specific first: the agent's model row → Defaults
 
 ### The interval and the provider's cache lifetime
 
-A keep-alive only helps while the provider's cache still holds the prefix, so the interval has to stay under the provider's cache lifetime — otherwise every ping pays for a fresh cache write. The providers this workspace talks to differ:
+A keep-alive only helps while the provider's cache still holds the prefix, so the interval has to stay under the provider's cache lifetime — otherwise every ping pays for a fresh cache write. The providers Plus talks to differ:
 
 | Provider | Cache lifetime (idle) | Sensible ping interval |
 | --- | --- | --- |
@@ -667,7 +666,7 @@ A keep-alive only helps while the provider's cache still holds the prefix, so th
 | OpenAI (GPT-5.6 and later) | `prompt_cache_options.ttl`, at least 30 minutes after the latest write or reuse; earlier models: `prompt_cache_retention` `in_memory` (~5–10 min) or `24h` extended | ~25 minutes for the 30-minute TTL, ~4 minutes for `in_memory` |
 | OpenAI-compatible gateways (CLIProxyAPI, and the GPT variants routed through it here) | whatever the upstream applies; frequently the 5–10 minute in-memory window | keep it as short as the Anthropic row unless the gateway documents more |
 | Google Gemini | implicit caching per request; explicit `cachedContents` carry their own TTL | explicit caches: under the TTL; implicit: a few minutes |
-| DeepSeek (and this workspace's DeepSeek routes) | disk prefix cache, enabled by default and automatic; best-effort, and entries not seen for hours to days are cleared. There is no cache-control call and nothing to refresh | none — leave warming off. A ping every few minutes cannot extend a cache that already lives for hours, and each ping is a paid read. If a very large context must survive a known short gap, an interval of tens of minutes is plenty |
+| DeepSeek (and the DeepSeek routes a gateway restores) | disk prefix cache, enabled by default and automatic; best-effort, and entries not seen for hours to days are cleared. There is no cache-control call and nothing to refresh | none — leave warming off. A ping every few minutes cannot extend a cache that already lives for hours, and each ping is a paid read. If a very large context must survive a known short gap, an interval of tens of minutes is plenty |
 | Zai, Mistral, others | no server-side prefix cache to keep warm | warming adds cost without a cache benefit; leave it off |
 
 Anthropic refreshes a 5-minute cache on read, which is why the round trips here work with 3.5-minute pings; OpenAI's 30-minute TTL needs no faster ping than ~25 minutes; DeepSeek's disk cache lasts for hours to days on its own, so it needs no keep-alive at all — warming it mostly pays for reads that would have hit anyway, and a cold prefix is simply re-cached by the next real request at cache-miss input rates (no separate write fee, no TTL to refresh). A per-model row in Defaults › Models (or the model's own opencode.json `settings.warming`) is the way to give one model a different interval from the rest.
@@ -701,7 +700,7 @@ One page for chat metrics: reasoning, cache reads and writes, uncached input, ou
 - **Keys**: `g` group, `s` scope, `S` session picker, `T` team picker, `t` window, `o` order, `a`/`f`/`F` filters, `/` text filter, `x` toggle filter, `c` compare, `m` mark, `Enter` drill/detail, `⌫`/`esc` back, `?` help popup. Settings persist; drill-downs do not. `/` narrows the rendered rows on every tab (groups, feed, requests, sessions and agents) while the totals keep describing the real query.
 - **Tokens per call** are attributed, because providers bill per step (one LLM call), never per tool:
   - `call` — the step's visible output tokens, split across its text and each call's input by size.
-  - `result` — what the result added to the next prompt: the next step's prompt growth minus this step's own output, split across its results by size. When no clean next step exists (a user message, compaction or instruction update in between, or the last step) it is estimated at 2.5 characters per token and marked `~`; on this workspace's real sessions 96 % of results are measured.
+  - `result` — what the result added to the next prompt: the next step's prompt growth minus this step's own output, split across its results by size. When no clean next step exists (a user message, compaction or instruction update in between, or the last step) it is estimated at 2.5 characters per token and marked `~`; on real sessions 96 % of results are measured.
   - `carried` — the result re-read by every later step until the next compaction. This is where most tokens go: a large `read` result is paid for again on every step after it.
   - `+n` counts Code Mode calls made inside an `execute` call (their tokens belong to the execute call); `*` marks a call still running.
 - **Code Mode**: `monitor.query({})` returns the calling session's requests and misses with cause, confidence and one-line evidence. `monitor.query({view: "cache", id})` returns the named segment diff, timing and lifetime, ping history, account switches, instruction updates/reverts, expected versus actual cache tokens, session/message ids and attributed calls. `monitor.mark({label})` stays available.
