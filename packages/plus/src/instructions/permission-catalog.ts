@@ -138,12 +138,6 @@ const secretFiles: readonly RowSpec[] = [
       "*/.local/share/opencode*/auth.json",
     ],
   },
-  {
-    id: "run-configs",
-    label: "Frozen team run configs",
-    on: true,
-    patterns: ["*/run/team/*/runs/*/config/*", "*/run/controller/*"],
-  },
   { id: "databases", label: "Session databases (*.db, *.sqlite)", on: true, patterns: ["*.db", "*.db-wal", "*.db-shm", "*.sqlite", "*.sqlite3"] },
 ]
 
@@ -164,7 +158,7 @@ const protectedEdits: readonly RowSpec[] = [
     id: "agent-definitions",
     label: "Agent and team definitions",
     on: true,
-    patterns: ["agents/*", ".opencode/agent/*", ".opencode/agents/*", "*/.opencode/agent/*", "*/.opencode/agents/*", "*/teams/*.md", "*/.config/opencodeplus/*"],
+    patterns: [".opencode/agent/*", ".opencode/agents/*", "*/.opencode/agent/*", "*/.opencode/agents/*", "*/teams/*.md", "*/.config/opencodeplus/*"],
   },
   { id: "instruction-files", label: "Instruction files (AGENTS.md)", on: true, patterns: ["AGENTS.md", "*/AGENTS.md", "CLAUDE.md", "*/CLAUDE.md"] },
   { id: "release", label: "Release configuration (release/)", on: true, patterns: ["release/*", "*/release/*"] },
@@ -558,13 +552,6 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
           patterns: ["cat *.env*", "cat *.key*", "cat *.pem*", "cat *id_rsa*", "cat *id_ed25519*", "cat *auth.json*", "cat */.ssh/*", "head *.env*", "tail *.env*", "less *.env*", "more *.env*", "bat *.env*"],
           message: "printing secret files is not allowed here",
         },
-        {
-          id: "workspace-scripts",
-          label: "Workspace team and service scripts",
-          on: true,
-          patterns: ["./bin/team *", "bin/team *", "*/bin/team *", "./bin/opencodeplus*", "bin/opencodeplus*", "*/bin/opencodeplus*"],
-          message: "workspace team and service scripts are not allowed here",
-        },
         // Allow-list rows: they matter once Every other command is off, and
         // then only what they match runs (apply.ts shellAllowList). pilotty
         // starts whatever program it is given, so this row limits the shell to
@@ -844,7 +831,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
           id: "protected",
           label: "Protected branches",
           on: true,
-          patterns: ["main", "master", "v2", "ocp-main", "release", "release*", "release/*"],
+          patterns: ["main", "master", "v2", "release", "release*", "release/*"],
           message: "landing on a protected branch is not allowed here; land on a task branch",
         },
       ],

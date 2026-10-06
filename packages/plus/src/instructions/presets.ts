@@ -149,7 +149,7 @@ function reach(tools: readonly string[]): PresetOverrides {
 
 // Secrets a team member neither reads nor searches: read's and grep's secret
 // file rows and grep's include filters aimed at them.
-const secretFiles = ["env", "keys", "credentials", "opencode-config", "run-configs", "databases"]
+const secretFiles = ["env", "keys", "credentials", "opencode-config", "databases"]
 const secrets: PresetOverrides = rows(off, [
   "perm:read:env",
   ...secretFiles.filter((id) => id !== "env").map((id) => `perm:read:files.${id}`),
@@ -218,7 +218,6 @@ const plannerShell: PresetOverrides = rows(off, [
   "perm:shell:commands.databases",
   "perm:shell:commands.github-cli",
   "perm:shell:commands.secret-reads",
-  "perm:shell:commands.workspace-scripts",
 ])
 
 const tavily = rows(off, ["tool:search_tavily_search", "tool:search_tavily_extract"])

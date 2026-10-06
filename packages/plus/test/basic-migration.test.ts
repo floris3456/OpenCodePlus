@@ -83,13 +83,28 @@ function resolvedFor(agentId: string): { role: string; items: Record<string, { s
 // delegated run waiting on open children started keeping its attempt open, and
 // team_supersede when team_stop took its reason.
 const retiredTools = ["team_wait", "team_supersede"]
-const retired = (id: string): boolean => retiredTools.some((tool) => id === `tool:${tool}` || id.startsWith(`perm:${tool}:`))
+const retired = (id: string): boolean =>
+  retiredTools.some((tool) => id === `tool:${tool}` || id.startsWith(`perm:${tool}:`)) || retiredRows.includes(id)
+
+// Workspace-specific catalogue rows removed after the snapshot was taken: the
+// read/grep "Frozen team run configs" row and the "Workspace team and service
+// scripts" shell row. They no longer exist in the catalogue, so a stored
+// record for one is an orphan row and takes no part in the comparison.
+const retiredRows = ["perm:read:files.run-configs", "perm:grep:files.run-configs", "perm:shell:commands.workspace-scripts"]
 
 // Rows whose shipped text changed after the snapshot was taken: git merge and
 // git worktree add moved out of these shell families into rows of their own
-// (store.ts migrateSplitRows). Their text is the current catalogue's; their
+// (store.ts migrateSplitRows), the Agent and team definitions and Protected
+// branches patterns dropped their workspace names, and the read/grep run
+// config rows were retired. Their text is the current catalogue's; their
 // state still has to match the snapshot.
-const rewrittenRows = ["perm:shell:commands.git-changes", "perm:shell:commands.git-refs"]
+const rewrittenRows = [
+  "perm:shell:commands.git-changes",
+  "perm:shell:commands.git-refs",
+  "perm:edit:protected.agent-definitions",
+  "perm:team_delegate:scope.agent-definitions",
+  "perm:team_integrate:branches.protected",
+]
 const currentText = (id: string): string | undefined => migratedInput.after.items.find((item) => item.id === id)?.text
 
 // The snapshot, with the rows the member preset has changed on purpose since.

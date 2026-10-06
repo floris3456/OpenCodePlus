@@ -315,7 +315,6 @@ test("read's secret Files rows and Where for every tool: off installs the core d
     ["perm:read:files.keys", "secret.key", "Private keys cannot be read here"],
     ["perm:read:files.credentials", "home/.netrc", "Credential stores cannot be read here"],
     ["perm:read:files.opencode-config", "/home/x/.config/opencodeplus/opencode.json", "Provider config and service passwords cannot be read here"],
-    ["perm:read:files.run-configs", "/w/run/team/ns/runs/r1/config/opencode.json", "Frozen team run configs cannot be read here"],
     ["perm:read:files.databases", "data/opencode.db", "Session databases (*.db, *.sqlite) cannot be read here"],
     ["perm:read:env", "app/.env", ".env files cannot be read here"],
   ] as const

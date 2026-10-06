@@ -270,9 +270,9 @@ test("an orchestrator's preset turns off the shell rows that change files, commi
 
 test("every member but a build seat reads and searches no secret files; a build seat has every team tool but finish", () => {
   const secretRows = Object.keys(states["planner"] ?? {}).filter(
-    (id) => /^perm:read:(env|files\.(keys|credentials|opencode-config|run-configs|databases))$/.test(id) || /^perm:grep:(files\.(env|keys|credentials|opencode-config|run-configs|databases)|include\.(env|keys))$/.test(id),
+    (id) => /^perm:read:(env|files\.(keys|credentials|opencode-config|databases))$/.test(id) || /^perm:grep:(files\.(env|keys|credentials|opencode-config|databases)|include\.(env|keys))$/.test(id),
   )
-  expect(secretRows).toHaveLength(14)
+  expect(secretRows).toHaveLength(12)
   for (const member of ids.filter((id) => id !== "ocp-build" && id !== "build-seat"))
     for (const id of secretRows) expect([member, id, states[member]?.[id]]).toEqual([member, id, "off"])
   for (const id of secretRows) expect(["ocp-build", id, states["ocp-build"]?.[id]]).toEqual(["ocp-build", id, "on"])
