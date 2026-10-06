@@ -127,7 +127,7 @@ const entries = (origin: string): Entry[] => [
 const start = Effect.fn(function* (origin: string) {
   const plugin = yield* Plugin.Service
   const host = yield* PluginHost.make(plugin)
-  yield* catalogueSync(host, { cpa: origin })
+  yield* catalogueSync(host, () => ({ cpa: origin }))
   yield* ConfigProviderPlugin.Plugin.effect(host).pipe(Effect.provide(Config.testLayer(entries(origin))))
 })
 

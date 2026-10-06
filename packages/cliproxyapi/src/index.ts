@@ -1,7 +1,8 @@
 import { Plugin } from "@opencode/plugin/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import { Form } from "@opencode/schema/form"
 import { Provider } from "@opencode/schema/provider"
-import { Effect, Ref, Schema, Stream } from "effect"
+import { Effect, Queue, Ref, Schema, Stream } from "effect"
 import { registerQuota } from "./quota/register.js"
 import {
   applyCatalogue,
@@ -21,22 +22,50 @@ export { onQuotaFact, type QuotaFact } from "./facts.js"
 export { provideLegacyQuotaStorage, legacyRead, migratingStorage } from "./legacy.js"
 
 export const ID = "opencode.plus.cliproxyapi"
+/** Integration and provider ID the /connect entry and routes are keyed by. */
+export const INTEGRATION_ID = "cliproxyapi"
+export const PROVIDER_ID = "cliproxyapi"
+const DEFAULT_PACKAGE = "@opencode/ai/providers/openai"
 const REFRESH = "5 minutes"
 const RETRY = "15 seconds"
 
-const Stored = Schema.Struct({ catalogue: Schema.Unknown, pkg: Schema.optional(Schema.String) })
+/** HTTPS anywhere, or HTTP only to a loopback host, then an optional path, ending in `/v1`. */
+export const BASE_URL_PATTERN = String.raw`^(https://[^/\s]+|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?)(/[^/\s]+)*/v1$`
+
+const Stored = Schema.Struct({
+  catalogue: Schema.Unknown,
+  pkg: Schema.optional(Schema.String),
+  /** Present for a catalogue bound to a connection: `<type>:<id>` of the connection that produced it. */
+  connectionKey: Schema.optional(Schema.String),
+})
+
+const Switched = Schema.Struct({ integrationID: Schema.String })
 
 interface Loaded {
   catalogue: Catalogue
   pkg: string | undefined
+  connectionKey: string | undefined
+}
+
+type Connection = NonNullable<Effect.Success<ReturnType<Context["integration"]["connection"]["active"]>>>
+
+export interface ConnectionRoute {
+  readonly providerID: string
+  readonly origin: string
+  readonly key: string
+  readonly info: Connection
 }
 
 /**
  * OpenCodePlus features for CLIProxyAPI (CPA), in one plugin that can be turned
  * off with `"plugins": ["-opencode.plus.cliproxyapi"]`:
+ * - `/connect` entry: connect once with the CPA URL and key; models sync without
+ *   any cliproxyapi.json or provider in opencode.json;
  * - model catalogue sync (all CPA models, reasoning levels, limits, Fast aliases);
  * - quota coordination with CPA's quota-handoff plugin and the usage views.
- * Inert without ~/.config/opencodeplus/cliproxyapi.json (or legacy quota-handoff.json).
+ * The file (~/.config/opencodeplus/cliproxyapi.json, or legacy
+ * quota-handoff.json) is the advanced route: a route there overrides the
+ * connection-derived one and keeps the old behaviour.
  */
 export default Plugin.define({
   id: ID,
@@ -44,7 +73,7 @@ export default Plugin.define({
     Effect.gen(function* () {
       const config = yield* Effect.promise(() => cliproxyapiConfig()).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("cliproxyapi.json could not be read; CLIProxyAPI features are off", { cause }).pipe(
+          Effect.logWarning("cliproxyapi.json could not be read; CLIProxyAPI file options are off", { cause }).pipe(
             Effect.as(undefined),
           ),
         ),
@@ -52,14 +81,95 @@ export default Plugin.define({
       const storage = migratingStorage(ctx.storage)
       const scoped: Context = { ...ctx, storage }
       yield* registerQuota(scoped, config?.quota)
-      if (!config) return
+      const fileRoutes = config?.routes ?? {}
+      const fileCatalog = config?.catalog ?? {}
+      const anthropicRelay = config?.anthropicRelay
+      const connectionRoute: { current: ConnectionRoute | undefined } = { current: undefined }
+      // Relay over every route, file or connection. A file route for a provider
+      // ID wins over the connection-derived route for the same ID.
+      const routes = () => {
+        const current = connectionRoute.current
+        return current ? { [current.providerID]: current.origin, ...fileRoutes } : fileRoutes
+      }
+      // Catalogue only for routes that opted in: file routes follow `catalog`,
+      // a connection route always syncs. A file route for the id wins its origin.
+      const catalogRoutes = () => {
+        const current = connectionRoute.current
+        if (!current || fileRoutes[current.providerID] !== undefined) return fileCatalog
+        return { ...fileCatalog, [current.providerID]: current.origin }
+      }
+      const connectionSource = () => (fileCatalog[PROVIDER_ID] ? undefined : connectionRoute.current)
+
+      // Resolve the active `cliproxyapi` connection into an origin. The
+      // credential's form answer (`configuration.baseURL`) is the URL requests
+      // use; it is validated at connect time, so here it only needs to parse.
+      const resolveConnectionRoute = Effect.fnUntraced(function* () {
+        const active = yield* ctx.integration.connection.active(INTEGRATION_ID)
+        if (!active || active.type !== "credential") {
+          connectionRoute.current = undefined
+          return
+        }
+        const credential = yield* ctx.integration.connection.resolve(active).pipe(Effect.orElseSucceed(() => undefined))
+        const configuration = credential?.type === "key" ? credential.configuration : undefined
+        const baseURL = configuration?.baseURL
+        if (typeof baseURL !== "string") {
+          connectionRoute.current = undefined
+          return
+        }
+        const origin = (() => {
+          try {
+            return new URL(baseURL).origin
+          } catch {
+            return undefined
+          }
+        })()
+        if (!origin) {
+          connectionRoute.current = undefined
+          return
+        }
+        connectionRoute.current = { providerID: PROVIDER_ID, origin, key: `credential:${active.id}`, info: active }
+      })
+
+      // The /connect entry: connect once with the CPA URL and an API key.
+      yield* ctx.integration.transform((editor) => {
+        editor.update(INTEGRATION_ID, (integration) => {
+          integration.name = "CLIProxyAPI"
+        })
+        editor.method.update({
+          integrationID: INTEGRATION_ID,
+          method: {
+            type: "key",
+            label: "CLIProxyAPI API key",
+            form: Form.Fields.make([
+              Form.StringField.make({
+                type: "string",
+                key: "baseURL",
+                title: "CLIProxyAPI URL",
+                description:
+                  "The URL must end in /v1 and use HTTPS (plain HTTP is allowed only for localhost).",
+                placeholder: "https://cpa.example.com/v1",
+                required: true,
+                pattern: BASE_URL_PATTERN,
+              }),
+            ]),
+          },
+        })
+      })
+      // The provider is always registered. Activation is `auto`: core makes it
+      // available only while the `cliproxyapi` integration has a connection.
+      yield* ctx.provider.transform((providers) => {
+        providers.update(PROVIDER_ID, (provider) => {
+          provider.name = "CLIProxyAPI"
+          if (!provider.package) provider.package = DEFAULT_PACKAGE
+        })
+      })
       // The model transform runs after provider transforms, so it reaches models
       // that config creates later (legacy quota-handoff routes, catalogue off).
       yield* ctx.model.transform((models) => {
-        applyRelayToModels(models, config.routes, config.anthropicRelay)
+        applyRelayToModels(models, routes(), anthropicRelay)
       })
       yield* ctx.provider.transform((providers) => {
-        applyRelayToExistingModels(providers, config.routes, config.anthropicRelay)
+        applyRelayToExistingModels(providers, routes(), anthropicRelay)
       })
       // Config applies its own per-model settings and variants in a later model
       // transform, so the relay re-registers a final pass on every plugin update.
@@ -76,55 +186,106 @@ export default Plugin.define({
             const previous = yield* Ref.get(relayDispose)
             if (previous) yield* previous
             const registration = yield* ctx.model.transform((models) => {
-              applyRelayToModels(models, config.routes, config.anthropicRelay, { compaction: true })
+              applyRelayToModels(models, routes(), anthropicRelay, { compaction: true })
             })
             yield* Ref.set(relayDispose, registration.dispose)
           }),
         ),
         Effect.forkScoped({ startImmediately: true }),
       )
-      if (Object.keys(config.catalog).length === 0) return
-      yield* catalogueSync(scoped, config.catalog, config.anthropicRelay)
+      // A connect refreshes immediately. The catalogue loop wakes on this queue
+      // instead of waiting for its next poll.
+      const wake = yield* Queue.unbounded<void>()
+      yield* resolveConnectionRoute()
+      yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === "credential.switched"),
+        Stream.runForEach((event) => {
+          const data = Schema.decodeUnknownOption(Switched)(event.data)
+          if (data._tag === "None" || data.value.integrationID !== INTEGRATION_ID) return Effect.void
+          return resolveConnectionRoute().pipe(Effect.andThen(Queue.offer(wake, undefined)))
+        }),
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* catalogueSync(scoped, catalogRoutes, anthropicRelay, connectionSource, wake)
     }),
 })
 
 export function catalogueSync(
   ctx: Context,
-  routes: Readonly<Record<string, string>>,
+  routes: () => Readonly<Record<string, string>>,
   anthropicRelay?: Readonly<Record<string, boolean>>,
+  connectionSource?: () => ConnectionRoute | undefined,
+  wake?: Queue.Queue<void>,
 ) {
   return Effect.gen(function* () {
     const loaded = new Map<string, Loaded>()
-    // The last good catalogue survives restarts and CPA outages.
-    for (const providerID of Object.keys(routes)) {
+    const activeConnectionKey = (providerID: string) => {
+      const current = connectionSource?.()
+      return current?.providerID === providerID ? current.key : undefined
+    }
+    // The last good catalogue survives restarts and CPA outages. A catalogue
+    // that was bound to a connection is only restored while that same
+    // connection is still active, so an old account's models never reappear.
+    for (const providerID of Object.keys(routes())) {
       const raw = yield* ctx.storage.get(`catalog/${providerID}`)
       const stored = Schema.decodeUnknownOption(Stored)(raw)
-      const catalogue = stored._tag === "Some" ? restore(stored.value.catalogue) : undefined
-      if (stored._tag === "Some" && catalogue) loaded.set(providerID, { catalogue, pkg: stored.value.pkg })
+      if (stored._tag === "None") continue
+      const catalogue = restore(stored.value.catalogue)
+      if (!catalogue) continue
+      if (stored.value.connectionKey !== undefined && stored.value.connectionKey !== activeConnectionKey(providerID))
+        continue
+      loaded.set(providerID, { catalogue, pkg: stored.value.pkg, connectionKey: stored.value.connectionKey })
     }
     yield* ctx.provider.transform((providers) => {
+      const current = connectionSource?.()
       for (const [providerID, entry] of loaded) {
+        // Rebind the provider to the connection that produced its catalogue and
+        // replace its model map with that catalogue, so an old connection's
+        // models never linger. Core hides the models once another connection is
+        // active, until the next refresh rebinds them.
+        if (entry.connectionKey !== undefined && current?.providerID === providerID) {
+          const record = providers.get(providerID)
+          if (record) providers.add({ info: record.provider, models: [], sourceConnection: current.info })
+        }
         const relay = anthropicRelay?.[providerID] !== false
         applyCatalogue(providers, providerID, entry.catalogue, entry.pkg, { anthropicRelay: relay })
       }
     })
     // Image models only work on CPA's images endpoint; the image tool makes them usable.
     yield* imageToolRegistration(ctx, () =>
-      Effect.forEach([...loaded], ([providerID, entry]) =>
-        connection(ctx, providerID, routes[providerID]!).pipe(
+      Effect.forEach([...loaded], ([providerID, entry]) => {
+        const origin = routes()[providerID]
+        if (!origin) return Effect.succeed([] as ImageTarget[])
+        return connection(ctx, providerID, origin).pipe(
           Effect.map((target): ImageTarget[] =>
             target ? [{ providerID, baseURL: target.baseURL, key: target.key, catalogue: entry.catalogue }] : [],
           ),
           Effect.catchCause(() => Effect.succeed([] as ImageTarget[])),
-        ),
-      ).pipe(Effect.map((items) => items.flat())),
+        )
+      }).pipe(Effect.map((items) => items.flat())),
     )
 
     /** Returns whether every route answered; failed routes keep their last catalogue. */
     const refresh = Effect.fn("CliproxyapiCatalogue.refresh")(function* () {
+      const origins = routes()
       let changed = false
+      // Drop routes that disappeared, and connection-bound catalogues whose
+      // connection changed, before re-fetching.
+      for (const providerID of [...loaded.keys()]) {
+        if (!(providerID in origins)) {
+          loaded.delete(providerID)
+          changed = true
+          continue
+        }
+        const entry = loaded.get(providerID)!
+        if (entry.connectionKey !== undefined && entry.connectionKey !== activeConnectionKey(providerID)) {
+          loaded.delete(providerID)
+          changed = true
+        }
+      }
       let complete = true
-      for (const [providerID, origin] of Object.entries(routes)) {
+      for (const [providerID, origin] of Object.entries(origins)) {
+        const connectionKey = activeConnectionKey(providerID)
         const next = yield* fetchCatalogue(ctx, providerID, origin).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("CPA catalogue refresh failed; keeping the last catalogue", { providerID, cause }).pipe(
@@ -136,22 +297,31 @@ export function catalogueSync(
           complete = false
           continue
         }
+        const value = { ...next, connectionKey }
         const previous = loaded.get(providerID)
-        if (previous && previous.catalogue.hash === next.catalogue.hash && previous.pkg === next.pkg) continue
-        loaded.set(providerID, next)
-        yield* ctx.storage.set(`catalog/${providerID}`, JSON.parse(JSON.stringify(next)))
+        if (
+          previous &&
+          previous.catalogue.hash === value.catalogue.hash &&
+          previous.pkg === value.pkg &&
+          previous.connectionKey === value.connectionKey
+        )
+          continue
+        loaded.set(providerID, value)
+        yield* ctx.storage.set(`catalog/${providerID}`, JSON.parse(JSON.stringify(value)))
         changed = true
       }
       if (changed) yield* ctx.provider.reload()
       return complete
     })
     // Retry quickly until every route answered (the provider may still be settling at
-    // startup), then refresh every five minutes.
+    // startup), then refresh every five minutes. A connection change wakes the loop.
     yield* Effect.forever(
-      refresh().pipe(
-        Effect.catchCause(() => Effect.succeed(false)),
-        Effect.flatMap((complete) => Effect.sleep(complete ? REFRESH : RETRY)),
-      ),
+      Effect.gen(function* () {
+        const complete = yield* refresh().pipe(Effect.catchCause(() => Effect.succeed(false)))
+        const delay = complete ? REFRESH : RETRY
+        if (wake) yield* Effect.race(Effect.sleep(delay), Queue.take(wake))
+        else yield* Effect.sleep(delay)
+      }),
     ).pipe(Effect.forkScoped)
   })
 }
@@ -200,10 +370,10 @@ function fetchCatalogue(ctx: Context, providerID: string, origin: string) {
         return { text, json: JSON.parse(text) as unknown }
       })
     const details = parseDetails((yield* get("details=true")).json)
-    if (details) return { catalogue: details, pkg: target.pkg } satisfies Loaded
+    if (details) return { catalogue: details, pkg: target.pkg } satisfies Omit<Loaded, "connectionKey">
     const codex = yield* get(`client_version=${CODEX_CLIENT_VERSION}`)
     const hash = new Bun.CryptoHasher("sha256").update(codex.text).digest("hex")
     const catalogue = parseCodexCatalogue(codex.json, hash)
-    return catalogue ? ({ catalogue, pkg: target.pkg } satisfies Loaded) : undefined
+    return catalogue ? ({ catalogue, pkg: target.pkg } satisfies Omit<Loaded, "connectionKey">) : undefined
   })
 }

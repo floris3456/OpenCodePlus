@@ -6,18 +6,28 @@ Hosts that do not use CPA see nothing from it.
 
 ## Turning it on and off
 
-- **On:** create `~/.config/opencodeplus/cliproxyapi.json` (host-owned; project
-  config cannot enable it):
+- **On, the normal way:** run `/connect` and choose **CLIProxyAPI**, then enter
+  the CPA URL (ending in `/v1`) and an API key. The `cliproxyapi` integration,
+  provider and model catalogue are always registered; connecting makes the
+  provider available and its models sync immediately, with no
+  `cliproxyapi.json` and no provider in `opencode.json`. The key is only ever
+  sent to the origin of the URL it was entered with.
+- **On, the advanced or existing way:** create
+  `~/.config/opencodeplus/cliproxyapi.json` (host-owned; project config cannot
+  enable it) and define the provider (package, `baseURL`, API key) in the normal
+  `providers` config. Use this for options `/connect` does not set, or to keep an
+  existing setup unchanged:
 
   ```json
   { "routes": { "cliproxyapi": "https://cpa.example" }, "quota": true, "catalog": true }
   ```
 
-  `routes` maps OpenCode provider IDs to the CPA origin serving them. The provider
-  itself (package, `baseURL`, API key) stays in the normal `providers` config; its
-  `baseURL` origin must equal the route, and the key is only ever sent there.
-  `quota` and `catalog` default to `true`. A legacy `quota-handoff.json` (routes
-  only) still enables quota and usage, without the catalogue.
+  `routes` maps OpenCode provider IDs to the CPA origin serving them. A file
+  route for a provider ID overrides the connection-derived route for the same
+  ID. The provider's `baseURL` origin must equal the route, and the key is only
+  ever sent there. `quota` and `catalog` default to `true`. A legacy
+  `quota-handoff.json` (routes only) still enables quota and usage, without the
+  catalogue.
 
   Claude models routed through CPA default to CPA's Anthropic Messages relay with
   `settings.compaction: { "type": "native" }` (see Anthropic Messages relay below).
