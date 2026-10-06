@@ -1418,15 +1418,17 @@ export interface ModelPickSuccess {
 
 export type ModelPickResult = ModelPickSuccess | OpFailure
 
-// The team a pick's agent resolves as a member of, or the flat agent. A member
-// id that names more than one team is ambiguous: the row to write would be a
-// guess, so the pick refuses instead.
+// The team a pick's agent resolves as a member of, or the flat agent. Matches
+// the runtime: `buildActiveModels` resolves only what Plus published, so a
+// member of a disabled team is not in force and must not redirect the pick. An
+// id in more than one enabled team is genuinely ambiguous: the row to write
+// would be a guess, so the pick refuses instead.
 function pickOwnerOf(
   input: MemoInput,
   agent: string,
 ): { readonly kind: "agent"; readonly level: Level } | { readonly kind: "member"; readonly level: Level; readonly team: string } | { readonly refusal: string } {
   const teams = (input.teams ?? []).filter(
-    (team) => team.agents.includes(agent) || (team.overlay?.includes(agent) ?? false),
+    (team) => team.enabled && (team.agents.includes(agent) || (team.overlay?.includes(agent) ?? false)),
   )
   if (teams.length > 1)
     return {
@@ -1434,7 +1436,11 @@ function pickOwnerOf(
     }
   const only = teams[0]
   if (only !== undefined) return { kind: "member", level: only.level, team: only.team }
-  const source = input.agents.find((entry) => entry.id === agent)
+  // The runtime's agent list orders team winners before stand-alone agents and
+  // keeps the first per id, so a stand-alone row wins the fallback.
+  const source =
+    input.agents.find((entry) => entry.id === agent && entry.team === undefined) ??
+    input.agents.find((entry) => entry.id === agent)
   if (source === undefined) return { refusal: `Unknown agent "${agent}"` }
   return { kind: "agent", level: source.scope }
 }
@@ -1458,7 +1464,7 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
   const upstream =
     agents.find((entry) => entry.id === pick.agent && entry.scope === owner.level)?.model ??
     agents.find((entry) => entry.id === pick.agent)?.model
-  const memberOf = owner.kind === "member" ? { level: owner.level as Level, team: owner.team } : undefined
+  const memberOf = owner.kind === "member" ? { level: owner.level, team: owner.team } : undefined
   const catalogue = owner.kind === "member" ? ("teams" as const) : undefined
   // Resolve the effective model exactly as buildActiveModels does.
   const runtime = modelRuntimeScope({

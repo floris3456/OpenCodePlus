@@ -9,7 +9,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
-import { load, type StoredRecord } from "../src/instructions/store.js"
+import { load, save, type StoredRecord } from "../src/instructions/store.js"
 import type { Model } from "@opencode/schema/model"
 import { expandedTree } from "../src/instructions/tree.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
@@ -197,23 +197,81 @@ test("(7) a one-team member pick writes its member row; an ambiguous member id r
   const throwing = throwingContext()
   await Effect.runPromise(handlers["team.create"]({ level: "global", team: "Basic" }, throwing))
   await Effect.runPromise(handlers["team.addAgent"]({ level: "global", team: "Basic", id: "Planner" }, throwing))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "Basic", enabled: true }, throwing))
   const result = await pick(handlers, { agent: "Planner", providerID: "acme", modelID: "nova-2" })
   expect(result.level).toBe("global")
+  expect(result.rowId).toBe("item:global:Basic/:Planner:model:acme/nova-2")
   const planner = modelRecords((await load(project)).records).filter((record) => record.agent === "Planner")
   expect(planner).toHaveLength(1)
   expect(planner[0]).toMatchObject({ level: "global", agent: "Planner", active: true })
-  // The tree's member row is the active one.
-  const rows = expandedTree(memoInputOf(await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing))))
-  expect(rows.some((row) => row.id === "item:global:Basic/:Planner:model:acme/nova-2" && row.badges.active === true)).toBe(true)
 
-  // A second global team with the same member id makes the target ambiguous.
+  // A second global team with the same member id, both enabled (seeded
+  // directly: team.setEnabled is exclusive). The target is genuinely ambiguous:
+  // two live teams claim Planner, so the pick refuses with no write.
   await Effect.runPromise(handlers["team.create"]({ level: "global", team: "Backup" }, throwing))
   await Effect.runPromise(handlers["team.addAgent"]({ level: "global", team: "Backup", id: "Planner" }, throwing))
+  const seeded = await load(project)
+  await save(project, {
+    expectedProjectRevision: seeded.projectRevision,
+    expectedGlobalRevision: seeded.globalRevision,
+    records: [
+      ...seeded.records,
+      { type: "team", level: "global", team: "Backup", enabled: true, updated: "2026-01-01T00:00:00.000Z" },
+    ],
+  })
   const before = await load(project)
   await expect(RunPick(handlers, { agent: "Planner", providerID: "acme", modelID: "nova-3" })).rejects.toMatchObject({
     type: "model.invalid",
   })
   const after = await load(project)
   expect(after.records).toEqual(before.records)
+})
+
+// Fix 2: a member of a DISABLED team is not in force at runtime, so the pick
+// must not redirect to a member row. With a standalone agent of the same id,
+// the pick writes the standalone agent's row.
+test("(11) a member of a disabled team resolves as the standalone agent", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build."), agentInfo("Planner", "Standalone.")],
+    models: [modelWith("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+  })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = throwingContext()
+  await Effect.runPromise(handlers["team.create"]({ level: "global", team: "Basic" }, throwing))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "global", team: "Basic", id: "Planner" }, throwing))
+  // The team stays disabled.
+  const result = await pick(handlers, { agent: "Planner", providerID: "acme", modelID: "nova-2" })
+  expect(result.level).toBe("defaults")
+  expect(result.rowId).toBe("item:defaults:Planner:model:acme/nova-2")
+  const planner = modelRecords((await load(project)).records).filter((record) => record.agent === "Planner")
+  expect(planner).toHaveLength(1)
+  expect(planner[0]).toMatchObject({ level: "defaults", agent: "Planner", active: true })
+  expect(planner[0]).not.toHaveProperty("team")
+})
+
+// Fix 2: one enabled team and one disabled team is not ambiguous: the enabled
+// team's member row is written.
+test("(12) an id in one enabled and one disabled team writes the enabled member row", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.")],
+    models: [modelWith("acme", "nova-2")],
+    classifications: { "": "general", "nova-2": "general" },
+  })
+  const handlers = createHandlers(ctx, createState())
+  const throwing = throwingContext()
+  await Effect.runPromise(handlers["team.create"]({ level: "global", team: "Basic" }, throwing))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "global", team: "Basic", id: "Planner" }, throwing))
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "global", team: "Basic", enabled: true }, throwing))
+  await Effect.runPromise(handlers["team.create"]({ level: "global", team: "Backup" }, throwing))
+  await Effect.runPromise(handlers["team.addAgent"]({ level: "global", team: "Backup", id: "Planner" }, throwing))
+  // Backup stays disabled.
+  const result = await pick(handlers, { agent: "Planner", providerID: "acme", modelID: "nova-2" })
+  expect(result.level).toBe("global")
+  expect(result.rowId).toBe("item:global:Basic/:Planner:model:acme/nova-2")
 })
 
