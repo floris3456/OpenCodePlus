@@ -44,3 +44,23 @@ test("plugins cannot select unavailable variants or variants without a model", a
   expect(none.variant.list()).toEqual([])
   expect(none.variant.set(undefined)).toBe(false)
 })
+
+test("plugins subscribe to user picks and unsubscribe cleanly", async () => {
+  await using setup = await renderLocal({ models: [model("first", ["low", "high"])] })
+  const selected = pluginModel(setup.local)
+  const picks: unknown[] = []
+  const off = selected.onPick((pick) => picks.push(pick))
+
+  // A programmatic variant.set is not a user pick and emits nothing.
+  selected.variant.set("high")
+  expect(picks).toEqual([])
+
+  setup.local.model.pick()
+  expect(picks).toEqual([
+    { agent: "build", providerID: "provider", modelID: "first", variant: "high", location: undefined },
+  ])
+
+  off()
+  setup.local.model.pick()
+  expect(picks).toHaveLength(1)
+})
