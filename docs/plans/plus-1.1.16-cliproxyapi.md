@@ -10,8 +10,8 @@ Line numbers are at commit `cbbd89b6d1`. Re-check them before starting.
 
 ## Decisions
 
-Made by the user on 2026-10-06 **(user)**, or proposed here and still to be
-confirmed **(proposed)**.
+All made by the user on 2026-10-06 **(user)**. Decisions 5, 6 and 8 were
+proposed here and confirmed the same day.
 
 1. **(user)** Model sync is gated on the CPA side: full sync when the CPA answers
    `GET /v1/models?details=true` with schema `cliproxyapi.model-details/1`.
@@ -21,7 +21,7 @@ confirmed **(proposed)**.
 4. **(user)** The CPA features (`/connect`, quota handoff, model sync) become a
    separate project. It ships with OpenCodePlus by default and users can
    remove it.
-5. **(proposed)** That project is an **OpenCode plugin package, not an MCP
+5. **(user)** That project is an **OpenCode plugin package, not an MCP
    server**. MCP gives a model tools, resources and prompts. It cannot:
    - add an entry to `/connect` (the integration registry);
    - create a provider or change its model list;
@@ -31,14 +31,14 @@ confirmed **(proposed)**.
 
    All four are plugin-host APIs. Only the image tool could also run as an MCP
    tool, and splitting it out gains nothing.
-6. **(proposed)** For 1.1.16 the project is a separate package in this repo,
+6. **(user)** For 1.1.16 the project is a separate package in this repo,
    `packages/cliproxyapi` (`@opencodeplus/cliproxyapi`). A separate repository
    and npm package can come later without code changes (see 1.4).
 7. **(proposed)** The plugin ID stays `opencode.plus.cliproxyapi`. Plugin
    storage is keyed by plugin ID (`packages/core/src/plugin/host.ts:675`). The
    cached catalogue, quota bindings and installation identity live in that
    storage. The existing opt-out line also keeps working.
-8. **(proposed)** As a last fallback, use the plain `/v1/models` list (see 3.1),
+8. **(user)** As a last fallback, use the plain `/v1/models` list (see 3.1),
    so connecting never ends with an empty model picker.
 
 ## What exists today
