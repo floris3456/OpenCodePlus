@@ -4,6 +4,7 @@ const repoRoot = resolve(import.meta.dir, "../../..")
 
 const packages = [
   "cli",
+  "cliproxyapi",
   "client",
   "core",
   "util",

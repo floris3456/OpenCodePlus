@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { StorageDomain } from "@opencode/plugin/effect/storage"
 import { Effect } from "effect"
-import { migratingStorage } from "../../src/cliproxyapi/legacy.js"
+import { migratingStorage } from "../src/legacy.js"
 
 function memory(initial: Record<string, unknown> = {}) {
   const data = new Map(Object.entries(initial))

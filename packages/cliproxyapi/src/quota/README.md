@@ -1,7 +1,7 @@
 # Credential quota handoff
 
 Part of the `opencode.plus.cliproxyapi` plugin (enable/disable, configuration file and
-the model catalogue: [../cliproxyapi/README.md](../cliproxyapi/README.md)).
+the model catalogue: [../../README.md](../../README.md)).
 
 Create `quota-handoff.json` in the host's global config directory (normally
 `~/.config/opencodeplus`, or `OPENCODE_CONFIG_DIR` when set):

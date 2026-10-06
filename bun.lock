@@ -202,6 +202,25 @@
         "solid-js",
       ],
     },
+    "packages/cliproxyapi": {
+      "name": "@opencodeplus/cliproxyapi",
+      "version": "0.0.0",
+      "dependencies": {
+        "@opencode/plugin": "workspace:*",
+        "@opencode/schema": "workspace:*",
+        "@opencode/util": "workspace:*",
+        "@opentui/solid": "catalog:",
+        "effect": "catalog:",
+        "solid-js": "catalog:",
+      },
+      "devDependencies": {
+        "@opentui/core": "catalog:",
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@typescript/native-preview": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/codemode": {
       "name": "@opencode/codemode",
       "version": "2.0.18",
@@ -362,6 +381,7 @@
         "@opencode/plus": "workspace:*",
         "@opencode/schema": "workspace:*",
         "@opencode/util": "workspace:*",
+        "@opencodeplus/cliproxyapi": "workspace:*",
         "@parcel/watcher": "2.5.1",
         "@silvia-odwyer/photon-node": "0.3.4",
         "@standard-schema/spec": "catalog:",
@@ -636,6 +656,7 @@
         "@opencode/plugin": "workspace:*",
         "@opencode/schema": "workspace:*",
         "@opencode/util": "workspace:*",
+        "@opencodeplus/cliproxyapi": "workspace:*",
         "@opentui/solid": "catalog:",
         "effect": "catalog:",
         "solid-js": "catalog:",
@@ -929,6 +950,7 @@
         "@opencode/theme": "workspace:*",
         "@opencode/ui": "workspace:*",
         "@opencode/util": "workspace:*",
+        "@opencodeplus/cliproxyapi": "workspace:*",
         "@opentui/core": "catalog:",
         "@opentui/keymap": "catalog:",
         "@opentui/solid": "catalog:",
@@ -2257,6 +2279,8 @@
     "@opencode/web": ["@opencode/web@workspace:packages/web"],
 
     "@opencode/www": ["@opencode/www@workspace:services/www"],
+
+    "@opencodeplus/cliproxyapi": ["@opencodeplus/cliproxyapi@workspace:packages/cliproxyapi"],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 

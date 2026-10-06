@@ -1,7 +1,7 @@
 import path from "node:path"
 import { Schema } from "effect"
-import { globalConfigDir } from "../instructions/paths.js"
-import type { Config as QuotaConfig } from "../quota/protocol.js"
+import { globalConfigDir } from "./paths.js"
+import type { Config as QuotaConfig } from "./quota/protocol.js"
 
 /**
  * ~/.config/opencodeplus/cliproxyapi.json — host-owned, never project config.

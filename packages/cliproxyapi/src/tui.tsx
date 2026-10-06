@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createQuota } from "../quota/tui.js"
-import { UsageDefinition } from "../quota/usage.js"
-import { createUsage } from "../quota/usage-view.js"
+import { createQuota } from "./quota/tui.js"
+import { UsageDefinition } from "./quota/usage.js"
+import { createUsage } from "./quota/usage-view.js"
 
 /**
  * TUI half of opencode.plus.cliproxyapi: quota notices and the credential usage

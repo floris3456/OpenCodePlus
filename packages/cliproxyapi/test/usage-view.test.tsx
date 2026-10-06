@@ -4,8 +4,8 @@ import { RGBA } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import { createRoot, createSignal } from "solid-js"
-import { createUsage } from "../../src/quota/usage-view.js"
-import { UsageDefinition, type UsageInput, type UsageResult, type UsageSnapshot } from "../../src/quota/usage.js"
+import { createUsage } from "../src/quota/usage-view.js"
+import { UsageDefinition, type UsageInput, type UsageResult, type UsageSnapshot } from "../src/quota/usage.js"
 
 type Layer = ReturnType<Parameters<Plugin.Context["keymap"]["layer"]>[0]>
 type Claim = { placement: string; target: string; render: (input: { sessionID: string }) => JSX.Element }

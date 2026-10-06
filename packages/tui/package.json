@@ -88,6 +88,7 @@
     "@opencode/theme": "workspace:*",
     "@opencode/ui": "workspace:*",
     "@opencode/util": "workspace:*",
+    "@opencodeplus/cliproxyapi": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",

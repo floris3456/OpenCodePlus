@@ -4,9 +4,9 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
-import { QuotaController, UNENROLLED_BACKOFF } from "../../src/quota/controller.js"
-import type { Snapshot, Stored } from "../../src/quota/protocol.js"
-import { portableMessages } from "../../src/quota/portable.js"
+import { QuotaController, UNENROLLED_BACKOFF } from "../src/quota/controller.js"
+import type { Snapshot, Stored } from "../src/quota/protocol.js"
+import { portableMessages } from "../src/quota/portable.js"
 
 const servers: ReturnType<typeof Bun.serve>[] = []
 afterEach(() => {

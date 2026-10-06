@@ -10,7 +10,7 @@ import { QuotaController } from "./controller.js"
 import { Definition } from "./rpc.js"
 import { installationIdentity } from "./identity.js"
 import { portableMessages } from "./portable.js"
-import { monitorFact } from "../monitor/plugin.js"
+import { emitQuotaFact } from "../facts.js"
 
 export function registerQuota(ctx: Context, config: Config | undefined) {
   return Effect.gen(function* () {
@@ -38,7 +38,7 @@ export function registerQuota(ctx: Context, config: Config | undefined) {
       fetch,
       now: Date.now,
       fact: (session, kind, detail) => {
-        monitorFact({ sessionID: session, kind, detail, at: Date.now() })
+        emitQuotaFact({ sessionID: session, kind, detail, at: Date.now() })
       },
     })
     yield* ctx.rpc

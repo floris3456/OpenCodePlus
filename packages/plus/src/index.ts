@@ -1,4 +1,4 @@
-import { provideLegacyQuotaStorage } from "./cliproxyapi/legacy.js"
+import { provideLegacyQuotaStorage, onQuotaFact } from "@opencodeplus/cliproxyapi/server"
 import { Plugin } from "@opencode/plugin/effect"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -85,7 +85,7 @@ import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
-import { monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
+import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
 
@@ -166,6 +166,11 @@ export default Plugin.define({
       // CPA features moved to the opencode.plus.cliproxyapi plugin; it migrates
       // quota bindings that earlier versions stored under this plugin's storage.
       provideLegacyQuotaStorage((key) => Effect.runPromise(ctx.storage.get(key)))
+      // Receive account-switch and handoff facts from the CLIProxyAPI plugin.
+      // Plus re-activates on config changes, so the finalizer below must remove
+      // this listener before the next effect can register another.
+      const disposeQuotaFacts = onQuotaFact(monitorFact)
+      yield* Effect.addFinalizer(() => Effect.sync(() => disposeQuotaFacts()))
       const state = createState()
       // Applied registrations live on detached scopes, so without this
       // finalizer they outlive the plugin when core unloads or reactivates it.

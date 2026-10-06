@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import { readUsage, type UsageInput, type UsageSnapshot } from "../../src/quota/usage.js"
-import type { Stored } from "../../src/quota/protocol.js"
+import { readUsage, type UsageInput, type UsageSnapshot } from "../src/quota/usage.js"
+import type { Stored } from "../src/quota/protocol.js"
 
 const servers: ReturnType<typeof Bun.serve>[] = []
 afterEach(() => servers.splice(0).forEach((server) => server.stop(true)))

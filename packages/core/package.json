@@ -114,6 +114,7 @@
     "@opencode/plus": "workspace:*",
     "@opencode/schema": "workspace:*",
     "@opencode/util": "workspace:*",
+    "@opencodeplus/cliproxyapi": "workspace:*",
     "@parcel/watcher": "2.5.1",
     "@silvia-odwyer/photon-node": "0.3.4",
     "@standard-schema/spec": "catalog:",

@@ -2,7 +2,7 @@ import { Plugin } from "@opencode/plugin/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Ref, Schema, Stream } from "effect"
-import { registerQuota } from "../quota/register.js"
+import { registerQuota } from "./quota/register.js"
 import {
   applyCatalogue,
   applyRelayToExistingModels,
@@ -17,6 +17,8 @@ import { imageToolRegistration, type ImageTarget } from "./image.js"
 import { migratingStorage } from "./legacy.js"
 
 export { applyCatalogue, applyRelayToExistingModels, applyRelayToModels } from "./catalog.js"
+export { onQuotaFact, type QuotaFact } from "./facts.js"
+export { provideLegacyQuotaStorage, legacyRead, migratingStorage } from "./legacy.js"
 
 export const ID = "opencode.plus.cliproxyapi"
 const REFRESH = "5 minutes"

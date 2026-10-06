@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
-import CliproxyapiTui from "../../src/cliproxyapi/tui.js"
+import CliproxyapiTui from "../src/tui.js"
 
 const cleanups: (() => void)[] = []
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()))

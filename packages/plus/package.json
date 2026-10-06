@@ -22,8 +22,6 @@
   "exports": {
     ".": "./src/index.ts",
     "./tui": "./src/tui/index.tsx",
-    "./cliproxyapi": "./src/cliproxyapi/index.ts",
-    "./cliproxyapi/tui": "./src/cliproxyapi/tui.tsx",
     "./rpc": "./src/rpc.ts"
   },
   "scripts": {
@@ -37,6 +35,7 @@
     "@opencode/plugin": "workspace:*",
     "@opencode/schema": "workspace:*",
     "@opencode/util": "workspace:*",
+    "@opencodeplus/cliproxyapi": "workspace:*",
     "@opentui/solid": "catalog:",
     "effect": "catalog:",
     "solid-js": "catalog:",

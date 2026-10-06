@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
-import { usageKey } from "../../src/quota/usage-key.js"
+import { usageKey } from "../src/quota/usage-key.js"
 
 function fixture() {
   const state = {

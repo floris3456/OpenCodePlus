@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { cliproxyapiConfig } from "../../src/cliproxyapi/config.js"
+import { cliproxyapiConfig } from "../src/config.js"
 
 test("cliproxyapi.json enables quota and catalogue by default; quota-handoff.json only quota", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cpa-config-"))

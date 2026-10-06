@@ -3,8 +3,8 @@ import { Effect, Exit } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { Catalogue } from "../../src/cliproxyapi/catalog.js"
-import { chooseImageModel, generateImage, outputPath, type ImageTarget } from "../../src/cliproxyapi/image.js"
+import type { Catalogue } from "../src/catalog.js"
+import { chooseImageModel, generateImage, outputPath, type ImageTarget } from "../src/image.js"
 
 const cleanups: (() => Promise<void> | void)[] = []
 afterEach(async () => {

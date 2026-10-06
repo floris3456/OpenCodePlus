@@ -8,8 +8,8 @@ import {
   windowShort,
   windowState,
   windowTail,
-} from "../../src/quota/usage-format.js"
-import type { UsageSnapshot, UsageWindow } from "../../src/quota/usage.js"
+} from "../src/quota/usage-format.js"
+import type { UsageSnapshot, UsageWindow } from "../src/quota/usage.js"
 
 const window: UsageWindow = { scope: "all", seconds: 18000, remaining: 61, reset: 103600, observed: 99999, held: false }
 const snapshot = { now: 100000, max_age_seconds: 90 } as UsageSnapshot

@@ -3,7 +3,7 @@ import type { ProviderEditor } from "@opencode/plugin/effect/provider"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import type { Types } from "effect"
-import { anthropicVariants, applyCatalogue, applyRelayToExistingModels, isClaude, spellVariants, type Catalogue } from "../../src/cliproxyapi/catalog.js"
+import { anthropicVariants, applyCatalogue, applyRelayToExistingModels, isClaude, spellVariants, type Catalogue } from "../src/catalog.js"
 
 function createTestEditor(initial: { provider: Provider.Info; models?: Model.Info[] }[]) {
   const store = new Map<string, { provider: Provider.Info; models: Map<string, Model.Info> }>()
@@ -421,7 +421,7 @@ test("cliproxyapiConfig parses anthropicRelay opt-out per-route and top-level", 
   const fs = await import("node:fs/promises")
   const os = await import("node:os")
   const path = await import("node:path")
-  const { cliproxyapiConfig } = await import("../../src/cliproxyapi/config.js")
+  const { cliproxyapiConfig } = await import("../src/config.js")
 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cpa-relay-config-"))
   try {

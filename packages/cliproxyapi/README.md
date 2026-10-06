@@ -71,6 +71,6 @@ Hosts that do not use CPA see nothing from it.
   They are listed as "(images)" with image output, and the `image.generate` tool
   creates an image with them and saves a PNG in the project (default
   `generated-images/`). Selecting one as a chat model fails at CPA.
-- **Quota coordination and usage** (`../quota/`): CPA quota-handoff bindings, quota
+- **Quota coordination and usage** (`src/quota/`): CPA quota-handoff bindings, quota
   notices, `/usage` and the sidebar Usage section. Bindings stored by earlier
   versions under `opencode.plus` are migrated on first read.
