@@ -99,9 +99,7 @@ describe("opencode.plus.cliproxyapi /connect", () => {
         const providers = yield* Provider.Service
         const integration = yield* integrations.get(integrationID)
         expect(integration?.name).toBe("CLIProxyAPI")
-        expect(integration?.methods).toEqual([
-          expect.objectContaining({ type: "key", label: "CLIProxyAPI API key" }),
-        ])
+        expect(integration?.methods).toEqual([expect.objectContaining({ type: "key", label: "CLIProxyAPI API key" })])
         const method = integration?.methods[0]
         const field = method?.type === "key" ? method.form?.[0] : undefined
         expect(field).toMatchObject({
@@ -154,15 +152,9 @@ describe("opencode.plus.cliproxyapi /connect", () => {
             yield* addPlugin()
             const models = yield* Model.Service
             yield* connect(first.server.url.origin)
-            yield* eventually(
-              models.get(providerID, Model.ID.make("model-first")),
-              (model) => model !== undefined,
-            )
+            yield* eventually(models.get(providerID, Model.ID.make("model-first")), (model) => model !== undefined)
             yield* connect(second.server.url.origin, "second-key")
-            yield* eventually(
-              models.get(providerID, Model.ID.make("model-second")),
-              (model) => model !== undefined,
-            )
+            yield* eventually(models.get(providerID, Model.ID.make("model-second")), (model) => model !== undefined)
             expect(yield* models.get(providerID, Model.ID.make("model-first"))).toBeUndefined()
           }),
         ),
@@ -180,12 +172,10 @@ describe("opencode.plus.cliproxyapi /connect", () => {
         yield* addPlugin()
         const integrations = yield* Integration.Service
         for (const baseURL of ["http://example.com/v1", "https://cpa.example.com", "https://cpa.example.com/v1/"]) {
-          const message = yield* integrations.connection
-            .key({ integrationID, key: "k", answer: { baseURL } })
-            .pipe(
-              Effect.flip,
-              Effect.map((error) => (error.cause instanceof Error ? error.cause.message : String(error.cause))),
-            )
+          const message = yield* integrations.connection.key({ integrationID, key: "k", answer: { baseURL } }).pipe(
+            Effect.flip,
+            Effect.map((error) => (error.cause instanceof Error ? error.cause.message : String(error.cause))),
+          )
           expect(message).toContain("pattern")
         }
         expect(yield* integrations.connection.active(integrationID)).toBeUndefined()
@@ -227,15 +217,22 @@ describe("opencode.plus.cliproxyapi /connect", () => {
             )
             const providers = yield* Provider.Service
             const models = yield* Model.Service
-            yield* eventually(
-              models.get(providerID, Model.ID.make("file-model")),
-              (model) => model !== undefined,
-            )
+            yield* eventually(models.get(providerID, Model.ID.make("file-model")), (model) => model !== undefined)
+            // The /connect integration exists now, but a config-defined provider stays available without it.
+            expect((yield* providers.available()).map((provider) => provider.id)).toContain(providerID)
             // Connecting to another origin must not replace the file route's
             // models, and must never bind the file-routed provider to the connection.
+            const fetched = file.seen.urls.length
             yield* connect(connected.server.url.origin, "connected-key")
+            // The connect wakes a refresh; it fetches the file route again and never the connected CPA.
+            yield* eventually(
+              Effect.sync(() => file.seen.urls.length),
+              (count) => count > fetched,
+            )
+            expect(connected.seen.urls).toEqual([])
             expect(yield* models.get(providerID, Model.ID.make("connection-model"))).toBeUndefined()
             expect((yield* models.get(providerID, Model.ID.make("file-model")))?.name).toBe("file-model")
+            expect((yield* providers.available()).map((provider) => provider.id)).toContain(providerID)
             const definition = (yield* providers.snapshot()).records.get(providerID)
             expect(definition?.sourceConnection).toBeUndefined()
           }),
@@ -262,13 +259,11 @@ describe("opencode.plus.cliproxyapi /connect", () => {
       Effect.gen(function* () {
         const host = yield* addPlugin()
         const seen = yield* Queue.unbounded<unknown>()
-        yield* host.event
-          .subscribe()
-          .pipe(
-            Stream.filter((event) => event.type === "credential.switched"),
-            Stream.runForEach((event) => Queue.offer(seen, event.data)),
-            Effect.forkScoped({ startImmediately: true }),
-          )
+        yield* host.event.subscribe().pipe(
+          Stream.filter((event) => event.type === "credential.switched"),
+          Stream.runForEach((event) => Queue.offer(seen, event.data)),
+          Effect.forkScoped({ startImmediately: true }),
+        )
         yield* Effect.yieldNow
         yield* connect("https://cpa.invalid")
         const data = yield* Queue.take(seen).pipe(Effect.timeout("2 seconds"))

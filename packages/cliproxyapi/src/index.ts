@@ -112,22 +112,16 @@ export default Plugin.define({
         const credential = yield* ctx.integration.connection.resolve(active).pipe(Effect.orElseSucceed(() => undefined))
         const configuration = credential?.type === "key" ? credential.configuration : undefined
         const baseURL = configuration?.baseURL
-        if (typeof baseURL !== "string") {
+        if (typeof baseURL !== "string" || !URL.canParse(baseURL)) {
           connectionRoute.current = undefined
           return
         }
-        const origin = (() => {
-          try {
-            return new URL(baseURL).origin
-          } catch {
-            return undefined
-          }
-        })()
-        if (!origin) {
-          connectionRoute.current = undefined
-          return
+        connectionRoute.current = {
+          providerID: PROVIDER_ID,
+          origin: new URL(baseURL).origin,
+          key: `credential:${active.id}`,
+          info: active,
         }
-        connectionRoute.current = { providerID: PROVIDER_ID, origin, key: `credential:${active.id}`, info: active }
       })
 
       // The /connect entry: connect once with the CPA URL and an API key.
@@ -145,8 +139,7 @@ export default Plugin.define({
                 type: "string",
                 key: "baseURL",
                 title: "CLIProxyAPI URL",
-                description:
-                  "The URL must end in /v1 and use HTTPS (plain HTTP is allowed only for localhost).",
+                description: "The URL must end in /v1 and use HTTPS (plain HTTP is allowed only for localhost).",
                 placeholder: "https://cpa.example.com/v1",
                 required: true,
                 pattern: BASE_URL_PATTERN,
