@@ -145,9 +145,10 @@ function eventually<A>(
   })
 }
 
-const responses = (effort: string) => ({
+// Claude is relayed to the Anthropic-compatible package, where Claude 5.x takes adaptive thinking.
+const anthropic = (effort: string) => ({
   id: effort,
-  settings: { reasoningEffort: effort, reasoningSummary: "auto", include: ["reasoning.encrypted_content"] },
+  settings: { effort, thinking: { type: "adaptive", display: "summarized" } },
 })
 
 describe("opencode.plus.cliproxyapi catalogue", () => {
@@ -171,8 +172,8 @@ describe("opencode.plus.cliproxyapi catalogue", () => {
               limit: { context: 1_000_000, output: 128_000 },
               capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
             })
-            // Exactly CPA's levels, spelled as Core spells Responses effort; not Core's generic none..xhigh.
-            expect(opus?.variants as unknown).toEqual(["low", "medium", "high", "xhigh", "max"].map(responses))
+            // Exactly CPA's levels, spelled as Core spells Anthropic effort; not Core's generic none..xhigh.
+            expect(opus?.variants as unknown).toEqual(["low", "medium", "high", "xhigh", "max"].map(anthropic))
             expect(opus?.limit.input).toBeUndefined()
 
             const astra = yield* models.get(providerID, Model.ID.make("gpt-6-astra"))
