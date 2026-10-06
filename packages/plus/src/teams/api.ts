@@ -116,7 +116,7 @@ const policy = Schema.decodeUnknownSync(Policy)({})
 
 const PATHS_MESSAGE =
   "scope.paths must be files or dir/* inside the repository, never version-control state."
-const PATHS_ACCEPTED = ["packages/plus/src/*", "packages/plus/test/*"]
+const PATHS_ACCEPTED = ["src/*", "test/*"]
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
 const COMMIT_MESSAGE_RE = /^(feat|fix|docs|chore|refactor|test)(\([^)]+\))?: /
 
@@ -234,8 +234,8 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (baseSha === undefined)
     return fail(
       "E_BASE",
-      `base "${brief.base}" is not a ref or commit in ${repo.key}. Omit base to use your HEAD (${defaultHead}), or pass a branch/sha. accepted: "ocp-main"`,
-      "ocp-main",
+      `base "${brief.base}" is not a ref or commit in ${repo.key}. Omit base to use your HEAD (${defaultHead}), or pass a branch/sha. accepted: "main"`,
+      "main",
     )
 
   // The checks a run stores are the commands they run: a project check by

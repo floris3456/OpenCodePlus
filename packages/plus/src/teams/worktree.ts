@@ -99,7 +99,7 @@ async function createLocked(opts: CreateOptions): Promise<Created> {
   const branch = `team/${opts.role}/${opts.name}-${ts}`
   const verify = await gitRaw(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--verify", `${opts.base}^{commit}`])
   if (verify.code !== 0)
-    throw toolError("E_BASE", `Unknown base "${opts.base}": ${verify.err || verify.out}`, "ocp-main")
+    throw toolError("E_BASE", `Unknown base "${opts.base}": ${verify.err || verify.out}`, "main")
   if (await exists(dir)) throw toolError("E_WT_EXISTS", `Worktree directory already exists: ${dir}`)
   // A brand-new data root has no worktrees/ yet. Creating the parent chain
   // before git runs means the first delegate's directory exists as named, so

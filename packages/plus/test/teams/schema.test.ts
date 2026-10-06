@@ -164,7 +164,7 @@ test("StopInput parses run, optional force and an optional reason of at most 300
   expect(() => Schema.decodeUnknownSync(StopInput)({ run: "w-0123456789abcdef", reason: "x".repeat(301) })).toThrow()
 })
 
-const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }
+const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "test/model.test.ts"] }
 
 describe("validateChecks", () => {
   test("rejects bare bun test with E_CHECKS and accepted", async () => {
@@ -178,7 +178,7 @@ describe("validateChecks", () => {
   })
 
   test("rejects bun run with a path, not a named script", async () => {
-    const thrown = await caught(() => validateChecks([{ id: "x", argv: ["bun", "run", "scripts/team2/build.ts"] }]))
+    const thrown = await caught(() => validateChecks([{ id: "x", argv: ["bun", "run", "scripts/build.ts"] }]))
     expect(thrown).toMatchObject({
       code: "E_CHECKS",
       message: "Use a named package script, not an external executable or path",
@@ -187,12 +187,12 @@ describe("validateChecks", () => {
   })
 
   test("accepts a named script with relative cwd", () => {
-    validateChecks([{ id: "x", argv: ["bun", "run", "build"], cwd: "scripts/team2" }])
+    validateChecks([{ id: "x", argv: ["bun", "run", "build"], cwd: "scripts" }])
   })
 
   test("accepts an explicit test file and a directory", () => {
     validateChecks([
-      { id: "a", argv: ["bun", "test", "packages/plus/test/model.test.ts"] },
+      { id: "a", argv: ["bun", "test", "test/model.test.ts"] },
       { id: "b", argv: ["bun", "test", "test"] },
     ])
   })

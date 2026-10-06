@@ -13,11 +13,10 @@ import { readProjectChecks } from "./project-checks.js"
 import { errCode, io } from "./io.js"
 import { Release } from "../release/identity.js"
 
-// Check executor (docs/team-v2/07-code-mode.md §check serialization,
-// docs/team-v2/03-tools.md §check, docs/team-v2/05-runtime-and-storage.md
-// §Receipts). Checks hold ONLY the per-worktree `wt:` lock for their whole
-// duration — never a `repo:` lock — so checks in the same worktree queue
-// FIFO while checks in different worktrees run in parallel.
+// Check executor: serializes a check's argv, writes its receipt and judges its
+// pass. Checks hold ONLY the per-worktree `wt:` lock for their whole duration
+// — never a `repo:` lock — so checks in the same worktree queue FIFO while
+// checks in different worktrees run in parallel.
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 900_000
 export const MAX_LOG_BYTES = 2 * 1024 * 1024
@@ -214,7 +213,7 @@ interface Provisioned {
 // A team worktree is a fresh `git worktree add`, so a repository whose checks need
 // installed packages (a Bun lockfile at the worktree root and no node_modules yet)
 // gets them before its first check: a frozen install, lifecycle scripts off, the same
-// preparation the workspace's frozen team ran. Later checks find node_modules and
+// preparation a fresh checkout needs. Later checks find node_modules and
 // skip this. node_modules is ignored by git, so a clean tree stays clean; an install
 // that nevertheless changes the tracked tree is reported, never hidden.
 async function provisionDependencies(

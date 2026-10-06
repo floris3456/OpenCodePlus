@@ -598,7 +598,7 @@ test("delegate rejects E_BASE for an unknown ref", async () => {
       const error = rejected(await api.delegate(delegateInput({ base: "no-such-ref" }), callerFor(parent)))
       expect(error.code).toBe("E_BASE")
       expect(error.message).toBe(
-        `base "no-such-ref" is not a ref or commit in opencode. Omit base to use your HEAD (${repo.head}), or pass a branch/sha. accepted: "ocp-main"`,
+        `base "no-such-ref" is not a ref or commit in opencode. Omit base to use your HEAD (${repo.head}), or pass a branch/sha. accepted: "main"`,
       )
     } finally {
       await removeRepo(repo.dir)
@@ -627,7 +627,7 @@ test("delegate rejects E_PATHS when a commit for an implementer-preset member ha
       expect(error.message).toBe(
         "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable (Briefs it accepts → Scope paths for a commit).",
       )
-      expect(error.accepted).toEqual(["packages/plus/src/*", "packages/plus/test/*"])
+      expect(error.accepted).toEqual(["src/*", "test/*"])
     } finally {
       await removeRepo(repo.dir)
     }
