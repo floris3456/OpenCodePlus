@@ -380,6 +380,13 @@ test("historical-message edits are a real prefix change; tail growth and rolling
   expect(edited.request.cause).toBe("prefix-changed")
   expect(edited.request.evidence).toContain("message 2 (text) changed")
 
+  record(db, "penultimate", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
+  record(db, "penultimate", { id: "edit", at: 2000, count: 6, read: 0, write: 9000, edits: { 4: "EDITED" } })
+  const penultimate = last(db, "penultimate", "edit")
+  expect(penultimate.request.verdict).toBe("miss")
+  expect(penultimate.request.cause).toBe("prefix-changed")
+  expect(penultimate.request.evidence).toContain("message 5 (text) changed")
+
   // Control: pure tail growth keeps the rolling-marker prefix and is not a
   // prefix change.
   record(db, "tail", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })

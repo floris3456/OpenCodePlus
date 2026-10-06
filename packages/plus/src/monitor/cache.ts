@@ -299,8 +299,7 @@ export function cacheLifetime(r: RequestRow, fp?: RequestFingerprintData): numbe
   return undefined
 }
 
-// A `message <n> (...)` change is conversation growth (a replacing tail) or the
-// boundary message being extended, not a reusable-prefix edit.
+// Segment labels use one-based message ordinals, unlike the stored prefix index.
 const messageIndexIn = (name: string): number | undefined => {
   const match = /^message (\d+) /.exec(name)
   return match ? Number(match[1]) : undefined
@@ -330,7 +329,7 @@ function reusablePrefixChanged(
 ): boolean {
   if (changes.some((c) => c.name !== "cache markers" && messageIndexIn(c.name) === undefined)) return true
   if (changes.length > 0 && markerShape(before) !== markerShape(after)) return true
-  const lastCommon = Math.min(before?.messagePrefixes.length ?? 0, after?.messagePrefixes.length ?? 0) - 1
+  const lastCommon = Math.min(before?.messagePrefixes.length ?? 0, after?.messagePrefixes.length ?? 0)
   return changes.some((c) => {
     const index = messageIndexIn(c.name)
     return index !== undefined && index < lastCommon
