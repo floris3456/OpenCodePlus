@@ -4,7 +4,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
 import { formatClock, formatCost, formatTokens } from "../format.js"
-import { createRowStore, createRowWindow, rowWindowLog } from "../window.js"
+import { createRowStore, createRowWindow } from "../window.js"
 
 export interface SessionsTabProps {
   readonly context: Plugin.Context
@@ -86,6 +86,7 @@ export function SessionsTab(props: SessionsTabProps) {
       >
         <scrollbox
           flexGrow={1}
+          id="monitor-scroll"
           ref={(next: ScrollBoxRenderable) => {
             window.ref(next)
             props.onScrollRef?.(next)
@@ -97,7 +98,6 @@ export function SessionsTab(props: SessionsTabProps) {
           <For each={rows.items}>
             {(s, index) => {
               const at = () => window.start + index()
-              if (rowWindowLog.enabled) rowWindowLog.keys.push(s.sessionID)
               const isSelected = () => at() === props.selectedIndex && props.active
               const bg = () =>
                 isSelected()
@@ -105,11 +105,18 @@ export function SessionsTab(props: SessionsTabProps) {
                   : theme().background.action.primary.base
               const fg = () => (isSelected() ? theme().text.action.primary.focused : theme().text.base)
 
-              const indent = "  ".repeat(s.depth) + (s.depth > 0 ? "└─ " : "")
-              const name = `${indent}${s.title ?? s.role ?? s.sessionID.slice(0, 10)}`
+              // Getters so a same-id row whose fields changed updates in place
+              // rather than keeping the first render's text.
+              const name = () =>
+                `${"  ".repeat(s.depth)}${s.depth > 0 ? "└─ " : ""}${s.title ?? s.role ?? s.sessionID.slice(0, 10)}`
+              const agent = () => s.agent ?? "—"
+              const state = () => s.state ?? "—"
+              const tokens = () =>
+                formatTokens(s.input + s.output + s.reasoning + s.cacheRead + s.cacheWrite)
 
               return (
                 <box
+                  id={`monitor-row-${s.sessionID}`}
                   flexDirection="row"
                   flexShrink={0}
                   paddingLeft={1}
@@ -117,15 +124,13 @@ export function SessionsTab(props: SessionsTabProps) {
                   backgroundColor={bg()}
                   onMouseUp={() => props.onSelect(at())}
                 >
-                  <text fg={fg()} width={34} wrapMode="none" truncate>{name}</text>
+                  <text fg={fg()} width={34} wrapMode="none" truncate>{name()}</text>
                   <Show when={showAgent()}>
-                    <text fg={fg()} width={14} wrapMode="none" truncate>{s.agent ?? "—"}</text>
+                    <text fg={fg()} width={14} wrapMode="none" truncate>{agent()}</text>
                   </Show>
-                  <text fg={theme().text.muted} width={10} wrapMode="none" truncate>{s.state ?? "—"}</text>
+                  <text fg={theme().text.muted} width={10} wrapMode="none" truncate>{state()}</text>
                   <text fg={fg()} width={8}>{String(s.steps)}</text>
-                  <text fg={fg()} width={10}>
-                    {formatTokens(s.input + s.output + s.reasoning + s.cacheRead + s.cacheWrite)}
-                  </text>
+                  <text fg={fg()} width={10}>{tokens()}</text>
                   <Show when={showRead()}>
                     <text fg={fg()} width={10}>{formatTokens(s.cacheRead)}</text>
                   </Show>

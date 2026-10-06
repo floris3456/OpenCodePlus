@@ -2,8 +2,8 @@
 // with a margin above and below and spacer boxes carrying the rest of the
 // scroll height. OpenTUI culls drawing outside the viewport but still
 // instantiates every child, so rendering a whole thousand-row list creates one
-// native TextBuffer per cell and can exhaust the renderer; the window keeps the
-// instantiated row count bounded however long the list is.
+// native TextBuffer per cell; windowing keeps the instantiated row count
+// bounded however long the list is.
 import type { ScrollBoxRenderable } from "@opentui/core"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
@@ -15,20 +15,6 @@ export const LIST_WINDOW_MARGIN = 12
 // Before the first frame the scrollbox reports no viewport; this is a safe
 // stand-in that the frame sync replaces with the real height.
 const DEFAULT_VIEWPORT = 24
-
-/**
- * Test observability for the row window (not read in production): one entry per
- * row the list's <For> instantiates. Recording starts with resetRowWindowLog();
- * production never enables it.
- */
-export const rowWindowLog: { enabled: boolean; keys: string[] } = { enabled: false, keys: [] }
-export function resetRowWindowLog(): void {
-  rowWindowLog.enabled = true
-  rowWindowLog.keys.length = 0
-}
-export function stopRowWindowLog(): void {
-  rowWindowLog.enabled = false
-}
 
 export interface RowWindow<T> {
   /** The rows to instantiate, in list order. */
@@ -43,10 +29,12 @@ export interface RowWindow<T> {
 
 /**
  * Window the rows a list instantiates to the scrollbox viewport plus a margin.
- * When the cursor is inside the window the viewport anchors it, so wheel and
- * page scrolling show those rows; when the cursor has moved outside — the
- * viewport has not caught up yet — the window centres on the cursor. Either way
- * its length stays `viewport + 2 * margin`.
+ *
+ * The window always covers the viewport, so wheel and page scrolling mount the
+ * rows the user is looking at even while the selection stays put. When the
+ * keyboard moves the selection outside the mounted window, the window also
+ * follows the selection (centred) so the selected row exists before the list
+ * scrolls it into view. Its length always stays `viewport + 2 * margin`.
  */
 export function createRowWindow<T>(options: {
   readonly context: Plugin.Context
@@ -54,6 +42,9 @@ export function createRowWindow<T>(options: {
   readonly selectedIndex: () => number
 }): RowWindow<T> {
   let scroll: ScrollBoxRenderable | undefined
+  // The selection that the last window was built for: a change means the
+  // keyboard moved, not the viewport, and the window must follow it.
+  let lastSelected = options.selectedIndex()
   const [view, setView] = createSignal({ top: 0, height: DEFAULT_VIEWPORT })
 
   const sync = () => {
@@ -73,11 +64,14 @@ export function createRowWindow<T>(options: {
     const span = size + LIST_WINDOW_MARGIN * 2
     const selected = Math.max(0, Math.min(total - 1, options.selectedIndex()))
     const top = view().top
+    const moved = selected !== lastSelected
+    lastSelected = selected
     const near = selected >= top - LIST_WINDOW_MARGIN && selected < top + size + LIST_WINDOW_MARGIN
-    // Anchor on the viewport while it holds the cursor; otherwise centre the
-    // cursor so a key step pulls the window along before scrolling catches up.
-    const anchor = near ? top - LIST_WINDOW_MARGIN : selected - Math.floor(size / 2)
-    const start = Math.max(0, Math.min(anchor, total - span))
+    // While the viewport holds the selection, follow the viewport. When the
+    // selection moved outside it, centre the selection instead — this is a key
+    // step, and the list scrolls to it on the next pass.
+    const anchor = near || !moved ? top - LIST_WINDOW_MARGIN : selected - Math.floor(size / 2)
+    const start = Math.max(0, Math.min(anchor, Math.max(0, total - span)))
     const end = Math.min(total, start + span)
     return { rows: items.slice(start, end), start, end, total }
   })
@@ -104,8 +98,9 @@ export function createRowWindow<T>(options: {
 
 /**
  * Keep the mounted rows' identity across polls: reconcile the window by a
- * stable key field into a store, so an unchanged row keeps its component (and
- * its native TextBuffers) instead of being torn down and rebuilt every refresh.
+ * stable key field into a store, so an unchanged row keeps its component
+ * instead of being torn down and rebuilt every refresh, and a same-id row's
+ * changed fields update in place.
  */
 export function createRowStore<T extends object>(window: () => RowWindow<T>, key: keyof T & string) {
   const [rows, setRows] = createStore<{ items: readonly T[] }>({ items: [] })

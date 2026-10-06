@@ -257,18 +257,29 @@ export function MonitorView(props: MonitorViewProps) {
   createEffect(() => setRows("groups", reconcile(groups(), { key: "key" })))
   createEffect(() => setRows("feed", reconcile(shown()?.feed ?? [], { key: "callID" })))
 
+  // Scroll the selected row into view, but only when the selection (or tab)
+  // moved — a poll returns a fresh report every second and must not yank a
+  // user who scrolled the list away from the selection.
+  let lastFollowed: { tab: TabName; index: number } | undefined
   createEffect(() => {
+    const current = tab()
     const count =
-      tab() === "tools"
+      current === "tools"
         ? rows.groups.length
-        : tab() === "cache" || tab() === "steps"
+        : current === "cache" || current === "steps"
           ? (shown()?.requests?.length ?? 0)
-          : tab() === "sessions"
+          : current === "sessions"
             ? (shown()?.sessions?.length ?? 0)
             : 0
-    const scroll = scrolls[tab()]
-    if (scroll === undefined || count === 0) return
-    const index = Math.min(selected(), count - 1)
+    const index = Math.min(selected(), Math.max(0, count - 1))
+    if (count === 0) {
+      lastFollowed = undefined
+      return
+    }
+    if (lastFollowed?.tab === current && lastFollowed.index === index) return
+    lastFollowed = { tab: current, index }
+    const scroll = scrolls[current]
+    if (scroll === undefined) return
     if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
     if (index < scroll.scrollTop) scroll.scrollTo(index)
   })

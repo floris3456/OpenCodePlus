@@ -4,7 +4,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
 import { formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
-import { createRowStore, createRowWindow, rowWindowLog } from "../window.js"
+import { createRowStore, createRowWindow } from "../window.js"
 
 export interface StepsTabProps {
   readonly context: Plugin.Context
@@ -95,6 +95,7 @@ export function StepsTab(props: StepsTabProps) {
             >
               <scrollbox
                 flexGrow={1}
+                id="monitor-scroll"
                 ref={(next: ScrollBoxRenderable) => {
                   window.ref(next)
                   props.onScrollRef?.(next)
@@ -106,7 +107,6 @@ export function StepsTab(props: StepsTabProps) {
                 <For each={rows.items}>
                   {(req, index) => {
                     const at = () => window.start + index()
-                    if (rowWindowLog.enabled) rowWindowLog.keys.push(req.id)
                     const isSelected = () => at() === props.selectedIndex && props.active
                     const bg = () =>
                       isSelected()
@@ -116,6 +116,7 @@ export function StepsTab(props: StepsTabProps) {
 
                     return (
                       <box
+                        id={`monitor-row-${req.id}`}
                         flexDirection="row"
                         flexShrink={0}
                         paddingLeft={1}
