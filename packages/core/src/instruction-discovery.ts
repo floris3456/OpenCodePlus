@@ -2,7 +2,9 @@ export * as InstructionDiscovery from "./instruction-discovery.js"
 
 import { Context, Effect, Layer, Option, Schema, Types } from "effect"
 import { createHash } from "crypto"
+import { dirname } from "path"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
+import { FSUtil } from "@opencode/util/fs-util"
 import { createPatch } from "diff"
 import { Bus } from "./bus.js"
 import { Environment } from "./environment/index.js"
@@ -203,6 +205,70 @@ export function configured(options?: Options) {
 }
 
 export const node = configured()
+
+const decodeFile = Schema.decodeUnknownOption(Schema.toCodecJson(File))
+
+/**
+ * Adds the per-file sources a Session still holds but this Location does not
+ * serve, as after a move. Each reads as removed, so the Session records once
+ * that the file no longer applies, while the epoch baseline keeps rendering
+ * the stored file where it stood: the cached prompt prefix survives the move.
+ * `keys` are the Session's stored keys in stored order; `values` carries their
+ * stored values where the caller has them (baseline rendering needs them).
+ */
+export function retain(
+  list: Instructions.List,
+  keys: ReadonlyArray<string>,
+  values: Readonly<Record<string, Schema.Json>> = {},
+): Instructions.List {
+  const served = new Set<string>(list.map((source) => source.key))
+  return keys
+    .filter((key) => key.startsWith(`${legacy}/`) && !served.has(key))
+    .reduce((placed, key) => {
+      const value = values[key]
+      const file = value === undefined ? undefined : Option.getOrUndefined(decodeFile(value))
+      const at = retainedPosition(placed, file?.path, key, keys)
+      return [
+        ...placed.slice(0, at),
+        ...Instructions.make<File>({
+          key: Instructions.Key.make(key),
+          ...(file === undefined ? {} : { path: file.path }),
+          codec: Schema.toCodecJson(File),
+          read: Effect.succeed(Instructions.removed),
+          render: {
+            initial: (current) => render([current]),
+            changed: (previous, current) => renderFileUpdate(previous, current),
+            removed: (previous) => `The instructions from ${previous.path} no longer apply.`,
+          },
+        }),
+        ...placed.slice(at),
+      ]
+    }, list)
+}
+
+// Project files list nearest folder first, so a retained file goes before the
+// first placed file whose folder holds its own; otherwise right after the
+// source stored before it.
+function retainedPosition(
+  placed: Instructions.List,
+  path: string | undefined,
+  key: string,
+  keys: ReadonlyArray<string>,
+) {
+  const folder = path === undefined ? undefined : dirname(path)
+  const farther =
+    folder === undefined
+      ? -1
+      : placed.findIndex(
+          (source) =>
+            source.path !== undefined &&
+            dirname(source.path) !== folder &&
+            FSUtil.contains(dirname(source.path), folder),
+        )
+  if (farther !== -1) return farther
+  const before = new Set(keys.slice(0, keys.indexOf(key)))
+  return placed.findLastIndex((source) => before.has(source.key)) + 1
+}
 
 function render(files: ReadonlyArray<File>) {
   return files.map((file) => `Instructions from: ${file.path}\n${file.content}`).join("\n\n")

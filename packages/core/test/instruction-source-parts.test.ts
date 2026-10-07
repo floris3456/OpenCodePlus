@@ -306,4 +306,93 @@ describe("InstructionDiscovery session request assembly", () => {
       ])
     }),
   )
+
+  assembledOnly.effect("a move keeps the baseline and records which files apply now", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.create()
+      const { db, bus } = yield* setupSession(sessionID)
+      const inA = yield* folder(["/config/AGENTS.md", "/ws/a/AGENTS.md", "/ws/AGENTS.md"])
+      yield* InstructionState.prepare(db, bus, inA, sessionID)
+      const before = assemble((yield* SessionHistory.entriesForRunner(db, sessionID, inA, "local")).initial)
+      expect(before.map((part) => part.text)).toEqual([
+        "agent",
+        "Instructions from: /config/AGENTS.md\nglobal",
+        "Instructions from: /ws/a/AGENTS.md\na",
+        "Instructions from: /ws/AGENTS.md\nws",
+      ])
+
+      // The destination serves its own nearest file; the source folder's is not among its sources.
+      const inB = yield* folder(["/config/AGENTS.md", "/ws/b/AGENTS.md", "/ws/AGENTS.md"])
+      yield* InstructionState.prepare(db, bus, inB, sessionID)
+      const history = yield* SessionHistory.entriesForRunner(db, sessionID, inB, "local")
+      expect(assemble(history.initial)).toEqual(before)
+      const updates = history.entries.flatMap((entry) => (entry.message.type === "system" ? [entry.message.text] : []))
+      expect(updates).toEqual([
+        "The instructions from /ws/a/AGENTS.md no longer apply.\n\nInstructions from: /ws/b/AGENTS.md\nb",
+      ])
+
+      // Recorded once: the next boundary in the destination admits nothing more.
+      yield* InstructionState.prepare(db, bus, inB, sessionID)
+      const again = yield* SessionHistory.entriesForRunner(db, sessionID, inB, "local")
+      expect(again.entries.filter((entry) => entry.message.type === "system")).toHaveLength(1)
+      expect(assemble(again.initial)).toEqual(before)
+
+      // Moving back: the file applies again, the baseline still has not changed.
+      yield* InstructionState.prepare(db, bus, inA, sessionID)
+      const back = yield* SessionHistory.entriesForRunner(db, sessionID, inA, "local")
+      expect(assemble(back.initial)).toEqual(before)
+      expect(back.entries.flatMap((entry) => (entry.message.type === "system" ? [entry.message.text] : [])).at(-1)).toBe(
+        "Instructions from: /ws/a/AGENTS.md\na\n\nThe instructions from /ws/b/AGENTS.md no longer apply.",
+      )
+    }),
+  )
+
+  assembledOnly.effect("a move after a compaction keeps the moved-in file where it rendered", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.create()
+      const { db, bus } = yield* setupSession(sessionID)
+      yield* InstructionState.prepare(
+        db,
+        bus,
+        yield* folder(["/config/AGENTS.md", "/ws/a/AGENTS.md", "/ws/AGENTS.md"]),
+        sessionID,
+      )
+      const inB = yield* folder(["/config/AGENTS.md", "/ws/b/AGENTS.md", "/ws/AGENTS.md"])
+      yield* InstructionState.prepare(db, bus, inB, sessionID)
+      // A compaction makes the current values the baseline: b was stored last but renders in list order.
+      yield* InstructionState.advanceEpoch(db, sessionID, 1_000)
+      const before = assemble((yield* SessionHistory.entriesForRunner(db, sessionID, inB, "local")).initial)
+      expect(before.map((part) => part.text)).toEqual([
+        "agent",
+        "Instructions from: /config/AGENTS.md\nglobal",
+        "Instructions from: /ws/b/AGENTS.md\nb",
+        "Instructions from: /ws/AGENTS.md\nws",
+      ])
+
+      const inC = yield* folder(["/config/AGENTS.md", "/ws/c/AGENTS.md", "/ws/AGENTS.md"])
+      yield* InstructionState.prepare(db, bus, inC, sessionID)
+      expect(assemble((yield* SessionHistory.entriesForRunner(db, sessionID, inC, "local")).initial)).toEqual(before)
+    }),
+  )
 })
+
+const contents: Record<string, string> = {
+  "/config/AGENTS.md": "global",
+  "/ws/AGENTS.md": "ws",
+  "/ws/a/AGENTS.md": "a",
+  "/ws/b/AGENTS.md": "b",
+  "/ws/c/AGENTS.md": "c",
+}
+
+// The sources one folder serves, in its discovery order (global, then nearest
+// folder first). Files of other folders are simply not among them.
+const folder = (paths: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const discovery = yield* InstructionDiscovery.Service
+    yield* discovery.transform((editor) => {
+      for (const [path, content] of Object.entries(contents))
+        if (!editor.list().some((existing) => existing.path === path)) editor.add(file(path, content))
+    })
+    const all = yield* discovery.load()
+    return paths.flatMap((path) => all.filter((source) => source.path === path))
+  })

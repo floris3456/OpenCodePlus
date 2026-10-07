@@ -4,6 +4,7 @@ import { eq, inArray, sql } from "drizzle-orm"
 import { Effect, Option, Schema } from "effect"
 import type { Database } from "../database/database.js"
 import type { Bus } from "../bus.js"
+import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Instructions } from "../instructions/index.js"
 import { SessionEvent } from "./event.js"
 import { SessionSchema } from "./schema.js"
@@ -23,9 +24,10 @@ export const observe = Effect.fn("InstructionState.observe")(function* (
   instructions: Instructions.List,
   sessionID: SessionSchema.ID,
 ): Effect.fn.Return<Observation, Instructions.InitializationBlocked> {
-  const [observed, stored] = yield* Effect.all([Instructions.read(instructions), find(db, sessionID)], {
-    concurrency: "unbounded",
-  })
+  const stored = yield* find(db, sessionID)
+  const observed = yield* Instructions.read(
+    InstructionDiscovery.retain(instructions, Object.keys(stored?.current_values ?? {})),
+  )
   const result = yield* observeAgainst(observed, stored?.current_values)
   return {
     sessionID,
@@ -74,7 +76,11 @@ const renderUpdateText = Effect.fnUntraced(function* (
   const admitted = new Map(
     Object.entries(observation.blobs).map(([hash, value]) => [Instructions.Hash.make(hash), value]),
   )
-  return Instructions.renderUpdate(instructions, previous, dereferenceDelta(observation.delta, admitted))
+  return Instructions.renderUpdate(
+    InstructionDiscovery.retain(instructions, Object.keys(observation.previous)),
+    previous,
+    dereferenceDelta(observation.delta, admitted),
+  )
 })
 
 export const prepare = Effect.fn("InstructionState.prepare")(function* (
@@ -169,8 +175,11 @@ export const initial = Effect.fn("InstructionState.initial")(function* (
 ) {
   const state = yield* find(db, sessionID)
   if (!state) return yield* Effect.die(new Error(`Instruction state not found during assembly: ${sessionID}`))
-  const blobs = yield* loadBlobs(db, Object.values(state.initial_values))
-  return Instructions.renderInitialParts(instructions, dereference(state.initial_values, blobs))
+  const values = dereference(state.initial_values, yield* loadBlobs(db, Object.values(state.initial_values)))
+  return Instructions.renderInitialParts(
+    InstructionDiscovery.retain(instructions, Object.keys(values), values),
+    values,
+  )
 })
 
 /** The current instruction values, used to seed a fork's baseline. */
@@ -188,7 +197,10 @@ export const preview = Effect.fn("InstructionState.preview")(function* (
   observed: Instructions.ReadResult,
 ) {
   const state = yield* find(db, sessionID)
-  const result = yield* observeAgainst(observed, state?.current_values)
+  const current = InstructionDiscovery.retain(instructions, Object.keys(state?.current_values ?? {}))
+  const read = new Set(observed.map((entry) => entry.key))
+  const retained = yield* Instructions.read(current.filter((source) => !read.has(source.key)))
+  const result = yield* observeAgainst([...observed, ...retained], state?.current_values)
   const observedBlobs = new Map<Instructions.Hash, Schema.Json>(
     Object.entries(result.blobs).map(([hash, value]) => [Instructions.Hash.make(hash), value]),
   )
@@ -197,10 +209,14 @@ export const preview = Effect.fn("InstructionState.preview")(function* (
     return { initial: Instructions.renderInitialParts(instructions, values), update: "" }
   }
   const stored = yield* loadBlobs(db, [...Object.values(state.initial_values), ...Object.values(state.current_values)])
+  const initial = dereference(state.initial_values, stored)
   return {
-    initial: Instructions.renderInitialParts(instructions, dereference(state.initial_values, stored)),
+    initial: Instructions.renderInitialParts(
+      InstructionDiscovery.retain(instructions, Object.keys(initial), initial),
+      initial,
+    ),
     update: Instructions.renderUpdate(
-      instructions,
+      current,
       dereference(state.current_values, stored),
       dereferenceDelta(result.delta, observedBlobs),
     ),
