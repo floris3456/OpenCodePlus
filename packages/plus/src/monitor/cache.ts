@@ -2,7 +2,7 @@
 import type { MonitorRequest, MonitorRequestDetail } from "../rpc.js"
 import { Model } from "@opencode/schema/model"
 import { Option, Schema } from "effect"
-import { canonicalJson, sha256 } from "./fingerprint.js"
+import { canonicalJson, sha256, type CacheControlMarker } from "./fingerprint.js"
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
 
 type Segment = {
@@ -11,6 +11,8 @@ type Segment = {
   hash: string
   chars: number
   tokens: number
+  /** The zero-based message index the name spells ("message 3 (…)" is 2); undefined for other parts. */
+  index: number | undefined
 }
 
 export const promptTokens = (r: RequestRow) => r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens
@@ -19,8 +21,21 @@ export const isMiss = (r: MonitorRequest) => r.verdict === "miss" || r.verdict =
 type SegmentInfo = {
   readonly segments: Segment[]
   readonly totalTokens: number
+  /** The non-message parts, in order. */
+  readonly prefix: Segment[]
+  /**
+   * Position of message 0 when the message parts hold indices 0, 1, 2… in
+   * order (as every recorded wire body does), so message `i` sits at
+   * `firstMessage + i`; -1 otherwise, and lookups search the whole list.
+   */
+  readonly firstMessage: number
+  /** The cache-breakpoint message boundary (`markedMessageBoundary`). */
+  readonly boundary: number
 }
 
+// Computed once per fingerprint object. A session analysis compares each
+// request with several earlier ones, so per-call segment work dominated the
+// Monitor's load time on long chats.
 const segmentCache = new WeakMap<RequestFingerprintData, SegmentInfo>()
 
 function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
@@ -32,7 +47,15 @@ function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
   for (let i = 0; i < segs.length; i++) {
     totalTokens += segs[i]!.tokens
   }
-  const info = { segments: segs, totalTokens }
+  const first = segs.length - fp.messagePrefixes.length
+  const contiguous = segs.slice(first).every((part, i) => part.index === i)
+  const info = {
+    segments: segs,
+    totalTokens,
+    prefix: segs.filter((part) => part.kind !== "message"),
+    firstMessage: contiguous ? first : -1,
+    boundary: markedMessageBoundary(fp),
+  }
   segmentCache.set(fp, info)
   return info
 }
@@ -44,6 +67,7 @@ function segments(fp: RequestFingerprintData): Segment[] {
     hash: p.hash,
     chars: p.chars,
     tokens: p.estimatedTokens,
+    index: undefined,
   }))
   const tools = fp.tools.flatMap((p) => [
     {
@@ -52,6 +76,7 @@ function segments(fp: RequestFingerprintData): Segment[] {
       hash: p.descHash,
       chars: p.chars,
       tokens: p.estimatedTokens,
+      index: undefined,
     },
     {
       name: `tool ${p.name} schema`,
@@ -59,6 +84,7 @@ function segments(fp: RequestFingerprintData): Segment[] {
       hash: p.schemaHash,
       chars: 0,
       tokens: 0,
+      index: undefined,
     },
   ])
 
@@ -71,10 +97,11 @@ function segments(fp: RequestFingerprintData): Segment[] {
       hash,
       chars: 0,
       tokens: 0,
+      index: undefined,
     }))
 
   return [
-    { name: "protocol", kind: "marker", hash: sha256(fp.protocol), chars: 0, tokens: 0 },
+    { name: "protocol", kind: "marker", hash: sha256(fp.protocol), chars: 0, tokens: 0, index: undefined },
     ...optionEntries,
     {
       name: "cache markers",
@@ -82,15 +109,21 @@ function segments(fp: RequestFingerprintData): Segment[] {
       hash: sha256(canonicalJson([fp.cacheKey ?? null, fp.cacheControl ?? []])),
       chars: 0,
       tokens: 0,
+      index: undefined,
     },
     ...(fp.protocol === "anthropic-messages" ? [...tools, ...system] : [...system, ...tools]),
-    ...fp.messagePrefixes.map((p) => ({
-      name: `message ${p.idx + 1} (${p.kind ?? p.role})`,
-      kind: "message" as const,
-      hash: p.prefixHash,
-      chars: p.chars,
-      tokens: p.estimatedTokens,
-    })),
+    ...fp.messagePrefixes.map((p) => {
+      const name = `message ${p.idx + 1} (${p.kind ?? p.role})`
+      return {
+        name,
+        kind: "message" as const,
+        hash: p.prefixHash,
+        chars: p.chars,
+        tokens: p.estimatedTokens,
+        // A plain index spells itself; anything else is read back from the name.
+        index: Number.isSafeInteger(p.idx) && p.idx >= 0 ? p.idx : messageIndex(name),
+      }
+    }),
   ]
 }
 
@@ -111,8 +144,24 @@ function messageIndex(name: string): number | undefined {
   return match ? Number(match[1]) - 1 : undefined
 }
 
-function hasSegment(list: Segment[], part: Segment): boolean {
-  return list.some((entry) => entry.name === part.name && entry.hash === part.hash)
+// Whether `info` holds a part with this message part's name and hash. A
+// message name spells its index, so in an in-order list the only candidate is
+// at that index's position.
+function hasMessage(info: SegmentInfo, part: Segment): boolean {
+  if (info.firstMessage < 0)
+    return info.segments.some((entry) => entry.name === part.name && entry.hash === part.hash)
+  const entry = info.segments[info.firstMessage + part.index!]
+  return entry !== undefined && entry.index === part.index && entry.name === part.name && entry.hash === part.hash
+}
+
+// Whether a message part of `from` past the boundary is missing from `to`.
+function tailMissing(from: SegmentInfo, to: SegmentInfo, boundary: number): boolean {
+  const start = from.firstMessage < 0 ? 0 : from.firstMessage + boundary + 1
+  for (let i = start; i < from.segments.length; i++) {
+    const part = from.segments[i]!
+    if (part.index !== undefined && part.index > boundary && !hasMessage(to, part)) return true
+  }
+  return false
 }
 
 // Cache-control markers and prompt-cache key that belong to the reusable
@@ -120,35 +169,120 @@ function hasSegment(list: Segment[], part: Segment): boolean {
 // change to these is a real cache-prefix change; the tail's own markers are
 // replaced with the tail and must not be counted.
 function reusableMarkerSignature(fp: RequestFingerprintData, boundary: number): string {
+  const known = signatureCache.get(fp) ?? new Map<number, string>()
+  signatureCache.set(fp, known)
+  const cached = known.get(boundary)
+  if (cached !== undefined) return cached
   const relevant = (fp.cacheControl ?? []).filter((marker) => {
     const match = /messages\[(\d+)\]/.exec(marker.target)
     return match === null || Number(match[1]) <= boundary
   })
-  return canonicalJson([fp.cacheKey ?? null, relevant])
+  // canonicalJson([cacheKey, relevant]), with each marker's text computed once.
+  const signature = `[${canonicalJson(fp.cacheKey ?? null)},[${relevant.map(markerJson).join(",")}]]`
+  known.set(boundary, signature)
+  return signature
 }
+
+function markerJson(marker: CacheControlMarker): string {
+  const cached = markerCache.get(marker)
+  if (cached !== undefined) return cached
+  const json = canonicalJson(marker)
+  markerCache.set(marker, json)
+  return json
+}
+
+// Marker signatures per fingerprint (and boundary), and each marker's
+// canonical text: each fingerprint is compared with several others.
+const signatureCache = new WeakMap<RequestFingerprintData, Map<number, string>>()
+const shapeCache = new WeakMap<RequestFingerprintData, string>()
+const markerCache = new WeakMap<CacheControlMarker, string>()
 
 // Everything the provider caches: non-message parts except the aggregate marker
 // segment, and messages at or before the last common breakpoint. The reusable
 // marker metadata is compared separately so a marker change is never masked.
 function reusablePrefixEqual(a: Segment[], b: Segment[], boundary: number): boolean {
-  const keep = (part: Segment) => {
-    const index = messageIndex(part.name)
-    if (index !== undefined) return index <= boundary
-    return part.name !== "cache markers"
+  const keep = (part: Segment) => (part.index !== undefined ? part.index <= boundary : part.name !== "cache markers")
+  let i = 0
+  let j = 0
+  for (;;) {
+    while (i < a.length && !keep(a[i]!)) i++
+    while (j < b.length && !keep(b[j]!)) j++
+    if (i >= a.length || j >= b.length) return i >= a.length && j >= b.length
+    if (a[i]!.name !== b[j]!.name || a[i]!.hash !== b[j]!.hash) return false
+    i++
+    j++
   }
-  const ap = a.filter(keep)
-  const bp = b.filter(keep)
-  return ap.length === bp.length && ap.every((part, index) => part.name === bp[index]!.name && part.hash === bp[index]!.hash)
 }
 
 function tokensThroughBoundary(a: Segment[], boundary: number): number {
   let total = 0
   for (const part of a) {
-    const index = messageIndex(part.name)
-    if (index !== undefined && index > boundary) break
+    if (part.index !== undefined && part.index > boundary) break
     total += part.tokens
   }
   return total
+}
+
+// A linked Responses continuation keeps every non-message part.
+function samePrefix(aInfo: SegmentInfo, bInfo: SegmentInfo): boolean {
+  const prefix = aInfo.prefix
+  const next = bInfo.prefix
+  return prefix.length === next.length && prefix.every((part, index) => part.name === next[index]?.name && part.hash === next[index]?.hash)
+}
+
+// #13: a warming ping appends a private prompt after the history's last cache
+// breakpoint; the next real step replaces that uncached tail with its own
+// user input. When only the tail past the marked boundary differs, the
+// reusable prefix is unchanged and this is not a certain prefix change.
+function tailReplaced(
+  before: RequestFingerprintData,
+  after: RequestFingerprintData,
+  aInfo: SegmentInfo,
+  bInfo: SegmentInfo,
+): boolean {
+  if (before.protocol !== "anthropic-messages" || after.protocol !== "anthropic-messages") return false
+  const boundary = Math.min(aInfo.boundary, bInfo.boundary)
+  return (
+    boundary >= 0 &&
+    (tailMissing(aInfo, bInfo, boundary) || tailMissing(bInfo, aInfo, boundary)) &&
+    reusableMarkerSignature(before, boundary) === reusableMarkerSignature(after, boundary) &&
+    reusablePrefixEqual(aInfo.segments, bInfo.segments, boundary)
+  )
+}
+
+/** `prefixDiff(before, after).reusable`, without building the change list. */
+function reusableOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): boolean {
+  if (!before || !after) return false
+  const full = diffCache.get(before)?.get(after)
+  if (full) return full.reusable
+  const known = reuseCache.get(before) ?? new WeakMap<RequestFingerprintData, boolean>()
+  reuseCache.set(before, known)
+  const cached = known.get(after)
+  if (cached !== undefined) return cached
+  const reusable = decideReusable(before, after)
+  known.set(after, reusable)
+  return reusable
+}
+
+// The same decisions as prefixDiff, in its order.
+function decideReusable(before: RequestFingerprintData, after: RequestFingerprintData): boolean {
+  const aInfo = getSegmentInfo(before)
+  const bInfo = getSegmentInfo(after)
+  if (before.previousResponseId && !after.previousResponseId) return false
+  if (after.protocol === "openai-responses" && after.previousResponseId) {
+    if (before.responseId !== after.previousResponseId) return false
+    if (samePrefix(aInfo, bInfo)) return true
+  }
+  if (tailReplaced(before, after, aInfo, bInfo)) return true
+  // A pure append: every part of `before` sits unchanged at the same place in
+  // `after`. Its last part is checked first; with rolling breakpoints that part
+  // carried the marker and differs, which settles most comparisons at once.
+  const a = aInfo.segments
+  const b = bInfo.segments
+  if (a.length > b.length || before.protocol !== after.protocol) return false
+  const last = a.length - 1
+  if (last >= 0 && (a[last]!.hash !== b[last]!.hash || a[last]!.name !== b[last]!.name)) return false
+  return a.every((part, i) => part.hash === b[i]!.hash && part.name === b[i]!.name)
 }
 
 export function prefixDiff(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined) {
@@ -169,9 +303,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
 
   if (after.protocol === "openai-responses" && after.previousResponseId) {
     if (before.responseId === after.previousResponseId) {
-      const prefix = a.filter((part) => part.kind !== "message")
-      const next = b.filter((part) => part.kind !== "message")
-      if (prefix.length === next.length && prefix.every((part, index) => part.name === next[index]?.name && part.hash === next[index]?.hash))
+      if (samePrefix(aInfo, bInfo))
         return { known: true, append: true, reusable: true, common: aInfo.totalTokens, changes: [] }
     } else {
       return { known: true, append: false, reusable: false, common: 0, changes: [{
@@ -182,36 +314,17 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
     }
   }
 
-  // #13: a warming ping appends a private prompt after the history's last cache
-  // breakpoint; the next real step replaces that uncached tail with its own
-  // user input. When only the tail past the marked boundary differs, the
-  // reusable prefix is unchanged and this is not a certain prefix change.
-  if (before.protocol === "anthropic-messages" && after.protocol === "anthropic-messages") {
-    const boundary = Math.min(markedMessageBoundary(before), markedMessageBoundary(after))
-    if (boundary >= 0) {
-      const tailChanged =
-        a.some((part) => {
-          const index = messageIndex(part.name)
-          return index !== undefined && index > boundary && !hasSegment(b, part)
-        }) ||
-        b.some((part) => {
-          const index = messageIndex(part.name)
-          return index !== undefined && index > boundary && !hasSegment(a, part)
-        })
-      const markersEqual = reusableMarkerSignature(before, boundary) === reusableMarkerSignature(after, boundary)
-      if (tailChanged && markersEqual && reusablePrefixEqual(a, b, boundary)) {
-        return {
-          known: true,
-          append: false,
-          reusable: true,
-          common: tokensThroughBoundary(a, boundary),
-          changes: [],
-        }
-      }
+  if (tailReplaced(before, after, aInfo, bInfo)) {
+    return {
+      known: true,
+      append: false,
+      reusable: true,
+      common: tokensThroughBoundary(a, Math.min(aInfo.boundary, bInfo.boundary)),
+      changes: [],
     }
   }
 
-  const end = a.findIndex((p, i) => p.name !== b[i]?.name || p.hash !== b[i]?.hash)
+  const end = a.findIndex((p, i) => p.hash !== b[i]?.hash || p.name !== b[i]?.name)
   const isPureAppend = end < 0 && a.length <= b.length && before.protocol === after.protocol
 
   if (isPureAppend) {
@@ -247,7 +360,8 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
   const changes: MonitorRequestDetail["segments"][number][] = []
   const value = (s: Segment) => ({ hash: s.hash, chars: s.chars, tokens: s.tokens })
 
-  for (let i = 0; i < a.length; i++) {
+  // Parts before the first difference are equal.
+  for (let i = commonIdx; i < a.length; i++) {
     const p = a[i]!
     const next = b[i]
     if (p.name === next?.name && p.hash === next.hash) continue
@@ -310,8 +424,12 @@ const messageIndexIn = (name: string): number | undefined => {
 // every step, which is not a cache-prefix change; a changed ttl or marker type
 // is.
 function markerShape(fp: RequestFingerprintData | undefined): string {
+  const cached = fp && shapeCache.get(fp)
+  if (cached !== undefined) return cached
   const shapes = (fp?.cacheControl ?? []).map((m) => `${m.type}\0${m.ttl ?? ""}`).sort()
-  return canonicalJson([fp?.cacheKey ?? null, shapes])
+  const shape = canonicalJson([fp?.cacheKey ?? null, shapes])
+  if (fp) shapeCache.set(fp, shape)
+  return shape
 }
 
 // A change to a non-message, non-marker segment is a real reusable-prefix edit
@@ -327,6 +445,7 @@ function reusablePrefixChanged(
   before: RequestFingerprintData | undefined,
   after: RequestFingerprintData | undefined,
 ): boolean {
+  if (changes.length === 0) return false
   if (changes.some((c) => c.name !== "cache markers" && messageIndexIn(c.name) === undefined)) return true
   if (changes.length > 0 && markerShape(before) !== markerShape(after)) return true
   const marked = before ? markedMessageBoundary(before) : -1
@@ -349,8 +468,67 @@ function warmPrefixTokens(previous: RequestRow | undefined): number {
   return previous.cacheReadTokens > 0 ? previous.cacheReadTokens : previous.cacheWriteTokens
 }
 
+type Diff = ReturnType<typeof prefixDiff>
+
+// One diff per pair of fingerprint objects. An analysis compares a request with
+// its previous, last real and refreshing requests and every write with its
+// later reads; a session's unchanged fingerprints keep their objects across
+// incremental analyses, so their diffs are reused too.
+const diffCache = new WeakMap<RequestFingerprintData, WeakMap<RequestFingerprintData, Diff>>()
+// Where only reuse matters (a refreshing request, a write's later reads), the verdict alone.
+const reuseCache = new WeakMap<RequestFingerprintData, WeakMap<RequestFingerprintData, boolean>>()
+
+function diffOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): Diff {
+  if (!before || !after) return prefixDiff(before, after)
+  const known = diffCache.get(before) ?? new WeakMap<RequestFingerprintData, Diff>()
+  diffCache.set(before, known)
+  const cached = known.get(after)
+  if (cached) return cached
+  const diff = prefixDiff(before, after)
+  known.set(after, diff)
+  return diff
+}
+
+// Context facts as the ledger returns them, in time order, are searched by
+// position; facts in any other order fall back to a scan with the same result.
+interface Facts {
+  readonly all: readonly ContextFactRow[]
+  readonly ordered: boolean
+}
+
+function factsOf(all: readonly ContextFactRow[]): Facts {
+  return { all, ordered: all.every((fact, i) => i === 0 || all[i - 1]!.at <= fact.at) }
+}
+
+// The first position whose fact is later than `at` (facts in time order).
+function laterThan(facts: Facts, at: number): number {
+  let low = 0
+  let high = facts.all.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (facts.all[mid]!.at <= at) low = mid + 1
+    else high = mid
+  }
+  return low
+}
+
+// Facts with `from < at <= to`, in their order.
+function factsBetween(facts: Facts, from: number, to: number): readonly ContextFactRow[] {
+  if (!facts.ordered) return facts.all.filter((f) => f.at > from && f.at <= to)
+  return facts.all.slice(laterThan(facts, from), laterThan(facts, to))
+}
+
+// The last fact matching `match`, which only accepts facts at or before `to`.
+function lastFact(facts: Facts, to: number, match: (fact: ContextFactRow) => boolean): ContextFactRow | undefined {
+  if (!facts.ordered) return facts.all.findLast(match)
+  for (let i = laterThan(facts, to) - 1; i >= 0; i--) {
+    if (match(facts.all[i]!)) return facts.all[i]
+  }
+  return undefined
+}
+
 interface DiffStep {
-  readonly diff: ReturnType<typeof prefixDiff>
+  readonly diff: Diff
   readonly expected: number | undefined
   readonly changed: boolean
 }
@@ -361,7 +539,7 @@ function diffStep(
   fp: RequestFingerprintData | undefined,
   previousWarm: RequestRow | undefined,
 ): DiffStep {
-  const diff = prefixDiff(previous && previousFp, fp)
+  const diff = diffOf(previous && previousFp, fp)
   const warm = warmPrefixTokens(previousWarm)
   const expected = !diff.known
     ? undefined
@@ -413,7 +591,7 @@ function timingStep(
   lastRealIndex: number,
   fingerprints: Map<string, RequestFingerprintData | undefined>,
   fp: RequestFingerprintData | undefined,
-  facts: readonly ContextFactRow[],
+  facts: Facts,
   previous: RequestRow | undefined,
 ): TimingStep {
   const pings = earlier.slice(lastRealIndex + 1).filter((p) => p.kind === "ping")
@@ -427,29 +605,34 @@ function timingStep(
     p.model === r.model &&
     p.variant === r.variant &&
     p.agent === r.agent
-  const goodPing =
-    pings.length > 0
-      ? pings.findLast((p) => healthyCompatible(p) && p.cacheReadTokens > 0 && prefixDiff(fingerprints.get(p.id), fp).reusable)
-      : undefined
-  const refreshes = (p: RequestRow) => healthyCompatible(p) && prefixDiff(fingerprints.get(p.id), fp).reusable
-  const refreshed = previous && refreshes(previous) ? previous : earlier.findLast(refreshes)
   // Rolling Anthropic breakpoints move to the newest message on every step, so
-  // no two wire bodies ever compare as reusable and the fingerprint link above
+  // no two wire bodies ever compare as reusable and the fingerprint link below
   // finds nothing. A completed request that reported cache usage still warmed
   // the provider's prefix, so it anchors the idle gap when no reusable link is
   // known. An errored or usage-less request did not.
-  const lastWarm = earlier.findLast(
+  const lastWarmIndex = earlier.findLastIndex(
     (p) => healthyCompatible(p) && (p.cacheReadTokens > 0 || p.cacheWriteTokens > 0),
   )
+  const lastWarm = earlier[lastWarmIndex]
+  // The gap runs from the latest start among the refreshing request, a
+  // keep-alive that read the cache back and the last warm request. Rows are in
+  // start order, so a refreshing request at or before the last warm one cannot
+  // move that start: it is searched for only after it (searching all of them
+  // diffed every pair of requests). A keep-alive that read the cache is itself
+  // a warm request, so it never moves the start either.
+  const refreshes = (p: RequestRow) => healthyCompatible(p) && reusableOf(fingerprints.get(p.id), fp)
+  const refreshed = previous && refreshes(previous) ? previous : findLastAfter(earlier, lastWarmIndex, refreshes)
   const gap = previous
     ? r.started -
       // Prefer the latest request that can actually have refreshed the prefix.
       // Only when none can (a session's first request) fall back to the
       // previous request's start.
-      (Math.max(refreshed?.started ?? 0, goodPing?.started ?? 0, lastWarm?.started ?? 0) || previous.started)
+      (Math.max(refreshed?.started ?? 0, lastWarm?.started ?? 0) || previous.started)
     : undefined
   const lifetime = cacheLifetime(r, fp)
-  const warmingFact = facts.findLast(
+  const warmingFact = lastFact(
+    facts,
+    r.started,
     (f) =>
       f.kind === "warming" &&
       f.at <= r.started &&
@@ -469,6 +652,14 @@ function timingStep(
         : undefined
 
   return { pings, gap, lifetime, warming }
+}
+
+// The last row after position `after` that matches.
+function findLastAfter(rows: readonly RequestRow[], after: number, match: (row: RequestRow) => boolean) {
+  for (let i = rows.length - 1; i > after; i--) {
+    if (match(rows[i]!)) return rows[i]
+  }
+  return undefined
 }
 
 interface CauseStep {
@@ -646,13 +837,17 @@ function costStep(
   verdict: MonitorRequest["verdict"],
   expected: number | undefined,
   missOverride: number | undefined,
-  facts: readonly ContextFactRow[],
+  facts: Facts,
 ): CostStep {
   const missing =
     verdict === "miss" || verdict === "partial"
       ? missOverride ?? Math.min(r.inputTokens + r.cacheWriteTokens, Math.max(0, (expected ?? 0) - r.cacheReadTokens))
       : 0
-  const pricing = facts.findLast(
+  // Nothing missed costs nothing; the recorded pricing is read only for a miss.
+  if (missing === 0) return { missing, missCost: 0 }
+  const pricing = lastFact(
+    facts,
+    r.started,
     (f) =>
       f.kind === "pricing" && f.at <= r.started && f.detail?.provider === r.provider && f.detail?.model === r.model,
   )
@@ -728,24 +923,73 @@ function findFirstReadAfter(reads: readonly UnreadRead[], time: number): number 
   return low
 }
 
+// The streak state after one row, so a later analysis can resume there.
+interface ResumePoint {
+  /** Segments changed on consecutive real requests up to this row, with their streak. */
+  readonly streaks: ReadonlyMap<string, number>
+  /** How many segment names had changed at least once by this row. */
+  readonly named: number
+  /** How many unstable entries this row and the ones before it recorded. */
+  readonly unstable: number
+}
+
+/** A session analysis with what an incremental analysis of the same session needs. */
+export interface SessionFold {
+  readonly analysis: SessionAnalysis
+  readonly rows: readonly RequestRow[]
+  readonly facts: readonly ContextFactRow[]
+  readonly resume: readonly ResumePoint[]
+  /** Each segment name that changed, numbered in the order it first changed. */
+  readonly names: ReadonlyMap<string, number>
+}
+
+/**
+ * The session's fingerprints by request id: those stored under the session, or
+ * when it has none, each request's own (`perRequest`).
+ */
+export function sessionFingerprints(ledger: Ledger, rows: readonly RequestRow[]) {
+  const sessionFps = rows[0] ? ledger.getFingerprints(rows[0].sessionID) : []
+  return sessionFps.length
+    ? { perRequest: false, fingerprints: new Map<string, RequestFingerprintData | undefined>(sessionFps.map((fp) => [fp.requestID, fp])) }
+    : { perRequest: true, fingerprints: new Map(rows.map((r) => [r.id, ledger.getFingerprint(r.id)])) }
+}
+
 // The analysis is a pure fold of the session's rows and facts; it never depends
-// on the query window, so it can be cached on the ledger revision alone and the
-// windowed signals below are applied at report time.
+// on the query window, so it can be cached and the windowed signals below are
+// applied at report time.
 export function analyzeSession(
   ledger: Ledger,
   rows: readonly RequestRow[],
   facts: readonly ContextFactRow[],
 ): SessionAnalysis {
-  const sessionFps = rows[0] ? ledger.getFingerprints(rows[0].sessionID) : []
-  const fingerprints = sessionFps.length
-    ? new Map(sessionFps.map((fp) => [fp.requestID, fp]))
-    : new Map(rows.map((r) => [r.id, ledger.getFingerprint(r.id)]))
-  const details: MonitorRequestDetail[] = []
-  const streaks = new Map<string, number>()
-  const unstable: UnstableStreak[] = []
-  const earlier: RequestRow[] = []
+  return foldSession(rows, facts, sessionFingerprints(ledger, rows).fingerprints).analysis
+}
 
-  for (const r of rows) {
+/**
+ * Folds `rows` (in start order, as the ledger returns them). With `from`, rows
+ * before that index keep their results from `previous`: a request's verdict
+ * depends only on earlier rows, facts at or before its start and their
+ * fingerprints, so the caller passes the first row where any of those changed.
+ */
+export function foldSession(
+  rows: readonly RequestRow[],
+  facts: readonly ContextFactRow[],
+  fingerprints: Map<string, RequestFingerprintData | undefined>,
+  resume?: { readonly previous: SessionFold; readonly from: number },
+): SessionFold {
+  const from = resume === undefined ? 0 : Math.max(0, Math.min(resume.from, rows.length, resume.previous.rows.length))
+  const point = from > 0 ? resume?.previous.resume[from - 1] : undefined
+  const details: MonitorRequestDetail[] = point ? resume!.previous.analysis.details.slice(0, from) : []
+  const unstable: UnstableStreak[] = point ? resume!.previous.analysis.unstable.slice(0, point.unstable) : []
+  const points: ResumePoint[] = point ? resume!.previous.resume.slice(0, from) : []
+  // Each name keeps the number it got when it first changed, which orders the
+  // unstable entries one row records; names first changed after `from` are renumbered.
+  const names = new Map(point ? [...resume!.previous.names].filter(([, order]) => order < point.named) : [])
+  let streaks: ReadonlyMap<string, number> = point?.streaks ?? new Map()
+  const ordered = factsOf(facts)
+  const earlier = rows.slice(0, from)
+
+  for (const r of rows.slice(from)) {
     const fp = fingerprints.get(r.id)
     const linked = fp?.previousResponseId
       ? earlier.findLast((p) => p.provider === r.provider && p.model === r.model && fingerprints.get(p.id)?.responseId === fp.previousResponseId)
@@ -754,7 +998,7 @@ export function analyzeSession(
     const lastRealIndex = earlier.findLastIndex((p) => p.kind !== "ping" && !p.isTitle)
     const lastReal = earlier[lastRealIndex]
     const last = r.kind === "ping" || r.isTitle ? earlier.at(-1) : lastReal
-    const between = facts.filter((f) => f.at > (last?.started ?? 0) && f.at <= r.started)
+    const between = factsBetween(ordered, last?.started ?? 0, r.started)
 
     // 1. Diff: calculate prefix diff and expected tokens
     const warm = previousWarmRequest(r, earlier)
@@ -766,13 +1010,13 @@ export function analyzeSession(
     )
 
     // 2. Timing: compute gap, cache lifetime, pings and warming status
-    const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, facts, previous)
+    const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, ordered, previous)
 
     // 3. Cause: determine cache verdict, root cause, confidence and evidence
     const cause = causeStep(r, previous, last, earlier, between, diff, changed, expected, warm, timing)
 
     // 4. Cost: compute miss tokens and re-read cost from recorded pricing
-    const cost = costStep(r, cause.verdict, expected, cause.missOverride, facts)
+    const cost = costStep(r, cause.verdict, expected, cause.missOverride, ordered)
 
     const request: MonitorRequest = {
       id: r.id,
@@ -848,27 +1092,31 @@ export function analyzeSession(
       actualCacheRead: r.cacheReadTokens,
     })
 
+    // A segment changed on this real request extends its streak; every other
+    // segment's streak ends. Three in a row is an unstable prefix, recorded in
+    // the order the segments first changed.
     if (r.kind !== "ping" && !r.isTitle) {
-      const diffLastReal = lastReal === previous ? diff : prefixDiff(lastReal && fingerprints.get(lastReal.id), fp)
-      if (diffLastReal.changes.length > 0 || streaks.size > 0) {
-        const changed = new Set(diffLastReal.changes.filter((c) => c.change === "changed").map((c) => c.name))
-        for (const name of new Set([...streaks.keys(), ...changed])) {
-          const count = changed.has(name) ? (streaks.get(name) ?? 0) + 1 : 0
-          streaks.set(name, count)
-          if (count >= 3) {
-            unstable.push({
-              segment: name,
-              streak: count,
-              at: r.started,
-              requestID: r.id,
-              ...(r.agent === undefined ? {} : { agent: r.agent }),
-              ...(r.provider === undefined ? {} : { provider: r.provider }),
-              ...(r.model === undefined ? {} : { model: r.model }),
-            })
-          }
-        }
+      const diffLastReal = lastReal === previous ? diff : diffOf(lastReal && fingerprints.get(lastReal.id), fp)
+      const changed = new Set(diffLastReal.changes.filter((c) => c.change === "changed").map((c) => c.name))
+      const next = new Map<string, number>()
+      for (const name of changed) {
+        next.set(name, (streaks.get(name) ?? 0) + 1)
+        if (!names.has(name)) names.set(name, names.size)
+      }
+      streaks = next
+      for (const [name, count] of [...next].filter(([, count]) => count >= 3).sort(([a], [b]) => names.get(a)! - names.get(b)!)) {
+        unstable.push({
+          segment: name,
+          streak: count,
+          at: r.started,
+          requestID: r.id,
+          ...(r.agent === undefined ? {} : { agent: r.agent }),
+          ...(r.provider === undefined ? {} : { provider: r.provider }),
+          ...(r.model === undefined ? {} : { model: r.model }),
+        })
       }
     }
+    points.push({ streaks, named: names.size, unstable: unstable.length })
 
     earlier.push(r)
   }
@@ -905,7 +1153,7 @@ export function analyzeSession(
       if (read.provider !== r.provider || read.model !== r.model) continue
       const gained = read.cacheRead - r.cacheReadTokens
       if (gained <= 0) continue
-      if (prefixDiff(fp, read.fp).reusable) {
+      if (reusableOf(fp, read.fp)) {
         compatibleReads.push({
           at: read.at,
           gained,
@@ -930,11 +1178,11 @@ export function analyzeSession(
   }
 
   return {
-    details,
-    unstable,
-    fingerprints,
-    writes,
-    reads,
+    analysis: { details, unstable, fingerprints, writes, reads },
+    rows,
+    facts,
+    resume: points,
+    names,
   }
 }
 

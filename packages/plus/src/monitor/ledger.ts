@@ -46,6 +46,34 @@ function rollupUpsert(row: "new" | "old", sign: 1 | -1): string {
       duration = duration + excluded.duration, timed = timed + excluded.timed;`
 }
 
+// Per-session change marks for the Monitor's analysis cache. Every write to a
+// session's requests, fingerprints or context facts, from any connection or
+// process, bumps that session's revision, and a written or deleted
+// fingerprint records the revision it was written at. An analysis then reloads
+// only what changed in its own session; another chat's writes leave it alone.
+function changeTriggers(): string {
+  const bump = (session: string) => `insert into session_change (session_id, rev) values (${session}, 1)
+    on conflict (session_id) do update set rev = rev + 1;`
+  const mark = (row: "new" | "old") => `insert into fingerprint_change (request_id, session_id, rev)
+    values (${row}.request_id, ${row}.session_id, (select rev from session_change where session_id = ${row}.session_id))
+    on conflict (request_id) do update set session_id = excluded.session_id, rev = excluded.rev;`
+  const plain = (table: string) => `
+create trigger if not exists ${table}_change_insert after insert on ${table} begin ${bump("new.session_id")} end;
+create trigger if not exists ${table}_change_update after update on ${table} begin ${bump("old.session_id")} ${bump("new.session_id")} end;
+create trigger if not exists ${table}_change_delete after delete on ${table} begin ${bump("old.session_id")} end;`
+  return `${plain("request")}
+${plain("context_fact")}
+create trigger if not exists request_fingerprint_change_insert after insert on request_fingerprint begin
+  ${bump("new.session_id")} ${mark("new")}
+end;
+create trigger if not exists request_fingerprint_change_update after update on request_fingerprint begin
+  ${bump("old.session_id")} ${bump("new.session_id")} ${mark("new")}
+end;
+create trigger if not exists request_fingerprint_change_delete after delete on request_fingerprint begin
+  ${bump("old.session_id")} ${mark("old")}
+end;`
+}
+
 function rollupTriggers(): string {
   return `
 create trigger if not exists call_hour_insert after insert on call begin
@@ -230,6 +258,18 @@ create table if not exists context_fact (
 );
 create index if not exists context_fact_session on context_fact(session_id, at);
 create index if not exists context_fact_kind on context_fact(kind, at);
+
+create table if not exists session_change (
+  session_id text primary key,
+  rev integer not null
+) without rowid;
+create table if not exists fingerprint_change (
+  request_id text primary key,
+  session_id text not null,
+  rev integer not null
+) without rowid;
+create index if not exists fingerprint_change_session on fingerprint_change(session_id, rev);
+${changeTriggers()}
 `
 
 export interface SessionFacts {
@@ -418,6 +458,10 @@ export interface Ledger {
    * fingerprint, a kind relabel) from any handle invalidates stale reads.
    */
   revision(): string
+  /** This session's change mark: any write to its requests, fingerprints or context facts moves it. */
+  sessionRevision(sessionID: string): number
+  /** Request ids whose fingerprint in this session was written or deleted after its revision `since`. */
+  changedFingerprints(sessionID: string, since: number): readonly string[]
   requestStarted(req: RequestStart): void
   requestEnded(id: string, end: RequestEnd): void
   requestFingerprint(fp: RequestFingerprintData): void
@@ -596,6 +640,10 @@ export function createLedger(file: string): Ledger {
   // process (or a direct `createLedger`) is the other case.
   const totalChanges = db.query<{ n: number }, []>("select total_changes() as n")
   const dataVersion = db.query<{ data_version: number }, []>("pragma data_version")
+  const sessionRevision = db.query<{ rev: number }, [string]>("select rev from session_change where session_id = ?")
+  const changedFingerprints = db.query<{ request_id: string }, [string, number]>(
+    "select request_id from fingerprint_change where session_id = ? and rev > ?",
+  )
 
   const writeCallTokens = db.transaction((updates: readonly CallTokens[]) => {
     updates.forEach((update) =>
@@ -703,6 +751,11 @@ export function createLedger(file: string): Ledger {
         ).run(before)
         db.query("delete from epoch where session_id not in (select distinct session_id from step)").run()
         db.query("delete from call_hour where calls = 0 and inner = 0 and running = 0").run()
+        // A deleted fingerprint's mark tells a cached analysis to drop it; once its
+        // request is gone too, no analysis reads it any more.
+        db.query(
+          "delete from fingerprint_change where request_id not in (select request_id from request_fingerprint) and request_id not in (select id from request)",
+        ).run()
       })()
     },
     requestStarted: (req) =>
@@ -774,6 +827,8 @@ export function createLedger(file: string): Ledger {
     getFingerprints: (sessionID) => findSessionFingerprints.all(sessionID).map(toFingerprintData),
     getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
     revision: () => `${totalChanges.get()?.n ?? 0}:${dataVersion.get()?.data_version ?? 0}`,
+    sessionRevision: (sessionID) => sessionRevision.get(sessionID)?.rev ?? 0,
+    changedFingerprints: (sessionID, since) => changedFingerprints.all(sessionID, since).map((row) => row.request_id),
     close: () => {
       open.delete(file)
       db.close()

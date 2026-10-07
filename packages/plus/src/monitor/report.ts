@@ -1,5 +1,13 @@
 import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorSessionRow, MonitorTotals } from "../rpc.js"
-import { analyzeSession, isMiss, promptTokens, windowedSessionSignals, type SessionAnalysis } from "./cache.js"
+import {
+  foldSession,
+  isMiss,
+  promptTokens,
+  sessionFingerprints,
+  windowedSessionSignals,
+  type SessionAnalysis,
+  type SessionFold,
+} from "./cache.js"
 import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
 
@@ -28,37 +36,110 @@ interface LegacyStep {
   cost: number
 }
 
-interface CachedSessionAnalysis {
-  readonly revision: string
+interface CachedSession {
+  /** The ledger revision this entry was last confirmed at. */
+  revision: string
+  /** The session's change mark the entry was built from. */
+  readonly mark: number
+  /** The fingerprints were looked up per request (none stored under this session). */
+  readonly perRequest: boolean
+  readonly fold: SessionFold
+}
+
+interface SessionData {
+  readonly rows: readonly RequestRow[]
+  readonly facts: readonly ContextFactRow[]
   readonly analysis: SessionAnalysis
 }
 
-const sessionAnalysisCache = new WeakMap<Ledger, Map<string, CachedSessionAnalysis>>()
-function getSessionAnalysis(
-  ledger: Ledger,
-  id: string,
+const sessionCache = new WeakMap<Ledger, Map<string, CachedSession>>()
+
+// One session's rows, facts and analysis. The analysis folds in-place writes
+// (request completion, a corrected final wire fingerprint, a kind relabel), so
+// it is keyed on change marks, never on row ids. An unchanged ledger revision
+// (which also covers other connections and processes) answers at once; an
+// unchanged session mark answers with one lookup however busy other chats are.
+// Otherwise only this session is read again, only changed fingerprints are
+// loaded, and the fold resumes at the first request a change can affect. The
+// analysis never depends on the query window, so it stays reusable across
+// window changes and polling.
+function sessionData(ledger: Ledger, id: string): SessionData {
+  const cache = sessionCache.get(ledger) ?? new Map<string, CachedSession>()
+  sessionCache.set(ledger, cache)
+  const cached = cache.get(id)
+  const revision = ledger.revision()
+  if (cached && cached.revision === revision) return dataOf(cached.fold)
+  // The mark is read before the rows: a write in between shows as a change next time.
+  const mark = ledger.sessionRevision(id)
+  if (cached && !cached.perRequest && cached.mark === mark) {
+    cached.revision = revision
+    return dataOf(cached.fold)
+  }
+  const changed = cached && !cached.perRequest ? ledger.changedFingerprints(id, cached.mark) : []
+  const rows = ledger.getRequests(id)
+  const facts = ledger.getContextFacts(id)
+  const updated = cached && !cached.perRequest ? updatedFingerprints(ledger, id, cached.fold, changed) : undefined
+  if (cached && updated && updated.size > 0) {
+    const fold = foldSession(rows, facts, updated, { previous: cached.fold, from: firstChange(cached.fold, rows, facts, changed) })
+    cache.set(id, { revision, mark, perRequest: false, fold })
+    return dataOf(fold)
+  }
+  const loaded = sessionFingerprints(ledger, rows)
+  const fold = foldSession(rows, facts, loaded.fingerprints)
+  cache.set(id, { revision, mark, perRequest: loaded.perRequest, fold })
+  return dataOf(fold)
+}
+
+function dataOf(fold: SessionFold): SessionData {
+  return { rows: fold.rows, facts: fold.facts, analysis: fold.analysis }
+}
+
+// The cached fingerprints with the changed ones reloaded (or dropped when deleted).
+function updatedFingerprints(ledger: Ledger, id: string, fold: SessionFold, changed: readonly string[]) {
+  const fingerprints = new Map(fold.analysis.fingerprints)
+  for (const requestID of changed) {
+    const fp = ledger.getFingerprint(requestID)
+    if (fp?.sessionID === id) fingerprints.set(requestID, fp)
+    else fingerprints.delete(requestID)
+  }
+  return fingerprints
+}
+
+// The first request whose verdict a change can affect: a changed or new row,
+// a row with a changed fingerprint, or a row starting at or after the earliest
+// added or removed context fact (a verdict reads only facts up to its start).
+function firstChange(
+  fold: SessionFold,
   rows: readonly RequestRow[],
   facts: readonly ContextFactRow[],
-): SessionAnalysis {
-  let cache = sessionAnalysisCache.get(ledger)
-  if (!cache) {
-    cache = new Map()
-    sessionAnalysisCache.set(ledger, cache)
+  changed: readonly string[],
+): number {
+  const rowChange = firstDifference(rows, fold.rows, sameRow)
+  const factChange = firstDifference(facts, fold.facts, sameFact)
+  const factAt =
+    factChange < 0
+      ? Infinity
+      : [...facts.slice(factChange), ...fold.facts.slice(factChange)].reduce((min, fact) => Math.min(min, fact.at), Infinity)
+  const ids = new Set(changed)
+  const affected = rows.findIndex((row) => row.started >= factAt || ids.has(row.id))
+  return Math.min(rowChange < 0 ? rows.length : rowChange, affected < 0 ? rows.length : affected)
+}
+
+function firstDifference<T>(next: readonly T[], previous: readonly T[], same: (a: T, b: T) => boolean): number {
+  for (let i = 0; i < Math.max(next.length, previous.length); i++) {
+    if (next[i] === undefined || previous[i] === undefined || !same(next[i]!, previous[i]!)) return i
   }
+  return -1
+}
 
-  // The analysis folds in-place facts (request completion, a corrected final
-  // wire fingerprint, a kind relabel) that leave row ids and fact timestamps
-  // unchanged. Key on the ledger's change revision, which covers writes from
-  // this handle and from another connection or process on the same file, so
-  // none of them is masked. The analysis never depends on the query window, so
-  // it stays reusable across window changes and polling.
-  const revision = ledger.revision()
-  const cached = cache.get(id)
-  if (cached && cached.revision === revision) return cached.analysis
+// Ledger rows carry every field, undefined ones included.
+function sameRow(a: RequestRow, b: RequestRow): boolean {
+  const keys = Object.keys(a) as (keyof RequestRow)[]
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.is(a[key], b[key]))
+}
 
-  const analysis = analyzeSession(ledger, rows, facts)
-  cache.set(id, { revision, analysis })
-  return analysis
+function sameFact(a: ContextFactRow, b: ContextFactRow): boolean {
+  return a.id === b.id && a.at === b.at && a.kind === b.kind && a.sessionID === b.sessionID && JSON.stringify(a.detail) === JSON.stringify(b.detail)
 }
 
 export function requestReport(
@@ -113,8 +194,7 @@ export function requestReport(
   }
 
   const analyses = selected.map((id) => {
-    const rows = ledger.getRequests(id)
-    const facts = ledger.getContextFacts(id)
+    const { rows, facts, analysis } = sessionData(ledger, id)
     const compact = facts.findLast((f) => f.kind === "compaction" && f.at < window.until)?.at
     const since = Math.max(window.since, input.sinceCompaction ? (compact ?? 0) : 0)
     const legacy = (legacyMap.get(id) ?? []).filter(
@@ -124,7 +204,6 @@ export function requestReport(
         (!input.agents?.length || input.agents.includes(s.agent ?? "")) &&
         (!input.models?.length || input.models.includes(`${s.provider}/${s.model}`)),
     )
-    const analysis = getSessionAnalysis(ledger, id, rows, facts)
     const signals = windowedSessionSignals(
       analysis,
       { since, until: window.until },
@@ -163,7 +242,8 @@ export function requestReport(
   const details = analyses
     .flatMap((a) => a.details)
     .sort((a, b) => a.request.at - b.request.at || a.request.id.localeCompare(b.request.id))
-  const requests = details.map((d) => d.request)
+  // Copies: the steps view adds per-query fields, and the analysis is cached.
+  const requests = details.map((d) => ({ ...d.request }))
 
   const sum = (
     rows: readonly MonitorRequest[],
@@ -252,7 +332,8 @@ export function requestReport(
   }
 
   if (input.id) {
-    const detail = details.find((d) => d.request.id === input.id)
+    const index = details.findIndex((d) => d.request.id === input.id)
+    const detail = details[index]
     if (detail) {
       const calls = ledger.db
         .query<
@@ -283,6 +364,7 @@ export function requestReport(
 
       sections.detail = {
         ...detail,
+        request: requests[index]!,
         calls: calls.map((c) => ({
           sessionID: detail.request.sessionID,
           callID: c.call_id,
