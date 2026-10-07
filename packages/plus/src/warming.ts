@@ -200,7 +200,7 @@ const MAX_CHATS = 500
  */
 export const WAITING_WARMING_MS = 75 * 60_000
 
-// Parent links kept for the waiting check; the newest win.
+// Parent links (and each chat's configured duration) kept for the waiting check; the newest win.
 const MAX_PARENTS = 2_000
 
 interface Scheduled {
@@ -229,6 +229,10 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   const compactors = new Map<string, Compact>()
   const busy = new Set<string>()
   const parents = new Map<string, string>()
+  // Core proposes at each warming request the settings this store returned last
+  // time, so a waiting chat's longer window would come back as its own: each
+  // chat's duration as configured at its last request stands in for it.
+  const configuredDuration = new Map<string, number>()
   // The chat itself runs, or anything it started (at any depth) runs.
   const waiting = (sessionID: string) =>
     [...busy].some((running) => {
@@ -362,7 +366,15 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       }
 
       const compacted = isCompactionActivity || (await isCompacted(event.sessionID, event.since))
-      const decided = decideWarming({ configured: event.settings, rows, chat })
+      if (activity && event.settings !== undefined) {
+        configuredDuration.delete(event.sessionID)
+        configuredDuration.set(event.sessionID, event.settings.duration)
+        const oldest = configuredDuration.keys().next().value
+        if (configuredDuration.size > MAX_PARENTS && oldest !== undefined) configuredDuration.delete(oldest)
+      }
+      const own = configuredDuration.get(event.sessionID)
+      const configured = activity || event.settings === undefined || own === undefined ? event.settings : { ...event.settings, duration: own }
+      const decided = decideWarming({ configured, rows, chat })
       const decision = compacted
         ? { ...decided, settings: undefined }
         : decided.settings !== undefined && waiting(event.sessionID)

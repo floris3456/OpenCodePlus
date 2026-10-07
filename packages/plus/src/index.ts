@@ -6251,8 +6251,9 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
     Stream.runForEach((event) =>
       Effect.promise(() => {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
-        // A move is not a turn: it must not clear a running chat's busy flag.
-        if (typeof sessionID === "string" && event.type !== "session.moved") {
+        // Only the run events start or end a turn: a move or a scheduled retry
+        // must not clear a running chat's busy flag.
+        if (typeof sessionID === "string" && SessionRunEvents.has(event.type)) {
           const started = event.type === "session.execution.started"
           warmingStore.running(sessionID, started)
           // Its parent chat keeps warm while it runs (looked up once per start).

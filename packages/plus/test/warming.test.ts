@@ -17,11 +17,11 @@ import {
 } from "../src/instructions/model.js"
 import { setModelWarmingRow } from "../src/instructions/ops.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import { warmingRowsOf, decideWarmingFor, parentChatOf, type PlusState } from "../src/index.js"
+import { createState, warmingRowsOf, decideWarmingFor, parentChatOf, watchHostEvents, type PlusState } from "../src/index.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
-import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS } from "../src/warming.js"
+import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS, warmingStore, type WarmingRows } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { context } from "./harness.js"
 import { saveRun, type RunRecord } from "../src/teams/run.js"
 import { teamsDataDir } from "../src/instructions/paths.js"
@@ -325,55 +325,83 @@ test("the store applies the decision to the hook event and records the window fo
 
 test("a chat waiting on its own running work stays warm up to 75 minutes, then falls back", async () => {
   const store = createWarmingStore(await tempFile())
-  const warm = (minutes: number, sessionID = "ses_warm") =>
-    event({ sessionID: Session.ID.make(sessionID), phase: "warm", now: 1_000_000 + minutes * MINUTE })
+  // Like core: each warming request proposes the settings the store returned last time.
+  const proposed = new Map<string, SessionWarming["settings"]>()
+  const decide = async (phase: "activity" | "warm", minutes: number, sessionID = "ses_warm", rows: WarmingRows = {}) => {
+    const next = event({
+      sessionID: Session.ID.make(sessionID),
+      phase,
+      now: 1_000_000 + minutes * MINUTE,
+      ...(phase === "warm" && proposed.has(sessionID) ? { settings: proposed.get(sessionID) } : {}),
+    })
+    await store.decide(next, rows)
+    proposed.set(sessionID, next.settings)
+    return next.settings?.duration
+  }
   // Control: an idle chat with nothing running keeps the configured 30 minutes.
-  const idle = warm(4)
-  await store.decide(idle, {})
-  expect(idle.settings?.duration).toBe(30 * MINUTE)
+  expect(await decide("activity", 0)).toBe(30 * MINUTE)
+  expect(await decide("warm", 4)).toBe(30 * MINUTE)
 
   // The chat's own command (or any tool call) still runs.
   store.running("ses_warm", true)
-  const ownCommand = warm(28)
-  await store.decide(ownCommand, {})
-  expect(ownCommand.settings?.duration).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 28)).toBe(WAITING_WARMING_MS)
   expect((await store.status("ses_warm", 1_000_000 + 40 * MINUTE)).expires).toBe(1_000_000 + WAITING_WARMING_MS)
+  // It ends: back to 30 minutes, though core now proposes the longer window it was given.
   store.running("ses_warm", false)
+  expect(await decide("warm", 29)).toBe(30 * MINUTE)
 
   // A subagent it started runs while the chat itself is idle.
   store.running("ses_child", true)
   store.parent("ses_child", "ses_warm")
-  const child = warm(32)
-  await store.decide(child, {})
-  expect(child.settings?.duration).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 29.5)).toBe(WAITING_WARMING_MS)
 
   // A grandchild runs while the subagent between them is idle.
   store.running("ses_child", false)
   store.running("ses_grandchild", true)
   store.parent("ses_grandchild", "ses_child")
-  const grandchild = warm(36)
-  await store.decide(grandchild, {})
-  expect(grandchild.settings?.duration).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 36)).toBe(WAITING_WARMING_MS)
   // Another chat is not kept warm by work it did not start.
-  const unrelated = warm(36, "ses_other")
-  await store.decide(unrelated, {})
-  expect(unrelated.settings?.duration).toBe(30 * MINUTE)
+  expect(await decide("warm", 36, "ses_other")).toBe(30 * MINUTE)
 
   // Nothing runs any more: back to the configured window, which has ended.
   store.running("ses_grandchild", false)
-  const done = warm(40)
-  await store.decide(done, {})
-  expect(done.settings?.duration).toBe(30 * MINUTE)
+  expect(await decide("warm", 40)).toBe(30 * MINUTE)
   expect((await store.status("ses_warm", 1_000_000 + 40 * MINUTE)).active).toBe(false)
 
   // A longer window of its own is kept, and warming switched off stays off.
   store.running("ses_warm", true)
-  const long = warm(5)
-  await store.decide(long, { row: { warming: { value: "2h", level: "project" } } })
-  expect(long.settings?.duration).toBe(120 * MINUTE)
-  const off = warm(5)
-  await store.decide(off, { row: { warming: { value: "off", level: "project" } } })
-  expect(off.settings).toBeUndefined()
+  expect(await decide("activity", 50, "ses_warm", { row: { warming: { value: "2h", level: "project" } } })).toBe(120 * MINUTE)
+  expect(await decide("warm", 54, "ses_warm", { row: { warming: { value: "off", level: "project" } } })).toBeUndefined()
+})
+
+test("a subagent waiting out a provider retry still keeps its parent chat warm", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-warming-retry-"))
+  temps.push(dir)
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = dir
+  try {
+    const events = [
+      { type: "session.execution.started", data: { sessionID: "ses_retry_kid" } },
+      // Core schedules a retry while the run goes on: not the end of a turn.
+      { type: "session.retry.scheduled", data: { sessionID: "ses_retry_kid", attempt: 1, at: Date.now() + 5_000, error: { type: "provider.rate-limit", message: "" } } },
+    ]
+    const ctx = context({
+      event: { subscribe: () => Stream.fromIterable(events) as never },
+      session: {
+        get: (input) => Effect.succeed({ id: input.sessionID, ...(input.sessionID === "ses_retry_kid" ? { parentID: "ses_retry_lead" } : {}) } as never),
+      },
+    })
+    const state = createState()
+    await Effect.runPromise(Effect.scoped(Effect.andThen(watchHostEvents(ctx, state), Effect.sleep("100 millis"))))
+    expect(state.running.has("ses_retry_kid")).toBe(true)
+    const lead = event({ sessionID: Session.ID.make("ses_retry_lead"), phase: "warm", now: 1_000_000 + MINUTE })
+    await warmingStore.decide(lead, {})
+    expect(lead.settings?.duration).toBe(WAITING_WARMING_MS)
+  } finally {
+    warmingStore.running("ses_retry_kid", false)
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+  }
 })
 
 test("a chat's parent is its subagent parent session or its team run's parent chat", async () => {
