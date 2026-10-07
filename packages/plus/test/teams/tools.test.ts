@@ -918,7 +918,12 @@ test("planner delegate under ask: allow creates run and audit line with asked:al
       await git(repoDir, ["config", "user.name", "team-test"])
       await git(repoDir, ["config", "user.email", "team-test@local"])
       await fs.writeFile(path.join(repoDir, "README.md"), "# planner gate\n")
-      await git(repoDir, ["add", "README.md"])
+      // The briefs below name test/a.test.ts and test/b.test.ts as checks, so
+      // both are part of the base commit the child starts from.
+      await fs.mkdir(path.join(repoDir, "test"), { recursive: true })
+      await fs.writeFile(path.join(repoDir, "test", "a.test.ts"), "// checked\n")
+      await fs.writeFile(path.join(repoDir, "test", "b.test.ts"), "// checked\n")
+      await git(repoDir, ["add", "README.md", "test/a.test.ts", "test/b.test.ts"])
       await git(repoDir, ["commit", "-m", "feat: initial commit"])
       const head = await git(repoDir, ["rev-parse", "HEAD"])
 

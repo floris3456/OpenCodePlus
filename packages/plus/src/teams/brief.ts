@@ -33,9 +33,22 @@ export interface RenderFilled {
   budget: Budget
   attached?: { path: string; content: string }
   review?: ReviewContext
+  /** The member's "Attached brief file" limit; a larger attachment is named by path only. */
+  attachmentLimit?: number
 }
 
-const ATTACH_CAP = 40 * 1024
+/**
+ * A brief's attached file is pasted whole while it fits the member's
+ * "Attached brief file" limit (limits.attachment, default 8,000 characters).
+ * A larger one is not pasted: the Brief names its path and the child reads only
+ * what it needs. The default is the shipped limit; `api.ts` passes the row's
+ * resolved value.
+ */
+export const DEFAULT_ATTACHMENT_LIMIT = 8_000
+
+export function attachmentPasted(content: string, limit: number): boolean {
+  return content.length <= limit
+}
 
 // One line per deliverable: what "done" means for it, so the child knows what
 // to hand back without reading the tool schema.
@@ -89,9 +102,11 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   if (brief.prompt !== undefined && brief.prompt.trim() !== "") sections.push(`## Extra instructions\n${brief.prompt}`)
   if (filled.attached !== undefined) {
     const attached = filled.attached
-    const bytes = Buffer.byteLength(attached.content, "utf8")
-    if (bytes > ATTACH_CAP)
-      sections.push(`## Attached: ${attached.path}\n(${bytes} bytes, over 40 KB: read the file itself.)`)
+    const limit = filled.attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT
+    if (!attachmentPasted(attached.content, limit))
+      sections.push(
+        `## Attached: ${attached.path}\n(${attached.content.length} chars, over the ${limit}-character attachment limit: read the file itself, only what you need.)`,
+      )
     else sections.push(`## Attached: ${attached.path}\n${attached.content}`)
   }
   return sections.join("\n\n") + "\n"

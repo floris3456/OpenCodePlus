@@ -88,13 +88,22 @@ describe("brief", () => {
     expect(nothing).toContain(`Checks at ${to.slice(0, 12)}: none recorded.`)
   })
 
-  test("attached material over 40 KB is replaced with a pointer", () => {
-    const big = "x".repeat(41 * 1024)
+  test("attached material over the attachment limit is replaced with a pointer", () => {
+    const big = "x".repeat(8_001)
     const out = render(briefBase(), { budget: policy.effort.small, attached: { path: "big.md", content: big } })
-    expect(out).toContain("## Attached: big.md\n(41984 bytes, over 40 KB: read the file itself.)")
+    expect(out).toContain("## Attached: big.md\n(8001 chars, over the 8000-character attachment limit: read the file itself, only what you need.)")
     expect(out).not.toContain(big.slice(0, 100))
     const small = render(briefBase(), { budget: policy.effort.small, attached: { path: "s.md", content: "hello" } })
     expect(small).toContain("## Attached: s.md\nhello")
+  })
+
+  test("the attachment limit is the member's row, and an over-limit file is named by path only", () => {
+    const content = "y".repeat(100)
+    const pasted = render(briefBase(), { budget: policy.effort.small, attached: { path: "a.md", content }, attachmentLimit: 200 })
+    expect(pasted).toContain(`## Attached: a.md\n${content}`)
+    const named = render(briefBase(), { budget: policy.effort.small, attached: { path: "a.md", content }, attachmentLimit: 50 })
+    expect(named).toContain("## Attached: a.md\n(100 chars, over the 50-character attachment limit: read the file itself, only what you need.)")
+    expect(named).not.toContain(content)
   })
 })
 
