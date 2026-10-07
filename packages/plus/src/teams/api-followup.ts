@@ -85,13 +85,12 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
       `Run ${args.run} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
       parent.children,
     )
-  const requestID = args.requestID ?? createHash("sha256").update(stable(args)).digest("hex").slice(0, 16)
   const signature = signatureOf(args)
-  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(requestID)}.json`)
+  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(args.requestID)}.json`)
   const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
-      return fail("E_REQUEST_ID", `requestID "${requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
+      return fail("E_REQUEST_ID", `requestID "${args.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
     if (replay.output !== undefined) return succeeded({ ...replay.output, replayed: true, receipt: replay.output, current: { run: child.id, state: child.state, attempt: child.attempts.at(-1)?.n ?? 0, worktree: child.worktree } })
   }
   const rounds = bound(table, caller.agent, "followup", "limits.rounds")

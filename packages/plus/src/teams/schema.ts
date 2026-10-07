@@ -520,10 +520,15 @@ const defaultBounds = {
   briefChars: 6000,
 }
 
+// Tokens count input + cache writes + output + reasoning (cache reads are
+// re-reads, not new work). Calibrated on 113 worker runs (2026-10-07,
+// monitor.db): about the 75th percentile of each effort's real usage, so only
+// an unusual run pings its parent (small p75 764k, medium 1.31M, large 1.66M
+// with p90 3.5M).
 const defaultEffort = {
-  small: { turns: 25, tokens: 50000, wallMs: 1200000 },
-  medium: { turns: 60, tokens: 200000, wallMs: 3600000 },
-  large: { turns: 150, tokens: 800000, wallMs: 5400000 },
+  small: { turns: 25, tokens: 750000, wallMs: 1200000 },
+  medium: { turns: 60, tokens: 1500000, wallMs: 3600000 },
+  large: { turns: 150, tokens: 3000000, wallMs: 5400000 },
 }
 
 const defaultTimeouts = { startMs: 60000, stallMs: 600000, deadGraceMs: 300000, hookMs: 120000 }
@@ -792,9 +797,7 @@ export function parseDuration(raw: string): number {
 // input schema, exported from here and shared between registration and handlers.
 export const FollowupInput = Schema.Struct({
   run: RunID.annotate({ description: "Your child's run id." }),
-  requestID: Schema.optional(
-    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
-  ).annotate({
+  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)).annotate({
     description: "Your id for this followup; repeat it only to retry the identical call.",
   }),
   prompt: Schema.optional(
@@ -803,7 +806,8 @@ export const FollowupInput = Schema.Struct({
     description: "The correction or answer; it is the child's next message.",
   }),
   delivery: Schema.optional(Schema.Literals(["now", "queue"])).annotate({
-    description: "queue (default): delivered when the child next goes idle. now: only for a child that is idle already.",
+    description:
+      "queue (default): a working child gets it at its next step boundary, without interrupting the step; an idle or warm stopped child at once. now: only for a child that is idle already.",
   }),
   budget: Schema.optional(FollowupBudget).annotate({
     description: "Changes the child's advisory budget; only given dimensions change.",
