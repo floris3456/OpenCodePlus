@@ -24,7 +24,7 @@ export function derive(text: string, title: string): Split {
   if (headings.length > 0) return headingSplit(text, headings)
   const blocks = findBlocks(text)
   if (blocks.length > 0) return blockSplit(text, blocks)
-  return { kind: "whole", sections: [{ id: "whole", name: title, depth: 0, start: 0, end: text.length }] }
+  return { kind: "whole", sections: [{ id: "whole", name: "Full text", depth: 0, start: 0, end: text.length }] }
 }
 
 export function manual(text: string, boundaries: readonly Boundary[]): Split {
