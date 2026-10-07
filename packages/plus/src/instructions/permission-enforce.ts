@@ -60,6 +60,13 @@ export interface PermissionTable {
 
 const enforced = new Set(["input", "value", "param", "limit", "approval", "env", "team"])
 
+const agentRowsCacheLimit = 5000
+const agentRowsCache = new Map<string, readonly PermRow[]>()
+
+export function resetAgentRowsCache(): void {
+  agentRowsCache.clear()
+}
+
 // The table resolves lazily and remembers per agent: most agents (title,
 // summary, compaction) never call a tool, so a publish pays only for the
 // agents that do.
@@ -68,21 +75,40 @@ export function permissionTable(input: {
   readonly teamMembers: readonly string[]
   readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string }
   readonly describe?: (agent: string) => string | undefined
+  readonly cacheKey?: (agent: string) => string
 }): PermissionTable {
   const rows = input.items.filter((item) => item.kind === "perm" && item.permKind !== undefined && enforced.has(item.permKind))
   const rules = input.items.filter((item) => item.kind === "perm" && (item.permKind === undefined || item.permKind === "rule"))
   const byAgent = new Map<string, readonly PermRow[]>()
   const byTool = new Map<string, readonly PermRow[]>()
   const agentRows = (agent: string): readonly PermRow[] => {
-    const cached = byAgent.get(agent)
-    if (cached !== undefined) return cached
+    const key = input.cacheKey?.(agent)
+    if (key !== undefined) {
+      const cached = agentRowsCache.get(key)
+      if (cached !== undefined) {
+        agentRowsCache.delete(key)
+        agentRowsCache.set(key, cached)
+        return cached
+      }
+    } else {
+      const cached = byAgent.get(agent)
+      if (cached !== undefined) return cached
+    }
     const resolved = rows
       .filter((item) => applies(item, agent))
       .map((item) => {
         const state = input.resolve(item, agent)
         return { item, on: state.enabled, text: state.text }
       })
-    byAgent.set(agent, resolved)
+    if (key !== undefined) {
+      if (agentRowsCache.size >= agentRowsCacheLimit) {
+        const oldest = agentRowsCache.keys().next()
+        if (!oldest.done) agentRowsCache.delete(oldest.value)
+      }
+      agentRowsCache.set(key, resolved)
+    } else {
+      byAgent.set(agent, resolved)
+    }
     return resolved
   }
   return {

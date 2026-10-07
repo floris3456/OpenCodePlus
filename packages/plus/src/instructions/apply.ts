@@ -18,8 +18,12 @@ import { parseTeamFields, runSpecialRegistration, runTeamRegistration, type Team
 import {
   applies,
   catalogPath,
+  chainContentKey,
+  fingerprint,
+  itemRecordsIndex,
   resolve,
   resolveActiveModel,
+  resolutionChain,
   runtimeScope,
   type AgentSource,
   type CustomizationRecord,
@@ -294,8 +298,24 @@ export async function applyPublishParts(
   let skillReload = false
   let mcpReload = false
 
+  // Compute resolutions and plans once per publish
+  const customByAgent = await readCustomSystem(ctx, input.applyInput.agents)
+
+  const roleCand = roleCandidates(input.applyInput)
+  const roles = roleCand.filter((c) => !c.noop).map((c) => ({ agent: c.agent, text: c.text }))
+  const allRoles = roleCand.map((c) => ({ agent: c.agent, text: c.text }))
+
+  const allCandidates = toolCandidates(input.applyInput, { skipNoop: true })
+  const candidates = allCandidates.filter((c) => !c.noop)
+  const allNative: ToolPlan[] = allCandidates
+    .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
+    .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+
+  const instructionCand = instructionCandidates(input.applyInput)
+  const instructions = instructionCand.filter((c) => !c.noop).map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
+  const allInstructions = instructionCand.map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
+
   // 1. roles
-  const roles = roleUpdates(input.applyInput)
   const rolesFp = JSON.stringify(roles)
   if (rolesFp !== state.appliedParts.get("roles")?.fingerprint) {
     const prev = state.appliedParts.get("roles")?.registrations ?? []
@@ -342,19 +362,10 @@ export async function applyPublishParts(
   }
 
   // 4. session
-  const session = sessionPlans(input.applyInput, permissions)
+  const session = sessionPlans(input.applyInput, permissions, candidates)
   const sessionFp = JSON.stringify(session)
   const prevSession = state.appliedParts.get("session")
   const sessionTools = session.tools
-
-  const instructions = instructionPlans(input.applyInput)
-  const allInstructions = instructionPlans(input.applyInput, { skipNoop: true })
-  const customByAgent = await readCustomSystem(ctx, input.applyInput.agents)
-  const allRoles = roleUpdates(input.applyInput, { skipNoop: true })
-  const allCandidates = toolCandidates(input.applyInput, { skipNoop: true })
-  const allNative: ToolPlan[] = allCandidates
-    .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
-    .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
 
   state.currentPlanSet = createPlanSet({
     roles: new Map(allRoles.map((r) => [r.agent, r.text])),
@@ -369,7 +380,10 @@ export async function applyPublishParts(
 
   if (sessionFp !== prevSession?.fingerprint) {
     toDispose.push(...(prevSession?.registrations ?? []))
-    const installed = await installSessionPlans(ctx, input.applyInput, session, permissions, state)
+    const installed = await installSessionPlans(ctx, input.applyInput, session, permissions, state, {
+      instructions,
+      customByAgent,
+    })
     state.appliedParts.set("session", { fingerprint: sessionFp, registrations: installed })
     const prevPlan = state.appliedPlans.get("session") as SessionPlans | undefined
     if (
@@ -533,12 +547,46 @@ export async function applyAgentControls(ctx: Context, input: ApplyInput): Promi
   return applyControlsWithPlans(ctx, plans)
 }
 
+const enforcedPermKinds = new Set(["input", "value", "param", "limit", "approval", "env", "team"])
+
 // Every agent's permission rows, resolved lazily. Rows nobody customized
 // resolve to their shipped state without walking the records — for an agent
 // no preset, entry or off fallback can change (`plain`). The team tools and
 // the hooks read this table.
 export function permissionTableOf(input: ApplyInput): PermissionTable {
   const byId = new Map(input.agents.map((agent) => [agent.id, agent] as const))
+  const permRows = input.items.filter((item) => item.kind === "perm" && item.permKind !== undefined && enforcedPermKinds.has(item.permKind))
+  const recordsIndex = itemRecordsIndex(input.records)
+
+  const agentKeyCache = new Map<string, string>()
+  const cacheKey = (agentId: string): string => {
+    const cached = agentKeyCache.get(agentId)
+    if (cached !== undefined) return cached
+
+    const agent = byId.get(agentId)
+    const address = {
+      level: "project" as const,
+      agent: agentId,
+      item: "",
+      section: null,
+      ...(agent?.team !== undefined ? { team: agent.team } : {}),
+    }
+    const chain = resolutionChain(address, input.scopes)
+    const chainKey = chainContentKey(chain)
+
+    const itemsForAgent = permRows.filter((item) => applies(item, agentId))
+    const itemsDigest = itemsForAgent
+      .map((item) => {
+        const recHash = recordsIndex.get(item.id)?.hash ?? ""
+        return `${item.id}:${item.fingerprint}:${item.enabled}:${recHash}`
+      })
+      .join(";")
+
+    const key = `${agentId}:${agent?.team ? agent.team.level + "/" + agent.team.team : ""}:${chainKey}:${fingerprint(itemsDigest)}`
+    agentKeyCache.set(agentId, key)
+    return key
+  }
+
   return permissionTable({
     items: input.items,
     teamMembers: input.teamAgents ?? [],
@@ -558,6 +606,7 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
       const item = controlItemFor(rows, { agent: agentId, item: "setting:description", team: agent.team })
       return item === undefined ? undefined : resolvedFor(item, agent, input).text
     },
+    cacheKey,
   })
 }
 
@@ -760,10 +809,13 @@ export function rowGate(input: ApplyInput, agent: ApplyAgent): (ids: readonly st
   return gateOf(isOn)
 }
 
-export function roleUpdates(
-  input: ApplyInput,
-  options?: { readonly skipNoop?: boolean },
-): { agent: string; text: string }[] {
+interface RoleCandidate {
+  readonly agent: string
+  readonly text: string
+  readonly noop: boolean
+}
+
+function roleCandidates(input: ApplyInput): RoleCandidate[] {
   return input.agents.flatMap((agent) => {
     const gate = rowGate(input, agent)
     return input.items.flatMap((item) => {
@@ -774,12 +826,22 @@ export function roleUpdates(
       // does not meet are out and no marker line is left (requires.ts).
       const resolved = resolvedFor(item, agent, input, gate)
       const text = resolved.assembled
-      if (options?.skipNoop !== true && isNoop(item, resolved)) return []
       // A disabled role never clears the agent system text.
       if (!resolved.enabled || text.trim().length === 0) return []
-      return [{ agent: agent.id, text }]
+      return [{ agent: agent.id, text, noop: isNoop(item, resolved) }]
     })
   })
+}
+
+export function roleUpdates(
+  input: ApplyInput,
+  options?: { readonly skipNoop?: boolean },
+): { agent: string; text: string }[] {
+  const candidates = roleCandidates(input)
+  if (options?.skipNoop === true) {
+    return candidates.map((c) => ({ agent: c.agent, text: c.text }))
+  }
+  return candidates.filter((c) => !c.noop).map((c) => ({ agent: c.agent, text: c.text }))
 }
 
 export async function applyRolesWithUpdates(ctx: Context, updates: readonly { agent: string; text: string }[]): Promise<Registration | undefined> {
@@ -1229,6 +1291,7 @@ interface ToolCandidate {
   readonly enabled: boolean
   readonly text: string
   readonly pinned: boolean
+  readonly noop?: boolean
 }
 
 function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boolean }): ToolCandidate[] {
@@ -1242,7 +1305,8 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
       // Mode tool would be discarded here before catalogPlans ever sees it.
       // Let the candidate survive when the resolved pin differs from the
       // registry default.
-      if (options?.skipNoop !== true && isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false)) return []
+      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false)
+      if (options?.skipNoop !== true && noop) return []
       return [{
         agent: agent.id,
         item,
@@ -1250,12 +1314,21 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
         enabled: resolved.enabled,
         text: resolved.assembled,
         pinned: resolved.pinned,
+        noop,
       }]
     }),
   )
 }
 
-function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
+interface InstructionCandidate {
+  readonly agent: string
+  readonly path: string
+  readonly text: string
+  readonly enabled: boolean
+  readonly noop: boolean
+}
+
+function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
   return input.agents.flatMap((agent) => {
     const gate = rowGate(input, agent)
     return input.items.flatMap((item) => {
@@ -1269,10 +1342,23 @@ function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boo
       // applies to that agent (and nothing is installed when none does).
       const guidance = item.id === guidanceItemId
       if (guidance && (!resolved.enabled || text.trim().length === 0)) return []
-      if (options?.skipNoop !== true && !guidance && isNoop(item, resolved)) return []
-      return [{ agent: agent.id, path: instructionPlanPath(item.id), text, enabled: resolved.enabled && text.trim().length > 0 }]
+      return [{
+        agent: agent.id,
+        path: instructionPlanPath(item.id),
+        text,
+        enabled: resolved.enabled && text.trim().length > 0,
+        noop: !guidance && isNoop(item, resolved),
+      }]
     })
   })
+}
+
+function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
+  const candidates = instructionCandidates(input)
+  if (options?.skipNoop === true) {
+    return candidates.map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
+  }
+  return candidates.filter((c) => !c.noop).map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
 }
 
 // The teaching row carries a stable id instead of a location-relative path,
@@ -1296,9 +1382,13 @@ export interface SessionPlans {
   readonly tools: readonly ToolPlan[]
 }
 
-export function sessionPlans(input: ApplyInput, permissions: PermissionTable): SessionPlans {
+export function sessionPlans(
+  input: ApplyInput,
+  permissions: PermissionTable,
+  candidatesInput?: readonly ToolCandidate[],
+): SessionPlans {
   const base = basePlans(input)
-  const candidates = toolCandidates(input)
+  const candidates = candidatesInput ?? toolCandidates(input)
   const native: ToolPlan[] = candidates
     .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
     .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
@@ -1357,11 +1447,15 @@ export async function installSessionPlans(
     sessionPins?: SessionPinManager
     currentPlanSet?: PlanSet
   },
+  precomputed?: {
+    readonly instructions?: readonly InstructionPlan[]
+    readonly customByAgent?: ReadonlySet<string>
+  },
 ): Promise<Registration[]> {
   const installed: Registration[] = []
   try {
     const team = new Set(input.teamAgents ?? [])
-    const instructions = instructionPlans(input)
+    const instructions = precomputed?.instructions ?? instructionPlans(input)
     const scrubByAgent = new Map(plans.scrubByAgent)
     const needsScrub = plans.scrubByAgent.some(([_, keywords]) => keywords.length > 0)
     const contextHook =
@@ -1396,23 +1490,25 @@ export async function installSessionPlans(
         ),
       )).data
       const classifier: RequestClassifier = { pinned: pins, catalog: data, prompt: ctx.prompt }
-      const customByAgent = await readCustomSystem(ctx, input.agents)
-      const allRoles = roleUpdates(input, { skipNoop: true })
-      const allInstructions = instructionPlans(input, { skipNoop: true })
-      const allCandidates = toolCandidates(input, { skipNoop: true })
-      const allNative: ToolPlan[] = allCandidates
-        .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
-        .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
-      const fallbackPlanSet = createPlanSet({
-        roles: new Map(allRoles.map((r) => [r.agent, r.text])),
-        base: plans.base,
-        native: allNative,
-        instructions: allInstructions,
-        scrubByAgent,
-        needsNarrowing: plans.needsNarrowing,
-        permissions,
-        customByAgent,
-      })
+      const customByAgent = precomputed?.customByAgent ?? state?.currentPlanSet?.customByAgent ?? (await readCustomSystem(ctx, input.agents))
+      const fallbackPlanSet = state?.currentPlanSet ?? (() => {
+        const allRoles = roleUpdates(input, { skipNoop: true })
+        const allInstructions = instructionPlans(input, { skipNoop: true })
+        const allCandidates = toolCandidates(input, { skipNoop: true })
+        const allNative: ToolPlan[] = allCandidates
+          .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
+          .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+        return createPlanSet({
+          roles: new Map(allRoles.map((r) => [r.agent, r.text])),
+          base: plans.base,
+          native: allNative,
+          instructions: allInstructions,
+          scrubByAgent,
+          needsNarrowing: plans.needsNarrowing,
+          permissions,
+          customByAgent,
+        })
+      })()
       const registration = await runHook(ctx.session.hook, "context", (event) => {
         if (state === undefined) {
           applyBasePlan(event, plans.base, classifier, customByAgent)
@@ -1560,7 +1656,7 @@ async function applySession(
     permissions,
     customByAgent,
   })
-  const installed = await installSessionPlans(ctx, input, plans, permissions)
+  const installed = await installSessionPlans(ctx, input, plans, permissions, undefined, { instructions, customByAgent })
   return { registrations: installed, tools: plans.tools, agentChanged: plans.denials.length > 0 || plans.permDenies.length > 0 }
 }
 
