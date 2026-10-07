@@ -52,6 +52,7 @@ const startEntries = Effect.fnUntraced(function* (
     claude: [],
     agents: [],
   },
+  configDir?: string,
 ) {
   const service = yield* Skill.Service
   const pluginHost = host({
@@ -61,15 +62,17 @@ const startEntries = Effect.fnUntraced(function* (
       reload: service.reload,
     },
   })
+  const globalService = Global.Service.of({ ...Global.make(), home, config: configDir ?? Global.make().config })
   yield* ConfigCompatibilityPlugin.Plugin.effect(pluginHost).pipe(
     Effect.provide(Config.testLayer(entries, compatibility)),
+    Effect.provideService(Global.Service, globalService),
   )
   yield* ConfigSkillPlugin.Plugin.effect(
     pluginHost,
   ).pipe(
     Effect.provide(Config.testLayer(entries, compatibility)),
     Effect.provideService(SkillDiscovery.Service, discovery),
-    Effect.provideService(Global.Service, Global.Service.of({ ...Global.make(), home })),
+    Effect.provideService(Global.Service, globalService),
     Effect.provideService(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make(directory) }))),
   )
   return service
@@ -167,33 +170,48 @@ describe("ConfigSkillPlugin.Plugin", () => {
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          const claude = path.join(tmp.path, "claude")
-          const agents = path.join(tmp.path, "agents")
-          const opencode = path.join(tmp.path, "opencode")
+          // Item 4.6: every source loads, but only service-wide sources are
+          // watched. The project skill directory loads at boot and is left
+          // alone afterwards; the global config and ~/.agents skill
+          // directories share one watcher each.
+          const global = path.join(tmp.path, "global")
           const home = path.join(tmp.path, "home")
           const directory = path.join(tmp.path, "project")
-          const expected = [
-            path.join(claude, "skills"),
-            path.join(agents, "skills"),
-            path.join(opencode, "skill"),
-            path.join(opencode, "skills"),
-            path.join(home, "shared"),
-            path.join(directory, "relative"),
-          ]
-          yield* Effect.promise(() => Promise.all(expected.map((item) => fs.mkdir(item, { recursive: true }))))
+          const globalSkills = [path.join(global, "skill"), path.join(global, "skills")]
+          const agentSkills = path.join(home, ".agents", "skills")
+          const projectSkills = path.join(directory, "skills")
+          yield* Effect.promise(() =>
+            Promise.all(
+              [...globalSkills, agentSkills, projectSkills].map((item) => fs.mkdir(item, { recursive: true })),
+            ),
+          )
+          yield* Effect.promise(() => fs.mkdir(path.join(projectSkills, "local"), { recursive: true }))
+          yield* Effect.promise(() => fs.mkdir(path.join(globalSkills[0], "shared"), { recursive: true }))
+          yield* Effect.promise(() => write(projectSkills, "local", "Local"))
+          yield* Effect.promise(() => write(globalSkills[0], "shared", "Shared"))
 
-          yield* startEntries(
+          const service = yield* startEntries(
             [
-              new Directory({ type: "directory", path: AbsolutePath.make(opencode) }),
-              new Document({ type: "document", info: decode({ skills: ["~/shared", "./relative"] }) }),
+              new Directory({ type: "directory", path: AbsolutePath.make(global) }),
+              new Document({ type: "document", info: decode({ skills: [projectSkills] }) }),
             ],
             directory,
             home,
             emptyDiscovery,
-            { claude: [AbsolutePath.make(claude)], agents: [AbsolutePath.make(agents)] },
+            { claude: [], agents: [AbsolutePath.make(path.join(home, ".agents"))] },
+            global,
           )
+          // Every source loads, project or global.
+          expect((yield* service.list()).map((item) => item.id).toSorted()).toEqual([
+            Skill.ID.make("local"),
+            Skill.ID.make("shared"),
+          ])
+          // Only the service-wide sources are watched.
           const watcher = yield* Watcher.Test
-          expect(yield* watcher.subscriptions()).toEqual(expected.map((item) => ({ path: item, type: "directory" })))
+          expect(yield* watcher.subscriptions()).toEqual(
+            expect.arrayContaining(globalSkills.map((item) => ({ path: item, type: "directory" }))),
+          )
+          expect(yield* watcher.subscriptions()).not.toContainEqual({ path: projectSkills, type: "directory" })
         }),
       ),
     ),
@@ -289,35 +307,73 @@ describe("ConfigSkillPlugin.Plugin", () => {
     ),
   )
 
-  it.live("rescans directory sources when watched files change", () =>
+  it.live("rescans global directory sources when watched files change", () =>
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
+          // Item 4.6 keeps the watcher for service-wide sources: an edit
+          // under the global config directory still rescans. Project sources
+          // (the next test) load once and ignore the feed.
+          const global = path.join(tmp.path, "global")
+          const source = path.join(global, "skills")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(source, "deploy"), { recursive: true })
+            await write(source, "deploy", "Initial")
+          })
+          const skill = yield* startEntries(
+            [new Document({ type: "document", info: decode({ skills: [source] }) })],
+            tmp.path,
+            tmp.path,
+            emptyDiscovery,
+            { claude: [], agents: [] },
+            global,
+          )
+          expect((yield* skill.list()).find((item) => item.id === "deploy")?.description).toBe("Initial")
+
+          const deploy = path.join(source, "deploy", "SKILL.md")
+          yield* Effect.promise(() => write(source, "deploy", "Updated"))
+          yield* emitAndWait({ type: "update", path: deploy })
+          expect((yield* skill.list()).find((item) => item.id === "deploy")?.description).toBe("Updated")
+
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(source, "review"), { recursive: true })
+            await write(source, "review", "Review")
+          })
+          yield* emitAndWait({ type: "create", path: path.join(source, "review", "SKILL.md") })
+          expect((yield* skill.list()).map((item) => item.id)).toEqual([
+            Skill.ID.make("deploy"),
+            Skill.ID.make("review"),
+          ])
+
+          yield* Effect.promise(() => fs.rm(path.join(source, "review"), { recursive: true }))
+          yield* emitAndWait({ type: "delete", path: path.join(source, "review", "SKILL.md") })
+          expect((yield* skill.list()).map((item) => item.id)).toEqual([Skill.ID.make("deploy")])
+        }),
+      ),
+    ),
+  )
+
+  it.live("loads project skills once and ignores later file changes", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          // Item 4.6: a skill file inside a project folder applies in the
+          // next chat or after /refresh, never through a watcher. The load
+          // still happens at boot.
           yield* Effect.promise(async () => {
             await fs.mkdir(path.join(tmp.path, "deploy"), { recursive: true })
             await write(tmp.path, "deploy", "Initial")
           })
           const skill = yield* start([tmp.path], tmp.path)
           expect((yield* skill.list()).find((item) => item.id === "deploy")?.description).toBe("Initial")
+          const watcher = yield* Watcher.Test
+          expect(yield* watcher.subscriptions()).toEqual([])
 
           const deploy = path.join(tmp.path, "deploy", "SKILL.md")
           yield* Effect.promise(() => write(tmp.path, "deploy", "Updated"))
-          yield* emitAndWait({ type: "update", path: deploy })
-          expect((yield* skill.list()).find((item) => item.id === "deploy")?.description).toBe("Updated")
-
-          yield* Effect.promise(async () => {
-            await fs.mkdir(path.join(tmp.path, "review"), { recursive: true })
-            await write(tmp.path, "review", "Review")
-          })
-          yield* emitAndWait({ type: "create", path: path.join(tmp.path, "review", "SKILL.md") })
-          expect((yield* skill.list()).map((item) => item.id)).toEqual([
-            Skill.ID.make("deploy"),
-            Skill.ID.make("review"),
-          ])
-
-          yield* Effect.promise(() => fs.rm(path.join(tmp.path, "review"), { recursive: true }))
-          yield* emitAndWait({ type: "delete", path: path.join(tmp.path, "review", "SKILL.md") })
-          expect((yield* skill.list()).map((item) => item.id)).toEqual([Skill.ID.make("deploy")])
+          yield* watcher.emit({ type: "update", path: deploy })
+          yield* Effect.sleep("300 millis")
+          expect((yield* skill.list()).find((item) => item.id === "deploy")?.description).toBe("Initial")
         }),
       ),
     ),
@@ -327,8 +383,11 @@ describe("ConfigSkillPlugin.Plugin", () => {
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          const source = path.join(tmp.path, "source")
-          const target = path.join(tmp.path, "target", "bro")
+          // The canonical target of a global symlinked source is watched,
+          // so edits through the link rescan.
+          const global = path.join(tmp.path, "global")
+          const source = path.join(global, "skills")
+          const target = path.join(global, "canon", "bro")
           const file = path.join(target, "SKILL.md")
           yield* Effect.promise(async () => {
             await fs.mkdir(source, { recursive: true })
@@ -337,7 +396,14 @@ describe("ConfigSkillPlugin.Plugin", () => {
             await fs.symlink(target, path.join(source, "bro"), process.platform === "win32" ? "junction" : undefined)
           })
 
-          const skill = yield* start([source], tmp.path)
+          const skill = yield* startEntries(
+            [new Document({ type: "document", info: decode({ skills: [source] }) })],
+            tmp.path,
+            tmp.path,
+            emptyDiscovery,
+            { claude: [], agents: [] },
+            global,
+          )
           const watcher = yield* Watcher.Test
           expect((yield* skill.list()).find((item) => item.id === "bro")?.description).toBe("Initial")
           expect(yield* watcher.subscriptions()).toContainEqual({ path: target, type: "directory" })
@@ -354,9 +420,10 @@ describe("ConfigSkillPlugin.Plugin", () => {
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          const source = path.join(tmp.path, "source")
-          const first = path.join(tmp.path, "first")
-          const second = path.join(tmp.path, "second")
+          const global = path.join(tmp.path, "global")
+          const source = path.join(global, "source")
+          const first = path.join(global, "first")
+          const second = path.join(global, "second")
           yield* Effect.promise(async () => {
             await fs.mkdir(path.join(first, "bro"), { recursive: true })
             await fs.mkdir(path.join(second, "bro"), { recursive: true })
@@ -365,7 +432,14 @@ describe("ConfigSkillPlugin.Plugin", () => {
             await fs.symlink(first, source, process.platform === "win32" ? "junction" : undefined)
           })
 
-          const skill = yield* start([source], tmp.path)
+          const skill = yield* startEntries(
+            [new Document({ type: "document", info: decode({ skills: [source] }) })],
+            tmp.path,
+            tmp.path,
+            emptyDiscovery,
+            { claude: [], agents: [] },
+            global,
+          )
           const watcher = yield* Watcher.Test
           expect((yield* skill.list()).find((item) => item.id === "bro")?.description).toBe("First")
           expect(yield* watcher.subscriptions()).toEqual([
@@ -395,14 +469,23 @@ describe("ConfigSkillPlugin.Plugin", () => {
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          const source = path.join(tmp.path, "generated", "skills")
-          const skill = yield* start([source], tmp.path)
+          const global = path.join(tmp.path, "global")
+          yield* Effect.promise(() => fs.mkdir(global, { recursive: true }))
+          const source = path.join(global, "generated", "skills")
+          const skill = yield* startEntries(
+            [new Document({ type: "document", info: decode({ skills: [source] }) })],
+            tmp.path,
+            tmp.path,
+            emptyDiscovery,
+            { claude: [], agents: [] },
+            global,
+          )
           const watcher = yield* Watcher.Test
           expect(yield* skill.list()).toEqual([])
-          expect(yield* watcher.subscriptions()).toEqual([{ path: path.join(tmp.path, "generated"), type: "file" }])
+          expect(yield* watcher.subscriptions()).toEqual([{ path: path.join(global, "generated"), type: "file" }])
 
-          yield* Effect.promise(() => fs.mkdir(path.join(tmp.path, "generated")))
-          yield* emitAndWait({ type: "create", path: path.join(tmp.path, "generated") })
+          yield* Effect.promise(() => fs.mkdir(path.join(global, "generated")))
+          yield* emitAndWait({ type: "create", path: path.join(global, "generated") })
           yield* Effect.promise(async () => {
             await fs.mkdir(path.join(source, "deploy"), { recursive: true })
             await write(source, "deploy", "Deploy")

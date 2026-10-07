@@ -295,6 +295,7 @@ function resourceMcpLayer(
               Config.Service.of({
                 entries: overrides.entries,
                 changes: () => Stream.never,
+                reload: () => Effect.void,
               }),
             )
           : Config.testLayer([

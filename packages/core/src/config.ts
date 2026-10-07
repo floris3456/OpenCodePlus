@@ -40,6 +40,14 @@ export interface Interface {
    * source files they parse and rebuild their own state.
    */
   readonly changes: () => Stream.Stream<Watcher.Update>
+  /**
+   * Re-reads this folder's config from disk and republishes when it changed.
+   * With `force`, republishes unconditionally so every config-backed domain
+   * rescans its files: `/refresh` picks up file additions and removals that
+   * change no config document (a new skill file), not just document edits.
+   * Watchers always reload without force; only an explicit refresh forces.
+   */
+  readonly reload: (options?: { readonly force?: boolean }) => Effect.Effect<void>
   /** Updates supported global config fields while preserving unrelated JSONC content. */
   readonly update?: (patch: Patch) => Effect.Effect<void, FSUtil.Error>
 }
@@ -79,6 +87,7 @@ export const testLayer = (
       const updates = yield* PubSub.unbounded<Watcher.Update>()
       const service = Test.of({
         entries: () => Ref.get(entries),
+        reload: () => Effect.void,
         compatibility: () => Effect.succeed(compatibility),
         changes: () => Stream.fromPubSub(updates),
         setEntries: (next) => Ref.set(entries, next),
@@ -298,7 +307,12 @@ export const layer = (options?: Options) =>
       const requestReload = PubSub.publish(reloads, undefined).pipe(Effect.asVoid)
       const watched = yield* FiberMap.make<string>()
       const reconcile = Effect.fn("Config.reconcileWatches")(function* (sources: ConfigDiscovery.Sources) {
-        const plan = ConfigWatch.plan(sources)
+        // Service-wide sources only: a project opencode.json, skill or agent
+        // file under this folder is read at boot and on demand, never watched.
+        const plan = ConfigWatch.plan(sources, {
+          config: initial.global,
+          home: AbsolutePath.make(globalService.home),
+        })
         for (const key of Array.from(watched, ([key]) => key)) {
           if (!plan.has(key)) yield* FiberMap.remove(watched, key)
         }
@@ -314,21 +328,25 @@ export const layer = (options?: Options) =>
         }
       })
 
-      const reload = Effect.fn("Config.reload")(
-        function* () {
-          const discovered = yield* ConfigDiscovery.discover(options)
-          const next = yield* load(discovered)
-          yield* reconcile(discovered)
-          const compatibilityChanged =
-            !isDeepStrictEqual(sources.claude, discovered.claude) ||
-            !isDeepStrictEqual(sources.agents, discovered.agents)
-          if (isDeepStrictEqual(configs, next) && !compatibilityChanged) return
-          sources = discovered
-          configs = next
-          yield* bus.publish(Event.Updated, {})
-        },
-        (effect) => reloadLock.withPermit(effect),
-      )
+      const runReload = Effect.fn("Config.reload")(function* (input?: { readonly force?: boolean }) {
+        const discovered = yield* ConfigDiscovery.discover(options).pipe(
+          Effect.provideService(FSUtil.Service, fs),
+          Effect.provideService(Global.Service, globalService),
+          Effect.provideService(Location.Service, location),
+        )
+        const next = yield* load(discovered)
+        yield* reconcile(discovered)
+        const compatibilityChanged =
+          !isDeepStrictEqual(sources.claude, discovered.claude) ||
+          !isDeepStrictEqual(sources.agents, discovered.agents)
+        // Discovery reads its services from the layer closure, so an
+        // explicit reload through the plugin seam needs no caller context.
+        if (isDeepStrictEqual(configs, next) && !compatibilityChanged && input?.force !== true) return
+        sources = discovered
+        configs = next
+        yield* bus.publish(Event.Updated, {})
+      })
+      const reload = (input?: { readonly force?: boolean }) => reloadLock.withPermit(runReload(input))
 
       // Subscribe eagerly so synchronous watch readiness isn't dropped.
       const pendingReloads = yield* PubSub.subscribe(reloads)
@@ -405,6 +423,7 @@ export const layer = (options?: Options) =>
           if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
           return configs
         }),
+        reload: (input) => reload(input).pipe(Effect.asVoid),
         compatibility: () =>
           Effect.all({
             claude: Effect.filter(sources.claude, fs.isDir),

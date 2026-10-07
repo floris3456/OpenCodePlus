@@ -6,6 +6,7 @@ import type { App } from "../app.js"
 import type { AgentDomain } from "./agent.js"
 import type { AISDKDomain } from "./aisdk.js"
 import type { CommandDomain } from "./command.js"
+import type { ConfigDomain } from "./config.js"
 import type { EventDomain } from "./event.js"
 import type { IntegrationDomain } from "./integration.js"
 import type { MCPDomain } from "./mcp.js"
@@ -35,6 +36,7 @@ export interface Context {
   readonly agent: AgentDomain
   readonly aisdk: AISDKDomain
   readonly command: CommandDomain
+  readonly config: ConfigDomain
   readonly event: EventDomain
   readonly experimental: {
     readonly terminal: Pick<OpenCodeClient["experimental"]["persistentPty"], "read">

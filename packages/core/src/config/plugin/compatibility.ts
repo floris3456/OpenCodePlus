@@ -2,6 +2,7 @@ export * as ConfigCompatibilityPlugin from "./compatibility.js"
 
 import { define } from "@opencode/plugin/effect/plugin"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Global } from "@opencode/util/global"
 import path from "path"
 import { Effect, FiberMap, PubSub, Semaphore, Stream } from "effect"
 import { Config } from "../../config.js"
@@ -15,6 +16,7 @@ export const Plugin = define({
   effect: Effect.fn(function* (ctx) {
     const config = yield* Config.Service
     const fs = yield* FSUtil.Service
+    const global = yield* Global.Service
     const watcher = yield* Watcher.Service
     const watches = yield* FiberMap.make<string>()
     const changes = yield* PubSub.sliding<string>(1)
@@ -25,6 +27,14 @@ export const Plugin = define({
       target: string,
       type: "file" | "directory",
     ) {
+      // Service-wide roots only: `~/.claude/skills` and `~/.agents/skills`
+      // share one native watcher across folders. A project's own
+      // compatibility directories load at boot and on demand instead.
+      const resolved = path.resolve(target)
+      const watched = [path.join(global.home, ".claude"), path.join(global.home, ".agents")].some(
+        (root) => resolved === root || FSUtil.contains(path.resolve(root), resolved),
+      )
+      if (!watched) return
       const updates = yield* watcher.subscribe({ path: target, type })
       yield* FiberMap.run(
         watches,
@@ -63,6 +73,14 @@ export const Plugin = define({
     const updates = yield* PubSub.subscribe(changes)
     yield* Stream.fromSubscription(updates).pipe(
       Stream.debounce("100 millis"),
+      Stream.runForEach(() => reload),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    // An explicit reload (config.reload, the /refresh path) carries no
+    // watcher event: the config.updated broadcast refreshes instead, so
+    // project compatibility directories apply on demand.
+    yield* ctx.event.subscribe().pipe(
+      Stream.filter((event) => event.type === "config.updated"),
       Stream.runForEach(() => reload),
       Effect.forkScoped({ startImmediately: true }),
     )

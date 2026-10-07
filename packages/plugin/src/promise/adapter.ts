@@ -338,6 +338,9 @@ export function fromPromise(plugin: Plugin) {
               ),
             reload: () => run(host.command.reload()),
           },
+          config: {
+            reload: (options) => run(host.config.reload(options)),
+          },
           event: {
             subscribe: (options) =>
               streams(
