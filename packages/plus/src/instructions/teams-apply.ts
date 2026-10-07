@@ -78,7 +78,7 @@ export async function installTeamAgents(
   }
 }
 
-async function runSpecialRegistration(
+export async function runSpecialRegistration(
   ctx: Context,
   id: string,
   systemText: string,
@@ -135,7 +135,7 @@ export interface TeamFields {
 // request defaults, core permissions) in place. Disposing the registration
 // rebuilds the host view without it, which removes team-only ids and restores
 // overwritten ones.
-async function runTeamRegistration(
+export async function runTeamRegistration(
   ctx: Context,
   id: string,
   body: string,
