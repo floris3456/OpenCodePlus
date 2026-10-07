@@ -10,6 +10,7 @@ import { Effect, Option, Schema, Stream } from "effect"
 import { Agent } from "../agent.js"
 import { AISDK } from "../aisdk.js"
 import { Command } from "../command.js"
+import { Config } from "../config.js"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
 import { Environment } from "../environment/index.js"
@@ -39,6 +40,7 @@ import { Generate } from "../generate.js"
 import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "./hooks.js"
+import { LocationActivity } from "../location-activity.js"
 import type { Interface } from "../plugin.js"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 
@@ -69,6 +71,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const providers = yield* Provider.Service
   const models = yield* Model.Service
   const commands = yield* Command.Service
+  const config = yield* Config.Service
   const bus = yield* Bus.Service
   const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
   const integration = yield* Integration.Service
@@ -92,6 +95,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const sessions = yield* Session.Service
   const persistentPty = yield* PersistentPty.Service
   const locations = yield* LocationServiceMap.Service
+  const activity = yield* LocationActivity.Service
   const worktrees = yield* Worktree.Service
   const worktreeStrategies = yield* WorktreeStrategies.Service
   const currentWorktreeStrategies = location.workspaceID ? undefined : worktreeStrategies
@@ -282,6 +286,9 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
       list: () => response(commands.list()),
       reload: commands.reload,
       transform: commands.transform,
+    },
+    config: {
+      reload: config.reload,
     },
     event: {
       subscribe: () =>
@@ -482,6 +489,10 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
     plugin: {
       list: () => response(plugin.list()),
     },
+    locations: {
+      evict: (ref) => activity.evict(ref),
+      loaded: (ref) => activity.loaded(ref),
+    },
     prompt: {
       templates: () => Effect.succeed(PromptTemplate.templates),
       active: (model) => Effect.succeed(PromptTemplate.active(model)),
@@ -644,6 +655,7 @@ export const requirements = LayerNode.group([
   Provider.node,
   Model.node,
   Command.node,
+  Config.node,
   Bus.node,
   InstructionDiscovery.node,
   Integration.node,
@@ -665,6 +677,7 @@ export const requirements = LayerNode.group([
   Session.node,
   PersistentPty.node,
   LocationServiceMap.node,
+  LocationActivity.node,
 ])
 
 /**

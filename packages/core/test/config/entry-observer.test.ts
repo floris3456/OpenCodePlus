@@ -15,6 +15,7 @@ describe("ConfigEntryObserver", () => {
       const config = Config.Service.of({
         entries: () => Ref.get(current),
         changes: () => Stream.empty,
+        reload: () => Effect.void,
       })
       const event = {
         subscribe: () =>

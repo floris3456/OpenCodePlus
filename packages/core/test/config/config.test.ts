@@ -310,11 +310,9 @@ describe("Config", () => {
           Effect.andThen(
             Effect.gen(function* () {
               const watcher = yield* Watcher.Test
-              const subscriptions = yield* watcher.subscriptions()
-              expect(subscriptions.length).toBeGreaterThan(0)
-              expect(
-                subscriptions.filter((item) => inFixture(global, item.path) || inFixture(link, item.path)),
-              ).toEqual([])
+              // Item 4.6: with global config off there is no service-wide
+              // source left, so no folder watches anything at all.
+              expect(yield* watcher.subscriptions()).toEqual([])
             }).pipe(
               Effect.provide(
                 testLayer(project, global, project, undefined, undefined, undefined, undefined, { global: false }),
@@ -358,7 +356,7 @@ describe("Config", () => {
   // Real watcher on purpose: the regression this pins (a deleted config file's
   // watch being torn down, making recreation invisible) only reproduces with
   // path-faithful event delivery.
-  it.live("keeps watching a deleted config file so recreating it reloads", () =>
+  it.live("reloads a deleted and recreated project config file on demand", () =>
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
@@ -372,22 +370,17 @@ describe("Config", () => {
           })
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
-            const bus = yield* Bus.Service
             expect(Config.latest(yield* config.entries(), "shell")).toBe("one")
-            yield* Effect.sleep("10 millis")
 
-            const removed = yield* bus
-              .subscribe(Event.Updated)
-              .pipe(Stream.take(1), Stream.runDrain, Effect.forkScoped({ startImmediately: true }))
+            // Item 4.6: the project file is not watched, so deletion and
+            // recreation apply on an explicit reload (the /refresh path)
+            // instead of through a per-folder file watcher.
             yield* Effect.promise(() => fs.rm(file))
-            yield* Fiber.join(removed).pipe(Effect.timeout("5 seconds"))
+            yield* config.reload()
             expect(Config.latest(yield* config.entries(), "shell")).toBeUndefined()
 
-            const recreated = yield* bus
-              .subscribe(Event.Updated)
-              .pipe(Stream.take(1), Stream.runDrain, Effect.forkScoped({ startImmediately: true }))
             yield* Effect.promise(() => fs.writeFile(file, JSON.stringify({ shell: "two" })))
-            yield* Fiber.join(recreated).pipe(Effect.timeout("5 seconds"))
+            yield* config.reload()
             expect(Config.latest(yield* config.entries(), "shell")).toBe("two")
           }).pipe(
             Effect.provide(
@@ -941,16 +934,15 @@ describe("Config", () => {
             const watcher = yield* Watcher.Test
             yield* config.entries()
 
+            // Item 4.6: project ecosystem roots are never watched. Only the
+            // service-wide global config directory remains (it covers the
+            // global ~/.claude and ~/.agents roots here, which sit inside
+            // it, so no parent watch is needed for them).
             expect((yield* watcher.subscriptions()).filter((item) => inFixture(tmp.path, item.path))).toEqual([
               {
                 type: "directory",
                 path: AbsolutePath.make(path.join(tmp.path, "global")),
                 ignore: ["**/{node_modules,.git}/**", ".git", "node_modules"],
-              },
-              {
-                type: "entries",
-                path: tmp.path,
-                names: [".agents", ".claude", ".opencode", "opencode.json", "opencode.jsonc"],
               },
             ])
           }).pipe(Effect.provide(testLayer(tmp.path, undefined, undefined, undefined, Watcher.testLayer)))

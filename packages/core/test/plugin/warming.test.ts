@@ -43,6 +43,7 @@ const makeConfig = Effect.fn("makeConfig")(function* (initial: Entry[]) {
     service: Config.Service.of({
       entries: () => Ref.get(entries),
       changes: () => Stream.empty,
+      reload: () => Effect.void,
     }),
     set: (next: Entry[]) => Ref.set(entries, next),
   }

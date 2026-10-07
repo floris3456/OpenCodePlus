@@ -367,6 +367,7 @@ describe("LocationWatcher subscriptions", () => {
       Config.Service.of({
         entries: () => Effect.sync(() => entries.current),
         changes: () => Stream.never,
+        reload: () => Effect.void,
       }),
     )
     return Effect.gen(function* () {

@@ -3,7 +3,7 @@ export * as ConfigInstructionPlugin from "./instruction.js"
 import { define } from "@opencode/plugin/effect/plugin"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
-import { dirname, join } from "path"
+import { join } from "path"
 import { Effect, PubSub, Semaphore, Stream } from "effect"
 import { Watcher } from "../../filesystem/watcher.js"
 import { InstructionDiscovery } from "../../instruction-discovery.js"
@@ -38,16 +38,14 @@ export const Plugin = define({
       const loaded: { current: Loaded } = { current: { type: "available", files: [] } }
 
       const publish = (update: Watcher.Update) => PubSub.publish(changes, update.path).pipe(Effect.asVoid)
-      // The ancestor walk can reach the global file when the location sits
-      // beneath the global config dir; global: false excludes it there too.
-      const candidates = [
-        ...(discovery.global ? [globalFile] : []),
-        ...(project
-          ? ancestorDirectories(start, stop)
-              .map((directory) => join(directory, "AGENTS.md"))
-              .filter((file) => discovery.global || file !== globalFile)
-          : []),
-      ]
+      // Service-wide sources only: the global file is watched, so global
+      // edits still land in every loaded folder. A project's own AGENTS.md
+      // files load at boot and on demand (the next chat, or `/refresh`),
+      // never watched: one watch set per loaded folder is what scaled with
+      // the team. The ancestor walk can reach the global file when the
+      // location sits beneath the global config dir; global: false excludes
+      // it there too.
+      const candidates = [...(discovery.global ? [globalFile] : [])]
       for (const path of new Set(candidates)) {
         const updates = yield* watcher.subscribe({ path, type: "file" })
         yield* updates.pipe(Stream.runForEach(publish), Effect.forkScoped({ startImmediately: true }))
@@ -129,8 +127,3 @@ export const Plugin = define({
     )
   }),
 })
-
-function ancestorDirectories(start: string, stop: string): string[] {
-  if (start === stop) return [start]
-  return [start, ...ancestorDirectories(dirname(start), stop)]
-}

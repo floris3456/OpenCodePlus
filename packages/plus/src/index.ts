@@ -10,7 +10,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { DateTime, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
+import { DateTime, Effect, Exit, Queue, Scope, Schema, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -87,10 +87,13 @@ import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
+import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
+import { ledgerAt } from "./monitor/ledger.js"
 import { registerMonitorTools } from "./monitor/tools.js"
+import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
 import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 
@@ -100,6 +103,10 @@ export interface TeamOwnership {
 }
 
 export interface PlusState {
+  /** When this Location's Plus instance started: its folder's files were read then. */
+  readonly loadedAt: number
+  /** Chats that already had their first prompt here (a new chat re-reads the folder's files once). */
+  readonly chatsSeen: Set<string>
   registration: RpcRegistration<typeof Definition> | undefined
   applied: Registration[]
   appliedParts: Map<string, AppliedPart>
@@ -173,6 +180,8 @@ export interface PlusState {
 
 export function createState(): PlusState {
   return {
+    loadedAt: Date.now(),
+    chatsSeen: new Set(),
     registration: undefined,
     applied: [],
     appliedParts: new Map(),
@@ -268,6 +277,7 @@ export default Plugin.define({
       // request runs, so no request uses stale instructions.
       yield* ctx.session.hook("prompt", (event) =>
         Effect.gen(function* () {
+          if (event && event.sessionID) yield* refreshFolderForNewChat(ctx, state, String(event.sessionID))
           yield* flushPendingRefresh(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
@@ -638,6 +648,7 @@ export type UpdateRuleResult =
 export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
+  readonly chatRefresh: (input: Schema.Schema.Type<typeof Plus.ChatRefreshInput>) => Promise<{ ok: true; value: Schema.Schema.Type<typeof Plus.ChatRefreshResult> }>
   readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
@@ -681,6 +692,22 @@ export interface PlusApi {
 export interface PlusApiOptions {
   /** Defaults-tier teams. None ship (the shipped teams are Plus team presets); tests inject fixtures. */
   readonly builtins?: readonly BuiltinTeam[]
+}
+
+// What a refresh costs: the input tokens of this chat's last request, which the
+// next request re-reads whole when the rebuild invalidates the prefix. The
+// Monitor's ledger holds the input token count per request.
+async function chatRefreshCost(
+  ctx: Context,
+  sessionID: string | undefined,
+): Promise<{ reReadTokens: number; withoutCache: boolean }> {
+  if (sessionID === undefined || sessionID === "") return { reReadTokens: 0, withoutCache: false }
+  const rows = ledgerAt().getRequests(sessionID)
+  const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title").at(-1)
+  if (last === undefined) return { reReadTokens: 0, withoutCache: false }
+  // input is the prompt the model saw; cacheRead is the part it read from cache.
+  const tokens = last.inputTokens + last.cacheReadTokens
+  return { reReadTokens: tokens, withoutCache: last.cacheReadTokens > 0 }
 }
 
 export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiOptions): PlusApi {
@@ -885,6 +912,62 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
       return { ok: true as const, value: await snapshotOf(loaded, directory, discovered) }
+    },
+    chatRefresh: async (input) => {
+      // Rebuild this folder from its current settings and files: the host
+      // reloads (config, agents, providers, models, commands, skills, MCP),
+      // then Plus republishes what this chat sends, and applies any pending
+      // Instructions change. This is the escape hatch: it may rebuild a cached
+      // prefix, so the caller is told the cost first.
+      const directory = await activationDirectory(ctx.location.directory)
+      if (input.dryRun === true) {
+        const cost = await chatRefreshCost(ctx, input.sessionID)
+        const stored = await loadMigrated(directory)
+        return {
+          ok: true as const,
+          value: {
+            reloaded: [],
+            reReadTokens: cost.reReadTokens,
+            withoutCache: cost.withoutCache,
+            revision: stored.projectRevision,
+            globalRevision: stored.globalRevision,
+          },
+        }
+      }
+      // Config first, forced: the domain reloads below re-read their entries,
+      // and a forced config publish makes every config-backed plugin rescan
+      // its files, so a new skill file or edited project opencode.json
+      // applies here instead of through a per-folder file watcher. Each is
+      // independent: one failing domain must not skip the others.
+      const reloads: readonly [string, Effect.Effect<void>][] = [
+        ["config", ctx.config.reload({ force: true })],
+        ["instruction", ctx.instruction.reload()],
+        ["agents", ctx.agent.reload()],
+        ["providers", ctx.provider.reload()],
+        ["models", ctx.model.reload()],
+        ["commands", ctx.command.reload()],
+        ["skills", ctx.skill.reload()],
+        ["mcp", ctx.mcp.reload()],
+      ]
+      const reloaded: string[] = []
+      for (const [name, reload] of reloads) {
+        const exit = await Effect.runPromiseExit(reload)
+        if (exit._tag === "Success") reloaded.push(name)
+        else Effect.runSync(Effect.logWarning("plus chat refresh reload failed", { domain: name }))
+      }
+      await Effect.runPromise(refreshFromHost(ctx, state))
+      const fresh = await loadMigrated(directory)
+      const cost = await chatRefreshCost(ctx, input.sessionID)
+      return {
+        ok: true as const,
+        value: {
+          reloaded,
+          reReadTokens: cost.reReadTokens,
+          withoutCache: cost.withoutCache,
+          revision: fresh.projectRevision,
+          globalRevision: fresh.globalRevision,
+        },
+      }
     },
     mutate: async (input) => {
       if ("changes" in input) return mutateDelta(input)
@@ -3176,6 +3259,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.refresh())
         return result.value
       }),
+    "chat.refresh": (input) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.chatRefresh(input))
+        return result.value
+      }),
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.mutate(input))
@@ -3701,6 +3789,13 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
     if (Date.now() - state.warmingCheckedAt > 5_000) {
       state.warmingCheckedAt = Date.now()
       await refreshActiveModelsIfStale(await activationDirectory(ctx.location.directory), state)
+    }
+    // A ping must not boot an unloaded folder: the location's own services are
+    // dropped after its idle window, and its next load reads fresh state, so a
+    // ping there is wasted work at best and an MCP process spawn at worst.
+    if (event.phase === "warm" && !(await Effect.runPromise(ctx.locations.loaded(ctx.location)))) {
+      event.settings = undefined
+      return false
     }
     return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model), (sessionID) =>
       Effect.runPromise(
@@ -5161,8 +5256,10 @@ async function installTooling(ctx: Context, state: PlusState): Promise<Registrat
   // authority, so it installs with the rest of the tooling rather than behind one.
   const release = await registerReleaseTools(ctx)
   const monitor = await registerMonitorTools(ctx)
+  const refresh = await registerRefreshTool(ctx, api)
   const search = await registerSearchMcp(ctx)
-  return search !== undefined ? [...teaching, tools, release, monitor, search] : [...teaching, tools, release, monitor]
+  const base = [...teaching, tools, release, monitor, refresh]
+  return search !== undefined ? [...base, search] : base
 }
 
 function disposeTooling(state: PlusState): Effect.Effect<void> {
@@ -6270,30 +6367,17 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
 // The cross-process half: any write to the shared records file or the global
 // teams root (an empty team is a directory and writes no record, so the teams
 // root needs its own watch) means another Plus instance published. Bun.write
-// rewrites the records file in place, so the directory watch sees it. A missing
-// directory (nothing written yet) just means no watcher for it; the in-process
-// bus still works.
+// rewrites the records file in place, so the directory watch sees it.
+//
+// One service-wide pair, not one per folder: see shared-store-file.ts.
 function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => void): Effect.Effect<void, never, Scope.Scope> {
-  return Effect.acquireRelease(
-    Effect.sync(() => {
+  return acquireSharedStoreWatch(
+    [
       // The teams root changes without a record write, so its changes force a rediscovery.
-      const targets = [
-        { path: path.dirname(globalRecordsPath()), force: false },
-        { path: globalTeamsPath(), force: true },
-      ]
-      const watchers: fsSync.FSWatcher[] = []
-      for (const target of targets) {
-        try {
-          const watcher = fsSync.watch(target.path, { persistent: false }, () => onChange(undefined, target.force))
-          watcher.on("error", () => undefined)
-          watchers.push(watcher)
-        } catch {
-          // Missing target: no watcher until the first write creates it.
-        }
-      }
-      return watchers
-    }),
-    (watchers) => Effect.sync(() => watchers.forEach((watcher) => watcher.close())),
+      { path: path.dirname(globalRecordsPath()), force: false },
+      { path: globalTeamsPath(), force: true },
+    ],
+    (force) => onChange(undefined, force),
   )
 }
 
@@ -6398,6 +6482,24 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
 }
 
 const refreshProcessSemaphore = Effect.runSync(Semaphore.make(1))
+
+// A folder's own files (its opencode.json, skills, agent and command files)
+// are not watched (item 4): a new chat re-reads them once, before its first
+// request, so a change applies in the next chat. A folder that loaded moments
+// ago has just read them (a team worker's first prompt), and later prompts of
+// the same chat keep what it started with; `/refresh` reloads everything now.
+export function refreshFolderForNewChat(ctx: Context, state: PlusState, sessionID: string): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (state.chatsSeen.has(sessionID)) return
+    state.chatsSeen.add(sessionID)
+    if (Date.now() - state.loadedAt < NEW_CHAT_FRESH_MS) return
+    const reloads = [ctx.config.reload({ force: true }), ctx.instruction.reload(), ctx.agent.reload(), ctx.command.reload(), ctx.skill.reload()]
+    for (const reload of reloads)
+      yield* reload.pipe(Effect.catchCause((cause) => Effect.logWarning("plus new-chat folder reload failed", { cause })))
+  })
+}
+
+const NEW_CHAT_FRESH_MS = 5000
 
 export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.promise(async () => {

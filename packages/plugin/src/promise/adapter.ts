@@ -338,6 +338,9 @@ export function fromPromise(plugin: Plugin) {
               ),
             reload: () => run(host.command.reload()),
           },
+          config: {
+            reload: (options) => run(host.config.reload(options)),
+          },
           event: {
             subscribe: (options) =>
               streams(
@@ -460,6 +463,10 @@ export function fromPromise(plugin: Plugin) {
           },
           plugin: {
             list: adaptApiMethod(PluginEndpoints["plugin.list"], host.plugin.list),
+          },
+          locations: {
+            evict: (ref) => run(host.locations.evict(ref)),
+            loaded: (ref) => run(host.locations.loaded(ref)),
           },
           reference: {
             list: adaptApiMethod(ReferenceEndpoints["reference.list"], host.reference.list),

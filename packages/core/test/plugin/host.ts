@@ -64,6 +64,9 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       transform: () => Effect.die("unused command.transform"),
       reload: () => Effect.die("unused command.reload"),
     },
+    config: overrides.config ?? {
+      reload: () => Effect.die("unused config.reload"),
+    },
     event: overrides.event ?? {
       subscribe: () => Stream.empty,
     },
@@ -121,6 +124,10 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     },
     plugin: overrides.plugin ?? {
       list: () => Effect.die("unused plugin.list"),
+    },
+    locations: overrides.locations ?? {
+      evict: () => Effect.void,
+      loaded: () => Effect.succeed(true),
     },
     reference: overrides.reference ?? {
       list: () => Effect.die("unused reference.list"),

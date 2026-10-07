@@ -32,6 +32,7 @@ describe("warming ping usage seam", () => {
       const configService = Config.Service.of({
         entries: () => Ref.get(configEntries),
         changes: () => Stream.empty,
+        reload: () => Effect.void,
       })
 
       const providers = yield* Provider.Service

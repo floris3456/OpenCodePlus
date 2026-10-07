@@ -96,6 +96,10 @@ function commandDomain(): CommandDomain {
   }
 }
 
+function configDomain(): { readonly reload: () => Effect.Effect<void> } {
+  return { reload: () => Effect.void }
+}
+
 function eventDomain(): EventDomain {
   return { subscribe: () => Stream.empty }
 }
@@ -843,6 +847,7 @@ export function context(overrides: Overrides = {}): Context {
     model: overrides.model ?? modelDomain([]),
     provider: overrides.provider ?? providerDomain(),
     command: overrides.command ?? commandDomain(),
+    config: overrides.config ?? configDomain(),
     event: overrides.event ?? eventDomain(),
     experimental: overrides.experimental ?? {
       terminal: { read: die("unused experimental.terminal.read") },
@@ -853,6 +858,7 @@ export function context(overrides: Overrides = {}): Context {
     mcp: overrides.mcp ?? mcpDomain(),
     permission: overrides.permission ?? permissionDomain(),
     plugin: overrides.plugin ?? { list: die("unused plugin.list") },
+    locations: overrides.locations ?? { evict: () => Effect.void, loaded: () => Effect.succeed(true) },
     prompt: overrides.prompt ?? promptDomain(defaultHostTemplates, new Map([["", "general"]])),
     reference: overrides.reference ?? referenceDomain(),
     rpc: overrides.rpc ?? rpcDomain(),

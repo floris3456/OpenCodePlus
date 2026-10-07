@@ -56,6 +56,7 @@ describe("ConfigImagePlugin.Plugin", () => {
       const config = Config.Service.of({
         entries: () => Effect.sync(() => [document({ max_width: reads++ === 0 ? 1_200 : 700, max_base64_bytes: 1 })]),
         changes: () => Stream.empty,
+        reload: () => Effect.void,
       })
       yield* ConfigImagePlugin.Plugin.effect(yield* PluginHost.make(plugins)).pipe(
         Effect.provideService(Config.Service, config),

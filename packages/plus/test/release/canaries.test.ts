@@ -217,6 +217,7 @@ const emptyMcpLayer = Layer.succeed(
   Mcp.Service.of({
     transform: () => Effect.die("unused mcp.transform"),
     reload: () => Effect.die("unused mcp.reload"),
+    ensure: Effect.void,
     servers: () => Effect.succeed([]),
     add: () => Effect.die("unused mcp.add"),
     connect: () => Effect.die("unused mcp.connect"),

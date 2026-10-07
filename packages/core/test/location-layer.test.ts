@@ -297,6 +297,43 @@ describe("LocationServiceMap", () => {
     }),
   )
 
+  itWithActivity.effect("evicts a loaded location on demand without waiting for the timeout", () =>
+    Effect.gen(function* () {
+      const locations = yield* LocationServiceMap.Service
+      const activity = yield* LocationActivity.Service
+      const ref = Location.Ref.make({ directory: AbsolutePath.make("/project") })
+      yield* Location.Service.pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+      expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([ref])
+
+      // Item 4.4: a stopped worker's folder releases now, not after 60 minutes.
+      yield* activity.evict(ref)
+      expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([])
+
+      // A missing or already-unloaded location is a no-op.
+      yield* activity.evict(ref)
+    }),
+  )
+
+  itWithActivity.effect("an event for a dropped folder does not reopen it", () =>
+    Effect.gen(function* () {
+      const locations = yield* LocationServiceMap.Service
+      const activity = yield* LocationActivity.Service
+      const bus = yield* Bus.Service
+      const ref = Location.Ref.make({ directory: AbsolutePath.make("/project") })
+      const sessionID = Session.ID.make("ses_dropped_event")
+      yield* Location.Service.pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+      yield* activity.evict(ref)
+      expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([])
+
+      // Item 4.2: delivering an event to a dropped folder must not boot it.
+      yield* bus.publish(Provider.Event.Updated, {}, { location: ref })
+      yield* bus.publish(Model.Event.Updated, {}, { location: ref })
+      yield* bus.publish(SessionEvent.Execution.Started, { sessionID }, { location: ref })
+      yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID }, { location: ref })
+      expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([])
+    }),
+  )
+
   it.live("retries a location after its missing directory is recreated", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

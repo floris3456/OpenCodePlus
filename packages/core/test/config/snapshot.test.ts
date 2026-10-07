@@ -59,8 +59,8 @@ describe("ConfigSnapshotPlugin.Plugin", () => {
         }),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ).pipe(
-      Effect.provide(PluginTestLayer),
       Effect.provide(Config.testLayer([new Document({ type: "document", info: new Info({ snapshots: false }) })])),
+      Effect.provide(PluginTestLayer),
     ),
   )
 })

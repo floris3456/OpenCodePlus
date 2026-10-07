@@ -25,6 +25,7 @@ import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
+import { LocationActivity } from "@opencode/core/location-activity"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Permission } from "@opencode/core/permission"
 import { Reference } from "@opencode/core/reference"
@@ -68,54 +69,64 @@ const permissionLayer = Layer.succeed(
   }),
 )
 
-export const PluginTestLayer = AppNodeBuilder.build(
-  LayerNode.group([
-    AppProcess.node,
-    FileSystem.node,
-    FSUtil.node,
-    Location.node,
-    Npm.node,
-    Credential.node,
-    Bus.node,
-    Form.node,
-    Generate.node,
-    InstructionDiscovery.node,
-    LayerNodePlatform.httpClient,
-    Plugin.node,
-    // The durable release store is a hard requirement of the plugin host, so the
-    // fixture exposes it here instead of letting a host come up without one.
-    ReleaseRequestStore.node,
-    Agent.node,
-    AISDK.node,
-    Provider.node,
-    Model.node,
-    Command.node,
-    Integration.node,
-    KV.node,
-    ManagedPolicy.node,
-    Mcp.node,
-    Session.node,
-    PersistentPty.node,
-    LocationServiceMap.node,
-    Permission.node,
-    PluginHooks.node,
-    Reference.node,
-    Rpc.node,
-    Skill.node,
-    SkillDiscovery.node,
-    Tool.node,
-    Vcs.node,
-    Watcher.node,
-    WebSearch.node,
-    Worktree.node,
-    WorktreeStrategies.node,
-  ]),
-  [
-    Location.node.replace(tempLocationLayer),
-    Npm.node.replace(npmLayer),
-    Config.node.replace(Config.testLayer()),
-    Mcp.node.replace(emptyMcpLayer),
-    Generate.node.replace(generateLayer),
-    Permission.node.replace(permissionLayer),
-  ],
+export const PluginTestLayer = Layer.merge(
+  AppNodeBuilder.build(
+    LayerNode.group([
+      AppProcess.node,
+      FileSystem.node,
+      FSUtil.node,
+      Location.node,
+      Npm.node,
+      Credential.node,
+      Bus.node,
+      Form.node,
+      Generate.node,
+      InstructionDiscovery.node,
+      LayerNodePlatform.httpClient,
+      Plugin.node,
+      // The durable release store is a hard requirement of the plugin host, so the
+      // fixture exposes it here instead of letting a host come up without one.
+      ReleaseRequestStore.node,
+      Agent.node,
+      AISDK.node,
+      Provider.node,
+      Model.node,
+      Command.node,
+      Integration.node,
+      KV.node,
+      ManagedPolicy.node,
+      Mcp.node,
+      Session.node,
+      PersistentPty.node,
+      LocationServiceMap.node,
+      LocationActivity.node,
+      Permission.node,
+      PluginHooks.node,
+      Reference.node,
+      Rpc.node,
+      Skill.node,
+      SkillDiscovery.node,
+      Tool.node,
+      Vcs.node,
+      Watcher.node,
+      WebSearch.node,
+      Worktree.node,
+      WorktreeStrategies.node,
+    ]),
+    [
+      Location.node.replace(tempLocationLayer),
+      Npm.node.replace(npmLayer),
+      Config.node.replace(Config.testLayer()),
+      Mcp.node.replace(emptyMcpLayer),
+      Generate.node.replace(generateLayer),
+      Permission.node.replace(permissionLayer),
+    ],
+  ),
+  // The plugin host reads Config for its config seam, so bodies that build a
+  // host need Config.Service in scope. The graph above keeps its own
+  // in-memory instance for its internals; this second one only serves the
+  // outer scope (its reload is a no-op). Tests that need their own entries
+  // provide a Config.testLayer closer to the effect, which wins over this
+  // one; a test-wide layer farther out never overrides it.
+  Config.testLayer(),
 )

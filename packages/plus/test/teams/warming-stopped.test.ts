@@ -112,6 +112,57 @@ test("a stopped run keeps warming until expires, and then stops", async () => {
   })
 })
 
+test("a ping into an unloaded folder does not boot it", async () => {
+  await withIsolatedTeamsRoot(async () => {
+    const now = 1000000
+    const dummyState = {
+      warmingCheckedAt: now,
+      cachedAgents: [],
+      cachedModels: [],
+      cachedModelSettings: [],
+      cachedScopes: [],
+    } as unknown as PlusState
+    // A location whose services are dropped: a warm ping must not boot it.
+    const dummyCtx = context({ locations: { evict: () => Effect.void, loaded: () => Effect.succeed(false) } })
+    const event = {
+      sessionID: Session.ID.make("ses_unloaded_warm"),
+      agent: Agent.ID.make("implementer"),
+      model: Model.Ref.make({ providerID: Provider.ID.make("cliproxyapi"), id: Model.ID.make("gemini-3.8-flash-high") }),
+      phase: "warm" as const,
+      since: now,
+      now,
+      settings: { prompt: "ping", interval: 60000, duration: 300000 },
+    }
+    await Effect.runPromise(decideWarmingFor(dummyCtx, dummyState, event))
+    expect(event.settings).toBeUndefined()
+  })
+})
+
+test("a ping into a loaded folder keeps warming", async () => {
+  await withIsolatedTeamsRoot(async () => {
+    const now = 1000000
+    const dummyState = {
+      warmingCheckedAt: now,
+      cachedAgents: [],
+      cachedModels: [],
+      cachedModelSettings: [],
+      cachedScopes: [],
+    } as unknown as PlusState
+    const dummyCtx = context({ locations: { evict: () => Effect.void, loaded: () => Effect.succeed(true) } })
+    const event = {
+      sessionID: Session.ID.make("ses_loaded_warm"),
+      agent: Agent.ID.make("implementer"),
+      model: Model.Ref.make({ providerID: Provider.ID.make("cliproxyapi"), id: Model.ID.make("gemini-3.8-flash-high") }),
+      phase: "warm" as const,
+      since: now,
+      now,
+      settings: { prompt: "ping", interval: 60000, duration: 300000 },
+    }
+    await Effect.runPromise(decideWarmingFor(dummyCtx, dummyState, event))
+    expect(event.settings).toBeDefined()
+  })
+})
+
 test("dead, superseded and reaped runs stop warming immediately", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = 1000000

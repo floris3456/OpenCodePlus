@@ -15,6 +15,7 @@ const config = (plugins: Info["plugins"] = []) =>
     Config.Service.of({
       entries: () => Effect.succeed([new Document({ type: "document", info: new Info({ plugins }) })]),
       changes: () => Stream.never,
+      reload: () => Effect.void,
     }),
   )
 

@@ -29,11 +29,27 @@ export const Plugin = define({
       entries: yield* config.entries(),
       skills: [],
     }
+    // Service-wide sources only: the global config directory and the global
+    // `~/.claude` and `~/.agents` roots share one native watcher across every
+    // loaded folder. A skill directory inside a project folder is read at boot
+    // and on demand (the next chat, or `/refresh`), never watched: one
+    // recursive watcher per loaded folder is what kept finished worker
+    // folders' processes alive.
+    const globalRoots = [
+      path.resolve(global.config),
+      path.resolve(global.home, ".claude"),
+      path.resolve(global.home, ".agents"),
+    ]
+    const isGlobalSource = (directory: string) => {
+      const target = path.resolve(directory)
+      return globalRoots.some((root) => target === root || FSUtil.contains(root, target))
+    }
     const watches = yield* FiberMap.make<string>()
     const changes = yield* PubSub.sliding<string>(1)
     const lock = Semaphore.makeUnsafe(1)
 
     const watch = Effect.fn("ConfigSkillPlugin.watch")(function* (directory: string, type: "file" | "directory") {
+      if (!isGlobalSource(directory)) return
       const target = path.resolve(directory)
       const updates = yield* watcher.subscribe({ path: target, type })
       yield* FiberMap.run(
