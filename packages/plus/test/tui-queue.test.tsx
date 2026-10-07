@@ -217,14 +217,8 @@ test("A refused write reverts only its rows and shows the refusal; later edits s
   expect(records.some((r) => r.type === "customization" && r.item === toolB.id)).toBe(true)
 })
 
-test("Own instructions.changed events do not trigger a snapshot reload; a newer external revision does", async () => {
-  const initial = createSnapshot({
-    revision: 1,
-    globalRevision: 1,
-    items: [makeTool("sample")],
-    records: [],
-  })
-
+test("only this screen's own writes skip the reload: any other instructions.changed reloads, a host change with unchanged revisions included", async () => {
+  const initial = createSnapshot({ revision: 1, globalRevision: 1, items: [makeTool("sample")], records: [] })
   let state: InstructionsState | undefined
   let snapshotCalls = 0
 
@@ -233,7 +227,11 @@ test("Own instructions.changed events do not trigger a snapshot reload; a newer 
     rpc: {
       "instructions.snapshot": async () => {
         snapshotCalls++
-        return { ...initial, revision: snapshotCalls }
+        return initial
+      },
+      "instructions.mutate": async (input: unknown) => {
+        const delta = input as Plus.MutateInputDelta
+        return { ok: true, revision: 5, globalRevision: 1, snapshot: { ...initial, revision: 5, records: delta.changes.upsert } }
       },
     },
     render: (context) => {
@@ -242,62 +240,54 @@ test("Own instructions.changed events do not trigger a snapshot reload; a newer 
       return null
     },
   })
-
   await fixture.waitForFrame(() => state?.snapshot() !== undefined)
   if (!state) throw new Error("State did not mount")
-
-  // Initial load did 1 snapshot call
   expect(snapshotCalls).toBe(1)
 
-  // Emit event with own revision (<= 1)
+  // A host change (a new skill or agent file) re-emits the unchanged store
+  // revisions: nothing was written here, so the tree must reload.
   await fixture.emitChanged(createSnapshot({ revision: 1, globalRevision: 1 }))
-  await new Promise((r) => setTimeout(r, 50))
-  // No snapshot call triggered!
-  expect(snapshotCalls).toBe(1)
-
-  // Emit event with newer revision (2) from another writer
-  await fixture.emitChanged(createSnapshot({ revision: 2, globalRevision: 1 }))
   await fixture.waitForFrame(() => snapshotCalls === 2)
+
+  state.setFilter("sample")
+  const node = state.nodes().find((n) => n.address?.item === "tool:sample")
+  if (!node) throw new Error("no sample row")
+  expect(await state.toggle(node)).toBe(true)
+  // This screen's own write (revisions 5/1) needs no reload.
+  await fixture.emitChanged(createSnapshot({ revision: 5, globalRevision: 1 }))
+  await new Promise((r) => setTimeout(r, 50))
   expect(snapshotCalls).toBe(2)
 })
 
-test("Teams groups toggle: all enabled -> disable all, else enable all; runs team.setEnabled through queue and refreshes", async () => {
-  const team1 = { level: "project" as const, team: "alpha", enabled: true, agents: ["coder"] }
-  const team2 = { level: "project" as const, team: "beta", enabled: false, agents: ["reviewer"] }
-
-  const initial = createSnapshot({
-    revision: 1,
-    globalRevision: 1,
-    teams: [team1, team2],
-    records: [],
-  })
-
+test("a reload while edits are queued keeps them on screen and still saves them", async () => {
+  const initial = createSnapshot({ revision: 1, globalRevision: 1, items: [makeTool("a"), makeTool("b"), makeTool("c")], records: [] })
+  const external: Plus.SnapshotRecord = {
+    type: "customization",
+    level: "defaults",
+    agent: null,
+    item: "tool:c",
+    section: null,
+    state: "on",
+    basedOn: "fp-c",
+    updated: "2026-01-01T00:00:00.000Z",
+  }
   let state: InstructionsState | undefined
-  const enabledCalls: { level: string; team: string; enabled: boolean }[] = []
-  let refreshCalls = 0
+  let snapshotCalls = 0
+  const held: (() => void)[] = []
+  const sent: string[][] = []
 
   await using fixture = await renderPlusFixture({
     snapshots: [initial],
     rpc: {
-      "team.setEnabled": async (input: { level: string; team: string; enabled: boolean }) => {
-        enabledCalls.push(input)
-        return {
-          level: input.level,
-          team: input.team,
-          enabled: input.enabled,
-          exclusive: true,
-          disabledTeams: [],
-        }
+      "instructions.snapshot": async () => {
+        snapshotCalls++
+        return snapshotCalls === 1 ? initial : { ...initial, revision: 7, records: [external] }
       },
-      "instructions.refresh": async () => {
-        refreshCalls++
-        // Return updated snapshot where target state is applied
-        const targetEnabled = enabledCalls[enabledCalls.length - 1]?.enabled ?? false
-        return {
-          ...initial,
-          revision: 2,
-          teams: (initial.teams ?? []).map((t) => ({ ...t, enabled: targetEnabled })),
-        }
+      "instructions.mutate": async (input: unknown) => {
+        const delta = input as Plus.MutateInputDelta
+        sent.push(delta.changes.upsert.flatMap((u) => ("item" in u ? [u.item] : [])))
+        await new Promise<void>((resolve) => held.push(resolve))
+        return { ok: true, revision: 7 + sent.length, globalRevision: 1 }
       },
     },
     render: (context) => {
@@ -306,22 +296,72 @@ test("Teams groups toggle: all enabled -> disable all, else enable all; runs tea
       return null
     },
   })
-
   await fixture.waitForFrame(() => state?.snapshot() !== undefined)
   if (!state) throw new Error("State did not mount")
+  state.setFilter("tool")
+  const row = (id: string) => state!.nodes().find((n) => n.address?.item === id)
+  const stateOf = (id: string) => row(id)?.badges.state
+  // Rows without an owner start off here; a toggle turns them on.
+  expect([stateOf("tool:a"), stateOf("tool:b"), stateOf("tool:c")]).toEqual(["off", "off", "off"])
+  const toggledA = state.toggle(row("tool:a")!)
+  const toggledB = state.toggle(row("tool:b")!)
+  // "a" is in flight, "b" is queued behind it. Another writer switches "c" on.
+  await fixture.emitChanged(createSnapshot({ revision: 7, globalRevision: 1 }))
+  await fixture.waitForFrame(() => snapshotCalls === 2)
+  expect([stateOf("tool:a"), stateOf("tool:b"), stateOf("tool:c")]).toEqual(["on", "on", "on"])
+  let done = false
+  void Promise.all([toggledA, toggledB]).then(() => {
+    done = true
+  })
+  while (!done) {
+    for (const release of held.splice(0)) release()
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  expect(await toggledA).toBe(true)
+  expect(await toggledB).toBe(true)
+  // "b" was not lost by the reload: it went out in the next write.
+  expect(sent.flat().toSorted()).toEqual(["tool:a", "tool:b"])
+  expect([stateOf("tool:a"), stateOf("tool:b"), stateOf("tool:c")]).toEqual(["on", "on", "on"])
+})
 
-  // Teams group node has summary "1/2"
+test("a Teams group turns its teams off; with none on it explains that only one team can be on", async () => {
+  const alpha = { level: "project" as const, team: "alpha", enabled: true, agents: ["coder"] }
+  const beta = { level: "project" as const, team: "beta", enabled: false, agents: ["reviewer"] }
+  let teams = [alpha, beta]
+  let state: InstructionsState | undefined
+  const enabledCalls: { team: string; enabled: boolean }[] = []
+
+  await using fixture = await renderPlusFixture({
+    snapshots: [createSnapshot({ revision: 1, globalRevision: 1, teams, records: [] })],
+    rpc: {
+      "team.setEnabled": async (input: { level: "project" | "global"; team: string; enabled: boolean }) => {
+        enabledCalls.push({ team: input.team, enabled: input.enabled })
+        teams = teams.map((t) => (t.team === input.team ? { ...t, enabled: input.enabled } : t))
+        return { level: input.level, team: input.team, enabled: input.enabled, exclusive: true, disabledTeams: [] }
+      },
+      "instructions.refresh": async () => createSnapshot({ revision: 2, globalRevision: 1, teams, records: [] }),
+    },
+    render: (context) => {
+      state = createInstructionsState(context)
+      onCleanup(state.dispose)
+      return null
+    },
+  })
+  await fixture.waitForFrame(() => state?.snapshot() !== undefined)
+  if (!state) throw new Error("State did not mount")
   state.setFilter("teams")
-  const teamsGroup = state.nodes().find((n) => n.id === "group:project:teams")
-  expect(teamsGroup).toBeDefined()
-  expect(teamsGroup?.actions?.toggle).toBe(true)
-  expect(teamsGroup?.badges.summary).toBe("1/2")
+  const group = () => state!.nodes().find((n) => n.id === "group:project:teams")
+  expect(group()?.actions?.toggle).toBe(true)
+  expect(group()?.badges.summary).toBe("1/2")
 
-  // Toggle Teams group: not all enabled -> should enable all!
-  const toggled = await state.toggle(teamsGroup!)
-  expect(toggled).toBe(true)
+  expect(await state.toggle(group()!)).toBe(true)
+  expect(enabledCalls.length).toBeGreaterThan(0)
+  expect(enabledCalls.every((call) => call.enabled === false)).toBe(true)
+  expect(teams.every((t) => !t.enabled)).toBe(true)
 
-  expect(enabledCalls.length).toBe(2)
-  expect(enabledCalls.every((c) => c.enabled === true)).toBe(true)
-  expect(refreshCalls).toBe(1)
+  // Enabling is exclusive (one team disables the others), so all-on is refused.
+  const calls = enabledCalls.length
+  expect(await state.toggle(group()!)).toBe(false)
+  expect(state.status()).toContain("Only one team can be on at a time")
+  expect(enabledCalls.length).toBe(calls)
 })

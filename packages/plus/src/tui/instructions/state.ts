@@ -183,6 +183,10 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   let generation = 0
 
   let confirmedRecords: StoredRecord[] = []
+  // Store revisions this screen's own writes produced, with when: their
+  // instructions.changed events need no reload. A host change re-emits the same
+  // revisions later (nothing was written since), so the match expires.
+  const ownWrites = new Map<string, number>()
   let lastConfirmedRevisions = { revision: 0, globalRevision: 0 }
   let lastOpStatus = ""
   let localVersion = 0
@@ -350,11 +354,24 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     try {
       const fresh = await plus["instructions.snapshot"](undefined, { location: context.location })
       if (disposed || requestGen !== generation) return
-      setSnapshot(fresh)
+      // Edits still queued (not yet confirmed) stay on screen: they are laid
+      // over the fresh records, row by row, as the server will apply them.
+      const pending = deltaOf(confirmedRecords, optimisticStoredRecords())
+      const freshStored = recordsOf(fresh.records)
       cache.put(directory, fresh)
-      confirmedRecords = recordsOf(fresh.records)
+      confirmedRecords = freshStored
       lastConfirmedRevisions = { revision: fresh.revision, globalRevision: fresh.globalRevision }
-      setStatus("")
+      if (pending.upsert.length + pending.remove.length === 0) {
+        setSnapshot(fresh)
+        setStatus("")
+        return
+      }
+      const rebased = applyDeltaToRecords(freshStored, pending)
+      setSnapshot({
+        ...fresh,
+        records: rebased.map(snapshotRecordOf).filter((record): record is SnapshotRecord => record !== undefined),
+      })
+      void scheduleDrain()
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return
       setStatus(errorMessage(error))
@@ -491,6 +508,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
             revision: result.revision,
             globalRevision: result.globalRevision,
           }
+          ownWrites.set(`${result.revision}/${result.globalRevision}`, Date.now())
 
           if (wantSnapshot && result.snapshot !== undefined) {
             if (localVersion === dispatchVersion) {
@@ -687,8 +705,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(`"${node.label}" has no toggleable teams`)
       return false
     }
-    const allEnabled = teamRows.every((t) => t.enabled)
-    const targetState = !allEnabled
+    // Only one team can be on at a time (enabling one disables the others), so
+    // a Teams group can only turn them all off.
+    if (!teamRows.some((t) => t.enabled)) {
+      setStatus("Only one team can be on at a time: press space on a team to switch it on")
+      return false
+    }
+    const targetState = false
 
     const nextTeams = (current.teams ?? []).map((t) => {
       const matched = teamRows.find((tr) => tr.level === t.level && tr.team === t.team)
@@ -1342,14 +1365,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const payload = (event && typeof event === "object" && "data" in event ? event.data : event) as
       | Plus.InstructionsChanged
       | undefined
-    const rev = payload?.revision
-    const globalRev = payload?.globalRevision
-    if (rev !== undefined) {
-      const isOursOrOlder =
-        rev <= lastConfirmedRevisions.revision &&
-        (globalRev === undefined || globalRev <= lastConfirmedRevisions.globalRevision)
-      if (isOursOrOlder) return
-    }
+    const now = Date.now()
+    for (const [key, at] of ownWrites) if (now - at > 5000) ownWrites.delete(key)
+    if (payload !== undefined && ownWrites.has(`${payload.revision}/${payload.globalRevision}`)) return
     void requestReload()
   })
   function dispose() {
