@@ -15,7 +15,7 @@ import path from "node:path"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { editRefusal, type PermissionTable } from "../../src/instructions/permission-enforce.js"
 import { createTeamApi, type TeamApiResult, type TeamCaller } from "../../src/teams/api.js"
-import { checkFiles } from "../../src/teams/check-files.js"
+import { checkFiles, missingCheckFiles } from "../../src/teams/check-files.js"
 import { git } from "../../src/teams/git.js"
 import { saveRun, type RunRecord } from "../../src/teams/run.js"
 import type { Check } from "../../src/teams/schema.js"
@@ -138,6 +138,19 @@ test("a check's files: what bun test names, what the base holds under a named di
   expect([...(await checkFiles(repo.dir, repo.head, checks))].toSorted()).toEqual(
     ["packages/plus/package.json", "scripts/check.sh", "test/new.test.ts", "test/unit/a.test.ts", "test/value.test.ts"].toSorted(),
   )
+})
+
+// Item 1: a check naming a file the base does not hold is what refuses a
+// delegation. missingCheckFiles reports exactly the missing `bun test` paths,
+// treating a base-held directory as present (new files under it are free).
+test("missingCheckFiles reports only the bun test paths the base does not hold", async () => {
+  const repo = await makeRepo()
+  const checks: Check[] = [
+    { id: "value", argv: ["bun", "test", "test/value.test.ts", "test/absent.test.ts"] },
+    { id: "unit", argv: ["bun", "test", "test/unit"] },
+    { id: "run", argv: ["bun", "run", "typecheck"] },
+  ]
+  expect(await missingCheckFiles(repo.dir, repo.head, checks)).toEqual([{ id: "value", file: "test/absent.test.ts" }])
 })
 
 test("Files its checks run stay unchanged: on refuses committing the test a check runs and the package.json it reads, off commits them", async () => {

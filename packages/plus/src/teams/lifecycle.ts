@@ -276,9 +276,62 @@ export async function onSessionEvent(
     return updated
   }
 
+  if (event.type === "session.moved") {
+    return onSessionMoved(root, run, payload)
+  }
+
   const outcome = SessionOutcomes[event.type]
   if (outcome === undefined) return undefined
   return onSessionIdle(ctx, root, run, outcome, Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error)))
+}
+
+// A chat may move between checkouts. A root run with no open children follows
+// its chat: the run takes the new folder's directory, branch, base and head,
+// and one history entry records the move. A root run with an open child stays
+// where it is — the child's worktree and the landing both belong to the old
+// checkout — and remembers where the chat went so its next team call says so.
+// A delegated run is tied to its own worktree and never follows the chat.
+async function onSessionMoved(root: string, run: RunRecord, payload: Record<string, unknown>): Promise<RunRecord | undefined> {
+  const location = payload.location as { readonly directory?: unknown } | undefined
+  const directory = typeof location?.directory === "string" ? location.directory : undefined
+  if (directory === undefined || directory.length === 0) return undefined
+  if (run.parent !== null && run.parent !== undefined) return undefined
+  const open = await openChildren(root, run.id)
+  if (open.length > 0) {
+    // The chat returning to the run's own folder clears any pending notice.
+    const target = directory === run.directory ? undefined : directory
+    if (run.movedTo === target) return undefined
+    return updateRun(root, run.id, (record) => {
+      const next: RunRecord = { ...record, lastUsed: new Date().toISOString() }
+      if (target === undefined) delete next.movedTo
+      else next.movedTo = target
+      return next
+    })
+  }
+  const headOut = await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  if (headOut.code !== 0) return undefined
+  const branchOut = await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--abbrev-ref", "HEAD"])
+  const branch = branchOut.code === 0 && branchOut.out.length > 0 ? branchOut.out : "HEAD"
+  const topOut = await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--show-toplevel"])
+  const repoKey = topOut.code === 0 && topOut.out.length > 0 ? path.basename(topOut.out) : run.repoKey
+  const now = new Date().toISOString()
+  return updateRun(root, run.id, (record) => {
+    if (record.directory === directory && record.head === headOut.out) return record
+    const next: RunRecord = {
+      ...record,
+      directory,
+      projectDirectory: directory,
+      repo: repoKey,
+      repoKey,
+      branch,
+      base: headOut.out,
+      head: headOut.out,
+      lastUsed: now,
+      history: [...record.history, { at: now, from: record.state, to: record.state, trigger: "session_moved" }],
+    }
+    delete next.movedTo
+    return next
+  })
 }
 
 // The host's reason for a failed execution (core's SessionError.Error): what

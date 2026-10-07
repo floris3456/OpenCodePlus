@@ -409,7 +409,10 @@ async function makeRepo(): Promise<{ dir: string; head: string }> {
   await git(dir, ["config", "user.name", "delegation-rows"])
   await git(dir, ["config", "user.email", "delegation-rows@local"])
   await Bun.write(path.join(dir, "README.md"), "# delegation rows\n")
-  await git(dir, ["add", "README.md"])
+  // The brief helper's `bun test FILE` check must name a file the base holds.
+  await fs.mkdir(path.join(dir, "packages", "plus", "test"), { recursive: true })
+  await Bun.write(path.join(dir, "packages", "plus", "test", "unit.test.ts"), "// checked by the brief\n")
+  await git(dir, ["add", "README.md", "packages/plus/test/unit.test.ts"])
   await git(dir, ["commit", "-m", "feat: initial commit"])
   return { dir, head: await git(dir, ["rev-parse", "HEAD"]) }
 }

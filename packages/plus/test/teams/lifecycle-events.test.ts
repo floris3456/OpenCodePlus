@@ -12,7 +12,23 @@ import { peek, put } from "../../src/teams/inbox.js"
 import { deliverInbox, onSessionEvent, onSessionIdle } from "../../src/teams/lifecycle.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "../../src/teams/session-events.js"
 import { loadRun, saveRun, updateRun, type RunRecord } from "../../src/teams/run.js"
+import { git } from "../../src/teams/git.js"
 import { atomicJson } from "../../src/teams/store.js"
+
+async function makeRepo(label: string): Promise<{ dir: string; head: string }> {
+  const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), `plus-team-moved-${label}-`))
+  await git(dir, ["init"])
+  await git(dir, ["config", "user.name", "team-test"])
+  await git(dir, ["config", "user.email", "team-test@local"])
+  await fs.writeFile(path.join(dir, "README.md"), "# moved\n")
+  await git(dir, ["add", "README.md"])
+  await git(dir, ["commit", "-m", "feat: initial commit"])
+  return { dir, head: await git(dir, ["rev-parse", "HEAD"]) }
+}
+
+function movedEvent(sessionID: string, directory: string) {
+  return { type: "session.moved", data: { sessionID, location: { directory } } }
+}
 
 // Real run records in a real temp state root, driven by the same synthetic
 // event payloads the host publishes. No mocks of the run store: every
@@ -1197,3 +1213,73 @@ test("session.execution.started clears retrying", async () => {
     expect(updated?.retrying).toBeUndefined()
   })
 })
+
+// ── Item 7: a moved chat takes its team run along ────────────────────────
+
+test("a root run with no child follows its chat to the new checkout, with one history entry", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const from = await makeRepo("from")
+    const to = await makeRepo("to")
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      kind: "main",
+      role: "orchestrator",
+      directory: from.dir,
+      projectDirectory: from.dir,
+      repo: path.basename(from.dir),
+      repoKey: path.basename(from.dir),
+      branch: "main",
+      base: from.head,
+      head: from.head,
+      state: "idle",
+      sessionID: "ses_moved_root",
+    })
+    await saveRun(root, parent)
+    const returned = await onSessionEvent(context({ session: recordSession().domain }), root, movedEvent("ses_moved_root", to.dir))
+    expect(returned?.directory).toBe(to.dir)
+    expect(returned?.projectDirectory).toBe(to.dir)
+    expect(returned?.branch).toBe(await git(to.dir, ["rev-parse", "--abbrev-ref", "HEAD"]))
+    expect(returned?.base).toBe(to.head)
+    expect(returned?.head).toBe(to.head)
+    const stored = await loadRun(root, parent.id)
+    expect(stored?.directory).toBe(to.dir)
+    const moved = stored?.history.filter((entry) => entry.trigger === "session_moved") ?? []
+    expect(moved).toHaveLength(1)
+    expect(moved[0]).toMatchObject({ from: "idle", to: "idle", trigger: "session_moved" })
+  })
+}, 30000)
+
+test("a root run with an open child stays put and remembers where the chat went", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const from = await makeRepo("stay-from")
+    const to = await makeRepo("stay-to")
+    const parent = baseRun({
+      id: "main-0123456789abcdef",
+      kind: "main",
+      role: "orchestrator",
+      directory: from.dir,
+      projectDirectory: from.dir,
+      base: from.head,
+      head: from.head,
+      state: "idle",
+      children: ["w-aaaaaaaaaaaaaaaa"],
+      sessionID: "ses_moved_parent",
+    })
+    const child = { ...workingChild("w-aaaaaaaaaaaaaaaa", parent.id, "ses_moved_child"), directory: from.dir, projectDirectory: from.dir }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const returned = await onSessionEvent(context({ session: recordSession().domain }), root, movedEvent("ses_moved_parent", to.dir))
+    expect(returned?.directory).toBe(from.dir)
+    expect(returned?.movedTo).toBe(to.dir)
+    // A delegated run is tied to its own worktree: a move of its chat never
+    // follows, even with no children of its own, so nothing is written.
+    const childReturned = await onSessionEvent(context({ session: recordSession().domain }), root, movedEvent("ses_moved_child", to.dir))
+    expect(childReturned).toBeUndefined()
+    expect((await loadRun(root, child.id))?.directory).toBe(from.dir)
+    expect((await loadRun(root, child.id))?.movedTo).toBeUndefined()
+    // The chat moving back to the run's own folder clears the pending notice.
+    const back = await onSessionEvent(context({ session: recordSession().domain }), root, movedEvent("ses_moved_parent", from.dir))
+    expect(back?.movedTo).toBeUndefined()
+    expect((await loadRun(root, parent.id))?.movedTo).toBeUndefined()
+  })
+}, 30000)

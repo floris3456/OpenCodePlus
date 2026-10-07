@@ -1872,9 +1872,11 @@ member of an enabled team (`policyMembersOf` keeps every one):
 
 The other catalog rows of the team tools (the per-tool table under Permission
 rules) are read by the same handlers: `team_delegate` Limits — Children
-working at once 4, Delegation depth 3, Brief size 6000 characters, Live team
-runs in total 12, all on (`E_BOUNDS`, `E_ROLE`, `E_TOO_LONG`; an off row
-removes the bound); `team_followup` Limits (Followups per child 5, shipped off;
+working at once 4, Delegation depth 3, Brief size 6000 characters, Attached
+brief file 8000 characters, Live team runs in total 12, all on (`E_BOUNDS`,
+`E_ROLE`, `E_TOO_LONG`; an off row removes the bound; an attachment over the
+attachment limit is named by path only and does not count toward the brief
+limit); `team_followup` Limits (Followups per child 5, shipped off;
 `E_ROUNDS`); `team_finish` Requirements for done (Assigned checks pass at HEAD,
 on, `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
 `E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
@@ -2011,9 +2013,15 @@ Error codes carrying `accepted` today:
 - `E_REQUEST_ID`: `"requestID \"<requestID>\" was used with different arguments; reuse only to retry the identical call, else pick a new requestID."`; reuse guidance (`"pick a new requestID"`)
 - `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
 - `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
-- `E_TOO_LONG`: brief length guidance (`"pass briefFile"`)
+- `E_TOO_LONG`: brief length guidance telling the caller to shorten the Brief
+  (`"a shorter brief"`); a pasted attachment counts toward the limit
+- `E_NO_COMMIT_REPO`: `team_delegate` bootstrap in a repository with no commit
+  refuses with a classified message telling the caller to make a first commit;
+  no run is created
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
-- `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`) or session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`)
+- `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`),
+  session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`),
+  or a root run whose chat moved while it has an open child (`"This chat moved to <dir>, but run <id> stays in <runDir>..."`)
 - `objective`: schema validation refusal when `objective` is shorter than 20 characters (`"Expected a value with a length of at least 20"`)
 - `E_BUSY`: `followup` with `delivery:"now"` against a working child refuses with
   `{"delivery":"queue"}`; the queued form is then delivered by the child's own
@@ -2068,7 +2076,13 @@ A run's state is driven by its host session, not by whether the agent called a
 tool. `index.ts` subscribes to `session.execution.succeeded`,
 `session.execution.failed`, `session.execution.interrupted`, and
 `session.execution.started` (`SessionRunEvents`), resolves `sessionID → run`
-with `run.bySession`, and ignores sessions with no run.
+with `run.bySession`, and ignores sessions with no run. It also subscribes to
+`session.moved`: a root run with no open child takes its chat's new checkout
+(`directory`, `projectDirectory`, `branch`, `base`, `head` from the new
+checkout, one `session_moved` history entry); a root run with an open child
+stays and records `movedTo`, so its next team call refuses with `E_NOT_ACTOR`
+naming the run's folder once. A delegated run never follows a move. A move
+never changes the warming store's busy flag.
 `session.execution.succeeded` is the host's canonical success event
 (`SessionEvent.Execution.Succeeded`, published by core's `SessionExecution` at
 the end of every busy period). `session.idle` is a deprecated schema event the

@@ -7,7 +7,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context, fullContext } from "../harness.js"
-import { teamState } from "./preset-table.js"
+import { change, presetTable, shippedMembers, teamState } from "./preset-table.js"
 import plus, { activationDirectory, createHandlers, createPlusApi, createState } from "../../src/index.js"
 import { formatMarkdown } from "../../src/agents/files.js"
 import { load, save } from "../../src/instructions/store.js"
@@ -46,7 +46,11 @@ async function makeRepo(): Promise<{ dir: string; head: string }> {
   await git(dir, ["config", "user.name", "team-test"])
   await git(dir, ["config", "user.email", "team-test@local"])
   await fs.writeFile(path.join(dir, "README.md"), "# team api test\n")
-  await git(dir, ["add", "README.md"])
+  // A brief's `bun test FILE` check must name a file the base holds; the
+  // default brief below names this one, so it is part of the first commit.
+  await fs.mkdir(path.join(dir, "packages", "plus", "test"), { recursive: true })
+  await fs.writeFile(path.join(dir, "packages", "plus", "test", "unit.test.ts"), "// checked by the brief\n")
+  await git(dir, ["add", "README.md", "packages/plus/test/unit.test.ts"])
   await git(dir, ["commit", "-m", "feat: initial commit"])
   const head = await git(dir, ["rev-parse", "HEAD"])
   return { dir, head }
@@ -715,6 +719,154 @@ test("delegate rejects E_REQUEST_ID when the id is reused with new arguments", a
       expect(error.message).toBe(
         `requestID "dup-1" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`,
       )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// ── Item 1: Briefs stay short and correct ────────────────────────────────
+
+// The attachment limit counts toward the brief limit; a file over the
+// attachment limit is named by path only, so it cannot inflate the Brief.
+test("a small attachment is pasted and counts toward the brief limit; an over-limit one is named by path only", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, "notes"), { recursive: true })
+      // 7,500 chars of attachment plus the objective and prompt stay under the
+      // 6,000-char brief limit only if the attachment is NOT counted; the
+      // member's attachment limit (8,000) pastes it, so the brief limit refuses.
+      await fs.writeFile(path.join(repo.dir, "notes", "small.md"), "s".repeat(7_500))
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_attach_small",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const tooLong = rejected(
+        await api.delegate(delegateInput({ requestID: "attach-small-1", briefFile: "notes/small.md" }), callerFor(parent)),
+      )
+      expect(tooLong.code).toBe("E_TOO_LONG")
+      // The refusal says to shorten the Brief, never to move text into a file.
+      expect(tooLong.message).toContain("Shorten it")
+      expect(tooLong.message).not.toContain("briefFile")
+      expect(tooLong.accepted).toBe("a shorter brief")
+
+      // A file over the attachment limit is named by path only and does not
+      // count toward the brief limit.
+      await fs.writeFile(path.join(repo.dir, "notes", "big.md"), "b".repeat(9_000))
+      const value = required(
+        await api.delegate(delegateInput({ requestID: "attach-big-1", briefFile: "notes/big.md" }), callerFor(parent)),
+      ) as { briefPath: string }
+      const brief = await fs.readFile(value.briefPath, "utf8")
+      expect(brief).toContain("## Attached: notes/big.md")
+      expect(brief).toContain("over the 8000-character attachment limit: read the file itself")
+      expect(brief).not.toContain("b".repeat(100))
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// The attachment limit is a member row: raising it pastes a larger file, and
+// the pasted content then counts toward the brief limit.
+test("the Attached brief file row raises the paste limit, and a pasted attachment counts", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.mkdir(path.join(repo.dir, "notes"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, "notes", "mid.md"), "m".repeat(2_000))
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_attach_row",
+      })
+      await saveRun(root, parent)
+      const member = shippedMembers().find((entry) => entry.id === "orchestrator")
+      if (member === undefined) throw new Error("missing orchestrator member")
+      // Lower the row to 1,000: the 2,000-char file is now over it, so it is
+      // named by path and passes the brief limit.
+      const table = presetTable({
+        records: [change(member, "perm:team_delegate:limits.attachment", { state: "on", text: "1000" })],
+      })
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState(table))
+      const value = required(
+        await api.delegate(delegateInput({ requestID: "attach-row-1", briefFile: "notes/mid.md" }), callerFor(parent)),
+      ) as { briefPath: string }
+      const brief = await fs.readFile(value.briefPath, "utf8")
+      expect(brief).toContain("over the 1000-character attachment limit: read the file itself")
+      expect(brief).not.toContain("m".repeat(100))
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// Every `bun test FILE` a brief names is resolved against the child's base
+// commit: a missing file refuses the delegation, names the file, and creates
+// no run.
+test("a check naming a file the base does not hold refuses the delegation and creates no run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_missing_check",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const error = rejected(
+        await api.delegate(
+          delegateInput({ requestID: "missing-1", checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/nope.test.ts"] }] }),
+          callerFor(parent),
+        ),
+      )
+      expect(error.code).toBe("E_CHECKS")
+      expect(error.message).toContain("packages/plus/test/nope.test.ts")
+      expect(error.message).toContain("base")
+      expect(error.accepted).toBe("an existing test file")
+      // No run record was created for the refused delegation.
+      const entries = await fs.readdir(path.join(root, "runs")).catch(() => [] as string[])
+      expect(entries.filter((entry) => entry.startsWith("w-"))).toEqual([])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("a check naming a file the base holds is accepted", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_present_check",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(
+        await api.delegate(
+          delegateInput({ requestID: "present-1", checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/unit.test.ts"] }] }),
+          callerFor(parent),
+        ),
+      ) as { run: string }
+      expect((await loadRun(root, value.run))?.role).toBe("implementer")
     } finally {
       await removeRepo(repo.dir)
     }
