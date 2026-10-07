@@ -1243,7 +1243,7 @@ test("a root run with no child follows its chat to the new checkout, with one hi
     expect(returned?.head).toBe(to.head)
     const stored = await loadRun(root, parent.id)
     expect(stored?.directory).toBe(to.dir)
-    const moved = stored?.history.filter((entry) => entry.trigger === "session_moved") ?? []
+    const moved = stored?.history.filter((entry) => "trigger" in entry && entry.trigger === "session_moved") ?? []
     expect(moved).toHaveLength(1)
     expect(moved[0]).toMatchObject({ from: "idle", to: "idle", trigger: "session_moved" })
   })
