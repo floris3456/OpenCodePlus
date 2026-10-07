@@ -818,7 +818,7 @@ test("perm rows list under the tool's Permissions and category groups, and item:
   // A one-section text is the Description row itself; the rule sits under
   // Permissions → its tool's category.
   expect(below).toEqual([
-    { id: "section:project:Implementer:tool:shell:whole", label: "Description", depth: 1 },
+    { id: "section:project:Implementer:tool:shell:whole", label: "Full text", depth: 1 },
     { id: "group:project:Implementer:tool:shell:permissions", label: "Permissions", depth: 1 },
     { id: "group:project:Implementer:tool:shell:permissions:commands", label: "Commands", depth: 2 },
     { id: "item:project:Implementer:perm:shell:git-push", label: "Git push", depth: 3 },
