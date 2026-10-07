@@ -372,7 +372,7 @@ export const Brief = Schema.Struct({
   }),
   briefFile: Schema.optional(Schema.String).annotate({
     description:
-      "A file in your checkout attached to the Brief (inline up to 40 KB): the only way an uncommitted file reaches the child.",
+      "A file in your checkout attached to the Brief. Inline up to the member's attached-file limit; larger is named by path so the child reads only what it needs. The only way an uncommitted file reaches the child.",
   }),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(300))).annotate({
     description: "Why this work needs its own run.",

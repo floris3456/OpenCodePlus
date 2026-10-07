@@ -6028,7 +6028,9 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     Stream.runForEach((event) =>
       Effect.promise(() => {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
-        if (typeof sessionID === "string") warmingStore.running(sessionID, event.type === "session.execution.started")
+        // A move is not a turn: it must not clear a running chat's busy flag.
+        if (typeof sessionID === "string" && event.type !== "session.moved")
+          warmingStore.running(sessionID, event.type === "session.execution.started")
         return onSessionEvent(ctx, teamsDataDir(), event)
       }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus team session event failed", { cause, type: event.type })),
