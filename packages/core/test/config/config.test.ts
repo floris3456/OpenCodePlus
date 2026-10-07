@@ -1505,11 +1505,9 @@ describe("Config", () => {
             const documents = (yield* config.entries()).filter((entry) => entry.type === "document")
 
             expect(documents.map((document) => document.info.$schema)).toEqual(["base"])
-            expect(yield* watcher.subscriptions()).toContainEqual({
-              path: tmp.path,
-              type: "entries",
-              names: [".agents", ".claude", ".opencode", "opencode.json", "opencode.jsonc"],
-            })
+            // A project folder is read at boot and on demand (a new chat,
+            // /refresh), never watched: only service-wide sources are.
+            expect((yield* watcher.subscriptions()).some((subscription) => subscription.path === tmp.path)).toBe(false)
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),
       ),
