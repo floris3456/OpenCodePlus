@@ -1,4 +1,7 @@
-# plus-1.1.18: Monitor load, model rows with Warming and Compaction, cold-cache compaction
+# plus-1.1.18 / 1.1.19: Monitor load, then model rows with Warming and Compaction, cold-cache compaction
+
+1.1.18 = the Monitor fix alone (section 1, WP-A). 1.1.19 = sections 2–6
+(WPs B–E). The split was decided by the user; see Decisions.
 
 Base: `aa1927c988` (= `v2.0.18-plus-1.1.17`). Integration branch `plus-1.1.18`
 (worktree `worktrees/plus-1.1.18/opencode`). Work packages (WPs) run in
@@ -253,14 +256,14 @@ byte-identical requests.
 
 ## Work packages
 
-| WP | Content | Depends on |
-| --- | --- | --- |
-| A `p118-monitor` | Section 1 (a)–(d), the comparison over the real-DB copy, the golden test | none |
-| B `p118-core-compact` | Decision overrides `strategy`, `system`, `compactionFallbacks`, `optional`; core tests | none |
-| C `p118-model-fields` | Record fields, validation, resolution, decide-hook application, per-chat compact switch, cold detection and arming, `compaction.cold` RPC, team followup default | B |
-| D `p118-model-tui` | Model row categories, Compaction tab removed, list rows (a/d/m), dropdowns (section 6), footer text, `/compact-cold` | C (types), can start on fixtures |
-| E `p118-docs` | `tools.instructions` ids for the new fields (`modelfield:<field>:…`, `modelsetting:<field>:…`, list as comma text), `teaching.ts`, `tools.ts`, the `instructions-tools` skill, help and descriptions | C |
-| F (later) `p118-monitor-store` | Fingerprint deltas, migrating as rows are read | A |
+| WP | Release | Content | Depends on |
+| --- | --- | --- | --- |
+| A `p118-monitor` | 1.1.18 | Section 1 (a)–(d), the comparison over the real-DB copy, the golden test | none |
+| B `p119-core-compact` | 1.1.19 | Decision overrides `strategy`, `system`, `compactionFallbacks`, `optional`; core tests | none |
+| C `p119-model-fields` | 1.1.19 | Record fields, validation, resolution, decide-hook application, per-chat compact switch, cold detection and arming, `compaction.cold` RPC, team followup default | B |
+| D `p119-model-tui` | 1.1.19 | Model row categories, Compaction tab removed, list rows (a/d/m), dropdowns (section 6), footer text, `/compact-cold` | C (types), can start on fixtures |
+| E `p119-docs` | 1.1.19 | `tools.instructions` ids for the new fields (`modelfield:<field>:…`, `modelsetting:<field>:…`, list as comma text), `teaching.ts`, `tools.ts`, the `instructions-tools` skill, help and descriptions | C |
+| F (later) `monitor-store` | later | Fingerprint deltas, migrating as rows are read | A |
 
 ## Acceptance (live, as in 1.1.17)
 
@@ -292,13 +295,12 @@ byte-identical requests.
 7. **Prefixes:** provider-received bodies are unchanged by every settings
    edit (cache-safety rule).
 
-## Open decisions (asked 2026-10-07; answers recorded below)
+## Decisions (user, 2026-10-07)
 
-1. Ship the Monitor fix (WP-A) on its own first, or with the rest.
-2. Ping every and Warming: a dropdown plus Custom… (proposed), a dropdown
-   only, or typing in the row.
-3. Sending into a cold chat with cold compaction on: keep the "enter again"
-   confirmation, with the footer saying it compacts first (proposed), or send
-   at once.
-4. Agent-wide compaction: per model only, with old values shown as inherited
-   (proposed), or an "Every model" row in each agent's Models tab.
+1. **Monitor fix first.** WP-A ships alone as 1.1.18, from this branch. WPs B–E
+   follow as 1.1.19 on a branch cut after it. WP-F comes later.
+2. **Ping every and Warming:** a dropdown plus Custom…, as in section 6.
+3. **Sending into a cold chat with cold compaction on:** keep the "enter again"
+   confirmation; the footer says "cache cold · compacts with <model> first".
+4. **Agent-wide compaction:** per model only. The old tab's values still apply
+   and show as inherited; there is no "Every model" row per agent.
