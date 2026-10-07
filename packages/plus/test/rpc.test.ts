@@ -318,7 +318,7 @@ test("snapshot carries code mode namespace, pinned, execute, and pin across the 
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
   expectRpcBody(mutated)
-  const stored = mutated.snapshot.records.find((entry) => entry.type === "customization" && entry.item === coder.id)
+  const stored = mutated.snapshot!.records.find((entry) => entry.type === "customization" && entry.item === coder.id)
   if (stored?.type !== "customization") throw new Error("expected customization record")
   expect(stored.pin).toBe(true)
   const back = recordOf(stored)
@@ -894,7 +894,7 @@ test("instructions.assembled prefers the agent's private skill copy over the ori
   )
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expect(mutated.snapshot.records).toHaveLength(1)
+  expect(mutated.snapshot!.records).toHaveLength(1)
   expect(skillState.added.map((entry) => String(entry.id))).toEqual(["plus/alpha/notes"])
   const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
   expect(forAlpha.skills.find((entry) => entry.id === "notes")?.content).toBe("custom body")
@@ -1138,7 +1138,7 @@ test("rule remove drops customizations so re-adding the rule reads enabled:true"
     ),
   )
   expect(mutated.ok).toBe(true)
-  expect(mutated.snapshot.records.some((r) => r.type === "customization" && r.item === "perm:shell:custom")).toBe(true)
+  expect(mutated.snapshot!.records.some((r) => r.type === "customization" && r.item === "perm:shell:custom")).toBe(true)
 
   await Effect.runPromise(
     handlers["rule.remove"](
@@ -1354,7 +1354,7 @@ test("skill delete drops item-addressed customizations so re-created skill resol
   )
   expect(mutated.ok).toBe(true)
   expect(
-    mutated.snapshot.records.some(
+    mutated.snapshot!.records.some(
       (r) => (r.type === "customization" || r.type === "split") && r.item === "skill:notes",
     ),
   ).toBe(true)
@@ -1949,7 +1949,7 @@ test("snapshot reports the Plus-active base for a file-backed agent", async () =
   )
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  expect(mutated.snapshot.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
+  expect(mutated.snapshot!.agents.find((entry) => entry.id === "f")?.base).toBe("claude")
 })
 
 test("enabling a fixture team marks its non-file-backed member as plus origin", async () => {
@@ -2169,7 +2169,7 @@ test("SnapshotModelRecord with originalCandidate round-trips through mutate, sna
   )
   expect(mutated.ok).toBe(true)
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  const modelInSnapshot = mutated.snapshot.records.find((r) => r.type === "model" && r.agent === "alpha")
+  const modelInSnapshot = mutated.snapshot!.records.find((r) => r.type === "model" && r.agent === "alpha")
   expect(modelInSnapshot).toMatchObject({
     type: "model",
     providerID: "google",
@@ -2262,12 +2262,12 @@ test("base delete drops customizations so re-created base resolves new body", as
   )
   expect(mutated.ok).toBe(true)
   expect(
-    mutated.snapshot.records.some(
+    mutated.snapshot!.records.some(
       (r) => (r.type === "customization" || r.type === "split") && r.item === "base:custom" && r.level === "project",
     ),
   ).toBe(true)
 
-  const shownBefore = show(mutated.snapshot, { id: "base:custom", view: "resolved", agent: "alpha" })
+  const shownBefore = show(mutated.snapshot!, { id: "base:custom", view: "resolved", agent: "alpha" })
   expect(shownBefore.text).toBe("RESURRECTED BASE")
 
   const deleted = await Effect.runPromise(handlers["base.delete"]({ id: "custom" }, throwingContext({})))
@@ -2349,12 +2349,12 @@ test.skip("instruction delete drops customizations so re-created instruction res
   )
   expect(mutated.ok).toBe(true)
   expect(
-    mutated.snapshot.records.some(
+    mutated.snapshot!.records.some(
       (r) => (r.type === "customization" || r.type === "split") && r.item === "system:AGENTS.md" && r.level === "project",
     ),
   ).toBe(true)
 
-  const shownBefore = show(mutated.snapshot, { id: "system:AGENTS.md", view: "resolved", agent: "alpha" })
+  const shownBefore = show(mutated.snapshot!, { id: "system:AGENTS.md", view: "resolved", agent: "alpha" })
   expect(shownBefore.text).toBe("RESURRECTED INSTR")
 
   const deleted = await Effect.runPromise(handlers["instruction.delete"]({ name: "AGENTS.md" }, throwingContext({})))
@@ -2450,12 +2450,12 @@ test("mcp remove drops customizations from global store so re-created mcp resolv
   )
   expect(mutated.ok).toBe(true)
   expect(
-    mutated.snapshot.records.some(
+    mutated.snapshot!.records.some(
       (r) => (r.type === "customization" || r.type === "split") && r.item === "mcp:fetch" && r.level === "defaults",
     ),
   ).toBe(true)
 
-  const shownBefore = show(mutated.snapshot, { id: "mcp:fetch", view: "resolved" })
+  const shownBefore = show(mutated.snapshot!, { id: "mcp:fetch", view: "resolved" })
   expect(shownBefore.text).toBe("RESURRECTED MCP")
 
   const removed = await Effect.runPromise(handlers["mcp.remove"]({ name: "fetch" }, throwingContext({})))
@@ -2980,10 +2980,10 @@ test("instructions.mutate refuses a tool actor changing a protected agent's row 
   )
   expect(seeded.ok).toBe(true)
   if (!seeded.ok) throw new Error("expected seed mutate to succeed")
-  const warm = await Effect.runPromise(handlers["instructions.mutate"]({ expectedRevision: seeded.revision, expectedGlobalRevision: seeded.globalRevision, records: seeded.snapshot.records }, throwingContext({})))
+  const warm = await Effect.runPromise(handlers["instructions.mutate"]({ expectedRevision: seeded.revision, expectedGlobalRevision: seeded.globalRevision, records: seeded.snapshot!.records }, throwingContext({})))
   expect(warm.ok).toBe(true)
   if (!warm.ok) throw new Error("expected warm mutate to succeed")
-  const before = warm.snapshot
+  const before = warm.snapshot!
 
   // A tool mutate that carries the protected row unchanged is a no-op, not a
   // refusal: only the delta counts.
@@ -3027,7 +3027,7 @@ test("instructions.mutate refuses a tool actor changing a protected agent's row 
   )
   expect(tui.ok).toBe(true)
   if (!tui.ok) throw new Error("expected TUI mutate to succeed")
-  const afterTui = tui.snapshot.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
+  const afterTui = tui.snapshot!.records.find((candidate) => candidate.type === "customization" && candidate.item === "tool:a")
   if (afterTui === undefined || afterTui.type !== "customization") throw new Error("expected written customization")
   expect(afterTui.text).toBe("second")
 })

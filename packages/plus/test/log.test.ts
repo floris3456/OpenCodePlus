@@ -190,7 +190,7 @@ test("an unchanged save appends nothing and an empty log reads as empty", async 
     handlers["instructions.mutate"]({
       expectedRevision: first.revision,
       expectedGlobalRevision: first.globalRevision,
-      records: [...first.snapshot.records],
+      records: [...first.snapshot!.records],
     }, throwingContext({})),
   )
   expect(replay.ok).toBe(true)
@@ -291,7 +291,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   if (!kept1.ok || !kept1.value.ok) throw new Error("expected first keep mutate to succeed")
   const loggedAfterKeep1 = await api.log({})
   if (!loggedAfterKeep1.ok) throw new Error("log failed")
-  const keepUpdated = kept1.value.snapshot.records.find(
+  const keepUpdated = kept1.value.snapshot!.records.find(
     (entry) => entry.type === "customization" && entry.item === "tool:reader",
   )?.updated
   if (keepUpdated === undefined) throw new Error("expected kept record")
@@ -326,7 +326,7 @@ test("a repeated identical resolve keep and edit writes no second line and moves
   const loggedAfterEdit1 = await api.log({})
   if (!loggedAfterEdit1.ok) throw new Error("log failed")
   expect(loggedAfterEdit1.value.total).toBe(loggedAfterKeep2.value.total + 1)
-  const editUpdated = edited1.value.snapshot.records.find(
+  const editUpdated = edited1.value.snapshot!.records.find(
     (entry) => entry.type === "customization" && entry.item === "tool:reader",
   )?.updated
   if (editUpdated === undefined) throw new Error("expected edited record")

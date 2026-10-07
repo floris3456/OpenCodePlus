@@ -483,8 +483,61 @@ export const LogOutput = Schema.Struct({
   total: Schema.Number,
 }).annotate({ identifier: "Plus.LogOutput" })
 
-export interface MutateInput extends Schema.Schema.Type<typeof MutateInput> {}
-export const MutateInput = Schema.Struct({
+// One stored row addressed by identity for the delta form's `remove`: the
+// record type plus the fields that make up its target id (recordIdentity in
+// instructions/delta.ts) and its catalogue. Only the mutable snapshot record
+// kinds are removable here; teams, links, Defaults entries, presets,
+// Defaults › Models rows and categories have their own endpoints.
+export type RecordKey = typeof RecordKey.Type
+export const RecordKey = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("customization"),
+    level: Level,
+    agent: Schema.NullOr(Schema.String),
+    team: Schema.optionalKey(TeamOwner),
+    catalogue: Schema.optionalKey(Catalogue),
+    item: Schema.String,
+    section: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("split"),
+    level: Level,
+    agent: Schema.NullOr(Schema.String),
+    team: Schema.optionalKey(TeamOwner),
+    catalogue: Schema.optionalKey(Catalogue),
+    item: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("model"),
+    level: Level,
+    agent: Schema.NullOr(Schema.String),
+    team: Schema.optionalKey(TeamOwner),
+    catalogue: Schema.optionalKey(Catalogue),
+    providerID: Schema.String,
+    modelID: Schema.String,
+    variant: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("rule"),
+    level: Level,
+    agent: Schema.NullOr(Schema.String),
+    team: Schema.optionalKey(TeamOwner),
+    catalogue: Schema.optionalKey(Catalogue),
+    tool: Schema.String,
+    id: Schema.String,
+  }),
+]).annotate({ identifier: "Plus.RecordKey" })
+
+export interface MutateChanges extends Schema.Schema.Type<typeof MutateChanges> {}
+export const MutateChanges = Schema.Struct({
+  upsert: Schema.Array(SnapshotRecord),
+  remove: Schema.Array(RecordKey),
+}).annotate({ identifier: "Plus.MutateChanges" })
+
+// The full form (kept for compatibility): the client sends the whole record
+// set and both expected revisions, and the server refuses on a stale one.
+export type MutateInputFull = Schema.Schema.Type<typeof MutateInputFull>
+export const MutateInputFull = Schema.Struct({
   expectedRevision: Schema.Number,
   expectedGlobalRevision: Schema.Number,
   records: Schema.Array(SnapshotRecord),
@@ -492,14 +545,32 @@ export const MutateInput = Schema.Struct({
   // explicit undefined fails JSON encoding); the handler treats a missing
   // actor as { type: "tui" }.
   actor: Schema.optionalKey(Actor),
-}).annotate({ identifier: "Plus.MutateInput" })
+}).annotate({ identifier: "Plus.MutateInputFull" })
+
+// The delta form: only changed rows, applied to whatever the server currently
+// holds under one write lock. No expected revision, so two writers touching
+// different rows never conflict; the same row is last-writer-wins. The
+// snapshot is built only when `snapshot: true`.
+export type MutateInputDelta = Schema.Schema.Type<typeof MutateInputDelta>
+export const MutateInputDelta = Schema.Struct({
+  changes: MutateChanges,
+  snapshot: Schema.optionalKey(Schema.Boolean),
+  actor: Schema.optionalKey(Actor),
+}).annotate({ identifier: "Plus.MutateInputDelta" })
+
+export type MutateInput = typeof MutateInputFull.Type | typeof MutateInputDelta.Type
+export const MutateInput = Schema.Union([MutateInputFull, MutateInputDelta]).annotate({
+  identifier: "Plus.MutateInput",
+})
 
 export interface MutateSuccess extends Schema.Schema.Type<typeof MutateSuccess> {}
 export const MutateSuccess = Schema.Struct({
   ok: Schema.Literal(true),
   revision: Schema.Number,
   globalRevision: Schema.Number,
-  snapshot: Snapshot,
+  // Built only when the full form or a delta form asked for it; the full form
+  // always does, so its callers keep their snapshot.
+  snapshot: Schema.optionalKey(Snapshot),
 }).annotate({ identifier: "Plus.MutateSuccess" })
 
 export interface MutateConflict extends Schema.Schema.Type<typeof MutateConflict> {}

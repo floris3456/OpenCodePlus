@@ -408,19 +408,23 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       // before this answer arrives. That newer load owns the snapshot, but
       // the write still succeeded: report it, or an editor never closes.
       const latest = requestGen === generation
+      // The full form always answers with its snapshot; the delta form makes
+      // it optional. This path only sends the full form, so a missing snapshot
+      // (a future delta caller) fetches the current one.
+      const answered = result.snapshot ?? (await plus["instructions.snapshot"](undefined, { location: context.location }))
       if (result.ok) {
         if (latest) {
-          setSnapshot(result.snapshot)
-          cache.put(directory, result.snapshot)
+          setSnapshot(answered)
+          cache.put(directory, answered)
         }
         setStatus(successStatus)
         return true
       }
       if (!latest) return false
-      setSnapshot(result.snapshot)
-      cache.put(directory, result.snapshot)
+      setSnapshot(answered)
+      cache.put(directory, answered)
       setStatus(
-        `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${result.snapshot.revision}/${result.snapshot.globalRevision}); ${retryHint}`,
+        `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${answered.revision}/${answered.globalRevision}); ${retryHint}`,
       )
       return false
     } catch (error: unknown) {
