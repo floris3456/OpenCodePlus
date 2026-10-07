@@ -9,7 +9,7 @@ import os from "node:os"
 import path from "node:path"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { projectRecordsPath } from "../src/instructions/paths.js"
-import { load } from "../src/instructions/store.js"
+import { load, loadedFromSave, save } from "../src/instructions/store.js"
 import { deltaOf, recordIdentity, recordKeyOf } from "../src/instructions/delta.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { expandedTree } from "../src/instructions/tree.js"
@@ -235,6 +235,44 @@ test("api.snapshot returns the same cached object until the store changes", asyn
   expect(after.value).not.toBe(first.value)
   expect(after.value.records.some((record) => record.type === "customization" && record.item === "tool:a")).toBe(true)
   expect((await api.snapshot()).value).toBe(after.value)
+})
+
+test("loadedFromSave matches a fresh load after a save", async () => {
+  const { project } = await tempRoot()
+  const seeded = await save(project, {
+    expectedProjectRevision: 0,
+    expectedGlobalRevision: 0,
+    records: [
+      {
+        type: "customization",
+        level: "project",
+        agent: "alpha",
+        item: "tool:a",
+        section: null,
+        state: "on",
+        basedOn: "",
+        updated: UPDATED,
+      },
+      {
+        type: "customization",
+        level: "defaults",
+        agent: null,
+        item: "tool:b",
+        section: null,
+        state: "on",
+        basedOn: "",
+        updated: UPDATED,
+      },
+    ] as never,
+  })
+  expect(seeded.ok).toBe(true)
+  if (!seeded.ok) throw new Error("expected save")
+  const written = (await load(project)).records
+  const fromSave = loadedFromSave(seeded, written)
+  const fresh = await load(project)
+  expect(fromSave.projectRevision).toBe(fresh.projectRevision)
+  expect(fromSave.globalRevision).toBe(fresh.globalRevision)
+  expect(fromSave.records).toEqual(fresh.records)
 })
 
 test("the delta identity and key agree, and deltaOf reports only changed rows", () => {
