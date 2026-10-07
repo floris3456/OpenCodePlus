@@ -107,6 +107,21 @@ Evidence and full traces: `run/evidence/plus-1.2.0/analysis/findings.md`
   `tui/src/routes/session/rows.ts`, `index.tsx` scroll restore); the T4 reseed
   and `session.model.selected` rows on agent or model changes.
 
+- **(10) "Session failed" after a mid-chat Instructions change (regression in
+  1.1.18, seen live 2026-10-07 23:43:54Z on the build seat's own chat).** The
+  log shows `Failed to drain Session: TypeError: T.content.map is not a
+  function` in `SessionModelRequest.prepare`. Plus's `context` hook
+  (`plus/src/instructions/apply.ts`, the steered change note after
+  `checkAndEmitChangeNote`, from `1025fe6960`) pushes
+  `{ role: "user", content: noteText }`: string content, hidden by
+  `as never`. Core's `unsupportedParts` (`core/src/session/model-request.ts`,
+  `boundImages(unsupportedParts(shaped.messages, …))`, first in the 1.1.18 tag)
+  maps `message.content` as an array. The first step after any change that
+  emits a note fails; re-sending works because the note is not pushed again.
+  Fix it properly: Plus pushes a real text part, and core checks hook-returned
+  messages against the message schema at the hook boundary, so a plugin
+  cannot crash the runner. Add a regression test for each.
+
 ## Decisions (user, 2026-10-08)
 
 1. **Release.** Everything is 1.2.0: today's requests, the 1.1.19 plan
@@ -165,9 +180,13 @@ Assumptions recorded with the decisions (not contradicted by the user):
   server and tool descriptions, tool parameter descriptions, agent and member
   descriptions, keep-alive prompts and compaction instructions.
 
-## Open
+16. **End to end, including the release.** The run tags, pushes and publishes
+    1.2.0 itself (git push and `gh` were enabled for Simple-Build at Global on
+    2026-10-08; force push stays off).
+17. **GPT cache misses** (cliproxyapi/gpt-*) are investigated and fixed in
+    1.2.0, first, by Heavy-Implementer.
 
-- The user has one more topic to discuss before planning continues.
+## Open
 - Existing global category tabs: how they become folders (proposal: one
   folder per tab its items belong to, same name).
 - Where display order and folders are stored (proposal: global, like
