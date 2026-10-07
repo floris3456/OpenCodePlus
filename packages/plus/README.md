@@ -495,9 +495,10 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
 - The Brief a child receives (`brief.ts`) has no empty sections; says what
   done means for its deliverable; marks a read-only task as such; states the
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
-  budget); and attaches a `briefFile` inline up to 40 KB — the only way an
-  uncommitted file reaches a child, whose worktree starts at the parent's last
-  commit. A `findings` Brief gains a Review section: the exact `team_diff`
+  budget); and attaches a `briefFile` inline up to the member's "Attached brief
+  file" limit (a larger one is named by path so the child reads only what it
+  needs) — the only way an uncommitted file reaches a child, whose worktree
+  starts at the parent's last commit. A `findings` Brief gains a Review section: the exact `team_diff`
   call that shows the change (from the delegating run's base to the
   reviewer's own start) and the delegating run's check results there, since a
   reviewer can neither run checks nor read another run.
