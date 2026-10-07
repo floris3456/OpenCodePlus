@@ -99,6 +99,13 @@ const cloneConfig = (config: Mcp.ServerConfig) => structuredClone(config) as Typ
 
 export interface Interface extends State.Transformable<Editor> {
   readonly servers: () => Effect.Effect<ServerInfo[]>
+  /**
+   * Starts every enabled server once, on the first Session use of this
+   * Location, and resolves once those starts have settled. A folder loaded
+   * only for its config (a TUI listing sessions, a team status read) starts no
+   * server process until then.
+   */
+  readonly ensure: Effect.Effect<void>
   readonly add: (server: ServerName | string, config: Mcp.ServerConfig) => Effect.Effect<void>
   readonly connect: (server: ServerName | string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (server: ServerName | string) => Effect.Effect<void, NotFoundError>
@@ -486,7 +493,11 @@ export const layer = (options?: Options) =>
         if (entry.registration) yield* entry.registration.dispose
       })
 
-      const replaceServer = Effect.fnUntraced(function* (name: ServerName, serverConfig: Mcp.ServerConfig) {
+      const replaceServer = Effect.fnUntraced(function* (
+        name: ServerName,
+        serverConfig: Mcp.ServerConfig,
+        forceStart = false,
+      ) {
         const previous = entries.get(name)
         if (previous) yield* disposeServer(name, previous)
         const entry: ServerEntry = {
@@ -502,6 +513,9 @@ export const layer = (options?: Options) =>
             yield* bus.publish(McpEvent.StatusChanged, { server: name })
             return
           }
+          // A lazy Location starts no server until its first Session use. An
+          // explicit connect or credential reconnect always starts.
+          if (!forceStart && !started) return
           yield* startServer(name, entry)
         }).pipe(
           // Settle startup even when registration fails or replacement is interrupted, so readers cannot hang.
@@ -519,8 +533,22 @@ export const layer = (options?: Options) =>
       })
 
       let applied: Map<ServerName, Mcp.ServerConfig> | undefined
+      // Servers start on the first Session use of this Location, not at boot.
+      let started = false
       const overrides = new Map<ServerName, Mcp.ServerConfig | false>()
       const reconcileLock = Semaphore.makeUnsafe(1)
+      const startAll = Effect.fnUntraced(function* () {
+        started = true
+        const starts: Effect.Effect<void, never, never>[] = []
+        for (const [name, entry] of entries) {
+          if (entry.config.disabled) continue
+          if (entry.client || entry.scope) continue
+          starts.push(startServer(name, entry).pipe(locks.withLock(name)))
+        }
+        // Settle the starts so the first request's tool snapshot sees them.
+        yield* Effect.forEach(starts, (start) => start, { discard: true, concurrency: "unbounded" })
+      })
+      const ensure = reconcileLock.withPermit(startAll())
       const reconcile = Effect.fnUntraced(function* () {
         const servers = state.get().servers
         if (!applied && entries.size === 0) {
@@ -542,6 +570,7 @@ export const layer = (options?: Options) =>
               yield* bus.publish(McpEvent.StatusChanged, { server: name })
               continue
             }
+            if (!started) continue
             fork(startServer(name, entry).pipe(locks.withLock(name)))
           }
           return
@@ -614,6 +643,7 @@ export const layer = (options?: Options) =>
       return Service.of({
         transform: state.transform,
         reload: state.reload,
+        ensure,
         servers: Effect.fn("MCP.servers")(function* () {
           return Array.from(entries)
             .toSorted(([a], [b]) => a.localeCompare(b))
@@ -654,6 +684,7 @@ export const layer = (options?: Options) =>
             .toSorted((a, b) => a.server.localeCompare(b.server) || a.name.localeCompare(b.name))
         }),
         callTool: Effect.fn("MCP.callTool")(function* (input) {
+          yield* ensure
           const target = yield* requireServer(input.server)
           yield* target.entry.startup.await
           if (!target.entry.client)
@@ -672,6 +703,7 @@ export const layer = (options?: Options) =>
           return { ...result, server: target.name, tool: input.name }
         }),
         instructions: Effect.fn("MCP.instructions")(function* () {
+          yield* ensure
           return Array.from(entries)
             .flatMap(([server, entry]) => {
               const instructions = entry.client?.instructions

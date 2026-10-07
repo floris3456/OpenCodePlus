@@ -136,6 +136,10 @@ const layer = Layer.effect(
         return yield* Effect.interrupt
 
       yield* mcpTools.flush
+      // A Location loaded only for its config starts no MCP server until its
+      // first Session use. Start and settle them before the tool snapshot, so
+      // the first request sees the server's tools.
+      yield* mcpTools.ensure
       const agent = yield* agents.select(pinned ?? session.agent)
       if (!agent.info)
         return yield* new AgentNotFoundError({ sessionID: session.id, agent: pinned ?? session.agent ?? agent.id })

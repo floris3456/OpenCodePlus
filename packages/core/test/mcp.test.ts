@@ -359,8 +359,10 @@ const connect = (server: string, config: typeof ConfigMCP.Server.Type, directory
   McpClient.connect(server, config, directory).pipe(Effect.provide(hostEnvironmentLayer))
 
 // Reads no longer wait for startup, so tests that assert on a connected server settle it first.
+// A lazy Location starts no server until `ensure`; a direct-API test opts in first.
 const settled = (service: Mcp.Interface, name = "resources") =>
   Effect.gen(function* () {
+    yield* service.ensure
     const status = (yield* service.servers()).find((server) => server.name === name)?.status
     if (status?.status === "pending") return yield* Effect.fail(status)
     return status
@@ -734,6 +736,36 @@ test("reports a local MCP server as failed when the location has no execution pl
         error: expect.stringContaining("location has no execution plane"),
       })
     }).pipe(Effect.provide(resourceMcpLayer(config, undefined, undefined, { environment }))),
+  )
+})
+
+// Item 4.3: a folder loaded for its config only (a TUI listing sessions, a
+// team status read) must start no MCP server process. The server starts on the
+// first Session use (`ensure`), and that first use's tool snapshot carries its
+// tools. Before this change, booting the Location started every enabled server.
+test("starts no MCP server on location boot and starts them on first use", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* resourceServer()
+        const layer = resourceMcpLayer(new ConfigMCP.Remote({ type: "remote", url: server.url, oauth: false }))
+        yield* Effect.gen(function* () {
+          const service = yield* Mcp.Service
+          // Booting the Location registers the config but starts nothing.
+          expect(yield* service.tools()).toEqual([])
+          expect(server.state.initializations).toBe(0)
+
+          // The first Session use starts it and settles before returning.
+          yield* service.ensure
+          expect(server.state.initializations).toBe(1)
+          expect((yield* service.tools()).map((tool) => tool.name)).toEqual(["echo"])
+
+          // A second use is a cheap no-op: no second handshake.
+          yield* service.ensure
+          expect(server.state.initializations).toBe(1)
+        }).pipe(Effect.provide(layer))
+      }),
+    ),
   )
 })
 
@@ -1120,6 +1152,8 @@ test("reconnects and retries a tool call after the MCP session expires", async (
         const server = yield* resourceServer()
         yield* Effect.gen(function* () {
           const service = yield* Mcp.Service
+          // A runtime transform models a live Session's server management.
+          yield* service.ensure
           yield* service.callTool({ server: "resources", name: "echo", args: { n: 1 } })
           expect(server.state.toolCalls).toHaveLength(1)
           expect(server.state.initializations).toBe(1)
@@ -1585,6 +1619,9 @@ test("adds, disconnects, and reconnects MCP servers at runtime", async () => {
               command: [process.execPath, path.join(import.meta.dir, "fixture/mcp-output-schema.ts")],
             }),
           )
+          // A runtime add is lazy until the Location is used; a Session's first
+          // use calls ensure.
+          yield* service.ensure
           expect((yield* service.servers()).find((server) => server.name === "dynamic")?.status).toEqual({
             status: "connected",
           })
@@ -1715,6 +1752,8 @@ testEffect(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unus
   () =>
     Effect.gen(function* () {
       const service = yield* Mcp.Service
+      // A Location with a live Session has already started its servers.
+      yield* service.ensure
 
       yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1968,6 +2007,7 @@ testEffect(Layer.empty).live("keeps MCP config snapshots stable during an in-fli
 
     yield* Effect.gen(function* () {
       const service = yield* Mcp.Service
+      yield* service.ensure
       const replacing = yield* service
         .transform((editor) => editor.update("resources", (config) => (config.disabled = false)))
         .pipe(Effect.forkScoped({ startImmediately: true }))

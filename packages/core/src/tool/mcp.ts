@@ -19,6 +19,12 @@ export const name = (server: string, tool: string) => `${namespace(server)}_${to
 export interface Interface {
   /** Wait for the initial MCP tool registration to settle. */
   readonly flush: Effect.Effect<void>
+  /**
+   * Starts this Location's MCP servers on first use and re-registers their
+   * tools before returning, so the first request's tool snapshot includes
+   * them. A folder loaded only for config never runs this.
+   */
+  readonly ensure: Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/McpTool") {}
@@ -136,6 +142,32 @@ export const layer = Layer.effect(
         yield* tools.reload()
       }),
     )
+    // First use: start this Location's servers, then re-read the catalog so the
+    // first request's snapshot carries their tools. Repeated calls are cheap
+    // after the servers have started.
+    const ensure = Effect.gen(function* () {
+      yield* mcp.ensure
+      yield* lock.withPermit(
+        Effect.gen(function* () {
+          const listed = yield* mcp.tools()
+          if (
+            listed.length === discovered.length &&
+            listed.every((tool, index) => {
+              const current = discovered[index]
+              return (
+                current !== undefined &&
+                current.server === tool.server &&
+                current.name === tool.name &&
+                current.description === tool.description
+              )
+            })
+          )
+            return
+          discovered = listed
+          yield* tools.reload()
+        }),
+      )
+    })
 
     // Servers announce tools in bursts and each read loads the whole catalog, so settle and refresh
     // once. The bus subscription stays eager; only the already-open sliding subscription is debounced.
@@ -150,7 +182,7 @@ export const layer = Layer.effect(
       Stream.runForEach(() => reconcile),
       Effect.forkScoped({ startImmediately: true }),
     )
-    return Service.of({ flush: Effect.asVoid(Fiber.await(initial)) })
+    return Service.of({ flush: Effect.asVoid(Fiber.await(initial)), ensure })
   }),
 )
 
