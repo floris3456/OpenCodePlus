@@ -26,6 +26,8 @@ import type {
   InstructionsChanged,
   LinkSetInput,
   ModelAddInput,
+  MutateInput,
+  MutateInputDelta,
   MutateInputFull,
   PresetAddMemberInput,
   PresetCreateInput,
@@ -34,8 +36,12 @@ import type {
   SetModelSettingsInput,
   Snapshot,
   SnapshotModelRecord,
+  SnapshotRecord,
   TeamAddAgentInput,
 } from "../src/rpc.js"
+import { recordsOf } from "../src/tui/instructions/state.js"
+import { recordOf } from "../src/instructions/snapshot.js"
+import { keyIdentity, recordIdentity, snapshotRecordOf } from "../src/instructions/delta.js"
 
 export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
   return {
@@ -127,7 +133,7 @@ export type TestKeymapCommand = NonNullable<TestKeymapLayer["commands"]>[number]
 type KeymapLayerCallback = Parameters<Plugin.Context["keymap"]["layer"]>[0]
 
 export interface FakeRpc {
-  readonly mutateInputs: MutateInputFull[]
+  readonly mutateInputs: (MutateInput & { records: readonly SnapshotRecord[]; expectedRevision?: number; expectedGlobalRevision?: number })[]
   readonly agentCreates: CreateAgentInput[]
   readonly agentDeletes: { scope: string; id: string }[]
   readonly skillCreates: CreateSkillInput[]
@@ -352,8 +358,27 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           activeSnapshot = nextSnapshot()
           return activeSnapshot
         },
-        "instructions.mutate": async (input: MutateInputFull) => {
-          fake.mutateInputs.push(input)
+        "instructions.mutate": async (input: MutateInput) => {
+          let recordedRecords: readonly SnapshotRecord[]
+          if ("changes" in input) {
+            const currentStored = recordsOf(activeSnapshot?.records ?? [])
+            const removals = new Set(input.changes.remove.map(keyIdentity))
+            const upsertKeys = new Set(input.changes.upsert.map((u) => {
+              const rec = recordOf(u)
+              return rec ? recordIdentity(rec) : ""
+            }))
+            const mergedStored = [
+              ...currentStored.filter((r) => !removals.has(recordIdentity(r)) && !upsertKeys.has(recordIdentity(r))),
+              ...input.changes.upsert.map(recordOf).filter((r): r is NonNullable<typeof r> => r !== undefined),
+            ]
+            recordedRecords = mergedStored.map(snapshotRecordOf).filter((r): r is SnapshotRecord => r !== undefined)
+            ;(input as any).records = recordedRecords
+            ;(input as any).expectedRevision ??= activeSnapshot?.revision ?? 1
+            ;(input as any).expectedGlobalRevision ??= activeSnapshot?.globalRevision ?? 1
+          } else {
+            recordedRecords = input.records
+          }
+          fake.mutateInputs.push(input as any)
           // A real mutate answers with the store's post-write snapshot. Derive
           // it from the request records so tests can assert the submitted
           // mutation instead of a canned reply: a visible model in the
@@ -362,7 +387,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
             (record): record is SnapshotModelRecord => record.type === "model" && record.removed !== true,
           )
           for (const previous of previousModels) {
-            const survives = input.records.some(
+            const survives = recordedRecords.some(
               (record) =>
                 record.type === "model" &&
                 record.level === previous.level &&
@@ -388,10 +413,16 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
               : {
                   ...(activeSnapshot ?? createSnapshot()),
                   revision: (activeSnapshot?.revision ?? 1) + 1,
-                  records: input.records,
+                  records: recordedRecords,
                 }
           activeSnapshot = next
-          return { ok: true, revision: next.revision, globalRevision: next.globalRevision, snapshot: next }
+          const wantSnapshot = !("changes" in input) || input.snapshot === true
+          return {
+            ok: true,
+            revision: next.revision,
+            globalRevision: next.globalRevision,
+            ...(wantSnapshot ? { snapshot: next } : {}),
+          }
         },
         "agent.create": async (input: CreateAgentInput) => {
           fake.agentCreates.push(input)
@@ -682,7 +713,13 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
 
   async function emitChanged(next?: Snapshot): Promise<void> {
     if (next !== undefined) queue.push(next)
-    const data: InstructionsChanged = { revision: next?.revision ?? 1, globalRevision: next?.globalRevision ?? 1 }
+    const upcoming = next ?? queue[0]
+    const data: InstructionsChanged = next !== undefined
+      ? { revision: next.revision, globalRevision: next.globalRevision }
+      : {
+          revision: Math.max((activeSnapshot?.revision ?? 0) + 1, upcoming?.revision ?? 0),
+          globalRevision: upcoming?.globalRevision ?? (activeSnapshot?.globalRevision ?? 1),
+        }
     for (const listener of instructionsListeners) listener({ data })
   }
 
