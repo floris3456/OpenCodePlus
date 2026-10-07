@@ -61,6 +61,12 @@ function canToggle(node: TreeNode | undefined): boolean {
   return node?.address !== undefined && node?.actions?.toggle === true
 }
 
+// Space on a required parameter row goes to ops.toggle, which refuses with the
+// reason, instead of doing nothing.
+function requiredParam(node: TreeNode | undefined): boolean {
+  return node?.address?.item.startsWith("param:") === true && node.actions?.toggle !== true
+}
+
 // Agent rows under the Agents groups (never team member rows, which are kind
 // "team") can be made the current agent with ctrl+space. Space toggles their
 // Enabled item; older snapshots with no controls retain space-to-select.
@@ -995,7 +1001,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function toggle() {
     const node = current()
     if (!node) return
-    if (canToggle(node)) {
+    if (canToggle(node) || requiredParam(node)) {
       void state.toggle(node)
       return
     }
@@ -1498,7 +1504,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           group: "Instructions",
           run: () => switchCategory(index),
         })),
-        ...(canToggle(node)
+        ...(canToggle(node) || requiredParam(node)
           ? [{ bind: "space", title: "Toggle", group: "Instructions", run: toggle }]
           : selectableAgent(node) !== undefined
             ? [{ bind: "space", title: "Select agent", group: "Instructions", run: toggle }]

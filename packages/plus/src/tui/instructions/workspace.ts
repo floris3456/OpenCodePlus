@@ -245,6 +245,7 @@ export function canExpand(node: TreeNode): boolean {
   if (isModelSettingRowId(node.id) || isModelFieldRowId(node.id)) return false
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   if (node.address?.item.startsWith("perm:") === true) return false
+  if (node.address?.item.startsWith("param:") === true) return false
   return true
 }
 

@@ -15,6 +15,7 @@ import { fingerprint, type CustomizationRecord, type Item } from "../src/instruc
 import { reset, saveText, setEnabled, toggle } from "../src/instructions/ops.js"
 import { editInputSchema, toolParameters } from "../src/instructions/parameters.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
+import { canExpand } from "../src/tui/instructions/workspace.js"
 import { context } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -145,6 +146,10 @@ test("each tool row lists its parameters; an optional one switches off, a requir
   expect(refused.refusal).toBe(`"path: string (required)" is required by its tool and cannot be switched off`)
   const refusedSet = setEnabled(input, rowOf(input, "param:reader:path").id, false)
   expect("refusal" in refusedSet).toBe(true)
+
+  // A parameter row is a leaf in the list: no ▸ to open.
+  expect(canExpand(rowOf(input, "param:reader:offset"))).toBe(false)
+  expect(canExpand(rowOf(input, "tool:reader"))).toBe(true)
 
   const off = toggle(input, rowOf(input, "param:reader:offset").id)
   if ("refusal" in off) throw new Error(off.refusal)
