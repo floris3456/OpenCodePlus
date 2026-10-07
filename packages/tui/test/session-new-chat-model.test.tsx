@@ -136,4 +136,12 @@ test("resolveNewChatModel prefers the agent model and keeps the variant only for
     }),
   ).toEqual({ model: { providerID: "demo", modelID: "stale-pick" }, variant: undefined })
   expect(resolveNewChatModel({ agentModel: undefined, composer: undefined, variant: undefined })).toBeUndefined()
+  // The agent's saved effort (a pick saves it with the model) wins over the composer's.
+  expect(
+    resolveNewChatModel({
+      agentModel: { providerID: "demo", id: "active-model", variant: "xhigh" },
+      composer: { providerID: "demo", modelID: "stale-pick" },
+      variant: "ultra",
+    }),
+  ).toEqual({ model: { providerID: "demo", modelID: "active-model" }, variant: "xhigh" })
 })

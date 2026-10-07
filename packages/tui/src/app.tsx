@@ -116,11 +116,12 @@ export interface NewChatModel {
  * Which model a new chat starts on: the current agent's active model as the
  * host reports it now, not the composer's leftover (an earlier manual pick
  * superseded since, for example by an Instructions activation). Without an
- * agent model the composer's pick carries over; its variant only when it was
- * picked for that same model.
+ * agent model the composer's pick carries over. The agent's own effort wins;
+ * otherwise the composer's variant is kept only when it was picked for that
+ * same model.
  */
 export function resolveNewChatModel(options: {
-  readonly agentModel: { readonly providerID: string; readonly id: string } | undefined
+  readonly agentModel: { readonly providerID: string; readonly id: string; readonly variant?: string } | undefined
   readonly composer: { readonly providerID: string; readonly modelID: string } | undefined
   readonly variant: string | undefined
 }): NewChatModel | undefined {
@@ -134,7 +135,7 @@ export function resolveNewChatModel(options: {
     options.composer.modelID === options.agentModel.id
   return {
     model: { providerID: options.agentModel.providerID, modelID: options.agentModel.id },
-    variant: same ? options.variant : undefined,
+    variant: options.agentModel.variant ?? (same ? options.variant : undefined),
   }
 }
 
