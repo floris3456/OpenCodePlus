@@ -1514,6 +1514,23 @@ function itemSplitsHash(splits: readonly SplitRecord[] | undefined, item: string
   return perSplits.get(item) ?? ""
 }
 
+// The upstream text keyed by its content, not by its `fingerprint` field: an
+// upstream built for a merge or an unmasked discovery copy can carry a text
+// its fingerprint does not describe. One fast hash per upstream object.
+const upstreamTextKeys = new WeakMap<object, string>()
+function upstreamTextKey(upstream: ChainInput["upstream"]): string {
+  const known = upstreamTextKeys.get(upstream)
+  if (known !== undefined) return known
+  const key = `${upstream.text.length}.${Bun.hash(upstream.text).toString(36)}`
+  upstreamTextKeys.set(upstream, key)
+  return key
+}
+
+// Everything a whole or section resolution reads besides the item's records,
+// splits and chain (hashed by the caller): the upstream text, the upstream
+// fields the fallback, split and pin read, the address, whether the owner is
+// native (the fallback's default), the preset catalogue at preset level, and
+// the gate. A missing input here serves another resolution's answer.
 function resolutionContentKey(
   input: ChainInput,
   recordsHash: string,
@@ -1522,7 +1539,11 @@ function resolutionContentKey(
 ): string {
   const upstream = input.upstream
   const gateKey = input.gate === undefined ? "none" : identityKey(input.gate)
-  return `${upstream.id}:${upstream.fingerprint}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${addressKey(input.address)}:${recordsHash}:${splitsHash}:${chainKey}:${gateKey}`
+  const agent = input.address.agent
+  const native = input.scopes.native === undefined ? "u" : agent !== null && input.scopes.native.has(agent) ? "n" : "-"
+  const presets = input.address.level === "preset" ? identityKey(input.scopes.presets) : ""
+  const owners = `${(upstream.agents ?? []).join(",")}|${upstream.ownedBy ?? ""}`
+  return `${upstream.id}:${upstreamTextKey(upstream)}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${owners}:${addressKey(input.address)}:${recordsHash}:${splitsHash}:${chainKey}:${native}:${presets}:${gateKey}`
 }
 
 const resolutionCacheLimit = 20000
@@ -1892,7 +1913,7 @@ export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[])
   const recordsEntry = itemRecordsIndex(input.records).get(input.address.item) ?? emptyItemRecordsEntry
   const recordsHash = recordsEntry.hash
   const splitsHash = itemSplitsHash(input.splits, input.address.item)
-  const key = `${input.address.item}:${input.upstream.title}:${recordsHash}:${splitsHash}:${chainKey}`
+  const key = resolutionContentKey({ ...input, gate: undefined }, recordsHash, splitsHash, chainKey)
 
   const cached = sectionOverridesCache.get(key)
   if (cached !== undefined) {
