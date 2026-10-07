@@ -125,7 +125,8 @@ export const PluginTestLayer = Layer.merge(
   // The plugin host reads Config for its config seam, so bodies that build a
   // host need Config.Service in scope. The graph above keeps its own
   // in-memory instance for its internals; this second one only serves the
-  // outer scope (its reload is a no-op, and every test provides its own
-  // entries to the plugin under test).
+  // outer scope (its reload is a no-op). Tests that need their own entries
+  // provide a Config.testLayer closer to the effect, which wins over this
+  // one; a test-wide layer farther out never overrides it.
   Config.testLayer(),
 )

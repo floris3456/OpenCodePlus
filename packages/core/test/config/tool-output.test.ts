@@ -52,7 +52,6 @@ describe("ConfigToolOutputPlugin.Plugin", () => {
         ),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ).pipe(
-      Effect.provide(PluginTestLayer),
       Effect.provide(
         Config.testLayer([
           new Document({
@@ -61,6 +60,7 @@ describe("ConfigToolOutputPlugin.Plugin", () => {
           }),
         ]),
       ),
+      Effect.provide(PluginTestLayer),
     ),
   )
 })
