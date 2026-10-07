@@ -114,6 +114,8 @@ export interface RunRecord {
   }
   worktree?: WorktreeState
   promotedFrom?: string
+  /** Where the chat moved after this run was tied to a folder, when the run stays behind. Cleared once a team call reports it. */
+  movedTo?: string
   history: HistoryEntry[]
   requestedModel?: ModelIdentity | null
   loadedModel?: ModelIdentity | null

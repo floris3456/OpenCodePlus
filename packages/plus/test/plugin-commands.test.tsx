@@ -46,6 +46,9 @@ function createHarness(): CommandsHarness {
       store: (_key: string, options: { initial: object }) => [options.initial, async () => {}] as const,
     },
     ui: {
+      // model.pick registers its pick listener at setup (tui/model-pick.ts);
+      // these command tests never pick a model.
+      model: { onPick: () => () => {} },
       router: {
         register: () => () => {},
         current: () => current,

@@ -26,7 +26,7 @@ import type {
   InstructionsChanged,
   LinkSetInput,
   ModelAddInput,
-  MutateInput,
+  MutateInputFull,
   PresetAddMemberInput,
   PresetCreateInput,
   PresetDeleteInput,
@@ -127,7 +127,7 @@ export type TestKeymapCommand = NonNullable<TestKeymapLayer["commands"]>[number]
 type KeymapLayerCallback = Parameters<Plugin.Context["keymap"]["layer"]>[0]
 
 export interface FakeRpc {
-  readonly mutateInputs: MutateInput[]
+  readonly mutateInputs: MutateInputFull[]
   readonly agentCreates: CreateAgentInput[]
   readonly agentDeletes: { scope: string; id: string }[]
   readonly skillCreates: CreateSkillInput[]
@@ -352,7 +352,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           activeSnapshot = nextSnapshot()
           return activeSnapshot
         },
-        "instructions.mutate": async (input: MutateInput) => {
+        "instructions.mutate": async (input: MutateInputFull) => {
           fake.mutateInputs.push(input)
           // A real mutate answers with the store's post-write snapshot. Derive
           // it from the request records so tests can assert the submitted

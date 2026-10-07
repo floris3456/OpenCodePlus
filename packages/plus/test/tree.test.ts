@@ -1588,7 +1588,7 @@ test("a native tool row lists its Description and a Permissions group whose cate
   // A one-section text is the Description row itself, then Permissions.
   const kids = childrenOf(nodes, toolRow.id)
   expect(kids.map((node) => [node.id, node.kind, node.label])).toEqual([
-    ["section:project:Implementer:tool:shell:whole", "section", "Description"],
+    ["section:project:Implementer:tool:shell:whole", "section", "Full text"],
     ["group:project:Implementer:tool:shell:permissions", "group", "Permissions"],
   ])
   expect(kids[0]?.actions?.toggle).toBe(true)

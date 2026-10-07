@@ -39,6 +39,7 @@ test("every method and event is declared", () => {
     "team.rename",
     "team.list",
     "model.add",
+    "model.pick",
     "model.remove",
     "catalog.models",
     "rule.add",

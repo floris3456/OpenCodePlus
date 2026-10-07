@@ -18,7 +18,7 @@ import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
-import { checkFiles } from "./check-files.js"
+import { checkFiles, missingCheckFiles } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
 import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
@@ -256,6 +256,37 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const refused = briefRefusal(table, brief)
   if (refused !== undefined) return refused
 
+  // The attached file is read before the brief limit: its content counts
+  // toward the limit when it is pasted. A file over the member's
+  // "Attached brief file" limit (limits.attachment, default 8,000 chars) is
+  // not pasted: the Brief names its path and the child reads only what it
+  // needs.
+  let attached: { path: string; content: string } | undefined
+  const briefFile = brief.briefFile
+  if (briefFile !== undefined) {
+    // A relative briefFile is relative to the caller's checkout, the same
+    // directory a shell tool in that session would start in.
+    const resolvedBrief = path.resolve(parent.directory, briefFile)
+    const realBrief = await realpath(resolvedBrief).catch(() => resolvedBrief)
+    const callerReal = await realpath(parent.directory).catch(() => parent.directory)
+    const runDir = path.join(root, "runs", parent.id)
+    const runReal = await realpath(runDir).catch(() => runDir)
+    const inside =
+      realBrief === callerReal ||
+      realBrief.startsWith(`${callerReal}${path.sep}`) ||
+      realBrief === runReal ||
+      realBrief.startsWith(`${runReal}${path.sep}`)
+    if (!inside)
+      return fail(
+        "E_PATHS",
+        `briefFile must be inside your checkout (${callerReal}) or this run's directory (${runReal}); got ${realBrief}.`,
+        [parent.directory, runDir],
+      )
+    attached = { path: briefFile, content: await readFile(realBrief, "utf8") }
+  }
+  const attachmentLimit = bound(table, agent, "delegate", "limits.attachment")
+  const attachmentPasted = attached === undefined || attachmentLimit === undefined || attached.content.length <= attachmentLimit
+
   const childID = newRunID("w")
   let taskID = brief.task
   if (taskID !== undefined) {
@@ -293,14 +324,32 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const ifaceChars = brief.context.interfaces.reduce((n, item) => n + item.path.length + (item.symbol?.length ?? 0) + item.note.length, 0)
   const decisionChars = brief.context.decisions.reduce((n, decision) => n + decision.length, 0)
-  const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars
+  // An attachment counts toward the brief limit only while it is pasted; a
+  // larger one travels as a path, so its size never inflates the Brief.
+  const attachmentChars = attached !== undefined && attachmentPasted ? attached.content.length : 0
+  const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars + attachmentChars
   const briefLimit = bound(table, agent, "delegate", "limits.brief")
   if (briefLimit !== undefined && briefChars > briefLimit)
     return fail(
       "E_TOO_LONG",
-      `Brief text is ${briefChars} chars (max ${briefLimit}). Move long material into a file and pass briefFile.`,
-      "pass briefFile",
+      `Brief text is ${briefChars} chars (max ${briefLimit}). Shorten it: keep the outcome, the files, the decisions and the checks; move detail out of the Brief.`,
+      "a shorter brief",
     )
+
+  // A check must be able to run before the child creates anything: every
+  // `bun test FILE` a brief names is resolved against the child's base commit.
+  // A file the base does not hold refuses the delegation, so a run is never
+  // created for a check that cannot pass. The parent commits the file first or
+  // names one that already exists.
+  const missingChecks = await missingCheckFiles(repo.root, baseSha, checks)
+  if (missingChecks.length > 0) {
+    const first = missingChecks[0]!
+    return fail(
+      "E_CHECKS",
+      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: commit it first, or name an existing test file.`,
+      "an existing test file",
+    )
+  }
 
   if (taskID === undefined) {
     const title = brief.objective.split("\n")[0] ?? ""
@@ -316,30 +365,6 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const briefModule = await import("./brief.js")
   const budget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
-
-  let attached: { path: string; content: string } | undefined
-  const briefFile = brief.briefFile
-  if (briefFile !== undefined) {
-    // A relative briefFile is relative to the caller's checkout, the same
-    // directory a shell tool in that session would start in.
-    const resolvedBrief = path.resolve(parent.directory, briefFile)
-    const realBrief = await realpath(resolvedBrief).catch(() => resolvedBrief)
-    const callerReal = await realpath(parent.directory).catch(() => parent.directory)
-    const runDir = path.join(root, "runs", parent.id)
-    const runReal = await realpath(runDir).catch(() => runDir)
-    const inside =
-      realBrief === callerReal ||
-      realBrief.startsWith(`${callerReal}${path.sep}`) ||
-      realBrief === runReal ||
-      realBrief.startsWith(`${runReal}${path.sep}`)
-    if (!inside)
-      return fail(
-        "E_PATHS",
-        `briefFile must be inside your checkout (${callerReal}) or this run's directory (${runReal}); got ${realBrief}.`,
-        [parent.directory, runDir],
-      )
-    attached = { path: briefFile, content: await readFile(realBrief, "utf8") }
-  }
 
   // A review starts where the delegating run started and ends at the commit
   // the reviewer's worktree starts from; the run's own check results there
@@ -361,6 +386,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const rendered = briefModule.render(resolved, {
     budget,
     ...(attached === undefined ? {} : { attached }),
+    ...(attachmentLimit === undefined ? {} : { attachmentLimit }),
     ...(review === undefined ? {} : { review }),
   })
   const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")

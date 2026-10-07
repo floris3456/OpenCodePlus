@@ -68,6 +68,7 @@ async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "G
     })
     if (!result.ok) throw new Error(result.error.message)
     if (!result.value.ok) throw new Error("Unexpected stale write")
+    if (result.value.snapshot === undefined) throw new Error("expected a snapshot from the full mutate form")
     return result.value.snapshot
   }
   async function call(name: string, input: unknown, agent = "build") {

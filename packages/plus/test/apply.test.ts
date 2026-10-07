@@ -1126,8 +1126,10 @@ test("a model update for a current team agent missing from the registry still la
     ctx,
     makeInput({ items: discovered.items, records: [], models, scopes: fromBuild(discovered, "ghost"), agents: [{ id: "alpha", level: "project" }, { id: "ghost", level: "project" }], teamAgents: ["ghost"] }),
   )
-  // The model registration, plus the per-request tool narrowing every enabled team installs.
-  expect(applied.registrations).toHaveLength(2)
+  // The model registration, the team's tool denials and the per-request
+  // narrowing context hook every enabled team installs (the harness's session
+  // domain used to refuse hook registrations, which hid the hook from this count).
+  expect(applied.registrations).toHaveLength(3)
   expect(agents.state.get("alpha")?.model).toMatchObject({ providerID: "acme", id: "nova-2" })
   expect(agents.state.get("ghost")?.model).toMatchObject({ providerID: "acme", id: "nova-3" })
 })

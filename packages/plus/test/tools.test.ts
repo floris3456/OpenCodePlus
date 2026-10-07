@@ -1209,7 +1209,7 @@ test("toggling the execute row through set succeeds and writes the state record"
   expect(pinError.message).toBe(`"execute" is host-owned: toggle only`)
 })
 
-test("a stale bare-id toggle reports the status that actually committed", async () => {
+test("a bare-id toggle sends a delta and lands over a concurrent write to another row", async () => {
   const { project } = await tempProject()
   const ctx = fixtureContext(project)
   await linkToBuild(project, "defaults", ["alpha"])
@@ -1219,27 +1219,38 @@ test("a stale bare-id toggle reports the status that actually committed", async 
   const memo = memoFromSnapshot(before)
   const target = expandedTree(memo).find((candidate) => candidate.address?.item === "tool:reader")
   if (target === undefined) throw new Error("missing reader row")
-  let calls = 0
+  const expected = toggle(memo, target.id)
+  if ("refusal" in expected) throw new Error(`expected toggle success: ${expected.refusal}`)
+  // A different row is written concurrently, the way another writer would.
+  // With the full form this was a stale refusal; the delta form lands both
+  // writes because they touch different rows.
+  let injected = false
+  const sent: Plus.MutateInput[] = []
   const wrapped: PlusApi = {
     ...real,
     mutate: async (input) => {
-      calls += 1
-      if (calls === 1) {
-        const concurrentOp = toggle(memo, target.id)
-        if ("refusal" in concurrentOp) throw new Error(`concurrent toggle refused: ${concurrentOp.refusal}`)
+      sent.push(input)
+      if (!injected && "changes" in input) {
+        injected = true
         const concurrent = await real.mutate({
-          expectedRevision: before.revision,
-          expectedGlobalRevision: before.globalRevision,
-          records: [...concurrentOp.records, ...concurrentOp.splits] as unknown as Plus.MutateInput["records"],
+          changes: {
+            upsert: [
+              {
+                type: "customization",
+                level: "defaults",
+                agent: "alpha",
+                item: "skill:notes",
+                section: null,
+                state: "off",
+                basedOn: "",
+                updated: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+            remove: [],
+          },
           actor: { type: "tui" },
         })
-        if (!concurrent.ok) throw new Error("concurrent write failed")
-        const fresh = await real.snapshot()
-        if (!fresh.ok) throw new Error("fresh snapshot failed")
-        return {
-          ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: "project" as const, snapshot: fresh.value },
-        }
+        if (!concurrent.ok || !concurrent.value.ok) throw new Error("concurrent delta write failed")
       }
       return real.mutate(input)
     },
@@ -1247,11 +1258,20 @@ test("a stale bare-id toggle reports the status that actually committed", async 
   await registerInstructionTools(ctx, wrapped)
   const tools = await readTools(ctx)
   const output = (await runOk(need(tools, "instructions_set"), { id: target.id })) as { status: string }
-  expect(output.status).toBe(`Enabled "reader"`)
+  expect(output.status).toBe(expected.status)
+  const delta = sent.find((input) => "changes" in input)
+  if (delta === undefined || !("changes" in delta)) throw new Error("expected a delta write")
+  // Only the toggled row crossed the wire; the concurrent row did not.
+  expect(delta.changes.upsert).toHaveLength(1)
+  expect(delta.changes.upsert[0]).toMatchObject({ type: "customization", item: "tool:reader" })
+  expect(delta.changes.remove).toEqual([])
   const after = await snapshotOf(real)
   const enabled = after.records.find((record) => record.type === "customization" && record.item === "tool:reader")
   if (enabled === undefined || enabled.type !== "customization") throw new Error("expected committed record")
-  expect(enabled.state).toBe("on")
+  expect(enabled.state).toBe(expected.records.find((record) => record.item === "tool:reader")?.state)
+  const otherRow = after.records.find((record) => record.type === "customization" && record.item === "skill:notes")
+  if (otherRow === undefined || otherRow.type !== "customization") throw new Error("expected concurrent record")
+  expect(otherRow.state).toBe("off")
 })
 
 test("toolHarness exposes agent, skill, and hook state for parity checks", async () => {

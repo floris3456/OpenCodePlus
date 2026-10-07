@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
-import { assembleWithOverrides, derive, manual, slice, type Split } from "./sections.js"
+import { assembleWithOverrides, assembleWithSpans, derive, manual, slice, type SectionSpan, type Split } from "./sections.js"
 import { markerIn, stripMarkers } from "./requires.js"
 
 // `preset` holds the human's edits of presets (DESIGN §1); its records live
@@ -1024,6 +1024,10 @@ export interface RuleRecord {
 export interface Resolved {
   readonly text: string
   readonly assembled: string
+  /** The assembled text with all section overrides and no exclusions, for display only. */
+  readonly fullText?: string
+  /** Section spans in fullText for display ranges. */
+  readonly spans?: ReadonlyMap<string, SectionSpan>
   readonly enabled: boolean
   readonly pinned: boolean
   readonly source: Level | "upstream"
@@ -1132,8 +1136,38 @@ export function threeWay(input: ChainInput): ThreeWay | undefined {
   if (input.address.section !== null) return threeWaySection(input)
   const whole = wholeRecords(input)
   const own = at(whole, input.address)
-  if (own?.text === undefined || own.basedOnText === undefined) return undefined
-  return { original: own.basedOnText, mine: own.text, upstream: aboveWholeText(input, whole) }
+  const split = resolveSplit({
+    text: input.upstream.text,
+    title: input.upstream.title,
+    splits: input.splits,
+    scopes: input.scopes,
+    address: input.address,
+  })
+  const ownSectionRecords = split.sections
+    .map((sec) => at(sectionRecords(input, sec.id), input.address))
+    .filter((rec): rec is CustomizationRecord => rec?.text !== undefined)
+
+  if (own?.text === undefined && ownSectionRecords.length === 0) return undefined
+
+  if (split.kind === "whole" && split.sections.length <= 1 && own?.text !== undefined && own.basedOnText !== undefined) {
+    return { original: own.basedOnText, mine: own.text, upstream: aboveWholeText(input, whole) }
+  }
+
+  const resolvedMine = resolveWhole(input)
+  const upstream = aboveWholeText(input, whole)
+  const chainAbove = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
+  const origOverrides = new Map<string, string>()
+  for (const sec of split.sections) {
+    const ownSec = at(sectionRecords(input, sec.id), input.address)
+    if (ownSec?.basedOnText !== undefined) {
+      origOverrides.set(sec.id, ownSec.basedOnText)
+    } else {
+      const aboveSecText = chainAbove.map((node) => sectionTextAt(input, node, sec.id)).find((t) => t !== undefined)
+      if (aboveSecText !== undefined) origOverrides.set(sec.id, aboveSecText)
+    }
+  }
+  const original = assembleWithOverrides(input.upstream.text, split, new Set(), origOverrides)
+  return { original, mine: resolvedMine.fullText ?? resolvedMine.assembled, upstream }
 }
 
 // The resolved baseline for a new text edit at one address, exported so
@@ -1303,6 +1337,18 @@ export function merge(
 }
 
 export function reset(records: readonly CustomizationRecord[], address: Address): CustomizationRecord[] {
+  if (address.section === null) {
+    return records.filter(
+      (record) =>
+        !(
+          record.item === address.item &&
+          record.level === address.level &&
+          record.agent === address.agent &&
+          sameTeam(record.team, address.team) &&
+          catalogueMatches(address.agent, record.catalogue, address.catalogue)
+        ),
+    )
+  }
   return records.filter((record) => !sameNode(record, address))
 }
 
@@ -1312,6 +1358,16 @@ export function applies(item: Pick<Item, "agents">, agent: string): boolean {
 }
 
 export function canReset(records: readonly CustomizationRecord[], address: Address): boolean {
+  if (address.section === null) {
+    return records.some(
+      (record) =>
+        record.item === address.item &&
+        record.level === address.level &&
+        record.agent === address.agent &&
+        sameTeam(record.team, address.team) &&
+        catalogueMatches(address.agent, record.catalogue, address.catalogue),
+    )
+  }
   return records.some((record) => sameNode(record, address))
 }
 
@@ -1371,14 +1427,6 @@ export function scopeKey(scopes: Scopes | undefined | null): string {
   return identityKey(scopes ?? undefined)
 }
 
-// Everything besides the records array that a whole or section resolution
-// reads: the upstream item (its text by fingerprint, and the fields the
-// fallback, split and pin read), the address, the scopes and the splits.
-function resolutionKey(input: ChainInput): string {
-  const upstream = input.upstream
-  return `${upstream.id}:${upstream.fingerprint}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${addressKey(input.address)}:${scopeKey(input.scopes)}:${identityKey(input.splits)}`
-}
-
 export function addressKey(address: Address): string {
   const team = address.team ? `${address.team.level}:${address.team.team}` : ""
   const member = address.memberOf ? `${address.memberOf.level}:${address.memberOf.team}` : ""
@@ -1386,20 +1434,154 @@ export function addressKey(address: Address): string {
   return `${address.level}:${address.agent ?? ""}:${address.item}:${address.section ?? ""}:${team}:${member}:${cat}`
 }
 
-const resolveWholeCache = new WeakMap<readonly CustomizationRecord[], Map<string, Resolved>>()
+export interface ItemRecordsEntry {
+  readonly records: readonly CustomizationRecord[]
+  readonly hash: string
+  readonly sections: Map<string | null, CustomizationRecord[]>
+}
+
+const emptyItemRecordsEntry: ItemRecordsEntry = {
+  records: [],
+  hash: "",
+  sections: new Map(),
+}
+
+function recordDigest(r: CustomizationRecord): string {
+  const team = r.team ? `${r.team.level}/${r.team.team}` : ""
+  const req = r.requires ? r.requires.join(",") : ""
+  return `${r.level}:${r.agent ?? ""}:${r.section ?? ""}:${team}:${r.catalogue ?? ""}:${r.text ?? ""}:${r.state ?? ""}:${r.pin ?? ""}:${req}:${r.basedOn}:${r.basedOnText ?? ""}:${r.acknowledged ?? ""}:${r.basedOnState ?? ""}:${r.basedOnPin ?? ""}:${r.updated}`
+}
+
+const itemRecordsCache = new WeakMap<readonly CustomizationRecord[], Map<string, ItemRecordsEntry>>()
+
+export function itemRecordsIndex(records: readonly CustomizationRecord[]): Map<string, ItemRecordsEntry> {
+  const cached = itemRecordsCache.get(records)
+  if (cached !== undefined) return cached
+
+  const grouped = new Map<string, { records: CustomizationRecord[]; sections: Map<string | null, CustomizationRecord[]> }>()
+  for (const record of records) {
+    let entry = grouped.get(record.item)
+    if (entry === undefined) {
+      entry = { records: [], sections: new Map() }
+      grouped.set(record.item, entry)
+    }
+    entry.records.push(record)
+    let sectionList = entry.sections.get(record.section)
+    if (sectionList === undefined) {
+      sectionList = []
+      entry.sections.set(record.section, sectionList)
+    }
+    sectionList.push(record)
+  }
+
+  const result = new Map<string, ItemRecordsEntry>()
+  for (const [item, entry] of grouped.entries()) {
+    const hash = fingerprint(entry.records.map(recordDigest).join(";"))
+    result.set(item, { records: entry.records, hash, sections: entry.sections })
+  }
+
+  itemRecordsCache.set(records, result)
+  return result
+}
+
+const itemSplitsCache = new WeakMap<readonly SplitRecord[], Map<string, string>>()
+
+function itemSplitsHash(splits: readonly SplitRecord[] | undefined, item: string): string {
+  if (splits === undefined || splits.length === 0) return ""
+  let perSplits = itemSplitsCache.get(splits)
+  if (perSplits === undefined) {
+    perSplits = new Map()
+    const grouped = new Map<string, SplitRecord[]>()
+    for (const split of splits) {
+      let list = grouped.get(split.item)
+      if (list === undefined) {
+        list = []
+        grouped.set(split.item, list)
+      }
+      list.push(split)
+    }
+    for (const [itemId, list] of grouped.entries()) {
+      const digest = list
+        .map(
+          (s) =>
+            `${s.level}:${s.agent ?? ""}:${s.boundaries.map((b) => `${b.id},${b.name},${b.start}`).join(",")}:${s.updated}`,
+        )
+        .join(";")
+      perSplits.set(itemId, fingerprint(digest))
+    }
+    itemSplitsCache.set(splits, perSplits)
+  }
+  return perSplits.get(item) ?? ""
+}
+
+// The upstream text keyed by its content, not by its `fingerprint` field: an
+// upstream built for a merge or an unmasked discovery copy can carry a text
+// its fingerprint does not describe. One fast hash per upstream object.
+const upstreamTextKeys = new WeakMap<object, string>()
+function upstreamTextKey(upstream: ChainInput["upstream"]): string {
+  const known = upstreamTextKeys.get(upstream)
+  if (known !== undefined) return known
+  const key = `${upstream.text.length}.${Bun.hash(upstream.text).toString(36)}`
+  upstreamTextKeys.set(upstream, key)
+  return key
+}
+
+// Everything a whole or section resolution reads besides the item's records,
+// splits and chain (hashed by the caller): the upstream text, the upstream
+// fields the fallback, split and pin read, the address, whether the owner is
+// native (the fallback's default), the preset catalogue at preset level, and
+// the gate. A missing input here serves another resolution's answer.
+function resolutionContentKey(
+  input: ChainInput,
+  recordsHash: string,
+  splitsHash: string,
+  chainKey: string,
+): string {
+  const upstream = input.upstream
+  const gateKey = input.gate === undefined ? "none" : identityKey(input.gate)
+  const agent = input.address.agent
+  const native = input.scopes.native === undefined ? "u" : agent !== null && input.scopes.native.has(agent) ? "n" : "-"
+  const presets = input.address.level === "preset" ? identityKey(input.scopes.presets) : ""
+  const owners = `${(upstream.agents ?? []).join(",")}|${upstream.ownedBy ?? ""}`
+  return `${upstream.id}:${upstreamTextKey(upstream)}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${owners}:${addressKey(input.address)}:${recordsHash}:${splitsHash}:${chainKey}:${native}:${presets}:${gateKey}`
+}
+
+const resolutionCacheLimit = 20000
+const resolutionCache = new Map<string, Resolved>()
+
+export function resetResolutionCache(): void {
+  resolutionCache.clear()
+  sectionOverridesCache.clear()
+}
+
+function getResolutionFromCache(key: string): Resolved | undefined {
+  const val = resolutionCache.get(key)
+  if (val === undefined) return undefined
+  resolutionCache.delete(key)
+  resolutionCache.set(key, val)
+  return val
+}
+
+function setResolutionInCache(key: string, value: Resolved): void {
+  if (resolutionCache.size >= resolutionCacheLimit) {
+    const oldest = resolutionCache.keys().next()
+    if (!oldest.done) resolutionCache.delete(oldest.value)
+  }
+  resolutionCache.set(key, value)
+}
 
 export function resolveWhole(input: ChainInput): Resolved {
-  let perRecords = resolveWholeCache.get(input.records)
-  if (perRecords === undefined) {
-    perRecords = new Map()
-    resolveWholeCache.set(input.records, perRecords)
-  }
-  const key = `${resolutionKey(input)}:${identityKey(input.gate)}`
-  const cached = perRecords.get(key)
+  const chain = resolutionChain(input.address, input.scopes)
+  const chainKey = chainContentKey(chain)
+  const recordsEntry = itemRecordsIndex(input.records).get(input.address.item) ?? emptyItemRecordsEntry
+  const recordsHash = recordsEntry.hash
+  const splitsHash = itemSplitsHash(input.splits, input.address.item)
+  const key = resolutionContentKey(input, recordsHash, splitsHash, chainKey)
+
+  const cached = getResolutionFromCache(key)
   if (cached !== undefined) return cached
 
   const whole = wholeRecords(input)
-  const chain = resolutionChain(input.address, input.scopes)
   const values = chain.map((node) => valueAt(input, whole, node, null))
   const textAt = values.findIndex((value) => value?.text !== undefined)
   const stateAt = values.findIndex((value) => value?.state !== undefined)
@@ -1433,23 +1615,63 @@ export function resolveWhole(input: ChainInput): Resolved {
       const ids = sectionRequires(input, chain, section.id, overridden.get(section.id) ?? slice(text, section))?.ids
       if (ids !== undefined && !gate(ids)) excluded.add(section.id)
     }
+  const { text: fullAssembled, spans } = assembleWithSpans(text, split, overridden)
   const assembled = assembleWithOverrides(text, split, excluded, overridden)
+
+  const hasOwnSectionText = split.sections.some((sec) => {
+    const ownSec = at(sectionRecords(input, sec.id), input.address)
+    return ownSec?.text !== undefined
+  })
+  const hasOwnSectionOverride = split.sections.some((sec) => {
+    const ownSec = at(sectionRecords(input, sec.id), input.address)
+    return ownSec !== undefined && (ownSec.text !== undefined || ownSec.state !== undefined || ownSec.requires !== undefined)
+  })
+
+  let reviewPartsList = [...reviewOf]
+  if (hasOwnSectionText) {
+    const hasSectionReview = split.sections.some((sec) => {
+      const ownSec = at(sectionRecords(input, sec.id), input.address)
+      return ownSec !== undefined && isReview(ownSec, () => aboveSectionFingerprint(input, sec.id))
+    })
+    if (hasSectionReview && !reviewPartsList.includes("text")) {
+      reviewPartsList.push("text")
+    }
+  }
+
+  let textFrom = textAt === -1 ? { kind: "upstream" as const } : chain[textAt].from
+  if (overridden.size > 0) {
+    const overrideNode = chain.find((node) =>
+      split.sections.some((sec) => valueAt(input, sectionRecords(input, sec.id), node, sec.id)?.text !== undefined),
+    )
+    if (overrideNode !== undefined) textFrom = overrideNode.from
+  }
+
+  const sectionSourceNode = chain.find((node) =>
+    split.sections.some((sec) => {
+      const val = valueAt(input, sectionRecords(input, sec.id), node, sec.id)
+      return val?.text !== undefined || val?.state !== undefined
+    }),
+  )
+  const source = sourceAt === -1 ? (sectionSourceNode?.level ?? "upstream") : chain[sourceAt].level
+
   const result: Resolved = {
     text,
     assembled: gate === undefined ? assembled : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
+    fullText: fullAssembled,
+    spans,
     enabled: stateAt === -1 ? fallback.enabled : values[stateAt]?.state === "on",
     pinned: pinAt === -1 ? (input.upstream.pinned ?? false) : (values[pinAt]?.pin ?? false),
-    source: sourceAt === -1 ? "upstream" : chain[sourceAt].level,
+    source,
     from: stateAt === -1 ? fallback.from : chain[stateAt].from,
-    textFrom: textAt === -1 ? { kind: "upstream" } : chain[textAt].from,
+    textFrom,
     pinFrom: pinAt === -1 ? { kind: "upstream" } : chain[pinAt].from,
-    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined || own.requires !== undefined),
-    modified: own?.text !== undefined,
-    review: reviewOf.length > 0,
-    reviewOf,
+    overriddenHere: (own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined || own.requires !== undefined)) || hasOwnSectionOverride,
+    modified: own?.text !== undefined || hasOwnSectionText,
+    review: reviewPartsList.length > 0,
+    reviewOf: reviewPartsList,
     ...(requires === undefined ? {} : { requires }),
   }
-  perRecords.set(key, result)
+  setResolutionInCache(key, result)
   return result
 }
 
@@ -1486,6 +1708,15 @@ function resolveSection(input: ChainInput): Resolved {
   const id = input.address.section
   if (id === null) return resolveWhole(input)
   const chain = resolutionChain(input.address, input.scopes)
+  const chainKey = chainContentKey(chain)
+  const recordsEntry = itemRecordsIndex(input.records).get(input.address.item) ?? emptyItemRecordsEntry
+  const recordsHash = recordsEntry.hash
+  const splitsHash = itemSplitsHash(input.splits, input.address.item)
+  const key = resolutionContentKey(input, recordsHash, splitsHash, chainKey)
+
+  const cached = getResolutionFromCache(key)
+  if (cached !== undefined) return cached
+
   const whole = resolveWhole({ ...input, address: { ...input.address, section: null } })
   const split = resolveSplit({
     text: whole.text,
@@ -1505,9 +1736,10 @@ function resolveSection(input: ChainInput): Resolved {
   const sourceNode = textAt === -1 ? (stateAt === -1 ? undefined : chain[stateAt]) : chain[textAt]
   const reviewOf = reviewParts(input, own, () => aboveSectionFingerprint(input, id))
   const requires = sectionRequires(input, chain, id, text)
-  return {
+  const result: Resolved = {
     text,
     assembled: text,
+    fullText: text,
     enabled: stateAt === -1 ? whole.enabled : values[stateAt]?.state === "on",
     pinned: whole.pinned,
     source: sourceNode?.level ?? "upstream",
@@ -1520,6 +1752,8 @@ function resolveSection(input: ChainInput): Resolved {
     reviewOf,
     ...(requires === undefined ? {} : { requires }),
   }
+  setResolutionInCache(key, result)
+  return result
 }
 
 function threeWaySection(input: ChainInput): ThreeWay | undefined {
@@ -1531,24 +1765,14 @@ function threeWaySection(input: ChainInput): ThreeWay | undefined {
   return { original: own.basedOnText, mine: own.text, upstream: aboveSectionText(input, id) }
 }
 
-function wholeRecords(input: ChainInput): CustomizationRecord[] {
-  return input.records.filter((record) => record.item === input.address.item && record.section === null)
+function wholeRecords(input: ChainInput): readonly CustomizationRecord[] {
+  const entry = itemRecordsIndex(input.records).get(input.address.item)
+  return entry?.sections.get(null) ?? []
 }
 
-const sectionRecordsCache = new WeakMap<readonly CustomizationRecord[], Map<string, CustomizationRecord[]>>()
-
 export function sectionRecords(input: ChainInput, id: string): CustomizationRecord[] {
-  let perRecords = sectionRecordsCache.get(input.records)
-  if (perRecords === undefined) {
-    perRecords = new Map()
-    sectionRecordsCache.set(input.records, perRecords)
-  }
-  const key = `${input.address.item}:${id}`
-  const cached = perRecords.get(key)
-  if (cached !== undefined) return cached
-  const result = input.records.filter((record) => record.item === input.address.item && record.section === id)
-  perRecords.set(key, result)
-  return result
+  const entry = itemRecordsIndex(input.records).get(input.address.item)
+  return entry?.sections.get(id) ?? []
 }
 
 // A stored node answers from its record; a shipped node from the preset
@@ -1606,11 +1830,29 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
   return "off"
 }
 
-function aboveWholeText(input: ChainInput, whole: readonly CustomizationRecord[]): string {
-  const above = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
-    .map((node) => valueAt(input, whole, node, null)?.text)
-    .find((text) => text !== undefined)
-  return above ?? input.upstream.text
+function aboveWholeText(input: ChainInput, whole?: readonly CustomizationRecord[]): string {
+  const chainAbove = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
+  const baseAbove =
+    chainAbove
+      .map((node) => valueAt(input, whole ?? wholeRecords(input), node, null)?.text)
+      .find((text) => text !== undefined) ?? input.upstream.text
+  const split = resolveSplit({
+    text: baseAbove,
+    title: input.upstream.title,
+    splits: input.splits,
+    scopes: input.scopes,
+    address: input.address,
+  })
+  if (split.kind === "whole" && split.sections.length <= 1) {
+    return baseAbove
+  }
+  const overrides = new Map<string, string>()
+  for (const sec of split.sections) {
+    const text = chainAbove.map((node) => sectionTextAt(input, node, sec.id)).find((t) => t !== undefined)
+    if (text !== undefined) overrides.set(sec.id, text)
+  }
+  if (overrides.size === 0) return baseAbove
+  return assembleWithOverrides(baseAbove, split, new Set(), overrides)
 }
 
 function aboveWholeFingerprint(
@@ -1663,17 +1905,23 @@ function aboveSectionFingerprint(input: ChainInput, id: string): string {
 // winning text for each section down the chain replaces that section's
 // upstream slice; exclusions still drop a parent with its children, and a
 // child edit cannot resurrect an excluded parent.
-const sectionOverridesCache = new WeakMap<readonly CustomizationRecord[], Map<string, Map<string, string>>>()
+const sectionOverridesCacheLimit = 5000
+const sectionOverridesCache = new Map<string, Map<string, string>>()
 
 export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[]): Map<string, string> {
-  let perRecords = sectionOverridesCache.get(input.records)
-  if (perRecords === undefined) {
-    perRecords = new Map()
-    sectionOverridesCache.set(input.records, perRecords)
+  const chainKey = chainContentKey(chain)
+  const recordsEntry = itemRecordsIndex(input.records).get(input.address.item) ?? emptyItemRecordsEntry
+  const recordsHash = recordsEntry.hash
+  const splitsHash = itemSplitsHash(input.splits, input.address.item)
+  const key = resolutionContentKey({ ...input, gate: undefined }, recordsHash, splitsHash, chainKey)
+
+  const cached = sectionOverridesCache.get(key)
+  if (cached !== undefined) {
+    sectionOverridesCache.delete(key)
+    sectionOverridesCache.set(key, cached)
+    return cached
   }
-  const key = resolutionKey(input)
-  const cached = perRecords.get(key)
-  if (cached !== undefined) return cached
+
   const split = resolveSplit({
     text: effectiveWholeText(input),
     title: input.upstream.title,
@@ -1687,7 +1935,11 @@ export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[])
     if (override === undefined) continue
     out.set(section.id, override)
   }
-  perRecords.set(key, out)
+  if (sectionOverridesCache.size >= sectionOverridesCacheLimit) {
+    const oldest = sectionOverridesCache.keys().next()
+    if (!oldest.done) sectionOverridesCache.delete(oldest.value)
+  }
+  sectionOverridesCache.set(key, out)
   return out
 }
 
@@ -1817,7 +2069,44 @@ export interface ChainNode {
  * a preset seen once is not expanded again, which cuts cycles. The fallback
  * after the last node is the resolver's (fallbackOf).
  */
+function normalizedChainAddress(address: Address): Address {
+  if (address.memberOf !== undefined && address.team === undefined) {
+    return {
+      level: address.level,
+      agent: address.agent,
+      item: address.item,
+      section: address.section,
+      team: address.memberOf,
+      catalogue: address.catalogue ?? "teams",
+    }
+  }
+  return address
+}
+
+function chainAddressKey(address: Address): string {
+  const norm = normalizedChainAddress(address)
+  const team = norm.team ? `${norm.team.level}:${norm.team.team}` : ""
+  const cat = norm.catalogue ?? ""
+  return `${norm.level}:${norm.agent ?? ""}:${team}:${cat}`
+}
+
+const resolutionChainCache = new WeakMap<Scopes, Map<string, ChainNode[]>>()
+
 export function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
+  let perScopes = resolutionChainCache.get(scopes)
+  if (perScopes === undefined) {
+    perScopes = new Map()
+    resolutionChainCache.set(scopes, perScopes)
+  }
+  const key = chainAddressKey(address)
+  const cached = perScopes.get(key)
+  if (cached !== undefined) return cached
+  const chain = computeResolutionChain(address, scopes)
+  perScopes.set(key, chain)
+  return chain
+}
+
+function computeResolutionChain(address: Address, scopes: Scopes): ChainNode[] {
   // A member row reads exactly the chain apply runs for the member of that
   // team; only what it writes (its own node, `L/A`) differs.
   if (address.memberOf !== undefined && address.team === undefined)
@@ -1856,6 +2145,30 @@ export function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
           ...expand(scopes, catalogue, linkAt(scopes, node), visited),
         ])
   return distinct([...own, ...linked, ...entries, ...tail])
+}
+
+const chainContentKeyCache = new WeakMap<readonly ChainNode[], string>()
+
+export function chainContentKey(chain: readonly ChainNode[]): string {
+  const cached = chainContentKeyCache.get(chain)
+  if (cached !== undefined) return cached
+
+  const serialized = chain.map(serializeChainNode).join(";")
+  chainContentKeyCache.set(chain, serialized)
+  return serialized
+}
+
+function serializeChainNode(node: ChainNode): string {
+  const team = node.team ? `${node.team.level}/${node.team.team}` : ""
+  const shipped = node.shipped ? `${node.shipped.kind}:${node.shipped.id}:${node.shipped.kind === "member" ? node.shipped.team : ""}` : ""
+  return `${node.level}:${node.agent ?? ""}:${team}:${node.catalogue ?? ""}:${shipped}:${serializeFrom(node.from)}`
+}
+
+function serializeFrom(from: From): string {
+  if (from.kind === "level") return `level:${from.level}`
+  if (from.kind === "preset") return `preset:${from.id}:${from.team ?? ""}:${from.shipped}`
+  if (from.kind === "default") return `default:${from.name}:${from.team ?? ""}`
+  return from.kind
 }
 
 /** `*` and `%` match any run of characters (including none); the whole name must match, ignoring case. */

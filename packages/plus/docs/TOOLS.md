@@ -420,7 +420,8 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_WT_EXISTS` | The worktree directory a delegate would create already exists | `packages/plus/src/teams/worktree.ts:82` |
 | `E_REASON` | `reason` too short or a required reason missing | `packages/plus/src/teams/api.ts:249` |
 | `E_SPARK` | `spark-implementer` brief outside its limits | `packages/plus/src/teams/api.ts:241` |
-| `E_TOO_LONG` | Objective or prompt over its cap | `packages/plus/src/teams/api.ts:305` |
+| `E_TOO_LONG` | Objective or prompt over its cap, or a pasted attachment that pushes the Brief over it | `packages/plus/src/teams/api.ts:305` |
+| `E_NO_COMMIT_REPO` | `team_delegate` bootstrap in a repository with no commit | `packages/plus/src/teams/tools.ts:606` |
 | `E_REQUEST_ID` | Reused request id | `packages/plus/src/teams/api.ts:293`, `packages/plus/src/teams/api-followup.ts:85` |
 | `E_FINISH_TWICE` | A second report for the same attempt | `packages/plus/src/teams/api.ts:466` |
 | `E_CHECKS_RED` | `finish done` with a failing check | `packages/plus/src/teams/api.ts:494` |

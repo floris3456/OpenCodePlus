@@ -6,7 +6,9 @@ import {
   activateModel,
   addModelRecord,
   applies,
+  canReset,
   catalogueField,
+  catalogueMatches,
   catalogueOf,
   clearModelActive,
   ensureActivateModel,
@@ -26,6 +28,7 @@ import {
   parsePrompt,
   parseWarming,
   removeModelRecord,
+  reset as resetModelRecords,
   resolve,
   resolveActiveModel,
   resolutionChain,
@@ -38,6 +41,7 @@ import {
   setModelSettings,
   setModelWarming,
   tombstoneModelRecord,
+  upstreamForEdit,
 } from "./model.js"
 import type {
   Address,
@@ -62,7 +66,7 @@ import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { manual, slice } from "./sections.js"
+import { derive, manual, slice } from "./sections.js"
 import type { Split } from "./sections.js"
 
 export interface OpSuccess {
@@ -817,6 +821,70 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
   if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
+
+  if (chain.address.section === null) {
+    const newSplit = derive(text, chain.upstream.title)
+
+    if (newSplit.kind !== "whole") {
+      const currentText = resolvedTextOf(memo, chain)
+      const currentSplit = resolveSplit({
+        text: currentText,
+        title: chain.upstream.title,
+        splits: chain.splits,
+        scopes: memo.ctx.scopes,
+        address: chain.address,
+      })
+
+      let customizations = chain.customizations
+      customizations = merge(customizations, chain.address, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
+
+      for (const sec of newSplit.sections) {
+        const newSecText = slice(text, sec)
+        const prevSec = currentSplit.sections.find((s) => s.id === sec.id)
+        const prevSecText = prevSec !== undefined ? slice(currentText, prevSec) : undefined
+        if (prevSecText === undefined || newSecText.trimEnd() !== prevSecText.trimEnd()) {
+          const upstreamSecText = upstreamForEdit({
+            upstream: chain.upstream,
+            records: customizations,
+            splits: chain.splits,
+            scopes: memo.ctx.scopes,
+            address: { ...chain.address, section: sec.id },
+          })
+          if (newSecText.trimEnd() === upstreamSecText.trimEnd()) {
+            customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
+          } else {
+            customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: newSecText }, chain.upstream, memo.ctx.scopes, chain.splits)
+          }
+        }
+      }
+
+      for (const prevSec of currentSplit.sections) {
+        if (!newSplit.sections.some((s) => s.id === prevSec.id)) {
+          customizations = merge(customizations, { ...chain.address, section: prevSec.id }, { text: "" }, chain.upstream, memo.ctx.scopes, chain.splits)
+        }
+      }
+
+      return {
+        records: customizations,
+        splits: chain.splits,
+        status: `Saved "${node.label}"`,
+        retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
+      }
+    } else {
+      chain.customizations = chain.customizations.filter(
+        (r) =>
+          !(
+            r.item === chain.address.item &&
+            r.level === chain.address.level &&
+            r.agent === chain.address.agent &&
+            sameTeam(r.team, chain.address.team) &&
+            catalogueMatches(chain.address.agent, r.catalogue, chain.address.catalogue) &&
+            r.section !== null
+          ),
+      )
+    }
+  }
+
   // The chain context and splits make the baseline the text above this row
   // (a preset's or a default's), not the raw upstream: an agent whose preset
   // supplies the text is not "to review" the moment it saves its own.
@@ -856,7 +924,7 @@ export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRes
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
   if (node.actions?.reset !== true) {
-    const hasStored = chain.customizations.some((record) => sameAddress(record, chain.address))
+    const hasStored = canReset(chain.customizations, chain.address)
     return {
       refusal: hasStored
         ? `"${node.label}" cannot be reset; set state "on" to clear the stored override`
@@ -865,12 +933,15 @@ export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRes
   }
   // Clear through merge's removal path (null fields drop the record) so row
   // identity stays in merge's sameNode check instead of a second filter.
-  const next = merge(
+  let next = merge(
     chain.customizations,
     chain.address,
     { text: null, state: null, pin: null, acknowledged: null },
     chain.upstream,
   )
+  if (chain.address.section === null) {
+    next = resetModelRecords(next, chain.address)
+  }
   return {
     records: next,
     splits: chain.splits,

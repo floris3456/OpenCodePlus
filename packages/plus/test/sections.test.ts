@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { assemble, derive, manual, ownBody, slice, wrappingSection } from "../src/instructions/sections.js"
+import { assemble, assembleWithOverrides, derive, manual, ownBody, slice, wrappingSection } from "../src/instructions/sections.js"
 
 const GPT = [
   "# Harness",
@@ -108,7 +108,7 @@ test("derive falls back to whole", () => {
   const split = derive(text, "General")
   expect(split).toEqual({
     kind: "whole",
-    sections: [{ id: "whole", name: "General", depth: 0, start: 0, end: text.length }],
+    sections: [{ id: "whole", name: "Full text", depth: 0, start: 0, end: text.length }],
   })
 })
 
@@ -206,4 +206,13 @@ test("wrappingSection finds the lone top-level heading that wraps the document",
   expect(wrappingSection(derive("# A\na\n# B\nb\n", "T"))).toBeUndefined()
   expect(wrappingSection(derive("## A\na\n## B\nb\n", "T"))).toBeUndefined()
   expect(wrappingSection(derive("plain prose", "T"))).toBeUndefined()
+})
+
+test("assembleWithOverrides separates section overrides with a blank line before headings", () => {
+  const text = "# Part One\n\nBody one.\n\n# Part Two\n\nBody two.\n"
+  const split = derive(text, "Doc")
+  // Override without trailing newlines
+  const overrides = new Map([["part-one", "# Part One\n\nCustom body one without trailing newlines."]])
+  const out = assembleWithOverrides(text, split, new Set(), overrides)
+  expect(out).toContain("Custom body one without trailing newlines.\n\n# Part Two")
 })

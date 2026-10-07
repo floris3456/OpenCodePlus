@@ -2707,7 +2707,7 @@ function lazyItem(
         const only = split.sections[0]
         return only === undefined
           ? []
-          : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, { label: "Description" })]
+          : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, { label: "Full text" })]
       }
       if (tool && split.sections.length > 1)
         return [

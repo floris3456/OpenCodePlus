@@ -790,6 +790,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "inflight", label: "Children working at once", on: true, limit: 4 },
         { id: "depth", label: "Delegation depth", on: true, limit: 3 },
         { id: "brief", label: "Brief size (characters)", on: true, limit: 6000 },
+        { id: "attachment", label: "Attached brief file (characters)", on: true, limit: 8000 },
         { id: "members", label: "Live team runs in total", on: true, limit: 12 },
       ],
     },

@@ -14,7 +14,7 @@ import { DateTime, Effect, Exit, Queue, Scope, Schema, Semaphore, Stream } from 
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
-import { agentBody, discover, hostModelsOf, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
+import { agentBody, discover, hostModelsFrom, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
@@ -52,7 +52,8 @@ import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
-import { canonical, ensureCatalogues, linkedProjects, load, projectLinks, save, stable, updateGated, type CategoryRecord, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
+import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type CategoryRecord, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
+import { deltaOf, deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
 import {
   assignCategoryRecord,
   categoryByName,
@@ -93,6 +94,7 @@ import { ledgerAt } from "./monitor/ledger.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
+import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 
 export interface TeamOwnership {
   readonly team: string
@@ -104,6 +106,8 @@ export interface PlusState {
   applied: Registration[]
   appliedParts: Map<string, AppliedPart>
   appliedPlans: Map<string, unknown>
+  sessionPins: SessionPinManager
+  currentPlanSet?: PlanSet
   tooling: Registration[]
   teamTooling: Registration[]
   installedTools: readonly ToolPlan[]
@@ -116,6 +120,16 @@ export interface PlusState {
   pendingRefresh: boolean
   refreshTimer?: ReturnType<typeof setTimeout>
   activeRefresh?: Promise<void>
+  /**
+   * The last built snapshot for the current (projectRevision,
+   * globalRevision, snapshotGeneration) key. The generation is bumped
+   * whenever something outside the store can change what a snapshot contains
+   * (host events, the tool registry, team changes, file changes), so a stale
+   * read cannot answer while the key matches. `snapshot` returns the cached
+   * value as-is; it is never mutated after being built.
+   */
+  snapshotCache?: { projectRevision: number; globalRevision: number; generation: number; value: Plus.Snapshot }
+  snapshotGeneration: number
   baselines: Map<string, PromptBaseline>
   modelBaselines: Map<string, ModelBaseline>
   activeModels: Map<string, ModelRefLike>
@@ -146,6 +160,12 @@ export interface PlusState {
    */
   hostModels?: readonly HostModel[]
   /**
+   * The raw provider catalogue the cached `hostModels` derive from, read in
+   * the same call. Base-template classification, model validation and the
+   * per-request classifier read it instead of listing the catalogue again.
+   */
+  hostCatalog?: readonly Model.Info[]
+  /**
    * The in-flight `model.pick` save in this Plus instance, if any.
    * `applySessionModel` awaits it before comparing, so a session created right
    * after a pick cannot be reverted by the still-running pick.
@@ -159,6 +179,8 @@ export function createState(): PlusState {
     applied: [],
     appliedParts: new Map(),
     appliedPlans: new Map(),
+    sessionPins: new SessionPinManager(),
+    currentPlanSet: undefined,
     tooling: [],
     teamTooling: [],
     installedTools: [],
@@ -170,6 +192,7 @@ export function createState(): PlusState {
     pendingRefresh: false,
     refreshTimer: undefined,
     activeRefresh: undefined,
+    snapshotGeneration: 0,
     baselines: new Map(),
     modelBaselines: new Map(),
     activeModels: new Map(),
@@ -245,7 +268,18 @@ export default Plugin.define({
       yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // A location with a coalesced refresh pending applies it before a chat
       // request runs, so no request uses stale instructions.
-      yield* ctx.session.hook("prompt", () => flushPendingRefresh(ctx, state))
+      yield* ctx.session.hook("prompt", (event) =>
+        Effect.gen(function* () {
+          yield* flushPendingRefresh(ctx, state)
+          if (event && event.sessionID) {
+            yield* handlePromptBoundary(ctx, state, String(event.sessionID))
+          }
+        }),
+      )
+      yield* ctx.session.hook("compaction", (event) => {
+        state.sessionPins.markRebuild(String(event.sessionID))
+        return Effect.void
+      })
       yield* ctx.session.hook("compaction.decide", (event) => {
         const model = consumeColdCompaction(event.sessionID)
         if (model !== undefined) {
@@ -282,6 +316,14 @@ export type MutateResult =
   | { ok: true; value: Plus.MutateResult }
   | { ok: false; error: { code: "agent.protected"; message: string; data: Plus.AgentProtected } }
   | { ok: false; error: { code: "agent.invalid"; message: string; data: Plus.AgentInvalid } }
+
+// What updateGated's change function decides for a delta mutate before the
+// write: a refusal (nothing written), an invalid control row (nothing
+// written), or the merged record list to write.
+type DeltaDecision =
+  | { kind: "refusal"; error: { code: "agent.protected"; message: string; data: Plus.AgentProtected } }
+  | { kind: "invalid"; error: { code: "agent.invalid"; message: string; data: Plus.AgentInvalid } }
+  | { kind: "ok"; records: readonly StoredRecord[] }
 
 export type LogResult = { ok: true; value: Plus.LogOutput }
 
@@ -662,16 +704,198 @@ async function chatRefreshCost(
 
 export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiOptions): PlusApi {
   const builtins = options?.builtins ?? []
+  // The readback from a record set: discovery, teams, output ids and the
+  // server listing, then toSnapshot. Stores the result for the current
+  // (revision, generation) key, so navigation reads it back without
+  // rediscovering. `discovered` may be handed in when the caller already
+  // published (which discovered).
+  const snapshotOf = async (
+    loaded: LoadedStores,
+    directory: string,
+    discovered?: Discovered,
+  ): Promise<Plus.Snapshot> => {
+    const found = discovered ?? (await discoverAll(ctx, loaded, state, builtins, directory))
+    const teams = await snapshotTeams(directory, loaded.records, builtins)
+    const outputIds = await snapshotOutputIds(directory, found, loaded, builtins, state.teamOutputIds)
+    const value = toSnapshot(found, loaded, teams, outputIds, await serverListing(ctx, loaded.records))
+    state.snapshotCache = {
+      projectRevision: loaded.projectRevision,
+      globalRevision: loaded.globalRevision,
+      generation: state.snapshotGeneration,
+      value,
+    }
+    return value
+  }
+  // T3: a tool actor may not change a protected agent's row through a mutate
+  // either, no matter which level or row kind it addresses. Only changed rows
+  // count: a caller that carries a protected agent's records back unchanged
+  // (the normal full-snapshot mutate) is not refused, and a delta that leaves
+  // a protected row identical is not either.
+  const protectedRefusal = (
+    actor: Plus.Actor | undefined,
+    changed: readonly StoredRecord[],
+    config: { readonly protectedAgents: readonly string[] },
+  ) => {
+    const protectedRow = changed.find(
+      (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord | CategoryRecord> =>
+        record.type !== "team" &&
+        record.type !== "entry" &&
+        record.type !== "preset" &&
+        record.type !== "modelSettings" &&
+        record.type !== "category" &&
+        // A preset's rows are not an agent's, whatever its id.
+        record.level !== "preset" &&
+        record.agent !== null &&
+        config.protectedAgents.includes(record.agent),
+    )
+    return refuseProtectedForTool(actor, protectedRow?.agent, config)
+  }
+  const invalidOf = (rows: readonly StoredRecord[]) =>
+    rows.flatMap((record) => {
+      if (record.type === "split" && (record.item.startsWith("setting:") || record.item.startsWith("compaction:")))
+        return [{ id: record.item, reason: "Agent controls do not support sections" }]
+      if (record.type !== "customization") return []
+      const reason = controlRecordError(record)
+      return reason === undefined ? [] : [{ id: record.item, reason }]
+    })[0]
+
+  const mutateFull = async (input: typeof Plus.MutateInputFull.Type): Promise<MutateResult> => {
+    const directory = await activationDirectory(ctx.location.directory)
+    const config = await read(directory)
+    const stored = await load(directory)
+    const loaded = { ...stored, protectedAgents: config.protectedAgents }
+    // Links, Defaults entries and presets are not snapshot rows yet either:
+    // carried over like teams so a snapshot mutate cannot drop them.
+    const records: StoredRecord[] = [
+      ...input.records.map(toRecord),
+      ...loaded.records.filter(
+        (record) =>
+          record.type === "team" ||
+          record.type === "link" ||
+          record.type === "entry" ||
+          record.type === "preset" ||
+          record.type === "modelSettings" ||
+          record.type === "category",
+      ),
+    ]
+    const refusal = protectedRefusal(input.actor, deltaRows(loaded.records, records), config)
+    if (refusal !== undefined) return { ok: false as const, error: refusal }
+    const invalid = invalidOf(records)
+    if (invalid !== undefined) return { ok: false as const, error: { code: "agent.invalid" as const, message: invalid.reason, data: invalid } }
+    const staleStore =
+      input.expectedRevision !== loaded.projectRevision
+        ? ("project" as const)
+        : input.expectedGlobalRevision !== loaded.globalRevision
+          ? ("global" as const)
+          : undefined
+    if (staleStore !== undefined)
+      return {
+        ok: true as const,
+        value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: await snapshotOf(loaded, directory) },
+      }
+    const saved = await save(directory, {
+      expectedProjectRevision: loaded.projectRevision,
+      expectedGlobalRevision: loaded.globalRevision,
+      records,
+    })
+    if (!saved.ok) {
+      const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
+      return {
+        ok: true as const,
+        value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: await snapshotOf(refreshed, directory) },
+      }
+    }
+    await logMutate({
+      directory,
+      actor: normalizeActor(input.actor),
+      before: loaded.records,
+      after: records,
+      projectRevision: saved.projectRevision,
+      globalRevision: saved.globalRevision,
+      projectChanged: saved.changed.project,
+      globalChanged: saved.changed.global,
+    })
+    // No reload from disk: build the next view from what save just wrote and
+    // the revisions it returned, so a just-written store is not read again.
+    const next = { ...loadedFromSave(saved, records), protectedAgents: loaded.protectedAgents }
+    const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+    const snapshot = await snapshotOf(next, directory, discovered)
+    return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
+  }
+
+  const mutateDelta = async (input: typeof Plus.MutateInputDelta.Type): Promise<MutateResult> => {
+    const directory = await activationDirectory(ctx.location.directory)
+    const config = await read(directory)
+    const upserts = input.changes.upsert.map(toRecord)
+    const removals = new Set(input.changes.remove.map(keyIdentity))
+    const added = new Set(upserts.map(recordIdentity))
+    // Load, merge the delta onto the *current* records and save as one step
+    // under the store's write gates. No expected revision: a delta lands on
+    // whatever is current and the same row is last-writer-wins. Refusals are
+    // decided on the rows this delta actually changes, computed against the
+    // current store inside the gate, and return no records so nothing is
+    // written.
+    const seen: { before?: readonly StoredRecord[]; after?: readonly StoredRecord[] } = {}
+    const outcome = await updateGated<DeltaDecision>(directory, async (loaded) => {
+      const merged = [
+        ...loaded.records.filter((record) => !removals.has(recordIdentity(record)) && !added.has(recordIdentity(record))),
+        ...upserts,
+      ]
+      const changed = deltaRows(loaded.records, merged)
+      const refusal = protectedRefusal(input.actor, changed, config)
+      if (refusal !== undefined) return { result: { kind: "refusal" as const, error: refusal } }
+      const invalid = invalidOf(upserts)
+      if (invalid !== undefined)
+        return { result: { kind: "invalid" as const, error: { code: "agent.invalid" as const, message: invalid.reason, data: invalid } } }
+      seen.before = loaded.records
+      seen.after = merged
+      return { result: { kind: "ok" as const, records: merged }, records: merged }
+    })
+    const decision = outcome.result
+    if (decision.kind === "refusal") return { ok: false as const, error: decision.error }
+    if (decision.kind === "invalid") return { ok: false as const, error: decision.error }
+    const saved = outcome.saved
+    if (saved === undefined || !saved.ok)
+      return { ok: false as const, error: { code: "agent.invalid" as const, message: "mutate delta: write did not complete", data: { id: "", reason: "write did not complete" } } }
+    await logMutate({
+      directory,
+      actor: normalizeActor(input.actor),
+      before: seen.before ?? [],
+      after: seen.after ?? decision.records,
+      projectRevision: saved.projectRevision,
+      globalRevision: saved.globalRevision,
+      projectChanged: saved.changed.project,
+      globalChanged: saved.changed.global,
+    })
+    const next = { ...loadedFromSave(saved, decision.records), protectedAgents: config.protectedAgents }
+    const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+    const snapshot = input.snapshot === true ? await snapshotOf(next, directory, discovered) : undefined
+    return {
+      ok: true as const,
+      value: {
+        ok: true as const,
+        revision: next.projectRevision,
+        globalRevision: next.globalRevision,
+        ...(snapshot === undefined ? {} : { snapshot }),
+      },
+    }
+  }
+
   return {
     snapshot: async () => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
       const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
-      const teams = await snapshotTeams(directory, loaded.records, builtins)
-      const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds, await serverListing(ctx, loaded.records)) }
+      const cached = state.snapshotCache
+      if (
+        cached !== undefined &&
+        cached.projectRevision === loaded.projectRevision &&
+        cached.globalRevision === loaded.globalRevision &&
+        cached.generation === state.snapshotGeneration
+      )
+        return { ok: true as const, value: cached.value }
+      return { ok: true as const, value: await snapshotOf(loaded, directory) }
     },
     refresh: async () => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -679,9 +903,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const stored = await loadMigrated(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const discovered = await Effect.runPromise(publishFresh(ctx, state, loaded, builtins))
-      const teams = await snapshotTeams(directory, loaded.records, builtins)
-      const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
-      return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds, await serverListing(ctx, loaded.records)) }
+      return { ok: true as const, value: await snapshotOf(loaded, directory, discovered) }
     },
     chatRefresh: async (input) => {
       // Rebuild this folder from its current settings and files: the host
@@ -736,97 +958,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       }
     },
     mutate: async (input) => {
-      const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
-      const stored = await load(directory)
-      const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      // Links, Defaults entries and presets are not snapshot rows yet either:
-      // carried over like teams so a snapshot mutate cannot drop them.
-      const records: StoredRecord[] = [
-        ...input.records.map(toRecord),
-        ...loaded.records.filter(
-          (record) =>
-            record.type === "team" ||
-            record.type === "link" ||
-            record.type === "entry" ||
-            record.type === "preset" ||
-            record.type === "modelSettings" ||
-            record.type === "category",
-        ),
-      ]
-      // T3: a tool actor may not change a protected agent's row through a
-      // mutate either, no matter which level or row kind it addresses. Only
-      // changed rows count: a caller that carries a protected agent's records
-      // back unchanged (the normal full-snapshot mutate) is not refused.
-      const protectedRow = deltaRows(loaded.records, records).find(
-        (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord | CategoryRecord> =>
-          record.type !== "team" &&
-          record.type !== "entry" &&
-          record.type !== "preset" &&
-          record.type !== "modelSettings" &&
-          record.type !== "category" &&
-          // A preset's rows are not an agent's, whatever its id.
-          record.level !== "preset" &&
-          record.agent !== null &&
-          config.protectedAgents.includes(record.agent),
-      )
-      const refusal = refuseProtectedForTool(input.actor, protectedRow?.agent, config)
-      if (refusal !== undefined) return { ok: false as const, error: refusal }
-      const invalid = records.flatMap((record) => {
-        if (record.type === "split" && (record.item.startsWith("setting:") || record.item.startsWith("compaction:")))
-          return [{ id: record.item, reason: "Agent controls do not support sections" }]
-        if (record.type !== "customization") return []
-        const reason = controlRecordError(record)
-        return reason === undefined ? [] : [{ id: record.item, reason }]
-      })[0]
-      if (invalid !== undefined) return { ok: false as const, error: { code: "agent.invalid" as const, message: invalid.reason, data: invalid } }
-      const staleStore =
-        input.expectedRevision !== loaded.projectRevision
-          ? ("project" as const)
-          : input.expectedGlobalRevision !== loaded.globalRevision
-            ? ("global" as const)
-            : undefined
-      if (staleStore !== undefined) {
-        const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
-        const staleTeams = await snapshotTeams(directory, loaded.records, builtins)
-        const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
-        return {
-          ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: staleStore, snapshot: toSnapshot(discovered, loaded, staleTeams, outputIds, await serverListing(ctx, loaded.records)) },
-        }
-      }
-      const saved = await save(directory, {
-        expectedProjectRevision: loaded.projectRevision,
-        expectedGlobalRevision: loaded.globalRevision,
-        records,
-      })
-      if (!saved.ok) {
-        const refreshed = { ...saved.current, protectedAgents: loaded.protectedAgents }
-        const discovered = await discoverAll(ctx, refreshed, state, builtins, directory)
-        const staleTeams = await snapshotTeams(directory, refreshed.records, builtins)
-        const outputIds = await snapshotOutputIds(directory, discovered, refreshed, builtins, state.teamOutputIds)
-        return {
-          ok: true as const,
-          value: { ok: false as const, reason: "stale" as const, store: saved.store, snapshot: toSnapshot(discovered, refreshed, staleTeams, outputIds, await serverListing(ctx, refreshed.records)) },
-        }
-      }
-      await logMutate({
-        directory,
-        actor: normalizeActor(input.actor),
-        before: loaded.records,
-        after: records,
-        projectRevision: saved.projectRevision,
-        globalRevision: saved.globalRevision,
-        projectChanged: saved.changed.project,
-        globalChanged: saved.changed.global,
-      })
-      const reloaded = await load(directory)
-      const next = { ...reloaded, protectedAgents: loaded.protectedAgents }
-      const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
-      const teams = await snapshotTeams(directory, next.records, builtins)
-      const outputIds = await snapshotOutputIds(directory, discovered, next, builtins, state.teamOutputIds)
-      const snapshot = toSnapshot(discovered, next, teams, outputIds, await serverListing(ctx, next.records))
-      return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
+      if ("changes" in input) return mutateDelta(input)
+      return mutateFull(input)
     },
     log: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -1988,14 +2121,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           }
         }
       }
-      const catalog = await Effect.runPromise(
-        ctx.model.list().pipe(
-          Effect.catchCause(() =>
-            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-          ),
-        ),
-      )
-      if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
+      if (!(await catalogKnows(ctx, state, validated.providerID, validated.modelID, validated.variant))) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
         return {
           ok: false as const,
@@ -2163,14 +2289,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "model.invalid" as const, message: validated.reason, data: { providerID: input.providerID, modelID: input.modelID, ...(input.variant === undefined ? {} : { variant: input.variant }), reason: validated.reason } },
         }
-      const catalog = await Effect.runPromise(
-        ctx.model.list().pipe(
-          Effect.catchCause(() =>
-            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-          ),
-        ),
-      )
-      if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
+      if (!(await catalogKnows(ctx, state, validated.providerID, validated.modelID, validated.variant))) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
         return {
           ok: false as const,
@@ -4257,16 +4376,27 @@ function validateModelRef(
   return { ok: true, providerID: provider, modelID: model, variant: trimmedVariant }
 }
 
-function catalogHas(
-  models: readonly Model.Info[],
+// Validation reads the cached catalogue, and on a miss reads it once more: a
+// model can arrive without a host change Plus observes (a provider plugin's
+// catalogue sync, a fresh /connect), and a real pick must not be refused for
+// a stale cache.
+async function catalogKnows(ctx: Context, state: PlusState, providerID: string, modelID: string, variant?: string): Promise<boolean> {
+  if (hostCatalogHas(await hostModelsFor(ctx, state), providerID, modelID, variant)) return true
+  state.hostCatalog = undefined
+  state.hostModels = undefined
+  return hostCatalogHas(await hostModelsFor(ctx, state), providerID, modelID, variant)
+}
+
+function hostCatalogHas(
+  hostModels: readonly HostModel[],
   providerID: string,
   modelID: string,
   variant?: string,
 ): boolean {
-  const found = models.find((entry) => String(entry.providerID) === providerID && String(entry.id) === modelID)
+  const found = hostModels.find((entry) => entry.providerID === providerID && entry.modelID === modelID)
   if (found === undefined) return false
   if (variant === undefined) return true
-  return (found.variants ?? []).some((entry) => String(entry.id) === variant)
+  return found.variants.includes(variant)
 }
 
 async function saveModelRecords(
@@ -4474,94 +4604,10 @@ function normalizeActor(actor: Plus.Actor | undefined): Plus.Actor {
   }
 }
 
-// Tree row id for a stored record: customizations and splits address
-// item:<level>:<agent|''>:<itemId> (sectioned rows add their section),
-// teams address team:<level>:<name>.
-function recordTarget(record: StoredRecord): string {
-  if (record.type === "team") return `team:${record.level}:${record.team}`
-  if (record.type === "entry")
-    return record.team === undefined ? `agent:defaults:${record.name}` : `team:defaults:${record.team}:${record.name}`
-  if (record.type === "preset")
-    return record.team === undefined ? `${record.kind}:preset:${record.id}` : `team:preset:${record.team}:${record.id}`
-  if (record.type === "link") return `link:${record.level}:${record.agent ?? ""}`
-  if (record.type === "modelSettings")
-    return record.providerID === undefined || record.modelID === undefined
-      ? "modeldefault:every"
-      : `modeldefault:${record.providerID}/${record.modelID}`
-  if (record.type === "model")
-    return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
-  if (record.type === "rule") return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
-  if (record.type === "category") return `category:${record.name}`
-  const agent = record.agent ?? ""
-  if (record.type === "split") return `item:${record.level}:${agent}:${record.item}`
-  if (record.section !== null) return `section:${record.level}:${agent}:${record.item}:${record.section}`
-  return `item:${record.level}:${agent}:${record.item}`
-}
-
 function mutateTarget(rows: readonly StoredRecord[]): string {
   const first = rows[0]
   if (first === undefined) return "records"
   return recordTarget(first)
-}
-
-// Multiset difference keyed by row identity (type plus level/agent/item/
-// section, or level/team): a row counts as changed when it was added,
-// removed, or its stored content differs, and a modified row is named once
-// (the after version). Content compares on the store's canonical serialized
-// form. Team rows merged back verbatim cancel out, so a pure mutate never
-// names them.
-function deltaRows(before: readonly StoredRecord[], after: readonly StoredRecord[]): StoredRecord[] {
-  const beforeGroups = groupByIdentity(before)
-  const afterGroups = groupByIdentity(after)
-  const changed: StoredRecord[] = []
-  for (const key of new Set([...beforeGroups.keys(), ...afterGroups.keys()])) {
-    const olds = sortByContent(beforeGroups.get(key) ?? [])
-    const news = sortByContent(afterGroups.get(key) ?? [])
-    const paired = Math.min(olds.length, news.length)
-    for (let index = 0; index < paired; index++) {
-      const oldRow = olds[index]
-      const newRow = news[index]
-      if (oldRow === undefined || newRow === undefined) continue
-      if (contentOf(oldRow) !== contentOf(newRow)) changed.push(newRow)
-    }
-    for (let index = paired; index < olds.length; index++) {
-      const removed = olds[index]
-      if (removed !== undefined) changed.push(removed)
-    }
-    for (let index = paired; index < news.length; index++) {
-      const added = news[index]
-      if (added !== undefined) changed.push(added)
-    }
-  }
-  return changed
-}
-
-function groupByIdentity(records: readonly StoredRecord[]): Map<string, StoredRecord[]> {
-  const groups = new Map<string, StoredRecord[]>()
-  for (const record of records) {
-    // NUL separates the type from the row id, written as an escape so the
-    // source stays plain text. It keeps a customization and a split over the
-    // same coordinates distinct, and the id validators reject NUL bytes, so
-    // it cannot collide with row-id content.
-    const key = `${record.type}\\u0000${recordTarget(record)}`
-    const group = groups.get(key)
-    if (group === undefined) groups.set(key, [record])
-    else group.push(record)
-  }
-  return groups
-}
-
-function contentOf(record: StoredRecord): string {
-  return JSON.stringify(stable(record))
-}
-
-function sortByContent(records: readonly StoredRecord[]): StoredRecord[] {
-  return [...records].sort((left, right) => {
-    const leftKey = contentOf(left)
-    const rightKey = contentOf(right)
-    if (leftKey === rightKey) return 0
-    return leftKey < rightKey ? -1 : 1
-  })
 }
 
 function mutateSummary(changed: readonly StoredRecord[], level: string): string {
@@ -4801,7 +4847,10 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // text is raw, and core's optimize plugins render it
 // into `system[0]` before Plus's later (`post`) hook overwrites it with
 // stored custom text.
-async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
+async function resolveBaseTemplates(
+  ctx: Context,
+  catalog: readonly Model.Info[],
+): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
   const templates = await Effect.runPromise(ctx.prompt.templates())
   const user = readUserBaseTemplates().map((template) => ({ ...template, user: true as const }))
   const userIds = new Set(user.map((template) => template.id))
@@ -4809,13 +4858,6 @@ async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemp
     templates.length === 0
       ? [...fallbackBaseTemplates().filter((template) => !userIds.has(template.id)), ...user]
       : [...templates.filter((template) => !userIds.has(template.id)).map((template) => ({ ...template })), ...user]
-  const catalog = await Effect.runPromise(
-    ctx.model.list().pipe(
-      Effect.catchCause(() =>
-        Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-      ),
-    ),
-  )
   const fallback = await Effect.runPromise(
     ctx.model
       .default()
@@ -4826,7 +4868,7 @@ async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemp
       ),
   )
   const active = (agent: Agent.Info): string | undefined => {
-    const model = resolveCatalogModel(agent, catalog.data, fallback.data)
+    const model = resolveCatalogModel(agent, catalog, fallback.data)
     return Effect.runSync(ctx.prompt.active(model))
   }
   return { templates: listed, active }
@@ -4888,8 +4930,27 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
 // the cache when the host's config, agents or skills change, which is when the
 // catalogue can move.
 async function hostModelsFor(ctx: Context, state: PlusState): Promise<readonly HostModel[]> {
-  if (state.hostModels === undefined) state.hostModels = await hostModelsOf(ctx)
-  return state.hostModels
+  await hostCatalogFor(ctx, state)
+  return state.hostModels ?? []
+}
+
+// The one `ctx.model.list()` call: reads the raw catalogue once and derives
+// the cached host models from the same answer, so base-template
+// classification, discovery, validation and the per-request classifier all
+// share one read instead of each listing the catalogue.
+async function hostCatalogFor(ctx: Context, state: PlusState): Promise<readonly Model.Info[]> {
+  if (state.hostCatalog === undefined) {
+    const listed = await Effect.runPromise(
+      ctx.model.list().pipe(
+        Effect.catchCause(() =>
+          Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+        ),
+      ),
+    )
+    state.hostCatalog = listed.data
+    state.hostModels = hostModelsFrom(listed.data)
+  }
+  return state.hostCatalog
 }
 
 export const discoverCounter = { count: 0 }
@@ -4913,7 +4974,7 @@ async function discoverAll(
       state.agentUpstream = structuredClone(editor.list())
     })
   }
-  const resolved = await resolveBaseTemplates(ctx)
+  const resolved = await resolveBaseTemplates(ctx, await hostCatalogFor(ctx, state))
   const teams = await discoverAllTeams(directory, builtins)
   // Read before discovery reads the registry: a change in between shows as a
   // difference later and costs one more (unchanged) publish, never a miss.
@@ -5238,6 +5299,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       yield* disposeTooling(state)
       yield* disposeTeamTooling(state)
       state.fingerprint = undefined
+      state.snapshotCache = undefined
       state.projectRevision = undefined
       state.globalRevision = undefined
       state.baselines = new Map()
@@ -5248,6 +5310,8 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
       state.teamOutputIds = new Map()
+      state.hostModels = undefined
+      state.hostCatalog = undefined
     }),
   )
 }
@@ -5260,6 +5324,12 @@ function refreshAfterFileChange(
   force = false,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
+    // A file op (agent/skill/base/team/... create or delete) can change what a
+    // snapshot contains without moving a store revision — a team is a
+    // directory of files, not a record — and can leave the publish fingerprint
+    // unchanged (an empty team contributes no body). Bump before publishing so
+    // no read can answer from the pre-op snapshot.
+    state.snapshotGeneration++
     const stored = yield* Effect.promise(() => loadCurrent(directory))
     yield* publishFresh(ctx, state, stored, builtins, force)
   })
@@ -5473,9 +5543,16 @@ function publishFresh(
         if (!force) return discovered
         // Core debounces its own reload, so a just-written agent file cannot
         // move the fingerprint yet; the file mutation itself is the change.
+        state.snapshotGeneration++
         yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
         return discovered
       }
+      // The per-request base classifier reads the cached catalogue instead
+      // of listing the provider catalogue on every publish.
+      const catalog = yield* Effect.promise(() => hostCatalogFor(ctx, state))
+      // The installed state changed: the snapshot cache key must move so the
+      // next read rebuilds instead of answering from the old registrations.
+      state.snapshotGeneration++
       const applyInput: ApplyInput = {
         items: discovered.items,
         // Discovery keeps shadowed identities for scope resolution and the UI;
@@ -5486,6 +5563,7 @@ function publishFresh(
         scopes: publishScopes,
         models: modelRecords,
         rules: rulesOf(stored.records),
+        catalog,
         teamAgents: view.teamAgents.map((agent) => agent.id),
         enforcement: state.enforcement,
         enforcementDeps: {
@@ -5707,6 +5785,8 @@ function disposeApplied(state: PlusState): Effect.Effect<void> {
     const registrations = [...state.appliedParts.values()].flatMap((p) => p.registrations as Registration[])
     state.appliedParts.clear()
     state.appliedPlans.clear()
+    state.sessionPins.clear()
+    state.currentPlanSet = undefined
     state.applied = []
     state.installedTools = []
     yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
@@ -6133,12 +6213,16 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
   // A team run's state follows its host session: idle, failed and interrupted
   // turns settle the attempt and hand the inbox over without any tool call.
   // Compact before cold reads the same events: a running chat never compacts.
+  // A chat that moves between checkouts is the other event a run follows
+  // (lifecycle.onSessionMoved): a root run with no child takes the new folder.
   const runs = ctx.event.subscribe().pipe(
-    Stream.filter((event) => SessionRunEvents.has(event.type) || event.type === RETRY_SCHEDULED),
+    Stream.filter((event) => SessionRunEvents.has(event.type) || event.type === RETRY_SCHEDULED || event.type === "session.moved"),
     Stream.runForEach((event) =>
       Effect.promise(() => {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
-        if (typeof sessionID === "string") warmingStore.running(sessionID, event.type === "session.execution.started")
+        // A move is not a turn: it must not clear a running chat's busy flag.
+        if (typeof sessionID === "string" && event.type !== "session.moved")
+          warmingStore.running(sessionID, event.type === "session.execution.started")
         return onSessionEvent(ctx, teamsDataDir(), event)
       }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus team session event failed", { cause, type: event.type })),
@@ -6154,6 +6238,7 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
       Effect.gen(function* () {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
         if (typeof sessionID === "string") {
+          state.sessionPins.markRebuild(sessionID)
           const created = (event as { created?: unknown }).created
           const completedAt = typeof created === "number" ? created : Date.now()
           warmingStore.invalidateCompaction(sessionID, completedAt)
@@ -6167,11 +6252,27 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )
+  const sessionDeletions = ctx.event.subscribe().pipe(
+    Stream.filter((event) => event.type === "session.deleted"),
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        const sessionID =
+          (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID ??
+          (event as { readonly sessionID?: unknown }).sessionID
+        if (typeof sessionID === "string") {
+          state.sessionPins.dropPin(sessionID)
+        }
+      }),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
   return Effect.gen(function* () {
     yield* refresh
     yield* sessions
     yield* runs
     yield* compactions
+    yield* sessionDeletions
     yield* watchToolRegistry(ctx, state)
   })
 }
@@ -6416,8 +6517,14 @@ export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<v
       const forced = hasHostChange || state.pendingForce
       state.pendingHostChange = false
       state.pendingForce = false
+      // A host or team change changes what a snapshot holds even when the store
+      // revisions did not move: the snapshot cache key moves first.
+      if (forced) state.snapshotGeneration++
       // A host change can change the provider catalogue; a store or team change cannot.
-      if (hasHostChange) state.hostModels = undefined
+      if (hasHostChange) {
+        state.hostModels = undefined
+        state.hostCatalog = undefined
+      }
       const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
       const stored = yield* Effect.promise(() => loadCurrent(directory))
       if (
@@ -6511,6 +6618,7 @@ function toSnapshot(
                 off: item.policy.off.map((rule) => ({ ...rule })),
               },
             }),
+        ...(item.alsoUnder === undefined ? {} : { alsoUnder: [...item.alsoUnder] }),
         ...(item.runID === undefined ? {} : { runID: item.runID }),
         ...(item.category === undefined ? {} : { category: item.category }),
         ...(item.permKind === undefined ? {} : { permKind: item.permKind }),
@@ -6521,7 +6629,6 @@ function toSnapshot(
         ...(item.mode === undefined ? {} : { mode: item.mode }),
         ...(item.message === undefined ? {} : { message: item.message }),
         ...(item.fallback === undefined ? {} : { fallback: item.fallback }),
-        ...(item.alsoUnder === undefined ? {} : { alsoUnder: [...item.alsoUnder] }),
       }
     }),
     records: loaded.records.flatMap((record): Plus.SnapshotRecord[] => {

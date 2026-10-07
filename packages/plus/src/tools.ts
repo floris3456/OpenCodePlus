@@ -65,8 +65,11 @@ import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
 import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
-import type { MemoInput, TreeNode } from "./instructions/tree.js"
+import { buildTreeMemo } from "./instructions/tree.js"
+import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
+import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
+import type { StoredRecord } from "./instructions/store.js"
 import {
   everySettings,
   hostModelOf,
@@ -366,7 +369,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const node = findRow(memo, input.id)
+          const treeMemo = buildTreeMemo(memo)
+          const node = findRow(memo, input.id, treeMemo)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
@@ -405,13 +409,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
           if (input.warming !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
-          if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
+          if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
-          const op = computeSet(memo, input)
+          const op = computeSet(memo, input, treeMemo)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-          const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
-            computeSet(memoFromSnapshot(fresh), input),
-          )
+          const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
         }),
     })
@@ -427,7 +429,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const node = findRow(memo, input.id)
+          const treeMemo = buildTreeMemo(memo)
+          const node = findRow(memo, input.id, treeMemo)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
@@ -439,9 +442,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           }
           if (isModelDefaultRowId(input.id)) return yield* clearModelDefaults(api, node, actor, "reset")
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* resetModel(api, snapshot, memo, input.id, actor)
-          const op = reset(memo, input.id)
+          const op = reset(memo, input.id, treeMemo)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-          const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => reset(memoFromSnapshot(fresh), input.id))
+          const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
         }),
     })
@@ -457,18 +460,15 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const node = findRow(memo, input.id)
+          const treeMemo = buildTreeMemo(memo)
+          const node = findRow(memo, input.id, treeMemo)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          const op = computeSplit(memo, input)
+          const op = computeSplit(memo, input, treeMemo)
           if (typeof op === "string") return yield* Effect.fail(new Tool.Error({ message: op }))
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-          const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => {
-            const retry = computeSplit(memoFromSnapshot(fresh), input)
-            if (typeof retry === "string") return { refusal: retry }
-            return retry
-          })
+          const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
         }),
     })
@@ -657,99 +657,6 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
   }
 }
 
-// A state-only write (set with just `state`) resubmits every record, so this
-// serializer has to carry the same optional fields `toRecord` (index.ts) and
-// `toRpcRecords` (tui/instructions/state.ts) preserve. Two are easy to drop
-// silently: a rule's `message` — the refusal text the model reads — and the
-// shared-inventory `catalogue`, which decides whether a Defaults row resolves
-// through the Agents or the Teams catalogue. Absent keys stay absent so an
-// unset field encodes exactly as it did before it existed.
-function toSnapshotRecords(
-  records: readonly CustomizationRecord[],
-  splits: readonly SplitRecord[],
-  models?: readonly ModelRecord[],
-  rules?: readonly RuleRecord[],
-): Plus.SnapshotRecord[] {
-  return [
-    ...records.map(
-      (record): Plus.SnapshotRecord => ({
-        type: "customization",
-        level: record.level,
-        agent: record.agent,
-        ...(record.team !== undefined ? { team: record.team } : {}),
-        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
-        item: record.item,
-        section: record.section,
-        ...(record.text === undefined ? {} : { text: record.text }),
-        ...(record.state === undefined ? {} : { state: record.state }),
-        ...(record.pin === undefined ? {} : { pin: record.pin }),
-        ...(record.requires === undefined ? {} : { requires: [...record.requires] }),
-        basedOn: record.basedOn,
-        ...(record.basedOnText === undefined ? {} : { basedOnText: record.basedOnText }),
-        ...(record.acknowledged === undefined ? {} : { acknowledged: record.acknowledged }),
-        ...(record.basedOnState === undefined ? {} : { basedOnState: record.basedOnState }),
-        ...(record.basedOnPin === undefined ? {} : { basedOnPin: record.basedOnPin }),
-        updated: record.updated,
-      }),
-    ),
-    ...splits.map(
-      (split): Plus.SnapshotRecord => ({
-        type: "split",
-        level: split.level,
-        agent: split.agent,
-        ...(split.team !== undefined ? { team: split.team } : {}),
-        ...(split.catalogue === undefined ? {} : { catalogue: split.catalogue }),
-        item: split.item,
-        boundaries: split.boundaries.map((boundary) => ({ ...boundary })),
-        updated: split.updated,
-      }),
-    ),
-    ...(models ?? []).map(
-      (record): Plus.SnapshotRecord => ({
-        type: "model",
-        level: record.level,
-        agent: record.agent,
-        ...(record.team !== undefined ? { team: record.team } : {}),
-        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
-        providerID: record.providerID,
-        modelID: record.modelID,
-        ...(record.variant === undefined ? {} : { variant: record.variant }),
-        ...(record.active === undefined ? {} : { active: record.active }),
-        ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
-        ...(record.warming === undefined ? {} : { warming: record.warming }),
-        ...(record.interval === undefined ? {} : { interval: record.interval }),
-        ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
-        ...(record.removed === undefined ? {} : { removed: record.removed }),
-        ...(record.originalCandidate === undefined
-          ? {}
-          : {
-              originalCandidate: {
-                ...record.originalCandidate,
-                ...(record.originalCandidate.editedFields === undefined ? {} : { editedFields: [...record.originalCandidate.editedFields] }),
-              },
-            }),
-        updated: record.updated,
-      }),
-    ),
-    ...(rules ?? []).map(
-      (record): Plus.SnapshotRecord => ({
-        type: "rule",
-        level: record.level,
-        agent: record.agent,
-        ...(record.team !== undefined ? { team: record.team } : {}),
-        ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
-        tool: record.tool,
-        id: record.id,
-        label: record.label,
-        patterns: [...record.patterns],
-        keywords: [...record.keywords],
-        ...(record.message === undefined ? {} : { message: record.message }),
-        updated: record.updated,
-      }),
-    ),
-  ]
-}
-
 function modelsOfMemo(memo: MemoInput): ModelRecord[] {
   return memo.records.filter((record): record is ModelRecord => record.type === "model")
 }
@@ -882,6 +789,10 @@ function computeSet(
     requires?: readonly string[] | null
     resolve?: "keep" | "take" | "edit"
   },
+  // The resolution memo built once for this tool call. Only the first op reads
+  // it: a follow-up op runs against the interim records the first produced, so
+  // it resolves through its own memo.
+  sharedMemo?: Memo,
 ): ReturnType<typeof setRequires> {
   const preserved = modelsOfMemo(memo)
   const preservedRules = rulesOfMemo(memo)
@@ -891,20 +802,20 @@ function computeSet(
   })
   // The condition is its own field: set it, then whatever else came with it.
   if (input.requires !== undefined) {
-    const first = setRequires(memo, input.id, input.requires)
+    const first = setRequires(memo, input.id, input.requires, sharedMemo)
     const rest = { ...input, requires: undefined }
     const more = rest.mode !== undefined || rest.text !== undefined || rest.state !== undefined || rest.pin !== undefined || rest.resolve !== undefined
     if ("refusal" in first || !more) return first
     return computeSet(withModels(first.records, first.splits), rest)
   }
   if (input.mode !== undefined) {
-    const first = setAgentMode(memo, input.id, input.mode)
+    const first = setAgentMode(memo, input.id, input.mode, sharedMemo)
     if ("refusal" in first || (input.state === undefined && input.text === undefined && input.pin === undefined && input.resolve === undefined)) return first
     return computeSet(withModels(first.records, first.splits), { ...input, mode: undefined })
   }
   if (input.resolve !== undefined) {
-    if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text)
-    const first = resolveReview(memo, input.id, input.resolve, input.text)
+    if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text, undefined, sharedMemo)
+    const first = resolveReview(memo, input.id, input.resolve, input.text, undefined, sharedMemo)
     if ("refusal" in first) return first
     let interim: MemoInput = withModels(first.records, first.splits)
     if (input.state !== undefined) {
@@ -917,7 +828,7 @@ function computeSet(
     return first
   }
   if (input.text !== undefined && input.state !== undefined && input.pin !== undefined) {
-    const first = saveText(memo, input.id, input.text)
+    const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
     const second = setEnabled(interim, input.id, input.state === "on")
@@ -926,121 +837,90 @@ function computeSet(
     return setPin(interim2, input.id, input.pin)
   }
   if (input.text !== undefined && input.state !== undefined) {
-    const first = saveText(memo, input.id, input.text)
+    const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
     return setEnabled(interim, input.id, input.state === "on")
   }
   if (input.text !== undefined && input.pin !== undefined) {
-    const first = saveText(memo, input.id, input.text)
+    const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
     return setPin(interim, input.id, input.pin)
   }
   if (input.state !== undefined && input.pin !== undefined) {
-    const first = setEnabled(memo, input.id, input.state === "on")
+    const first = setEnabled(memo, input.id, input.state === "on", sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
     return setPin(interim, input.id, input.pin)
   }
-  if (input.text !== undefined) return saveText(memo, input.id, input.text)
-  if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on")
-  if (input.pin !== undefined) return setPin(memo, input.id, input.pin)
-  return toggle(memo, input.id)
+  if (input.text !== undefined) return saveText(memo, input.id, input.text, sharedMemo)
+  if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on", sharedMemo)
+  if (input.pin !== undefined) return setPin(memo, input.id, input.pin, sharedMemo)
+  return toggle(memo, input.id, sharedMemo)
 }
 
 function computeSplit(
   memo: MemoInput,
   input: { id: string; boundaries?: readonly { id: string; name: string; start: number }[]; add?: { name: string; text: string } },
+  sharedMemo?: Memo,
 ): { records: CustomizationRecord[]; splits: SplitRecord[]; status: string; retryHint: string } | { refusal: string } | string {
-  if (input.add !== undefined) return addSection(memo, input.id, input.add.name, input.add.text)
-  if (input.boundaries !== undefined) return saveSplit(memo, input.id, [...input.boundaries])
+  if (input.add !== undefined) return addSection(memo, input.id, input.add.name, input.add.text, sharedMemo)
+  if (input.boundaries !== undefined) return saveSplit(memo, input.id, [...input.boundaries], sharedMemo)
   return "split requires boundaries or add"
 }
 
-function mutateWithRetry(
+// Every instruction write goes through a delta: the rows this op actually
+// changed, applied to whatever the server currently holds. There is no
+// expected revision, so a write never gets a stale refusal for an unrelated
+// row and the whole record set never crosses the wire. `before` is the memo
+// the op was computed against (built once per tool call); `next` is the full
+// desired inventory the op produced. Unchanged rows stay byte-identical.
+function mutateDelta(
   api: PlusApi,
-  snapshot: Plus.Snapshot,
-  op: { records: CustomizationRecord[]; splits: SplitRecord[]; models?: readonly ModelRecord[]; status: string },
+  before: MemoInput,
+  next: readonly StoredRecord[],
   actor: Plus.Actor,
-  recompute: (fresh: Plus.Snapshot) => { records: CustomizationRecord[]; splits: SplitRecord[]; models?: readonly ModelRecord[]; status: string } | { refusal: string },
+  status: string,
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   return Effect.gen(function* () {
-    const models = op.models ?? modelsOfMemo(memoFromSnapshot(snapshot))
-    const rules = rulesOfMemo(memoFromSnapshot(snapshot))
-    const first = yield* Effect.promise(() =>
-      api.mutate({
-        expectedRevision: snapshot.revision,
-        expectedGlobalRevision: snapshot.globalRevision,
-        records: toSnapshotRecords(op.records, op.splits, models, rules),
-        actor,
-      }),
+    const delta = deltaOf(before.records, next)
+    const upsert = delta.upsert.flatMap((record) => {
+      const snapshot = snapshotRecordOf(record)
+      return snapshot === undefined ? [] : [snapshot]
+    })
+    const result = yield* Effect.promise(() =>
+      api.mutate({ changes: { upsert, remove: delta.remove }, actor }),
     )
-    if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `${first.error.code}: ${first.error.message}` }))
-    if (first.value.ok) return { revision: first.value.revision, globalRevision: first.value.globalRevision, status: op.status }
-    const fresh = yield* Effect.promise(() => api.snapshot())
-    const retry = recompute(fresh.value)
-    if ("refusal" in retry) return yield* Effect.fail(new Tool.Error({ message: retry.refusal }))
-    const retryModels = retry.models ?? modelsOfMemo(memoFromSnapshot(fresh.value))
-    const retryRules = rulesOfMemo(memoFromSnapshot(fresh.value))
-    const second = yield* Effect.promise(() =>
-      api.mutate({
-        expectedRevision: fresh.value.revision,
-        expectedGlobalRevision: fresh.value.globalRevision,
-        records: toSnapshotRecords(retry.records, retry.splits, retryModels, retryRules),
-        actor,
-      }),
-    )
-    if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `${second.error.code}: ${second.error.message}` }))
-    if (second.value.ok)
-      return { revision: second.value.revision, globalRevision: second.value.globalRevision, status: retry.status }
-    return yield* Effect.fail(new Tool.Error({ message: "stale: write conflicted twice; re-read and retry" }))
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    if (!result.value.ok) return yield* Effect.fail(new Tool.Error({ message: "stale: delta write was refused" }))
+    return { revision: result.value.revision, globalRevision: result.value.globalRevision, status }
   })
 }
 
-function mutateModelsWithRetry(
+// A customization/split op: models and rules are carried from the memo the op
+// was computed against unless the op produced its own model list.
+function mutateOp(
   api: PlusApi,
-  snapshot: Plus.Snapshot,
   memo: MemoInput,
-  models: ModelRecord[],
+  op: { records: CustomizationRecord[]; splits: SplitRecord[]; models?: readonly ModelRecord[]; status: string },
+  actor: Plus.Actor,
+): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
+  const models = op.models ?? modelsOfMemo(memo)
+  return mutateDelta(api, memo, [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo)], actor, op.status)
+}
+
+// A model op: customizations, splits and rules pass through unchanged; the
+// op's `models` is the complete new model list, so it replaces the memo's.
+function mutateModels(
+  api: PlusApi,
+  memo: MemoInput,
+  models: readonly ModelRecord[],
   status: string,
   actor: Plus.Actor,
-  recompute: (fresh: Plus.Snapshot) => { models: ModelRecord[]; status: string } | { refusal: string },
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
-  return Effect.gen(function* () {
-    const customizations = memo.records.filter((record): record is CustomizationRecord => record.type === "customization")
-    const splits = memo.records.filter((record): record is SplitRecord => record.type === "split")
-    const rules = memo.records.filter((record): record is RuleRecord => record.type === "rule")
-    const first = yield* Effect.promise(() =>
-      api.mutate({
-        expectedRevision: snapshot.revision,
-        expectedGlobalRevision: snapshot.globalRevision,
-        records: toSnapshotRecords(customizations, splits, models, rules),
-        actor,
-      }),
-    )
-    if (!first.ok) return yield* Effect.fail(new Tool.Error({ message: `${first.error.code}: ${first.error.message}` }))
-    if (first.value.ok) return { revision: first.value.revision, globalRevision: first.value.globalRevision, status }
-    const fresh = yield* Effect.promise(() => api.snapshot())
-    const retry = recompute(fresh.value)
-    if ("refusal" in retry) return yield* Effect.fail(new Tool.Error({ message: retry.refusal }))
-    const freshMemo = memoFromSnapshot(fresh.value)
-    const freshCustom = freshMemo.records.filter((record): record is CustomizationRecord => record.type === "customization")
-    const freshSplits = freshMemo.records.filter((record): record is SplitRecord => record.type === "split")
-    const freshRules = freshMemo.records.filter((record): record is RuleRecord => record.type === "rule")
-    const second = yield* Effect.promise(() =>
-      api.mutate({
-        expectedRevision: fresh.value.revision,
-        expectedGlobalRevision: fresh.value.globalRevision,
-        records: toSnapshotRecords(freshCustom, freshSplits, retry.models, freshRules),
-        actor,
-      }),
-    )
-    if (!second.ok) return yield* Effect.fail(new Tool.Error({ message: `${second.error.code}: ${second.error.message}` }))
-    if (second.value.ok)
-      return { revision: second.value.revision, globalRevision: second.value.globalRevision, status: retry.status }
-    return yield* Effect.fail(new Tool.Error({ message: "stale: write conflicted twice; re-read and retry" }))
-  })
+  const rest = memo.records.filter((record) => record.type !== "model")
+  return mutateDelta(api, memo, [...rest, ...models], actor, status)
 }
 
 // The candidate a model row addresses: `model:<provider>/<model>[@variant]`.
@@ -1076,11 +956,7 @@ function setModel(
       const warming = input.warming
       const op = setModelWarmingRow(memo, id, warming)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-      const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-        const retry = setModelWarmingRow(memoFromSnapshot(fresh), id, warming)
-        if ("refusal" in retry) return retry
-        return { models: retry.models, status: retry.status }
-      })
+      const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
     }
     // A model row's text replaces the candidate (and may set warming in the
@@ -1105,11 +981,7 @@ function setModel(
       }
       const op = editModelRow(memo, id, fields)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-      const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-        const retry = editModelRow(memoFromSnapshot(fresh), id, fields)
-        if ("refusal" in retry) return retry
-        return { models: retry.models, status: retry.status }
-      })
+      const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
     }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
@@ -1123,7 +995,7 @@ function setModel(
       const text = String(limitOf(input.text))
       const op = computeSet(memo, { id, text })
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-      const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => computeSet(memoFromSnapshot(fresh), { id, text }))
+      const applied = yield* mutateOp(api, memo, op, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
     }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
@@ -1131,11 +1003,7 @@ function setModel(
     if (input.state !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be toggled by state; use active:true to activate` }))
     const op = activateModelRow(memo, id)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-      const retry = activateModelRow(memoFromSnapshot(fresh), id)
-      if ("refusal" in retry) return retry
-      return { models: retry.models, status: retry.status }
-    })
+    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1162,11 +1030,7 @@ function setModelField(
     const text = input.text
     const op = setModelFieldRow(memo, id, text)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-      const retry = setModelFieldRow(memoFromSnapshot(fresh), id, text)
-      if ("refusal" in retry) return retry
-      return { models: retry.models, status: retry.status }
-    })
+    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1186,11 +1050,7 @@ function resetModelField(
     if (node === undefined) return yield* Effect.fail(unknownError(id))
     const op = resetModelFieldRow(memo, id)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-      const retry = resetModelFieldRow(memoFromSnapshot(fresh), id)
-      if ("refusal" in retry) return retry
-      return { models: retry.models, status: retry.status }
-    })
+    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1301,6 +1161,7 @@ function setPerm(
   id: string,
   actor: Plus.Actor,
   input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
+  treeMemo?: Memo,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
@@ -1320,19 +1181,17 @@ function setPerm(
       if (limitOf(input.text) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
       const text = String(limitOf(input.text))
-      const op = computeSet(memo, { id, text })
+      const op = computeSet(memo, { id, text }, treeMemo)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-      const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) => computeSet(memoFromSnapshot(fresh), { id, text }))
+      const applied = yield* mutateOp(api, memo, op, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
     }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
-    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) })
+    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
-      computeSet(memoFromSnapshot(fresh), { id, ...(input.state === undefined ? {} : { state: input.state }) }),
-    )
+    const applied = yield* mutateOp(api, memo, op, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1347,11 +1206,7 @@ function resetModel(
   return Effect.gen(function* () {
     const op = resetModelRow(memo, id)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-      const retry = resetModelRow(memoFromSnapshot(fresh), id)
-      if ("refusal" in retry) return retry
-      return { models: retry.models, status: retry.status }
-    })
+    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1369,11 +1224,7 @@ function deleteModelRow(
     // the currently effective model refuses with its own message.
     const op = removeModelRow(memo, id)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModelsWithRetry(api, snapshot, memo, op.models, op.status, actor, (fresh) => {
-      const retry = removeModelRow(memoFromSnapshot(fresh), id)
-      if ("refusal" in retry) return retry
-      return { models: retry.models, status: retry.status }
-    })
+    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1520,9 +1371,7 @@ function setGroup(
     const isProtected = (agent: string) => snapshot.protectedAgents.includes(agent)
     const op = toggleGroup(memo, id, undefined, target, isProtected)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
-      toggleGroup(memoFromSnapshot(fresh), id, undefined, target, (agent) => fresh.protectedAgents.includes(agent)),
-    )
+    const applied = yield* mutateOp(api, memo, op, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
@@ -1697,7 +1546,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         output: {
           id,
           view,
-          text: resolved.text,
+          text: address.section === null ? (resolved.fullText ?? resolved.text) : resolved.text,
           assembled: resolved.assembled,
           enabled: resolved.enabled,
           source: resolved.source,
@@ -1717,6 +1566,25 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     }
     if (view === "upstream") return { output: { id, view, text: upstreamForEdit(chain) } }
     if (view === "mine") {
+      if (address.section === null) {
+        const ownRecords = customizations.filter(
+          (record) =>
+            record.level === address.level &&
+            record.agent === address.agent &&
+            sameTeam(record.team, address.team) &&
+            record.item === address.item &&
+            catalogueMatches(address.agent, record.catalogue, address.catalogue),
+        )
+        const hasOverride = ownRecords.some((r) => r.text !== undefined)
+        if (!hasOverride) return { output: { id, view, text: "", hasOverride: false } }
+        const wholeRecord = ownRecords.find((r) => r.section === null && r.text !== undefined)
+        const hasSectionOverrides = ownRecords.some((r) => r.section !== null && r.text !== undefined)
+        if (wholeRecord !== undefined && !hasSectionOverrides) {
+          return { output: { id, view, text: wholeRecord.text ?? "", hasOverride: true } }
+        }
+        const resolved = resolve(chain)
+        return { output: { id, view, text: resolved.fullText ?? resolved.text, hasOverride: true } }
+      }
       const own = customizations.find(
         (record) =>
           record.level === address.level &&

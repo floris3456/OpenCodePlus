@@ -32,7 +32,10 @@ async function makeRepo(): Promise<{ dir: string; head: string }> {
   await git(dir, ["config", "user.name", "team-test"])
   await git(dir, ["config", "user.email", "team-test@local"])
   await fs.writeFile(path.join(dir, "README.md"), "# model pins test\n")
-  await git(dir, ["add", "README.md"])
+  // The default brief's `bun test FILE` check must name a file the base holds.
+  await fs.mkdir(path.join(dir, "packages", "plus", "test"), { recursive: true })
+  await fs.writeFile(path.join(dir, "packages", "plus", "test", "unit.test.ts"), "// checked by the brief\n")
+  await git(dir, ["add", "README.md", "packages/plus/test/unit.test.ts"])
   await git(dir, ["commit", "-m", "feat: initial commit"])
   const head = await git(dir, ["rev-parse", "HEAD"])
   return { dir, head }

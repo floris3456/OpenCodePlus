@@ -230,7 +230,12 @@ export async function hostModelsOf(ctx: Context): Promise<HostModel[]> {
       ),
     ),
   )
-  return listed.data.map((entry) => {
+  return hostModelsFrom(listed.data)
+}
+
+/** The same mapping over an already-read catalog, so one read feeds every consumer. */
+export function hostModelsFrom(data: readonly Model.Info[]): HostModel[] {
+  return data.map((entry) => {
     const settings = entry.settings as { readonly warming?: unknown } | undefined
     const warming = decodeHostWarming(settings?.warming)
     return {

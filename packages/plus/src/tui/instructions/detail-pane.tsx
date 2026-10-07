@@ -442,6 +442,26 @@ export function excludedRanges(node: TreeNode, snapshot: Snapshot, memo?: Memo):
     if (!sectionResolved.enabled) excluded.add(section.id)
   }
   if (excluded.size === 0) return []
+
+  const spans = whole.spans
+  if (spans !== undefined) {
+    const ranges: ExcludedRange[] = []
+    const dropped = (id: string) => {
+      const parts = id.split("/")
+      return parts.some((_, index) => excluded.has(parts.slice(0, index + 1).join("/")))
+    }
+    for (const section of split.sections) {
+      if (!dropped(section.id)) continue
+      const parts = section.id.split("/")
+      if (parts.length > 1 && dropped(parts.slice(0, -1).join("/"))) continue
+      const span = spans.get(section.id)
+      if (span !== undefined && span.end > span.start) {
+        ranges.push({ start: span.start, end: span.end })
+      }
+    }
+    return ranges.sort((left, right) => left.start - right.start)
+  }
+
   const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
   const dropped = (id: string) => {
     const parts = id.split("/")
@@ -489,7 +509,11 @@ export function excludedAttributes(excluded: boolean) {
 }
 
 export function wholeItemText(node: TreeNode, snapshot: Snapshot, memo?: Memo): { text: string; ranges: ExcludedRange[] } {
-  const text = resolvedText(node, snapshot, memo)
+  const address = node.address
+  const derived = derivedOf(snapshot)
+  const upstream = address === undefined ? undefined : upstreamFor(derived.items, address)
+  const whole = address === undefined || upstream === undefined ? undefined : resolveAt(derived, address, upstream, memo)
+  const text = (node.address?.section === null ? whole?.fullText : undefined) ?? resolvedText(node, snapshot, memo)
   if (node.address?.section !== null) return { text, ranges: [] }
   return { text, ranges: excludedRanges(node, snapshot, memo) }
 }
