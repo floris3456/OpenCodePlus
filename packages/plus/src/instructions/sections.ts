@@ -80,17 +80,21 @@ export function assembleWithOverrides(
     list.push(index)
     children.set(parent, list)
   })
+  const separate = (str: string): string => {
+    if (str.trim().length === 0) return ""
+    return str.trimEnd() + "\n\n"
+  }
   const effective = (index: number): string => {
     const section = ordered[index]
     if (section === undefined) return ""
     if (isDropped(section.id, excluded)) return ""
     const override = overrides.get(section.id)
-    if (override !== undefined) return override
+    if (override !== undefined) return separate(override)
     const kids = children.get(index) ?? []
     if (kids.length === 0) return text.slice(section.start, section.end)
     const starts = kids.map((child) => ordered[child]?.start ?? section.end)
     const own = text.slice(section.start, Math.min(...starts))
-    return own + kids.map(effective).join("")
+    return separate(own) + kids.map(effective).join("")
   }
   const tops = ordered.map((_, index) => index).filter((index) => parents[index] === undefined)
   return tops.map(effective).join("").replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
