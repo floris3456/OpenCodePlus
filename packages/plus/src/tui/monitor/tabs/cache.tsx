@@ -152,9 +152,11 @@ export function CacheTab(props: CacheTabProps) {
                           {req.cause ?? "—"}
                         </text>
                         <Show when={showAgent()}>
-                          <text fg={fg()} width={16} wrapMode="none" truncate>
+                          {/* One column short of the header: a truncated model name never runs into In. */}
+                          <text fg={fg()} width={15} wrapMode="none" truncate>
                             {req.model ?? req.agent ?? "—"}
                           </text>
+                          <box width={1} flexShrink={0} />
                         </Show>
                         <Show when={showInput()}>
                           <text fg={fg()} width={9}>{formatTokens(req.input)}</text>

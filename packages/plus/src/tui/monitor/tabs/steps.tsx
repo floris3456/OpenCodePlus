@@ -126,7 +126,8 @@ export function StepsTab(props: StepsTabProps) {
                       >
                         <text fg={fg()} width={10}>{formatClock(req.at)}</text>
                         <text fg={fg()} width={10}>{req.kind}</text>
-                        <text fg={fg()} width={16} wrapMode="none" truncate>{req.model ?? req.agent ?? "—"}</text>
+                        <text fg={fg()} width={15} wrapMode="none" truncate>{req.model ?? req.agent ?? "—"}</text>
+                        <box width={1} flexShrink={0} />
                         <text fg={fg()} width={8}>{formatTokens(req.input)}</text>
                         <text fg={fg()} width={8}>{formatTokens(req.cacheRead)}</text>
                         <Show when={showWrite()}>
