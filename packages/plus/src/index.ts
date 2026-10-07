@@ -91,6 +91,7 @@ import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
+import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 
 export interface TeamOwnership {
   readonly team: string
@@ -102,6 +103,8 @@ export interface PlusState {
   applied: Registration[]
   appliedParts: Map<string, AppliedPart>
   appliedPlans: Map<string, unknown>
+  sessionPins: SessionPinManager
+  currentPlanSet?: PlanSet
   tooling: Registration[]
   teamTooling: Registration[]
   installedTools: readonly ToolPlan[]
@@ -157,6 +160,8 @@ export function createState(): PlusState {
     applied: [],
     appliedParts: new Map(),
     appliedPlans: new Map(),
+    sessionPins: new SessionPinManager(),
+    currentPlanSet: undefined,
     tooling: [],
     teamTooling: [],
     installedTools: [],
@@ -243,7 +248,18 @@ export default Plugin.define({
       yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
       // A location with a coalesced refresh pending applies it before a chat
       // request runs, so no request uses stale instructions.
-      yield* ctx.session.hook("prompt", () => flushPendingRefresh(ctx, state))
+      yield* ctx.session.hook("prompt", (event) =>
+        Effect.gen(function* () {
+          yield* flushPendingRefresh(ctx, state)
+          if (event && event.sessionID) {
+            yield* handlePromptBoundary(ctx, state, String(event.sessionID))
+          }
+        }),
+      )
+      yield* ctx.session.hook("compaction", (event) => {
+        state.sessionPins.markRebuild(String(event.sessionID))
+        return Effect.void
+      })
       yield* ctx.session.hook("compaction.decide", (event) => {
         const model = consumeColdCompaction(event.sessionID)
         if (model !== undefined) {
@@ -5622,6 +5638,8 @@ function disposeApplied(state: PlusState): Effect.Effect<void> {
     const registrations = [...state.appliedParts.values()].flatMap((p) => p.registrations as Registration[])
     state.appliedParts.clear()
     state.appliedPlans.clear()
+    state.sessionPins.clear()
+    state.currentPlanSet = undefined
     state.applied = []
     state.installedTools = []
     yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
@@ -6069,6 +6087,7 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
       Effect.gen(function* () {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
         if (typeof sessionID === "string") {
+          state.sessionPins.markRebuild(sessionID)
           const created = (event as { created?: unknown }).created
           const completedAt = typeof created === "number" ? created : Date.now()
           warmingStore.invalidateCompaction(sessionID, completedAt)
@@ -6082,11 +6101,27 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )
+  const sessionDeletions = ctx.event.subscribe().pipe(
+    Stream.filter((event) => event.type === "session.deleted"),
+    Stream.runForEach((event) =>
+      Effect.sync(() => {
+        const sessionID =
+          (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID ??
+          (event as { readonly sessionID?: unknown }).sessionID
+        if (typeof sessionID === "string") {
+          state.sessionPins.dropPin(sessionID)
+        }
+      }),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  )
   return Effect.gen(function* () {
     yield* refresh
     yield* sessions
     yield* runs
     yield* compactions
+    yield* sessionDeletions
     yield* watchToolRegistry(ctx, state)
   })
 }
