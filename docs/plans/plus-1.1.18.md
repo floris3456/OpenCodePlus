@@ -1,7 +1,7 @@
 # plus-1.1.18 / 1.1.19: Monitor load, then model rows with Warming and Compaction, cold-cache compaction
 
-1.1.18 = the Monitor fix (section 1, WP-A) and the warming-window fix
-(section 1b, WP-W). 1.1.19 = sections 2–9 (WPs B–E, G). The split was decided
+1.1.18 = the Monitor fix (section 1, WP-A), the warming-window fix
+(section 1b, WP-W) and keep-alives that survive a stall (section 1c, WP-Q). 1.1.19 = sections 2–9 (WPs B–E, G). The split was decided
 by the user; see Decisions.
 
 Base: `aa1927c988` (= `v2.0.18-plus-1.1.17`). Integration branch `plus-1.1.18`
@@ -29,6 +29,7 @@ Requests (user, 2026-10-07, on the installed 1.1.17):
    and the chat must show which model wrote the summary. (sections 4 and 7)
 9. A notification when a cache miss happens, which says to type `/monitor`.
    (section 9)
+10. Another bust at 17:00, with no account switch: why? (section 1c)
 
 ## 1. Monitor does not load (measured)
 
@@ -112,6 +113,42 @@ Evidence: `run/evidence/plus-1.1.18/analysis/monitor-load.md`.
     at the next keep-alive.
   - Live: three idle gaps on the dev server, each dropping to the configured
     window.
+
+## 1c. Keep-alives that survive a stall (WP-Q, and the ping retry in WP-W; 1.1.18)
+
+Seen at 16:40–17:00Z: a 150,597-token rewrite with no account switch
+(`run/evidence/plus-1.1.18/analysis/cache-bust-1700.md`).
+
+1. The server froze for about 50 s after each ledger write. The most likely
+   cause is the Monitor's full re-analysis (section 1), which WP-A removes.
+2. A CPA quota poll in flight during a freeze hit its 15 s timeout.
+3. `tick()` stored that timeout as `route.refusal`, and `headers()` then failed
+   every request on the chat at once. That killed the running turn and all
+   three keep-alives.
+4. Nothing re-polled an idle chat, so the refusal stayed until the next user
+   message. The cache expired in between.
+
+Fixes:
+
+- **WP-Q (`packages/cliproxyapi/src/quota/controller.ts`).** Pausing when quota
+  coordination is unavailable stays: it guards account routing. It must also
+  recover on its own:
+  - `headers()` with a stored refusal polls once more, then answers from that
+    poll. It no longer throws the stored error without asking again.
+  - `tick()` also polls routes that hold a refusal, at 5 s, 10 s, 20 s… up to
+    60 s, until one poll succeeds.
+  - A refusal from a timeout or network error says so ("quota service did not
+    answer"), not "The operation timed out.".
+  - Tests with a fake quota endpoint:
+    - it stalls past the timeout once: the next ping polls again and succeeds;
+    - it is down for 2 min: the chat pauses, then resumes on its own.
+- **WP-W (core `plugin/warming.ts`).** A failed keep-alive retries after 30 s.
+  It does not wait a full interval, which with 4 min pings and a 5 min cache
+  leaves no second chance. A failed attempt that never reached the provider
+  costs nothing. Retries stop at the next regular ping or the window's end.
+  Test: a ping that fails once is retried 30 s later, and the window keeps its
+  expiry.
+- **Section 9.** The cache-miss toast reports such a miss when it happens.
 
 ## 2. Model rows: Model, Effort, Warming ▸, Compaction ▸
 
@@ -358,7 +395,8 @@ byte-identical requests.
 | WP | Release | Content | Depends on |
 | --- | --- | --- | --- |
 | A `p118-monitor` | 1.1.18 | Section 1 (a)–(d), the comparison over the real-DB copy, the golden test | none |
-| W `p118-warming` | 1.1.18 | Section 1b: `waiting()` checks core's running state, plugin-context `session.active`, footer re-decides at turn end, tests | none |
+| W `p118-warming` | 1.1.18 | Section 1b: `waiting()` checks core's running state, plugin-context `session.active`, footer re-decides at turn end; section 1c: failed keep-alive retries after 30 s; tests | none |
+| Q `p118-quota` | 1.1.18 | Section 1c: CPA quota refusal recovers (re-poll in `headers()`, `tick()` polls refused routes with backoff, clear wording), fake-endpoint tests | none |
 | B `p119-core-compact` | 1.1.19 | Decision overrides `strategy`, `system`, `compactionFallbacks`, `optional`; a failed compaction records its model (section 7); core tests | none |
 | C `p119-model-fields` | 1.1.19 | Record fields, validation, resolution, decide-hook application, per-chat compact switch, cold detection and arming, account switch uses the model's list (section 4), CPA notice names the armed models, `compaction.cold` RPC, team followup default | B |
 | D `p119-model-tui` | 1.1.19 | Model row categories, Compaction tab removed, list rows (a/d/m), dropdowns (section 6), footer text, model on every compaction line (section 7), `/compact-cold` | C (types), can start on fixtures |
