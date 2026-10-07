@@ -8,6 +8,7 @@ import plus, {
   createState,
   discoverCounter,
   flushPendingRefresh,
+  useLocation,
   refreshFromHost,
   resetDiscoverCounter,
   watchSharedStore,
@@ -109,6 +110,45 @@ describe("publish coalescing", () => {
     await Effect.runPromise(refreshFromHost(ctx, state))
 
     expect(discoverCounter.count).toBe(0)
+  })
+
+  test("an idle folder defers another folder's write to its next use; a folder in use or running a session does not", async () => {
+    resetSharedStoreListeners()
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    const ctx = fullContext({ directory: project, hooks: { current: 0 } })
+    const state = createState()
+    const scope = await Effect.runPromise(Scope.make())
+    try {
+      await Effect.runPromise(watchSharedStore(ctx, state).pipe(Scope.provide(scope)))
+      await Effect.runPromise(activate(ctx, state))
+      // Idle for ten minutes, nothing running: the write only marks it.
+      state.lastUsedAt = Date.now() - 10 * 60_000
+      notifySharedStoreChanged(undefined, true)
+      expect(state.pendingRefresh).toBe(true)
+      expect(state.refreshTimer).toBeUndefined()
+      // Its next use (an RPC, a prompt, a warming decision) applies it first.
+      resetDiscoverCounter()
+      await Effect.runPromise(useLocation(ctx, state))
+      expect(discoverCounter.count).toBe(1)
+      expect(state.pendingRefresh).toBeFalsy()
+      // Just used: the write schedules the coalesced refresh.
+      notifySharedStoreChanged(undefined, true)
+      expect(state.refreshTimer).toBeDefined()
+      clearTimeout(state.refreshTimer)
+      state.refreshTimer = undefined
+      // Idle by the clock but running a session (a long autonomous turn): also scheduled.
+      state.lastUsedAt = Date.now() - 10 * 60_000
+      state.running.add("ses_long_turn")
+      notifySharedStoreChanged(undefined, true)
+      expect(state.refreshTimer).toBeDefined()
+      clearTimeout(state.refreshTimer)
+      state.refreshTimer = undefined
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+      resetSharedStoreListeners()
+    }
   })
 
   test("a forced notice (a team change, no record write) rediscovers with unchanged revisions", async () => {

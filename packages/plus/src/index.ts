@@ -123,6 +123,14 @@ export interface PlusState {
   /** A change with no record write (a team directory) is pending: rediscover even with unchanged revisions. */
   pendingForce: boolean
   pendingRefresh: boolean
+  /**
+   * Last time this Location was used (a prompt, a warming decision, a Plus RPC).
+   * A Location idle longer than IDLE_REFRESH_MS, with no session running here,
+   * does not refresh on another Location's write: it refreshes on next use.
+   */
+  lastUsedAt: number
+  /** Sessions running in this Location right now (execution started, not yet settled). */
+  readonly running: Set<string>
   refreshTimer?: ReturnType<typeof setTimeout>
   activeRefresh?: Promise<void>
   /**
@@ -197,6 +205,8 @@ export function createState(): PlusState {
     pendingHostChange: false,
     pendingForce: false,
     pendingRefresh: false,
+    lastUsedAt: Date.now(),
+    running: new Set(),
     refreshTimer: undefined,
     activeRefresh: undefined,
     snapshotGeneration: 0,
@@ -231,7 +241,7 @@ export default Plugin.define({
       // Applied registrations live on detached scopes, so without this
       // finalizer they outlive the plugin when core unloads or reactivates it.
       yield* Effect.addFinalizer(() => deactivate(state))
-      const registration = yield* ctx.rpc.register(Definition, createHandlers(ctx, state)).pipe(Effect.orDie)
+      const registration = yield* ctx.rpc.register(Definition, usedHandlers(ctx, state, createHandlers(ctx, state))).pipe(Effect.orDie)
       state.registration = registration
       // Team tools exist in every Plus instance: a child worktree may carry no
       // project store of its own and still needs them, so this stays out of
@@ -272,13 +282,14 @@ export default Plugin.define({
       // decides before the monitor records the warming fact: registered the
       // other way round, the fact kept core's proposal ("on") after Plus had
       // turned warming off.
-      yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
+      // A warming ping replays this folder's prefix: bring it up to date first.
+      yield* ctx.session.hook("warming", (event) => Effect.andThen(useLocation(ctx, state), decideWarmingFor(ctx, state, event)))
       // A location with a coalesced refresh pending applies it before a chat
       // request runs, so no request uses stale instructions.
       yield* ctx.session.hook("prompt", (event) =>
         Effect.gen(function* () {
           if (event && event.sessionID) yield* refreshFolderForNewChat(ctx, state, String(event.sessionID))
-          yield* flushPendingRefresh(ctx, state)
+          yield* useLocation(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
           }
@@ -6233,9 +6244,17 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
       Effect.promise(() => {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
         // A move is not a turn: it must not clear a running chat's busy flag.
-        if (typeof sessionID === "string" && event.type !== "session.moved")
-          warmingStore.running(sessionID, event.type === "session.execution.started")
-        return onSessionEvent(ctx, teamsDataDir(), event)
+        if (typeof sessionID === "string" && event.type !== "session.moved") {
+          const started = event.type === "session.execution.started"
+          warmingStore.running(sessionID, started)
+          // A running session keeps this Location in use (its context hook
+          // reads the published plans every step, prompt or not).
+          if (started) state.running.add(sessionID)
+          if (!started) state.running.delete(sessionID)
+        }
+        // A session starting here without a prompt (a resumed run) is a use too.
+        const used = event.type === "session.execution.started" ? Effect.runPromise(useLocation(ctx, state)) : Promise.resolve()
+        return used.then(() => onSessionEvent(ctx, teamsDataDir(), event))
       }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus team session event failed", { cause, type: event.type })),
         Effect.asVoid,
@@ -6338,6 +6357,9 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
       if (source === state) return
       state.pendingRefresh = true
       if (force === true) state.pendingForce = true
+      // An idle folder (a stopped worker's, one nobody opened for a while)
+      // catches up on its next use instead of rediscovering on every write.
+      if (state.running.size === 0 && Date.now() - state.lastUsedAt > IDLE_REFRESH_MS) return
       if (state.refreshTimer !== undefined) {
         clearTimeout(state.refreshTimer)
       }
@@ -6500,6 +6522,33 @@ export function refreshFolderForNewChat(ctx: Context, state: PlusState, sessionI
 }
 
 const NEW_CHAT_FRESH_MS = 5000
+
+// A Location unused this long (and running nothing) defers other Locations'
+// writes to its next use; see `useLocation`.
+const IDLE_REFRESH_MS = 5 * 60_000
+
+/** Marks this Location used and applies a refresh it deferred, before the use goes on. */
+export function useLocation(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    state.lastUsedAt = Date.now()
+    return state.pendingRefresh ? flushPendingRefresh(ctx, state) : Effect.void
+  })
+}
+
+// Every Plus RPC is a use of its Location (the TUI's Instructions page, the
+// agent tools' writes): a deferred refresh lands before it answers.
+function usedHandlers<Handlers extends Record<string, (input: never, context: never) => Effect.Effect<unknown, unknown>>>(
+  ctx: Context,
+  state: PlusState,
+  handlers: Handlers,
+): Handlers {
+  return Object.fromEntries(
+    Object.entries(handlers).map(([name, handler]) => [
+      name,
+      (input: never, context: never) => Effect.andThen(useLocation(ctx, state), handler(input, context)),
+    ]),
+  ) as Handlers
+}
 
 export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.promise(async () => {
