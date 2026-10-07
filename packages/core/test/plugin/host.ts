@@ -122,6 +122,9 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     plugin: overrides.plugin ?? {
       list: () => Effect.die("unused plugin.list"),
     },
+    locations: overrides.locations ?? {
+      evict: () => Effect.void,
+    },
     reference: overrides.reference ?? {
       list: () => Effect.die("unused reference.list"),
       transform: () => Effect.die("unused reference.transform"),

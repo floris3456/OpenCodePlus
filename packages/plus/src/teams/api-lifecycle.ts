@@ -3,7 +3,7 @@ import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { put } from "./inbox.js"
-import { stopIdle } from "./lifecycle.js"
+import { stopIdle, evictRunFolder } from "./lifecycle.js"
 import { isTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
 import { StopInput } from "./schema.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
@@ -57,6 +57,7 @@ export async function stopRun(ctx: Context, runID: string): Promise<TeamApiResul
   if (run.state === "dead") {
     const stopped = transition(run, "stopped", "reconcile")
     await saveRun(root, stopped)
+    await evictRunFolder(ctx, stopped)
     return succeeded({ run: run.id, state: "stopped" })
   }
   const updated: RunRecord = { ...run, stopRequested: true }

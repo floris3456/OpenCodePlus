@@ -101,6 +101,52 @@ const it = testEffect(
 )
 
 describe("LocationActivity eviction", () => {
+  it.effect("evicts a loaded location on demand and spares one with an active session", () =>
+    Effect.gen(function* () {
+      const db = (yield* Database.Service).db
+      const map = yield* LocationServiceMap.Service
+      const execution = yield* SessionExecution.Service
+      const activity = yield* LocationActivity.Service
+      const ref = LocationServiceMap.canonical({ directory: AbsolutePath.make("/project") })
+      const sessionID = Session.ID.make("ses_explicit_evict")
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: ref.directory, sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "evict",
+          directory: ref.directory,
+          title: "Evict",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* Location.Service.pipe(Effect.provide(map.get(ref)), Effect.scoped)
+      const running = yield* execution.resume(sessionID).pipe(Effect.exit, Effect.forkScoped)
+      yield* Effect.addFinalizer(() =>
+        execution.interrupt(sessionID).pipe(Effect.andThen(TestClock.adjust("5 minutes"))),
+      )
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)))
+
+      // A Session active in the folder keeps it: the idle sweep decides later.
+      yield* activity.evict(ref)
+      expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([ref])
+
+      // Once idle, the same call releases the folder immediately (item 4.4).
+      yield* execution.interrupt(sessionID)
+      yield* TestClock.adjust("5 minutes")
+      yield* execution.awaitIdle(sessionID)
+      yield* activity.evict(ref)
+      expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([])
+      yield* Fiber.join(running)
+    }),
+  )
+
   for (const [count, admission] of [
     [1, "none"],
     [2, "none"],

@@ -11,7 +11,17 @@ import { makeGlobalNode } from "@opencode/util/effect/app-node"
 
 const isSessionEvent = Schema.is(SessionEvent.Durable)
 
-export class Service extends Context.Service<Service, {}>()("@opencode/LocationActivity") {}
+export interface Interface {
+  /**
+   * Evicts a loaded Location now, unless a Session there is active. This is the
+   * idle sweep's eviction without the wait: a team worker's folder releases its
+   * cached services as soon as its run stops. A missing or unloaded Location is
+   * a no-op, and an active Session there is left to the normal idle timeout.
+   */
+  readonly evict: (ref: Location.Ref) => Effect.Effect<void>
+}
+
+export class Service extends Context.Service<Service, Interface>()("@opencode/LocationActivity") {}
 
 export function layer(options: { readonly timeToLive?: Duration.Input; readonly sweepInterval?: Duration.Input } = {}) {
   return Layer.effect(
@@ -29,6 +39,27 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
         Effect.sync(() => {
           entries.set(key(ref), { ref, expiresAt: clock.currentTimeMillisUnsafe() + timeToLive })
         })
+      // The sessions whose execution is owned here and placed in `ref`.
+      const ownersIn = (ref: Location.Ref) =>
+        Effect.gen(function* () {
+          const active = yield* Effect.forEach(yield* execution.active, (sessionID) => sessions.get(sessionID))
+          return active.flatMap((session) => (session && key(session.location) === key(ref) ? [session] : []))
+        })
+      const invalidate = (ref: Location.Ref) =>
+        Effect.logInfo("location services evicted", {
+          directory: ref.directory,
+          workspaceID: ref.workspaceID,
+        }).pipe(Effect.andThen(locations.invalidate(ref)))
+
+      const evict = Effect.fn("LocationActivity.evict")(function* (ref: Location.Ref) {
+        // An active Session keeps its folder: the normal idle timeout decides.
+        if ((yield* ownersIn(ref)).length > 0) {
+          yield* touch(ref)
+          return
+        }
+        entries.delete(key(ref))
+        yield* invalidate(ref)
+      })
 
       const unsubscribe = yield* bus.listen((event) => {
         if (!isSessionEvent(event)) return Effect.void
@@ -50,14 +81,11 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
         const now = clock.currentTimeMillisUnsafe()
         const expired = Array.from(entries.values()).filter((entry) => entry.expiresAt <= now)
         if (expired.length === 0) return
-        const active = yield* Effect.forEach(yield* execution.active, (sessionID) => sessions.get(sessionID))
         yield* Effect.forEach(
           expired,
           (entry) =>
             Effect.gen(function* () {
-              const owners = active.flatMap((session) =>
-                session && key(session.location) === key(entry.ref) ? [session] : [],
-              )
+              const owners = yield* ownersIn(entry.ref)
               // Invalidation only detaches the cache entry; borrowers retain the old
               // graph. Stop its executions and settle tool cleanup before detaching it.
               yield* Effect.forEach(
@@ -68,23 +96,20 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
                   concurrency: "unbounded",
                 },
               )
-              const remaining = yield* Effect.forEach(yield* execution.active, (sessionID) => sessions.get(sessionID))
+              const remaining = yield* ownersIn(entry.ref)
               // New work admitted during cleanup may now own the cached graph.
-              if (remaining.some((session) => session && key(session.location) === key(entry.ref))) {
+              if (remaining.length > 0) {
                 yield* touch(entry.ref)
                 return
               }
               entries.delete(key(entry.ref))
-              yield* Effect.logInfo("location services evicted", {
-                directory: entry.ref.directory,
-                workspaceID: entry.ref.workspaceID,
-              }).pipe(Effect.andThen(locations.invalidate(entry.ref)))
+              yield* invalidate(entry.ref)
             }),
           { discard: true, concurrency: "unbounded" },
         )
       }).pipe(Effect.forever, Effect.forkScoped)
 
-      return Service.of({})
+      return Service.of({ evict })
     }),
   )
 }

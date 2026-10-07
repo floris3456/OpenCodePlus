@@ -1,6 +1,8 @@
 import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import { Location } from "@opencode/schema/location"
+import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Duration, Effect, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
 import { batchNotify, partition, peek, put, take, type InboxItem } from "./inbox.js"
@@ -326,7 +328,10 @@ export async function onSessionIdle(
   })
   if (marked === undefined) return (await loadRun(root, run.id)) ?? run
   if (settled.attempt !== undefined) await notifyParent(ctx, root, marked, settled.attempt)
-  if (settled.stopped) return marked
+  if (settled.stopped) {
+    await evictRunFolder(ctx, marked)
+    return marked
+  }
   return deliverInbox(ctx, root, marked)
 }
 
@@ -401,9 +406,24 @@ export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: 
   const attempt = stopped.attempts.at(-1)
   const toSave = waiting ? markNotified(stopped) : stopped
   await saveRun(root, toSave)
+  await evictRunFolder(ctx, toSave)
   if (waiting && attempt !== undefined && stopped.parent !== null && stopped.parent !== by)
     await notifyParent(ctx, root, stopped, attempt)
   return toSave
+}
+
+/**
+ * Releases a stopped run's worker folder now, so its MCP servers and plugin
+ * loops go with it instead of waiting for the 60-minute idle timeout. A folder
+ * with another active Session is left to the timeout (LocationActivity.evict
+ * checks that). A plugin context without the seam, or a run with no directory,
+ * is a no-op.
+ */
+export async function evictRunFolder(ctx: Context, run: RunRecord): Promise<void> {
+  if (run.directory === undefined || run.directory === "") return
+  await Effect.runPromise(
+    ctx.locations.evict(Location.Ref.make({ directory: AbsolutePath.make(run.directory) })).pipe(Effect.ignore),
+  )
 }
 
 function markNotified(run: RunRecord): RunRecord {

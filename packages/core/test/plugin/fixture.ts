@@ -25,6 +25,7 @@ import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
+import { LocationActivity } from "@opencode/core/location-activity"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Permission } from "@opencode/core/permission"
 import { Reference } from "@opencode/core/reference"
@@ -97,6 +98,7 @@ export const PluginTestLayer = AppNodeBuilder.build(
     Session.node,
     PersistentPty.node,
     LocationServiceMap.node,
+    LocationActivity.node,
     Permission.node,
     PluginHooks.node,
     Reference.node,

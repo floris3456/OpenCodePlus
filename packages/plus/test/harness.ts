@@ -850,6 +850,7 @@ export function context(overrides: Overrides = {}): Context {
     mcp: overrides.mcp ?? mcpDomain(),
     permission: overrides.permission ?? permissionDomain(),
     plugin: overrides.plugin ?? { list: die("unused plugin.list") },
+    locations: overrides.locations ?? { evict: () => Effect.void },
     prompt: overrides.prompt ?? promptDomain(defaultHostTemplates, new Map([["", "general"]])),
     reference: overrides.reference ?? referenceDomain(),
     rpc: overrides.rpc ?? rpcDomain(),

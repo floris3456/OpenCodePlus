@@ -45,6 +45,10 @@ export interface Context {
   readonly generate: GenerateApi
   readonly permission: PermissionDomain
   readonly plugin: Pick<PluginApi, "list">
+  readonly locations: {
+    /** Evicts a loaded Location's services unless a Session there is active. */
+    readonly evict: (ref: Location.Ref) => Promise<void>
+  }
   readonly provider: ProviderDomain
   readonly reference: ReferenceDomain
   readonly rpc: RpcDomain

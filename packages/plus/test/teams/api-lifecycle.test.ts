@@ -384,6 +384,64 @@ test("stopRun on an idle run in the namespace stops it without ownership check",
   })
 })
 
+// Item 4.4: stopping a worker releases its folder at once, so its MCP servers
+// and plugin loops go with it instead of waiting 60 idle minutes. Before this
+// change, a stop only wrote the record; the folder stayed loaded.
+test("stopping an idle run evicts its folder with the run's directory", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-evict-stop-001", state: "idle", sessionID: "ses_evict_stop", directory: "/tmp/wt-evict" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const evicted: Array<{ directory: string }> = []
+    const ctx = context({
+      session: sessions.domain,
+      locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)) },
+    })
+    required(await stopRun(ctx, run.id))
+    expect(evicted).toEqual([{ directory: "/tmp/wt-evict" }])
+  })
+})
+
+test("stopping a dead run evicts its folder too", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({ id: "w-evict-dead-001", state: "dead", sessionID: "ses_evict_dead", directory: "/tmp/wt-evict-dead" })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const evicted: Array<{ directory: string }> = []
+    required(
+      await stopRun(
+        context({
+          session: sessions.domain,
+          locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)) },
+        }),
+        run.id,
+      ),
+    )
+    expect(evicted).toEqual([{ directory: "/tmp/wt-evict-dead" }])
+  })
+})
+
+test("a run ending through its session evicts its folder", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = baseRun({
+      id: "w-evict-idle-001",
+      state: "working",
+      sessionID: "ses_evict_idle",
+      directory: "/tmp/wt-evict-idle",
+      stopRequested: true,
+    })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const evicted: Array<{ directory: string }> = []
+    const ctx = context({
+      session: sessions.domain,
+      locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)) },
+    })
+    await onSessionIdle(ctx, root, run, "idle")
+    expect(evicted).toEqual([{ directory: "/tmp/wt-evict-idle" }])
+  })
+})
+
 test("stopRun on a working run fails E_BUSY", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const run = baseRun({ id: "w-working-stop-001", state: "working", sessionID: "ses_working_stop" })

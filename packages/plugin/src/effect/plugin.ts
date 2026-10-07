@@ -10,6 +10,7 @@ import type { CommandDomain } from "./command.js"
 import type { EventDomain } from "./event.js"
 import type { IntegrationDomain } from "./integration.js"
 import type { InstructionDomain } from "./instruction.js"
+import type { LocationAdminDomain } from "./location.js"
 import type { MCPDomain } from "./mcp.js"
 import type { ModelDomain } from "./model.js"
 import type { PermissionDomain } from "./permission.js"
@@ -81,6 +82,7 @@ export interface Context {
   readonly generate: GenerateApi<unknown>
   readonly permission: PermissionDomain
   readonly plugin: Pick<PluginApi<unknown>, "list">
+  readonly locations: LocationAdminDomain
   readonly prompt: PromptDomain
   readonly provider: ProviderDomain
   readonly reference: ReferenceDomain

@@ -39,6 +39,7 @@ import { Generate } from "../generate.js"
 import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "./hooks.js"
+import { LocationActivity } from "../location-activity.js"
 import type { Interface } from "../plugin.js"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 
@@ -92,6 +93,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const sessions = yield* Session.Service
   const persistentPty = yield* PersistentPty.Service
   const locations = yield* LocationServiceMap.Service
+  const activity = yield* LocationActivity.Service
   const worktrees = yield* Worktree.Service
   const worktreeStrategies = yield* WorktreeStrategies.Service
   const currentWorktreeStrategies = location.workspaceID ? undefined : worktreeStrategies
@@ -482,6 +484,9 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
     plugin: {
       list: () => response(plugin.list()),
     },
+    locations: {
+      evict: (ref) => activity.evict(ref),
+    },
     prompt: {
       templates: () => Effect.succeed(PromptTemplate.templates),
       active: (model) => Effect.succeed(PromptTemplate.active(model)),
@@ -665,6 +670,7 @@ export const requirements = LayerNode.group([
   Session.node,
   PersistentPty.node,
   LocationServiceMap.node,
+  LocationActivity.node,
 ])
 
 /**
