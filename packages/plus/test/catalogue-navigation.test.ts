@@ -207,3 +207,27 @@ test("model validation reuses the cached catalogue instead of re-reading it", as
   expect(picked.status.length).toBeGreaterThan(0)
   expect(counts.list).toBe(1)
 })
+
+test("a model that arrives after the cache was filled is accepted with one more read", async () => {
+  const project = await tempProject()
+  const models = [modelWith("anthropic", "claude", { variants: ["low", "high"] })]
+  const base = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build the thing.", modelRef("anthropic", "claude"))],
+    models,
+    classifications: { "": "general", claude: "general", fresh: "general" },
+  })
+  const counts: ModelCounts = { list: 0, transform: 0, reload: 0 }
+  const ctx = { ...base, model: countingModel(base.model, counts) }
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const throwingContext = throwing()
+  await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext))
+  expect(counts.list).toBe(1)
+  // A provider plugin's catalogue sync adds a model without a host event Plus watches.
+  models.push(modelWith("anthropic", "fresh", { variants: ["high"] }))
+  const picked = await Effect.runPromise(
+    handlers["model.pick"]({ agent: "build", providerID: "anthropic", modelID: "fresh", variant: "high" }, throwingContext),
+  )
+  expect(picked.status.length).toBeGreaterThan(0)
+  expect(counts.list).toBe(2)
+})

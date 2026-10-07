@@ -1923,8 +1923,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           }
         }
       }
-      const catalog = await hostModelsFor(ctx, state)
-      if (!hostCatalogHas(catalog, validated.providerID, validated.modelID, validated.variant)) {
+      if (!(await catalogKnows(ctx, state, validated.providerID, validated.modelID, validated.variant))) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
         return {
           ok: false as const,
@@ -2092,8 +2091,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "model.invalid" as const, message: validated.reason, data: { providerID: input.providerID, modelID: input.modelID, ...(input.variant === undefined ? {} : { variant: input.variant }), reason: validated.reason } },
         }
-      const catalog = await hostModelsFor(ctx, state)
-      if (!hostCatalogHas(catalog, validated.providerID, validated.modelID, validated.variant)) {
+      if (!(await catalogKnows(ctx, state, validated.providerID, validated.modelID, validated.variant))) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
         return {
           ok: false as const,
@@ -4166,6 +4164,17 @@ function validateModelRef(
   if (trimmedVariant !== undefined && trimmedVariant.length === 0) return { ok: false, reason: "Model variant cannot be empty" }
   if (trimmedVariant === undefined) return { ok: true, providerID: provider, modelID: model }
   return { ok: true, providerID: provider, modelID: model, variant: trimmedVariant }
+}
+
+// Validation reads the cached catalogue, and on a miss reads it once more: a
+// model can arrive without a host change Plus observes (a provider plugin's
+// catalogue sync, a fresh /connect), and a real pick must not be refused for
+// a stale cache.
+async function catalogKnows(ctx: Context, state: PlusState, providerID: string, modelID: string, variant?: string): Promise<boolean> {
+  if (hostCatalogHas(await hostModelsFor(ctx, state), providerID, modelID, variant)) return true
+  state.hostCatalog = undefined
+  state.hostModels = undefined
+  return hostCatalogHas(await hostModelsFor(ctx, state), providerID, modelID, variant)
 }
 
 function hostCatalogHas(
