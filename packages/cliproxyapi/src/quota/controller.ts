@@ -11,6 +11,8 @@ export interface QuotaIO {
   fact?: (session: string, kind: string, detail: Record<string, unknown>) => void
   fetch: typeof fetch
   now(): number
+  /** How long one quota poll may take; 15 s unless a test shortens it. */
+  pollTimeout?: number
 }
 export type Status = { sessionID: string; text: string; kind: string }
 type Route = {
@@ -36,12 +38,31 @@ type Route = {
   switchText?: string
   /** Immediate retries of one account switch; bounds a refusal loop. */
   switchRetries?: number
+  /** While refused: when tick() polls again, idle or not. */
+  retryAt?: number
+  /** While refused: the wait before retryAt, doubled per failed poll. */
+  retryDelay?: number
 }
 
 /** Background polling interval for a chat CPA has not bound yet. */
 export const UNENROLLED_BACKOFF = 30_000
 /** Retries of one account switch before its refusal reaches the chat as an error. */
 const SWITCH_RETRIES = 3
+/** A refused route is polled again after this long, then twice as long each time, up to REFUSED_RETRY_MAX. */
+const REFUSED_RETRY = 5_000
+const REFUSED_RETRY_MAX = 60_000
+/** A timeout or network failure says nothing about quota; this is the refusal it leaves. */
+export const UNANSWERED = "Quota service did not answer; generation is paused until it answers."
+
+/** Fetch rejections and stalled bodies are timeouts or network failures; other errors keep their text. */
+function unanswered(cause: unknown): never {
+  if (
+    cause instanceof TypeError ||
+    (cause instanceof DOMException && (cause.name === "TimeoutError" || cause.name === "AbortError"))
+  )
+    throw new Error(UNANSWERED, { cause })
+  throw cause
+}
 
 /**
  * A model setting for the account-switch summary (`compactionModel`, `compactionFallback`). A value that
@@ -131,6 +152,24 @@ export class QuotaController {
     route.notices = [status]
     await this.io.notify(route.session, id, text)
   }
+  /** A failed poll pauses the route; tick() asks again after REFUSED_RETRY, doubling up to REFUSED_RETRY_MAX. */
+  private refuse(route: Route, error: unknown) {
+    const refusal = error instanceof Error ? error.message : String(error)
+    route.refusal = refusal
+    route.retryDelay = Math.min(
+      route.retryDelay === undefined ? REFUSED_RETRY : route.retryDelay * 2,
+      REFUSED_RETRY_MAX,
+    )
+    route.retryAt = this.io.now() + route.retryDelay
+    return refusal
+  }
+  /** Coordination answered: an earlier refusal and the paused notice it left no longer hold. */
+  private recover(route: Route) {
+    route.notices = route.notices.filter((notice) => notice.kind !== "paused" || notice.text !== route.refusal)
+    route.refusal = undefined
+    route.retryAt = undefined
+    route.retryDelay = undefined
+  }
   private poll(route: Route): Promise<void> {
     if (route.reading) return route.reading
     const reading = this.read(route).finally(() => {
@@ -143,14 +182,18 @@ export class QuotaController {
     const url = new URL(route.endpoint)
     url.searchParams.set("after", String(route.stored.cursor))
     url.searchParams.set("model", `${route.provider}/${route.model}`)
-    const response = await this.io.fetch(url, {
-      headers: { Authorization: `Bearer ${route.stored.capability}` },
-      signal: AbortSignal.timeout(15_000),
-      redirect: "error",
-    })
+    const response = await this.io
+      .fetch(url, {
+        headers: { Authorization: `Bearer ${route.stored.capability}` },
+        signal: AbortSignal.timeout(this.io.pollTimeout ?? 15_000),
+        redirect: "error",
+      })
+      .catch(unanswered)
     if (response.status === 401 && route.stored.generation === 0) {
-      const health = await this.io.fetch(route.endpoint, { signal: AbortSignal.timeout(5000), redirect: "error" })
-      const data: unknown = await health.json()
+      const health = await this.io
+        .fetch(route.endpoint, { signal: AbortSignal.timeout(5000), redirect: "error" })
+        .catch(unanswered)
+      const data: unknown = await health.json().catch(unanswered)
       const status = Schema.decodeUnknownSync(
         Schema.Struct({
           protocol: Schema.Literal(1),
@@ -161,14 +204,13 @@ export class QuotaController {
       route.mode = status.mode
       // The bridge is reachable again: an earlier transient failure must not keep
       // an unenrolled chat paused (it never reaches the snapshot path below).
-      route.refusal = undefined
-      route.notices = route.notices.filter((notice) => notice.kind !== "paused")
+      this.recover(route)
       // Enrollment happens on a model request, which polls again from response().
       route.unenrolledUntil = this.io.now() + UNENROLLED_BACKOFF
       return
     }
     if (!response.ok) throw new Error(`Quota coordination unavailable (${response.status}); generation is paused`)
-    const snapshot = Schema.decodeUnknownSync(Snapshot)(await response.json())
+    const snapshot = Schema.decodeUnknownSync(Snapshot)(await response.json().catch(unanswered))
     route.snapshot = snapshot
     route.mode = snapshot.mode
     route.unenrolledUntil = undefined
@@ -183,16 +225,14 @@ export class QuotaController {
       )
     }
     route.stored = { ...route.stored, cursor: snapshot.cursor }
-    route.refusal = undefined
+    this.recover(route)
     await this.save(route)
   }
   async decide(event: SessionCompactionDecision) {
     const route = await this.route(event.sessionID, event.model.providerID, event.model.id)
     route.decision = event
     route.touched = this.io.now()
-    await this.poll(route).catch((error: unknown) => {
-      route.refusal = error instanceof Error ? error.message : String(error)
-    })
+    await this.poll(route).catch((error: unknown) => this.refuse(route, error))
     if (route.refusal) {
       event.refusal = { type: "quota.unavailable", message: route.refusal }
       return
@@ -271,6 +311,8 @@ export class QuotaController {
     const route = await this.route(session, provider, model)
     if (!baseURL || new URL(baseURL).origin !== new URL(route.endpoint).origin)
       throw new Error("Quota route does not match the model endpoint")
+    // A stored refusal may be stale (one poll timed out during a stall): ask once more and answer from that.
+    if (route.refusal) await this.poll(route).catch((error: unknown) => this.refuse(route, error))
     if (route.refusal) throw new Error(route.refusal)
     // Auxiliary requests can happen before the first primary decision.
     if (!route.decision) await this.poll(route)
@@ -419,11 +461,14 @@ export class QuotaController {
     }
     return route.stored.replay || !!route.decision?.boundary.checkpoint
   }
+  /**
+   * A refusal does not end the warming window: each ping asks again in headers(), and one still refused
+   * fails before it reaches the provider, so Core retries it soon after.
+   */
   async warming(session: string) {
     const routes = await Promise.all(this.routes.values())
     return !routes.some(
-      (route) =>
-        route.session === session && (route.snapshot?.intent || route.refusal || route.stored.switching !== undefined),
+      (route) => route.session === session && (route.snapshot?.intent || route.stored.switching !== undefined),
     )
   }
   async status(session: string) {
@@ -447,16 +492,20 @@ export class QuotaController {
   }
   async tick() {
     const routes = await Promise.all(this.routes.values())
+    const now = this.io.now()
     await Promise.all(
       routes
         // A provider whose quota turned off is no longer polled; its endpoint may be gone.
         .filter((route) => this.enabled(route.provider))
-        .filter((route) => route.active || this.io.now() - route.touched < 5000)
-        .filter((route) => (route.unenrolledUntil ?? 0) <= this.io.now())
+        // A refused chat is polled while idle too, with backoff, so it resumes without a new message.
+        .filter(
+          (route) =>
+            route.active || now - route.touched < 5000 || (route.refusal !== undefined && (route.retryAt ?? 0) <= now),
+        )
+        .filter((route) => (route.unenrolledUntil ?? 0) <= now)
         .map((route) =>
           this.poll(route).catch((error: unknown) => {
-            route.refusal = error instanceof Error ? error.message : String(error)
-            route.notices = [{ sessionID: route.session, kind: "paused", text: route.refusal }]
+            route.notices = [{ sessionID: route.session, kind: "paused", text: this.refuse(route, error) }]
           }),
         ),
     )

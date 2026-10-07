@@ -4,7 +4,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
-import { QuotaController, UNENROLLED_BACKOFF } from "../src/quota/controller.js"
+import { QuotaController, UNANSWERED, UNENROLLED_BACKOFF, type QuotaIO } from "../src/quota/controller.js"
 import type { Snapshot, Stored } from "../src/quota/protocol.js"
 import { portableMessages } from "../src/quota/portable.js"
 
@@ -17,6 +17,8 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
     known: false,
     status: 200,
     reads: 0,
+    /** Requests that stall for a second before answering, as during a server freeze. */
+    stalls: 0,
     routes: [] as string[],
     snapshot: {
       protocol: 1,
@@ -34,9 +36,13 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       state.reads++
       state.routes.push(new URL(request.url).searchParams.get("model") ?? "")
+      if (state.stalls > 0) {
+        state.stalls--
+        await Bun.sleep(1000)
+      }
       if (!request.headers.has("Authorization")) return Response.json({ protocol: 1, mode: state.snapshot.mode })
       if (!state.known) return new Response(null, { status: 401 })
       return Response.json(state.snapshot, { status: state.status })
@@ -533,4 +539,98 @@ test("quota follows the current routes: a provider that loses its route is neith
   await f.controller.tick()
   expect(f.controller.enabled("proxy")).toBe(true)
   expect(f.state.reads).toBeGreaterThan(reads)
+})
+
+/** A controller on the fixture's endpoint and store, with its own clock, fetch or poll timeout. */
+function controllerFor(f: ReturnType<typeof fixture>, io: Partial<QuotaIO>) {
+  return new QuotaController(() => ({ routes: f.live.routes }), "installation", {
+    read: async (key) => f.store.get(key),
+    write: async (key, value) => {
+      f.store.set(key, value)
+    },
+    notify: async (session, id, text) => {
+      f.notices.set(id, { session, text })
+    },
+    fetch,
+    now: Date.now,
+    ...io,
+  })
+}
+
+test("a poll that stalls past its timeout once pauses the chat only until the next ping asks again", async () => {
+  const f = fixture()
+  f.state.known = true
+  const controller = controllerFor(f, { pollTimeout: 100 })
+  await controller.decide(f.event())
+  // The server freezes while a background poll is in flight; CPA answers only after the timeout.
+  f.state.stalls = 1
+  await controller.tick()
+  expect(await controller.status("ses_test")).toEqual([{ sessionID: "ses_test", kind: "paused", text: UNANSWERED }])
+  // The refusal does not end the warming window: the ping itself asks again.
+  expect(await controller.warming("ses_test")).toBe(true)
+  // Still frozen at the ping: it polls again and is refused from that poll, before reaching the provider.
+  f.state.stalls = 1
+  const before = f.state.reads
+  await expect(controller.headers("ses_test", "proxy", "model", "generate", f.server.url.href)).rejects.toThrow(
+    UNANSWERED,
+  )
+  expect(f.state.reads).toBe(before + 1)
+  // The next ping polls again, CPA answers, and the ping goes through with a normal claim.
+  const claim = claimOf(await controller.headers("ses_test", "proxy", "model", "generate", f.server.url.href))
+  expect(f.state.reads).toBe(before + 2)
+  expect(claim).toMatchObject({ kind: "generate", generation: 1, route: "proxy/model" })
+  expect(await controller.status("ses_test")).toEqual([])
+})
+
+test("a quota service down for two minutes pauses the chat, which resumes on its own while idle", async () => {
+  const f = fixture()
+  f.state.known = true
+  // A port nothing listens on: every poll during the outage is a real refused connection.
+  const gone = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null) })
+  const unreachable = gone.url.href
+  gone.stop(true)
+  let clock = 1_000_000
+  let down = false
+  const polls: { at: number; down: boolean }[] = []
+  const controller = controllerFor(f, {
+    now: () => clock,
+    fetch: Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      polls.push({ at: clock, down })
+      return fetch(down ? unreachable : input, init)
+    }, fetch),
+  })
+  await controller.decide(f.event())
+  await controller.activity("ses_test", true)
+  clock += 10_000
+  const start = clock
+  polls.splice(0)
+  down = true
+  // A running turn: the background poll fails, then the next request asks again and is refused.
+  await controller.tick()
+  expect(await controller.status("ses_test")).toEqual([{ sessionID: "ses_test", kind: "paused", text: UNANSWERED }])
+  await expect(controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)).rejects.toThrow(
+    UNANSWERED,
+  )
+  // The turn ended with that error; nobody sends another message.
+  await controller.activity("ses_test", false)
+  while (clock < start + 180_000) {
+    clock += 1000
+    if (clock >= start + 120_000) down = false
+    await controller.tick()
+  }
+  // Two failed polls at the start (5 s, then 10 s), then 20 s, 40 s and the 60 s cap; the first poll after
+  // the service came back at 120 s succeeds, and the idle chat is not polled after that.
+  expect(polls.map((poll) => ({ at: (poll.at - start) / 1000, down: poll.down }))).toEqual([
+    { at: 0, down: true },
+    { at: 0, down: true },
+    { at: 10, down: true },
+    { at: 30, down: true },
+    { at: 70, down: true },
+    { at: 130, down: false },
+  ])
+  expect(await controller.status("ses_test")).toEqual([])
+  const event = f.event()
+  await controller.decide(event)
+  expect(event.refusal).toBeUndefined()
+  await expect(controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)).resolves.toBeDefined()
 })
