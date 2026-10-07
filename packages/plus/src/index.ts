@@ -14,7 +14,7 @@ import { DateTime, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
-import { agentBody, discover, hostModelsOf, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
+import { agentBody, discover, hostModelsFrom, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
@@ -143,6 +143,12 @@ export interface PlusState {
    * `ctx.model.list()` each time; a host config/agent/skill refresh clears it.
    */
   hostModels?: readonly HostModel[]
+  /**
+   * The raw provider catalogue the cached `hostModels` derive from, read in
+   * the same call. Base-template classification, model validation and the
+   * per-request classifier read it instead of listing the catalogue again.
+   */
+  hostCatalog?: readonly Model.Info[]
   /**
    * The in-flight `model.pick` save in this Plus instance, if any.
    * `applySessionModel` awaits it before comparing, so a session created right
@@ -1917,14 +1923,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           }
         }
       }
-      const catalog = await Effect.runPromise(
-        ctx.model.list().pipe(
-          Effect.catchCause(() =>
-            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-          ),
-        ),
-      )
-      if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
+      const catalog = await hostModelsFor(ctx, state)
+      if (!hostCatalogHas(catalog, validated.providerID, validated.modelID, validated.variant)) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
         return {
           ok: false as const,
@@ -2092,14 +2092,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "model.invalid" as const, message: validated.reason, data: { providerID: input.providerID, modelID: input.modelID, ...(input.variant === undefined ? {} : { variant: input.variant }), reason: validated.reason } },
         }
-      const catalog = await Effect.runPromise(
-        ctx.model.list().pipe(
-          Effect.catchCause(() =>
-            Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-          ),
-        ),
-      )
-      if (!catalogHas(catalog.data, validated.providerID, validated.modelID, validated.variant)) {
+      const catalog = await hostModelsFor(ctx, state)
+      if (!hostCatalogHas(catalog, validated.providerID, validated.modelID, validated.variant)) {
         const reason = `Unknown model ${validated.providerID}/${validated.modelID}${validated.variant === undefined ? "" : `@${validated.variant}`}`
         return {
           ok: false as const,
@@ -4174,16 +4168,16 @@ function validateModelRef(
   return { ok: true, providerID: provider, modelID: model, variant: trimmedVariant }
 }
 
-function catalogHas(
-  models: readonly Model.Info[],
+function hostCatalogHas(
+  hostModels: readonly HostModel[],
   providerID: string,
   modelID: string,
   variant?: string,
 ): boolean {
-  const found = models.find((entry) => String(entry.providerID) === providerID && String(entry.id) === modelID)
+  const found = hostModels.find((entry) => entry.providerID === providerID && entry.modelID === modelID)
   if (found === undefined) return false
   if (variant === undefined) return true
-  return (found.variants ?? []).some((entry) => String(entry.id) === variant)
+  return found.variants.includes(variant)
 }
 
 async function saveModelRecords(
@@ -4718,7 +4712,10 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
 // text is raw, and core's optimize plugins render it
 // into `system[0]` before Plus's later (`post`) hook overwrites it with
 // stored custom text.
-async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
+async function resolveBaseTemplates(
+  ctx: Context,
+  catalog: readonly Model.Info[],
+): Promise<{ templates: BaseTemplate[]; active: (agent: Agent.Info) => string | undefined }> {
   const templates = await Effect.runPromise(ctx.prompt.templates())
   const user = readUserBaseTemplates().map((template) => ({ ...template, user: true as const }))
   const userIds = new Set(user.map((template) => template.id))
@@ -4726,13 +4723,6 @@ async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemp
     templates.length === 0
       ? [...fallbackBaseTemplates().filter((template) => !userIds.has(template.id)), ...user]
       : [...templates.filter((template) => !userIds.has(template.id)).map((template) => ({ ...template })), ...user]
-  const catalog = await Effect.runPromise(
-    ctx.model.list().pipe(
-      Effect.catchCause(() =>
-        Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
-      ),
-    ),
-  )
   const fallback = await Effect.runPromise(
     ctx.model
       .default()
@@ -4743,7 +4733,7 @@ async function resolveBaseTemplates(ctx: Context): Promise<{ templates: BaseTemp
       ),
   )
   const active = (agent: Agent.Info): string | undefined => {
-    const model = resolveCatalogModel(agent, catalog.data, fallback.data)
+    const model = resolveCatalogModel(agent, catalog, fallback.data)
     return Effect.runSync(ctx.prompt.active(model))
   }
   return { templates: listed, active }
@@ -4805,8 +4795,27 @@ function readUserBaseTemplatesSync(): BaseTemplate[] {
 // the cache when the host's config, agents or skills change, which is when the
 // catalogue can move.
 async function hostModelsFor(ctx: Context, state: PlusState): Promise<readonly HostModel[]> {
-  if (state.hostModels === undefined) state.hostModels = await hostModelsOf(ctx)
-  return state.hostModels
+  await hostCatalogFor(ctx, state)
+  return state.hostModels ?? []
+}
+
+// The one `ctx.model.list()` call: reads the raw catalogue once and derives
+// the cached host models from the same answer, so base-template
+// classification, discovery, validation and the per-request classifier all
+// share one read instead of each listing the catalogue.
+async function hostCatalogFor(ctx: Context, state: PlusState): Promise<readonly Model.Info[]> {
+  if (state.hostCatalog === undefined) {
+    const listed = await Effect.runPromise(
+      ctx.model.list().pipe(
+        Effect.catchCause(() =>
+          Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
+        ),
+      ),
+    )
+    state.hostCatalog = listed.data
+    state.hostModels = hostModelsFrom(listed.data)
+  }
+  return state.hostCatalog
 }
 
 export const discoverCounter = { count: 0 }
@@ -4830,7 +4839,7 @@ async function discoverAll(
       state.agentUpstream = structuredClone(editor.list())
     })
   }
-  const resolved = await resolveBaseTemplates(ctx)
+  const resolved = await resolveBaseTemplates(ctx, await hostCatalogFor(ctx, state))
   const teams = await discoverAllTeams(directory, builtins)
   // Read before discovery reads the registry: a change in between shows as a
   // difference later and costs one more (unchanged) publish, never a miss.
@@ -5163,6 +5172,8 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
       state.teamOutputIds = new Map()
+      state.hostModels = undefined
+      state.hostCatalog = undefined
     }),
   )
 }
@@ -5391,6 +5402,9 @@ function publishFresh(
         yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
         return discovered
       }
+      // The per-request base classifier reads the cached catalogue instead
+      // of listing the provider catalogue on every publish.
+      const catalog = yield* Effect.promise(() => hostCatalogFor(ctx, state))
       const applyInput: ApplyInput = {
         items: discovered.items,
         // Discovery keeps shadowed identities for scope resolution and the UI;
@@ -5401,6 +5415,7 @@ function publishFresh(
         scopes: publishScopes,
         models: modelRecords,
         rules: rulesOf(stored.records),
+        catalog,
         teamAgents: view.teamAgents.map((agent) => agent.id),
         enforcement: state.enforcement,
         enforcementDeps: {
@@ -6332,7 +6347,10 @@ export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<v
       state.pendingHostChange = false
       state.pendingForce = false
       // A host change can change the provider catalogue; a store or team change cannot.
-      if (hasHostChange) state.hostModels = undefined
+      if (hasHostChange) {
+        state.hostModels = undefined
+        state.hostCatalog = undefined
+      }
       const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
       const stored = yield* Effect.promise(() => loadCurrent(directory))
       if (

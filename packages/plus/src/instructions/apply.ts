@@ -77,6 +77,13 @@ export interface ApplyInput {
   readonly rules?: readonly RuleRecord[]
   /** Ids of the currently resolved (enabled) team winners; the only absent ids applyModels may create. */
   readonly teamAgents?: readonly string[]
+  /**
+   * The cached provider catalogue for the per-request base classifier.
+   * Absent (standalone callers, older tests) means installSessionPlans lists
+   * it once; publishFresh always passes the cached read, so a publish never
+   * lists the catalogue.
+   */
+  readonly catalog?: readonly Model.Info[]
   /** Hook-side permission state kept across publishes (pending approvals, "always" answers). */
   readonly enforcement?: EnforcementState
   /** How enforcement tells a delegated team run (nobody to ask) from a watched session. */
@@ -1341,14 +1348,14 @@ export async function installSessionPlans(
       for (const agent of input.agents) {
         if (agent.base !== undefined) pins.set(agent.id, agent.base)
       }
-      const catalog = await runPublish(
+      const data = input.catalog ?? (await runPublish(
         ctx.model.list().pipe(
           Effect.catchCause(() =>
             Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
           ),
         ),
-      )
-      const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
+      )).data
+      const classifier: RequestClassifier = { pinned: pins, catalog: data, prompt: ctx.prompt }
       const customByAgent = await readCustomSystem(ctx, input.agents)
       const registration = await runHook(ctx.session.hook, "context", (event) => {
         applyBasePlan(event, plans.base, classifier, customByAgent)
