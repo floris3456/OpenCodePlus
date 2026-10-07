@@ -72,6 +72,30 @@ describe("chat.refresh", () => {
     expect(result.reloaded).toEqual([])
   })
 
+  test("a refresh re-reads this folder's config first, forced", async () => {
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    await fs.mkdir(project, { recursive: true })
+
+    const calls: unknown[] = []
+    const ctx = context({
+      ...fullContext({ directory: project, hooks: { current: 0 } }),
+      config: { reload: (options) => Effect.sync(() => { calls.push(options) }) },
+    })
+    const state = createState()
+    await Effect.runPromise(activate(ctx, state))
+    const handlers = createHandlers(ctx, state)
+
+    const result = await Effect.runPromise(handlers["chat.refresh"]({ sessionID: "ses_refresh" }, throwing))
+    // Config reloads before every domain reload so discovery reads fresh
+    // host state, and forced so file additions no document changed for still
+    // rescan (item 4.6: no per-folder watchers, /refresh applies them).
+    expect(calls).toEqual([{ force: true }])
+    expect(result.reloaded[0]).toBe("config")
+    expect(result.reloaded).toContain("instruction")
+  })
+
   test("the refresh tool registers in the opencode namespace with its own permission row", async () => {
     const root = await tempDir()
     process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")

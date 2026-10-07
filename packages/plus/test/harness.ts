@@ -96,6 +96,10 @@ function commandDomain(): CommandDomain {
   }
 }
 
+function configDomain(): { readonly reload: () => Effect.Effect<void> } {
+  return { reload: () => Effect.void }
+}
+
 function eventDomain(): EventDomain {
   return { subscribe: () => Stream.empty }
 }
@@ -843,6 +847,7 @@ export function context(overrides: Overrides = {}): Context {
     model: overrides.model ?? modelDomain([]),
     provider: overrides.provider ?? providerDomain(),
     command: overrides.command ?? commandDomain(),
+    config: overrides.config ?? configDomain(),
     event: overrides.event ?? eventDomain(),
     experimental: overrides.experimental ?? {
       terminal: { read: die("unused experimental.terminal.read") },

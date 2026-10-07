@@ -87,6 +87,7 @@ import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
+import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
@@ -926,10 +927,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           },
         }
       }
-      // Reloads run before the publish so discovery reads fresh host state.
-      // Each is independent: one failing domain must not skip the others.
+      // Config first, forced: the domain reloads below re-read their entries,
+      // and a forced config publish makes every config-backed plugin rescan
+      // its files, so a new skill file or edited project opencode.json
+      // applies here instead of through a per-folder file watcher. Each is
+      // independent: one failing domain must not skip the others.
       const reloads: readonly [string, Effect.Effect<void>][] = [
-        ["config", ctx.instruction.reload()],
+        ["config", ctx.config.reload({ force: true })],
+        ["instruction", ctx.instruction.reload()],
         ["agents", ctx.agent.reload()],
         ["providers", ctx.provider.reload()],
         ["models", ctx.model.reload()],
@@ -6355,30 +6360,17 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
 // The cross-process half: any write to the shared records file or the global
 // teams root (an empty team is a directory and writes no record, so the teams
 // root needs its own watch) means another Plus instance published. Bun.write
-// rewrites the records file in place, so the directory watch sees it. A missing
-// directory (nothing written yet) just means no watcher for it; the in-process
-// bus still works.
+// rewrites the records file in place, so the directory watch sees it.
+//
+// One service-wide pair, not one per folder: see shared-store-file.ts.
 function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => void): Effect.Effect<void, never, Scope.Scope> {
-  return Effect.acquireRelease(
-    Effect.sync(() => {
+  return acquireSharedStoreWatch(
+    [
       // The teams root changes without a record write, so its changes force a rediscovery.
-      const targets = [
-        { path: path.dirname(globalRecordsPath()), force: false },
-        { path: globalTeamsPath(), force: true },
-      ]
-      const watchers: fsSync.FSWatcher[] = []
-      for (const target of targets) {
-        try {
-          const watcher = fsSync.watch(target.path, { persistent: false }, () => onChange(undefined, target.force))
-          watcher.on("error", () => undefined)
-          watchers.push(watcher)
-        } catch {
-          // Missing target: no watcher until the first write creates it.
-        }
-      }
-      return watchers
-    }),
-    (watchers) => Effect.sync(() => watchers.forEach((watcher) => watcher.close())),
+      { path: path.dirname(globalRecordsPath()), force: false },
+      { path: globalTeamsPath(), force: true },
+    ],
+    (force) => onChange(undefined, force),
   )
 }
 
