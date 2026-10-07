@@ -146,6 +146,47 @@ remains on hold until item 6 has landed and been measured).
 
 Measured results: `run/evidence/plus-1.1.17/integration/perf.md`.
 
+## Added after the cache and retry investigation (user, 2026-10-07)
+
+Findings: `run/evidence/plus-1.1.17/integration/cache-and-retry.md`.
+
+- **A session move keeps its cached baseline** (core). The epoch baseline
+  renders through the current location's sources, so a move dropped the old
+  folder's per-file instruction keys from the cached prefix (a full rewrite
+  per move) and never recorded them as gone. Sessions now retain those keys
+  (`InstructionDiscovery.retain`): the baseline keeps rendering the stored
+  file where it stood (nearest folder first, else after the source stored
+  before it), and one chronological update says it no longer applies.
+- **A chat waiting on its own work stays warm up to 75 minutes** after its
+  last request: while its command or other tool call runs, or a subagent or
+  team worker it started (any depth) runs. Then the configured window. Until
+  about there keep-alive pings cost less than one rewrite of the prefix.
+- **A plain subagent's long retry tells its parent** once per error type per
+  busy period, under the team thresholds (≥ 60 s or third retry); both
+  notices name the HTTP status when the error body is empty.
+- **Tools and rules › Commands**: keep a foreground command under about 10
+  minutes; longer work in the background; every wait loop has its own limit.
+
+## Item 6: Parameters (build seat)
+
+- Rows: `param:<toolId>:<name>`, kind `param`, under each tool row's
+  Parameters group (after its description, before Permissions), one per
+  top-level property of the input JSON Schema (Effect Schema, zod or JSON
+  Schema), in schema order. Text is the description; fallback is the tool's
+  own (`upstream`) for every agent: the tool row decides whether the agent
+  has the tool at all.
+- Not per-agent at the source: core's `ToolEditor` is location-wide, and
+  rows are per agent, so edits ride the per-request tool plan
+  (`ToolPlan.params`). Native tools: the context hook replaces
+  `tool.input`. Code Mode tools: the session `catalog` hook now carries each
+  tool's own `input`; replacing it re-renders that request's catalog
+  signature and `search()` from the edited schema (core: `Inventory.inputs`,
+  `Tool.snapshot(permissions, inputs)`). Calls still decode with the tool's
+  own schema, so a hidden parameter passed anyway reaches the tool.
+- Only parameters some record touches are resolved per agent. With no edits
+  nothing is installed (byte-identical definitions). A running chat gets
+  edits at its next rebuild, with a "parameters changed" note.
+
 ## Rules for every WP
 
 - Own worktree and branch only; never touch another worktree, the shared
