@@ -1049,6 +1049,64 @@ test("a 90 s retry notifies the parent once", async () => {
   })
 })
 
+test("a retry whose error has an empty body names its HTTP status", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-parent0000009", role: "opus-orchestrator", state: "working", sessionID: "ses_parent_009" })
+    const child = workingChild("w-child0000000009", parent.id, "ses_child_009")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const ctx = context({ session: recordSession().domain })
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_009", { error: { type: "HttpError", message: "", status: 429 } }))
+    const items = await peek(root, parent.id)
+    expect(items[0]?.text).toContain(" got HttpError (HTTP 429). It retries at ")
+    // The run record keeps its error shape.
+    expect((await loadRun(root, child.id))?.retrying?.error).toEqual({ type: "HttpError", message: "" })
+  })
+})
+
+test("a plain subagent's long retry notifies its parent chat once per error type and busy period", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const prompted: Array<{ sessionID: string; text: string }> = []
+    const ctx = context({
+      session: {
+        get: (input) =>
+          Effect.succeed(
+            (input.sessionID === "ses_sub_001"
+              ? { id: input.sessionID, parentID: "ses_lead_001", model: { providerID: "cliproxyapi", id: "gemini-3.8-flash-high" } }
+              : { id: input.sessionID }) as never,
+          ),
+        prompt: (input) => {
+          prompted.push({ sessionID: String(input.sessionID), text: String(input.text) })
+          return Effect.succeed(undefined as never)
+        },
+      },
+    })
+    const at = Date.now() + 15 * 60_000
+    const quota = { type: "HttpError", message: "", status: 429 }
+    // A short first retry stays quiet: most transient errors clear by themselves.
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 2, at: Date.now() + 4_000, error: quota }))
+    expect(prompted).toEqual([])
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 3, at, error: quota }))
+    const date = new Date(at)
+    const time = `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`
+    expect(prompted).toEqual([
+      {
+        sessionID: "ses_lead_001",
+        text: `Subagent ses_sub_001 on cliproxyapi/gemini-3.8-flash-high got HttpError (HTTP 429). It retries at ${time} UTC, attempt 3, and keeps retrying until the provider answers or it gives up. Wait for it, or give its task to a subagent on another model; this one cannot be stopped from here (the user can stop it).`,
+      },
+    ])
+    // The same error again stays quiet; a new busy period may notify again.
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 4, at, error: quota }))
+    expect(prompted).toHaveLength(1)
+    await onSessionEvent(ctx, root, { type: "session.execution.started", data: { sessionID: "ses_sub_001" } })
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 3, at, error: quota }))
+    expect(prompted).toHaveLength(2)
+    // Control: a top-level chat's retry tells nobody (its own user sees it).
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_top_001", { attempt: 5, at, error: quota }))
+    expect(prompted).toHaveLength(2)
+  })
+})
+
 test("a second retry with the same error type does not notify again", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({

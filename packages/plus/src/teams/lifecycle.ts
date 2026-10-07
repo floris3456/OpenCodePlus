@@ -198,7 +198,10 @@ export async function onSessionEvent(
   const sessionID = payload.sessionID
   if (typeof sessionID !== "string" || sessionID.length === 0) return undefined
   const run = await bySession(root, sessionID)
-  if (run === undefined) return undefined
+  if (run === undefined) {
+    await onSubagentEvent(ctx, sessionID, event.type, payload)
+    return undefined
+  }
 
   if (event.type === "session.execution.started") {
     const applied = { changed: false }
@@ -251,11 +254,7 @@ export async function onSessionEvent(
         if (record.parent !== null && record.parent !== undefined) {
           const modelObj = lastAttempt.resolvedModel ?? record.resolvedModel
           const providerModel = modelObj ? `${modelObj.providerID}/${modelObj.modelID}` : "unknown"
-          const date = new Date(at)
-          const hh = String(date.getUTCHours()).padStart(2, "0")
-          const mm = String(date.getUTCMinutes()).padStart(2, "0")
-          const first200 = errorObj.message.slice(0, 200)
-          const text = `Run ${record.id} (${record.role}, ${providerModel}) got ${errorObj.type}: ${first200}. It retries at ${hh}:${mm} UTC, attempt ${attemptNum}. Wait, or stop it with team_stop force and delegate the Brief to another worker.`
+          const text = `Run ${record.id} (${record.role}, ${providerModel}) got ${retryReason(parsedError ?? errorObj)}. It retries at ${utcTime(at)} UTC, attempt ${attemptNum}. Wait, or stop it with team_stop force and delegate the Brief to another worker.`
           notify.action = { text, parentID: record.parent }
         }
       }
@@ -334,6 +333,47 @@ async function onSessionMoved(root: string, run: RunRecord, payload: Record<stri
     delete next.movedTo
     return next
   })
+}
+
+// A plain subagent (no team run) gets the parent the same notice: core retries
+// a provider error up to 10 times, honouring the provider's retry-after up to
+// 15 minutes each, and the subagent tool reports only when the child ends, so
+// an out-of-quota child would otherwise leave its parent waiting for hours.
+// Once per error type per busy period, under the team thresholds. Shared by
+// every Plus instance in the process, so one event notifies once.
+const subagentNotices = new Map<string, Set<string>>()
+
+async function onSubagentEvent(ctx: Context, sessionID: string, type: string, payload: Record<string, unknown>) {
+  if (type === "session.execution.started") {
+    subagentNotices.delete(sessionID)
+    return
+  }
+  if (type !== RETRY_SCHEDULED) return
+  const error = Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error)) ?? { type: "error", message: "" }
+  const at = typeof payload.at === "number" ? payload.at : Date.now()
+  const attempt = typeof payload.attempt === "number" ? payload.attempt : 1
+  const notified = subagentNotices.get(sessionID) ?? new Set<string>()
+  if (notified.has(error.type) || (at - Date.now() < 60_000 && attempt < 3)) return
+  // Claimed before any await: concurrent deliveries of the same event see it.
+  subagentNotices.set(sessionID, notified.add(error.type))
+  for (const key of [...subagentNotices.keys()].slice(0, Math.max(0, subagentNotices.size - 500))) subagentNotices.delete(key)
+  const child = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
+  if (child?.parentID === undefined) return
+  const model = child.model === undefined ? "" : ` on ${child.model.providerID}/${child.model.id}`
+  const text = `Subagent ${sessionID}${model} got ${retryReason(error)}. It retries at ${utcTime(at)} UTC, attempt ${attempt}, and keeps retrying until the provider answers or it gives up. Wait for it, or give its task to a subagent on another model; this one cannot be stopped from here (the user can stop it).`
+  await Effect.runPromise(ctx.session.prompt({ sessionID: Session.ID.make(child.parentID), text })).catch(() => undefined)
+}
+
+// "HttpError (HTTP 429): message"; an error with an empty body still names its status.
+function retryReason(error: { readonly type: string; readonly message: string; readonly status?: number }) {
+  const status = error.status === undefined ? "" : ` (HTTP ${error.status})`
+  const message = error.message.slice(0, 200)
+  return `${error.type}${status}${message === "" ? "" : `: ${message}`}`
+}
+
+function utcTime(at: number) {
+  const date = new Date(at)
+  return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`
 }
 
 // The host's reason for a failed execution (core's SessionError.Error): what
