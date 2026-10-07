@@ -14,7 +14,9 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
-import { buildTreeMemo, controlChoices, treeOf, withControlItems, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { deltaOf, keyIdentity, recordIdentity, snapshotRecordOf, type Delta } from "../../instructions/delta.js"
+import type { StoredRecord } from "../../instructions/store.js"
+import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import {
   isEvery,
   isModelDefaultRowId,
@@ -60,7 +62,7 @@ import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 
 export type { TreeNode }
 
-function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[] {
+export function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[] {
   return records
     .map((record) => {
       const converted = recordOf(record)
@@ -180,11 +182,69 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   let disposed = false
   let generation = 0
 
+  let confirmedRecords: StoredRecord[] = []
+  let lastConfirmedRevisions = { revision: 0, globalRevision: 0 }
+  let lastOpStatus = ""
+  let localVersion = 0
+  let draining = false
+
+  interface PendingEdit {
+    readonly version: number
+    readonly resolve: (ok: boolean) => void
+  }
+  const pendingEdits: PendingEdit[] = []
+  const drainWaiters: (() => void)[] = []
+
+  function notifyDrainWaiters() {
+    const waiters = drainWaiters.splice(0)
+    for (const w of waiters) w()
+  }
+
+  function resolvePending(maxVersion: number, ok: boolean) {
+    for (let i = pendingEdits.length - 1; i >= 0; i--) {
+      const edit = pendingEdits[i]
+      if (edit !== undefined && edit.version <= maxVersion) {
+        edit.resolve(ok)
+        pendingEdits.splice(i, 1)
+      }
+    }
+  }
+
+  function applyDeltaToRecords(current: readonly StoredRecord[], delta: Delta): StoredRecord[] {
+    const removals = new Set(delta.remove.map(keyIdentity))
+    const added = new Set(delta.upsert.map(recordIdentity))
+    return [
+      ...current.filter((r) => !removals.has(recordIdentity(r)) && !added.has(recordIdentity(r))),
+      ...delta.upsert,
+    ]
+  }
+
+  function optimisticStoredRecords(): StoredRecord[] {
+    const cur = snapshot()
+    return cur === undefined ? [] : recordsOf(cur.records)
+  }
+
+  async function awaitDrain(): Promise<void> {
+    while (
+      draining ||
+      deltaOf(confirmedRecords, optimisticStoredRecords()).upsert.length +
+        deltaOf(confirmedRecords, optimisticStoredRecords()).remove.length >
+        0
+    ) {
+      if (!draining) void scheduleDrain()
+      await new Promise<void>((resolve) => drainWaiters.push(resolve))
+    }
+  }
+
   // Opening the screen renders the plugin-level cached snapshot at once, stale
   // or not, and the initial reload below revalidates it in the background. The
   // first ever open (empty cache) behaves as before.
   const cached = cache.peek(directory)
-  if (cached !== undefined) setSnapshot(cached.snapshot)
+  if (cached !== undefined) {
+    setSnapshot(cached.snapshot)
+    confirmedRecords = recordsOf(cached.snapshot.records)
+    lastConfirmedRevisions = { revision: cached.snapshot.revision, globalRevision: cached.snapshot.globalRevision }
+  }
 
   // Presets and Defaults entries get the Role/persona row every agent has.
   const itemsForTree = createMemo<Item[]>(() => {
@@ -292,6 +352,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       if (disposed || requestGen !== generation) return
       setSnapshot(fresh)
       cache.put(directory, fresh)
+      confirmedRecords = recordsOf(fresh.records)
+      lastConfirmedRevisions = { revision: fresh.revision, globalRevision: fresh.globalRevision }
       setStatus("")
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return
@@ -303,6 +365,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   async function refresh() {
     if (disposed) return
+    await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -310,6 +373,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       if (disposed || requestGen !== generation) return
       setSnapshot(fresh)
       cache.put(directory, fresh)
+      confirmedRecords = recordsOf(fresh.records)
+      lastConfirmedRevisions = { revision: fresh.revision, globalRevision: fresh.globalRevision }
       setStatus("Refreshed from host")
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return
@@ -375,6 +440,135 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     })
   }
 
+  async function scheduleDrain(): Promise<void> {
+    if (draining) return
+    draining = true
+    try {
+      while (true) {
+        const optimistic = optimisticStoredRecords()
+        const delta = deltaOf(confirmedRecords, optimistic)
+        const count = delta.upsert.length + delta.remove.length
+        if (count === 0) {
+          resolvePending(localVersion, true)
+          if (!disposed && lastOpStatus !== "") {
+            setStatus(lastOpStatus)
+          }
+          break
+        }
+
+        const dispatchVersion = localVersion
+        const wantSnapshot = dispatchVersion === localVersion
+
+        if (!disposed) {
+          setStatus(`Saving ${count} change(s)…`)
+        }
+
+        const payload: Plus.MutateInputDelta = {
+          changes: {
+            upsert: delta.upsert.map(snapshotRecordOf).filter((r): r is SnapshotRecord => r !== undefined),
+            remove: delta.remove,
+          },
+          ...(wantSnapshot ? { snapshot: true } : {}),
+        }
+
+        const touchedIdentities = new Set([
+          ...delta.upsert.map(recordIdentity),
+          ...delta.remove.map(keyIdentity),
+        ])
+        const confirmedMap = new Map(confirmedRecords.map((r) => [recordIdentity(r), r]))
+
+        let result: Plus.MutateResult | undefined
+        let errorThrown: unknown = undefined
+        try {
+          result = await plus["instructions.mutate"](payload, { location: context.location })
+        } catch (err: unknown) {
+          errorThrown = err
+        }
+
+        if (errorThrown === undefined && result !== undefined && result.ok === true) {
+          confirmedRecords = applyDeltaToRecords(confirmedRecords, delta)
+          lastConfirmedRevisions = {
+            revision: result.revision,
+            globalRevision: result.globalRevision,
+          }
+
+          if (wantSnapshot && result.snapshot !== undefined) {
+            if (localVersion === dispatchVersion) {
+              if (!disposed) {
+                setSnapshot(result.snapshot)
+                cache.put(directory, result.snapshot)
+              }
+              confirmedRecords = recordsOf(result.snapshot.records)
+              lastConfirmedRevisions = {
+                revision: result.snapshot.revision,
+                globalRevision: result.snapshot.globalRevision,
+              }
+            }
+          }
+
+          resolvePending(dispatchVersion, true)
+
+          if (localVersion === dispatchVersion) {
+            if (!disposed) {
+              setStatus(lastOpStatus)
+            }
+            break
+          }
+        } else {
+          const cur = snapshot()
+          const currentOptimistic = optimisticStoredRecords()
+          const currentMap = new Map(currentOptimistic.map((r) => [recordIdentity(r), r]))
+          for (const id of touchedIdentities) {
+            currentMap.delete(id)
+            const confirmedRow = confirmedMap.get(id)
+            if (confirmedRow !== undefined) {
+              currentMap.set(id, confirmedRow)
+            }
+          }
+          const revertedStored = Array.from(currentMap.values())
+          if (cur) {
+            const nextRecords = revertedStored.map(snapshotRecordOf).filter((r): r is SnapshotRecord => r !== undefined)
+            setSnapshot({ ...cur, records: nextRecords })
+          }
+
+          if (result && !result.ok && "reason" in result && result.reason === "stale" && "snapshot" in result && result.snapshot) {
+            if (!disposed) {
+              setSnapshot(result.snapshot)
+              cache.put(directory, result.snapshot)
+            }
+            confirmedRecords = recordsOf(result.snapshot.records)
+            lastConfirmedRevisions = {
+              revision: result.snapshot.revision,
+              globalRevision: result.snapshot.globalRevision,
+            }
+          }
+
+          const msg = errorThrown !== undefined
+            ? errorMessage(errorThrown)
+            : (result && !result.ok && "error" in result && typeof result.error === "object" && result.error !== null && "message" in result.error
+                ? String(result.error.message)
+                : result && !result.ok && "reason" in result
+                  ? `Revision changed (expected ${cur?.revision}/${cur?.globalRevision}, latest ${result.snapshot.revision}/${result.snapshot.globalRevision}); retry`
+                  : "Write did not complete")
+
+          if (!disposed) {
+            setStatus(msg)
+          }
+
+          resolvePending(dispatchVersion, false)
+
+          const remainingDelta = deltaOf(confirmedRecords, optimisticStoredRecords())
+          if (remainingDelta.upsert.length + remainingDelta.remove.length === 0) {
+            break
+          }
+        }
+      }
+    } finally {
+      draining = false
+      notifyDrainWaiters()
+    }
+  }
+
   async function persist(
     nextCustomizations: readonly CustomizationRecord[],
     nextSplits: readonly (SplitRecord & { updated?: string })[],
@@ -393,48 +587,18 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       nextModels ?? converted.filter((record): record is ModelRecord => record.type === "model")
     const preservedRules =
       nextRules ?? converted.filter((record): record is RuleRecord => record.type === "rule")
-    const requestGen = ++generation
-    setLoading(true)
-    try {
-      const result = await plus["instructions.mutate"](
-        {
-          expectedRevision: current.revision,
-          expectedGlobalRevision: current.globalRevision,
-          records: toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules),
-        },
-        { location: context.location },
-      )
-      if (disposed) return false
-      // The write's own instructions.changed event usually starts a reload
-      // before this answer arrives. That newer load owns the snapshot, but
-      // the write still succeeded: report it, or an editor never closes.
-      const latest = requestGen === generation
-      // The full form always answers with its snapshot; the delta form makes
-      // it optional. This path only sends the full form, so a missing snapshot
-      // (a future delta caller) fetches the current one.
-      const answered = result.snapshot ?? (await plus["instructions.snapshot"](undefined, { location: context.location }))
-      if (result.ok) {
-        if (latest) {
-          setSnapshot(answered)
-          cache.put(directory, answered)
-        }
-        setStatus(successStatus)
-        return true
-      }
-      if (!latest) return false
-      setSnapshot(answered)
-      cache.put(directory, answered)
-      setStatus(
-        `Revision changed (expected ${current.revision}/${current.globalRevision}, latest ${answered.revision}/${answered.globalRevision}); ${retryHint}`,
-      )
-      return false
-    } catch (error: unknown) {
-      if (disposed || requestGen !== generation) return false
-      setStatus(errorMessage(error))
-      return false
-    } finally {
-      if (!disposed && requestGen === generation) setLoading(false)
-    }
+
+    const nextSnapshotRecords = toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules)
+    setSnapshot({ ...current, records: nextSnapshotRecords })
+
+    lastOpStatus = successStatus
+    localVersion++
+    const version = localVersion
+    const editPromise = new Promise<boolean>((resolve) => {
+      pendingEdits.push({ version, resolve })
+    })
+    void scheduleDrain()
+    return editPromise
   }
 
   function memoInput(): MemoInput {
@@ -488,15 +652,74 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   // A group row turns its nearest toggleable rows on or off in one write
   // (ops.toggleGroup): all on means all off, otherwise all on. Team groups
-  // are never toggleable here (the tree leaves their toggle off), so they
-  // keep the refusal the plain toggle path always gave them.
+  // toggle all their teams through team.setEnabled and the write queue.
   async function toggleGroupRow(node: TreeNode): Promise<boolean> {
+    const memo = treeMemo()
+    const lazy = memo === undefined ? undefined : findLazy(memo, node.id)
+    const found = lazy === undefined ? undefined : groupToggleRows(lazy)
+    if (found?.hasTeam) {
+      return toggleTeamsGroup(node, found.rows)
+    }
     const result = toggleGroup(memoInput(), node.id, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false
     }
     return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
+  async function toggleTeamsGroup(node: TreeNode, rows: readonly Lazy[]): Promise<boolean> {
+    const current = snapshot()
+    if (!current) {
+      setStatus("No snapshot loaded")
+      return false
+    }
+    const teamRows = rows.flatMap((leaf) => {
+      const match = leaf.id.match(/^team:(project|global):(.+)$/)
+      if (!match) return []
+      return [{
+        level: match[1] as "project" | "global",
+        team: match[2],
+        enabled: leaf.partial().state === "on",
+      }]
+    })
+    if (teamRows.length === 0) {
+      setStatus(`"${node.label}" has no toggleable teams`)
+      return false
+    }
+    const allEnabled = teamRows.every((t) => t.enabled)
+    const targetState = !allEnabled
+
+    const nextTeams = (current.teams ?? []).map((t) => {
+      const matched = teamRows.find((tr) => tr.level === t.level && tr.team === t.team)
+      return matched ? { ...t, enabled: targetState } : t
+    })
+    setSnapshot({ ...current, teams: nextTeams })
+
+    await awaitDrain()
+
+    const requestGen = ++generation
+    setLoading(true)
+    try {
+      for (const t of teamRows) {
+        await plus["team.setEnabled"](
+          { level: t.level, team: t.team, enabled: targetState },
+          { location: context.location },
+        )
+      }
+      if (disposed || requestGen !== generation) return false
+      await refresh()
+      if (disposed) return false
+      setStatus(targetState ? `Enabled ${teamRows.length} team(s)` : `Disabled ${teamRows.length} team(s)`)
+      return true
+    } catch (error: unknown) {
+      if (disposed || requestGen !== generation) return false
+      setStatus(errorMessage(error))
+      await refresh()
+      return false
+    } finally {
+      if (!disposed && requestGen === generation) setLoading(false)
+    }
   }
 
   // Team toggle: the tree row id is `team:<level>:<team>` (member rows hang
@@ -519,6 +742,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(plan.refusal)
       return false
     }
+    await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -556,6 +780,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus("No snapshot loaded")
       return false
     }
+    await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -582,6 +807,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     input: { action: "create" | "assign" | "rename" | "delete"; name?: string; to?: string; item?: string; category?: string | null; confirm?: boolean },
     success: string,
   ): Promise<boolean> {
+    await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -636,6 +862,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       | { readonly kind: "member"; readonly level: "project" | "global"; readonly team: string; readonly from: string; readonly to: string }
       | { readonly kind: "team"; readonly level: "project" | "global"; readonly from: string; readonly to: string },
   ): Promise<string | undefined> {
+    await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -878,6 +1105,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return false
     }
     const label = isEvery(key) ? "Every model" : `${key.providerID}/${key.modelID}`
+    await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
@@ -940,6 +1168,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // every item and section row so refusals reach the user as status text;
   // rows without remove actions never delete.
   async function remove(node: TreeNode): Promise<boolean> {
+    await awaitDrain()
     if (isModelDefaultRowId(node.id)) {
       if (node.actions?.remove !== true) {
         setStatus(`"${node.label}" has no Defaults › Models values to clear`)
@@ -1109,12 +1338,22 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   void requestReload()
-  const unsubscribeInstructions = plus.events.on("instructions.changed", () => {
+  const unsubscribeInstructions = plus.events.on("instructions.changed", (event?: unknown) => {
+    const payload = (event && typeof event === "object" && "data" in event ? event.data : event) as
+      | Plus.InstructionsChanged
+      | undefined
+    const rev = payload?.revision
+    const globalRev = payload?.globalRevision
+    if (rev !== undefined) {
+      const isOursOrOlder =
+        rev <= lastConfirmedRevisions.revision &&
+        (globalRev === undefined || globalRev <= lastConfirmedRevisions.globalRevision)
+      if (isOursOrOlder) return
+    }
     void requestReload()
   })
   function dispose() {
     disposed = true
-    generation++
     unsubscribeInstructions()
   }
 

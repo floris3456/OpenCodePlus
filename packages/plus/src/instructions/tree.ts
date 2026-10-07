@@ -690,7 +690,10 @@ export function groupToggleRows(lazy: Lazy): GroupToggleRows {
       return
     }
     if (node.kind === "team") {
-      if (node.actions.toggle === true) hasTeam = true
+      if (node.actions.toggle === true) {
+        rows.push(node)
+        hasTeam = true
+      }
       return
     }
     if (node.enabledRow !== undefined) {
@@ -727,7 +730,7 @@ export function groupToggleOf(lazy: Lazy): { readonly toggle: boolean; readonly 
 }
 
 function groupToggleSummary(found: GroupToggleRows): { readonly toggle: boolean; readonly state?: "on" | "off"; readonly summary?: string } {
-  if (found.hasTeam || found.rows.length === 0) return { toggle: false }
+  if (found.rows.length === 0) return { toggle: false }
   // Item rows answer their state without resolving their text; entity rows
   // (an agent's Enabled) read it from their badges.
   const states = found.rows
