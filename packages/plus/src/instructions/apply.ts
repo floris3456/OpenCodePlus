@@ -9,8 +9,29 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Exit, Scope } from "effect"
+import fs from "node:fs/promises"
 import path from "node:path"
-import { applies, catalogPath, resolve, resolveActiveModel, runtimeScope, type CustomizationRecord, type Item, type Level, type ModelRecord, type PolicyRule, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./model.js"
+import { agentBody } from "./discover.js"
+import { builtinBody } from "./teams.js"
+import type { BuiltinTeam } from "./builtin-teams.js"
+import { parseTeamFields, runSpecialRegistration, runTeamRegistration, type TeamFields } from "./teams-apply.js"
+import {
+  applies,
+  catalogPath,
+  resolve,
+  resolveActiveModel,
+  runtimeScope,
+  type AgentSource,
+  type CustomizationRecord,
+  type Item,
+  type Level,
+  type ModelRecord,
+  type PolicyRule,
+  type RuleRecord,
+  type Scopes,
+  type SplitRecord,
+  type TeamRef,
+} from "./model.js"
 import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
 import { describeProjectChecks, readProjectChecks } from "../teams/project-checks.js"
 import {
@@ -29,6 +50,7 @@ import {
 import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "./paths.js"
 import { gateOf } from "./requires.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
+import { runPublish } from "./publish-runtime.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -80,13 +102,93 @@ export interface Applied {
   readonly permissions: PermissionTable
 }
 
+export interface AppliedPart {
+  readonly fingerprint: string
+  readonly registrations: readonly Registration[]
+}
+
+export interface PublishPartsInput {
+  readonly applyInput: ApplyInput
+  readonly fileAgents: readonly AgentSource[]
+  readonly builtinWinners: readonly AgentSource[]
+  readonly builtins: readonly BuiltinTeam[]
+  readonly teamRoleOverrides?: ReadonlyMap<string, string>
+  readonly specialRoleOverrides?: ReadonlyMap<string, string>
+}
+
+export interface PublishPartsResult {
+  readonly tools: readonly ToolPlan[]
+  readonly permissions: PermissionTable
+  readonly installedIds: readonly string[]
+}
+
+export interface EnforcementPlans {
+  readonly active: boolean
+  readonly rowsByAgent: readonly (readonly [string, readonly { readonly item: string; readonly on: boolean; readonly text: string }[]])[]
+  readonly members: readonly string[]
+}
+
+export function enforcementPlans(input: ApplyInput, permissions: PermissionTable): EnforcementPlans {
+  const active = tableActive(permissions, input.agents.map((agent) => agent.id))
+  if (!active) return { active: false, rowsByAgent: [], members: [] }
+  const rowsByAgent = input.agents.map((agent) => [
+    agent.id,
+    permissions.rows(agent.id).map((r) => ({ item: r.item.id, on: r.on, text: r.text })),
+  ] as const)
+  const members = [...permissions.teamMembers].sort()
+  return { active: true, rowsByAgent, members }
+}
+
+export interface TeamFilePlans {
+  readonly agents: readonly { id: string; path: string; body: string; fields: TeamFields; override?: string }[]
+  readonly special: readonly [string, string][]
+}
+
+export async function teamFilePlans(
+  fileAgents: readonly AgentSource[],
+  overrides?: ReadonlyMap<string, string>,
+  specialOverrides?: ReadonlyMap<string, string>,
+): Promise<TeamFilePlans> {
+  const agents: { id: string; path: string; body: string; fields: TeamFields; override?: string }[] = []
+  for (const agent of fileAgents) {
+    if (agent.path === undefined) continue
+    const text = await fs.readFile(agent.path, "utf8").catch(() => undefined)
+    if (text === undefined) continue
+    const fields = parseTeamFields(text)
+    if (fields.disabled === true) continue
+    agents.push({ id: agent.id, path: agent.path, body: agentBody(text), fields, override: overrides?.get(agent.id) })
+  }
+  const special = specialOverrides ? Array.from(specialOverrides.entries()).sort((a, b) => a[0].localeCompare(b[0])) : []
+  return { agents, special }
+}
+
+export interface TeamBuiltinPlan {
+  readonly id: string
+  readonly team: string
+  readonly body: string
+  readonly fields: TeamFields
+  readonly override?: string
+}
+
+export function teamBuiltinPlans(
+  builtinWinners: readonly AgentSource[],
+  builtins: readonly BuiltinTeam[],
+  overrides?: ReadonlyMap<string, string>,
+): readonly TeamBuiltinPlan[] {
+  const list: TeamBuiltinPlan[] = []
+  for (const agent of builtinWinners) {
+    if (agent.team === undefined) continue
+    const body = builtinBody(builtins, agent.team, agent.id)
+    if (body === undefined) continue
+    const fields: TeamFields = builtins.find((entry) => entry.name === agent.team)?.members.find((member) => member.id === agent.id)?.fields ?? { permissions: [] }
+    list.push({ id: agent.id, team: agent.team, body: agentBody(body), fields, override: overrides?.get(agent.id) })
+  }
+  return list
+}
+
 export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
   const models = input.models ?? []
   const permissions = permissionTableOf(input)
-  // Team rules do not come from a record: a live run's edit scope and the
-  // `team.*` deny that hides the namespace from every non-member must land
-  // even when nothing at all is customized, so they are their own reason to
-  // install.
   const teamRules = input.items.some((item) => item.kind === "perm" && item.policy !== undefined)
   if (
     input.records.length === 0 &&
@@ -96,41 +198,242 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     input.agents.every((agent) => plain(input.scopes, agent.id))
   )
     return { registrations: [], tools: [], permissions }
+
   const installed: Registration[] = []
-  // Registrations live on detached scopes so a partial failure must be unwound explicitly.
   try {
-    const role = await applyRoles(ctx, input)
-    if (role !== undefined) installed.push(role)
-    const model = await applyModels(ctx, { agents: input.agents, models, scopes: input.scopes, teamAgents: input.teamAgents })
-    if (model !== undefined) installed.push(model)
-    const skills = await applySkills(ctx, input, (registration) => installed.push(registration))
-    const session = await applySession(ctx, input, permissions)
-    for (const registration of session.registrations) installed.push(registration)
-    if (tableActive(permissions, input.agents.map((agent) => agent.id)))
-      for (const registration of await installEnforcement(
+    const rolePlans = roleUpdates(input)
+    if (rolePlans.length > 0) {
+      const reg = await applyRolesWithUpdates(ctx, rolePlans)
+      if (reg !== undefined) installed.push(reg)
+    }
+
+    const modelPl = modelUpdates({ agents: input.agents, models, scopes: input.scopes, teamAgents: input.teamAgents })
+    if (modelPl.updates.length > 0) {
+      const reg = await applyModelsWithUpdates(ctx, modelPl.updates, modelPl.teamAgents)
+      if (reg !== undefined) installed.push(reg)
+    }
+
+    const skPlans = skillPlans(input)
+    const skRegs = await installSkillPlans(ctx, skPlans, input.teamAgents)
+    installed.push(...skRegs)
+
+    const sessPlans = sessionPlans(input, permissions)
+    const sessRegs = await installSessionPlans(ctx, input, sessPlans, permissions)
+    installed.push(...sessRegs)
+
+    const enfPlans = enforcementPlans(input, permissions)
+    if (enfPlans.active) {
+      const enfRegs = await installEnforcement(
         ctx,
         permissions,
         input.enforcement ?? enforcementState(),
         input.enforcementDeps ?? { headless: async () => false },
-      ))
-        installed.push(registration)
-    const mcp = await applyMcp(ctx, input)
-    if (mcp !== undefined) installed.push(mcp)
-    const controls = input.deferAgentControls ? undefined : await applyAgentControls(ctx, input)
-    if (controls !== undefined) installed.push(controls)
-    if (role !== undefined || model !== undefined || skills.agentChanged || session.agentChanged || controls !== undefined) await runVoid(ctx.agent.reload())
-    if (skills.skillChanged) await runVoid(ctx.skill.reload())
-    if (mcp !== undefined) await runVoid(ctx.mcp.reload())
-    return { registrations: [...installed], tools: session.tools, permissions }
+      )
+      installed.push(...enfRegs)
+    }
+
+    const mcPlans = mcpPlans(input)
+    if (mcPlans.length > 0) {
+      const reg = await applyMcpWithUpdates(ctx, mcPlans)
+      if (reg !== undefined) installed.push(reg)
+    }
+
+    const ctlPlans = input.deferAgentControls ? [] : controlPlans(input)
+    if (ctlPlans.length > 0) {
+      const reg = await applyControlsWithPlans(ctx, ctlPlans)
+      if (reg !== undefined) installed.push(reg)
+    }
+
+    const agentChanged =
+      rolePlans.length > 0 ||
+      modelPl.updates.length > 0 ||
+      skPlans.rules.length > 0 ||
+      sessPlans.denials.length > 0 ||
+      sessPlans.permDenies.length > 0 ||
+      ctlPlans.length > 0
+    if (agentChanged) await runVoid(ctx.agent.reload())
+    if (skPlans.copies.length > 0) await runVoid(ctx.skill.reload())
+    if (mcPlans.length > 0) await runVoid(ctx.mcp.reload())
+
+    return { registrations: [...installed], tools: sessPlans.tools, permissions }
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
   }
 }
 
-/** Final Plus agent writer: deletions happen after all possible team upserts. */
-export async function applyAgentControls(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
-  const plans = input.agents.flatMap((agent) => {
+export async function applyPublishParts(
+  ctx: Context,
+  state: {
+    appliedParts: Map<string, AppliedPart>
+    appliedPlans?: Map<string, unknown>
+  },
+  input: PublishPartsInput,
+): Promise<PublishPartsResult> {
+  const permissions = permissionTableOf(input.applyInput)
+  state.appliedPlans ??= new Map()
+  const toDispose: Registration[] = []
+  let agentReload = false
+  let skillReload = false
+  let mcpReload = false
+
+  // 1. roles
+  const roles = roleUpdates(input.applyInput)
+  const rolesFp = JSON.stringify(roles)
+  if (rolesFp !== state.appliedParts.get("roles")?.fingerprint) {
+    const prev = state.appliedParts.get("roles")?.registrations ?? []
+    toDispose.push(...prev)
+    const reg = await applyRolesWithUpdates(ctx, roles)
+    const installed = reg !== undefined ? [reg] : []
+    state.appliedParts.set("roles", { fingerprint: rolesFp, registrations: installed })
+    agentReload = true
+  }
+
+  // 2. models
+  const models = modelUpdates({
+    agents: input.applyInput.agents,
+    models: input.applyInput.models ?? [],
+    scopes: input.applyInput.scopes,
+    teamAgents: input.applyInput.teamAgents,
+  })
+  const modelsFp = JSON.stringify(models)
+  if (modelsFp !== state.appliedParts.get("models")?.fingerprint) {
+    const prev = state.appliedParts.get("models")?.registrations ?? []
+    toDispose.push(...prev)
+    const reg = await applyModelsWithUpdates(ctx, models.updates, models.teamAgents)
+    const installed = reg !== undefined ? [reg] : []
+    state.appliedParts.set("models", { fingerprint: modelsFp, registrations: installed })
+    agentReload = true
+  }
+
+  // 3. skills
+  const skills = skillPlans(input.applyInput)
+  const skillsFp = JSON.stringify(skills)
+  const prevSkills = state.appliedParts.get("skills")
+  if (skillsFp !== prevSkills?.fingerprint) {
+    toDispose.push(...(prevSkills?.registrations ?? []))
+    const installed = await installSkillPlans(ctx, skills, input.applyInput.teamAgents)
+    state.appliedParts.set("skills", { fingerprint: skillsFp, registrations: installed })
+    const prevPlan = state.appliedPlans.get("skills") as SkillPlans | undefined
+    if (!prevPlan || JSON.stringify(prevPlan.copies) !== JSON.stringify(skills.copies)) {
+      skillReload = true
+    }
+    if (!prevPlan || JSON.stringify(prevPlan.rules) !== JSON.stringify(skills.rules)) {
+      agentReload = true
+    }
+    state.appliedPlans.set("skills", skills)
+  }
+
+  // 4. session
+  const session = sessionPlans(input.applyInput, permissions)
+  const sessionFp = JSON.stringify(session)
+  const prevSession = state.appliedParts.get("session")
+  const sessionTools = session.tools
+  if (sessionFp !== prevSession?.fingerprint) {
+    toDispose.push(...(prevSession?.registrations ?? []))
+    const installed = await installSessionPlans(ctx, input.applyInput, session, permissions)
+    state.appliedParts.set("session", { fingerprint: sessionFp, registrations: installed })
+    const prevPlan = state.appliedPlans.get("session") as SessionPlans | undefined
+    if (
+      !prevPlan ||
+      JSON.stringify(prevPlan.denials) !== JSON.stringify(session.denials) ||
+      JSON.stringify(prevPlan.permDenies) !== JSON.stringify(session.permDenies)
+    ) {
+      agentReload = true
+    }
+    state.appliedPlans.set("session", session)
+  }
+
+  // 5. enforcement
+  const enforcement = enforcementPlans(input.applyInput, permissions)
+  const enforcementFp = JSON.stringify(enforcement)
+  if (enforcementFp !== state.appliedParts.get("enforcement")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("enforcement")?.registrations ?? []))
+    const installed = enforcement.active
+      ? await installEnforcement(
+          ctx,
+          permissions,
+          input.applyInput.enforcement ?? enforcementState(),
+          input.applyInput.enforcementDeps ?? { headless: async () => false },
+        )
+      : []
+    state.appliedParts.set("enforcement", { fingerprint: enforcementFp, registrations: installed })
+  }
+
+  // 6. mcp
+  const mcp = mcpPlans(input.applyInput)
+  const mcpFp = JSON.stringify(mcp)
+  if (mcpFp !== state.appliedParts.get("mcp")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("mcp")?.registrations ?? []))
+    const reg = await applyMcpWithUpdates(ctx, mcp)
+    const installed = reg !== undefined ? [reg] : []
+    state.appliedParts.set("mcp", { fingerprint: mcpFp, registrations: installed })
+    mcpReload = true
+  }
+
+  // 7. controls
+  const controls = controlPlans(input.applyInput)
+  const controlsFp = JSON.stringify(controls)
+  if (controlsFp !== state.appliedParts.get("controls")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("controls")?.registrations ?? []))
+    const reg = await applyControlsWithPlans(ctx, controls)
+    const installed = reg !== undefined ? [reg] : []
+    state.appliedParts.set("controls", { fingerprint: controlsFp, registrations: installed })
+    agentReload = true
+  }
+
+  // 8. teamFiles
+  const filePlans = await teamFilePlans(input.fileAgents, input.teamRoleOverrides, input.specialRoleOverrides)
+  const fileFp = JSON.stringify(filePlans)
+  const installedFileIds: string[] = filePlans.agents.map((a: { id: string }) => a.id)
+  if (fileFp !== state.appliedParts.get("teamFiles")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("teamFiles")?.registrations ?? []))
+    const installed: Registration[] = []
+    for (const a of filePlans.agents) {
+      installed.push(await runTeamRegistration(ctx, a.id, a.body, a.fields, a.override))
+    }
+    for (const [id, text] of filePlans.special) {
+      installed.push(await runSpecialRegistration(ctx, id, text))
+      installedFileIds.push(id)
+    }
+    state.appliedParts.set("teamFiles", { fingerprint: fileFp, registrations: installed })
+    agentReload = true
+  }
+
+  // 9. teamBuiltin
+  const builtinPlans = teamBuiltinPlans(input.builtinWinners, input.builtins, input.teamRoleOverrides)
+  const builtinFp = JSON.stringify(builtinPlans)
+  const installedBuiltinIds: string[] = builtinPlans.map((a: { id: string }) => a.id)
+  if (builtinFp !== state.appliedParts.get("teamBuiltin")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("teamBuiltin")?.registrations ?? []))
+    const installed: Registration[] = []
+    for (const a of builtinPlans) {
+      installed.push(await runTeamRegistration(ctx, a.id, a.body, a.fields, a.override))
+    }
+    state.appliedParts.set("teamBuiltin", { fingerprint: builtinFp, registrations: installed })
+    agentReload = true
+  }
+
+  // Dispose superseded registrations (install-before-dispose order)
+  for (const reg of toDispose) {
+    await runPublish(reg.dispose).catch(() => {})
+  }
+
+  // Reload affected subsystems
+  if (agentReload) await runVoid(ctx.agent.reload())
+  if (skillReload) await runVoid(ctx.skill.reload())
+  if (mcpReload) await runVoid(ctx.mcp.reload())
+
+  const installedIds = [...new Set([...installedFileIds, ...installedBuiltinIds])]
+  return {
+    tools: sessionTools,
+    permissions,
+    installedIds,
+  }
+}
+
+export function controlPlans(input: ApplyInput): readonly { agent: string; rows: readonly { id: string; text: string; enabled: boolean }[] }[] {
+  return input.agents.flatMap((agent) => {
     const rows = input.items.filter((item) => isControl(item.id) && applies(item, agent.id))
     const unique = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
       const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
@@ -143,6 +446,12 @@ export async function applyAgentControls(ctx: Context, input: ApplyInput): Promi
     })
     return unique.length === 0 ? [] : [{ agent: agent.id, rows: unique }]
   })
+}
+
+export async function applyControlsWithPlans(
+  ctx: Context,
+  plans: readonly { agent: string; rows: readonly { id: string; text: string; enabled: boolean }[] }[],
+): Promise<Registration | undefined> {
   if (plans.length === 0) return undefined
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const plan of plans) {
@@ -178,6 +487,12 @@ export async function applyAgentControls(ctx: Context, input: ApplyInput): Promi
       })
     }
   })
+}
+
+/** Final Plus agent writer: deletions happen after all possible team upserts. */
+export async function applyAgentControls(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const plans = controlPlans(input)
+  return applyControlsWithPlans(ctx, plans)
 }
 
 // Every agent's permission rows, resolved lazily. Rows nobody customized
@@ -231,14 +546,7 @@ function plain(scopes: Scopes, agent: string): boolean {
   return scopes.native === undefined || scopes.native.has(agent)
 }
 
-// Per-agent model selection: resolve each effective agent's active model down
-// the existing chain and set the host agent's model in one transform. No
-// active model means Plus installs nothing for that agent, so an unchanged
-// save stays a no-op.
-export async function applyModels(
-  ctx: Context,
-  input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes; teamAgents?: readonly string[] },
-): Promise<Registration | undefined> {
+export function modelUpdates(input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes; teamAgents?: readonly string[] }) {
   const updates = input.agents.flatMap((agent) => {
     const runtime = runtimeScope(agent, input.scopes)
     const winner = resolveActiveModel({
@@ -252,15 +560,19 @@ export async function applyModels(
     if (winner.source === "upstream") return []
     return [{ agent: agent.id, providerID: winner.providerID, modelID: winner.modelID, ...(winner.variant === undefined ? {} : { variant: winner.variant }) }]
   })
+  const teamAgents = [...(input.teamAgents ?? [])].sort()
+  return { updates, teamAgents }
+}
+
+export async function applyModelsWithUpdates(
+  ctx: Context,
+  updates: readonly { agent: string; providerID: string; modelID: string; variant?: string }[],
+  teamAgents: readonly string[],
+): Promise<Registration | undefined> {
   if (updates.length === 0) return undefined
-  const team = new Set(input.teamAgents ?? [])
+  const team = new Set(teamAgents)
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
-      // Upsert only for a current team winner. A retained model record for a
-      // disabled team still resolves a winner for the stale discovered id, and
-      // core's update would recreate the disposed role from Agent.Info.default
-      // (allow '*' included). Team-only ids absent at apply time need the
-      // upsert; every other absent id keeps the old skip-if-absent behaviour.
       if (!editor.get(update.agent) && !team.has(update.agent)) continue
       editor.update(update.agent, (agent) => {
         agent.model = Model.Ref.make({
@@ -273,22 +585,34 @@ export async function applyModels(
   })
 }
 
+// Per-agent model selection: resolve each effective agent's active model down
+// the existing chain and set the host agent's model in one transform. No
+// active model means Plus installs nothing for that agent, so an unchanged
+// save stays a no-op.
+export async function applyModels(
+  ctx: Context,
+  input: { agents: readonly ApplyAgent[]; models: readonly ModelRecord[]; scopes: Scopes; teamAgents?: readonly string[] },
+): Promise<Registration | undefined> {
+  const plans = modelUpdates(input)
+  return applyModelsWithUpdates(ctx, plans.updates, plans.teamAgents)
+}
+
 async function disposeRegistrations(registrations: readonly Registration[]): Promise<void> {
   const reversed = registrations.slice().reverse()
   for (const registration of reversed) {
-    await Effect.runPromise(registration.dispose).catch(() => {})
+    await runPublish(registration.dispose).catch(() => {})
   }
 }
 
 async function runVoid(effect: Effect.Effect<void>): Promise<void> {
-  await Effect.runPromise(effect)
+  await runPublish(effect)
 }
 
 export async function runRegistration<Editor>(
   transform: Transform<Editor>,
   callback: (editor: Editor) => void,
 ): Promise<Registration> {
-  return Effect.runPromise(
+  return runPublish(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() => transform(callback)).pipe(
@@ -304,7 +628,7 @@ async function runHook<Name extends "context" | "catalog">(
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
 ): Promise<Registration> {
-  return Effect.runPromise(
+  return runPublish(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() => hook(name, callback)).pipe(
@@ -420,8 +744,7 @@ export function roleUpdates(
   })
 }
 
-async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
-  const updates = roleUpdates(input)
+export async function applyRolesWithUpdates(ctx: Context, updates: readonly { agent: string; text: string }[]): Promise<Registration | undefined> {
   if (updates.length === 0) return undefined
   return runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
     for (const update of updates) {
@@ -433,16 +756,23 @@ async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration
   })
 }
 
+async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const updates = roleUpdates(input)
+  return applyRolesWithUpdates(ctx, updates)
+}
+
 interface SkillApplied {
   readonly agentChanged: boolean
   readonly skillChanged: boolean
 }
 
-async function applySkills(
-  ctx: Context,
-  input: ApplyInput,
-  onInstall: (registration: Registration) => void,
-): Promise<SkillApplied> {
+export interface SkillPlans {
+  readonly denials: readonly { agent: string; skill: string }[]
+  readonly copies: readonly { agent: string; skill: string; text: string }[]
+  readonly rules: readonly { agent: string; action: "skill"; resource: string; effect: PolicyRule["effect"] }[]
+}
+
+export function skillPlans(input: ApplyInput): SkillPlans {
   const denials = input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "skill") return []
@@ -460,20 +790,11 @@ async function applySkills(
       const resolved = resolvedFor(item, agent, input)
       if (!skillCustomized(item, resolved)) return []
       if (!resolved.enabled) return []
-      // A copy identical to upstream adds nothing. Note this compares the
-      // assembled body (what the copy would hold) against the raw upstream:
-      // the one case where they differ without a user customization is
-      // assemble's whitespace normalization, and skillCustomized already
-      // excluded that, so any remaining difference is a real customization.
       if (resolved.assembled === item.text) return []
       return [{ agent: agent.id, skill: parseId(item.id, "skill:"), text: resolved.assembled }]
     }),
   )
-  if (denials.length === 0 && copies.length === 0) return { agentChanged: false, skillChanged: false }
-  const added = copies.length === 0 ? undefined : await addSkillCopies(ctx, copies)
-  if (added !== undefined) onInstall(added.registration)
-  const addedIDs = added?.added ?? new Set<string>()
-  const addedCopies = copies.filter((copy) => addedIDs.has(copyName(copy.agent, copy.skill)))
+  const addedCopies = copies
   const namespaceDenies =
     addedCopies.length === 0
       ? []
@@ -486,13 +807,44 @@ async function applySkills(
       { agent: copy.agent, action: "skill" as const, resource: copyName(copy.agent, copy.skill), effect: "allow" as const },
     ]),
   ]
-  if (rules.length === 0) return { agentChanged: false, skillChanged: added !== undefined }
-  const team = new Set(input.teamAgents ?? [])
-  const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-    for (const rule of rules) pushRule(editor, rule, team)
-  })
-  onInstall(agentRegistration)
-  return { agentChanged: true, skillChanged: added !== undefined }
+  return { denials, copies, rules }
+}
+
+export async function installSkillPlans(
+  ctx: Context,
+  plans: SkillPlans,
+  teamAgents?: readonly string[],
+): Promise<Registration[]> {
+  const installed: Registration[] = []
+  try {
+    if (plans.copies.length > 0) {
+      const added = await addSkillCopies(ctx, [...plans.copies])
+      if (added !== undefined) installed.push(added.registration)
+    }
+    if (plans.rules.length > 0) {
+      const team = new Set(teamAgents ?? [])
+      const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
+        for (const rule of plans.rules) pushRule(editor, rule, team)
+      })
+      installed.push(agentRegistration)
+    }
+    return installed
+  } catch (error) {
+    await disposeRegistrations(installed)
+    throw error
+  }
+}
+
+async function applySkills(
+  ctx: Context,
+  input: ApplyInput,
+  onInstall: (registration: Registration) => void,
+): Promise<SkillApplied> {
+  const plans = skillPlans(input)
+  if (plans.denials.length === 0 && plans.copies.length === 0) return { agentChanged: false, skillChanged: false }
+  const installed = await installSkillPlans(ctx, plans, input.teamAgents)
+  for (const reg of installed) onInstall(reg)
+  return { agentChanged: plans.rules.length > 0, skillChanged: plans.copies.length > 0 }
 }
 
 function pushRule(
@@ -798,7 +1150,7 @@ async function addSkillCopies(
     }
   })
   if (added.size === 0) {
-    await Effect.runPromise(registration.dispose)
+    await runPublish(registration.dispose)
     return undefined
   }
   return { registration, added }
@@ -895,14 +1247,20 @@ function instructionPlanPath(id: string): string {
   return parseId(id, "system:")
 }
 
-async function applySession(
-  ctx: Context,
-  input: ApplyInput,
-  permissions: PermissionTable,
-): Promise<{ registrations: Registration[]; tools: readonly ToolPlan[]; agentChanged: boolean }> {
+export interface SessionPlans {
+  readonly base: readonly BasePlan[]
+  readonly native: readonly ToolPlan[]
+  readonly denials: readonly ToolCandidate[]
+  readonly catalogPlans: readonly ToolPlan[]
+  readonly permDenies: readonly Rule[]
+  readonly scrubByAgent: readonly [string, string[]][]
+  readonly needsNarrowing: boolean
+  readonly tools: readonly ToolPlan[]
+}
+
+export function sessionPlans(input: ApplyInput, permissions: PermissionTable): SessionPlans {
   const base = basePlans(input)
   const candidates = toolCandidates(input)
-  const instructions = instructionPlans(input)
   const native: ToolPlan[] = candidates
     .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
     .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
@@ -925,11 +1283,6 @@ async function applySession(
       catalogPath: catalogPath(candidate.item),
       pinned: candidate.pinned,
     }))
-  // Role rules, the non-member namespace deny and every row's own rules land
-  // through the same pushRule path, in orderRules' order: defaults, then what
-  // lets something through, then refusals. A policy row's own ordering (deny
-  // *, then the allowed paths, then the never-editable state) is exactly that
-  // order, so it survives core's last-match-wins evaluation.
   const permDenies = orderRules<Rule>([
     ...permDenials(input),
     ...shellAllowList(input),
@@ -944,25 +1297,42 @@ async function applySession(
     ...(rule.message === undefined ? {} : { message: rule.message }),
   }))
   const scrubByAgent = scrubKeywordsByAgent(input)
-  const needsScrub = [...scrubByAgent.values()].some((keywords) => keywords.length > 0)
-  // Team members' tools also learn the project's checks per request (the file
-  // can change between publishes), so a team needs the narrowing hook.
   const needsNarrowing = tableNarrows(permissions, input.agents.map((agent) => agent.id)) || (input.teamAgents?.length ?? 0) > 0
-  if (base.length === 0 && native.length === 0 && instructions.length === 0 && denials.length === 0 && catalogPlans.length === 0 && permDenies.length === 0 && !needsScrub && !needsNarrowing)
-    return { registrations: [], tools: [], agentChanged: false }
-  const contextHook = base.length > 0 || native.length > 0 || instructions.length > 0 || needsScrub
+  return {
+    base,
+    native,
+    denials,
+    catalogPlans,
+    permDenies,
+    scrubByAgent: Array.from(scrubByAgent.entries()),
+    needsNarrowing,
+    tools: [...native, ...catalogPlans],
+  }
+}
+
+export async function installSessionPlans(
+  ctx: Context,
+  input: ApplyInput,
+  plans: SessionPlans,
+  permissions: PermissionTable,
+): Promise<Registration[]> {
   const installed: Registration[] = []
-  const team = new Set(input.teamAgents ?? [])
   try {
-    if (denials.length > 0) {
+    const team = new Set(input.teamAgents ?? [])
+    const instructions = instructionPlans(input)
+    const scrubByAgent = new Map(plans.scrubByAgent)
+    const needsScrub = plans.scrubByAgent.some(([_, keywords]) => keywords.length > 0)
+    const contextHook = plans.base.length > 0 || plans.native.length > 0 || instructions.length > 0 || needsScrub
+
+    if (plans.denials.length > 0) {
       const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-        for (const denial of denials) pushRule(editor, { agent: denial.agent, action: denial.tool, resource: "*", effect: "deny" }, team)
+        for (const denial of plans.denials) pushRule(editor, { agent: denial.agent, action: denial.tool, resource: "*", effect: "deny" }, team)
       })
       installed.push(agentRegistration)
     }
-    if (permDenies.length > 0) {
+    if (plans.permDenies.length > 0) {
       const permRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
-        for (const rule of permDenies) pushRule(editor, rule, team)
+        for (const rule of plans.permDenies) pushRule(editor, rule, team)
       })
       installed.push(permRegistration)
     }
@@ -971,7 +1341,7 @@ async function applySession(
       for (const agent of input.agents) {
         if (agent.base !== undefined) pins.set(agent.id, agent.base)
       }
-      const catalog = await Effect.runPromise(
+      const catalog = await runPublish(
         ctx.model.list().pipe(
           Effect.catchCause(() =>
             Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
@@ -981,19 +1351,16 @@ async function applySession(
       const classifier: RequestClassifier = { pinned: pins, catalog: catalog.data, prompt: ctx.prompt }
       const customByAgent = await readCustomSystem(ctx, input.agents)
       const registration = await runHook(ctx.session.hook, "context", (event) => {
-        applyBasePlan(event, base, classifier, customByAgent)
-        applyToolPlan(event, native.filter((plan) => plan.agent === String(event.agent)))
+        applyBasePlan(event, plans.base, classifier, customByAgent)
+        applyToolPlan(event, plans.native.filter((plan) => plan.agent === String(event.agent)))
         applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
         applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
-        if (needsNarrowing) narrowTools(event, permissions)
-        return needsNarrowing ? describeChecks(ctx, event) : Effect.void
+        if (plans.needsNarrowing) narrowTools(event, permissions)
+        return plans.needsNarrowing ? describeChecks(ctx, event) : Effect.void
       })
       installed.push(registration)
     }
-    // Schema narrowing alone rides its own context hook: it only shapes what
-    // the model is told (execute.before still refuses), so a host without the
-    // seam keeps working without it.
-    if (!contextHook && needsNarrowing) {
+    if (!contextHook && plans.needsNarrowing) {
       const narrowing = await hook(() =>
         ctx.session.hook("context", (event) => {
           narrowTools(event, permissions)
@@ -1002,13 +1369,13 @@ async function applySession(
       )
       if (narrowing !== undefined) installed.push(narrowing)
     }
-    if (catalogPlans.length > 0 || needsScrub) {
+    if (plans.catalogPlans.length > 0 || needsScrub) {
       const catalogRegistration = await runHook(ctx.session.hook, "catalog", (event) => {
-        for (const plan of catalogPlans) {
+        for (const plan of plans.catalogPlans) {
           if (plan.agent !== String(event.agent)) continue
-          const path = plan.catalogPath
-          if (path === undefined) continue
-          const entry = event.tools[path]
+          const catalogP = plan.catalogPath
+          if (catalogP === undefined) continue
+          const entry = event.tools[catalogP]
           if (entry === undefined) continue
           entry.description = plan.text
           if (plan.pinned !== undefined) entry.pinned = plan.pinned
@@ -1018,11 +1385,33 @@ async function applySession(
       })
       installed.push(catalogRegistration)
     }
-    return { registrations: installed, tools: [...native, ...catalogPlans], agentChanged: denials.length > 0 || permDenies.length > 0 }
+    return installed
   } catch (error) {
     await disposeRegistrations(installed)
     throw error
   }
+}
+
+async function applySession(
+  ctx: Context,
+  input: ApplyInput,
+  permissions: PermissionTable,
+): Promise<{ registrations: Registration[]; tools: readonly ToolPlan[]; agentChanged: boolean }> {
+  const plans = sessionPlans(input, permissions)
+  const instructions = instructionPlans(input)
+  if (
+    plans.base.length === 0 &&
+    plans.native.length === 0 &&
+    instructions.length === 0 &&
+    plans.denials.length === 0 &&
+    plans.catalogPlans.length === 0 &&
+    plans.permDenies.length === 0 &&
+    !plans.scrubByAgent.some(([_, k]) => k.length > 0) &&
+    !plans.needsNarrowing
+  )
+    return { registrations: [], tools: [], agentChanged: false }
+  const installed = await installSessionPlans(ctx, input, plans, permissions)
+  return { registrations: installed, tools: plans.tools, agentChanged: plans.denials.length > 0 || plans.permDenies.length > 0 }
 }
 
 // The one host-sourced classification: mirror the core optimize plugin
@@ -1095,7 +1484,7 @@ async function readCustomSystem(
   agents: readonly ApplyAgent[],
 ): Promise<ReadonlySet<string>> {
   const explicit = new Set(agents.filter((agent) => agent.customSystem === true).map((agent) => agent.id))
-  const listed = await Effect.runPromise(
+  const listed = await runPublish(
     ctx.agent.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Agent.Info[] }))),
   )
   for (const entry of listed.data) {
@@ -1294,8 +1683,8 @@ function partPath(part: SessionContext["system"][number]): string | undefined {
   return undefined
 }
 
-async function applyMcp(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
-  const updates = input.items.flatMap((item) => {
+export function mcpPlans(input: ApplyInput): readonly { name: string; enabled: boolean }[] {
+  return input.items.flatMap((item) => {
     if (item.kind !== "mcp") return []
     const resolved = resolve({
       upstream: item,
@@ -1308,6 +1697,12 @@ async function applyMcp(ctx: Context, input: ApplyInput): Promise<Registration |
     if (resolved.enabled === item.enabled) return []
     return [{ name: parseId(item.id, "mcp:"), enabled: resolved.enabled }]
   })
+}
+
+export async function applyMcpWithUpdates(
+  ctx: Context,
+  updates: readonly { name: string; enabled: boolean }[],
+): Promise<Registration | undefined> {
   if (updates.length === 0) return undefined
   return runRegistration(ctx.mcp.transform, (editor: MCPEditor) => {
     for (const update of updates) {
@@ -1320,4 +1715,9 @@ async function applyMcp(ctx: Context, input: ApplyInput): Promise<Registration |
       current.disabled = true
     }
   })
+}
+
+async function applyMcp(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
+  const updates = mcpPlans(input)
+  return applyMcpWithUpdates(ctx, updates)
 }

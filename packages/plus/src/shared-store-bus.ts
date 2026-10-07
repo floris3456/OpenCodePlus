@@ -11,12 +11,15 @@
 // file, so a listener just refreshes and lets the normal stale check decide.
 // The file watcher in index.ts covers the same signal across separate server
 // processes (the standalone dev topology), where module state is not shared.
-type Listener = () => void
+// `source` is the notifying instance (it skips its own notice); `force` marks
+// a change that writes no record (a team directory), which the listeners must
+// rediscover even though the store revisions did not move.
+type Listener = (source?: unknown, force?: boolean) => void
 
 const listeners = new Set<Listener>()
 
-export function notifySharedStoreChanged(): void {
-  for (const listener of [...listeners]) listener()
+export function notifySharedStoreChanged(source?: unknown, force?: boolean): void {
+  for (const listener of [...listeners]) listener(source, force)
 }
 
 export function onSharedStoreChanged(listener: Listener): () => void {

@@ -1,3 +1,5 @@
+import { fingerprint } from "./model.js"
+
 // Curated tool permission rules plus the one shared keyword derivation.
 //
 // Phase-1 foundation only: this module holds view-time data. It persists
@@ -345,6 +347,29 @@ function isWordChar(char: string | undefined): boolean {
   return char === "_"
 }
 
+interface MinedToolRule {
+  readonly tool: string
+  readonly id: string
+  readonly label: string
+  readonly patterns: readonly string[]
+}
+
+const minedRulesCacheLimit = 4000
+const minedRulesCache = new Map<string, readonly MinedToolRule[]>()
+
+export function resetMinedRulesCache(): void {
+  minedRulesCache.clear()
+}
+
+function cacheMinedToolRules(tool: string, fp: string, rules: readonly MinedToolRule[]): void {
+  const key = `${tool}\n${fp}`
+  if (minedRulesCache.size >= minedRulesCacheLimit) {
+    const oldest = minedRulesCache.keys().next()
+    if (!oldest.done) minedRulesCache.delete(oldest.value)
+  }
+  minedRulesCache.set(key, rules)
+}
+
 // Mine view-time permission candidates from text Plus already holds. Inputs
 // are `{ item, text }` pairs where `item` is the inventory item id (e.g.
 // "tool:shell", "base:gpt", "skill:notes") used as provenance. Agents and
@@ -367,12 +392,42 @@ export function mineDiscoveredRules(input: {
     }
     existing.provenance.add(item)
   }
+  const fileTools = ["edit", "write", "read", "glob", "grep"]
   for (const entry of input.texts) {
     const text = entry.text
     if (text.length === 0) continue
-    for (const mined of mineCommands(text)) add("shell", mined.id, mined.label, mined.patterns, entry.item)
-    for (const mined of mineFiles(text)) add(mined.tool, mined.id, mined.label, mined.patterns, entry.item)
-    for (const mined of mineUrls(text)) add(mined.tool, mined.id, mined.label, mined.patterns, entry.item)
+    const fp = fingerprint(text)
+
+    const shellKey = `shell\n${fp}`
+    let shellRules = minedRulesCache.get(shellKey)
+    if (shellRules === undefined) {
+      shellRules = mineCommands(text).map((mined) => ({ tool: "shell", id: mined.id, label: mined.label, patterns: mined.patterns }))
+      cacheMinedToolRules("shell", fp, shellRules)
+    }
+    for (const mined of shellRules) add("shell", mined.id, mined.label, mined.patterns, entry.item)
+
+    const missingFileTool = fileTools.some((tool) => !minedRulesCache.has(`${tool}\n${fp}`))
+    if (missingFileTool) {
+      const mined = mineFiles(text)
+      for (const tool of fileTools) {
+        const forTool = mined.filter((item) => item.tool === tool)
+        cacheMinedToolRules(tool, fp, forTool)
+      }
+    }
+    for (const tool of fileTools) {
+      const cached = minedRulesCache.get(`${tool}\n${fp}`)
+      if (cached !== undefined) {
+        for (const mined of cached) add(mined.tool, mined.id, mined.label, mined.patterns, entry.item)
+      }
+    }
+
+    const urlKey = `webfetch\n${fp}`
+    let urlRules = minedRulesCache.get(urlKey)
+    if (urlRules === undefined) {
+      urlRules = mineUrls(text)
+      cacheMinedToolRules("webfetch", fp, urlRules)
+    }
+    for (const mined of urlRules) add(mined.tool, mined.id, mined.label, mined.patterns, entry.item)
   }
   const agents = input.agents ?? []
   const skills = input.skills ?? []

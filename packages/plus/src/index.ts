@@ -20,8 +20,9 @@ import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFiel
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
-import { apply, applyAgentControls, roleUpdates, runRegistration, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
+import { apply, applyAgentControls, applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
+import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerReleaseTools } from "./release/tools.js"
@@ -99,12 +100,20 @@ export interface TeamOwnership {
 export interface PlusState {
   registration: RpcRegistration<typeof Definition> | undefined
   applied: Registration[]
+  appliedParts: Map<string, AppliedPart>
+  appliedPlans: Map<string, unknown>
   tooling: Registration[]
   teamTooling: Registration[]
   installedTools: readonly ToolPlan[]
   fingerprint: string | undefined
   projectRevision: number | undefined
   globalRevision: number | undefined
+  pendingHostChange: boolean
+  /** A change with no record write (a team directory) is pending: rediscover even with unchanged revisions. */
+  pendingForce: boolean
+  pendingRefresh: boolean
+  refreshTimer?: ReturnType<typeof setTimeout>
+  activeRefresh?: Promise<void>
   baselines: Map<string, PromptBaseline>
   modelBaselines: Map<string, ModelBaseline>
   activeModels: Map<string, ModelRefLike>
@@ -146,12 +155,19 @@ export function createState(): PlusState {
   return {
     registration: undefined,
     applied: [],
+    appliedParts: new Map(),
+    appliedPlans: new Map(),
     tooling: [],
     teamTooling: [],
     installedTools: [],
     fingerprint: undefined,
     projectRevision: undefined,
     globalRevision: undefined,
+    pendingHostChange: false,
+    pendingForce: false,
+    pendingRefresh: false,
+    refreshTimer: undefined,
+    activeRefresh: undefined,
     baselines: new Map(),
     modelBaselines: new Map(),
     activeModels: new Map(),
@@ -225,6 +241,9 @@ export default Plugin.define({
       // other way round, the fact kept core's proposal ("on") after Plus had
       // turned warming off.
       yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
+      // A location with a coalesced refresh pending applies it before a chat
+      // request runs, so no request uses stale instructions.
+      yield* ctx.session.hook("prompt", () => flushPendingRefresh(ctx, state))
       yield* ctx.session.hook("compaction.decide", (event) => {
         const model = consumeColdCompaction(event.sessionID)
         if (model !== undefined) {
@@ -4790,6 +4809,11 @@ async function hostModelsFor(ctx: Context, state: PlusState): Promise<readonly H
   return state.hostModels
 }
 
+export const discoverCounter = { count: 0 }
+export function resetDiscoverCounter(): void {
+  discoverCounter.count = 0
+}
+
 async function discoverAll(
   ctx: Context,
   loaded: LoadedStores,
@@ -4800,6 +4824,7 @@ async function discoverAll(
   // resolve against the parent project, not the copy-free worktree.
   directory: string = ctx.location.directory,
 ): Promise<Discovered> {
+  discoverCounter.count++
   if (state.agentObserver === undefined) {
     state.agentObserver = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
       state.agentUpstream = structuredClone(editor.list())
@@ -5329,6 +5354,7 @@ function publishFresh(
       // worktree would report and install an empty project.
       const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
       const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state, builtins, directory))
+      yield* Effect.yieldNow
       // A newer publish already won; this read is stale, so leave the applied
       // registrations and the last emitted revision untouched.
       if (state.projectRevision !== undefined && stored.projectRevision < state.projectRevision) return discovered
@@ -5339,6 +5365,7 @@ function publishFresh(
       const { view, teams, specialRoleOverrides, publishAgents, publishScopes } = yield* Effect.promise(() =>
         publishChain(discovered, stored.records, directory, builtins, state.teamOutputIds),
       )
+      yield* Effect.yieldNow
       state.activeModels = buildActiveModels(publishAgents, modelRecords, publishScopes)
       state.cachedModels = modelRecords
       state.cachedModelSettings = modelSettingsOf(stored.records)
@@ -5364,15 +5391,6 @@ function publishFresh(
         yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
         return discovered
       }
-      // Install the replacement before disposing the superseded registrations.
-      // Core rebuilds and reconciles on every registration change, so disposing
-      // first would expose the un-transformed upstream state between the two
-      // steps: an MCP server Plus keeps disabled would genuinely start, then
-      // stop again once the replacement reinstalls disabled = true. Core replays
-      // transforms in registration order with last write wins; every Plus
-      // transform overwrites the same key (agent.system, disabled = true, skill
-      // rules with a presence check, session tools by agent), so the briefly
-      // doubled callback ends with the new value.
       const applyInput: ApplyInput = {
         items: discovered.items,
         // Discovery keeps shadowed identities for scope resolution and the UI;
@@ -5394,43 +5412,37 @@ function publishFresh(
         },
         deferAgentControls: true,
       }
-      const applied = yield* Effect.promise(() => apply(ctx, applyInput))
-      // Enabled teams become real core-visible agents: resolve the enabled
-      // teams (on-disk project/global plus built-in defaults) against the
-      // unmasked regular sources (Plus team output never feeds back as a
-      // regular to shadow its own team; resolveTeams already favours an
-      // established same-level regular, so losing team copies never reach the
-      // installer) and register each winner's markdown body with the host.
-      // Built-in members install from the source registry with no filesystem
-      // path. Team registrations install after apply's own and dispose with
-      // the same superseded set when the next publish replaces them.
-      // A Plus customization of a member's role wins over the shipped body:
-      // the override map over the resolved winners (at the winner's scope)
-      // carries the edited text instead of clobbering it. Uncustomized
-      // members still receive their team body exactly as before. The winner
-      // ids just installed become the recorded team output for the next
-      // publish, so ownership never depends on matching host body text.
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
       const teamRoleOverrides = view.overrides
-      const teamApplied = yield* Effect.promise(() => installTeamAgents(ctx, fileAgents, teamRoleOverrides, specialRoleOverrides))
-      const builtinApplied = yield* Effect.promise(() => installBuiltinTeamAgents(ctx, builtinWinners, builtins, teamRoleOverrides))
-      const controls = yield* Effect.promise(() => applyAgentControls(ctx, applyInput))
-      if (controls !== undefined) yield* ctx.agent.reload()
-      const previous = state.applied
-      state.applied = [...applied.registrations, ...teamApplied.registrations, ...builtinApplied.registrations, ...(controls === undefined ? [] : [controls])]
+
+      // One core batch for the whole install/dispose set: the host rebuilds
+      // and reconciles each registry once per publish.
+      const partsResult = yield* inPublishBatch(ctx.batch, () =>
+        applyPublishParts(ctx, state, {
+          applyInput,
+          fileAgents,
+          builtinWinners,
+          builtins,
+          teamRoleOverrides,
+          specialRoleOverrides,
+        }),
+      )
+      yield* Effect.yieldNow
+
+      state.applied = [...state.appliedParts.values()].flatMap((p) => p.registrations as Registration[])
       const winnerById = new Map(teamAgents.map((agent) => [agent.id, agent] as const))
       const ownership = new Map<string, TeamOwnership>()
-      for (const id of [...teamApplied.installedIds, ...builtinApplied.installedIds]) {
+      for (const id of partsResult.installedIds) {
         const winner = winnerById.get(id)
         if (winner?.team === undefined) continue
         ownership.set(id, { team: winner.team, level: winner.scope })
       }
       const teamOwnershipChanged = !sameTeamOwnership(state.teamOutputIds, ownership)
       state.teamOutputIds = ownership
-      state.installedTools = applied.tools
-      state.permissions = applied.permissions
+      state.installedTools = partsResult.tools
+      state.permissions = partsResult.permissions
       state.fingerprint = fingerprint
       state.projectRevision = stored.projectRevision
       state.globalRevision = stored.globalRevision
@@ -5447,7 +5459,6 @@ function publishFresh(
         specialRoleOverrides,
         contextFor(discovered.agents, discovered.items, stored.records, teams),
       )
-      yield* Effect.forEach(previous, (registration) => registration.dispose, { discard: true })
       yield* emitChanged(state, stored.projectRevision, stored.globalRevision)
       if (teamOwnershipChanged) yield* emitTeamsChanged(state)
       return discovered
@@ -5608,7 +5619,9 @@ function baselineKey(item: { id: string; agents?: readonly string[] }): string {
 
 function disposeApplied(state: PlusState): Effect.Effect<void> {
   return Effect.gen(function* () {
-    const registrations = state.applied
+    const registrations = [...state.appliedParts.values()].flatMap((p) => p.registrations as Registration[])
+    state.appliedParts.clear()
+    state.appliedPlans.clear()
     state.applied = []
     state.installedTools = []
     yield* Effect.forEach(registrations, (registration) => registration.dispose, { discard: true })
@@ -5619,7 +5632,7 @@ function emitChanged(state: PlusState, revision: number, globalRevision: number)
   // Wake the other Locations in this process (and, through the file watcher,
   // other processes) before the optional host event: sharing the store is the
   // point, not the local registration.
-  notifySharedStoreChanged()
+  notifySharedStoreChanged(state)
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("instructions.changed", { revision, globalRevision }).pipe(Effect.orDie)
@@ -5633,8 +5646,9 @@ function emitWarmingChanged(state: PlusState, sessionID: string): Effect.Effect<
 
 function emitTeamsChanged(state: PlusState): Effect.Effect<void> {
   // A team create/enable/member change can touch no record (an empty team is a
-  // directory), so notify here too: the other Locations must re-discover.
-  notifySharedStoreChanged()
+  // directory), so notify here too: the other Locations must re-discover even
+  // though the store revisions did not move.
+  notifySharedStoreChanged(state, true)
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("teams.changed", {}).pipe(Effect.orDie)
@@ -6012,11 +6026,12 @@ const SessionCompactionEvents: Set<string> = new Set(["session.compaction.ended"
 function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
   const refresh = ctx.event.subscribe().pipe(
     Stream.filter((event) => RefreshEvents.has(event.type)),
-    Stream.runForEach((event) =>
-      refreshFromHost(ctx, state).pipe(
+    Stream.runForEach((event) => {
+      state.pendingHostChange = true
+      return refreshFromHost(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus refresh failed", { cause, type: event.type })),
-      ),
-    ),
+      )
+    }),
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )
@@ -6098,6 +6113,7 @@ export function watchToolRegistry(ctx: Context, state: PlusState): Effect.Effect
           if (known === undefined) return
           const listed = yield* ctx.tool.list()
           if (listed.length === known.size && listed.every((tool) => known.has(tool.id))) return
+          state.pendingHostChange = true
           yield* refreshFromHost(ctx, state)
         }).pipe(Effect.catchCause((cause) => Effect.logWarning("plus tool registry refresh failed", { cause }))),
       ),
@@ -6116,25 +6132,37 @@ export function watchToolRegistry(ctx: Context, state: PlusState): Effect.Effect
 //   its own (the `--standalone` dev topology), where module state is not
 //   shared.
 //
-// Both offer to one sliding queue; the debounce coalesces the burst a single
-// store write produces, and refreshFromHost re-reads and republishes. The
-// publish is what makes the host emit agent.updated per Location, so its TUI
-// re-lists agents and teams.
+// Both trigger a 1s trailing quiet coalescing timer, and a location with a
+// pending refresh flushes before prompt execution.
 export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
   return Effect.gen(function* () {
-    const changes = yield* Queue.sliding<void>(1)
-    const unsubscribe = onSharedStoreChanged(() => Queue.offerUnsafe(changes, undefined))
-    yield* Effect.addFinalizer(() => Effect.sync(unsubscribe))
-    yield* watchSharedStoreFile(changes)
-    yield* Stream.fromQueue(changes).pipe(
-      Stream.debounce("50 millis"),
-      Stream.runForEach(() =>
-        refreshFromHost(ctx, state).pipe(
-          Effect.catchCause((cause) => Effect.logWarning("plus shared store refresh failed", { cause })),
-        ),
-      ),
-      Effect.forkScoped({ startImmediately: true }),
+    const trigger = (source?: unknown, force?: boolean) => {
+      if (source === state) return
+      state.pendingRefresh = true
+      if (force === true) state.pendingForce = true
+      if (state.refreshTimer !== undefined) {
+        clearTimeout(state.refreshTimer)
+      }
+      state.refreshTimer = setTimeout(() => {
+        state.refreshTimer = undefined
+        Effect.runPromise(
+          flushPendingRefresh(ctx, state).pipe(
+            Effect.catchCause((cause) => Effect.logWarning("plus coalesced refresh failed", { cause })),
+          ),
+        )
+      }, 1000)
+    }
+    const unsubscribe = onSharedStoreChanged(trigger)
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        unsubscribe()
+        if (state.refreshTimer !== undefined) {
+          clearTimeout(state.refreshTimer)
+          state.refreshTimer = undefined
+        }
+      }),
     )
+    yield* watchSharedStoreFile(trigger)
   })
 }
 
@@ -6144,14 +6172,18 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
 // rewrites the records file in place, so the directory watch sees it. A missing
 // directory (nothing written yet) just means no watcher for it; the in-process
 // bus still works.
-function watchSharedStoreFile(changes: Queue.Queue<void>): Effect.Effect<void, never, Scope.Scope> {
+function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => void): Effect.Effect<void, never, Scope.Scope> {
   return Effect.acquireRelease(
     Effect.sync(() => {
-      const targets = [path.dirname(globalRecordsPath()), globalTeamsPath()]
+      // The teams root changes without a record write, so its changes force a rediscovery.
+      const targets = [
+        { path: path.dirname(globalRecordsPath()), force: false },
+        { path: globalTeamsPath(), force: true },
+      ]
       const watchers: fsSync.FSWatcher[] = []
       for (const target of targets) {
         try {
-          const watcher = fsSync.watch(target, { persistent: false }, () => Queue.offerUnsafe(changes, undefined))
+          const watcher = fsSync.watch(target.path, { persistent: false }, () => onChange(undefined, target.force))
           watcher.on("error", () => undefined)
           watchers.push(watcher)
         } catch {
@@ -6264,18 +6296,57 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
   return { providerID, modelID }
 }
 
-function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    // A host agent/skill/config change can change the provider catalogue
-    // (providers, models, warming), so the cached read is dropped and the
-    // publish below reads it once more. Navigation between refreshes reuses it.
-    state.hostModels = undefined
-    // Same resolution as activate: a host refresh in a run's worktree refreshes
-    // the recorded project, not the worktree (see activationDirectory).
-    const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
-    const stored = yield* Effect.promise(() => loadCurrent(directory))
-    yield* publishFresh(ctx, state, stored)
+const refreshProcessSemaphore = Effect.runSync(Semaphore.make(1))
+
+export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return Effect.promise(async () => {
+    if (state.refreshTimer !== undefined) {
+      clearTimeout(state.refreshTimer)
+      state.refreshTimer = undefined
+    }
+    if (state.activeRefresh !== undefined) {
+      await state.activeRefresh.catch(() => {})
+      if (!state.pendingRefresh) return
+    }
+    if (!state.pendingRefresh) return
+    state.pendingRefresh = false
+    const promise = Effect.runPromise(
+      refreshFromHost(ctx, state).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus flush refresh failed", { cause })),
+      ),
+    )
+    state.activeRefresh = promise
+    try {
+      await promise
+    } finally {
+      state.activeRefresh = undefined
+    }
   })
+}
+
+export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return refreshProcessSemaphore.withPermits(1)(
+    Effect.gen(function* () {
+      const hasHostChange = state.pendingHostChange
+      const forced = hasHostChange || state.pendingForce
+      state.pendingHostChange = false
+      state.pendingForce = false
+      // A host change can change the provider catalogue; a store or team change cannot.
+      if (hasHostChange) state.hostModels = undefined
+      const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
+      const stored = yield* Effect.promise(() => loadCurrent(directory))
+      if (
+        !forced &&
+        state.projectRevision !== undefined &&
+        state.globalRevision !== undefined &&
+        stored.projectRevision === state.projectRevision &&
+        stored.globalRevision === state.globalRevision
+      ) {
+        return
+      }
+      yield* publishFresh(ctx, state, stored)
+    }),
+  )
 }
 
 function toSnapshot(
