@@ -71,7 +71,6 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const providers = yield* Provider.Service
   const models = yield* Model.Service
   const commands = yield* Command.Service
-  const config = yield* Config.Service
   const bus = yield* Bus.Service
   const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
   const integration = yield* Integration.Service
@@ -288,7 +287,19 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
       transform: commands.transform,
     },
     config: {
-      reload: config.reload,
+      // The location's own Config, from its full service graph (where the
+      // Environment a placed folder reads through is present), resolved per
+      // call: the host itself never builds a Config.
+      reload: (input) =>
+        Effect.gen(function* () {
+          const config = yield* Config.Service
+          yield* config.reload(input)
+        }).pipe(
+          Effect.provide(
+            locations.get(Location.Ref.make({ directory: location.directory, workspaceID: location.workspaceID })),
+          ),
+          Effect.orDie,
+        ),
     },
     event: {
       subscribe: () =>
@@ -655,7 +666,6 @@ export const requirements = LayerNode.group([
   Provider.node,
   Model.node,
   Command.node,
-  Config.node,
   Bus.node,
   InstructionDiscovery.node,
   Integration.node,
