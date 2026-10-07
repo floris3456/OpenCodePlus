@@ -103,6 +103,7 @@ export function loadedFromSave(saved: SaveSuccess, records: readonly StoredRecor
     presetsMigrated: false,
     skillsMigrated: false,
     splitsMigrated: false,
+    wholeRowsMigrated: false,
   }
 }
 

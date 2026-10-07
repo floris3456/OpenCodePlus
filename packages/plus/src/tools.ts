@@ -1546,7 +1546,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         output: {
           id,
           view,
-          text: resolved.text,
+          text: address.section === null ? (resolved.fullText ?? resolved.text) : resolved.text,
           assembled: resolved.assembled,
           enabled: resolved.enabled,
           source: resolved.source,
@@ -1583,7 +1583,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           return { output: { id, view, text: wholeRecord.text ?? "", hasOverride: true } }
         }
         const resolved = resolve(chain)
-        return { output: { id, view, text: resolved.text, hasOverride: true } }
+        return { output: { id, view, text: resolved.fullText ?? resolved.text, hasOverride: true } }
       }
       const own = customizations.find(
         (record) =>

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
-import { assembleWithOverrides, derive, manual, slice, type Split } from "./sections.js"
+import { assembleWithOverrides, assembleWithSpans, derive, manual, slice, type SectionSpan, type Split } from "./sections.js"
 import { markerIn, stripMarkers } from "./requires.js"
 
 // `preset` holds the human's edits of presets (DESIGN §1); its records live
@@ -1024,6 +1024,10 @@ export interface RuleRecord {
 export interface Resolved {
   readonly text: string
   readonly assembled: string
+  /** The assembled text with all section overrides and no exclusions, for display only. */
+  readonly fullText?: string
+  /** Section spans in fullText for display ranges. */
+  readonly spans?: ReadonlyMap<string, SectionSpan>
   readonly enabled: boolean
   readonly pinned: boolean
   readonly source: Level | "upstream"
@@ -1163,7 +1167,7 @@ export function threeWay(input: ChainInput): ThreeWay | undefined {
     }
   }
   const original = assembleWithOverrides(input.upstream.text, split, new Set(), origOverrides)
-  return { original, mine: resolvedMine.assembled, upstream }
+  return { original, mine: resolvedMine.fullText ?? resolvedMine.assembled, upstream }
 }
 
 // The resolved baseline for a new text edit at one address, exported so
@@ -1485,7 +1489,7 @@ export function resolveWhole(input: ChainInput): Resolved {
       const ids = sectionRequires(input, chain, section.id, overridden.get(section.id) ?? slice(text, section))?.ids
       if (ids !== undefined && !gate(ids)) excluded.add(section.id)
     }
-  const fullAssembled = assembleWithOverrides(text, split, new Set(), overridden)
+  const { text: fullAssembled, spans } = assembleWithSpans(text, split, overridden)
   const assembled = assembleWithOverrides(text, split, excluded, overridden)
 
   const hasOwnSectionText = split.sections.some((sec) => {
@@ -1525,8 +1529,10 @@ export function resolveWhole(input: ChainInput): Resolved {
   const source = sourceAt === -1 ? (sectionSourceNode?.level ?? "upstream") : chain[sourceAt].level
 
   const result: Resolved = {
-    text: fullAssembled,
+    text,
     assembled: gate === undefined ? assembled : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
+    fullText: fullAssembled,
+    spans,
     enabled: stateAt === -1 ? fallback.enabled : values[stateAt]?.state === "on",
     pinned: pinAt === -1 ? (input.upstream.pinned ?? false) : (values[pinAt]?.pin ?? false),
     source,
@@ -1598,6 +1604,7 @@ function resolveSection(input: ChainInput): Resolved {
   return {
     text,
     assembled: text,
+    fullText: text,
     enabled: stateAt === -1 ? whole.enabled : values[stateAt]?.state === "on",
     pinned: whole.pinned,
     source: sourceNode?.level ?? "upstream",

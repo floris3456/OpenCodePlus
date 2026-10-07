@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { fingerprint, resolve, threeWay, type Address, type CustomizationRecord, type Item } from "../src/instructions/model.js"
+import { fingerprint, resolve, threeWay, type Address, type CustomizationRecord, type Item, type SplitRecord } from "../src/instructions/model.js"
 import { derive } from "../src/instructions/sections.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import { saveText } from "../src/instructions/ops.js"
+import { addSection, saveText } from "../src/instructions/ops.js"
 import { migrateWholeRows } from "../src/instructions/store.js"
 
 function makeItem(overrides: Partial<Item> = {}): Item {
@@ -99,8 +99,9 @@ test("edit a section, then the row: its view and the assembled prompt are equal"
     address,
   })
 
-  // The row's view text and assembled prompt must be equal
-  expect(resolved1.text).toBe(resolved1.assembled)
+  // The row's view text (fullText) and assembled prompt must be equal
+  expect(resolved1.fullText).toBe(resolved1.assembled)
+  expect(resolved1.text).toBe(item.text)
   expect(resolved1.assembled).toContain("Custom intro text.")
   expect(resolved1.assembled).toContain("Body text.")
 
@@ -118,7 +119,8 @@ test("edit a section, then the row: its view and the assembled prompt are equal"
     address,
   })
 
-  expect(resolved2.text).toBe(resolved2.assembled)
+  expect(resolved2.fullText).toBe(resolved2.assembled)
+  expect(resolved2.text).toBe(item.text)
   expect(resolved2.assembled).toContain("Custom intro text.")
   expect(resolved2.assembled).toContain("Custom body text.")
 })
@@ -426,9 +428,10 @@ test("whole-row view, mine view, and threeWay diff reflect section overrides", (
     address,
   })
 
-  // The row's view text contains the section override and matches assembled prompt
-  expect(resolved.text).toBe(resolved.assembled)
-  expect(resolved.text).toContain("Intro edited.")
+  // The row's view text (fullText) contains the section override and matches assembled prompt
+  expect(resolved.fullText).toBe(resolved.assembled)
+  expect(resolved.fullText).toContain("Intro edited.")
+  expect(resolved.text).toBe(item.text)
   expect(resolved.modified).toBe(true)
   expect(resolved.overriddenHere).toBe(true)
 
@@ -444,4 +447,104 @@ test("whole-row view, mine view, and threeWay diff reflect section overrides", (
   expect(three?.mine).toBe(resolved.assembled)
   expect(three?.original).toContain("Intro text.")
   expect(three?.upstream).toContain("Intro text.")
+})
+
+test("manual split with longer section override: adding a section uses winning-text position and assembles correctly", () => {
+  const upstreamText = "Part one text.\nPart two text.\n"
+  const item: Item = {
+    id: "system:split-doc",
+    kind: "system",
+    group: "none",
+    title: "SplitDoc",
+    text: upstreamText,
+    enabled: true,
+    fingerprint: fingerprint(upstreamText),
+    agents: ["orchestrator"],
+  }
+
+  const splitRecord: SplitRecord = {
+    type: "split",
+    level: "project",
+    agent: "orchestrator",
+    item: "system:split-doc",
+    boundaries: [
+      { id: "one", name: "One", start: 0 },
+      { id: "two", name: "Two", start: 15 },
+    ],
+    updated: "2026-10-06T00:00:00.000Z",
+  }
+
+  const longOverride = "This is a much longer custom override for section one that has many more characters than fifteen.\n"
+  const overrideRecord: CustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "orchestrator",
+    item: "system:split-doc",
+    section: "one",
+    text: longOverride,
+    basedOn: fingerprint("Part one text.\n"),
+    basedOnText: "Part one text.\n",
+    updated: "2026-10-06T00:00:00.000Z",
+  }
+
+  const input = baseInput({
+    items: [item],
+    records: [splitRecord, overrideRecord],
+  })
+
+  const rowId = findNodeId(input, "system:split-doc")
+
+  // Add section "Three"
+  const addResult = addSection(input, rowId, "Three", "Three body text.\n")
+  if ("refusal" in addResult) throw new Error(addResult.refusal)
+
+  // 1. The stored boundary for "Three" must be at winning-text positions (length of upstreamText = 30), NOT assembled position (~115)
+  const savedSplit = addResult.splits.find((s) => s.item === "system:split-doc")
+  expect(savedSplit).toBeDefined()
+  const threeBoundary = savedSplit?.boundaries.find((b) => b.name === "Three")
+  expect(threeBoundary?.start).toBe(upstreamText.length) // 30
+
+  // 2. The assembled prompt is correct
+  const address: Address = { level: "project", agent: "orchestrator", item: "system:split-doc", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: addResult.records,
+    splits: addResult.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+
+  expect(resolved.assembled).toContain("This is a much longer custom override for section one")
+  expect(resolved.assembled).toContain("Part two text.")
+  expect(resolved.assembled).toContain("Three body text.")
+
+  // 3. Row view shows the assembled text (fullText)
+  expect(resolved.fullText).toBeDefined()
+  expect(resolved.fullText).toBe(resolved.assembled)
+
+  // 4. Excluded range on assembled text: exclude section "two"
+  const withExcluded: CustomizationRecord[] = [
+    ...addResult.records,
+    {
+      type: "customization",
+      level: "project",
+      agent: "orchestrator",
+      item: "system:split-doc",
+      section: "two",
+      state: "off",
+      basedOn: "",
+      updated: "2026-10-07T00:00:00.000Z",
+    },
+  ]
+  const resolvedWithExcluded = resolve({
+    upstream: item,
+    records: withExcluded,
+    splits: addResult.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(resolvedWithExcluded.spans).toBeDefined()
+  const twoSpan = resolvedWithExcluded.spans?.get("two")
+  expect(twoSpan).toBeDefined()
+  expect(resolvedWithExcluded.fullText?.slice(twoSpan!.start, twoSpan!.end)).toContain("Part two text.")
 })

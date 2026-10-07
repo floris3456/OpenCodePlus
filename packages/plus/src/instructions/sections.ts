@@ -65,6 +65,81 @@ export function assemble(text: string, split: Split, excluded: ReadonlySet<strin
   return parts.join("").replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
 }
 
+export interface SectionSpan {
+  readonly start: number
+  readonly end: number
+}
+
+export interface AssembledWithSpans {
+  readonly text: string
+  readonly spans: ReadonlyMap<string, SectionSpan>
+}
+
+export function assembleWithSpans(
+  text: string,
+  split: Split,
+  overrides: ReadonlyMap<string, string>,
+): AssembledWithSpans {
+  const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
+  const parents = parentIndexes(ordered)
+  const children = new Map<number, number[]>()
+  parents.forEach((parent, index) => {
+    if (parent === undefined) return
+    const list = children.get(parent) ?? []
+    list.push(index)
+    children.set(parent, list)
+  })
+
+  const separate = (str: string): string => {
+    if (str.trim().length === 0) return ""
+    return str.trimEnd() + "\n\n"
+  }
+
+  let out = ""
+  const spans = new Map<string, SectionSpan>()
+
+  const emit = (index: number) => {
+    const section = ordered[index]
+    if (section === undefined) return
+    const secStart = out.length
+    const override = overrides.get(section.id)
+    if (override !== undefined) {
+      out += separate(override)
+      spans.set(section.id, { start: secStart, end: out.length })
+      return
+    }
+    const kids = children.get(index) ?? []
+    if (kids.length === 0) {
+      const content = text.slice(section.start, section.end)
+      out += content
+      spans.set(section.id, { start: secStart, end: out.length })
+      return
+    }
+    const starts = kids.map((child) => ordered[child]?.start ?? section.end)
+    const own = text.slice(section.start, Math.min(...starts))
+    out += separate(own)
+    for (const child of kids) {
+      emit(child)
+    }
+    spans.set(section.id, { start: secStart, end: out.length })
+  }
+
+  const tops = ordered.map((_, index) => index).filter((index) => parents[index] === undefined)
+  for (const top of tops) {
+    emit(top)
+  }
+
+  const finalText = out.replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
+  const clampedSpans = new Map<string, SectionSpan>()
+  for (const [id, span] of spans) {
+    clampedSpans.set(id, {
+      start: Math.min(finalText.length, span.start),
+      end: Math.min(finalText.length, span.end),
+    })
+  }
+  return { text: finalText, spans: clampedSpans }
+}
+
 export function assembleWithOverrides(
   text: string,
   split: Split,
