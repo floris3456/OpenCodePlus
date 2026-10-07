@@ -166,6 +166,21 @@ export function textMatches(filter: string | undefined, values: readonly (string
 }
 
 /**
+ * The Cache tab's rows, newest first. The report keeps its chronological
+ * (oldest-first) order for every other consumer; only this tab reverses.
+ */
+export function cacheRequests(
+  report: Plus.MonitorReport | undefined,
+  missesOnly: boolean,
+): readonly Plus.MonitorRequest[] {
+  const list = report?.requests ?? []
+  const filtered = missesOnly
+    ? list.filter((request) => request.verdict === "miss" || request.verdict === "partial")
+    : list
+  return filtered.toReversed()
+}
+
+/**
  * Apply the `/` text filter to the rendered rows only. Totals still answer the
  * real query; the tables drop rows whose identifiers do not contain the text.
  */

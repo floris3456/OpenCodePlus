@@ -4,11 +4,12 @@ import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@opencode/plugin/effect/session"
 import type { Agent } from "@opencode/schema/agent"
 import type { Session } from "@opencode/schema/session"
-import { Cause, Clock, Duration, Effect, Fiber, Scope } from "effect"
+import { Cause, Clock, Duration, Effect, Fiber, Option, Scope } from "effect"
 import { Config } from "../config.js"
 import { ConfigWarming } from "../config/warming.js"
 import { Model } from "../model.js"
 import { Provider } from "../provider.js"
+import { AgentNotFoundError } from "../session/error.js"
 import { PluginHooks } from "./hooks.js"
 
 type ActiveSession = {
@@ -19,6 +20,8 @@ type ActiveSession = {
   agent: Agent.ID
   model: Model.Ref
   settings: SessionWarmingSettings
+  /** The last warming ping failed because the pinned agent no longer exists. */
+  missingAgent: boolean
   /** Bumped per schedule so a loop replaced during a fork stops instead of sleeping on. */
   epoch: number
   fiber?: Fiber.Fiber<void>
@@ -115,11 +118,14 @@ export const Plugin = define({
           model: Model.Ref
         } = { sessionID, prompt: settings.prompt, agent: current.agent, model: current.model }
         let pingError: string | undefined
+        let pingMissingAgent = false
         yield* ctx.session
           .generate(ping)
           .pipe(
             Effect.catchCause((cause) => {
               pingError = Cause.pretty(cause).slice(0, 160)
+              if (Option.getOrUndefined(Cause.findErrorOption(cause)) instanceof AgentNotFoundError)
+                pingMissingAgent = true
               return Effect.logWarning("failed to warm session", { sessionID, cause })
             }),
           )
@@ -135,8 +141,22 @@ export const Plugin = define({
             settings: undefined,
           })
           .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to trigger warmed hook", { cause })))
+        // A renamed or deleted agent ends the window when it is still missing
+        // on the next ping, as an expired window ends. One transient miss
+        // followed by a success keeps warming.
+        if (pingMissingAgent && current.missingAgent) {
+          if (sessions.get(sessionID) === current) sessions.delete(sessionID)
+          yield* Effect.logInfo("stopping session warming: agent not found", {
+            sessionID,
+            agent: current.agent,
+          })
+          return
+        }
         const latest = sessions.get(sessionID)
-        if (latest === current && latest.last === last) latest.last = yield* Clock.currentTimeMillis
+        if (latest === current) {
+          latest.missingAgent = pingMissingAgent
+          if (latest.last === last) latest.last = yield* Clock.currentTimeMillis
+        }
         return yield* loop(sessionID, epoch)
       },
     )
@@ -189,6 +209,7 @@ export const Plugin = define({
           active.agent = event.agent
           active.model = event.model
           active.settings = settings
+          active.missingAgent = false
           yield* reschedule(event.sessionID, active)
           return
         }
@@ -199,6 +220,7 @@ export const Plugin = define({
           agent: event.agent,
           model: event.model,
           settings,
+          missingAgent: false,
           epoch: 0,
         }
         sessions.set(event.sessionID, scheduled)

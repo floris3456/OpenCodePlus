@@ -8,6 +8,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { WarmingPlugin } from "@opencode/core/plugin/warming"
+import { AgentNotFoundError } from "@opencode/core/session/error"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
@@ -83,6 +84,9 @@ const activate = Effect.fn("activateWarming")(function* (
   // When set, a recorded warm request also raises the session generate hook from
   // the same fiber, matching how the host invokes hooks from inside the loop.
   internal?: Map<Session.ID, Model.Ref>,
+  // When set and returning true for a warm request, the ping fails as if its
+  // pinned agent no longer existed.
+  fail?: (call: WarmCall) => boolean,
 ) {
   const plugin = yield* Plugin.Service
   const sessions = yield* Session.Service
@@ -94,12 +98,18 @@ const activate = Effect.fn("activateWarming")(function* (
         ...sessions,
         generate: (input) =>
           Effect.gen(function* () {
-            calls.push({
+            const record: WarmCall = {
               sessionID: input.sessionID,
               prompt: input.prompt,
               ...(input.agent === undefined ? {} : { agent: input.agent }),
               ...(input.model === undefined ? {} : { model: input.model }),
-            })
+            }
+            calls.push(record)
+            if (fail?.(record))
+              return yield* new AgentNotFoundError({
+                sessionID: input.sessionID,
+                agent: input.agent ?? Agent.ID.make("build"),
+              })
             const model = internal?.get(input.sessionID)
             if (!model) return ""
             yield* hooks.trigger("session", "generate", {
@@ -435,6 +445,57 @@ describe("WarmingPlugin", () => {
       expect(callsFor(calls, sessions.parent).length).toBe(warmed)
       yield* cross("4 minutes")
       expect(callsFor(calls, sessions.parent).length).toBe(warmed)
+    }),
+  )
+
+  it.effect("ends the warming window when the pinned agent is missing twice in a row", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service, undefined, () => true)
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* advance(3)
+      const missed = callsFor(calls, sessions.parent).length
+      expect(missed).toBeGreaterThanOrEqual(2)
+      // The window ended with the second consecutive miss: no more pings,
+      // even long after the interval and within the hour-long duration.
+      yield* advance(3)
+      yield* cross("10 minutes")
+      expect(callsFor(calls, sessions.parent).length).toBe(missed)
+    }),
+  )
+
+  it.effect("keeps warming after a transient miss followed by a success", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      let attempts = 0
+      yield* activate(
+        calls,
+        config.service,
+        undefined,
+        () => {
+          attempts++
+          return attempts === 1
+        },
+      )
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* advance(4)
+      const warmed = callsFor(calls, sessions.parent).length
+      expect(warmed).toBeGreaterThanOrEqual(3)
+      // Still warming: the next intervals ping again.
+      yield* advance(2)
+      expect(callsFor(calls, sessions.parent).length).toBeGreaterThan(warmed)
     }),
   )
 

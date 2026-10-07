@@ -6,6 +6,7 @@ import { createStore, reconcile } from "solid-js/store"
 import { Definition, type Plus } from "../../rpc.js"
 import {
   COMPARES,
+  cacheRequests,
   compareLabel,
   cycle,
   defaultSettings,
@@ -171,20 +172,35 @@ export function MonitorView(props: MonitorViewProps) {
           // Compute maxIdx from the FILTERED view so the selection always points
           // at an actually-visible row; the text filter drops rows independently
           // of the server query and must not leave the selector past the end.
-          const shown = filterReport(next, settings().filterText)
+          const filtered = filterReport(next, settings().filterText)
           const maxIdx = Math.max(
             0,
             (!props.full || tab() === "tools"
-              ? shown.groups.length
+              ? filtered.groups.length
               : tab() === "cache"
-                ? (shown.requests?.length ?? 0)
+                ? (filtered.requests?.length ?? 0)
                 : tab() === "sessions"
-                  ? (shown.sessions?.length ?? 0)
-                  : (shown.requests?.length ?? 0)) - 1,
+                  ? (filtered.sessions?.length ?? 0)
+                  : (filtered.requests?.length ?? 0)) - 1,
           )
+          // The Cache tab shows newest first, so a new request arrives at the
+          // top and shifts every row down. Remember the selected request's id
+          // so the selection follows the same request instead of its old row.
+          const previousID =
+            props.full && tab() === "cache"
+              ? cacheRequests(shown(), settings().missesOnly)[selected()]?.id
+              : undefined
           setReport(next)
           setFailure(undefined)
-          setSelected((index) => Math.min(index, maxIdx))
+          setSelected((index) => {
+            if (previousID !== undefined) {
+              const at = cacheRequests(filtered, settings().missesOnly).findIndex(
+                (request) => request.id === previousID,
+              )
+              if (at !== -1) return at
+            }
+            return Math.min(index, maxIdx)
+          })
         },
         (error: unknown) => setFailure(error instanceof Error ? error.message : String(error)),
       )
@@ -386,8 +402,7 @@ export function MonitorView(props: MonitorViewProps) {
       return
     }
     if (current === "cache") {
-      const requests = shown()?.requests ?? []
-      const req = requests[selected()]
+      const req = cacheRequests(shown(), settings().missesOnly)[selected()]
       if (req === undefined) return
       setDrills((stack) => [...stack, { kind: "cache", settings: settings(), requestID: req.id }])
       return

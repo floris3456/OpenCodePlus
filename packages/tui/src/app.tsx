@@ -107,6 +107,38 @@ import { createTuiClipboard } from "./clipboard"
 
 registerOpencodeSpinner()
 
+export interface NewChatModel {
+  readonly model: { readonly providerID: string; readonly modelID: string }
+  readonly variant: string | undefined
+}
+
+/**
+ * Which model a new chat starts on: the current agent's active model as the
+ * host reports it now, not the composer's leftover (an earlier manual pick
+ * superseded since, for example by an Instructions activation). Without an
+ * agent model the composer's pick carries over. The agent's own effort wins;
+ * otherwise the composer's variant is kept only when it was picked for that
+ * same model.
+ */
+export function resolveNewChatModel(options: {
+  readonly agentModel: { readonly providerID: string; readonly id: string; readonly variant?: string } | undefined
+  readonly composer: { readonly providerID: string; readonly modelID: string } | undefined
+  readonly variant: string | undefined
+}): NewChatModel | undefined {
+  if (options.agentModel === undefined) {
+    if (options.composer === undefined) return undefined
+    return { model: options.composer, variant: undefined }
+  }
+  const same =
+    options.composer !== undefined &&
+    options.composer.providerID === options.agentModel.providerID &&
+    options.composer.modelID === options.agentModel.id
+  return {
+    model: { providerID: options.agentModel.providerID, modelID: options.agentModel.id },
+    variant: options.agentModel.variant ?? (same ? options.variant : undefined),
+  }
+}
+
 const appGlobalBindingCommands = ["session.list", "session.new", "open.menu"] as const
 
 const sessionTabBindingCommands = [
@@ -724,8 +756,9 @@ function App() {
         category: "Session",
         slash: { name: "new" },
         run: () => {
-          const model = local.model.current()
           const agent = local.agent.current()
+          const composer = local.model.current()
+          const variant = local.model.variant.current()
           const current =
             route.data.type === "session"
               ? (data.session.get(route.data.sessionID)?.location ?? location.ref)
@@ -740,7 +773,15 @@ function App() {
             ),
           })
           if (agent) local.agent.set(agent.id)
-          if (model) local.model.set(model)
+          const next = resolveNewChatModel({
+            agentModel: (agent ?? local.agent.current())?.model,
+            composer,
+            variant,
+          })
+          if (next !== undefined) {
+            local.model.set(next.model)
+            if (next.variant !== undefined) local.model.variant.set(next.variant)
+          }
           dialog.clear()
         },
       },
@@ -750,8 +791,9 @@ function App() {
         category: "Session",
         slash: { name: "clear" },
         run: () => {
-          const model = local.model.current()
           const agent = local.agent.current()
+          const composer = local.model.current()
+          const variant = local.model.variant.current()
           const current =
             route.data.type === "session"
               ? (data.session.get(route.data.sessionID)?.location ?? location.ref)
@@ -767,7 +809,15 @@ function App() {
             ),
           })
           if (agent) local.agent.set(agent.id)
-          if (model) local.model.set(model)
+          const next = resolveNewChatModel({
+            agentModel: (agent ?? local.agent.current())?.model,
+            composer,
+            variant,
+          })
+          if (next !== undefined) {
+            local.model.set(next.model)
+            if (next.variant !== undefined) local.model.variant.set(next.variant)
+          }
           dialog.clear()
         },
       },
