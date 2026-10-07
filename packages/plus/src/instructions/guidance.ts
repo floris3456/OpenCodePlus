@@ -42,6 +42,11 @@ guessing.
 A subagent starts with no context: give it everything it needs, and use it for
 self-contained work whose result you can check.
 
+## Commands
+<!-- requires: tool:shell -->
+Keep a foreground command under about 10 minutes: run longer work in the
+background, and give every wait or polling loop its own time limit.
+
 ## Commits
 <!-- requires: !perm:shell:git-commit, tool:team_checkpoint -->
 You cannot commit through the shell here: commit with team_checkpoint.
