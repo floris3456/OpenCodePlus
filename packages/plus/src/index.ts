@@ -6211,11 +6211,19 @@ const SessionModelEvents: Set<string> = new Set(["session.created", "session.age
 
 const SessionCompactionEvents: Set<string> = new Set(["session.compaction.ended", "session.compacted"])
 
-function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
+export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
   const refresh = ctx.event.subscribe().pipe(
     Stream.filter((event) => RefreshEvents.has(event.type)),
     Stream.runForEach((event) => {
       state.pendingHostChange = true
+      // Each Instructions write lands in the global config directory every
+      // folder's Config watches, so every folder's skill and agent registries
+      // reload and announce it. An idle folder applies that on its next use
+      // instead of rediscovering on every write.
+      if (idleLocation(state)) {
+        state.pendingRefresh = true
+        return Effect.void
+      }
       return refreshFromHost(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus refresh failed", { cause, type: event.type })),
       )
@@ -6359,18 +6367,8 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
       if (force === true) state.pendingForce = true
       // An idle folder (a stopped worker's, one nobody opened for a while)
       // catches up on its next use instead of rediscovering on every write.
-      if (state.running.size === 0 && Date.now() - state.lastUsedAt > IDLE_REFRESH_MS) return
-      if (state.refreshTimer !== undefined) {
-        clearTimeout(state.refreshTimer)
-      }
-      state.refreshTimer = setTimeout(() => {
-        state.refreshTimer = undefined
-        Effect.runPromise(
-          flushPendingRefresh(ctx, state).pipe(
-            Effect.catchCause((cause) => Effect.logWarning("plus coalesced refresh failed", { cause })),
-          ),
-        )
-      }, 1000)
+      if (idleLocation(state)) return
+      scheduleRefresh(ctx, state)
     }
     const unsubscribe = onSharedStoreChanged(trigger)
     yield* Effect.addFinalizer(() =>
@@ -6527,6 +6525,10 @@ const NEW_CHAT_FRESH_MS = 5000
 // writes to its next use; see `useLocation`.
 const IDLE_REFRESH_MS = 5 * 60_000
 
+function idleLocation(state: PlusState): boolean {
+  return state.running.size === 0 && Date.now() - state.lastUsedAt > IDLE_REFRESH_MS
+}
+
 /** Marks this Location used and applies a refresh it deferred, before the use goes on. */
 export function useLocation(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.suspend(() => {
@@ -6535,8 +6537,24 @@ export function useLocation(ctx: Context, state: PlusState): Effect.Effect<void>
   })
 }
 
+// The coalesced refresh: one trailing second of quiet after the last notice.
+function scheduleRefresh(ctx: Context, state: PlusState): void {
+  if (state.refreshTimer !== undefined) clearTimeout(state.refreshTimer)
+  state.refreshTimer = setTimeout(() => {
+    state.refreshTimer = undefined
+    Effect.runPromise(
+      flushPendingRefresh(ctx, state).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus coalesced refresh failed", { cause })),
+      ),
+    )
+  }, 1000)
+}
+
 // Every Plus RPC is a use of its Location (the TUI's Instructions page, the
-// agent tools' writes): a deferred refresh lands before it answers.
+// agent tools' writes). An RPC answers from the store, not from what this
+// Location published, so it does not wait for a deferred refresh: it schedules
+// it (a request that runs on the published plans waits, in the prompt and
+// warming hooks).
 function usedHandlers<Handlers extends Record<string, (input: never, context: never) => Effect.Effect<unknown, unknown>>>(
   ctx: Context,
   state: PlusState,
@@ -6545,7 +6563,14 @@ function usedHandlers<Handlers extends Record<string, (input: never, context: ne
   return Object.fromEntries(
     Object.entries(handlers).map(([name, handler]) => [
       name,
-      (input: never, context: never) => Effect.andThen(useLocation(ctx, state), handler(input, context)),
+      (input: never, context: never) =>
+        Effect.andThen(
+          Effect.sync(() => {
+            state.lastUsedAt = Date.now()
+            if (state.pendingRefresh && state.refreshTimer === undefined) scheduleRefresh(ctx, state)
+          }),
+          handler(input, context),
+        ),
     ]),
   ) as Handlers
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, Scope } from "effect"
+import { Effect, Exit, PubSub, Scope, Stream } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import plus, {
@@ -9,6 +9,7 @@ import plus, {
   discoverCounter,
   flushPendingRefresh,
   useLocation,
+  watchHostEvents,
   refreshFromHost,
   resetDiscoverCounter,
   watchSharedStore,
@@ -148,6 +149,35 @@ describe("publish coalescing", () => {
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void))
       resetSharedStoreListeners()
+    }
+  })
+
+  test("an idle folder defers host events (the store write every folder's config watch sees) to its next use", async () => {
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    const events = await Effect.runPromise(PubSub.unbounded<{ readonly type: string; readonly data: unknown }>())
+    const base = fullContext({ directory: project, hooks: { current: 0 } })
+    const ctx = context({ ...base, event: { subscribe: () => Stream.fromPubSub(events) } as never })
+    const state = createState()
+    const scope = await Effect.runPromise(Scope.make())
+    try {
+      await Effect.runPromise(activate(ctx, state))
+      await Effect.runPromise(watchHostEvents(ctx, state).pipe(Scope.provide(scope)))
+      state.lastUsedAt = Date.now() - 10 * 60_000
+      resetDiscoverCounter()
+      await Effect.runPromise(PubSub.publish(events, { type: "skill.updated", data: {} }))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(discoverCounter.count).toBe(0)
+      expect(state.pendingRefresh).toBe(true)
+      await Effect.runPromise(useLocation(ctx, state))
+      expect(discoverCounter.count).toBe(1)
+      // In use: a host event refreshes at once, as before.
+      await Effect.runPromise(PubSub.publish(events, { type: "skill.updated", data: {} }))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(discoverCounter.count).toBe(2)
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
     }
   })
 
