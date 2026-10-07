@@ -12,6 +12,7 @@ import {
   parentItemTitle,
   provenanceLine,
   resolvedText,
+  wholeItemText,
   sectionExcluded,
   sectionRows,
 } from "../src/tui/instructions/detail-pane.js"
@@ -409,7 +410,8 @@ test("whole-item detail strikes the excluded section range", () => {
   expect(role).toBeDefined()
   const ranges = excludedRanges(role!, snap)
   expect(ranges).toHaveLength(1)
-  const text = resolvedText(role!, snap)
+  // The ranges index the text the detail pane shows: the assembled full text.
+  const text = wholeItemText(role!, snap).text
   const usageStart = text.indexOf("# Usage")
   expect(usageStart).toBeGreaterThanOrEqual(0)
   expect(ranges[0]).toEqual({ start: usageStart, end: text.length })

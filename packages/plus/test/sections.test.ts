@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { assemble, assembleWithOverrides, derive, manual, ownBody, slice, wrappingSection } from "../src/instructions/sections.js"
+import { assemble, assembleWithOverrides, assembleWithSpans, derive, manual, ownBody, slice, wrappingSection } from "../src/instructions/sections.js"
 
 const GPT = [
   "# Harness",
@@ -215,4 +215,16 @@ test("assembleWithOverrides separates section overrides with a blank line before
   const overrides = new Map([["part-one", "# Part One\n\nCustom body one without trailing newlines."]])
   const out = assembleWithOverrides(text, split, new Set(), overrides)
   expect(out).toContain("Custom body one without trailing newlines.\n\n# Part Two")
+})
+
+test("assembled spans stay on their sections when blank-line runs collapse before them", () => {
+  const text = "# Alpha\n\nalpha\n\n\n\n\nmore\n\n# Beta\n\nbeta\n"
+  const split = derive(text, "Doc")
+  const assembled = assembleWithSpans(text, split, new Map())
+  expect(assembled.text).toBe(assembleWithOverrides(text, split, new Set(), new Map()))
+  const beta = split.sections.find((section) => section.name === "Beta")
+  if (beta === undefined) throw new Error("no Beta section")
+  const span = assembled.spans.get(beta.id)
+  expect(span).toEqual({ start: assembled.text.indexOf("# Beta"), end: assembled.text.length })
+  expect(assembled.text.slice(span?.start, span?.end)).toBe("# Beta\n\nbeta")
 })

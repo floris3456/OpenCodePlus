@@ -129,15 +129,34 @@ export function assembleWithSpans(
     emit(top)
   }
 
-  const finalText = out.replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
-  const clampedSpans = new Map<string, SectionSpan>()
-  for (const [id, span] of spans) {
-    clampedSpans.set(id, {
-      start: Math.min(finalText.length, span.start),
-      end: Math.min(finalText.length, span.end),
-    })
+  const normalized = collapseBlankLines(out)
+  return {
+    text: normalized.text,
+    spans: new Map([...spans].map(([id, span]) => [id, { start: normalized.at(span.start), end: normalized.at(span.end) }])),
   }
-  return { text: finalText, spans: clampedSpans }
+}
+
+// The assembled text collapses blank-line runs and trims its ends (as
+// assembleWithOverrides does), so a span measured on the raw concatenation
+// moves left by every collapse before it. `at` maps a raw offset onto the
+// collapsed text.
+function collapseBlankLines(raw: string): { readonly text: string; readonly at: (offset: number) => number } {
+  const cuts: { readonly start: number; readonly length: number }[] = []
+  const collapsed = raw.replace(/\n(?:[ \t]*\n)+/g, (match: string, start: number) => {
+    cuts.push({ start, length: match.length })
+    return "\n\n"
+  })
+  const lead = collapsed.length - collapsed.trimStart().length
+  const text = collapsed.trim()
+  return {
+    text,
+    at: (offset) => {
+      const shift = cuts.filter((cut) => cut.start + cut.length <= offset).reduce((sum, cut) => sum + cut.length - 2, 0)
+      const inside = cuts.find((cut) => offset > cut.start && offset < cut.start + cut.length)
+      const mapped = inside === undefined ? offset - shift : inside.start - shift + Math.min(offset - inside.start, 2)
+      return Math.max(0, Math.min(text.length, mapped - lead))
+    },
+  }
 }
 
 export function assembleWithOverrides(

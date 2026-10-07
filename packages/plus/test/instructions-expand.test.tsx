@@ -27,7 +27,7 @@ function rowState(frame: string, label: string): "expanded" | "collapsed" | "hid
   const pattern = new RegExp(`[▸▾] (?:[●○] )?${label}(?=\\s|$)`)
   for (const [index, line] of frame.split("\n").entries()) {
     if (index < 2) continue
-    if (pattern.test(line)) return line.includes(`▾ ${label}`) || line.includes(`▾ ● ${label}`) ? "expanded" : "collapsed"
+    if (pattern.test(line)) return new RegExp(`▾ (?:[●○] )?${label}(?=\\s|$)`).test(line) ? "expanded" : "collapsed"
   }
   return "hidden"
 }
