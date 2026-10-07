@@ -816,7 +816,10 @@ function sessionDomain(overrides: Partial<SessionDomain> = {}): SessionDomain {
     wait: overrides.wait ?? die("unused session.wait"),
     context: overrides.context ?? die("unused session.context"),
     compact: overrides.compact ?? die("unused session.compact"),
-    hook: overrides.hook ?? die("unused session.hook"),
+    // Every publish registers Plus's context hook (cache-safe pins each
+    // session's plan set from its first request), so a no-op registration is
+    // the default rather than a failure.
+    hook: overrides.hook ?? (() => Effect.succeed({ dispose: Effect.void })),
   }
 }
 
