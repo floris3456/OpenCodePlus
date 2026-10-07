@@ -8,6 +8,7 @@ import fs from "node:fs/promises"
 import { agentBody } from "./discover.js"
 import type { AgentSource } from "./model.js"
 import { discoverTeams, resolveTeams, type TeamRecord } from "./teams.js"
+import { runPublish } from "./publish-runtime.js"
 
 // Enabled teams become real core-visible agents. Every publish resolves the
 // enabled teams against the discovered regular agents (the resolveTeams
@@ -70,7 +71,7 @@ export async function installTeamAgents(
         installedIds.push(id)
       }
     }
-    if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
+    if (installed.length > 0) await runPublish(ctx.agent.reload())
     return { registrations: [...installed], installedIds: [...installedIds] }
   } catch (error) {
     await disposeRegistrations(installed)
@@ -83,7 +84,7 @@ export async function runSpecialRegistration(
   id: string,
   systemText: string,
 ): Promise<Registration> {
-  return Effect.runPromise(
+  return runPublish(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() =>
@@ -142,7 +143,7 @@ export async function runTeamRegistration(
   fields: TeamFields,
   override?: string,
 ): Promise<Registration> {
-  return Effect.runPromise(
+  return runPublish(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() =>
@@ -158,7 +159,7 @@ export async function runTeamRegistration(
 async function disposeRegistrations(registrations: readonly Registration[]): Promise<void> {
   const reversed = registrations.slice().reverse()
   for (const registration of reversed) {
-    await Effect.runPromise(registration.dispose).catch(() => {})
+    await runPublish(registration.dispose).catch(() => {})
   }
 }
 

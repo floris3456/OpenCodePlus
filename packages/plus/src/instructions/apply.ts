@@ -50,6 +50,7 @@ import {
 import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "./paths.js"
 import { gateOf } from "./requires.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
+import { runPublish } from "./publish-runtime.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -415,7 +416,7 @@ export async function applyPublishParts(
 
   // Dispose superseded registrations (install-before-dispose order)
   for (const reg of toDispose) {
-    await Effect.runPromise(reg.dispose).catch(() => {})
+    await runPublish(reg.dispose).catch(() => {})
   }
 
   // Reload affected subsystems
@@ -599,19 +600,19 @@ export async function applyModels(
 async function disposeRegistrations(registrations: readonly Registration[]): Promise<void> {
   const reversed = registrations.slice().reverse()
   for (const registration of reversed) {
-    await Effect.runPromise(registration.dispose).catch(() => {})
+    await runPublish(registration.dispose).catch(() => {})
   }
 }
 
 async function runVoid(effect: Effect.Effect<void>): Promise<void> {
-  await Effect.runPromise(effect)
+  await runPublish(effect)
 }
 
 export async function runRegistration<Editor>(
   transform: Transform<Editor>,
   callback: (editor: Editor) => void,
 ): Promise<Registration> {
-  return Effect.runPromise(
+  return runPublish(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() => transform(callback)).pipe(
@@ -627,7 +628,7 @@ async function runHook<Name extends "context" | "catalog">(
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
 ): Promise<Registration> {
-  return Effect.runPromise(
+  return runPublish(
     Effect.gen(function* () {
       const scope = yield* Scope.make()
       return yield* Effect.suspend(() => hook(name, callback)).pipe(
@@ -1149,7 +1150,7 @@ async function addSkillCopies(
     }
   })
   if (added.size === 0) {
-    await Effect.runPromise(registration.dispose)
+    await runPublish(registration.dispose)
     return undefined
   }
   return { registration, added }
@@ -1340,7 +1341,7 @@ export async function installSessionPlans(
       for (const agent of input.agents) {
         if (agent.base !== undefined) pins.set(agent.id, agent.base)
       }
-      const catalog = await Effect.runPromise(
+      const catalog = await runPublish(
         ctx.model.list().pipe(
           Effect.catchCause(() =>
             Effect.succeed({ data: [] as readonly Model.Info[], location: { directory: ctx.location.directory } }),
@@ -1483,7 +1484,7 @@ async function readCustomSystem(
   agents: readonly ApplyAgent[],
 ): Promise<ReadonlySet<string>> {
   const explicit = new Set(agents.filter((agent) => agent.customSystem === true).map((agent) => agent.id))
-  const listed = await Effect.runPromise(
+  const listed = await runPublish(
     ctx.agent.list().pipe(Effect.catchCause(() => Effect.succeed({ data: [] as readonly Agent.Info[] }))),
   )
   for (const entry of listed.data) {

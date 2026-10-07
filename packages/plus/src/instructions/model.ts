@@ -1353,16 +1353,30 @@ export function countReview(
     .filter((entry) => entry.resolved.review).length
 }
 
-const scopeIdMap = new WeakMap<object, number>()
-let nextScopeId = 0
-export function scopeKey(scopes: Scopes | undefined | null): string {
-  if (!scopes) return "none"
-  let id = scopeIdMap.get(scopes)
-  if (id === undefined) {
-    id = ++nextScopeId
-    scopeIdMap.set(scopes, id)
-  }
+// Identity keys for the resolution memos: an object (scopes, splits, a gate
+// function) gets a number for as long as it lives, so two different values
+// never share a cache entry even when they look alike.
+const identityIds = new WeakMap<object, number>()
+let nextIdentityId = 0
+function identityKey(value: object | undefined): string {
+  if (value === undefined) return "none"
+  const known = identityIds.get(value)
+  if (known !== undefined) return String(known)
+  const id = ++nextIdentityId
+  identityIds.set(value, id)
   return String(id)
+}
+
+export function scopeKey(scopes: Scopes | undefined | null): string {
+  return identityKey(scopes ?? undefined)
+}
+
+// Everything besides the records array that a whole or section resolution
+// reads: the upstream item (its text by fingerprint, and the fields the
+// fallback, split and pin read), the address, the scopes and the splits.
+function resolutionKey(input: ChainInput): string {
+  const upstream = input.upstream
+  return `${upstream.id}:${upstream.fingerprint}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${addressKey(input.address)}:${scopeKey(input.scopes)}:${identityKey(input.splits)}`
 }
 
 export function addressKey(address: Address): string {
@@ -1380,8 +1394,7 @@ export function resolveWhole(input: ChainInput): Resolved {
     perRecords = new Map()
     resolveWholeCache.set(input.records, perRecords)
   }
-  const gateKey = input.gate !== undefined ? "gated" : "plain"
-  const key = `${input.upstream.id}:${input.upstream.fingerprint}:${addressKey(input.address)}:${scopeKey(input.scopes)}:${gateKey}`
+  const key = `${resolutionKey(input)}:${identityKey(input.gate)}`
   const cached = perRecords.get(key)
   if (cached !== undefined) return cached
 
@@ -1646,7 +1659,7 @@ export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[])
     perRecords = new Map()
     sectionOverridesCache.set(input.records, perRecords)
   }
-  const key = `${input.upstream.id}:${input.upstream.fingerprint}:${addressKey(input.address)}:${scopeKey(input.scopes)}`
+  const key = resolutionKey(input)
   const cached = perRecords.get(key)
   if (cached !== undefined) return cached
   const split = resolveSplit({

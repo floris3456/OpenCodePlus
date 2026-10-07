@@ -22,6 +22,7 @@ import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
 import { apply, applyAgentControls, applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
+import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerReleaseTools } from "./release/tools.js"
@@ -107,6 +108,8 @@ export interface PlusState {
   projectRevision: number | undefined
   globalRevision: number | undefined
   pendingHostChange: boolean
+  /** A change with no record write (a team directory) is pending: rediscover even with unchanged revisions. */
+  pendingForce: boolean
   pendingRefresh: boolean
   refreshTimer?: ReturnType<typeof setTimeout>
   activeRefresh?: Promise<void>
@@ -160,6 +163,7 @@ export function createState(): PlusState {
     projectRevision: undefined,
     globalRevision: undefined,
     pendingHostChange: false,
+    pendingForce: false,
     pendingRefresh: false,
     refreshTimer: undefined,
     activeRefresh: undefined,
@@ -5319,10 +5323,6 @@ function applyAgentsOf(agents: readonly AgentSource[]): ApplyAgent[] {
   }))
 }
 
-export function inPublishBatch<A, E, R>(ctx: Context, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
-  return effect
-}
-
 // Only publishFresh and deactivate acquire the semaphore, and neither calls the
 // other, so a caller never blocks on a permit it already holds.
 function publishFresh(
@@ -5403,18 +5403,17 @@ function publishFresh(
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
       const teamRoleOverrides = view.overrides
 
-      const partsResult = yield* inPublishBatch(
-        ctx,
-        Effect.promise(() =>
-          applyPublishParts(ctx, state, {
-            applyInput,
-            fileAgents,
-            builtinWinners,
-            builtins,
-            teamRoleOverrides,
-            specialRoleOverrides,
-          }),
-        ),
+      // One core batch for the whole install/dispose set: the host rebuilds
+      // and reconciles each registry once per publish.
+      const partsResult = yield* inPublishBatch(ctx.batch, () =>
+        applyPublishParts(ctx, state, {
+          applyInput,
+          fileAgents,
+          builtinWinners,
+          builtins,
+          teamRoleOverrides,
+          specialRoleOverrides,
+        }),
       )
       yield* Effect.yieldNow
 
@@ -5633,8 +5632,9 @@ function emitWarmingChanged(state: PlusState, sessionID: string): Effect.Effect<
 
 function emitTeamsChanged(state: PlusState): Effect.Effect<void> {
   // A team create/enable/member change can touch no record (an empty team is a
-  // directory), so notify here too: the other Locations must re-discover.
-  notifySharedStoreChanged(state)
+  // directory), so notify here too: the other Locations must re-discover even
+  // though the store revisions did not move.
+  notifySharedStoreChanged(state, true)
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("teams.changed", {}).pipe(Effect.orDie)
@@ -6122,9 +6122,10 @@ export function watchToolRegistry(ctx: Context, state: PlusState): Effect.Effect
 // pending refresh flushes before prompt execution.
 export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
   return Effect.gen(function* () {
-    const trigger = (source?: unknown) => {
+    const trigger = (source?: unknown, force?: boolean) => {
       if (source === state) return
       state.pendingRefresh = true
+      if (force === true) state.pendingForce = true
       if (state.refreshTimer !== undefined) {
         clearTimeout(state.refreshTimer)
       }
@@ -6157,14 +6158,18 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
 // rewrites the records file in place, so the directory watch sees it. A missing
 // directory (nothing written yet) just means no watcher for it; the in-process
 // bus still works.
-function watchSharedStoreFile(onChange: () => void): Effect.Effect<void, never, Scope.Scope> {
+function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => void): Effect.Effect<void, never, Scope.Scope> {
   return Effect.acquireRelease(
     Effect.sync(() => {
-      const targets = [path.dirname(globalRecordsPath()), globalTeamsPath()]
+      // The teams root changes without a record write, so its changes force a rediscovery.
+      const targets = [
+        { path: path.dirname(globalRecordsPath()), force: false },
+        { path: globalTeamsPath(), force: true },
+      ]
       const watchers: fsSync.FSWatcher[] = []
       for (const target of targets) {
         try {
-          const watcher = fsSync.watch(target, { persistent: false }, () => onChange())
+          const watcher = fsSync.watch(target.path, { persistent: false }, () => onChange(undefined, target.force))
           watcher.on("error", () => undefined)
           watchers.push(watcher)
         } catch {
@@ -6308,15 +6313,16 @@ export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effe
 export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
   return refreshProcessSemaphore.withPermits(1)(
     Effect.gen(function* () {
-      const hasHostChange = state.pendingHostChange === true
+      const hasHostChange = state.pendingHostChange
+      const forced = hasHostChange || state.pendingForce
       state.pendingHostChange = false
-      if (hasHostChange) {
-        state.hostModels = undefined
-      }
+      state.pendingForce = false
+      // A host change can change the provider catalogue; a store or team change cannot.
+      if (hasHostChange) state.hostModels = undefined
       const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
       const stored = yield* Effect.promise(() => loadCurrent(directory))
       if (
-        !hasHostChange &&
+        !forced &&
         state.projectRevision !== undefined &&
         state.globalRevision !== undefined &&
         stored.projectRevision === state.projectRevision &&
