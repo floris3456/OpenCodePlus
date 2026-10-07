@@ -327,6 +327,12 @@ When a step in the chat on screen misses the cache, the TUI shows a toast:
   - cache expired
   - account changed
   - unknown
+
+  Today the Monitor ranks "compacted" above "account changed"
+  (`cache.ts`, the cause chain). So the 16:11:20Z step would read "after
+  compaction". When that compaction was armed by an account switch (the
+  compaction's `quota.switch` metadata), the cause is "account changed ·
+  compacted first", in the toast and in `/monitor`.
 - **When.** Once per step, when the step's usage is recorded. It analyzes only
   the new step, using WP-A's per-chat incremental analysis, never the whole
   history. It sends no request and does not touch the prompt.
