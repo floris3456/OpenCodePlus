@@ -84,7 +84,7 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
     sections.push(`## Checks\n${checks.map((c) => `- ${c.id}: ${c.argv.join(" ")}`).join("\n")}`)
   if (filled.review !== undefined) sections.push(reviewSection(filled.review))
   sections.push(
-    `## Budget\neffort ${effort}: about ${tokens(budget.tokens)} tokens and ${minutes(budget.wallMs)}. A guide, not a limit: if you need more, keep going and say why in your report.`,
+    `## Budget\neffort ${effort}: about ${tokens(budget.tokens)} tokens (input, cache writes, output) and ${minutes(budget.wallMs)}. A guide, not a limit: if you need more, keep going and say why in your report.`,
   )
   if (brief.prompt !== undefined && brief.prompt.trim() !== "") sections.push(`## Extra instructions\n${brief.prompt}`)
   if (filled.attached !== undefined) {
