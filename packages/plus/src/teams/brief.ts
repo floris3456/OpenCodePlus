@@ -46,10 +46,6 @@ export interface RenderFilled {
  */
 export const DEFAULT_ATTACHMENT_LIMIT = 8_000
 
-export function attachmentPasted(content: string, limit: number): boolean {
-  return content.length <= limit
-}
-
 // One line per deliverable: what "done" means for it, so the child knows what
 // to hand back without reading the tool schema.
 const DELIVERABLE_MEANING: Readonly<Record<Brief["deliverable"]["kind"], string>> = {
@@ -103,7 +99,7 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   if (filled.attached !== undefined) {
     const attached = filled.attached
     const limit = filled.attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT
-    if (!attachmentPasted(attached.content, limit))
+    if (attached.content.length > limit)
       sections.push(
         `## Attached: ${attached.path}\n(${attached.content.length} chars, over the ${limit}-character attachment limit: read the file itself, only what you need.)`,
       )
