@@ -19,6 +19,7 @@ import {
   applies,
   catalogPath,
   chainContentKey,
+  scopesContentKey,
   fingerprint,
   itemRecordsIndex,
   resolve,
@@ -565,7 +566,7 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
 
     const agent = byId.get(agentId)
     const address = {
-      level: "project" as const,
+      level: agent?.level ?? ("project" as const),
       agent: agentId,
       item: "",
       section: null,
@@ -582,7 +583,9 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
       })
       .join(";")
 
-    const key = `${agentId}:${agent?.team ? agent.team.level + "/" + agent.team.team : ""}:${chainKey}:${fingerprint(itemsDigest)}`
+    // The scopes content: a row resolved through a preset reads teammates'
+    // links and Defaults entries (team_delegate's to.<member> rows do).
+    const key = `${agentId}:${agent?.team ? agent.team.level + "/" + agent.team.team : ""}:${chainKey}:${scopesContentKey(input.scopes)}:${fingerprint(itemsDigest)}`
     agentKeyCache.set(agentId, key)
     return key
   }

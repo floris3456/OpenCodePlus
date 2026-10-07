@@ -468,8 +468,19 @@ export function presetCatalog(input: { readonly items: readonly Item[]; readonly
       return role === undefined ? [] : [[id, role]]
     }),
   )
+  const presets = presetListing(input.presets).map((entry) => ({ ref: entry.ref, origin: entry.origin }))
+  // What `shipped` reads besides its arguments: the listing, the Native
+  // agents' roles and their control items (member presets are code).
+  const native = input.items.filter(
+    (item) => (item.id === "system:role" || isControl(item.id)) && item.agents?.some((id) => (nativePresetIds as readonly string[]).includes(id)) === true,
+  )
+  const content = JSON.stringify([
+    presets,
+    native.map((item) => [item.id, item.agents, item.text, item.enabled, item.pinned ?? null]),
+  ])
   return {
-    presets: presetListing(input.presets).map((entry) => ({ ref: entry.ref, origin: entry.origin })),
+    presets,
+    contentKey: `${content.length}.${Bun.hash(content).toString(36)}`,
     shipped: (ref, item, section, upstream, agent, linked) => {
       if (section !== null || ref.kind === "team") return undefined
       if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream, agent, linked)

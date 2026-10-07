@@ -624,11 +624,11 @@ test("[20e] a turn that ends without finish is idle / no_report", async () => {
   })
 }, 60000)
 
-test("[20f] a followup queued while the child is working is delivered on idle", async () => {
+test("[20f] a followup to a working child reaches it at its next step, without waiting for idle", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
-      banner("20f", "a followup queued while the child is working is delivered on idle")
+      banner("20f", "a followup to a working child reaches it at its next step, without waiting for idle")
       const now = new Date().toISOString()
       const parentRun = baseRun({
         id: "main-0123456789abcdef",
@@ -668,26 +668,28 @@ test("[20f] a followup queued while the child is working is delivered on idle", 
       call("team_followup", followup, queued)
       expect(queued).toEqual({ attempt: 1, state: "queued" })
 
-      await onSessionEvent(fixture.ctx, root, {
-        type: "session.idle",
-        properties: { sessionID: "ses_walkthrough_followup_child" },
-      })
+      // Steered: the host has it before the child's turn ends (core delivers
+      // it at the child's next safe step boundary, without interrupting it).
       call("session.prompt recorded by the host double", undefined, sessions.prompted)
       expect(sessions.prompted).toEqual([
         { sessionID: "ses_walkthrough_followup_child", text: "Also cover the empty-list case." },
       ])
 
+      // The child then finishes its turn with the followup handled: nothing
+      // is left to deliver on idle, and no second attempt starts.
+      await onSessionEvent(fixture.ctx, root, {
+        type: "session.idle",
+        properties: { sessionID: "ses_walkthrough_followup_child" },
+      })
+      expect(sessions.prompted).toHaveLength(1)
       const status = await runOk<StatusEntry[]>(
         need(fixture.tools, "team_status"),
         { runs: [child.id] },
         toolContext(parentRun.sessionID ?? "", "orchestrator"),
       )
       call("team_status", { runs: [child.id] }, status)
-      expect(status[0].state).toBe("working")
-      expect(status[0].attempt).toBe(2)
-      const moved = await loadRun(root, child.id)
-      call(`cat ${path.join(root, "runs", child.id, "run.json")} .attempts`, undefined, moved?.attempts)
-      expect(moved?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
+      expect(status[0].state).toBe("idle")
+      expect(status[0].attempt).toBe(1)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

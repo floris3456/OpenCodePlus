@@ -251,6 +251,12 @@ export interface ShippedValue {
 export interface PresetCatalog {
   readonly presets: readonly PresetInfo[]
   /**
+   * The content `shipped` answers from (the preset listing and the Native
+   * agents' role and control items), hashed: resolution memos key on it. A
+   * catalogue without one is keyed by identity.
+   */
+  readonly contentKey?: string
+  /**
    * The shipped value of `item` (`section` null = whole item) in a
    * Native/Plus preset; undefined = the preset does not set it. `upstream` is
    * the item being resolved (several items share an id, one per agent, so the
@@ -1526,6 +1532,29 @@ function upstreamTextKey(upstream: ChainInput["upstream"]): string {
   return key
 }
 
+// What a resolution reads from its scopes beyond its own chain: a preset
+// value can depend on a teammate's links and Defaults entries (`linked`), and
+// on the preset catalogue's content; the chain reads the agent sets and member
+// teams. Hashed once per scopes object, so unchanged scopes keep hitting the
+// memo across publishes and locations.
+const scopesContentKeys = new WeakMap<object, string>()
+export function scopesContentKey(scopes: Scopes): string {
+  const known = scopesContentKeys.get(scopes)
+  if (known !== undefined) return known
+  const content = JSON.stringify([
+    [...scopes.global].toSorted(),
+    [...scopes.defaults].toSorted(),
+    scopes.native === undefined ? null : [...scopes.native].toSorted(),
+    scopes.links ?? [],
+    scopes.entries ?? [],
+    scopes.memberTeams === undefined ? null : [...scopes.memberTeams].toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+    scopes.presets === undefined ? null : (scopes.presets.contentKey ?? `identity:${identityKey(scopes.presets)}`),
+  ])
+  const key = `${content.length}.${Bun.hash(content).toString(36)}`
+  scopesContentKeys.set(scopes, key)
+  return key
+}
+
 // Everything a whole or section resolution reads besides the item's records,
 // splits and chain (hashed by the caller): the upstream text, the upstream
 // fields the fallback, split and pin read, the address, whether the owner is
@@ -1541,7 +1570,7 @@ function resolutionContentKey(
   const gateKey = input.gate === undefined ? "none" : identityKey(input.gate)
   const agent = input.address.agent
   const native = input.scopes.native === undefined ? "u" : agent !== null && input.scopes.native.has(agent) ? "n" : "-"
-  const presets = input.address.level === "preset" ? identityKey(input.scopes.presets) : ""
+  const presets = scopesContentKey(input.scopes)
   const owners = `${(upstream.agents ?? []).join(",")}|${upstream.ownedBy ?? ""}`
   return `${upstream.id}:${upstreamTextKey(upstream)}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${owners}:${addressKey(input.address)}:${recordsHash}:${splitsHash}:${chainKey}:${native}:${presets}:${gateKey}`
 }
