@@ -6021,8 +6021,10 @@ function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<void, ne
   // A team run's state follows its host session: idle, failed and interrupted
   // turns settle the attempt and hand the inbox over without any tool call.
   // Compact before cold reads the same events: a running chat never compacts.
+  // A chat that moves between checkouts is the other event a run follows
+  // (lifecycle.onSessionMoved): a root run with no child takes the new folder.
   const runs = ctx.event.subscribe().pipe(
-    Stream.filter((event) => SessionRunEvents.has(event.type) || event.type === RETRY_SCHEDULED),
+    Stream.filter((event) => SessionRunEvents.has(event.type) || event.type === RETRY_SCHEDULED || event.type === "session.moved"),
     Stream.runForEach((event) =>
       Effect.promise(() => {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID

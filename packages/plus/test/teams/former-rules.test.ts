@@ -293,7 +293,7 @@ test("Start a team run from a chat: off refuses a chat's first team call with it
     ),
   )
   expect(refused).toBe(
-    `E_NOT_ACTOR: This session is not the owner of run unknown. Call team tools from the run's own chat; do not session_move. You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`,
+    `E_NOT_ACTOR: This session is not the owner of run unknown. Call team tools from the run's own chat. You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`,
   )
   expect(await bySession(root, "ses_alice_chat")).toBeUndefined()
   const on = await registered(tableWith(["perm:team_get_context:bootstrap.chat", "on"]), repo.dir)

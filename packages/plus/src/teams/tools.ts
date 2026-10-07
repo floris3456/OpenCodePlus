@@ -13,7 +13,8 @@ import { gitRaw } from "./git.js"
 import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
 import { toolGuidance, toolSurfaces, type TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
-import { attemptTransition, bySession, newRunID, saveRun, startAttempt, type RunRecord } from "./run.js"
+import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
+import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import {
   Brief,
   CheckInput,
@@ -597,11 +598,24 @@ function runGatedInner<A>(
                 "E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.",
             }),
           )
-        const headOut = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "HEAD"]))
-        if (headOut.code !== 0)
+        // `--verify --quiet` exits 1 without a message when HEAD is unborn (a
+        // fresh `git init` with no commit); `rev-parse HEAD` prints a raw git
+        // error. A repository with no commit has no base for a run, so it is a
+        // classified refusal telling the caller to make a first commit, not an
+        // internal failure.
+        const headOut = yield* Effect.promise(() => gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--verify", "--quiet", "HEAD"]))
+        if (headOut.code !== 0) {
+          const commits = yield* Effect.promise(() => gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-list", "--all", "--count"]))
+          if (commits.code === 0 && commits.out === "0")
+            return yield* Effect.fail(
+              new Tool.Error({
+                message: `E_NO_COMMIT_REPO: This repository has no commits yet, so a team run has no base to start from. Make a first commit (git add . && git commit -m "feat: initial commit") and call again.`,
+              }),
+            )
           return yield* Effect.fail(
             new Tool.Error({ message: `E_INTERNAL: Cannot read HEAD from ${directory}: ${headOut.err || headOut.out || "unknown error"}` }),
           )
+        }
         const branchOut = yield* Effect.promise(() => gitRaw(directory, ["rev-parse", "--abbrev-ref", "HEAD"]))
         const branch = branchOut.code === 0 && branchOut.out.length > 0 ? branchOut.out : "HEAD"
         const now = new Date().toISOString()
@@ -646,6 +660,15 @@ function runGatedInner<A>(
       }
     }
     const owned = yield* requireActor(run, input, agent)
+    // A root run with an open child stays in the folder it was tied to; its
+    // chat moved elsewhere. The call refuses with the run's folder named, so
+    // the model learns why landing happens where it does instead of being told
+    // never to move the chat.
+    if (owned.parent === null && owned.movedTo !== undefined && owned.movedTo !== owned.directory) {
+      const movedTo = owned.movedTo
+      yield* Effect.promise(() => clearMovedTo(teamsDataDir(), owned.id))
+      return yield* Effect.fail(new Tool.Error({ message: movedRunError(owned.id, owned.directory, movedTo) }))
+    }
     const caller: TeamCaller = { sessionID, agent, run: owned }
     const result = yield* Effect.promise(() => call(input, caller))
     if (!result.ok) {
@@ -671,7 +694,23 @@ function requireActor(
 
 function notActorError(id: string): Tool.Error {
   return new Tool.Error({
-    message: `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`,
+    message: `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat.`,
+  })
+}
+
+// A root run whose chat moved while it has an open child stays in its folder.
+// The call refuses with the run's own folder named; the record's `movedTo` is
+// cleared so the notice is said once, not on every later call.
+function movedRunError(id: string, directory: string, movedTo: string): string {
+  return `E_NOT_ACTOR: This chat moved to ${movedTo}, but run ${id} stays in ${directory}: it has an open child, and a child's worktree and landing belong to that checkout. Finish or stop the child and move the chat back to ${directory}, or start a fresh run in ${movedTo}.`
+}
+
+async function clearMovedTo(root: string, id: string): Promise<void> {
+  await updateRun(root, id, (record) => {
+    if (record.movedTo === undefined) return record
+    const next: RunRecord = { ...record }
+    delete next.movedTo
+    return next
   })
 }
 

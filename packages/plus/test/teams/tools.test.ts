@@ -65,7 +65,7 @@ const removedNames = [
 const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "checkpoint", "set_checks", "stop"])
 
 const notActor = (id: string): string =>
-  `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat; do not session_move.`
+  `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat.`
 
 // A member whose "Start a team run from a chat" row is off (the implementer
 // preset's) hears the same refusal plus the row's own words.
@@ -423,6 +423,36 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
   })
 })
 
+// Item 10 #27: a repository with no commit has no base for a run; the
+// bootstrap answers a classified refusal telling the caller to make a first
+// commit, not a raw git error.
+test("a fresh git init repository with no commit refuses the bootstrap with E_NO_COMMIT_REPO", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-no-commit-"))
+    try {
+      await git(repoDir, ["init"])
+      const harness = toolHarness()
+      const directory = AbsolutePath.make(repoDir)
+      const location = new Location.Info({
+        directory,
+        project: { id: Project.ID.global, directory, canonical: directory },
+      })
+      const pluginCtx = context({ tool: harness.domain, location })
+      const api = createTeamApi(pluginCtx, teamState())
+      await registerTeamTools(pluginCtx, api, shippedTable)
+      const message = await runMessage(need(harness.tools, "team_list"), {}, toolContext("ses_no_commit_repo", "orchestrator"))
+      expect(message).toBe(
+        `E_NO_COMMIT_REPO: This repository has no commits yet, so a team run has no base to start from. Make a first commit (git add . && git commit -m "feat: initial commit") and call again.`,
+      )
+      // No run was created for the refused bootstrap.
+      const entries = await fs.readdir(path.join(root, "runs")).catch(() => [] as string[])
+      expect(entries).toEqual([])
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
 test("team_status from a no-run implementer session still fails E_NOT_ACTOR", async () => {
   await withIsolatedTeamsRoot(async () => {
     const tools = await registeredTools()
@@ -460,6 +490,41 @@ test("team_status naming runs from a no-run orchestrator session bootstraps a ro
       expect(bound?.kind).toBe("main")
       const runs = await fs.readdir(path.join(root, "runs")).catch(() => [])
       expect(runs).toEqual([bound!.id])
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
+// Item 7: a root run whose chat moved while it has an open child stays in its
+// folder; the next team call refuses and names the run's folder once.
+test("a moved root run with an open child refuses its next team call and names its folder", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-moved-tools-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# moved tools\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const sessionID = "ses_moved_tools"
+      const record: RunRecord = {
+        ...makeRun("main-moved000000001", "orchestrator", sessionID),
+        kind: "main",
+        directory: repoDir,
+        movedTo: "/somewhere/else",
+        children: ["w-aaaaaaaaaaaaaaaa"],
+      }
+      await saveRun(root, record)
+      const tools = await registeredTools()
+      const message = await runMessage(need(tools, "team_status"), {}, toolContext(sessionID, "orchestrator"))
+      expect(message).toContain("This chat moved to /somewhere/else")
+      expect(message).toContain(`run ${record.id} stays in ${repoDir}`)
+      // Said once: the record's movedTo is cleared, so a second call runs.
+      expect((await loadRun(root, record.id))?.movedTo).toBeUndefined()
+      const second = (await runSuccess(need(tools, "team_status"), {}, toolContext(sessionID, "orchestrator"))) as Record<string, unknown>[]
+      expect(Array.isArray(second)).toBe(true)
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true })
     }
