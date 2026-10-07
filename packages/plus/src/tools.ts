@@ -37,6 +37,7 @@ import {
   teamPlan,
   teamRowEntity,
   toggle,
+  toggleGroup,
   unknownRowRefusal,
   type CreatedRow,
   type ModelEditFields,
@@ -109,6 +110,7 @@ const ShowDescription =
 
 const SetDescription =
   "Save an override, toggle, pin, set when shown, activate a model, resolve review or relink (TUI Enter/Space/p/w/k/t/e/l).\n" +
+  "On a group row id, state on|off turns every row under it on or off in one write (a bare id toggles the group: all on means all off, otherwise all on); protected rows are skipped and named, team groups refuse.\n" +
   "Enabling a team is exclusive across loaded project/global/defaults records; disabledTeams reports the other teams disabled by this save.\n" +
   "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
@@ -404,6 +406,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.warming !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input)
+          if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
           const op = computeSet(memo, input)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
@@ -1490,6 +1493,37 @@ function setTeam(
     if (!result.ok)
       return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { id, status: plan.successStatus, ...result.value } }
+  })
+}
+
+// `set {id, state}` on a group row id: the explicit target (or a plain toggle
+// when state is absent) applies to the group's nearest toggleable rows in one
+// write (ops.toggleGroup). Protected agents' rows are skipped and named; team
+// groups refuse (teams enable through team.setEnabled, not records).
+function setGroup(
+  api: PlusApi,
+  snapshot: Plus.Snapshot,
+  memo: MemoInput,
+  id: string,
+  actor: Plus.Actor,
+  input: { state?: "on" | "off"; text?: string; pin?: boolean; mode?: unknown; requires?: unknown; resolve?: unknown },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const node = findRow(memo, id)
+    const label = node?.label ?? id
+    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
+    if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" is not a Code Mode tool and cannot be pinned` }))
+    if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
+    if (input.mode !== undefined || input.requires !== undefined)
+      return yield* Effect.fail(new Tool.Error({ message: `"${label}" is a group: only state on|off applies` }))
+    const target = input.state === undefined ? undefined : input.state === "on"
+    const isProtected = (agent: string) => snapshot.protectedAgents.includes(agent)
+    const op = toggleGroup(memo, id, undefined, target, isProtected)
+    if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+    const applied = yield* mutateWithRetry(api, snapshot, op, actor, (fresh) =>
+      toggleGroup(memoFromSnapshot(fresh), id, undefined, target, (agent) => fresh.protectedAgents.includes(agent)),
+    )
+    return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }
 

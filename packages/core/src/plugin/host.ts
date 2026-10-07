@@ -28,6 +28,7 @@ import { ReleaseRequestStore } from "../release/request.js"
 import { Rpc } from "../rpc.js"
 import { AbsolutePath, type DeepMutable } from "../schema.js"
 import { Skill } from "../skill.js"
+import { State } from "../state.js"
 import { Tool } from "../tool.js"
 import { Workspace } from "../workspace.js"
 import { Vcs } from "../vcs.js"
@@ -145,6 +146,7 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
     app,
     location: locationInfo(),
     options: {},
+    batch: State.batch,
     rpc: Object.assign(rpc.client, { register: rpc.register }),
     agent: {
       get: (input) => {

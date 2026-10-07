@@ -21,15 +21,24 @@ export interface ReportInput {
   findings?: Finding[]
 }
 
+export interface BudgetHistoryItem {
+  at: string
+  by: string
+  from: { turns?: number; tokens?: number; wallMs?: number }
+  to: { turns?: number; tokens?: number; wallMs?: number }
+  reason: string
+}
+
 export interface ReportFilled {
   run: string
   attempt: number
   head: string
   commits: ReportCommit[]
   checks: ReportCheck[]
+  budgetHistory?: BudgetHistoryItem[]
 }
 
-type RenderReport = ReportInput & Partial<ReportFilled>
+type RenderReport = ReportInput & Partial<ReportFilled> & { budgetHistory?: BudgetHistoryItem[] }
 type RenderFilled = Partial<ReportFilled>
 
 const NEEDS_STATUSES: ReadonlySet<string> = new Set(["blocked", "needs_context", "rejected"])
@@ -64,6 +73,17 @@ export function render(report: RenderReport, filled?: RenderFilled): string {
   const checksBody =
     sortedChecks.length === 0 ? "- none" : sortedChecks.map((c) => `- ${c.id}: ${c.passed ? "pass" : "FAIL"}`).join("\n")
   sections.push(`## Checks at ${head7}\n${checksBody}`)
+
+  const budgetHistory = f.budgetHistory ?? report.budgetHistory ?? []
+  if (budgetHistory.length > 0) {
+    const historyBody = budgetHistory
+      .map(
+        (b) =>
+          `- ${b.at} by ${b.by}: tokens ${b.from.tokens ?? "—"} → ${b.to.tokens ?? "—"}, turns ${b.from.turns ?? "—"} → ${b.to.turns ?? "—"}, wall ${b.from.wallMs ?? "—"} → ${b.to.wallMs ?? "—"} (${b.reason})`,
+      )
+      .join("\n")
+    sections.push(`## Budget history\n${historyBody}`)
+  }
 
   if (concerns.length > 0) sections.push(`## Concerns\n${concerns.map((c) => `- ${c}`).join("\n")}`)
   if (NEEDS_STATUSES.has(status) && needs.length > 0)

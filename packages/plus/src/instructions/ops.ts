@@ -60,7 +60,7 @@ import type {
 import { presetOfAddress } from "./presets.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
-import { collectSkeleton, findLazy, materialize, skeletonOf } from "./tree.js"
+import { collectSkeleton, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { manual, slice } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -586,6 +586,93 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean, shar
     status: value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
   }
+}
+
+// Space on a group row turns its nearest toggleable rows on or off in one
+// write: all of its rows on means all off, otherwise (some or none on) all
+// on, unless `target` names the state explicitly (the agent tool's
+// `set {id, state}`). Every row merges through the same per-row logic as
+// `toggle`/`setEnabled`, in sequence on the accumulated records, so one
+// result carries every row's change. Rows that refuse (a protected agent, a
+// row `toggleRefusal` refuses) are skipped and named; when every row refuses
+// the op refuses. Team rows cannot be expressed as record toggles (teams use
+// `team.setEnabled`), so a group holding teams refuses and names the team
+// path instead.
+export function toggleGroup(
+  input: MemoInput,
+  groupId: string,
+  sharedMemo?: Memo,
+  target?: boolean,
+  isProtected?: (agent: string) => boolean,
+): OpResult {
+  const memo = sharedMemo ?? memoOfInput(input)
+  const lazy = findLazy(memo, groupId)
+  if (lazy === undefined || lazy.kind !== "group") return { refusal: unknownRowRefusal(groupId) }
+  const label = materialize(lazy).label
+  const found = groupToggleRows(lazy)
+  if (found.hasTeam) return { refusal: `"${label}" holds teams: enable teams one by one` }
+  // The same gate the tree uses for the row's toggle action: model-only,
+  // permission-only and section-only groups (a tool's Description group)
+  // carry no group toggle.
+  if (!groupToggleOf(lazy).toggle) return { refusal: `"${label}" has no toggleable rows` }
+  const rows = found.rows.flatMap((leaf) => {
+    const row = findNode(input, leaf.enabledRow ?? leaf.id, memo)
+    if (row === undefined) return []
+    const state = row.node.badges.state
+    // Name the entity the row stands for (an agent, not its Enabled
+    // control), so skipped rows read `"alpha" — protected`.
+    return state === "on" || state === "off" ? [{ node: row.node, label: materialize(leaf).label, on: state === "on" }] : []
+  })
+  if (rows.length === 0) return { refusal: `"${label}" has no toggleable rows` }
+  const want = target ?? !rows.every((row) => row.on)
+  let records = [...memo.ctx.customizations]
+  const splits = [...memo.ctx.splits]
+  const skipped: string[] = []
+  let applied = 0
+  for (const row of rows) {
+    const agent = groupRowAgent(row.node)
+    if (agent !== undefined && isProtected?.(agent) === true) {
+      skipped.push(`"${row.label}" — protected`)
+      continue
+    }
+    const address = row.node.address
+    if (address === undefined) {
+      skipped.push(`"${row.label}" — "${row.label}" cannot be toggled`)
+      continue
+    }
+    const refusal = toggleRefusal(row.node)
+    if (refusal !== undefined) {
+      skipped.push(`"${row.label}" — ${refusal}`)
+      continue
+    }
+    const upstream = upstreamFor(memo.ctx.items, address)
+    if (upstream === undefined) {
+      skipped.push(`"${row.label}" — Item not found for "${row.label}"`)
+      continue
+    }
+    // The chain context makes merge record what the chain above resolves,
+    // exactly as `toggle` does for one row.
+    records = merge(records, address, { state: want ? "on" : "off" }, upstream, memo.ctx.scopes)
+    applied += 1
+  }
+  if (applied === 0) return { refusal: skipped[0] ?? `"${label}" has no toggleable rows` }
+  return {
+    records,
+    splits,
+    status: `${want ? "Enabled" : "Disabled"} ${applied} row${applied === 1 ? "" : "s"} in "${label}"${skipped.length === 0 ? "" : ` (skipped: ${skipped.join(", ")})`}`,
+    retryHint: `toggled "${label}" against a stale revision; retry to apply`,
+  }
+}
+
+// The agent a row belongs to for the tool actor's protected check (tools.ts
+// `protectedOf`): presets are never protected, entities answer by id.
+function groupRowAgent(node: TreeNode): string | undefined {
+  if (node.owner?.level === "preset" || node.address?.level === "preset") return undefined
+  if (node.kind === "agent") {
+    const agent = node.id.split(":").slice(2).join(":")
+    return agent === "" ? undefined : agent
+  }
+  return node.address?.agent ?? node.owner?.agent ?? undefined
 }
 
 export function setPin(input: MemoInput, rowId: string, value: boolean, sharedMemo?: Memo): OpResult {

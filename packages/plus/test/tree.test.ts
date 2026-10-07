@@ -1105,8 +1105,9 @@ test("actions: toggle/edit/split on items, reset only with an override, remove o
   expect(nodes.find((node) => node.id === "item:defaults::mcp:sample")?.actions?.remove).toBe(true)
   expect(nodes.find((node) => node.id === "item:project:Implementer:skill:proj-one")?.actions?.remove).toBe(true)
   expect(nodes.find((node) => node.id === "agent:project:Implementer")?.actions?.remove).toBe(true)
+  // Categories toggle their nearest toggleable rows (plus-1.1.17).
   expect(nodes.find((node) => node.id === "group:project:Implementer:tools")?.actions).toEqual({
-    toggle: false,
+    toggle: true,
     edit: false,
     reset: false,
     remove: false,

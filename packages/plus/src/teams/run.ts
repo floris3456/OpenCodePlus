@@ -41,12 +41,22 @@ export interface AttemptError {
   status?: number
 }
 
-export interface HistoryEntry {
+export interface StateHistoryEntry {
   at: string
   from: RunState
   to: RunState
   trigger: string
 }
+
+export interface BudgetHistoryEntry {
+  at: string
+  by: string
+  from: RunBudget
+  to: RunBudget
+  reason: string
+}
+
+export type HistoryEntry = StateHistoryEntry | BudgetHistoryEntry
 
 export interface RunBudget {
   turns?: number
@@ -92,6 +102,8 @@ export interface RunRecord {
   stoppedBy?: string
   /** The reason team_stop was given; cleared when the run resumes. */
   stopReason?: string
+  budgetExceededAt?: string
+  lastBudgetPingAt?: string
   retrying?: {
     until: string
     attempt: number

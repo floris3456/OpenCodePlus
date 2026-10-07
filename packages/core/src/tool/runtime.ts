@@ -152,8 +152,12 @@ const validateStandard = (
     }),
   )
 
+const emptyJsonSchema: JsonSchema.JsonSchema = {}
+const jsonSchemaByEffectSchema = new WeakMap<object, JsonSchema.JsonSchema>()
+const standardJsonSchemaCache = new WeakMap<object, { input?: JsonSchema.JsonSchema; output?: JsonSchema.JsonSchema }>()
+
 const inputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
-  if (schema === undefined || schema === null) return {}
+  if (schema === undefined || schema === null) return emptyJsonSchema
   if (isStandardSchema(schema)) return standardJsonSchema(schema, "input")
   return Schema.isSchema(schema) ? toJsonSchema(schema) : schema
 }
@@ -164,12 +168,24 @@ const outputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema 
 }
 
 const standardJsonSchema = (schema: StandardSchemaV1<any, any>, io: "input" | "output"): JsonSchema.JsonSchema => {
+  const cached = standardJsonSchemaCache.get(schema)?.[io]
+  if (cached !== undefined) return cached
+  const generated = standardJsonSchemaGenerate(schema, io)
+  const entry = standardJsonSchemaCache.get(schema) ?? {}
+  entry[io] = generated
+  standardJsonSchemaCache.set(schema, entry)
+  return generated
+}
+
+const standardJsonSchemaGenerate = (schema: StandardSchemaV1<any, any>, io: "input" | "output"): JsonSchema.JsonSchema => {
   if (isStandardJSONSchema(schema)) return schema["~standard"].jsonSchema[io]({ target: "draft-2020-12" })
   if (schema instanceof $ZodType) return toJSONSchema(schema, { target: "draft-2020-12", io })
   throw new Error(`Schema vendor "${schema["~standard"].vendor}" does not support JSON Schema conversion`)
 }
 
 const toJsonSchema = (schema: Schema.Top): JsonSchema.JsonSchema => {
+  const cached = jsonSchemaByEffectSchema.get(schema)
+  if (cached !== undefined) return cached
   const document = Schema.toJsonSchemaDocument(schema)
   // Effect emits valid JSON Schema that some inference providers handle poorly. Simplify it
   // without changing validation: `{ type: "integer", allOf: [{ minimum: 0 }] }` becomes
@@ -182,7 +198,9 @@ const toJsonSchema = (schema: Schema.Top): JsonSchema.JsonSchema => {
       ? document.schema
       : { ...document.schema, $defs: document.definitions },
   )
-  return dropDefinitionsIfResolved(inlineLocalReferences(normalized)) as JsonSchema.JsonSchema
+  const result = dropDefinitionsIfResolved(inlineLocalReferences(normalized)) as JsonSchema.JsonSchema
+  jsonSchemaByEffectSchema.set(schema, result)
+  return result
 }
 
 const flattenAllOf = (value: unknown): unknown => {

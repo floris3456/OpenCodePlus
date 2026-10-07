@@ -202,9 +202,8 @@ test("the Cache tab shows a fixture miss with its cause, and detail opens and cl
     expect(cacheFrame).toContain("[HIT]")
     expect(cacheFrame).toContain("[COLD]")
 
-    // Move selection down to the miss request (3rd row) and open detail with return
-    dispatch(fixture, "down")
-    dispatch(fixture, "down")
+    // The miss request is the newest, so it is the first row: open its
+    // detail with return, without moving the selection.
     dispatch(fixture, "return")
     const detailFrame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
     expect(detailFrame).toContain("Cause: prefix-changed (certain)")
@@ -627,11 +626,11 @@ test("the Cache selection scrolls its full row into view", async () => {
     customReport: () => ({ ...contractFixtureReport(NOW), requests }),
   })
   try {
-    await fixture.waitForFrame((text) => text.includes("row-00"))
+    await fixture.waitForFrame((text) => text.includes("row-19"))
     for (let step = 0; step < 19; step++) dispatch(fixture, "down")
-    const frame = await fixture.waitForFrame((text) => text.includes("row-19"))
+    const frame = await fixture.waitForFrame((text) => text.includes("row-00"))
     // The selected full row scrolled into view rather than staying above the fold.
-    expect(frame).toContain("row-19")
+    expect(frame).toContain("row-00")
   } finally {
     fixture.destroy()
   }

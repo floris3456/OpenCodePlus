@@ -73,7 +73,9 @@ test("Enter on Mode still cycles after opening its narrow detail pane", async ()
   await reach(fixture, id, "Mode")
   // Narrow: the list is its own page with the inspector under it; Enter
   // still cycles there and the inspector follows.
-  expect(fixture.captureCharFrame()).not.toContain("▾ Agents")
+  // The sidebar's Agents row carries its toggle glyph ("▾ ● Agents",
+  // "▾ 2/4 Agents"), so absence is matched with the glyph, not the bare pair.
+  expect(fixture.captureCharFrame()).not.toMatch(/[▾▸]\s+(●|○|\d+\/\d+ )?Agents/)
   expect(dispatch(fixture, "return")).toBe(true)
   await fixture.waitForFrame((frame) => /value\s+Subagent/.test(frame))
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item: "setting:mode", text: "subagent" }))
