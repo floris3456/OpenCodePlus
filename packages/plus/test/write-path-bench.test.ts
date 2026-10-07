@@ -5,7 +5,6 @@ import path from "node:path"
 import { createPlusApi, createState } from "../src/index.js"
 import { projectRecordsPath } from "../src/instructions/paths.js"
 import { load } from "../src/instructions/store.js"
-import { snapshotRecordOf } from "../src/instructions/delta.js"
 import { agentInfo, fullContext } from "./harness.js"
 
 // The measured store the brief names: a copy of the live dev store (329
