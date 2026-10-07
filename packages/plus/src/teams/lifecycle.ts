@@ -25,7 +25,10 @@ import {
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
-import { Policy, parseDuration } from "./schema.js"
+import { Policy, budgetDimensions, budgetExhaustion, parseDuration } from "./schema.js"
+import { sessionTokens } from "./usage.js"
+import { bound } from "./reach.js"
+import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { RETRY_SCHEDULED, SessionOutcomes, type SessionOutcome } from "./session-events.js"
 import { lock, readJson } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
@@ -851,7 +854,109 @@ export function startSweep(ctx: Context, root: string, tickMs = policy.sweep.tic
   )
 }
 
+export interface OverBudgetChildInfo {
+  id: string
+  role: string
+  minutesOver: number
+  dims: Array<{ name: string; used: number; budget: number }>
+}
+
+export async function checkBudgets(
+  ctx: Context,
+  root: string,
+  table?: PermissionTable,
+  now = Date.now(),
+): Promise<void> {
+  const entries = await Effect.runPromise(
+    io(() => readdir(path.join(root, "runs"))).pipe(
+      Effect.map((names) => [...names]),
+      Effect.catchCause(() => Effect.succeed([] as string[])),
+    ),
+  )
+
+  const parentDueMap = new Map<string, OverBudgetChildInfo[]>()
+  const dueChildIds: string[] = []
+
+  for (const entry of entries) {
+    if (entry.startsWith(".")) continue
+    const record = await loadRecordSafe(root, entry)
+    if (record === undefined || isTerminal(record.state)) continue
+    if (record.state !== "working" || !record.parent) continue
+    const hasConfiguredBudget =
+      typeof record.budget.turns === "number" ||
+      typeof record.budget.tokens === "number" ||
+      typeof record.budget.wallMs === "number"
+    if (!hasConfiguredBudget) continue
+
+    const tokensUsed = await sessionTokens(ctx, record)
+    const exhaustion = budgetExhaustion(record, { tokensUsed, now })
+
+    if (exhaustion.exhausted) {
+      let exceededAt = record.budgetExceededAt
+      if (exceededAt === undefined) {
+        exceededAt = new Date(now).toISOString()
+        await updateRun(root, record.id, (fresh) => ({ ...fresh, budgetExceededAt: exceededAt }))
+      }
+
+      const exceededMs = Date.parse(exceededAt)
+      const minutesOver = Number.isFinite(exceededMs) ? Math.max(0, Math.floor((now - exceededMs) / 60_000)) : 0
+
+      const parentRecord = await loadRecordSafe(root, record.parent)
+      const pingRow =
+        parentRecord !== undefined && table !== undefined
+          ? bound(table, parentRecord.role, "followup", "limits.budget-ping")
+          : undefined
+      const pingIntervalMs = (pingRow ?? 15) * 60_000
+
+      const lastPing = record.lastBudgetPingAt ? Date.parse(record.lastBudgetPingAt) : undefined
+      const isDue = lastPing === undefined || now - lastPing >= pingIntervalMs
+
+      if (isDue) {
+        const dims = budgetDimensions(record, { tokensUsed, now })
+          .filter((d) => d.used >= d.budget)
+          .map((d) => ({ name: d.name, used: Math.round(d.used), budget: Math.round(d.budget) }))
+        const info: OverBudgetChildInfo = {
+          id: record.id,
+          role: record.role,
+          minutesOver,
+          dims,
+        }
+        const list = parentDueMap.get(record.parent) ?? []
+        list.push(info)
+        parentDueMap.set(record.parent, list)
+        dueChildIds.push(record.id)
+      }
+      continue
+    }
+
+    if (record.budgetExceededAt !== undefined || record.lastBudgetPingAt !== undefined) {
+      await updateRun(root, record.id, (fresh) => {
+        delete fresh.budgetExceededAt
+        delete fresh.lastBudgetPingAt
+        return fresh
+      })
+    }
+  }
+
+  for (const [parentId, children] of parentDueMap) {
+    const lines = children.map((c) => {
+      const dimsText = c.dims.map((d) => `${d.name} ${d.used}/${d.budget}`).join(", ")
+      return `- Run ${c.id} (${c.role}): ${dimsText}, ${c.minutesOver} min over`
+    })
+    const text = `Budget exceeded for ${children.length} child run(s):\n${lines.join("\n")}\nFollow up with team_followup to raise budget (with reason), nudge, or stop with team_stop.`
+    await notifySafe(root, parentId, children[0].id, text)
+  }
+
+  for (const childId of dueChildIds) {
+    await updateRun(root, childId, (fresh) => ({
+      ...fresh,
+      lastBudgetPingAt: new Date(now).toISOString(),
+    }))
+  }
+}
+
 export async function reconcile(ctx: Context, root: string): Promise<string[]> {
+  await checkBudgets(ctx, root).catch(() => {})
   const entries = await Effect.runPromise(
     io(() => readdir(path.join(root, "runs"))).pipe(
       Effect.map((names) => [...names]),

@@ -521,9 +521,9 @@ const defaultBounds = {
 }
 
 const defaultEffort = {
-  small: { turns: 25, tokens: 400000, wallMs: 1200000 },
-  medium: { turns: 60, tokens: 1500000, wallMs: 3600000 },
-  large: { turns: 150, tokens: 5000000, wallMs: 5400000 },
+  small: { turns: 25, tokens: 50000, wallMs: 1200000 },
+  medium: { turns: 60, tokens: 200000, wallMs: 3600000 },
+  large: { turns: 150, tokens: 800000, wallMs: 5400000 },
 }
 
 const defaultTimeouts = { startMs: 60000, stallMs: 600000, deadGraceMs: 300000, hookMs: 120000 }
@@ -625,13 +625,10 @@ export type PlanFrontMatter = typeof PlanFrontMatter.Type
 //
 // Both are optional additions: omitting them validates exactly as before.
 //
-// Single home of the "how far over budget" math (F1.4b): budgetDimensions
-// computes the per-dimension usage (turns = attempts.length, tokens = live
-// session tokensUsed, wall = run age, or attempt age when only the sweeper's
-// advisory wall fallback is configured). budgetExhaustion is the thin
-// overBy/exhausted wrapper used by status; sweeper.ts notifyBudget calls
-// budgetDimensions directly for the same numbers plus the ratios it needs
-// for its notify steps and line. There is no second copy.
+// Single home of the "how far over budget" math: budgetDimensions
+// computes per-dimension usage (turns = attempts.length, tokens = live
+// session tokensUsed without cache reads, wall = run age). budgetExhaustion
+// is the overBy/exhausted wrapper used by status and budget pings.
 export const FollowupBudget = Schema.Struct({
   turns: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   tokens: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
@@ -795,17 +792,26 @@ export function parseDuration(raw: string): number {
 // input schema, exported from here and shared between registration and handlers.
 export const FollowupInput = Schema.Struct({
   run: RunID.annotate({ description: "Your child's run id." }),
-  requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)).annotate({
+  requestID: Schema.optional(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  ).annotate({
     description: "Your id for this followup; repeat it only to retry the identical call.",
   }),
-  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)).annotate({
+  prompt: Schema.optional(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)),
+  ).annotate({
     description: "The correction or answer; it is the child's next message.",
   }),
   delivery: Schema.optional(Schema.Literals(["now", "queue"])).annotate({
     description: "queue (default): delivered when the child next goes idle. now: only for a child that is idle already.",
   }),
   budget: Schema.optional(FollowupBudget).annotate({
-    description: "Replaces the child's advisory budget; dimensions you omit are cleared.",
+    description: "Changes the child's advisory budget; only given dimensions change.",
+  }),
+  reason: Schema.optional(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
+  ).annotate({
+    description: "Why you change the budget (1–300 characters); required when budget is given.",
   }),
 })
 export type FollowupInput = typeof FollowupInput.Type

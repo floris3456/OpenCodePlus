@@ -22,6 +22,8 @@ import {
   startAttempt,
   transition,
   updateRun,
+  type BudgetHistoryEntry,
+  type RunBudget,
   type RunRecord,
 } from "./run.js"
 import { FollowupInput, toolError } from "./schema.js"
@@ -82,12 +84,13 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
       `Run ${args.run} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
       parent.children,
     )
+  const requestID = args.requestID ?? createHash("sha256").update(stable(args)).digest("hex").slice(0, 16)
   const signature = signatureOf(args)
-  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(args.requestID)}.json`)
+  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(requestID)}.json`)
   const replay = await readJson<{ signature?: string; output?: Record<string, unknown> }>(requestPath)
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
-      return fail("E_REQUEST_ID", `requestID "${args.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
+      return fail("E_REQUEST_ID", `requestID "${requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
     if (replay.output !== undefined) return succeeded({ ...replay.output, replayed: true, receipt: replay.output, current: { run: child.id, state: child.state, attempt: child.attempts.at(-1)?.n ?? 0, worktree: child.worktree } })
   }
   const rounds = bound(table, caller.agent, "followup", "limits.rounds")
@@ -113,10 +116,17 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
       `${child.role} ${corrections?.item.message ?? "takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report"} (Briefs it accepts → Corrections by followup).`,
       "delegate a fresh run",
     )
-
   await requireWorktree(child)
   if (child.parent !== null && (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.state === "landed"))
     return fail("E_ALREADY_LANDED", `Run ${child.id} is already landed; delegate fresh from current parent.`, "delegate fresh from current parent")
+  if (args.prompt === undefined && args.budget === undefined)
+    return fail("E_NO_CONTENT", "team_followup requires prompt, budget, or both.", "prompt or budget")
+  if (args.budget !== undefined) {
+    if (args.reason === undefined || args.reason.trim().length === 0)
+      return fail("E_BUDGET_REASON", "A budget change requires a reason (1–300 characters).", "provide a reason")
+    if (args.reason.length > 300)
+      return fail("E_BUDGET_REASON", "Budget reason must be at most 300 characters.", "provide a reason")
+  }
   await requireSession(ctx, child)
   if (child.state === "stopped" && child.stoppedBy === parent.id)
     return fail("E_STOPPED", `You stopped run ${child.id}; delegate a fresh run and point its Brief at the old report`)
@@ -131,12 +141,51 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
       return fail("E_BOUNDS", "No capacity to resume this child; end your turn and retry after an active run settles.", "retry after a run settles")
   }
 
+  if (args.prompt === undefined) {
+    const updated = applyBudget(child, args.budget, args.reason, parent.id)
+    await saveRun(root, updated)
+    const lastAttempt = updated.attempts.at(-1)?.n ?? 0
+    const output = { attempt: lastAttempt, state: updated.state, budget: updated.budget }
+    await atomicJson(requestPath, { signature, output, run: child.id })
+    return succeeded(output)
+  }
+
   const delivery = args.delivery ?? "queue"
-  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget)
-  return followupQueue(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget)
+  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget, args.reason)
+  return followupQueue(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget, args.reason)
 }
 
 type FollowupBudgetInput = { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined } | undefined
+
+function applyBudget(
+  current: RunRecord,
+  budget: FollowupBudgetInput,
+  reason: string | undefined,
+  parentId: string,
+): RunRecord {
+  if (budget === undefined) return current
+  const updatedBudget: RunBudget = {
+    ...current.budget,
+    ...(budget.turns !== undefined ? { turns: budget.turns } : {}),
+    ...(budget.tokens !== undefined ? { tokens: budget.tokens } : {}),
+    ...(budget.wallMs !== undefined ? { wallMs: budget.wallMs } : {}),
+  }
+  const entry: BudgetHistoryEntry = {
+    at: new Date().toISOString(),
+    by: parentId,
+    from: { ...current.budget },
+    to: { ...updatedBudget },
+    reason: reason ?? "",
+  }
+  const updated: RunRecord = {
+    ...current,
+    budget: updatedBudget,
+    history: [...current.history, entry],
+  }
+  delete updated.budgetExceededAt
+  delete updated.lastBudgetPingAt
+  return updated
+}
 
 async function followupQueue(
   ctx: Context,
@@ -147,6 +196,7 @@ async function followupQueue(
   childID: string,
   text: string,
   budget: FollowupBudgetInput,
+  reason?: string,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
   if (current === undefined)
@@ -163,23 +213,19 @@ async function followupQueue(
     )
   await requireWorktree(current)
   if (current.state !== "idle" && current.state !== "stopped") {
-    const record = budget === undefined ? current : { ...current, budget: { ...budget } }
-    if (budget !== undefined) await updateRun(root, childID, (fresh) => ({ ...fresh, budget: { ...budget } }))
+    const budgeted = applyBudget(current, budget, reason, parent.id)
+    await saveRun(root, budgeted)
     await put(root, childID, { kind: "followup", from: parent.id, text })
-    // The child's own session.idle drains this into a new attempt
-    // (lifecycle.onSessionIdle); neither side acts again.
-    // Settlement may have run between our read and put. Recheck through the
-    // same locked idle handoff so that correction is not stranded.
-    const delivered = await deliverInbox(ctx, root, record)
+    const delivered = await deliverInbox(ctx, root, budgeted)
     const last = delivered.attempts.at(-1)
-    const output = { attempt: last?.n ?? 0, state: delivered.attempts.length > record.attempts.length ? "admitted" : "queued" }
+    const output = { attempt: last?.n ?? 0, state: delivered.attempts.length > budgeted.attempts.length ? "admitted" : "queued" }
     await atomicJson(requestPath, { signature, output, run: childID })
     return succeeded(output)
   }
   // An idle child is prompted now, so the item it was prompted with is
   // recorded as delivered and the idle drain will not repeat it.
   const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
-  const admitted = await admitIdleChild(ctx, root, current, text, budget, queued.id)
+  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id)
   const done = admitted.attempts[admitted.attempts.length - 1]
   const output = { attempt: done?.n ?? 1, state: "admitted" }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -195,6 +241,7 @@ async function followupNow(
   childID: string,
   text: string,
   budget: FollowupBudgetInput,
+  reason?: string,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
   if (current === undefined)
@@ -217,7 +264,7 @@ async function followupNow(
       `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`,
       { delivery: "queue" },
     )
-  const admitted = await admitIdleChild(ctx, root, current, text, budget)
+  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id)
   const done = admitted.attempts[admitted.attempts.length - 1]
   const output = { attempt: done?.n ?? 1, state: "admitted" }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -230,6 +277,8 @@ async function admitIdleChild(
   current: RunRecord,
   text: string,
   budget: FollowupBudgetInput,
+  reason: string | undefined,
+  parentId: string,
   itemID?: string,
 ): Promise<RunRecord> {
   const resumed = current.state === "stopped" ? transition(consumeStopIntent(current), "starting", "followup") : current
@@ -238,7 +287,7 @@ async function admitIdleChild(
   const queued = started.attempts[started.attempts.length - 1]
   const admitted = queued !== undefined && queued.state === "queued" ? attemptTransition(started, "admitted", "admit") : started
   const delivered = itemID === undefined ? admitted : recordInboxDelivery(admitted, [itemID])
-  const budgeted = budget === undefined ? delivered : { ...delivered, budget: { ...budget } }
+  const budgeted = applyBudget(delivered, budget, reason, parentId)
   const working = budgeted.state === "idle" || budgeted.state === "starting" ? transition(budgeted, "working", "prompt") : budgeted
   if (working.sessionID === null) throw toolError("E_INTERNAL", `Run ${working.id} has no session to prompt.`, working.id)
   const previous = current

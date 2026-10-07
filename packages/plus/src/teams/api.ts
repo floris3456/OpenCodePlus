@@ -22,7 +22,7 @@ import { checkFiles } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
 import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
-import { sessionTokens } from "./usage.js"
+import { sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
@@ -47,6 +47,7 @@ import {
   toFinishing,
   transition,
   type AttemptRecord,
+  type BudgetHistoryEntry,
   type RunRecord,
 } from "./run.js"
 import {
@@ -680,9 +681,10 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
     at: now,
   }
   await mkdir(path.join(root, "runs", stored.id), { recursive: true })
+  const budgetHistory = stored.history.filter((h): h is BudgetHistoryEntry => "reason" in h)
   await writeFile(
     reportPath,
-    render(body, { run: stored.id, attempt: n, head, commits, checks: reportChecks }),
+    render(body, { run: stored.id, attempt: n, head, commits, checks: reportChecks, budgetHistory }),
     "utf8",
   )
   await atomicJson(path.join(root, "runs", stored.id, `report-${n}.json`), body)
@@ -874,7 +876,12 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
       turns: record.budget.turns ?? null,
       tokens: record.budget.tokens ?? null,
       wallMs: record.budget.wallMs ?? null,
-      used: { attemptsUsed: record.attempts.length, tokensUsed: await sessionTokens(ctx, record) ?? null, usageBasis: "Session-cumulative" },
+      used: {
+        attemptsUsed: record.attempts.length,
+        tokensUsed: (await sessionTokens(ctx, record)) ?? null,
+        cacheReads: (await sessionTokenUsage(ctx, record))?.cacheRead ?? null,
+        usageBasis: "Session-cumulative",
+      },
     },
     inbox: pending.map((item) => ({ id: item.id, from: item.from, kind: item.kind, text: item.text })),
   })
@@ -1198,7 +1205,8 @@ async function statusOf(ctx: Context, root: string, id: string) {
   }
   const stored = await latestReport(root, id)
   const taskState = record.task === null ? null : await taskStateOf(root, record.task)
-  const tokensUsed = await sessionTokens(ctx, record)
+  const usage = await sessionTokenUsage(ctx, record)
+  const tokensUsed = usage?.used
   const exhaustion = budgetExhaustion(record, { tokensUsed })
   return {
     run: record.id,
@@ -1236,10 +1244,12 @@ async function statusOf(ctx: Context, root: string, id: string) {
       turnsUsed: record.attempts.length, // compatibility alias: attempts, never model calls
       turns: record.budget.turns ?? 0,
       tokensUsed: tokensUsed ?? null,
+      cacheReads: usage?.cacheRead ?? null,
       usageBasis: "Session-cumulative",
       tokens: record.budget.tokens ?? 0,
       overBy: exhaustion.overBy,
       exhausted: exhaustion.exhausted,
+      history: record.history.filter((h): h is BudgetHistoryEntry => "reason" in h),
     },
     retrying: activeRetrying(record.retrying),
   }

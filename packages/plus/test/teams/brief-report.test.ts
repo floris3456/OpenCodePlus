@@ -4,9 +4,9 @@ import { render as renderReport } from "../../src/teams/report.js"
 
 const policy = {
   effort: {
-    small: { turns: 25, tokens: 400000, wallMs: 1200000 },
-    medium: { turns: 60, tokens: 1500000, wallMs: 3600000 },
-    large: { turns: 150, tokens: 5000000, wallMs: 5400000 },
+    small: { turns: 25, tokens: 50000, wallMs: 1200000 },
+    medium: { turns: 60, tokens: 200000, wallMs: 3600000 },
+    large: { turns: 150, tokens: 800000, wallMs: 5400000 },
   },
 }
 
@@ -54,7 +54,7 @@ describe("brief", () => {
     expect(sections[6]).toBe("## Checks\n- q: bun test q.test.ts")
     // The budget is advisory everywhere: the Brief says so in the same words the roles use.
     expect(sections[7]).toBe(
-      "## Budget\neffort medium: about 1.5M tokens and 60 min. A guide, not a limit: if you need more, keep going and say why in your report.",
+      "## Budget\neffort medium: about 200k tokens (input, cache writes, output) and 60 min. A guide, not a limit: if you need more, keep going and say why in your report.",
     )
     expect(out).toContain("## Extra instructions\nBe quick")
     expect(out.endsWith("\n")).toBe(true)

@@ -806,7 +806,10 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       label: "Limits",
       kind: "team",
       summary: "How many corrections one child may get before it should be replaced.",
-      rows: [{ id: "rounds", label: "Followups per child", on: false, limit: 5 }],
+      rows: [
+        { id: "rounds", label: "Followups per child", on: false, limit: 5 },
+        { id: "budget-ping", label: "Budget reminder interval (minutes)", on: true, limit: 15 },
+      ],
     },
     approval(),
   ],

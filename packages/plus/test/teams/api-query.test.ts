@@ -179,7 +179,7 @@ test("status uses Session-cumulative tokens and honestly counts attempts", async
       const ctx = context({ session: { ...context().session, get: () => Effect.succeed({ tokens }) } as unknown as SessionDomain })
       const api = createTeamApi(ctx, teamState())
       const status = required(await api.status({ runs: [run.id] }, callerFor(family.parent))) as Array<{ budget: Record<string, unknown> }>
-      expect(status[0]?.budget).toMatchObject({ attemptsUsed: 1, turnsUsed: 1, tokensUsed: TokenUsage.total(tokens), usageBasis: "Session-cumulative", exhausted: true })
+      expect(status[0]?.budget).toMatchObject({ attemptsUsed: 1, turnsUsed: 1, tokensUsed: 130, cacheReads: 11, usageBasis: "Session-cumulative", exhausted: true })
       const unavailable = createTeamApi(context(), teamState())
       expect(required(await unavailable.status({ runs: [run.id] }, callerFor(family.parent)))).toMatchObject([{ budget: { tokensUsed: null, exhausted: false } }])
     } finally { await removeRepo(repo.dir) }
