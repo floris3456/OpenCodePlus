@@ -3,6 +3,7 @@ import path from "node:path"
 import { Option, Schema } from "effect"
 import type { CategoryRecord } from "./categories.js"
 import type { Boundary } from "./sections.js"
+import { derive, manual, slice } from "./sections.js"
 import type {
   Catalogue,
   CustomizationRecord,
@@ -16,7 +17,7 @@ import type {
   RuleRecord,
   SplitRecord,
 } from "./model.js"
-import { fingerprint } from "./model.js"
+import { catalogueMatches, fingerprint, sameTeam } from "./model.js"
 import type { ModelSettingsRecord } from "./model-settings.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
@@ -57,6 +58,8 @@ export interface Loaded {
   readonly skillsMigrated: boolean
   /** True when this load carried a shell family's state onto a row split out of it. */
   readonly splitsMigrated: boolean
+  /** True when this load converted a whole-row override on a split row into section overrides. */
+  readonly wholeRowsMigrated: boolean
 }
 
 export interface SaveInput {
@@ -316,15 +319,17 @@ export async function load(projectDir: string): Promise<Loaded> {
     const presets = migrateRemovedPresets(catalogues.records)
     const skills = migrateSkillPermissions(presets.records)
     const splits = migrateSplitRows(skills.records)
+    const wholeRows = migrateWholeRows(splits.records)
     return {
       projectRevision: projectParsed.revision,
       globalRevision: globalParsed.revision,
-      records: splits.records,
+      records: wholeRows.records,
       migrated: false,
       cataloguesMigrated: catalogues.migrated,
       presetsMigrated: presets.migrated,
       skillsMigrated: skills.migrated,
       splitsMigrated: splits.migrated,
+      wholeRowsMigrated: wholeRows.migrated,
     }
   }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
@@ -333,7 +338,8 @@ export async function load(projectDir: string): Promise<Loaded> {
   const presets = migrateRemovedPresets(catalogues.records)
   const skills = migrateSkillPermissions(presets.records)
   const splits = migrateSplitRows(skills.records)
-  const routed = route(splits.records)
+  const wholeRows = migrateWholeRows(splits.records)
+  const routed = route(wholeRows.records)
   return {
     projectRevision: projectParsed.revision,
     globalRevision: globalParsed.revision,
@@ -343,6 +349,7 @@ export async function load(projectDir: string): Promise<Loaded> {
     presetsMigrated: presets.migrated,
     skillsMigrated: skills.migrated,
     splitsMigrated: splits.migrated,
+    wholeRowsMigrated: wholeRows.migrated,
   }
 }
 
@@ -477,6 +484,82 @@ export function migrateSplitRows(records: readonly StoredRecord[]): {
     }),
     migrated: true,
   }
+}
+
+// Idempotent: an existing whole-row override (section: null customization with
+// text on a split row) becomes section overrides. Section overrides already
+// stored stay on top. The prompt comes out byte-identical before and after.
+export function migrateWholeRows(records: readonly StoredRecord[]): {
+  records: StoredRecord[]
+  migrated: boolean
+} {
+  const needsMigration = (record: StoredRecord): boolean => {
+    if (record.type !== "customization" || record.section !== null || record.text === undefined) return false
+    const manualSplit = records.find((r): r is SplitRecord => r.type === "split" && r.item === record.item)
+    const split = manualSplit !== undefined ? manual(record.text, manualSplit.boundaries) : derive(record.text, record.item)
+    return split.kind !== "whole" && split.sections.length > 1
+  }
+
+  if (!records.some(needsMigration)) return { records: [...records], migrated: false }
+
+  const out: StoredRecord[] = []
+  let migrated = false
+
+  for (const record of records) {
+    if (!needsMigration(record)) {
+      out.push(record)
+      continue
+    }
+
+    migrated = true
+    const custom = record as CustomizationRecord
+    const manualSplit = records.find((r): r is SplitRecord => r.type === "split" && r.item === custom.item)
+    const split = manualSplit !== undefined ? manual(custom.text!, manualSplit.boundaries) : derive(custom.text!, custom.item)
+
+    const baseSplit =
+      custom.basedOnText !== undefined
+        ? (manualSplit !== undefined ? manual(custom.basedOnText, manualSplit.boundaries) : derive(custom.basedOnText, custom.item))
+        : undefined
+
+    for (const sec of split.sections) {
+      const alreadyStored = records.some(
+        (r): r is CustomizationRecord =>
+          r.type === "customization" &&
+          r.item === custom.item &&
+          r.level === custom.level &&
+          r.agent === custom.agent &&
+          sameTeam(r.team, custom.team) &&
+          catalogueMatches(custom.agent, r.catalogue, custom.catalogue) &&
+          r.section === sec.id,
+      )
+      if (alreadyStored) continue
+
+      const secText = slice(custom.text!, sec)
+      const baseSec = baseSplit?.sections.find((s) => s.id === sec.id)
+      const baseSecText = baseSec !== undefined && custom.basedOnText !== undefined ? slice(custom.basedOnText, baseSec) : undefined
+
+      out.push({
+        type: "customization",
+        level: custom.level,
+        agent: custom.agent,
+        ...(custom.team !== undefined ? { team: custom.team } : {}),
+        ...(custom.catalogue !== undefined ? { catalogue: custom.catalogue } : {}),
+        item: custom.item,
+        section: sec.id,
+        text: secText,
+        basedOn: baseSecText !== undefined ? fingerprint(baseSecText) : fingerprint(secText),
+        ...(baseSecText !== undefined ? { basedOnText: baseSecText } : {}),
+        updated: custom.updated,
+      })
+    }
+
+    if (custom.state !== undefined || custom.pin !== undefined || custom.requires !== undefined) {
+      const { text: _t, basedOnText: _b, ...kept } = custom
+      out.push(kept)
+    }
+  }
+
+  return { records: out, migrated }
 }
 
 // The catalogue split: before it there was one shared "everyone" inventory at
@@ -626,22 +709,23 @@ export async function updateGated<T>(
 // the revision race simply migrates on its own next load.
 export async function ensureCatalogues(
   projectDir: string,
-): Promise<{ migrated: boolean; presetsMigrated: boolean; skillsMigrated: boolean; splitsMigrated: boolean; loaded: Loaded; revision: number }> {
+): Promise<{ migrated: boolean; presetsMigrated: boolean; skillsMigrated: boolean; splitsMigrated: boolean; wholeRowsMigrated: boolean; loaded: Loaded; revision: number }> {
   const current = await load(projectDir)
-  if (!current.cataloguesMigrated && !current.presetsMigrated && !current.skillsMigrated && !current.splitsMigrated)
-    return { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, loaded: current, revision: current.globalRevision }
+  if (!current.cataloguesMigrated && !current.presetsMigrated && !current.skillsMigrated && !current.splitsMigrated && !current.wholeRowsMigrated)
+    return { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, loaded: current, revision: current.globalRevision }
   const saved = await save(projectDir, {
     expectedProjectRevision: current.projectRevision,
     expectedGlobalRevision: current.globalRevision,
     records: current.records,
   }, { readTriggeredMigration: true })
   if (!saved.ok)
-    return { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, loaded: saved.current, revision: saved.current.globalRevision }
+    return { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, loaded: saved.current, revision: saved.current.globalRevision }
   return {
     migrated: current.cataloguesMigrated,
     presetsMigrated: current.presetsMigrated,
     skillsMigrated: current.skillsMigrated,
     splitsMigrated: current.splitsMigrated,
+    wholeRowsMigrated: current.wholeRowsMigrated,
     loaded: await load(projectDir),
     revision: saved.globalRevision,
   }
@@ -659,7 +743,7 @@ async function write(projectDir: string, input: SaveInput, options?: SaveOptions
   // catalogue duplication and the retired-preset move are the same situation:
   // both sides of `same` are already migrated (the load applied them in
   // memory), so only these flags make the moved records reach disk.
-  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated
+  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
   // A read-triggered migration never writes a missing project store, and a
   // forced rewrite still never writes an empty one into a directory that has
