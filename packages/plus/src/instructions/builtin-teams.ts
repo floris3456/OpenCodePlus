@@ -242,7 +242,8 @@ that does not land, follow its next: line. Answer blocked or needs_context with
 one team_followup. On the third fix round for one task, stop the child with
 team_stop and delegate a fresh implementer; after five rounds, finish blocked
 yourself. A child over its budget keeps working: nudge it with team_followup
-only when it is off course.
+only when it is off course. A followup after a stop needs compactWith once the
+child is cold.
 
 ## Review and finish
 A review you start (Agent Routing says when) gets the range landed so far and

@@ -85,6 +85,7 @@ import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
+import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
 import { registerMonitorTools } from "./monitor/tools.js"
@@ -224,6 +225,15 @@ export default Plugin.define({
       // other way round, the fact kept core's proposal ("on") after Plus had
       // turned warming off.
       yield* ctx.session.hook("warming", (event) => decideWarmingFor(ctx, state, event))
+      yield* ctx.session.hook("compaction.decide", (event) => {
+        const model = consumeColdCompaction(event.sessionID)
+        if (model !== undefined) {
+          event.compact = true
+          event.portable = true
+          event.compactionModel = Model.Ref.parse(model)
+        }
+        return Effect.void
+      })
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -3537,16 +3547,18 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
   if (event.phase === "warmed") return Effect.void
   return Effect.promise(async () => {
     const run = await bySession(teamsDataDir(), event.sessionID)
-    if (
-      run !== undefined &&
-      (run.state === "stopping" ||
-        run.state === "stopped" ||
-        run.state === "dead" ||
-        run.state === "superseded" ||
-        run.state === "reaped")
-    ) {
-      event.settings = undefined
-      return false
+    if (run !== undefined) {
+      if (run.state === "dead" || run.state === "superseded" || run.state === "reaped") {
+        event.settings = undefined
+        return false
+      }
+      if (run.state === "stopping" || run.state === "stopped") {
+        const warming = await warmingStore.status(event.sessionID, event.now)
+        if (warming.expires === undefined || event.now >= warming.expires) {
+          event.settings = undefined
+          return false
+        }
+      }
     }
     if (Date.now() - state.warmingCheckedAt > 5_000) {
       state.warmingCheckedAt = Date.now()

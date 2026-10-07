@@ -5,10 +5,11 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
-import { put } from "./inbox.js"
+import { put, take } from "./inbox.js"
 import { queue } from "./merge.js"
 import { requireSession, requireWorktree } from "./availability.js"
 import { consumeStopIntent, deliverInbox } from "./lifecycle.js"
+import { armColdCompaction, isSessionWarm } from "./cold-compaction.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { bound, mayReach, relationOf, row } from "./reach.js"
 import {
@@ -128,8 +129,17 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
       return fail("E_BUDGET_REASON", "Budget reason must be at most 300 characters.", "provide a reason")
   }
   await requireSession(ctx, child)
-  if (child.state === "stopped" && child.stoppedBy === parent.id)
-    return fail("E_STOPPED", `You stopped run ${child.id}; delegate a fresh run and point its Brief at the old report`)
+  if (child.state === "stopped") {
+    const warm = child.sessionID ? await isSessionWarm(child.sessionID) : false
+    if (!warm) {
+      if (args.compactWith === undefined || args.compactWith.trim().length === 0)
+        return fail("E_STOPPED", `Run ${child.id} is stopped and cold: pass compactWith to compact before resuming.`, "compactWith")
+      if (child.sessionID === null)
+        return fail("E_INTERNAL", `Run ${child.id} has no session to compact.`)
+      armColdCompaction(child.sessionID, args.compactWith.trim())
+      await Effect.runPromise(ctx.session.compact({ sessionID: Session.ID.make(child.sessionID) }))
+    }
+  }
   if (!["idle", "working", "starting", "blocked_input", "stopped"].includes(child.state) || (child.stopRequested && child.state !== "stopped"))
     return fail("E_UNRESUMABLE", `Run ${child.id} is ${child.state} or stopping; delegate fresh from current parent.`, "delegate fresh from current parent")
   if (!occupiesSlot(child)) {
@@ -215,10 +225,16 @@ async function followupQueue(
   if (current.state !== "idle" && current.state !== "stopped") {
     const budgeted = applyBudget(current, budget, reason, parent.id)
     await saveRun(root, budgeted)
-    await put(root, childID, { kind: "followup", from: parent.id, text })
-    const delivered = await deliverInbox(ctx, root, budgeted)
-    const last = delivered.attempts.at(-1)
-    const output = { attempt: last?.n ?? 0, state: delivered.attempts.length > budgeted.attempts.length ? "admitted" : "queued" }
+    if (budgeted.sessionID === null)
+      throw toolError("E_INTERNAL", `Run ${budgeted.id} has no session to prompt.`, budgeted.id)
+    const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
+    await Effect.runPromise(
+      ctx.session.prompt({ sessionID: Session.ID.make(budgeted.sessionID), text, delivery: "steer" }),
+    )
+    await updateRun(root, childID, (fresh) => recordInboxDelivery(fresh, [queued.id]))
+    await take(root, childID, [queued.id])
+    const last = budgeted.attempts.at(-1)
+    const output = { attempt: last?.n ?? 1, state: "queued" }
     await atomicJson(requestPath, { signature, output, run: childID })
     return succeeded(output)
   }

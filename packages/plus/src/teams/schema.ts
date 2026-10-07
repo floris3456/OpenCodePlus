@@ -813,6 +813,11 @@ export const FollowupInput = Schema.Struct({
   ).annotate({
     description: "Why you change the budget (1–300 characters); required when budget is given.",
   }),
+  compactWith: Schema.optional(
+    Schema.String.check(Schema.isMinLength(1)),
+  ).annotate({
+    description: "Model to compact with when resuming a cold stopped child.",
+  }),
 })
 export type FollowupInput = typeof FollowupInput.Type
 
@@ -854,7 +859,7 @@ export const SetChecksInput = Schema.Struct({
 export type SetChecksInput = typeof SetChecksInput.Type
 
 export const StopInput = Schema.Struct({
-  run: RunID.annotate({ description: "The child run to stop." }),
+  run: RunID.annotate({ description: "The child run to stop. A followup after a stop needs compactWith once the child is cold." }),
   force: Schema.optional(Schema.Boolean).annotate({
     description: "End a working child now instead of after its turn.",
   }),

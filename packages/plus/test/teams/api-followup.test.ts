@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
+import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
@@ -13,6 +16,7 @@ import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { FollowupInput } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { warmingStore } from "../../src/warming.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
@@ -30,7 +34,7 @@ async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promi
 
 function recordSession() {
   const created: unknown[] = []
-  const prompted: Array<{ sessionID: unknown; text: unknown }> = []
+  const prompted: Array<{ sessionID: unknown; text: unknown; delivery?: unknown }> = []
   const waited: unknown[] = []
   let seq = 0
   const domain = {
@@ -40,8 +44,8 @@ function recordSession() {
       seq += 1
       return Effect.succeed({ id: Session.ID.make(`ses_child_${seq}`) })
     },
-    prompt: (input: { sessionID: unknown; text: unknown }) => {
-      prompted.push({ sessionID: input.sessionID, text: input.text })
+    prompt: (input: { sessionID: unknown; text: unknown; delivery?: unknown }) => {
+      prompted.push({ sessionID: input.sessionID, text: input.text, delivery: input.delivery })
       return Effect.succeed(undefined as never)
     },
     wait: (input: unknown) => {
@@ -382,7 +386,7 @@ test("same requestID twice is idempotent, different args fail E_REQUEST_ID", asy
   })
 })
 
-test("budget in the call replaces the child budget outright", async () => {
+test("budget in the call changes only given dimensions and writes history", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-ffffffffffffffff", {
       budget: { turns: 60, tokens: 1000, wallMs: 5000 },
@@ -391,10 +395,15 @@ test("budget in the call replaces the child budget outright", async () => {
     await saveRun(root, child)
     const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const value = required(
-      await api.followup(followupInput({ run: child.id, requestID: "bud-1", budget: { turns: 10 } }), callerFor(parent)),
+      await api.followup(
+        followupInput({ run: child.id, requestID: "bud-1", budget: { turns: 10 }, reason: "Increase turns allowance" }),
+        callerFor(parent),
+      ),
     )
     expect(value).toEqual({ attempt: 2, state: "admitted" })
-    expect((await loadRun(root, child.id))?.budget).toEqual({ turns: 10 })
+    const updated = await loadRun(root, child.id)
+    expect(updated?.budget).toEqual({ turns: 10, tokens: 1000, wallMs: 5000 })
+    expect(updated?.history.some((h) => "reason" in h && h.reason === "Increase turns allowance")).toBe(true)
   })
 })
 
@@ -421,19 +430,30 @@ test("a stopped child resumes once, consumes stop intent, and replays after sett
   })
 })
 
-test("followup on a child the caller stopped fails E_STOPPED", async () => {
+test("followup on a cold child the caller stopped fails E_STOPPED naming compactWith", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", {
       state: "stopped",
       stoppedBy: "main-0123456789abcdef",
+      sessionID: "ses_stopped_cold_caller",
     })
     await saveRun(root, parent)
     await saveRun(root, child)
+    const now = Date.now()
+    await warmingStore.decide({
+      sessionID: Session.ID.make(child.sessionID!),
+      agent: Agent.ID.make("implementer"),
+      model: Model.Ref.make({ providerID: Provider.ID.make("cliproxyapi"), id: Model.ID.make("gemini-3.8-flash-high") }),
+      phase: "warm",
+      since: now - 300000,
+      now: now - 300000,
+      settings: { prompt: "ping", interval: 60000, duration: 120000 },
+    }, {})
     const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const result = await api.followup(followupInput({ run: child.id }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_STOPPED")
-    expect(error.message).toBe(`You stopped run ${child.id}; delegate a fresh run and point its Brief at the old report`)
+    expect(error.message).toContain("compactWith")
   })
 })
 
@@ -517,7 +537,7 @@ test("queue default on an idle child prompts and returns admitted with the real 
   })
 })
 
-test("queue on a working child returns the current attempt and does not prompt", async () => {
+test("queue on a working child delivers as a steer and keeps current attempt", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()
     const { parent, child } = parentChild("main-0123456789abcdef", "w-3333333333333333", {
@@ -535,16 +555,16 @@ test("queue on a working child returns the current attempt and does not prompt",
       ),
     ) as { attempt: number; state: string }
     expect(value).toEqual({ attempt: 1, state: "queued" })
-    expect(sessions.prompted).toHaveLength(0)
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.delivery).toBe("steer")
     const kept = await loadRun(root, child.id)
     expect(kept?.state).toBe("working")
     expect(kept?.attempts).toHaveLength(1)
     expect(kept?.attempts[0]?.n).toBe(1)
-    expect(await peek(root, child.id)).toHaveLength(1)
   })
 })
 
-test("two queued followups to a working child keep the current attempt", async () => {
+test("two queued followups to a working child keep the current attempt and steer both", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()
     const { parent, child } = parentChild("main-0123456789abcdef", "w-4444444444444444", {
@@ -569,14 +589,15 @@ test("two queued followups to a working child keep the current attempt", async (
     ) as { attempt: number; state: string }
     expect(first).toEqual({ attempt: 1, state: "queued" })
     expect(second).toEqual({ attempt: 1, state: "queued" })
-    expect(sessions.prompted).toHaveLength(0)
+    expect(sessions.prompted).toHaveLength(2)
+    expect(sessions.prompted[0]?.delivery).toBe("steer")
+    expect(sessions.prompted[1]?.delivery).toBe("steer")
     const kept = await loadRun(root, child.id)
     expect(kept?.attempts).toHaveLength(1)
-    expect(await peek(root, child.id)).toHaveLength(2)
   })
 })
 
-test("a followup queued to a working child is delivered as a new attempt when it goes idle", async () => {
+test("a followup delivered as a steer to a working child is not repeated when it goes idle", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()
     const { parent, child } = parentChild("main-0123456789abcdef", "w-6666666666666666", {
@@ -595,19 +616,11 @@ test("a followup queued to a working child is delivered as a new attempt when it
       ),
     ) as { attempt: number; state: string }
     expect(queued).toEqual({ attempt: 1, state: "queued" })
-    expect(sessions.prompted).toHaveLength(0)
-    // The child's host session going idle is the whole handoff: no further
-    // call by either side.
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.delivery).toBe("steer")
+    // When the session goes idle, the steered message was already delivered so it is not repeated
     await onSessionEvent(ctx, root, { type: "session.idle", properties: { sessionID: String(child.sessionID) } })
     expect(sessions.prompted).toHaveLength(1)
-    expect(sessions.prompted[0]?.sessionID).toBe(child.sessionID)
-    expect(sessions.prompted[0]?.text).toContain("also cover the empty list")
-    const moved = await loadRun(root, child.id)
-    expect(moved?.state).toBe("working")
-    expect(moved?.attempts).toHaveLength(2)
-    expect(moved?.attempts[0]?.state).toBe("no_report")
-    expect(moved?.attempts[1]).toMatchObject({ n: 2, state: "admitted", trigger: "followup" })
-    expect(await peek(root, child.id)).toEqual([])
   })
 })
 

@@ -40,12 +40,14 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const DelegateDescription =
   "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run; its settlement wakes you with the report."
 const FinishDescription = "Report your task's outcome to your parent. Once per attempt; a correction arrives as a new message."
-const FollowupDescription = "Send a correction or answer to your child; it becomes the child's next message."
+const FollowupDescription =
+  "Send a correction or budget to your child. A followup after a stop needs compactWith once the child is cold."
 const IntegrateDescription =
   "Land a done child's commits on your branch: rebased onto your HEAD, verified with your integration checks, then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."
 const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
-const StopDescription = "Stop a child run you no longer need: now, or after its turn while it works (force ends it now)."
+const StopDescription =
+  "Stop a child run you no longer need: now, or after its turn while it works (force ends it now). A followup after a stop needs compactWith once the child is cold."
 const StatusDescription = "State, latest report, checks and HEAD of your run and your children."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
