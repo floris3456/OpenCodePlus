@@ -124,6 +124,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     },
     locations: overrides.locations ?? {
       evict: () => Effect.void,
+      loaded: () => Effect.succeed(true),
     },
     reference: overrides.reference ?? {
       list: () => Effect.die("unused reference.list"),

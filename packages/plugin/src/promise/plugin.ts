@@ -48,6 +48,8 @@ export interface Context {
   readonly locations: {
     /** Evicts a loaded Location's services unless a Session there is active. */
     readonly evict: (ref: Location.Ref) => Promise<void>
+    /** Whether a Location's services are loaded now, without booting it. */
+    readonly loaded: (ref: Location.Ref) => Promise<boolean>
   }
   readonly provider: ProviderDomain
   readonly reference: ReferenceDomain

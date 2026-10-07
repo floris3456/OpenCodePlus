@@ -395,7 +395,7 @@ test("stopping an idle run evicts its folder with the run's directory", async ()
     const evicted: Array<{ directory: string }> = []
     const ctx = context({
       session: sessions.domain,
-      locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)) },
+      locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)), loaded: () => Effect.succeed(true) },
     })
     required(await stopRun(ctx, run.id))
     expect(evicted).toEqual([{ directory: "/tmp/wt-evict" }])
@@ -412,7 +412,7 @@ test("stopping a dead run evicts its folder too", async () => {
       await stopRun(
         context({
           session: sessions.domain,
-          locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)) },
+          locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)), loaded: () => Effect.succeed(true) },
         }),
         run.id,
       ),
@@ -435,7 +435,7 @@ test("a run ending through its session evicts its folder", async () => {
     const evicted: Array<{ directory: string }> = []
     const ctx = context({
       session: sessions.domain,
-      locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)) },
+      locations: { evict: (ref) => Effect.sync(() => void evicted.push(ref)), loaded: () => Effect.succeed(true) },
     })
     await onSessionIdle(ctx, root, run, "idle")
     expect(evicted).toEqual([{ directory: "/tmp/wt-evict-idle" }])

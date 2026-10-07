@@ -9,6 +9,7 @@ import { createWarming } from "./warming.js"
 import { createModelPick } from "./model-pick.js"
 import { createMonitor } from "./monitor/index.js"
 import { openProjectChecks } from "./project-checks.js"
+import { createChatRefresh } from "./refresh.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -23,6 +24,7 @@ export default Plugin.define({
     const warming = createWarming(context)
     const modelPick = createModelPick(context)
     const monitor = createMonitor(context)
+    const refresh = createChatRefresh(context)
     const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
@@ -58,6 +60,16 @@ export default Plugin.define({
               palette: true,
               slash: { name: "monitor", aliases: ["tools"] },
               run: () => monitor.open(),
+            },
+            {
+              id: "plus.chat.refresh",
+              title: "Refresh: rebuild this chat from current settings and files",
+              description:
+                "Reload this folder's config, agents, skills, commands and MCP servers, and apply pending Instructions changes. It names the re-read cost first; normal use never needs it.",
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "refresh" },
+              run: () => refresh.run(),
             },
             {
               id: "plus.checks.open",

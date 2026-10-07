@@ -13,4 +13,10 @@ export interface LocationAdminDomain {
    * unloaded Location is a no-op.
    */
   readonly evict: (ref: Location.Ref) => Effect.Effect<void>
+  /**
+   * Whether a Location's services are loaded now. A caller that would boot a
+   * folder as a side effect (a cache-warming ping) checks first and skips an
+   * unloaded folder, which reads fresh state when it is next loaded.
+   */
+  readonly loaded: (ref: Location.Ref) => Effect.Effect<boolean>
 }

@@ -19,6 +19,12 @@ export interface Interface {
    * a no-op, and an active Session there is left to the normal idle timeout.
    */
   readonly evict: (ref: Location.Ref) => Effect.Effect<void>
+  /**
+   * Whether a Location's services are loaded now. A caller that would boot a
+   * folder as a side effect (a cache-warming ping) checks first and skips an
+   * unloaded folder, which reads fresh state when it is next loaded.
+   */
+  readonly loaded: (ref: Location.Ref) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LocationActivity") {}
@@ -50,6 +56,9 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
           directory: ref.directory,
           workspaceID: ref.workspaceID,
         }).pipe(Effect.andThen(locations.invalidate(ref)))
+      // Whether the location's services are loaded now. `RcMap.has` reports the
+      // cache without booting it.
+      const loaded = (ref: Location.Ref) => RcMap.has(locations.rcMap, LocationServiceMap.canonical(ref))
 
       const evict = Effect.fn("LocationActivity.evict")(function* (ref: Location.Ref) {
         // An active Session keeps its folder: the normal idle timeout decides.
@@ -109,7 +118,7 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
         )
       }).pipe(Effect.forever, Effect.forkScoped)
 
-      return Service.of({ evict })
+      return Service.of({ evict, loaded })
     }),
   )
 }

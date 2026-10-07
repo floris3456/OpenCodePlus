@@ -486,6 +486,7 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
     },
     locations: {
       evict: (ref) => activity.evict(ref),
+      loaded: (ref) => activity.loaded(ref),
     },
     prompt: {
       templates: () => Effect.succeed(PromptTemplate.templates),

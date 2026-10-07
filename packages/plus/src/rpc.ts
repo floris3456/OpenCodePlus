@@ -1789,10 +1789,35 @@ export const RuleInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.RuleInvalid" })
 
+// /refresh and tools.opencode.refresh(): rebuild what this chat sends from the
+// current settings and files. `cost` names the re-read before it happens, from
+// the chat's last request.
+export const ChatRefreshInput = Schema.Struct({
+  sessionID: Schema.optionalKey(Schema.String),
+  /** Only report the cost; do not reload or republish. */
+  dryRun: Schema.optionalKey(Schema.Boolean),
+}).annotate({ identifier: "Plus.ChatRefreshInput" })
+
+export const ChatRefreshResult = Schema.Struct({
+  /** What this folder reloaded: agents, skills, commands, MCP servers, config. */
+  reloaded: Schema.Array(Schema.String),
+  /** Estimated input tokens the next request re-reads without a cache hit. */
+  reReadTokens: Schema.Number,
+  /** The chat's last request had a cache read, so the re-read is a full miss. */
+  withoutCache: Schema.Boolean,
+  revision: Schema.Number,
+  globalRevision: Schema.Number,
+}).annotate({ identifier: "Plus.ChatRefreshResult" })
 // The TUI promise client only accepts portable schemas (Standard Schema or
 // JSON Schema views), which bare Effect schemas structurally lack. Wrap fresh
 // annotated copies so the shared exports above are never mutated in place.
 const Empty = Schema.toStandardSchemaV1(Schema.Void.annotate({ identifier: "Plus.Empty" }))
+const PortableChatRefreshInput = Schema.toStandardSchemaV1(
+  ChatRefreshInput.annotate({ identifier: "Plus.ChatRefreshInput" }),
+)
+const PortableChatRefreshResult = Schema.toStandardSchemaV1(
+  ChatRefreshResult.annotate({ identifier: "Plus.ChatRefreshResult" }),
+)
 const PortableSnapshot = Schema.toStandardSchemaV1(Snapshot.annotate({ identifier: "Plus.Snapshot" }))
 const PortableMutateInput = Schema.toStandardSchemaV1(MutateInput.annotate({ identifier: "Plus.MutateInput" }))
 const PortableMutateResult = Schema.toStandardSchemaV1(MutateResult.annotate({ identifier: "Plus.MutateResult" }))
@@ -2028,6 +2053,11 @@ export const Definition = Rpc.define({
     "instructions.refresh": {
       input: Empty,
       output: PortableSnapshot,
+      errors: {},
+    },
+    "chat.refresh": {
+      input: PortableChatRefreshInput,
+      output: PortableChatRefreshResult,
       errors: {},
     },
     "instructions.mutate": {

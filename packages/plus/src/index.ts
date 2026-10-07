@@ -10,7 +10,7 @@ import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { DateTime, Effect, Exit, Queue, Scope, Semaphore, Stream } from "effect"
+import { DateTime, Effect, Exit, Queue, Scope, Schema, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -89,7 +89,9 @@ import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-b
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
+import { ledgerAt } from "./monitor/ledger.js"
 import { registerMonitorTools } from "./monitor/tools.js"
+import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
 
 export interface TeamOwnership {
@@ -596,6 +598,7 @@ export type UpdateRuleResult =
 export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
+  readonly chatRefresh: (input: Schema.Schema.Type<typeof Plus.ChatRefreshInput>) => Promise<{ ok: true; value: Schema.Schema.Type<typeof Plus.ChatRefreshResult> }>
   readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
@@ -641,6 +644,22 @@ export interface PlusApiOptions {
   readonly builtins?: readonly BuiltinTeam[]
 }
 
+// What a refresh costs: the input tokens of this chat's last request, which the
+// next request re-reads whole when the rebuild invalidates the prefix. The
+// Monitor's ledger holds the input token count per request.
+async function chatRefreshCost(
+  ctx: Context,
+  sessionID: string | undefined,
+): Promise<{ reReadTokens: number; withoutCache: boolean }> {
+  if (sessionID === undefined || sessionID === "") return { reReadTokens: 0, withoutCache: false }
+  const rows = ledgerAt().getRequests(sessionID)
+  const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title").at(-1)
+  if (last === undefined) return { reReadTokens: 0, withoutCache: false }
+  // input is the prompt the model saw; cacheRead is the part it read from cache.
+  const tokens = last.inputTokens + last.cacheReadTokens
+  return { reReadTokens: tokens, withoutCache: last.cacheReadTokens > 0 }
+}
+
 export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiOptions): PlusApi {
   const builtins = options?.builtins ?? []
   return {
@@ -663,6 +682,58 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const teams = await snapshotTeams(directory, loaded.records, builtins)
       const outputIds = await snapshotOutputIds(directory, discovered, loaded, builtins, state.teamOutputIds)
       return { ok: true as const, value: toSnapshot(discovered, loaded, teams, outputIds, await serverListing(ctx, loaded.records)) }
+    },
+    chatRefresh: async (input) => {
+      // Rebuild this folder from its current settings and files: the host
+      // reloads (config, agents, providers, models, commands, skills, MCP),
+      // then Plus republishes what this chat sends, and applies any pending
+      // Instructions change. This is the escape hatch: it may rebuild a cached
+      // prefix, so the caller is told the cost first.
+      const directory = await activationDirectory(ctx.location.directory)
+      if (input.dryRun === true) {
+        const cost = await chatRefreshCost(ctx, input.sessionID)
+        const stored = await loadMigrated(directory)
+        return {
+          ok: true as const,
+          value: {
+            reloaded: [],
+            reReadTokens: cost.reReadTokens,
+            withoutCache: cost.withoutCache,
+            revision: stored.projectRevision,
+            globalRevision: stored.globalRevision,
+          },
+        }
+      }
+      // Reloads run before the publish so discovery reads fresh host state.
+      // Each is independent: one failing domain must not skip the others.
+      const reloads: readonly [string, Effect.Effect<void>][] = [
+        ["config", ctx.instruction.reload()],
+        ["agents", ctx.agent.reload()],
+        ["providers", ctx.provider.reload()],
+        ["models", ctx.model.reload()],
+        ["commands", ctx.command.reload()],
+        ["skills", ctx.skill.reload()],
+        ["mcp", ctx.mcp.reload()],
+      ]
+      const reloaded: string[] = []
+      for (const [name, reload] of reloads) {
+        const exit = await Effect.runPromiseExit(reload)
+        if (exit._tag === "Success") reloaded.push(name)
+        else Effect.runSync(Effect.logWarning("plus chat refresh reload failed", { domain: name }))
+      }
+      await Effect.runPromise(refreshFromHost(ctx, state))
+      const fresh = await loadMigrated(directory)
+      const cost = await chatRefreshCost(ctx, input.sessionID)
+      return {
+        ok: true as const,
+        value: {
+          reloaded,
+          reReadTokens: cost.reReadTokens,
+          withoutCache: cost.withoutCache,
+          revision: fresh.projectRevision,
+          globalRevision: fresh.globalRevision,
+        },
+      }
     },
     mutate: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
@@ -3057,6 +3128,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.refresh())
         return result.value
       }),
+    "chat.refresh": (input) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.chatRefresh(input))
+        return result.value
+      }),
     "instructions.mutate": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.mutate(input))
@@ -3582,6 +3658,13 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
     if (Date.now() - state.warmingCheckedAt > 5_000) {
       state.warmingCheckedAt = Date.now()
       await refreshActiveModelsIfStale(await activationDirectory(ctx.location.directory), state)
+    }
+    // A ping must not boot an unloaded folder: the location's own services are
+    // dropped after its idle window, and its next load reads fresh state, so a
+    // ping there is wasted work at best and an MCP process spawn at worst.
+    if (event.phase === "warm" && !(await Effect.runPromise(ctx.locations.loaded(ctx.location)))) {
+      event.settings = undefined
+      return false
     }
     return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model), (sessionID) =>
       Effect.runPromise(
@@ -5100,8 +5183,10 @@ async function installTooling(ctx: Context, state: PlusState): Promise<Registrat
   // authority, so it installs with the rest of the tooling rather than behind one.
   const release = await registerReleaseTools(ctx)
   const monitor = await registerMonitorTools(ctx)
+  const refresh = await registerRefreshTool(ctx, api)
   const search = await registerSearchMcp(ctx)
-  return search !== undefined ? [...teaching, tools, release, monitor, search] : [...teaching, tools, release, monitor]
+  const base = [...teaching, tools, release, monitor, refresh]
+  return search !== undefined ? [...base, search] : base
 }
 
 function disposeTooling(state: PlusState): Effect.Effect<void> {

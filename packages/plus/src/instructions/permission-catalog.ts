@@ -698,6 +698,7 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
     },
     limits([{ id: "title", label: "Longest title (characters)", on: false, limit: 80, field: "title" }], "refuse", "length"),
   ],
+  opencode_refresh: [approval()],
 }
 
 const teamStatuses = ["done", "done_with_concerns", "blocked", "needs_context", "rejected"]

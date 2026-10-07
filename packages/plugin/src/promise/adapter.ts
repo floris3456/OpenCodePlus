@@ -463,6 +463,7 @@ export function fromPromise(plugin: Plugin) {
           },
           locations: {
             evict: (ref) => run(host.locations.evict(ref)),
+            loaded: (ref) => run(host.locations.loaded(ref)),
           },
           reference: {
             list: adaptApiMethod(ReferenceEndpoints["reference.list"], host.reference.list),
