@@ -111,6 +111,32 @@ describe("publish coalescing", () => {
     expect(discoverCounter.count).toBe(0)
   })
 
+  test("a forced notice (a team change, no record write) rediscovers with unchanged revisions", async () => {
+    resetSharedStoreListeners()
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    const ctx = fullContext({ directory: project, hooks: { current: 0 } })
+    const state = createState()
+    const scope = await Effect.runPromise(Scope.make())
+    try {
+      await Effect.runPromise(watchSharedStore(ctx, state).pipe(Scope.provide(scope)))
+      await Effect.runPromise(activate(ctx, state))
+      resetDiscoverCounter()
+      // A plain notice with nothing changed is skipped by the revision check...
+      notifySharedStoreChanged()
+      await Effect.runPromise(flushPendingRefresh(ctx, state))
+      expect(discoverCounter.count).toBe(0)
+      // ...a forced one (emitTeamsChanged) is not.
+      notifySharedStoreChanged(undefined, true)
+      await Effect.runPromise(flushPendingRefresh(ctx, state))
+      expect(discoverCounter.count).toBe(1)
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+      resetSharedStoreListeners()
+    }
+  })
+
   test("a pending refresh is applied by the prompt hook before it returns", async () => {
     resetSharedStoreListeners()
     const root = await tempDir()
