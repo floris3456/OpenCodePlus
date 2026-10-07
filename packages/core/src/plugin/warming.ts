@@ -12,6 +12,13 @@ import { Provider } from "../provider.js"
 import { AgentNotFoundError } from "../session/error.js"
 import { PluginHooks } from "./hooks.js"
 
+/**
+ * A failed warming ping is tried again this soon instead of a whole interval
+ * later: with 4-minute pings and a 5-minute cache, the next regular ping comes
+ * too late. A ping that never reached the provider costs nothing.
+ */
+export const WARMING_RETRY_MS = 30_000
+
 type ActiveSession = {
   last: number
   /** Start of the warming window: the latest non-warming request. */
@@ -22,6 +29,8 @@ type ActiveSession = {
   settings: SessionWarmingSettings
   /** The last warming ping failed because the pinned agent no longer exists. */
   missingAgent: boolean
+  /** When the last warming ping failed: its retry, before the next regular ping and the window's end. */
+  retryAt?: number
   /** Bumped per schedule so a loop replaced during a fork stops instead of sleeping on. */
   epoch: number
   fiber?: Fiber.Fiber<void>
@@ -81,7 +90,7 @@ export const Plugin = define({
         if (current?.epoch !== epoch) return
 
         const now = yield* Clock.currentTimeMillis
-        const next = Math.min(current.last + current.settings.interval, current.expires)
+        const next = Math.min(current.retryAt ?? Infinity, current.last + current.settings.interval, current.expires)
         if (now < next) {
           yield* Effect.sleep(Duration.millis(next - now))
           return yield* loop(sessionID, epoch)
@@ -104,10 +113,16 @@ export const Plugin = define({
         current.settings = settings
         current.expires = current.since + settings.duration
         const decided = yield* Clock.currentTimeMillis
-        if (decided >= current.expires || decided < Math.min(current.last + settings.interval, current.expires))
+        if (
+          decided >= current.expires ||
+          decided < Math.min(current.retryAt ?? Infinity, current.last + settings.interval, current.expires)
+        )
           return yield* loop(sessionID, epoch)
 
         const last = current.last
+        // Before the regular ping is due, this one is a retry of a failed ping.
+        const retry = current.retryAt !== undefined && decided < last + settings.interval
+        current.retryAt = undefined
         yield* Effect.logInfo("warming session", { sessionID, last })
         // The ping pins the agent and model of the last real request. A blank Enter only
         // commits the composer selection, so the session's stored selection must not retarget
@@ -155,7 +170,18 @@ export const Plugin = define({
         const latest = sessions.get(sessionID)
         if (latest === current) {
           latest.missingAgent = pingMissingAgent
-          if (latest.last === last) latest.last = yield* Clock.currentTimeMillis
+          if (latest.last === last) {
+            const now = yield* Clock.currentTimeMillis
+            // A failed ping is tried again WARMING_RETRY_MS later, while that
+            // comes before the next regular ping and the window's end. A failed
+            // retry keeps the regular schedule; a success restarts it.
+            if (pingError === undefined || !retry) latest.last = now
+            const again = now + WARMING_RETRY_MS
+            latest.retryAt =
+              pingError !== undefined && again < latest.last + latest.settings.interval && again < latest.expires
+                ? again
+                : undefined
+          }
         }
         return yield* loop(sessionID, epoch)
       },
@@ -210,6 +236,7 @@ export const Plugin = define({
           active.model = event.model
           active.settings = settings
           active.missingAgent = false
+          active.retryAt = undefined
           yield* reschedule(event.sessionID, active)
           return
         }

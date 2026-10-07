@@ -357,14 +357,11 @@ async function hostSessionFacts(ctx: Context, ledger: Ledger): Promise<HostSessi
   const ids = ledger.db.query<{ id: string }, []>("select id from session").all().map((row) => row.id)
   const states = new Map<string, string>()
   const agents = new Map<string, string>()
-  // A session is running while the host reports it active, or—on a host that
-  // does not expose the live set—while it has an open request of its own. Both
-  // are current facts and must beat the last completed execution's outcome.
-  const active = activeSessions(ctx)
-  if (active) {
-    const running = await Effect.runPromise(active).catch(() => undefined)
-    for (const id of Object.keys(running ?? {})) states.set(id, "running")
-  }
+  // A session is running while the host reports it active, or—when that read
+  // fails—while it has an open request of its own. Both are current facts and
+  // must beat the last completed execution's outcome.
+  const running = await Effect.runPromise(Effect.suspend(() => ctx.session.active())).catch(() => undefined)
+  for (const id of Object.keys(running ?? {})) states.set(id, "running")
   for (const id of ids) {
     if (!states.has(id) && ledger.getRequests(id).some((row) => row.ended === undefined)) states.set(id, "running")
   }
@@ -383,13 +380,6 @@ async function hostSessionFacts(ctx: Context, ledger: Ledger): Promise<HostSessi
     }),
   )
   return { states, agents }
-}
-
-// The host's live active set is a later host capability; a build without it
-// reports no states through this seam rather than guessing.
-function activeSessions(ctx: Context): Effect.Effect<Record<string, { readonly type: string }>> | undefined {
-  const active = (ctx.session as { active?: () => Effect.Effect<Record<string, { readonly type: string }>> }).active
-  return typeof active === "function" ? active.call(ctx.session) : undefined
 }
 
 export function monitorMark(label: string, ledger: Ledger = ledgerAt()): MonitorMark {

@@ -86,8 +86,8 @@ const activate = Effect.fn("activateWarming")(function* (
   // the same fiber, matching how the host invokes hooks from inside the loop.
   internal?: Map<Session.ID, Model.Ref>,
   // When set and returning true for a warm request, the ping fails as if its
-  // pinned agent no longer existed.
-  fail?: (call: WarmCall) => boolean,
+  // pinned agent no longer existed; "down" fails it as an unreachable service does.
+  fail?: (call: WarmCall) => boolean | "down",
 ) {
   const plugin = yield* Plugin.Service
   const sessions = yield* Session.Service
@@ -106,7 +106,9 @@ const activate = Effect.fn("activateWarming")(function* (
               ...(input.model === undefined ? {} : { model: input.model }),
             }
             calls.push(record)
-            if (fail?.(record))
+            const failure = fail?.(record)
+            if (failure === "down") return yield* Effect.die(new Error("Quota service did not answer"))
+            if (failure)
               return yield* new AgentNotFoundError({
                 sessionID: input.sessionID,
                 agent: input.agent ?? Agent.ID.make("build"),
@@ -497,6 +499,76 @@ describe("WarmingPlugin", () => {
       // Still warming: the next intervals ping again.
       yield* advance(2)
       expect(callsFor(calls, sessions.parent).length).toBeGreaterThan(warmed)
+    }),
+  )
+
+  it.effect("retries a failed warming request 30 seconds later and keeps the window's end", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "4 minutes", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service, undefined, () => (calls.length <= 2 ? "down" : false))
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* cross("4 minutes")
+      expect(callsFor(calls, sessions.parent).length).toBe(1)
+      // Not a whole interval later: 30 seconds.
+      yield* cross("29 seconds")
+      expect(callsFor(calls, sessions.parent).length).toBe(1)
+      yield* cross("1 second")
+      expect(callsFor(calls, sessions.parent).length).toBe(2)
+      // The retry failed too: once more 30 seconds later, and this one succeeds.
+      yield* cross("30 seconds")
+      expect(callsFor(calls, sessions.parent).length).toBe(3)
+      // After the success the regular interval resumes from it.
+      yield* cross("239 seconds")
+      expect(callsFor(calls, sessions.parent).length).toBe(3)
+      yield* cross("1 second")
+      expect(callsFor(calls, sessions.parent).length).toBe(4)
+      // The window still ends an hour after its start: pings at 9:00, 13:00 … 57:00, then none.
+      yield* cross("2 hours")
+      expect(callsFor(calls, sessions.parent).length).toBe(16)
+    }),
+  )
+
+  it.effect("does not retry before a regular warming request that comes sooner", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "20 seconds", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service, undefined, () => (calls.length === 1 ? "down" : false))
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* cross("20 seconds")
+      expect(callsFor(calls, sessions.parent).length).toBe(1)
+      yield* cross("19 seconds")
+      expect(callsFor(calls, sessions.parent).length).toBe(1)
+      yield* cross("1 second")
+      expect(callsFor(calls, sessions.parent).length).toBe(2)
+    }),
+  )
+
+  it.effect("does not retry a failed warming request past the window's end", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "4 minutes", duration: "260 seconds" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service, undefined, () => "down")
+      const sessions = yield* makeSessions()
+
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* cross("4 minutes")
+      expect(callsFor(calls, sessions.parent).length).toBe(1)
+      yield* cross("10 minutes")
+      expect(callsFor(calls, sessions.parent).length).toBe(1)
     }),
   )
 

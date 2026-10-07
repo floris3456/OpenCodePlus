@@ -634,6 +634,11 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
         })
       },
       get: (input) => sessions.get(input.sessionID),
+      // The sessions running now, process-wide: the same set /api/session/active reports.
+      active: () =>
+        sessions.active.pipe(
+          Effect.map((ids) => Object.fromEntries(Array.from(ids, (id) => [id, { type: "running" as const }]))),
+        ),
       switchAgent: sessions.switchAgent,
       switchModel: sessions.switchModel,
       prompt: sessions.prompt,

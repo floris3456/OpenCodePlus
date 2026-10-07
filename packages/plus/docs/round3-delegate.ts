@@ -177,6 +177,11 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
         const requestPath = `/api/session/${segment(input.sessionID)}`
         return dataOf(await request("GET", requestPath), "GET", requestPath) as Session.Info
       }),
+    active: () =>
+      Effect.promise(async () => {
+        const requestPath = "/api/session/active"
+        return dataOf(await request("GET", requestPath), "GET", requestPath) as Record<Session.ID, { readonly type: "running" }>
+      }),
     switchAgent: (input) =>
       Effect.promise(async () => {
         await request("POST", `/api/session/${segment(input.sessionID)}/agent`, { agent: input.agent })

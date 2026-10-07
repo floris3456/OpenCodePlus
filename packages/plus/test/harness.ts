@@ -808,6 +808,7 @@ function sessionDomain(overrides: Partial<SessionDomain> = {}): SessionDomain {
   return {
     create: overrides.create ?? die("unused session.create"),
     get: overrides.get ?? die("unused session.get"),
+    active: overrides.active ?? die("unused session.active"),
     switchAgent: overrides.switchAgent ?? die("unused session.switchAgent"),
     switchModel: overrides.switchModel ?? die("unused session.switchModel"),
     prompt: overrides.prompt ?? die("unused session.prompt"),

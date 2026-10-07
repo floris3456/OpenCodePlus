@@ -229,6 +229,7 @@ export type SessionDomain = Pick<
   SessionApi<unknown>,
   | "create"
   | "get"
+  | "active"
   | "switchAgent"
   | "switchModel"
   | "prompt"
