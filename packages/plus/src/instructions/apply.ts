@@ -51,6 +51,14 @@ import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "
 import { gateOf } from "./requires.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
 import { runPublish } from "./publish-runtime.js"
+import {
+  checkAndEmitChangeNote,
+  createPlanSet,
+  isRebuildMoment,
+  sessionPins,
+  type PlanSet,
+  type SessionPinManager,
+} from "./cache-safe.js"
 
 export interface ApplyAgent {
   readonly id: string
@@ -116,9 +124,9 @@ export interface AppliedPart {
 
 export interface PublishPartsInput {
   readonly applyInput: ApplyInput
-  readonly fileAgents: readonly AgentSource[]
-  readonly builtinWinners: readonly AgentSource[]
-  readonly builtins: readonly BuiltinTeam[]
+  readonly fileAgents?: readonly AgentSource[]
+  readonly builtinWinners?: readonly AgentSource[]
+  readonly builtins?: readonly BuiltinTeam[]
   readonly teamRoleOverrides?: ReadonlyMap<string, string>
   readonly specialRoleOverrides?: ReadonlyMap<string, string>
 }
@@ -274,6 +282,8 @@ export async function applyPublishParts(
   state: {
     appliedParts: Map<string, AppliedPart>
     appliedPlans?: Map<string, unknown>
+    sessionPins?: SessionPinManager
+    currentPlanSet?: PlanSet
   },
   input: PublishPartsInput,
 ): Promise<PublishPartsResult> {
@@ -336,9 +346,30 @@ export async function applyPublishParts(
   const sessionFp = JSON.stringify(session)
   const prevSession = state.appliedParts.get("session")
   const sessionTools = session.tools
+
+  const instructions = instructionPlans(input.applyInput)
+  const allInstructions = instructionPlans(input.applyInput, { skipNoop: true })
+  const customByAgent = await readCustomSystem(ctx, input.applyInput.agents)
+  const allRoles = roleUpdates(input.applyInput, { skipNoop: true })
+  const allCandidates = toolCandidates(input.applyInput, { skipNoop: true })
+  const allNative: ToolPlan[] = allCandidates
+    .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
+    .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+
+  state.currentPlanSet = createPlanSet({
+    roles: new Map(allRoles.map((r) => [r.agent, r.text])),
+    base: session.base,
+    native: allNative,
+    instructions: allInstructions,
+    scrubByAgent: new Map(session.scrubByAgent),
+    needsNarrowing: session.needsNarrowing,
+    permissions,
+    customByAgent,
+  })
+
   if (sessionFp !== prevSession?.fingerprint) {
     toDispose.push(...(prevSession?.registrations ?? []))
-    const installed = await installSessionPlans(ctx, input.applyInput, session, permissions)
+    const installed = await installSessionPlans(ctx, input.applyInput, session, permissions, state)
     state.appliedParts.set("session", { fingerprint: sessionFp, registrations: installed })
     const prevPlan = state.appliedPlans.get("session") as SessionPlans | undefined
     if (
@@ -390,7 +421,7 @@ export async function applyPublishParts(
   }
 
   // 8. teamFiles
-  const filePlans = await teamFilePlans(input.fileAgents, input.teamRoleOverrides, input.specialRoleOverrides)
+  const filePlans = await teamFilePlans(input.fileAgents ?? [], input.teamRoleOverrides, input.specialRoleOverrides)
   const fileFp = JSON.stringify(filePlans)
   const installedFileIds: string[] = filePlans.agents.map((a: { id: string }) => a.id)
   if (fileFp !== state.appliedParts.get("teamFiles")?.fingerprint) {
@@ -408,7 +439,7 @@ export async function applyPublishParts(
   }
 
   // 9. teamBuiltin
-  const builtinPlans = teamBuiltinPlans(input.builtinWinners, input.builtins, input.teamRoleOverrides)
+  const builtinPlans = teamBuiltinPlans(input.builtinWinners ?? [], input.builtins ?? [], input.teamRoleOverrides)
   const builtinFp = JSON.stringify(builtinPlans)
   const installedBuiltinIds: string[] = builtinPlans.map((a: { id: string }) => a.id)
   if (builtinFp !== state.appliedParts.get("teamBuiltin")?.fingerprint) {
@@ -1163,7 +1194,7 @@ async function addSkillCopies(
   return { registration, added }
 }
 
-interface BasePlan {
+export interface BasePlan {
   readonly agent: string
   readonly template: string
   readonly text: string
@@ -1171,7 +1202,7 @@ interface BasePlan {
   readonly upstream: string
 }
 
-interface InstructionPlan {
+export interface InstructionPlan {
   readonly agent: string
   readonly path: string
   readonly text: string
@@ -1200,7 +1231,7 @@ interface ToolCandidate {
   readonly pinned: boolean
 }
 
-function toolCandidates(input: ApplyInput): ToolCandidate[] {
+function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boolean }): ToolCandidate[] {
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
@@ -1211,7 +1242,7 @@ function toolCandidates(input: ApplyInput): ToolCandidate[] {
       // Mode tool would be discarded here before catalogPlans ever sees it.
       // Let the candidate survive when the resolved pin differs from the
       // registry default.
-      if (isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false)) return []
+      if (options?.skipNoop !== true && isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false)) return []
       return [{
         agent: agent.id,
         item,
@@ -1224,7 +1255,7 @@ function toolCandidates(input: ApplyInput): ToolCandidate[] {
   )
 }
 
-function instructionPlans(input: ApplyInput): InstructionPlan[] {
+function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
   return input.agents.flatMap((agent) => {
     const gate = rowGate(input, agent)
     return input.items.flatMap((item) => {
@@ -1238,7 +1269,7 @@ function instructionPlans(input: ApplyInput): InstructionPlan[] {
       // applies to that agent (and nothing is installed when none does).
       const guidance = item.id === guidanceItemId
       if (guidance && (!resolved.enabled || text.trim().length === 0)) return []
-      if (!guidance && isNoop(item, resolved)) return []
+      if (options?.skipNoop !== true && !guidance && isNoop(item, resolved)) return []
       return [{ agent: agent.id, path: instructionPlanPath(item.id), text, enabled: resolved.enabled && text.trim().length > 0 }]
     })
   })
@@ -1322,6 +1353,10 @@ export async function installSessionPlans(
   input: ApplyInput,
   plans: SessionPlans,
   permissions: PermissionTable,
+  state?: {
+    sessionPins?: SessionPinManager
+    currentPlanSet?: PlanSet
+  },
 ): Promise<Registration[]> {
   const installed: Registration[] = []
   try {
@@ -1329,7 +1364,12 @@ export async function installSessionPlans(
     const instructions = instructionPlans(input)
     const scrubByAgent = new Map(plans.scrubByAgent)
     const needsScrub = plans.scrubByAgent.some(([_, keywords]) => keywords.length > 0)
-    const contextHook = plans.base.length > 0 || plans.native.length > 0 || instructions.length > 0 || needsScrub
+    const contextHook =
+      plans.base.length > 0 ||
+      plans.native.length > 0 ||
+      instructions.length > 0 ||
+      needsScrub ||
+      state !== undefined
 
     if (plans.denials.length > 0) {
       const agentRegistration = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
@@ -1357,13 +1397,104 @@ export async function installSessionPlans(
       )).data
       const classifier: RequestClassifier = { pinned: pins, catalog: data, prompt: ctx.prompt }
       const customByAgent = await readCustomSystem(ctx, input.agents)
+      const allRoles = roleUpdates(input, { skipNoop: true })
+      const allInstructions = instructionPlans(input, { skipNoop: true })
+      const allCandidates = toolCandidates(input, { skipNoop: true })
+      const allNative: ToolPlan[] = allCandidates
+        .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
+        .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+      const fallbackPlanSet = createPlanSet({
+        roles: new Map(allRoles.map((r) => [r.agent, r.text])),
+        base: plans.base,
+        native: allNative,
+        instructions: allInstructions,
+        scrubByAgent,
+        needsNarrowing: plans.needsNarrowing,
+        permissions,
+        customByAgent,
+      })
       const registration = await runHook(ctx.session.hook, "context", (event) => {
-        applyBasePlan(event, plans.base, classifier, customByAgent)
-        applyToolPlan(event, plans.native.filter((plan) => plan.agent === String(event.agent)))
-        applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
-        applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
-        if (plans.needsNarrowing) narrowTools(event, permissions)
-        return plans.needsNarrowing ? describeChecks(ctx, event) : Effect.void
+        if (state === undefined) {
+          applyBasePlan(event, plans.base, classifier, customByAgent)
+          applyToolPlan(event, plans.native.filter((plan) => plan.agent === String(event.agent)))
+          applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
+          applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
+          if (plans.needsNarrowing) narrowTools(event, permissions)
+          return plans.needsNarrowing ? describeChecks(ctx, event) : Effect.void
+        }
+        return Effect.gen(function* () {
+          const sessionID = String(event.sessionID)
+          const agent = String(event.agent)
+          const pinManager = state?.sessionPins ?? sessionPins
+          const activePlanSet = state?.currentPlanSet ?? fallbackPlanSet
+          let pin = pinManager.getPin(sessionID)
+
+          if (pin === undefined) {
+            pin = pinManager.pinSession(sessionID, event.model, activePlanSet)
+            applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
+            applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
+            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
+            applyRuleScrub(event, activePlanSet.scrubByAgent.get(agent) ?? [])
+            if (activePlanSet.needsNarrowing) narrowTools(event, activePlanSet.permissions)
+            pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
+            pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
+            pin.lastRequestAt = Date.now()
+            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
+            return
+          }
+
+          const rebuild = yield* Effect.promise(() => isRebuildMoment(pin!, event, Date.now()))
+          if (rebuild) {
+            pin = pinManager.repinSession(sessionID, event.model, activePlanSet)
+            applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
+            applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
+            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
+            applyRuleScrub(event, activePlanSet.scrubByAgent.get(agent) ?? [])
+            if (activePlanSet.needsNarrowing) narrowTools(event, activePlanSet.permissions)
+            pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
+            pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
+            pin.lastRequestAt = Date.now()
+            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
+            return
+          }
+
+          const noteText = yield* Effect.promise(() =>
+            checkAndEmitChangeNote(ctx, pin!, activePlanSet, agent, sessionID),
+          )
+          if (noteText !== undefined) {
+            const hasNote = event.messages.some(
+              (m) =>
+                (typeof m.content === "string" && m.content === noteText) ||
+                (Array.isArray(m.content) &&
+                  m.content.some((c) => typeof (c as { text?: unknown }).text === "string" && (c as { text: string }).text === noteText)),
+            )
+            if (!hasNote) {
+              event.messages.push({
+                role: "user",
+                content: noteText,
+              } as never)
+            }
+          }
+
+          const pinnedSystem0 = pin.pinnedSystem0.get(agent)
+          if (pinnedSystem0 !== undefined) {
+            if (event.system[0] !== undefined) {
+              event.system[0] = { ...event.system[0], text: pinnedSystem0 }
+            } else {
+              event.system.push({ type: "text", text: pinnedSystem0 })
+            }
+          } else {
+            applyBasePlan(event, pin.planSet.base, classifier, pin.planSet.customByAgent)
+            pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
+          }
+
+          applyToolPlan(event, pin.planSet.native.filter((plan) => plan.agent === agent))
+          applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent))
+          applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
+          if (pin.planSet.needsNarrowing) narrowTools(event, pin.planSet.permissions)
+          pin.lastRequestAt = Date.now()
+          if (pin.planSet.needsNarrowing) yield* describeChecks(ctx, event)
+        })
       })
       installed.push(registration)
     }
@@ -1417,6 +1548,18 @@ async function applySession(
     !plans.needsNarrowing
   )
     return { registrations: [], tools: [], agentChanged: false }
+  const roles = roleUpdates(input)
+  const customByAgent = await readCustomSystem(ctx, input.agents)
+  const planSet = createPlanSet({
+    roles: new Map(roles.map((r) => [r.agent, r.text])),
+    base: plans.base,
+    native: plans.native,
+    instructions,
+    scrubByAgent: new Map(plans.scrubByAgent),
+    needsNarrowing: plans.needsNarrowing,
+    permissions,
+    customByAgent,
+  })
   const installed = await installSessionPlans(ctx, input, plans, permissions)
   return { registrations: installed, tools: plans.tools, agentChanged: plans.denials.length > 0 || plans.permDenies.length > 0 }
 }

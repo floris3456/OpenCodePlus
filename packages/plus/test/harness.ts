@@ -728,13 +728,13 @@ export function fullContext(options: {
     skill: skillDomain,
     tool: tools.domain,
     mcp: mcp.domain,
-    session: options.session ?? (options.hooks === undefined ? {} : {
+    session: options.session ?? {
       hook: () =>
         Effect.sync(() => {
           if (options.hooks) options.hooks.current++
           return { dispose: Effect.sync(() => { if (options.hooks) options.hooks.current-- }) }
         }),
-    }),
+    },
   })
 }
 
