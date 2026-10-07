@@ -164,6 +164,8 @@ export interface RowOwner {
 
 export interface TreeNodeBadges {
   readonly state?: "on" | "off"
+  /** Group rows with a mixed on/off split: "n/m" (n on of m), shown where item rows show their on/off marker. */
+  readonly summary?: string
   /** System rows and sections: the rows its condition names (requires.ts) and whether this owner has each as required. */
   readonly requires?: readonly { readonly id: string; readonly on: boolean; readonly met: boolean }[]
   /** Where that condition comes from: "its text" (the section's own line) or a level ("set here", "from Global", …). */
@@ -629,12 +631,89 @@ function emit(lazy: Lazy, expanded: ReadonlySet<string>): TreeNode[] {
 }
 
 // Same badge rule as before: sections carry their own flags, every other row
-// rolls hidden and visible descendant review into review/reviewCount.
+// rolls hidden and visible descendant review into review/reviewCount. Group
+// rows additionally carry their toggle summary (on, off or n/m), computed
+// from their nearest toggleable descendants.
 function finalizeLazy(lazy: Lazy): TreeNode {
   if (lazy.kind === "section") return shell(lazy, lazy.partial())
   const count = lazy.reviewCount()
   const self = lazy.selfReview()
-  return shell(lazy, { ...lazy.partial(), review: self || count > 0, reviewCount: count })
+  if (lazy.kind !== "group") return shell(lazy, { ...lazy.partial(), review: self || count > 0, reviewCount: count })
+  const toggle = groupToggleOf(lazy)
+  return {
+    ...shell(lazy, {
+      ...lazy.partial(),
+      ...(toggle.state === undefined ? {} : { state: toggle.state }),
+      ...(toggle.summary === undefined ? {} : { summary: toggle.summary }),
+      review: self || count > 0,
+      reviewCount: count,
+    }),
+    ...(toggle.toggle ? { actions: { ...lazy.actions, toggle: true } } : {}),
+  }
+}
+
+// A group row is toggleable when it has at least one toggleable descendant.
+// "Its rows" are the nearest toggleable descendants: the walk stops at the
+// first node that is itself toggleable (actions.toggle, or an entity with an
+// Enabled control), so a tool's own Permissions and sections are never rows
+// of an outer group. Model rows are activation, not on/off, and permission
+// rows are switches of their own tool, so both are excluded. A group whose
+// rows include a team row is left to the team paths (team.setEnabled), not
+// the record toggle.
+export interface GroupToggleRows {
+  readonly rows: readonly Lazy[]
+  readonly hasTeam: boolean
+}
+
+export function groupToggleRows(lazy: Lazy): GroupToggleRows {
+  const rows: Lazy[] = []
+  let hasTeam = false
+  const visit = (node: Lazy): void => {
+    if (node.kind === "team") {
+      if (node.actions.toggle === true) hasTeam = true
+      return
+    }
+    if (node.enabledRow !== undefined) {
+      if (node.actions.toggle === true) rows.push(node)
+      return
+    }
+    if (node.address !== undefined && node.actions.toggle === true) {
+      if (!isGroupToggleExcluded(node)) rows.push(node)
+      return
+    }
+    if (node.kind === "item" || node.kind === "section") {
+      // A whole row that cannot be toggled (Role/persona, a base template)
+      // still has toggleable sections: keep walking for those.
+      if (node.kind === "section") return
+      for (const child of node.children()) visit(child)
+      return
+    }
+    for (const child of node.children()) visit(child)
+  }
+  for (const child of lazy.children()) visit(child)
+  return { rows, hasTeam }
+}
+
+function isGroupToggleExcluded(lazy: Lazy): boolean {
+  const item = lazy.address?.item
+  if (item === undefined) return false
+  if (item.startsWith("model")) return true
+  if (item.startsWith("perm:")) return true
+  return false
+}
+
+export function groupToggleOf(lazy: Lazy): { readonly toggle: boolean; readonly state?: "on" | "off"; readonly summary?: string } {
+  const found = groupToggleRows(lazy)
+  const states = found.rows.map((row) => row.partial().state).filter((state): state is "on" | "off" => state === "on" || state === "off")
+  if (found.hasTeam || states.length === 0) return { toggle: false }
+  // Sections alone never make a group toggleable: they belong to the whole
+  // row above them (a tool's Description group stays inert while the tool
+  // row itself carries the toggle).
+  if (!found.rows.some((row) => row.kind !== "section")) return { toggle: false }
+  const on = states.filter((state) => state === "on").length
+  if (on === states.length) return { toggle: true, state: "on" }
+  if (on === 0) return { toggle: true, state: "off" }
+  return { toggle: true, summary: `${on}/${states.length}` }
 }
 
 function shell(lazy: Lazy, badges: TreeNodeBadges): TreeNode {
@@ -2439,6 +2518,13 @@ function toolServerGroup(
 // servers the rows hang directly off it. Empty groups are never emitted: the
 // caller skips the group when there are no rows, and every namespace here
 // comes from a row so it is non-empty by construction.
+//
+// Dotted namespaces nest under their first segment: `browser` plus
+// `browser.*` become one `Browser` group holding the bare namespace's tools
+// as `Pages` and one group per sub-namespace (`CPU`, `Files`, …). A first
+// segment with no dotted namespace keeps today's single flat group, id and
+// label unchanged, so `image`, `opencode`, `instructions`, `monitor`,
+// `release`, `team` and `search` look exactly as today.
 function codemodeGroup(
   ctx: BuildContext,
   memo: Memo,
@@ -2465,14 +2551,78 @@ function codemodeGroup(
       const direct = items
         .filter((item) => item.namespace === undefined)
         .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath))
-      const namespaces = [...new Set(items.map((item) => item.namespace))].filter((ns): ns is string => ns !== undefined).sort()
-      return [
-        ...direct,
-        ...namespaces.map((namespace) =>
+      return [...direct, ...namespaceGroups(ctx, memo, level, owner, agent, id, depth + 1, items, teamRef, catalogue, ownerPath)]
+    },
+  })
+}
+
+// One Code Mode namespace group per first segment, sorted like the server
+// groups. A segment with no dotted namespace stays a single flat group
+// (`${id}:${namespace}`, label unchanged); otherwise the segment becomes a
+// parent (`${id}:${segment}`, capitalized) whose first child is the bare
+// namespace's tools (`Pages` for browser, `General` elsewhere) followed by
+// one group per sub-namespace labelled by its last segment (`cpu` reads
+// `CPU`). A sub-namespace id spells the full namespace with dots as colons,
+// so `browser.cpu` reads `${id}:browser:cpu`.
+function namespaceGroups(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  id: string,
+  depth: number,
+  items: readonly Item[],
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy[] {
+  const namespaces = [...new Set(items.map((item) => item.namespace))].filter((ns): ns is string => ns !== undefined).sort()
+  const firsts = [...new Set(namespaces.map((namespace) => namespace.split(".")[0]!))].sort()
+  return firsts.map((first) => {
+    const dotted = namespaces.filter((namespace) => namespace.startsWith(`${first}.`))
+    if (dotted.length === 0) {
+      const namespace = namespaces.find((candidate) => candidate === first)!
+      return branch(memo, {
+        kind: "group",
+        id: `${id}:${namespace}`,
+        label: namespace,
+        depth,
+        actions: noActions(),
+        children: () =>
+          items
+            .filter((item) => item.namespace === namespace)
+            .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath)),
+      })
+    }
+    const bare = namespaces.includes(first)
+      ? [
           branch(memo, {
             kind: "group",
-            id: `${id}:${namespace}`,
-            label: namespace,
+            id: `${id}:${first}:${first === "browser" ? "pages" : "general"}`,
+            label: first === "browser" ? "Pages" : "General",
+            depth: depth + 1,
+            actions: noActions(),
+            children: () =>
+              items
+                .filter((item) => item.namespace === first)
+                .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 2, teamRef, catalogue, ownerPath)),
+          }),
+        ]
+      : []
+    return branch(memo, {
+      kind: "group",
+      id: `${id}:${first}`,
+      label: capitalizeSegment(first),
+      depth,
+      actions: noActions(),
+      children: () => [
+        ...bare,
+        ...dotted.map((namespace) =>
+          branch(memo, {
+            kind: "group",
+            id: `${id}:${namespace.replaceAll(".", ":").toLowerCase()}`,
+            label: capitalizeSegment(namespace.split(".").at(-1)!),
             depth: depth + 1,
             actions: noActions(),
             children: () =>
@@ -2481,9 +2631,14 @@ function codemodeGroup(
                 .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 2, teamRef, catalogue, ownerPath)),
           }),
         ),
-      ]
-    },
+      ],
+    })
   })
+}
+
+function capitalizeSegment(segment: string): string {
+  if (segment.toLowerCase() === "cpu") return "CPU"
+  return segment.charAt(0).toUpperCase() + segment.slice(1)
 }
 
 function lazyItem(

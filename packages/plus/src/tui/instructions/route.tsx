@@ -55,6 +55,8 @@ function isExpandable(node: TreeNode): boolean {
 function canToggle(node: TreeNode | undefined): boolean {
   // Team rows carry no address by design (a synthetic address would corrupt
   // the mutate path), so toggleability reads from their toggle action alone.
+  // Group rows toggle their nearest toggleable descendants (ops.toggleGroup).
+  if (node?.kind === "group") return node?.actions?.toggle === true
   if (node?.kind === "team" || node?.enabledRow !== undefined) return node?.actions?.toggle === true
   return node?.address !== undefined && node?.actions?.toggle === true
 }

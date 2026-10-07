@@ -375,15 +375,19 @@ test("narrow editing unwinds one level per press: editor, list page, sidebar pag
   const fx = await renderRoute({ snapshots: [createSnapshot({ items: [mcpItem()] })], width: 80, height: 40, onClose: closed.onClose })
   try {
     await gotoMcpItem(fx)
-    // Narrow: the list is a page of its own (no sidebar beside it).
-    expect(fx.fixture.captureCharFrame()).not.toContain("▾ Agents")
+    // Narrow: the list is a page of its own (no sidebar beside it). The
+    // sidebar's Agents row carries its toggle glyph ("▾ ● Agents",
+    // "▾ 2/4 Agents"), so absence is matched with the glyph, not the bare pair.
+    expect(fx.fixture.captureCharFrame()).not.toMatch(/[▾▸]\s+(●|○|\d+\/\d+ )?Agents/)
     expect(send(fx, "e")).toBe(true)
     await fx.fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     expect(send(fx, "escape")).toBe(true)
     await fx.fixture.waitForFrame((frame) => !frame.includes("ctrl+s save") && frame.includes("esc sidebar"))
     expect(closed.count()).toBe(0)
     expect(send(fx, "escape")).toBe(true)
-    await fx.fixture.waitForFrame((frame) => frame.includes("▾ Agents") && frame.includes("esc close"))
+    // Group rows carry their toggle summary between the marker and the label
+    // ("▾ 2/4 Agents"), so match the label rather than the bare marker pair.
+    await fx.fixture.waitForFrame((frame) => frame.includes("▾") && frame.includes("Agents") && frame.includes("esc close"))
     expect(closed.count()).toBe(0)
     expect(send(fx, "escape")).toBe(true)
     await sleep(50)
