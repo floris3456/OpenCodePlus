@@ -251,10 +251,19 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   // Presets and Defaults entries get the Role/persona row every agent has.
+  // An optimistic edit replaces the records and keeps the items array, so the
+  // converted items (with control and role rows) are reused unless the items or
+  // the preset state (links, entries, presets: records) changed.
+  let itemsReuse: { readonly items: Snapshot["items"]; readonly presets: string; readonly value: Item[] } | undefined
   const itemsForTree = createMemo<Item[]>(() => {
     const current = snapshot()
     if (!current) return []
-    return withOwnerRoles(withControlItems(current.items.map(itemOf)), presetStateOfSnapshot(current))
+    const presetState = presetStateOfSnapshot(current)
+    const presets = JSON.stringify(presetState)
+    if (itemsReuse !== undefined && itemsReuse.items === current.items && itemsReuse.presets === presets) return itemsReuse.value
+    const value = withOwnerRoles(withControlItems(current.items.map(itemOf)), presetState)
+    itemsReuse = { items: current.items, presets, value }
+    return value
   })
 
   const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]>(() => {

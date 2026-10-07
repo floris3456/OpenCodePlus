@@ -269,7 +269,18 @@ export function modelDefaultsViewOf(
   return { ...view, key, ...(own === undefined ? {} : { record: own }) }
 }
 
+// A snapshot is an immutable answer: its memo input is computed once.
+const memoInputs = new WeakMap<Plus.Snapshot, MemoInput>()
+
 export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
+  const known = memoInputs.get(snapshot)
+  if (known !== undefined) return known
+  const input = memoInputFrom(snapshot)
+  memoInputs.set(snapshot, input)
+  return input
+}
+
+function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
   return {
     // Presets and Defaults entries get the Role/persona row discovery gives
     // every agent (presets.ts withOwnerRoles).

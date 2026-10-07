@@ -23,8 +23,13 @@ export function booleanControl(id: string): boolean {
 }
 
 /** Prefer the addressed member's upstream, then the standalone agent, then defaults. */
+// Items by id, once per items array (tree rows look controls up per agent).
+const rowsById = new WeakMap<readonly Item[], Map<string, Item[]>>()
+
 export function controlItemFor(items: readonly Item[], address: Pick<Address, "agent" | "item" | "team" | "memberOf">): Item | undefined {
-  const rows = items.filter((item) => item.id === address.item)
+  const index = rowsById.get(items) ?? Map.groupBy(items, (item) => item.id)
+  rowsById.set(items, index)
+  const rows = index.get(address.item) ?? []
   const team = address.team ?? address.memberOf
   return rows.find((item) => item.agents?.includes(address.agent ?? "") && sameTeam(item.controlTeam, team))
     ?? rows.find((item) => item.agents?.includes(address.agent ?? "") && item.controlTeam === undefined)

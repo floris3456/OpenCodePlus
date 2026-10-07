@@ -1364,8 +1364,11 @@ export function applies(item: Pick<Item, "agents">, agent: string): boolean {
 }
 
 export function canReset(records: readonly CustomizationRecord[], address: Address): boolean {
+  // Only this item's records can match: the per-records index answers them
+  // without scanning the whole store for every tree row.
+  const own = itemRecordsIndex(records).get(address.item)?.records ?? []
   if (address.section === null) {
-    return records.some(
+    return own.some(
       (record) =>
         record.item === address.item &&
         record.level === address.level &&
@@ -1374,7 +1377,7 @@ export function canReset(records: readonly CustomizationRecord[], address: Addre
         catalogueMatches(address.agent, record.catalogue, address.catalogue),
     )
   }
-  return records.some((record) => sameNode(record, address))
+  return own.some((record) => sameNode(record, address))
 }
 
 // The one host-sourced Code Mode classification: tools default into
