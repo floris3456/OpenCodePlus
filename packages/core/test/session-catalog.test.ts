@@ -340,6 +340,68 @@ describe("SessionContext catalog hook", () => {
     }),
   )
 
+  it.effect("a replaced input shows edited parameters in the catalog and search, and calls keep the tool's own schema", () =>
+    Effect.gen(function* () {
+      yield* setupAgents
+      const registry = yield* Tool.Service
+      const received: unknown[] = []
+      yield* registry.transform((editor) => {
+        editor.add({
+          name: "find",
+          description: "Find an order",
+          input: Schema.Struct({
+            id: Schema.String.annotate({ description: "Order id" }),
+            verbose: Schema.optional(Schema.Boolean).annotate({ description: "Include the order history" }),
+          }),
+          output: Schema.String,
+          execute: (input) => Effect.sync(() => (received.push(input), { output: "found" })),
+          options: { namespace: "orders", pinned: true },
+        })
+      })
+      const hooks = yield* PluginHooks.Service
+      const context = yield* SessionContext.Service
+      const own: unknown[] = []
+      yield* hooks.register("session", "catalog", (event) =>
+        Effect.sync(() => {
+          const current = event.tools["orders.find"]
+          if (current?.input === undefined || event.agent !== planID) return
+          own.push(current.input)
+          const input = structuredClone(current.input) as { properties: Record<string, { description?: string }> }
+          input.properties.id = { ...input.properties.id, description: "The order number" }
+          delete input.properties.verbose
+          event.tools["orders.find"] = { ...current, input }
+        }),
+      )
+      const plan = yield* context.select((yield* createSession(planID)).id)
+      const build = yield* context.select((yield* createSession(buildID)).id)
+      const planText = yield* codemodeText(plan)
+      expect(own).toHaveLength(1)
+      expect(planText).toContain("The order number")
+      expect(planText).not.toContain("verbose")
+      // Control: another agent, untouched by the hook, keeps the tool's own parameters byte for byte.
+      const buildText = yield* codemodeText(build)
+      expect(buildText).toContain("Order id")
+      expect(buildText).toContain("verbose")
+      const plain = yield* registry.snapshot()
+      expect(buildText).toBe((yield* readInitial(CodeModeInstructions.make(plain.codeModeCatalog))).text)
+
+      const run = (code: string) =>
+        plan.tools.execute({
+          sessionID: plan.session.id,
+          agent: planID,
+          messageID: "msg_catalog_test" as never,
+          call: { id: "call_1", name: "execute", input: { code } } as never,
+        })
+      const searched = yield* run(`return search({ query: "find" })`)
+      const found = JSON.stringify(searched.output)
+      expect(found).toContain("The order number")
+      expect(found).not.toContain("verbose")
+      // A call that still passes the hidden parameter reaches the tool unchanged.
+      yield* run(`return await tools.orders.find({ id: "7", verbose: true })`)
+      expect(received).toEqual([{ id: "7", verbose: true }])
+    }),
+  )
+
   it.effect("with no hook the output matches the un-hooked render", () =>
     Effect.gen(function* () {
       yield* setupAgents

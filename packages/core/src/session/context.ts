@@ -158,16 +158,26 @@ const layer = Layer.effect(
         },
         { concurrency: "unbounded" },
       )
-      const codeModeCatalog = yield* Effect.gen(function* () {
-        if (loaded.tools.codeModeCatalog === undefined) return undefined
-        const tools = CodeModeCatalog.flattenToRecord(loaded.tools.codeModeCatalog)
+      const catalogued = yield* Effect.gen(function* () {
+        if (loaded.tools.codeModeCatalog === undefined) return { tools: loaded.tools, catalog: undefined }
+        const own = loaded.tools.codeModeInputs
         const event = yield* hooks.trigger("session", "catalog", {
           sessionID,
           agent: info.id,
-          tools,
+          tools: CodeModeCatalog.flattenToRecord(loaded.tools.codeModeCatalog, own),
         })
-        return CodeModeCatalog.applyOverrides(loaded.tools.codeModeCatalog, event.tools)
+        // A hook shows a tool's parameters edited by replacing its `input`: those tools
+        // render from the edited schema, in the catalog and in `search()`, for this request.
+        const inputs = new Map(
+          Object.entries(event.tools).flatMap(([path, entry]) =>
+            entry.input !== undefined && entry.input !== own?.get(path) ? [[path, entry.input] as const] : [],
+          ),
+        )
+        const tools = inputs.size === 0 ? loaded.tools : yield* registry.snapshot(permissions, inputs)
+        if (tools.codeModeCatalog === undefined) return { tools, catalog: undefined }
+        return { tools, catalog: CodeModeCatalog.applyOverrides(tools.codeModeCatalog, event.tools) }
       })
+      const codeModeCatalog = catalogued.catalog
       return {
         session,
         agent: { ...agent, info },
@@ -180,7 +190,7 @@ const layer = Layer.effect(
           loaded.mcp,
           loaded.entries,
         ]),
-        tools: loaded.tools,
+        tools: catalogued.tools,
       }
     })
 

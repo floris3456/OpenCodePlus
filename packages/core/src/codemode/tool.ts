@@ -10,7 +10,7 @@ import type {
   Namespace as ToolNamespace,
   Result,
 } from "@opencode/schema/tool"
-import { Effect, Ref, Schema, Semaphore } from "effect"
+import { Effect, type JsonSchema, Ref, Schema, Semaphore } from "effect"
 import { definition, normalizedName } from "../tool/runtime.js"
 import { CodeModeCatalog } from "./catalog.js"
 import { CodeModeWeb } from "./web.js"
@@ -56,6 +56,13 @@ type Tools = {
 export type Inventory = {
   readonly tools: ReadonlyMap<string, Info>
   readonly namespaces?: ReadonlyMap<string, ToolNamespace>
+  /**
+   * Input schemas shown to the model in place of a tool's own, by qualified
+   * path (a session's edited parameters). They shape the catalog signature and
+   * `search()` only: CodeMode never validates against JSON Schema, and the call
+   * still decodes with the tool's own schema.
+   */
+  readonly inputs?: ReadonlyMap<string, JsonSchema.JsonSchema>
 }
 
 // Invariant model-facing guidance; the changing tool catalog is delivered through Instructions.
@@ -175,6 +182,10 @@ function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<Exe
   } satisfies CodeMode.Hooks
 }
 
+/** Each tool's own input schema by qualified path: what a session may show edited through `Inventory.inputs`. */
+export const inputs = (inventory: Inventory): ReadonlyMap<string, JsonSchema.JsonSchema> =>
+  new Map(Array.from(inventory.tools.values(), (registration) => [qualifiedName(registration), definition(registration).inputSchema]))
+
 export const catalog = (inventory: Inventory) => {
   const pinned = new Set(
     Array.from(inventory.tools.values())
@@ -230,7 +241,7 @@ function runtime(
     const child = definition(registration)
     getNode(root, qualifiedName(registration)).tool = Tool.make({
       description: child.description,
-      input: child.inputSchema,
+      input: inventory.inputs?.get(qualifiedName(registration)) ?? child.inputSchema,
       output: child.outputSchema ?? Schema.NullOr(Schema.String),
       execute: (input) => executeTool(name, registration, input),
     })

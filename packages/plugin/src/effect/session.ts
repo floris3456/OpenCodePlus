@@ -198,8 +198,12 @@ export interface SessionWarming {
 export interface SessionCatalog {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
-  /** Code Mode tools keyed by qualified dotted path, e.g. `browser.tabs.open`. */
-  tools: Record<string, { description: string; pinned: boolean }>
+  /**
+   * Code Mode tools keyed by qualified dotted path, e.g. `browser.tabs.open`.
+   * `input` is the tool's own input schema: replace it (never mutate it) to show
+   * the model edited parameters in the catalog and in `search()`.
+   */
+  tools: Record<string, { description: string; pinned: boolean; input?: JsonSchema.JsonSchema }>
 }
 
 export interface SessionHooks {

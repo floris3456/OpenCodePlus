@@ -1,6 +1,6 @@
 export * as CodeModeCatalog from "./catalog.js"
 
-import { Schema } from "effect"
+import { type JsonSchema, Schema } from "effect"
 
 export const Tool = Schema.Struct({
   type: Schema.Literal("tool"),
@@ -167,13 +167,20 @@ export type ToolOverride = {
   readonly pinned: boolean
 }
 
-export function flattenToRecord(inventory: Inventory): Record<string, { description: string; pinned: boolean }> {
-  const record: Record<string, { description: string; pinned: boolean }> = {}
+/** One Code Mode tool as a session's `catalog` hook sees it; `input` is its own input schema. */
+export type HookTool = { description: string; pinned: boolean; input?: JsonSchema.JsonSchema }
+
+export function flattenToRecord(
+  inventory: Inventory,
+  inputs?: ReadonlyMap<string, JsonSchema.JsonSchema>,
+): Record<string, HookTool> {
+  const record: Record<string, HookTool> = {}
   const visit = (entries: ReadonlyArray<Tool | Namespace>, path: ReadonlyArray<string>) => {
     for (const entry of entries) {
       if (entry.type === "tool") {
         const key = [...path, entry.name].join(".")
-        record[key] = { description: entry.description, pinned: entry.pinned ?? false }
+        const input = inputs?.get(key)
+        record[key] = { description: entry.description, pinned: entry.pinned ?? false, ...(input === undefined ? {} : { input }) }
         continue
       }
       visit(entry.tools, [...path, entry.name])

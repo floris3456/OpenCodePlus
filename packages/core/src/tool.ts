@@ -4,7 +4,7 @@ export type { Context, Metadata, Namespace, Options, Result } from "@opencode/sc
 
 import { ToolDefinition, type ToolCall } from "@opencode/ai"
 import { Tool } from "@opencode/schema/tool"
-import { Context, Effect, Layer, Result, Schema, SchemaIssue, Types } from "effect"
+import { Context, Effect, type JsonSchema, Layer, Result, Schema, SchemaIssue, Types } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import type { Agent } from "./agent.js"
 import { CodeModeCatalog } from "./codemode/catalog.js"
@@ -41,7 +41,11 @@ type Data = {
 
 export interface Interface extends State.Transformable<Editor> {
   readonly list: () => Effect.Effect<ReadonlyArray<Tool.Info & { readonly id: string }>>
-  readonly snapshot: (permissions?: Permission.Ruleset) => Effect.Effect<Snapshot>
+  /** `inputs` shows Code Mode tools with these input schemas (by qualified path) in this snapshot only. */
+  readonly snapshot: (
+    permissions?: Permission.Ruleset,
+    inputs?: ReadonlyMap<string, JsonSchema.JsonSchema>,
+  ) => Effect.Effect<Snapshot>
 }
 
 /** A local execution result after hooks and content normalization. */
@@ -52,6 +56,8 @@ export interface NormalizedResult extends Tool.Result {
 export interface Snapshot {
   readonly definitions: ReadonlyArray<ToolDefinition>
   readonly codeModeCatalog?: CodeModeCatalog.Inventory
+  /** Each Code Mode tool's own input schema by qualified path, while Code Mode is enabled. */
+  readonly codeModeInputs?: ReadonlyMap<string, JsonSchema.JsonSchema>
   readonly execute: (input: {
     readonly sessionID: SessionSchema.ID
     readonly agent: Agent.ID
@@ -224,7 +230,7 @@ const layer = Layer.effect(
       transform: state.transform,
       reload: state.reload,
       list: () => Effect.sync(() => Array.from(state.get().tools.values())),
-      snapshot: Effect.fn("Tool.snapshot")((permissions) =>
+      snapshot: Effect.fn("Tool.snapshot")((permissions, inputs) =>
         Effect.sync(() => {
           const data = state.get()
           const active = new Map<string, Tool.Info>()
@@ -236,7 +242,8 @@ for (const [name, tool] of data.tools) {
           const direct = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode === false))
           const codeModeTools = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode !== false))
           const namespaces = data.namespaces
-          const codeModeInventory = { tools: codeModeTools, namespaces }
+          const edited = inputs !== undefined && inputs.size > 0
+          const codeModeInventory = { tools: codeModeTools, namespaces, ...(edited ? { inputs } : {}) }
           const codeModeEnabled = !whollyDisabled("execute", rules)
           const codeModeTool = codeModeEnabled
             ? CodeModeTool.create(codeModeInventory, (name, tool, input, context) =>
@@ -248,14 +255,15 @@ for (const [name, tool] of data.tools) {
           const names = Array.from(codeModeTools.keys()).join("\0")
           // Discovery is immutable for a registry revision and visible tool set. Keep request
           // definitions/executors fresh, but share the much larger rendered catalog across steps.
+          // A session's edited inputs render their own catalog and never replace the shared one.
           const codeModeCatalog = !codeModeEnabled
             ? undefined
-            : catalog?.data === data && catalog.names === names
+            : !edited && catalog?.data === data && catalog.names === names
               ? catalog.value
               : CodeModeTool.catalog(codeModeInventory)
-          if (codeModeCatalog) catalog = { data, names, value: codeModeCatalog }
+          if (codeModeCatalog && !edited) catalog = { data, names, value: codeModeCatalog }
           return {
-            ...(codeModeCatalog === undefined ? {} : { codeModeCatalog }),
+            ...(codeModeCatalog === undefined ? {} : { codeModeCatalog, codeModeInputs: CodeModeTool.inputs(codeModeInventory) }),
             definitions: [
               ...Array.from(direct)
                 .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
