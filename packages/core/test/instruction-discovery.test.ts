@@ -232,7 +232,7 @@ describe("InstructionDiscovery", () => {
 })
 
 describe("ConfigInstructionPlugin.Plugin", () => {
-  it.live("loads global and upward project files and rescans them on change", () =>
+  it.live("loads global and upward project files and watches only the global file", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
@@ -261,18 +261,8 @@ describe("ConfigInstructionPlugin.Plugin", () => {
 
           const discovery = yield* start()
           const watcher = yield* Watcher.Test
-          expect(yield* watcher.subscriptions()).toEqual([
-            { path: globalFile, type: "file" },
-            { path: packageFile, type: "file" },
-            { path: path.join(project, "packages", "AGENTS.md"), type: "file" },
-            { path: projectFile, type: "file" },
-            { path: sharedFile, type: "file" },
-            { path: path.join(home, "AGENTS.md"), type: "file" },
-          ])
-          expect(yield* watcher.subscriptions()).not.toContainEqual({
-            path: path.join(tmp.path, "AGENTS.md"),
-            type: "file",
-          })
+          // Project files are read at boot and on each rescan, never watched per folder.
+          expect(yield* watcher.subscriptions()).toEqual([{ path: globalFile, type: "file" }])
           const initialized = yield* readInitial(yield* discovery.load())
           expect(initialized.text).toBe(
             [
@@ -284,8 +274,9 @@ describe("ConfigInstructionPlugin.Plugin", () => {
           )
           expect(initialized.text).not.toContain("outside")
 
+          // A project edit reaches the folder on its next rescan; a global change rescans here.
           yield* Effect.promise(() => fs.writeFile(packageFile, "changed"))
-          yield* emitAndWait({ type: "update", path: packageFile })
+          yield* emitAndWait({ type: "update", path: globalFile })
           const changed = (yield* readUpdate(yield* discovery.load(), initialized)).text
           // Per-file keys changed the replacement rendering: a single changed
           // file renders through the aggregate `changed` renderer as "The
@@ -295,7 +286,7 @@ describe("ConfigInstructionPlugin.Plugin", () => {
           expect(changed).not.toContain(`Instructions from: ${globalFile}\nglobal`)
 
           yield* Effect.promise(() => fs.rm(packageFile))
-          yield* emitAndWait({ type: "delete", path: packageFile })
+          yield* emitAndWait({ type: "update", path: globalFile })
           const removed = (yield* readUpdate(yield* discovery.load(), initialized)).text
           // Per-file keys changed this too: silent disk disappearances leave no
           // tombstones, so a deleted file renders no removal sentence through
@@ -303,12 +294,10 @@ describe("ConfigInstructionPlugin.Plugin", () => {
           expect(removed).toBe("")
           expect(removed).not.toContain(`Instructions from: ${globalFile}\nglobal`)
 
+          yield* Effect.promise(() => fs.rm(projectFile))
+          yield* Effect.promise(() => fs.rm(sharedFile))
           yield* Effect.promise(() => fs.rm(globalFile))
           yield* emitAndWait({ type: "delete", path: globalFile })
-          yield* Effect.promise(() => fs.rm(projectFile))
-          yield* emitAndWait({ type: "delete", path: projectFile })
-          yield* Effect.promise(() => fs.rm(sharedFile))
-          yield* emitAndWait({ type: "delete", path: sharedFile })
           // Per-file keys changed this too: silent disk disappearances leave no
           // tombstones, so the dead files render no removal text and the update
           // is empty — the aggregate "no longer apply" sentence only fires for
@@ -379,8 +368,9 @@ describe("ConfigInstructionPlugin.Plugin", () => {
           const discovery = yield* start()
           expect((yield* readInitial(yield* discovery.load())).text).toBe(`Instructions from: ${projectFile}\nproject`)
 
+          // Not watched: the new file arrives with the folder's next rescan (a global change here).
           yield* Effect.promise(() => fs.writeFile(intermediate, "intermediate"))
-          yield* emitAndWait({ type: "create", path: intermediate })
+          yield* emitAndWait({ type: "create", path: path.join(tmp.path, "global", "AGENTS.md") })
 
           expect((yield* readInitial(yield* discovery.load())).text).toBe(
             [`Instructions from: ${projectFile}\nproject`, `Instructions from: ${intermediate}\nintermediate`].join(
@@ -419,15 +409,21 @@ describe("ConfigInstructionPlugin.Plugin", () => {
         const project = path.join(tmp.path, "scratch", "repo")
         const directory = path.join(project, "packages", "core")
         return Effect.gen(function* () {
-          yield* Effect.promise(() => fs.mkdir(directory, { recursive: true }))
-          yield* start()
+          yield* Effect.promise(async () => {
+            await fs.mkdir(directory, { recursive: true })
+            await fs.writeFile(path.join(directory, "AGENTS.md"), "core")
+            await fs.writeFile(path.join(project, "AGENTS.md"), "project")
+            await fs.writeFile(path.join(tmp.path, "scratch", "AGENTS.md"), "above the root")
+          })
+          const discovery = yield* start()
           const watcher = yield* Watcher.Test
-          expect(yield* watcher.subscriptions()).toEqual([
-            { path: path.join(global, "AGENTS.md"), type: "file" },
-            { path: path.join(directory, "AGENTS.md"), type: "file" },
-            { path: path.join(project, "packages", "AGENTS.md"), type: "file" },
-            { path: path.join(project, "AGENTS.md"), type: "file" },
-          ])
+          expect(yield* watcher.subscriptions()).toEqual([{ path: path.join(global, "AGENTS.md"), type: "file" }])
+          expect((yield* readInitial(yield* discovery.load())).text).toBe(
+            [
+              `Instructions from: ${path.join(directory, "AGENTS.md")}\ncore`,
+              `Instructions from: ${path.join(project, "AGENTS.md")}\nproject`,
+            ].join("\n\n"),
+          )
         }).pipe(
           Effect.provide(
             instructionLayer({
