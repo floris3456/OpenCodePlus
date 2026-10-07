@@ -28,7 +28,7 @@ import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
-import { buildRunTree, byDirectory, bySession } from "./teams/run.js"
+import { buildRunTree, byDirectory, bySession, loadRun } from "./teams/run.js"
 import { onSessionEvent, startSweep } from "./teams/lifecycle.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
@@ -6255,6 +6255,8 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
         if (typeof sessionID === "string" && event.type !== "session.moved") {
           const started = event.type === "session.execution.started"
           warmingStore.running(sessionID, started)
+          // Its parent chat keeps warm while it runs (looked up once per start).
+          if (started) void parentChatOf(ctx, sessionID).then((parent) => parent === undefined || warmingStore.parent(sessionID, parent))
           // A running session keeps this Location in use (its context hook
           // reads the published plans every step, prompt or not).
           if (started) state.running.add(sessionID)
@@ -6469,6 +6471,17 @@ function toHostModelRef(wanted: ModelRefLike): Model.Ref {
     id: Model.ID.make(wanted.modelID),
     ...(wanted.variant === undefined ? {} : { variant: Model.VariantID.make(wanted.variant) }),
   })
+}
+
+// The chat that started this one: a subagent's parent session, or a team
+// worker's parent run's chat. Undefined for a top-level chat.
+export async function parentChatOf(ctx: Context, sessionID: string): Promise<string | undefined> {
+  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
+  if (session?.parentID !== undefined) return session.parentID
+  const run = await bySession(teamsDataDir(), sessionID).catch(() => undefined)
+  if (run?.parent === null || run?.parent === undefined) return undefined
+  const parent = await loadRun(teamsDataDir(), run.parent).catch(() => undefined)
+  return parent?.sessionID ?? undefined
 }
 
 async function currentSessionAgent(ctx: Context, sessionID: string): Promise<string | undefined> {

@@ -162,6 +162,8 @@ export interface WarmingStore {
   setCompact(sessionID: string, on: boolean): Promise<WarmingStatus>
   /** Whether the chat runs now: a running chat is using its cache and never compacts from here. */
   running(sessionID: string, running: boolean): void
+  /** The chat that started this one (a subagent's or team worker's parent): it keeps warm while this runs. */
+  parent(sessionID: string, parent: string): void
   /** Invalidate cached compaction truth for this chat. */
   invalidateCompaction(sessionID: string, completedAt?: number): void
   /** Configure the durable compaction history reader. */
@@ -189,6 +191,18 @@ export function warmingChatsPath(): string {
 // Per-chat switches outlive restarts; the newest 500 are kept.
 const MAX_CHATS = 500
 
+/**
+ * How long after its last request a chat stays warm while it waits on its own
+ * work: a command or other tool call still running, or a subagent or team
+ * worker it started. Such a chat is likely to come back, and until about here
+ * the keep-alive pings cost less than rewriting the whole cache once (a write
+ * costs ~1.25x the prompt, a ping reads it at ~0.1x, one ping per ~4 min).
+ */
+export const WAITING_WARMING_MS = 75 * 60_000
+
+// Parent links kept for the waiting check; the newest win.
+const MAX_PARENTS = 2_000
+
 interface Scheduled {
   readonly at: number
   readonly timer: unknown
@@ -214,6 +228,17 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   const scheduled = new Map<string, Scheduled>()
   const compactors = new Map<string, Compact>()
   const busy = new Set<string>()
+  const parents = new Map<string, string>()
+  // The chat itself runs, or anything it started (at any depth) runs.
+  const waiting = (sessionID: string) =>
+    [...busy].some((running) => {
+      const seen = new Set<string>()
+      for (let current: string | undefined = running; current !== undefined && !seen.has(current); current = parents.get(current)) {
+        if (current === sessionID) return true
+        seen.add(current)
+      }
+      return false
+    })
   const getCompaction = (sessionID: string): Promise<CompactionRecord | undefined> => {
     if (!compactionReader) return Promise.resolve(undefined)
     let cached = compactionCache.get(sessionID)
@@ -338,7 +363,11 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
 
       const compacted = isCompactionActivity || (await isCompacted(event.sessionID, event.since))
       const decided = decideWarming({ configured: event.settings, rows, chat })
-      const decision = compacted ? { ...decided, settings: undefined } : decided
+      const decision = compacted
+        ? { ...decided, settings: undefined }
+        : decided.settings !== undefined && waiting(event.sessionID)
+          ? { ...decided, settings: { ...decided.settings, duration: Math.max(decided.settings.duration, WAITING_WARMING_MS) } }
+          : decided
       event.settings = decision.settings
       const before = tracked.get(event.sessionID)
       const beforeCompact = scheduled.get(event.sessionID)?.at
@@ -410,6 +439,12 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     running(sessionID, running) {
       if (running) busy.add(sessionID)
       else busy.delete(sessionID)
+    },
+    parent(sessionID, parent) {
+      // Links outlive a run: an idle subagent still links its own running subagent up.
+      parents.delete(sessionID)
+      parents.set(sessionID, parent)
+      for (const key of [...parents.keys()].slice(0, Math.max(0, parents.size - MAX_PARENTS))) parents.delete(key)
     },
     invalidateCompaction(sessionID, completedAt) {
       compactionCache.delete(sessionID)

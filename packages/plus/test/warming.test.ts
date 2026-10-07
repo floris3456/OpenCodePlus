@@ -17,9 +17,9 @@ import {
 } from "../src/instructions/model.js"
 import { setModelWarmingRow } from "../src/instructions/ops.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import { warmingRowsOf, decideWarmingFor, type PlusState } from "../src/index.js"
+import { warmingRowsOf, decideWarmingFor, parentChatOf, type PlusState } from "../src/index.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
-import { createWarmingStore, decideWarming, WARMING_DEFAULTS } from "../src/warming.js"
+import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
 import { Effect } from "effect"
 import { context } from "./harness.js"
@@ -321,6 +321,110 @@ test("the store applies the decision to the hook event and records the window fo
   await store.decide(warm, { row: { warming: { value: "off", level: "global" } } })
   expect(warm.settings).toBeUndefined()
   expect((await store.status("ses_warm", 1_000_000 + 3 * MINUTE)).active).toBe(false)
+})
+
+test("a chat waiting on its own running work stays warm up to 75 minutes, then falls back", async () => {
+  const store = createWarmingStore(await tempFile())
+  const warm = (minutes: number, sessionID = "ses_warm") =>
+    event({ sessionID: Session.ID.make(sessionID), phase: "warm", now: 1_000_000 + minutes * MINUTE })
+  // Control: an idle chat with nothing running keeps the configured 30 minutes.
+  const idle = warm(4)
+  await store.decide(idle, {})
+  expect(idle.settings?.duration).toBe(30 * MINUTE)
+
+  // The chat's own command (or any tool call) still runs.
+  store.running("ses_warm", true)
+  const ownCommand = warm(28)
+  await store.decide(ownCommand, {})
+  expect(ownCommand.settings?.duration).toBe(WAITING_WARMING_MS)
+  expect((await store.status("ses_warm", 1_000_000 + 40 * MINUTE)).expires).toBe(1_000_000 + WAITING_WARMING_MS)
+  store.running("ses_warm", false)
+
+  // A subagent it started runs while the chat itself is idle.
+  store.running("ses_child", true)
+  store.parent("ses_child", "ses_warm")
+  const child = warm(32)
+  await store.decide(child, {})
+  expect(child.settings?.duration).toBe(WAITING_WARMING_MS)
+
+  // A grandchild runs while the subagent between them is idle.
+  store.running("ses_child", false)
+  store.running("ses_grandchild", true)
+  store.parent("ses_grandchild", "ses_child")
+  const grandchild = warm(36)
+  await store.decide(grandchild, {})
+  expect(grandchild.settings?.duration).toBe(WAITING_WARMING_MS)
+  // Another chat is not kept warm by work it did not start.
+  const unrelated = warm(36, "ses_other")
+  await store.decide(unrelated, {})
+  expect(unrelated.settings?.duration).toBe(30 * MINUTE)
+
+  // Nothing runs any more: back to the configured window, which has ended.
+  store.running("ses_grandchild", false)
+  const done = warm(40)
+  await store.decide(done, {})
+  expect(done.settings?.duration).toBe(30 * MINUTE)
+  expect((await store.status("ses_warm", 1_000_000 + 40 * MINUTE)).active).toBe(false)
+
+  // A longer window of its own is kept, and warming switched off stays off.
+  store.running("ses_warm", true)
+  const long = warm(5)
+  await store.decide(long, { row: { warming: { value: "2h", level: "project" } } })
+  expect(long.settings?.duration).toBe(120 * MINUTE)
+  const off = warm(5)
+  await store.decide(off, { row: { warming: { value: "off", level: "project" } } })
+  expect(off.settings).toBeUndefined()
+})
+
+test("a chat's parent is its subagent parent session or its team run's parent chat", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-warming-parent-"))
+  temps.push(dir)
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = dir
+  try {
+    const run = (id: string, sessionID: string, parent: string | null): RunRecord => ({
+      id,
+      role: "implementer",
+      kind: "w",
+      repo: "opencode",
+      repoKey: "opencode",
+      directory: dir,
+      paths: [],
+      branch: `team/implementer/${id}`,
+      base: "0123456789abcdef0123456789abcdef01234567",
+      head: "0123456789abcdef0123456789abcdef01234567",
+      state: "working",
+      attempts: [],
+      task: null,
+      parent,
+      children: [],
+      briefSha: "abc",
+      bundle: "team-test",
+      budget: {},
+      createdAt: UPDATED,
+      lastUsed: UPDATED,
+      sessionID,
+      configDigest: null,
+      history: [],
+    })
+    await saveRun(teamsDataDir(), run("r-root0000000001", "ses_lead", null))
+    await saveRun(teamsDataDir(), run("w-worker00000001", "ses_worker", "r-root0000000001"))
+    const parents: Record<string, string | undefined> = { ses_sub: "ses_lead" }
+    const ctx = context({
+      session: {
+        get: (input) =>
+          Effect.succeed({ id: input.sessionID, parentID: parents[input.sessionID] } as never),
+      },
+    })
+    expect(await parentChatOf(ctx, "ses_sub")).toBe("ses_lead")
+    expect(await parentChatOf(ctx, "ses_worker")).toBe("ses_lead")
+    // Control: a top-level chat and a root run have no parent chat.
+    expect(await parentChatOf(ctx, "ses_lead")).toBeUndefined()
+    expect(await parentChatOf(ctx, "ses_unknown")).toBeUndefined()
+  } finally {
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+  }
 })
 
 test("the per-chat switch persists across a restart and stops warming before the next request", async () => {
