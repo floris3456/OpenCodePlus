@@ -71,6 +71,7 @@ import {
 import { linkOf, presetOfAddress, type PresetEntry } from "./presets.js"
 import {
   buildMemo,
+  enabledOf,
   flagOf,
   splitOf,
   textEntryOf,
@@ -300,6 +301,8 @@ export interface Lazy {
   readonly actions: TreeNodeActions
   readonly selfReview: () => boolean
   readonly partial: () => TreeNodeBadges
+  /** Item rows: the on/off state alone, without the badges' full resolution. */
+  readonly enabled?: () => boolean
   readonly reviewCount: () => number
   readonly children: () => readonly Lazy[]
 }
@@ -665,10 +668,27 @@ export interface GroupToggleRows {
   readonly hasTeam: boolean
 }
 
+// Lazies are memoized per tree memo, so one walk per group per memo: a parent
+// group reuses its child groups' walks instead of repeating them.
+const groupRowsCache = new WeakMap<Lazy, GroupToggleRows>()
+const groupToggleCache = new WeakMap<Lazy, { readonly toggle: boolean; readonly state?: "on" | "off"; readonly summary?: string }>()
+
 export function groupToggleRows(lazy: Lazy): GroupToggleRows {
+  const cached = groupRowsCache.get(lazy)
+  if (cached !== undefined) return cached
   const rows: Lazy[] = []
   let hasTeam = false
   const visit = (node: Lazy): void => {
+    // A row's sections belong to that row: a category toggles whole rows
+    // only, so a row whose whole cannot be toggled (Role/persona, a base
+    // template) is skipped with its sections, never blanked section by section.
+    if (node.kind === "section") return
+    if (node.kind === "group") {
+      const nested = groupToggleRows(node)
+      rows.push(...nested.rows)
+      if (nested.hasTeam) hasTeam = true
+      return
+    }
     if (node.kind === "team") {
       if (node.actions.toggle === true) hasTeam = true
       return
@@ -681,17 +701,13 @@ export function groupToggleRows(lazy: Lazy): GroupToggleRows {
       if (!isGroupToggleExcluded(node)) rows.push(node)
       return
     }
-    if (node.kind === "item" || node.kind === "section") {
-      // A whole row that cannot be toggled (Role/persona, a base template)
-      // still has toggleable sections: keep walking for those.
-      if (node.kind === "section") return
-      for (const child of node.children()) visit(child)
-      return
-    }
+    if (node.kind === "item") return
     for (const child of node.children()) visit(child)
   }
   for (const child of lazy.children()) visit(child)
-  return { rows, hasTeam }
+  const found = { rows, hasTeam }
+  groupRowsCache.set(lazy, found)
+  return found
 }
 
 function isGroupToggleExcluded(lazy: Lazy): boolean {
@@ -703,13 +719,21 @@ function isGroupToggleExcluded(lazy: Lazy): boolean {
 }
 
 export function groupToggleOf(lazy: Lazy): { readonly toggle: boolean; readonly state?: "on" | "off"; readonly summary?: string } {
-  const found = groupToggleRows(lazy)
-  const states = found.rows.map((row) => row.partial().state).filter((state): state is "on" | "off" => state === "on" || state === "off")
-  if (found.hasTeam || states.length === 0) return { toggle: false }
-  // Sections alone never make a group toggleable: they belong to the whole
-  // row above them (a tool's Description group stays inert while the tool
-  // row itself carries the toggle).
-  if (!found.rows.some((row) => row.kind !== "section")) return { toggle: false }
+  const cached = groupToggleCache.get(lazy)
+  if (cached !== undefined) return cached
+  const result = groupToggleSummary(groupToggleRows(lazy))
+  groupToggleCache.set(lazy, result)
+  return result
+}
+
+function groupToggleSummary(found: GroupToggleRows): { readonly toggle: boolean; readonly state?: "on" | "off"; readonly summary?: string } {
+  if (found.hasTeam || found.rows.length === 0) return { toggle: false }
+  // Item rows answer their state without resolving their text; entity rows
+  // (an agent's Enabled) read it from their badges.
+  const states = found.rows
+    .map((row) => (row.enabled === undefined ? row.partial().state : row.enabled() ? "on" : "off"))
+    .filter((state): state is "on" | "off" => state === "on" || state === "off")
+  if (states.length === 0) return { toggle: false }
   const on = states.filter((state) => state === "on").length
   if (on === states.length) return { toggle: true, state: "on" }
   if (on === 0) return { toggle: true, state: "off" }
@@ -2745,6 +2769,7 @@ function lazyItem(
     },
     selfReview: () => cachedSelfReview(memo, rowId, () => flagOf(memo, level, owner, item, null, catalogue, teamRef)),
     partial: () => itemBadges(memo, level, owner, agent, item, wholeNoToggle, teamRef, catalogue),
+    enabled: () => enabledOf(memo, level, owner, item, catalogue, teamRef),
     reviewCount: () => cachedReviewCount(memo, rowId, () => itemRollup(memo, level, owner, item, catalogue, teamRef)),
     children: kids,
   }

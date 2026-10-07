@@ -352,3 +352,19 @@ test("instructions_set on a group id applies the explicit state", async () => {
   )
   expect(customs.some((record) => record.item.startsWith("perm:"))).toBe(false)
 })
+
+test("a category toggles whole rows only: Role/persona sections stay untouched", () => {
+  const items = [
+    makeItem({ id: "system:role", kind: "system", title: "Role", text: "# Voice\nBe brief.\n\n# Duties\nReview code.", agents: ["Implementer"] }),
+    makeItem({ id: "system:rules", kind: "system", title: "Rules", agents: ["Implementer"] }),
+  ]
+  const input = { items, records: [], agents: agents() }
+  const nodes = expandAll(input)
+  const system = nodes.find((node) => node.kind === "group" && node.label === "System" && node.id.includes("Implementer"))
+  if (system === undefined) throw new Error("no System group for Implementer")
+  // The Role/persona sections are toggleable on their own, but not rows of the category.
+  expect(nodes.some((node) => node.kind === "section" && node.actions?.toggle === true)).toBe(true)
+  const result = toggleGroup(input, system.id)
+  if ("refusal" in result) throw new Error(`expected success, got refusal: ${result.refusal}`)
+  expect(result.records.map((record) => [record.item, record.section, record.state])).toEqual([["system:rules", null, "off"]])
+})

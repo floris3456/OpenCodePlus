@@ -1,4 +1,4 @@
-import { catalogueOf, resolve, resolveSplit } from "./model.js"
+import { catalogueOf, resolve, resolveEnabled, resolveSplit } from "./model.js"
 import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
 import type {
@@ -95,6 +95,8 @@ export function contextOf(input: MemoInput): BuildContext {
 export interface Memo {
   readonly ctx: BuildContext
   readonly whole: Map<string, Resolved>
+  /** Whole-row on/off states resolved without the text (`enabledOf`). */
+  readonly enabled: Map<string, boolean>
   readonly section: Map<string, Resolved>
   readonly split: Map<string, Split>
   readonly flag: Map<string, boolean>
@@ -112,6 +114,7 @@ export function memoOf(ctx: BuildContext): Memo {
   return {
     ctx,
     whole: new Map(),
+    enabled: new Map(),
     section: new Map(),
     split: new Map(),
     flag: new Map(),
@@ -253,6 +256,25 @@ export function wholeOf(memo: Memo, level: Level, owner: string | null, item: It
   })
   memo.whole.set(key, resolved)
   return resolved
+}
+
+// A whole row's on/off state: from the full resolution when one is already
+// memoized, else from the state-only chain walk (no text assembly).
+export function enabledOf(memo: Memo, level: Level, owner: string | null, item: Item, catalogue?: Catalogue, team?: RowTeam): boolean {
+  const key = keyOf(level, owner, item.id, null, catalogue, team)
+  const whole = memo.whole.get(key)
+  if (whole !== undefined) return whole.enabled
+  const cached = memo.enabled.get(key)
+  if (cached !== undefined) return cached
+  const enabled = resolveEnabled({
+    upstream: item,
+    records: memo.ctx.customizations,
+    splits: memo.ctx.splits,
+    scopes: memo.ctx.scopes,
+    address: addressOf(level, owner, item.id, null, catalogue, team),
+  })
+  memo.enabled.set(key, enabled)
+  return enabled
 }
 
 export function splitOf(memo: Memo, level: Level, owner: string | null, item: Item, catalogue?: Catalogue, team?: RowTeam): Split {
