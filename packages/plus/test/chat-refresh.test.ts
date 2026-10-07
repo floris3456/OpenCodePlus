@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { activate, createHandlers, createState } from "../src/index.js"
-import { agentHarness, agentInfo, context, fullContext } from "./harness.js"
+import { agentHarness, agentInfo, context, fullContext, toolHarness } from "./harness.js"
 
 const throwing = {
   error: (type: string, message: string, data?: unknown): never => {
@@ -70,5 +70,25 @@ describe("chat.refresh", () => {
     )
     expect(harness.reloads).toBe(reloadsBefore)
     expect(result.reloaded).toEqual([])
+  })
+
+  test("the refresh tool registers in the opencode namespace with its own permission row", async () => {
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    await fs.mkdir(project, { recursive: true })
+
+    const tools = toolHarness([])
+    const ctx = context({
+      ...fullContext({ directory: project, hooks: { current: 0 } }),
+      tool: tools.domain,
+    })
+    const state = createState()
+    await Effect.runPromise(activate(ctx, state))
+    const refresh = tools.tools.get("opencode_refresh")
+    expect(refresh).toBeDefined()
+    expect(refresh?.options?.namespace).toBe("opencode")
+    expect(refresh?.options?.permission).toBe("opencode_refresh")
+    expect(refresh?.options?.codemode).toBe(true)
   })
 })
