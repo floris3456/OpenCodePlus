@@ -19,6 +19,7 @@ test("every method and event is declared", () => {
     "instructions.mutate",
     "instructions.log",
     "instructions.assembled",
+    "chat.refresh",
     "agent.create",
     "agent.rename",
     "agent.delete",
