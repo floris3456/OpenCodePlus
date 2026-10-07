@@ -33,6 +33,7 @@ import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-p
 import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 import { guidanceContent, guidanceTitle } from "./guidance.js"
 import { pendingMcpTools, type KnownMcpTools } from "./mcp-tools.js"
+import { toolParameters } from "./parameters.js"
 import { decodeHostWarming, type HostModel } from "./model-settings.js"
 
 export type { AgentScope, AgentSource } from "./model.js"
@@ -169,6 +170,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     return { ...source, base }
   })
   const toolRows = toolItems(tools, baselines)
+  const paramRows = paramItems(tools)
   const baseRows = baseItems(input.baseTemplates)
   const skillRows = skillItems(skills, directory, baselines)
   const roleRows = roleItems(agents, baselines, bodies)
@@ -198,6 +200,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   })
   const items = [
     ...toolRows,
+    ...paramRows,
     ...baseRows,
     ...skillRows,
     ...roleRows,
@@ -622,6 +625,29 @@ function toolItems(
     }
   })
   return [...rows, executeItem()]
+}
+
+// One row per top-level parameter of each tool's input schema (Tools ›
+// <tool> › Parameters): its description is the row text, so it edits and
+// resets like any text row; an optional one can be switched off.
+function paramItems(tools: readonly (Tool.Info & { readonly id: string })[]): Item[] {
+  return tools.flatMap((tool) => {
+    const grouped = toolGroup(toolOrigin(tool))
+    return toolParameters(tool.input).map((parameter, order): Item => ({
+      id: `param:${tool.id}:${parameter.name}`,
+      kind: "param",
+      group: grouped.group,
+      ...(grouped.server === undefined ? {} : { server: grouped.server }),
+      title: parameter.name,
+      text: parameter.description,
+      enabled: upstreamEnabled(),
+      fingerprint: fingerprint(parameter.description),
+      order,
+      paramTool: tool.id,
+      paramType: parameter.type,
+      ...(parameter.required ? { required: true as const } : {}),
+    }))
+  })
 }
 
 // The host-owned Code Mode entry point is synthesized by core's

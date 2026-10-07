@@ -54,6 +54,7 @@ import {
 } from "./permission-enforce.js"
 import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "./paths.js"
 import { gateOf } from "./requires.js"
+import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
 import { runPublish } from "./publish-runtime.js"
 import {
@@ -113,6 +114,8 @@ export interface ToolPlan {
   readonly codemode?: boolean
   readonly catalogPath?: string
   readonly pinned?: boolean
+  /** The parameters this agent sees edited (Tools › <tool> › Parameters); absent when none are. */
+  readonly params?: readonly ParamPlan[]
 }
 
 export interface Applied {
@@ -310,7 +313,7 @@ export async function applyPublishParts(
   const candidates = allCandidates.filter((c) => !c.noop)
   const allNative: ToolPlan[] = allCandidates
     .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
-    .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+    .map(nativePlan)
 
   const instructionCand = instructionCandidates(input.applyInput)
   const instructions = instructionCand.filter((c) => !c.noop).map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
@@ -1294,33 +1297,73 @@ interface ToolCandidate {
   readonly enabled: boolean
   readonly text: string
   readonly pinned: boolean
+  readonly params: readonly ParamPlan[]
   readonly noop?: boolean
 }
 
+function nativePlan(candidate: ToolCandidate): ToolPlan {
+  return {
+    agent: candidate.agent,
+    tool: candidate.tool,
+    enabled: candidate.enabled,
+    text: candidate.text,
+    ...(candidate.params.length === 0 ? {} : { params: candidate.params }),
+  }
+}
+
 function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boolean }): ToolCandidate[] {
+  const edited = editedParams(input)
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
+      const tool = parseId(item.id, "tool:")
+      const params = paramPlans(input, agent, edited.get(tool))
       // isNoop compares only text and enablement (it is shared with base and
       // instruction plans, which have no pin), so a pin-only change on a Code
       // Mode tool would be discarded here before catalogPlans ever sees it.
       // Let the candidate survive when the resolved pin differs from the
-      // registry default.
-      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false)
+      // registry default, or when the agent sees a parameter edited.
+      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false) && params.length === 0
       if (options?.skipNoop !== true && noop) return []
       return [{
         agent: agent.id,
         item,
-        tool: parseId(item.id, "tool:"),
+        tool,
         enabled: resolved.enabled,
         text: resolved.assembled,
         pinned: resolved.pinned,
+        params,
         noop,
       }]
     }),
   )
+}
+
+// Parameter rows by tool, only those some record touches: a parameter nobody
+// edited is its tool's own for every agent, so it is never resolved.
+function editedParams(input: ApplyInput): Map<string, Item[]> {
+  const touched = new Set(input.records.flatMap((record) => (record.item.startsWith("param:") ? [record.item] : [])))
+  const byTool = new Map<string, Item[]>()
+  if (touched.size === 0) return byTool
+  for (const item of input.items) {
+    if (item.kind !== "param" || item.paramTool === undefined || !touched.has(item.id)) continue
+    byTool.set(item.paramTool, [...(byTool.get(item.paramTool) ?? []), item])
+  }
+  return byTool
+}
+
+// The parameters one agent sees differently from the tool's own: an edited
+// description, or switched off. A required parameter always stays.
+function paramPlans(input: ApplyInput, agent: ApplyAgent, params: readonly Item[] | undefined): ParamPlan[] {
+  return (params ?? []).flatMap((param) => {
+    if (!applies(param, agent.id)) return []
+    const resolved = resolvedFor(param, agent, input)
+    const enabled = resolved.enabled || param.required === true
+    if (enabled && normalizeLossless(resolved.assembled) === normalizeLossless(param.text)) return []
+    return [{ name: param.title, enabled, text: resolved.assembled }]
+  })
 }
 
 interface InstructionCandidate {
@@ -1394,7 +1437,7 @@ export function sessionPlans(
   const candidates = candidatesInput ?? toolCandidates(input)
   const native: ToolPlan[] = candidates
     .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
-    .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+    .map(nativePlan)
   const denials = candidates.filter(
     (candidate) => (candidate.item.codemode === true || candidate.item.execute === true) && !candidate.enabled,
   )
@@ -1402,6 +1445,7 @@ export function sessionPlans(
     .filter((candidate) => {
       if (candidate.item.codemode !== true) return false
       if (candidate.item.execute === true) return false
+      if (candidate.params.length > 0) return true
       if (normalizeLossless(candidate.text) !== normalizeLossless(candidate.item.text)) return true
       return candidate.pinned !== (candidate.item.pinned ?? false)
     })
@@ -1413,6 +1457,7 @@ export function sessionPlans(
       codemode: true as const,
       catalogPath: catalogPath(candidate.item),
       pinned: candidate.pinned,
+      ...(candidate.params.length === 0 ? {} : { params: candidate.params }),
     }))
   const permDenies = orderRules<Rule>([
     ...permDenials(input),
@@ -1500,7 +1545,7 @@ export async function installSessionPlans(
         const allCandidates = toolCandidates(input, { skipNoop: true })
         const allNative: ToolPlan[] = allCandidates
           .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
-          .map((candidate) => ({ agent: candidate.agent, tool: candidate.tool, enabled: candidate.enabled, text: candidate.text }))
+          .map(nativePlan)
         return createPlanSet({
           roles: new Map(allRoles.map((r) => [r.agent, r.text])),
           base: plans.base,
@@ -1616,6 +1661,8 @@ export async function installSessionPlans(
           if (entry === undefined) continue
           entry.description = plan.text
           if (plan.pinned !== undefined) entry.pinned = plan.pinned
+          // Replaced, never mutated: core shows the request edited parameters by the new object.
+          if (plan.params !== undefined && entry.input !== undefined) entry.input = editInputSchema(entry.input, plan.params)
         }
         applyCatalogScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
         return Effect.void
@@ -1844,7 +1891,9 @@ function applyToolPlan(event: SessionContext, plans: readonly ToolPlan[]) {
       continue
     }
     const tool = event.tools[plan.tool]
-    if (tool) tool.description = plan.text
+    if (!tool) continue
+    tool.description = plan.text
+    if (plan.params !== undefined) tool.input = editInputSchema(tool.input, plan.params)
   }
 }
 

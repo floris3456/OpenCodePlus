@@ -62,6 +62,7 @@ export function kindWord(node: TreeNode): string {
   if (node.kind === "group") return node.id === MODELS_GROUP_ID ? "category" : "group"
   if (node.kind === "section") return "section"
   if (item?.startsWith("perm:") === true) return "permission"
+  if (item?.startsWith("param:") === true) return "parameter"
   if (item?.startsWith("modeldefault:") === true) return "model defaults"
   if (item?.startsWith("modelsetting:") === true) return "model setting"
   if (item?.startsWith("modelfield:") === true) return "model field"

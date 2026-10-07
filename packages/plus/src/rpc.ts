@@ -49,6 +49,7 @@ export const ItemKind = Schema.Union([
   Schema.Literal("perm"),
   Schema.Literal("setting"),
   Schema.Literal("compaction"),
+  Schema.Literal("param"),
 ]).annotate({ identifier: "Plus.ItemKind" })
 
 export type ItemGroup = typeof ItemGroup.Type
@@ -113,6 +114,9 @@ export const SnapshotItem = Schema.Struct({
   execute: Schema.optionalKey(Schema.Boolean),
   skillScope: Schema.optionalKey(SkillScope),
   skillPreset: Schema.optionalKey(Schema.String),
+  paramTool: Schema.optionalKey(Schema.String),
+  paramType: Schema.optionalKey(Schema.String),
+  required: Schema.optionalKey(Schema.Boolean),
   permTool: Schema.optionalKey(Schema.String),
   permAction: Schema.optionalKey(Schema.String),
   ruleId: Schema.optionalKey(Schema.String),

@@ -563,17 +563,19 @@ test("two publishes after a Code Mode text edit keep an identical fingerprint an
   const skillState = skillHarness([])
   const skill = { ...skillState.domain, list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }) }
   const tools = toolHarness([{ id: "coder", description: "code mode tool" }])
-  const hooks = { current: 0 }
+  // Live session hooks by name: the catalog hook carries the Code Mode edit,
+  // and the context hook pins each chat's plan set (cache-safe).
+  const hooks: string[] = []
   const ctx = context({
     location,
     agent: agents.domain,
     skill,
     tool: tools.domain,
     session: {
-      hook: () =>
+      hook: (name) =>
         Effect.sync(() => {
-          hooks.current++
-          return { dispose: Effect.sync(() => { hooks.current-- }) }
+          hooks.push(name)
+          return { dispose: Effect.sync(() => { hooks.splice(hooks.indexOf(name), 1) }) }
         }),
     },
     mcp: fullContext({ directory: project }).mcp,
@@ -606,19 +608,19 @@ test("two publishes after a Code Mode text edit keep an identical fingerprint an
   // shared tool registry: the registry still holds upstream, so the next
   // discovery unmasks nothing and the publish fingerprint stays stable.
   expect(tools.tools.get("coder")?.description).toBe("code mode tool")
-  expect(hooks.current).toBe(1)
+  expect(hooks.toSorted()).toEqual(["catalog", "context"])
   const installs = agents.transforms
   const disposes = agents.disposes
   const fingerprintAfterMutate = state.fingerprint
   await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
   expect(agents.transforms).toBe(installs)
   expect(agents.disposes).toBe(disposes)
-  expect(hooks.current).toBe(1)
+  expect(hooks.toSorted()).toEqual(["catalog", "context"])
   expect(state.fingerprint).toBe(fingerprintAfterMutate)
   await Effect.runPromise(handlers["instructions.refresh"](undefined, throwingContext({})))
   expect(agents.transforms).toBe(installs)
   expect(agents.disposes).toBe(disposes)
-  expect(hooks.current).toBe(1)
+  expect(hooks.toSorted()).toEqual(["catalog", "context"])
   expect(state.fingerprint).toBe(fingerprintAfterMutate)
 })
 

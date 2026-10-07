@@ -2734,7 +2734,11 @@ function lazyItem(
       return sectionKids(ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
     })
     if (!tool) return sections
-    return [...sections, ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent)]
+    return [
+      ...sections,
+      ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
+      ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent),
+    ]
   }
   if (perm) {
     return {
@@ -2925,6 +2929,83 @@ export function toolPermissions(
       ],
     }),
   ]
+}
+
+const paramIndexCache = new WeakMap<readonly Item[], Map<string, Item[]>>()
+
+// Parameter rows by the tool they belong to, built once per item list.
+function paramIndex(ctx: BuildContext): Map<string, Item[]> {
+  const cached = paramIndexCache.get(ctx.items)
+  if (cached !== undefined) return cached
+  const index = new Map<string, Item[]>()
+  for (const item of ctx.items) {
+    if (item.kind !== "param" || item.paramTool === undefined) continue
+    index.set(item.paramTool, [...(index.get(item.paramTool) ?? []), item])
+  }
+  paramIndexCache.set(ctx.items, index)
+  return index
+}
+
+// A tool's Parameters group: one row per top-level parameter, in schema
+// order. Its text is the parameter's description; an optional one switches
+// off (the model no longer sees it), a required one cannot.
+export function toolParameters(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  rowId: string,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy[] {
+  const params = paramIndex(ctx).get(item.id.slice("tool:".length)) ?? []
+  if (params.length === 0) return []
+  return [
+    branch(memo, {
+      kind: "group",
+      id: `${rowId.replace(/^item:/, "group:")}:parameters`,
+      label: "Parameters",
+      depth,
+      actions: noActions(),
+      children: () => params.map((param) => lazyParamRow(memo, level, owner, param, depth + 1, teamRef, catalogue, ownerPath)),
+    }),
+  ]
+}
+
+function lazyParamRow(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const address = addressOf(level, owner, item.id, null, teamRef, catalogue)
+  const id = rowIdOf("item", level, owner, item.id, catalogue, ownerPath)
+  return {
+    id,
+    kind: "item",
+    label: `${item.title}: ${item.paramType ?? "any"}${item.required === true ? " (required)" : ""}`,
+    depth,
+    address,
+    actions: {
+      toggle: item.required !== true,
+      edit: true,
+      reset: canReset(memo.ctx.customizations, address),
+      remove: false,
+      split: false,
+      pin: false,
+    },
+    selfReview: () => cachedSelfReview(memo, id, () => flagOf(memo, level, owner, item, null, catalogue, teamRef)),
+    partial: () => permBadges(memo, level, owner, item, teamRef, catalogue),
+    reviewCount: () => 0,
+    children: () => [],
+  }
 }
 
 function lazyPermRow(

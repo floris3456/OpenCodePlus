@@ -11,7 +11,7 @@ import type {
   TeamRef,
 } from "./model.js"
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { materialize, skeletonOf, teamsOwnerSegment, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { materialize, skeletonOf, teamsOwnerSegment, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
 import { categoryByItem } from "./categories.js"
@@ -323,7 +323,7 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
         if (!skipRows)
           push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
       }
-      // A tool row's Permissions group, its categories and their rows are
+      // A tool row's Parameters and Permissions groups, their categories and rows are
       // walked directly: building them resolves nothing, whereas
       // lazy.children() would also derive sections via splitOf and resolve
       // every address even for structural misses.
@@ -331,21 +331,14 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
       const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent, address)
       // Perm rows hang off the tool row and share its owner path, which the
       // row id already carries between `item:<level>:` and `:<itemId>`.
+      const ownerPath = address === undefined ? "" : lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1)
       const groups =
         item === undefined || address === undefined || item.kind !== "tool"
           ? []
-          : toolPermissions(
-              state.memo.ctx,
-              state.memo,
-              address.level,
-              address.agent,
-              item,
-              lazy.id,
-              lazy.depth + 1,
-              rowTeamOf(address),
-              address.catalogue,
-              lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1),
-            )
+          : [
+              ...toolParameters(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
+              ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
+            ]
       const walk = (node: Lazy) => {
         // A skill row under the skill tool's Skills category is a full item
         // (its own text and sections), not a permission row: visit it.
@@ -1100,7 +1093,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => allowed.some((alt) => candidate.kind === lower(alt))
     }
     case "item": {
-      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "modelsetting", "perm", "setting", "compaction"], term)
+      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "modelsetting", "perm", "param", "setting", "compaction"], term)
       return (candidate) => allowed.some((alt) => itemKindOf(state, candidate) === lower(alt))
     }
     case "tool": {

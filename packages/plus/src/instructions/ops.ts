@@ -461,6 +461,7 @@ function toggleRefusal(node: TreeNode): string | undefined {
   if (node.kind === "team") return `"${node.label}" cannot be toggled`
   if (node.address === undefined) return `"${node.label}" cannot be toggled`
   if (node.actions?.toggle !== true) {
+    if (node.address.item.startsWith("param:")) return `"${node.label}" is required by its tool and cannot be switched off`
     if (node.badges.unsupported === true && node.badges.unexcludable === true)
       return `"${node.label}" cannot be excluded and remains in effect`
     return `"${node.label}" cannot be toggled`

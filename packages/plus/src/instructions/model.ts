@@ -72,7 +72,7 @@ export interface Address {
   readonly memberOf?: TeamRef
 }
 
-export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm" | "setting" | "compaction"
+export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm" | "setting" | "compaction" | "param"
 export type ItemGroup = "native" | "plus" | "mcp" | "global" | "defaults" | "preset" | "project" | "none"
 
 export interface Item {
@@ -106,6 +106,12 @@ export interface Item {
   readonly skillScope?: "project" | "global" | "defaults" | "preset"
   /** Skill rows only: the preset a `preset`-scoped skill belongs to. Only discovery ever sets it. */
   readonly skillPreset?: string
+  /** Parameter rows only: the tool id the parameter belongs to (its row is `tool:<paramTool>`). Only discovery ever sets it. */
+  readonly paramTool?: string
+  /** Parameter rows only: a short summary of the parameter's type. Only discovery ever sets it. */
+  readonly paramType?: string
+  /** Parameter rows only: the tool requires it, so it cannot be switched off. Only discovery ever sets it. */
+  readonly required?: boolean
   /** Perm rule rows only: the parent tool id (e.g. "shell", "edit", "subagent"). Only discovery ever sets it. */
   readonly permTool?: string
   /** Perm rule rows only: the core permission action from the tool's own `options.permission` when the registry carries one. Only discovery ever sets it. */
@@ -190,6 +196,7 @@ export interface PolicyEffects {
 // - `mcp:<server>`
 // - `model:<providerID>/<modelID>` or `model:<providerID>/<modelID>@<variant>`
 // - `perm:<toolId>:<ruleId>`
+// - `param:<toolId>:<parameter>`
 
 /**
  * Everything the resolution chain needs besides the records it reads
@@ -1852,6 +1859,8 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
   if (native === undefined) return "upstream"
   if (input.upstream.kind === "mcp") return "upstream"
   if (input.upstream.kind === "setting" || input.upstream.kind === "compaction") return "upstream"
+  // A parameter is part of its tool: the tool row decides whether the agent has it at all.
+  if (input.upstream.kind === "param") return "upstream"
   if (agent === null) return "off"
   if (input.address.level === "preset") {
     if (input.address.team !== undefined) return "off"

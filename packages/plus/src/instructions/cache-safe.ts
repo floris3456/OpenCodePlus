@@ -265,6 +265,9 @@ export function computeChangeNote(
     if (pinTool.enabled && pinTool.text !== curTool.text) {
       items.push(`Tool "${tool}" description changed (available after the next rebuild).`)
     }
+    if (pinTool.enabled && JSON.stringify(pinTool.params ?? []) !== JSON.stringify(curTool.params ?? [])) {
+      items.push(`Tool "${tool}" parameters changed (available after the next rebuild).`)
+    }
   }
 
   if (items.length === 0) return undefined
