@@ -112,9 +112,39 @@ Made here:
 | service | Item 4 (load on first message, unload on stop, `/refresh` + tool, no per-folder watchers) | deepseek-v4.1-flash-cheap | publish |
 | catalogue | Item 9 (no catalogue reads while navigating) | muse-spark-1.3 | publish |
 
+| perf-apply | Content-keyed resolution memo across publishes and locations; plans computed once per publish; cached enforcement rows | gemini-3.8-flash-high | cache-safe |
+
 Item details stay in `plus-1.1.16-team-fixes.md`; this plan overrides it only
 where a decision above says so. Search stays on Plus's own server (item 4.6
 remains on hold until item 6 has landed and been measured).
+
+## Decisions made in review
+
+- **Categories toggle whole rows only.** A category never switches a row's
+  sections (Role/persona's included): switching off an agent's System
+  category must not blank its persona section by section. Group summaries
+  read each row's on/off state alone (`resolveEnabled`), never its full text.
+- **Effort budgets** (new count: input + cache writes + output + reasoning):
+  small 750k, medium 1.5M, large 3M tokens — about the 75th percentile of
+  113 real worker runs per effort (monitor.db, 2026-10-07), so only unusual
+  runs ping their parent. `team_followup.requestID` stays required.
+- **Model validation** re-reads the provider catalogue once on a miss, so a
+  model synced after the cache was filled is never refused.
+- **Team changes force a refresh** of other locations (they write no record,
+  so the unchanged-revision shortcut must not skip them).
+- **Publish runs in one core batch** through `runPublish`, which carries the
+  batch context across Plus's async code.
+- **Section migration verifies itself:** a whole-row override becomes section
+  overrides only when the assembled text is unchanged; otherwise the row is
+  left as it is. A section override is followed by a blank line before the
+  next heading (1.1.16 glued them: "…followup.# Orchestrator").
+  `Resolved.text` stays the winning whole text (all positions use it);
+  `fullText`/`spans` are display-only.
+- **Resolution memo keys hash what a resolution reads**: the upstream text
+  itself (not its `fingerprint` field), its owners, native membership, the
+  preset catalogue at preset level, records/splits/chain hashes and the gate.
+
+Measured results: `run/evidence/plus-1.1.17/integration/perf.md`.
 
 ## Rules for every WP
 
