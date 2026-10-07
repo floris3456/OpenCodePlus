@@ -3,7 +3,7 @@ import path from "node:path"
 import { Option, Schema } from "effect"
 import type { CategoryRecord } from "./categories.js"
 import type { Boundary } from "./sections.js"
-import { derive, manual, slice } from "./sections.js"
+import { assembleWithOverrides, derive, manual, slice } from "./sections.js"
 import type {
   Catalogue,
   CustomizationRecord,
@@ -489,6 +489,8 @@ export function migrateSplitRows(records: readonly StoredRecord[]): {
 // Idempotent: an existing whole-row override (section: null customization with
 // text on a split row) becomes section overrides. Section overrides already
 // stored stay on top. The prompt comes out byte-identical before and after.
+// Verify by assembling before and after inside the migration: if they differ,
+// do not migrate that row.
 export function migrateWholeRows(records: readonly StoredRecord[]): {
   records: StoredRecord[]
   migrated: boolean
@@ -511,10 +513,30 @@ export function migrateWholeRows(records: readonly StoredRecord[]): {
       continue
     }
 
-    migrated = true
     const custom = record as CustomizationRecord
     const manualSplit = records.find((r): r is SplitRecord => r.type === "split" && r.item === custom.item)
     const split = manualSplit !== undefined ? manual(custom.text!, manualSplit.boundaries) : derive(custom.text!, custom.item)
+
+    const existingSectionOverrides = new Map<string, string>()
+    for (const r of records) {
+      if (
+        r.type === "customization" &&
+        r.item === custom.item &&
+        r.level === custom.level &&
+        r.agent === custom.agent &&
+        sameTeam(r.team, custom.team) &&
+        catalogueMatches(custom.agent, r.catalogue, custom.catalogue) &&
+        r.section !== null &&
+        r.text !== undefined
+      ) {
+        existingSectionOverrides.set(r.section, r.text)
+      }
+    }
+
+    const assembledBefore = assembleWithOverrides(custom.text!, split, new Set(), existingSectionOverrides)
+
+    const candidateSectionRecords: CustomizationRecord[] = []
+    const allOverrides = new Map(existingSectionOverrides)
 
     const baseSplit =
       custom.basedOnText !== undefined
@@ -522,23 +544,14 @@ export function migrateWholeRows(records: readonly StoredRecord[]): {
         : undefined
 
     for (const sec of split.sections) {
-      const alreadyStored = records.some(
-        (r): r is CustomizationRecord =>
-          r.type === "customization" &&
-          r.item === custom.item &&
-          r.level === custom.level &&
-          r.agent === custom.agent &&
-          sameTeam(r.team, custom.team) &&
-          catalogueMatches(custom.agent, r.catalogue, custom.catalogue) &&
-          r.section === sec.id,
-      )
-      if (alreadyStored) continue
+      if (existingSectionOverrides.has(sec.id)) continue
 
       const secText = slice(custom.text!, sec)
       const baseSec = baseSplit?.sections.find((s) => s.id === sec.id)
       const baseSecText = baseSec !== undefined && custom.basedOnText !== undefined ? slice(custom.basedOnText, baseSec) : undefined
 
-      out.push({
+      allOverrides.set(sec.id, secText)
+      candidateSectionRecords.push({
         type: "customization",
         level: custom.level,
         agent: custom.agent,
@@ -551,6 +564,23 @@ export function migrateWholeRows(records: readonly StoredRecord[]): {
         ...(baseSecText !== undefined ? { basedOnText: baseSecText } : {}),
         updated: custom.updated,
       })
+    }
+
+    const baseTextForAfter = custom.basedOnText ?? custom.text!
+    const baseSplitForAfter = manualSplit !== undefined ? manual(baseTextForAfter, manualSplit.boundaries) : derive(baseTextForAfter, custom.item)
+    const assembledAfter = assembleWithOverrides(baseTextForAfter, baseSplitForAfter, new Set(), allOverrides)
+
+    const norm = (s: string) => s.replace(/\n(?:[ \t]*\n)+/g, "\n\n").trim()
+    const safeToMigrate = norm(assembledAfter) === norm(assembledBefore)
+
+    if (!safeToMigrate) {
+      out.push(record)
+      continue
+    }
+
+    migrated = true
+    for (const newSec of candidateSectionRecords) {
+      out.push(newSec)
     }
 
     if (custom.state !== undefined || custom.pin !== undefined || custom.requires !== undefined) {

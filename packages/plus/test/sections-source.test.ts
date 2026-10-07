@@ -300,6 +300,109 @@ test("migrating Simple-Orchestrator shape (whole override plus five section over
   expect(secondMigration.migrated).toBe(false)
 })
 
+test("migrating real Simple-Orchestrator shape (whole-row text with headings that upstream lacks, plus five section overrides) preserves assembled prompt", () => {
+  const upstreamText = [
+    "# Team member",
+    "## Runs and messages",
+    "Runs upstream.",
+    "## Working",
+    "Working upstream.",
+    "# Orchestrator",
+    "## Ownership",
+    "Ownership upstream.",
+    "## Worktrees",
+    "Worktrees upstream.",
+  ].join("\n\n")
+
+  const roleItem: Item = {
+    id: "system:role",
+    kind: "system",
+    group: "none",
+    title: "Role/persona",
+    text: upstreamText,
+    enabled: true,
+    fingerprint: fingerprint(upstreamText),
+    agents: ["Simple-Orchestrator"],
+  }
+
+  const wholeText = [
+    "# Team member",
+    "## Runs and messages",
+    "Runs customized in whole.",
+    "## Working",
+    "Working customized in whole.",
+    "# Orchestrator",
+    "## STOP EVERY RUN YOU ARE DONE WITH",
+    "Stop runs rule.",
+    "## Watching runs",
+    "Watching runs rule.",
+    "## Ownership",
+    "Ownership customized in whole.",
+    "## Briefs to workers",
+    "Briefs to workers rule.",
+    "## Choosing a worker",
+    "Choosing worker rule.",
+    "## Reviewing and landing",
+    "Reviewing landing rule.",
+    "## Worktrees",
+    "Worktrees customized in whole.",
+  ].join("\n\n")
+
+  const wholeRecord: CustomizationRecord = {
+    type: "customization",
+    level: "global",
+    agent: "Simple-Orchestrator",
+    item: "system:role",
+    section: null,
+    text: wholeText,
+    basedOn: fingerprint(upstreamText),
+    basedOnText: upstreamText,
+    updated: "2026-10-04T00:00:00.000Z",
+  }
+
+  const fiveSections = [
+    { section: "orchestrator/stop-every-run-you-are-done-with", text: "## STOP EVERY RUN YOU ARE DONE WITH\n\nSpecific stop override." },
+    { section: "orchestrator/watching-runs", text: "## Watching runs\n\nSpecific watch override." },
+    { section: "orchestrator/briefs-to-workers", text: "## Briefs to workers\n\nSpecific briefs override." },
+    { section: "orchestrator/choosing-a-worker", text: "## Choosing a worker\n\nSpecific worker choice override." },
+    { section: "orchestrator/reviewing-and-landing", text: "## Reviewing and landing\n\nSpecific landing override." },
+  ]
+
+  const sectionOverrides: CustomizationRecord[] = fiveSections.map((s) => ({
+    type: "customization",
+    level: "global",
+    agent: "Simple-Orchestrator",
+    item: "system:role",
+    section: s.section,
+    text: s.text,
+    basedOn: fingerprint("..."),
+    updated: "2026-10-05T00:00:00.000Z",
+  }))
+
+  const recordsBefore = [wholeRecord, ...sectionOverrides]
+  const address: Address = { level: "global", agent: "Simple-Orchestrator", item: "system:role", section: null }
+
+  const promptBefore = resolve({
+    upstream: roleItem,
+    records: recordsBefore,
+    splits: [],
+    scopes: { global: new Set(["Simple-Orchestrator"]), defaults: new Set() },
+    address,
+  }).assembled
+
+  const migrationResult = migrateWholeRows(recordsBefore)
+
+  const promptAfter = resolve({
+    upstream: roleItem,
+    records: migrationResult.records as CustomizationRecord[],
+    splits: [],
+    scopes: { global: new Set(["Simple-Orchestrator"]), defaults: new Set() },
+    address,
+  }).assembled
+
+  expect(promptAfter).toBe(promptBefore)
+})
+
 test("whole-row view, mine view, and threeWay diff reflect section overrides", () => {
   const item = makeItem()
   const address: Address = { level: "project", agent: "orchestrator", item: "system:role", section: null }
