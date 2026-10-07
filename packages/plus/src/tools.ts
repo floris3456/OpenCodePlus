@@ -1717,6 +1717,25 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     }
     if (view === "upstream") return { output: { id, view, text: upstreamForEdit(chain) } }
     if (view === "mine") {
+      if (address.section === null) {
+        const ownRecords = customizations.filter(
+          (record) =>
+            record.level === address.level &&
+            record.agent === address.agent &&
+            sameTeam(record.team, address.team) &&
+            record.item === address.item &&
+            catalogueMatches(address.agent, record.catalogue, address.catalogue),
+        )
+        const hasOverride = ownRecords.some((r) => r.text !== undefined)
+        if (!hasOverride) return { output: { id, view, text: "", hasOverride: false } }
+        const wholeRecord = ownRecords.find((r) => r.section === null && r.text !== undefined)
+        const hasSectionOverrides = ownRecords.some((r) => r.section !== null && r.text !== undefined)
+        if (wholeRecord !== undefined && !hasSectionOverrides) {
+          return { output: { id, view, text: wholeRecord.text ?? "", hasOverride: true } }
+        }
+        const resolved = resolve(chain)
+        return { output: { id, view, text: resolved.text, hasOverride: true } }
+      }
       const own = customizations.find(
         (record) =>
           record.level === address.level &&

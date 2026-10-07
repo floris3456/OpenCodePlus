@@ -1132,8 +1132,38 @@ export function threeWay(input: ChainInput): ThreeWay | undefined {
   if (input.address.section !== null) return threeWaySection(input)
   const whole = wholeRecords(input)
   const own = at(whole, input.address)
-  if (own?.text === undefined || own.basedOnText === undefined) return undefined
-  return { original: own.basedOnText, mine: own.text, upstream: aboveWholeText(input, whole) }
+  const split = resolveSplit({
+    text: input.upstream.text,
+    title: input.upstream.title,
+    splits: input.splits,
+    scopes: input.scopes,
+    address: input.address,
+  })
+  const ownSectionRecords = split.sections
+    .map((sec) => at(sectionRecords(input, sec.id), input.address))
+    .filter((rec): rec is CustomizationRecord => rec?.text !== undefined)
+
+  if (own?.text === undefined && ownSectionRecords.length === 0) return undefined
+
+  if (split.kind === "whole" && split.sections.length <= 1 && own?.text !== undefined && own.basedOnText !== undefined) {
+    return { original: own.basedOnText, mine: own.text, upstream: aboveWholeText(input, whole) }
+  }
+
+  const resolvedMine = resolveWhole(input)
+  const upstream = aboveWholeText(input, whole)
+  const chainAbove = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
+  const origOverrides = new Map<string, string>()
+  for (const sec of split.sections) {
+    const ownSec = at(sectionRecords(input, sec.id), input.address)
+    if (ownSec?.basedOnText !== undefined) {
+      origOverrides.set(sec.id, ownSec.basedOnText)
+    } else {
+      const aboveSecText = chainAbove.map((node) => sectionTextAt(input, node, sec.id)).find((t) => t !== undefined)
+      if (aboveSecText !== undefined) origOverrides.set(sec.id, aboveSecText)
+    }
+  }
+  const original = assembleWithOverrides(input.upstream.text, split, new Set(), origOverrides)
+  return { original, mine: resolvedMine.assembled, upstream }
 }
 
 // The resolved baseline for a new text edit at one address, exported so
@@ -1303,6 +1333,18 @@ export function merge(
 }
 
 export function reset(records: readonly CustomizationRecord[], address: Address): CustomizationRecord[] {
+  if (address.section === null) {
+    return records.filter(
+      (record) =>
+        !(
+          record.item === address.item &&
+          record.level === address.level &&
+          record.agent === address.agent &&
+          sameTeam(record.team, address.team) &&
+          catalogueMatches(address.agent, record.catalogue, address.catalogue)
+        ),
+    )
+  }
   return records.filter((record) => !sameNode(record, address))
 }
 
@@ -1312,6 +1354,16 @@ export function applies(item: Pick<Item, "agents">, agent: string): boolean {
 }
 
 export function canReset(records: readonly CustomizationRecord[], address: Address): boolean {
+  if (address.section === null) {
+    return records.some(
+      (record) =>
+        record.item === address.item &&
+        record.level === address.level &&
+        record.agent === address.agent &&
+        sameTeam(record.team, address.team) &&
+        catalogueMatches(address.agent, record.catalogue, address.catalogue),
+    )
+  }
   return records.some((record) => sameNode(record, address))
 }
 
@@ -1433,20 +1485,58 @@ export function resolveWhole(input: ChainInput): Resolved {
       const ids = sectionRequires(input, chain, section.id, overridden.get(section.id) ?? slice(text, section))?.ids
       if (ids !== undefined && !gate(ids)) excluded.add(section.id)
     }
+  const fullAssembled = assembleWithOverrides(text, split, new Set(), overridden)
   const assembled = assembleWithOverrides(text, split, excluded, overridden)
+
+  const hasOwnSectionText = split.sections.some((sec) => {
+    const ownSec = at(sectionRecords(input, sec.id), input.address)
+    return ownSec?.text !== undefined
+  })
+  const hasOwnSectionOverride = split.sections.some((sec) => {
+    const ownSec = at(sectionRecords(input, sec.id), input.address)
+    return ownSec !== undefined && (ownSec.text !== undefined || ownSec.state !== undefined || ownSec.requires !== undefined)
+  })
+
+  let reviewPartsList = [...reviewOf]
+  if (hasOwnSectionText) {
+    const hasSectionReview = split.sections.some((sec) => {
+      const ownSec = at(sectionRecords(input, sec.id), input.address)
+      return ownSec !== undefined && isReview(ownSec, () => aboveSectionFingerprint(input, sec.id))
+    })
+    if (hasSectionReview && !reviewPartsList.includes("text")) {
+      reviewPartsList.push("text")
+    }
+  }
+
+  let textFrom = textAt === -1 ? { kind: "upstream" as const } : chain[textAt].from
+  if (overridden.size > 0) {
+    const overrideNode = chain.find((node) =>
+      split.sections.some((sec) => valueAt(input, sectionRecords(input, sec.id), node, sec.id)?.text !== undefined),
+    )
+    if (overrideNode !== undefined) textFrom = overrideNode.from
+  }
+
+  const sectionSourceNode = chain.find((node) =>
+    split.sections.some((sec) => {
+      const val = valueAt(input, sectionRecords(input, sec.id), node, sec.id)
+      return val?.text !== undefined || val?.state !== undefined
+    }),
+  )
+  const source = sourceAt === -1 ? (sectionSourceNode?.level ?? "upstream") : chain[sourceAt].level
+
   const result: Resolved = {
-    text,
+    text: fullAssembled,
     assembled: gate === undefined ? assembled : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
     enabled: stateAt === -1 ? fallback.enabled : values[stateAt]?.state === "on",
     pinned: pinAt === -1 ? (input.upstream.pinned ?? false) : (values[pinAt]?.pin ?? false),
-    source: sourceAt === -1 ? "upstream" : chain[sourceAt].level,
+    source,
     from: stateAt === -1 ? fallback.from : chain[stateAt].from,
-    textFrom: textAt === -1 ? { kind: "upstream" } : chain[textAt].from,
+    textFrom,
     pinFrom: pinAt === -1 ? { kind: "upstream" } : chain[pinAt].from,
-    overriddenHere: own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined || own.requires !== undefined),
-    modified: own?.text !== undefined,
-    review: reviewOf.length > 0,
-    reviewOf,
+    overriddenHere: (own !== undefined && (own.text !== undefined || own.state !== undefined || own.pin !== undefined || own.requires !== undefined)) || hasOwnSectionOverride,
+    modified: own?.text !== undefined || hasOwnSectionText,
+    review: reviewPartsList.length > 0,
+    reviewOf: reviewPartsList,
     ...(requires === undefined ? {} : { requires }),
   }
   perRecords.set(key, result)
@@ -1606,11 +1696,29 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
   return "off"
 }
 
-function aboveWholeText(input: ChainInput, whole: readonly CustomizationRecord[]): string {
-  const above = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
-    .map((node) => valueAt(input, whole, node, null)?.text)
-    .find((text) => text !== undefined)
-  return above ?? input.upstream.text
+function aboveWholeText(input: ChainInput, whole?: readonly CustomizationRecord[]): string {
+  const chainAbove = aboveOwn(resolutionChain(input.address, input.scopes), input.address)
+  const baseAbove =
+    chainAbove
+      .map((node) => valueAt(input, whole ?? wholeRecords(input), node, null)?.text)
+      .find((text) => text !== undefined) ?? input.upstream.text
+  const split = resolveSplit({
+    text: baseAbove,
+    title: input.upstream.title,
+    splits: input.splits,
+    scopes: input.scopes,
+    address: input.address,
+  })
+  if (split.kind === "whole" && split.sections.length <= 1) {
+    return baseAbove
+  }
+  const overrides = new Map<string, string>()
+  for (const sec of split.sections) {
+    const text = chainAbove.map((node) => sectionTextAt(input, node, sec.id)).find((t) => t !== undefined)
+    if (text !== undefined) overrides.set(sec.id, text)
+  }
+  if (overrides.size === 0) return baseAbove
+  return assembleWithOverrides(baseAbove, split, new Set(), overrides)
 }
 
 function aboveWholeFingerprint(
