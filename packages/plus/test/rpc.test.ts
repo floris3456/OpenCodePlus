@@ -1620,6 +1620,12 @@ test("session.created uses the cached active model without rediscovery", async (
   expect(String(switches[0]?.model.id)).toBe("nova-2")
   expect(counts.agentLists).toBe(0)
   expect(counts.skillLists).toBe(0)
+  // A subagent keeps the model core gave it (its caller's explicit pick wins).
+  switches.length = 0
+  await Effect.runPromise(
+    applySessionModel(ctx, state, { type: "session.created", properties: { sessionID: "ses_child", parentID: "ses_1", agent: "alpha" } }),
+  )
+  expect(switches).toHaveLength(0)
   const { load, save } = await import("../src/instructions/store.js")
   const stored = await load(project)
   await save(project, {

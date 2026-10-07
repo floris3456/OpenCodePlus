@@ -6435,6 +6435,9 @@ export function applySessionModel(
     const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
     const sessionID = payload.sessionID
     if (typeof sessionID !== "string" || sessionID.length === 0) return
+    // Core already chose a subagent's model: the one its caller asked for,
+    // else its agent's model (which apply sets to the active one).
+    if (event.type === "session.created" && typeof payload.parentID === "string") return
     const agentID = typeof payload.agent === "string" ? payload.agent : undefined
     const targetAgent = agentID ?? (yield* Effect.promise(() => currentSessionAgent(ctx, sessionID)))
     if (targetAgent === undefined) return
