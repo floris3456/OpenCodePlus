@@ -303,6 +303,8 @@ function schemaMakeError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+const definitionValidationCache = new WeakMap<object, Map<string, RegistrationError | undefined>>()
+
 function registrationError(tool: Tool.Info) {
   const namespace = tool.options?.namespace
   if (namespace !== undefined) {
@@ -314,12 +316,22 @@ function registrationError(tool: Tool.Info) {
   const id = effectiveName(tool)
   if (tool.options?.codemode === false && id === "execute")
     return new RegistrationError({ name: id, message: 'Tool name "execute" is reserved for CodeMode' })
+  const def = definition(tool)
+  let cachedMap = definitionValidationCache.get(def.inputSchema)
+  const key = `${id}\0${tool.description ?? ""}\0${def.outputSchema ? JSON.stringify(def.outputSchema) : ""}`
+  if (cachedMap?.has(key)) return cachedMap.get(key)
   const result = Result.try({
-    try: () => ToolDefinition.make(definition(tool)),
+    try: () => ToolDefinition.make(def),
     catch: (error) =>
       new RegistrationError({ name: id, message: `Invalid tool definition ${id}: ${schemaMakeError(error)}` }),
   })
-  return Result.isFailure(result) ? result.failure : undefined
+  const error = Result.isFailure(result) ? result.failure : undefined
+  if (!cachedMap) {
+    cachedMap = new Map()
+    definitionValidationCache.set(def.inputSchema, cachedMap)
+  }
+  cachedMap.set(key, error)
+  return error
 }
 
 function namespaceError(name: string) {

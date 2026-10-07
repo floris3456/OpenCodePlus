@@ -8,6 +8,7 @@ import { Model } from "@opencode/core/model"
 import { Project } from "@opencode/core/project"
 import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
+import { State } from "@opencode/core/state"
 import { WebSearch } from "@opencode/core/websearch"
 import { Effect, Stream } from "effect"
 
@@ -28,6 +29,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
         },
       }),
     options: {},
+    batch: overrides.batch ?? State.batch,
     rpc:
       overrides.rpc ??
       Object.assign(
