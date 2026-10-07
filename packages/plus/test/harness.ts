@@ -834,6 +834,7 @@ export function context(overrides: Overrides = {}): Context {
         },
       }),
     options: {},
+    batch: overrides.batch ?? ((effect) => effect),
     agent: overrides.agent ?? agentDomain(),
     aisdk: overrides.aisdk ?? aisdkDomain(),
     model: overrides.model ?? modelDomain([]),

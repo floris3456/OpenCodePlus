@@ -1,8 +1,9 @@
 import { Tool } from "@opencode/schema/tool"
 import type { Rpc } from "@opencode/schema/rpc"
 import type { RpcCallOptions, RpcEventPayload } from "@opencode/client/promise/api"
-import { Effect, Schema, SchemaAST, Stream } from "effect"
+import { Context, Effect, Schema, SchemaAST, Stream } from "effect"
 import type { Scope } from "effect"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { HttpApiEndpoint, HttpApiSchema } from "effect/unstable/httpapi"
 import { define } from "../effect/plugin.js"
 import type { Plugin } from "./plugin.js"
@@ -238,15 +239,20 @@ export function fromPromise(plugin: Plugin) {
         const WebSearchEndpoints = ClientApi.groups["server.websearch"].endpoints
         const WorktreeEndpoints = ClientApi.groups["server.worktree"].endpoints
         const runtime = yield* Effect.context<Scope.Scope>()
+        const batchContextStorage = new AsyncLocalStorage<Context.Context<Scope.Scope>>()
         const streams = yield* makeStreams()
 
-        // Run a hook registration on the plugin scope and resolve once it is registered.
-        const register = (effect: Effect.Effect<HostRegistration, never, Scope.Scope>): Promise<Registration> =>
-          Effect.runPromiseWith(runtime)(effect).then((registration) => ({
-            dispose: () => Effect.runPromiseWith(runtime)(registration.dispose),
-          }))
+        const currentRuntime = () => batchContextStorage.getStore() ?? runtime
 
-        const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseWith(runtime)(effect)
+        // Run a hook registration on the plugin scope and resolve once it is registered.
+        const register = (effect: Effect.Effect<HostRegistration, never, Scope.Scope>): Promise<Registration> => {
+          const activeRuntime = currentRuntime()
+          return Effect.runPromiseWith(activeRuntime)(effect).then((registration) => ({
+            dispose: () => Effect.runPromiseWith(activeRuntime)(registration.dispose),
+          }))
+        }
+
+        const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseWith(currentRuntime())(effect)
 
         const promiseExecutor =
           (execute: Tool.Info["execute"]): Info["execute"] =>
@@ -292,6 +298,17 @@ export function fromPromise(plugin: Plugin) {
           app: host.app,
           location: host.location,
           options: host.options,
+          batch: <T>(fn: () => Promise<T>): Promise<T> =>
+            Effect.runPromiseWith(runtime)(
+              host.batch(
+                Effect.gen(function* () {
+                  const batchRuntime = yield* Effect.context<Scope.Scope>()
+                  return yield* Effect.promise(() =>
+                    Promise.resolve().then(() => batchContextStorage.run(batchRuntime, fn)),
+                  )
+                }),
+              ),
+            ),
           agent: {
             get: adaptApiMethod(AgentEndpoints["agent.get"], host.agent.get),
             list: adaptApiMethod(AgentEndpoints["agent.list"], host.agent.list),

@@ -62,6 +62,11 @@ export interface Context {
   readonly app: App
   readonly location: Location.Info
   readonly options: PluginOptions
+  /**
+   * Runs the effect inside a state batch. Registry changes made inside coalesce
+   * notifications so observers notify once at the end. Reads inside stay fresh.
+   */
+  readonly batch: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly agent: AgentDomain
   readonly aisdk: AISDKDomain
   readonly command: CommandDomain
