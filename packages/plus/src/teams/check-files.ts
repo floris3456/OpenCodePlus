@@ -47,7 +47,7 @@ export async function checkFiles(directory: string, base: string, checks: readon
 }
 
 /** The repository-relative `bun test` files and directories a check names, in check order. */
-export function namedTestFiles(checks: readonly Check[]): Set<string> {
+function namedTestFiles(checks: readonly Check[]): Set<string> {
   const named = new Set<string>()
   for (const check of checks) {
     const [program, verb, ...rest] = check.argv
