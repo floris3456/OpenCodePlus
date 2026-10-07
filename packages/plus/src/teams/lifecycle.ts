@@ -295,8 +295,15 @@ async function onSessionMoved(root: string, run: RunRecord, payload: Record<stri
   if (run.parent !== null && run.parent !== undefined) return undefined
   const open = await openChildren(root, run.id)
   if (open.length > 0) {
-    if (run.movedTo === directory) return undefined
-    return updateRun(root, run.id, (record) => ({ ...record, movedTo: directory, lastUsed: new Date().toISOString() }))
+    // The chat returning to the run's own folder clears any pending notice.
+    const target = directory === run.directory ? undefined : directory
+    if (run.movedTo === target) return undefined
+    return updateRun(root, run.id, (record) => {
+      const next: RunRecord = { ...record, lastUsed: new Date().toISOString() }
+      if (target === undefined) delete next.movedTo
+      else next.movedTo = target
+      return next
+    })
   }
   const headOut = await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   if (headOut.code !== 0) return undefined

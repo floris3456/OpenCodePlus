@@ -1277,5 +1277,9 @@ test("a root run with an open child stays put and remembers where the chat went"
     expect(childReturned).toBeUndefined()
     expect((await loadRun(root, child.id))?.directory).toBe(from.dir)
     expect((await loadRun(root, child.id))?.movedTo).toBeUndefined()
+    // The chat moving back to the run's own folder clears the pending notice.
+    const back = await onSessionEvent(context({ session: recordSession().domain }), root, movedEvent("ses_moved_parent", from.dir))
+    expect(back?.movedTo).toBeUndefined()
+    expect((await loadRun(root, parent.id))?.movedTo).toBeUndefined()
   })
 }, 30000)
