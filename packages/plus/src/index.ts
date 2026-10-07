@@ -103,6 +103,10 @@ export interface TeamOwnership {
 }
 
 export interface PlusState {
+  /** When this Location's Plus instance started: its folder's files were read then. */
+  readonly loadedAt: number
+  /** Chats that already had their first prompt here (a new chat re-reads the folder's files once). */
+  readonly chatsSeen: Set<string>
   registration: RpcRegistration<typeof Definition> | undefined
   applied: Registration[]
   appliedParts: Map<string, AppliedPart>
@@ -176,6 +180,8 @@ export interface PlusState {
 
 export function createState(): PlusState {
   return {
+    loadedAt: Date.now(),
+    chatsSeen: new Set(),
     registration: undefined,
     applied: [],
     appliedParts: new Map(),
@@ -271,6 +277,7 @@ export default Plugin.define({
       // request runs, so no request uses stale instructions.
       yield* ctx.session.hook("prompt", (event) =>
         Effect.gen(function* () {
+          if (event && event.sessionID) yield* refreshFolderForNewChat(ctx, state, String(event.sessionID))
           yield* flushPendingRefresh(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
@@ -6475,6 +6482,24 @@ async function currentSessionModel(ctx: Context, sessionID: string): Promise<Mod
 }
 
 const refreshProcessSemaphore = Effect.runSync(Semaphore.make(1))
+
+// A folder's own files (its opencode.json, skills, agent and command files)
+// are not watched (item 4): a new chat re-reads them once, before its first
+// request, so a change applies in the next chat. A folder that loaded moments
+// ago has just read them (a team worker's first prompt), and later prompts of
+// the same chat keep what it started with; `/refresh` reloads everything now.
+export function refreshFolderForNewChat(ctx: Context, state: PlusState, sessionID: string): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (state.chatsSeen.has(sessionID)) return
+    state.chatsSeen.add(sessionID)
+    if (Date.now() - state.loadedAt < NEW_CHAT_FRESH_MS) return
+    const reloads = [ctx.config.reload({ force: true }), ctx.instruction.reload(), ctx.agent.reload(), ctx.command.reload(), ctx.skill.reload()]
+    for (const reload of reloads)
+      yield* reload.pipe(Effect.catchCause((cause) => Effect.logWarning("plus new-chat folder reload failed", { cause })))
+  })
+}
+
+const NEW_CHAT_FRESH_MS = 5000
 
 export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.promise(async () => {

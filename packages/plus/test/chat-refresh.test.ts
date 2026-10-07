@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { activate, createHandlers, createState } from "../src/index.js"
+import { activate, createHandlers, createState, refreshFolderForNewChat } from "../src/index.js"
 import { agentHarness, agentInfo, context, fullContext, toolHarness } from "./harness.js"
 
 const throwing = {
@@ -114,5 +114,36 @@ describe("chat.refresh", () => {
     expect(refresh?.options?.namespace).toBe("opencode")
     expect(refresh?.options?.permission).toBe("opencode_refresh")
     expect(refresh?.options?.codemode).toBe(true)
+  })
+})
+
+describe("a new chat", () => {
+  test("re-reads the folder's files once, before its first request, unless the folder has just loaded", async () => {
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    await fs.mkdir(project, { recursive: true })
+    const forced: (boolean | undefined)[] = []
+    const harness = agentHarness([agentInfo("build", "build role")], project)
+    const ctx = context({
+      ...fullContext({ directory: project, hooks: { current: 0 } }),
+      agent: harness.domain,
+      config: { reload: (options?: { readonly force?: boolean }) => Effect.sync(() => void forced.push(options?.force)) },
+    })
+    // A folder loaded a minute ago: its files may have changed since.
+    const loaded = { ...createState(), loadedAt: Date.now() - 60_000 }
+    const agentReloads = harness.reloads
+    await Effect.runPromise(refreshFolderForNewChat(ctx, loaded, "ses_one"))
+    expect(forced).toEqual([true])
+    expect(harness.reloads).toBe(agentReloads + 1)
+    // The same chat's next prompt keeps what it started with.
+    await Effect.runPromise(refreshFolderForNewChat(ctx, loaded, "ses_one"))
+    expect(forced).toEqual([true])
+    // Another new chat re-reads again.
+    await Effect.runPromise(refreshFolderForNewChat(ctx, loaded, "ses_two"))
+    expect(forced).toEqual([true, true])
+    // A folder that has just loaded (a team worker's first prompt) read them already.
+    await Effect.runPromise(refreshFolderForNewChat(ctx, createState(), "ses_three"))
+    expect(forced).toEqual([true, true])
   })
 })
