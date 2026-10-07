@@ -3,7 +3,7 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show } from "solid-js"
 import type { Plus } from "../../../rpc.js"
-import { formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
+import { cacheRequests, formatClock, formatCost, formatMs, formatMsLabel, formatTokens } from "../format.js"
 import { createRowStore, createRowWindow } from "../window.js"
 
 export interface CacheTabProps {
@@ -34,13 +34,7 @@ export function CacheTab(props: CacheTabProps) {
   const kindWidth = () => 10
   const kindLabel = (kind: Plus.MonitorRequest["kind"]) => kind
 
-  const requests = () => {
-    const list = props.report?.requests ?? []
-    if (props.missesOnly) {
-      return list.filter((r) => r.verdict === "miss" || r.verdict === "partial")
-    }
-    return list
-  }
+  const requests = () => cacheRequests(props.report, props.missesOnly)
 
   // Only the rows around the viewport are instantiated; the selection index
   // still runs over the whole filtered list, and the window follows it.

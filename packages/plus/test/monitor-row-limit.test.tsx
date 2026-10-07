@@ -148,14 +148,14 @@ function scrollBox(fixture: TestFixture) {
 test("the Cache tab mounts only a viewport window of a 5,000-row list, and refreshes keep the rows", async () => {
   const { fixture, queries } = await render({ ...defaultSettings, tab: "cache", scope: "all" })
   try {
-    await fixture.waitForFrame((text) => text.includes("row-0000"))
+    await fixture.waitForFrame((text) => text.includes("row-4999"))
     expect(queries[0]).toMatchObject({ scope: "all", view: "cache" })
 
     // The window is the viewport plus margin, far fewer than the list.
     const first = mountedRows(fixture)
     expect(first.length).toBeGreaterThan(0)
     expect(first.length).toBeLessThan(200)
-    expect(first.some((row) => row.id === "monitor-row-req_4999")).toBe(false)
+    expect(first.some((row) => row.id === "monitor-row-req_0")).toBe(false)
 
     // Several polls return a fresh report; unchanged rows keep the same
     // renderable objects instead of being remounted.
@@ -177,7 +177,7 @@ test("the Cache tab mounts only a viewport window of a 5,000-row list, and refre
 test("manual scrolling mounts the rows at the viewport while the selection stays put", async () => {
   const { fixture } = await render({ ...defaultSettings, tab: "cache", scope: "all" })
   try {
-    await fixture.waitForFrame((text) => text.includes("row-0000"))
+    await fixture.waitForFrame((text) => text.includes("row-4999"))
     const scroll = scrollBox(fixture)
     // Selection is still row 0; scroll far away from it.
     expect(fixture.captureCharFrame()).toContain("row 1 of 5000")
@@ -187,8 +187,8 @@ test("manual scrolling mounts the rows at the viewport while the selection stays
     // The rows at the new viewport are mounted and drawn; a spacer no longer
     // covers them.
     expect(scroll.scrollTop).toBe(100)
-    expect(fixture.renderer.root.findDescendantById("monitor-row-req_100")).toBeDefined()
-    expect(fixture.captureCharFrame()).toContain("row-0100")
+    expect(fixture.renderer.root.findDescendantById("monitor-row-req_4899")).toBeDefined()
+    expect(fixture.captureCharFrame()).toContain("row-4899")
     expect(mountedRows(fixture).length).toBeLessThan(200)
   } finally {
     fixture.destroy()
@@ -198,15 +198,15 @@ test("manual scrolling mounts the rows at the viewport while the selection stays
 test("the Cache window follows the keyboard through the full list and drills the selected row", async () => {
   const { fixture, queries } = await render({ ...defaultSettings, tab: "cache", scope: "all" })
   try {
-    await fixture.waitForFrame((text) => text.includes("row-0000"))
+    await fixture.waitForFrame((text) => text.includes("row-4999"))
     for (let step = 0; step < 60; step++) dispatch(fixture, "down")
-    const moved = await fixture.waitForFrame((text) => text.includes("row-0060"))
+    const moved = await fixture.waitForFrame((text) => text.includes("row-4939"))
     expect(moved).toContain("row 61 of 5000")
 
     dispatch(fixture, "return")
     const detail = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
-    expect(detail).toContain("Request Detail: req_60")
-    expect(queries.at(-1)?.id).toBe("req_60")
+    expect(detail).toContain("Request Detail: req_4939")
+    expect(queries.at(-1)?.id).toBe("req_4939")
 
     // Navigating the whole span keeps the mounted set bounded.
     expect(mountedRows(fixture).length).toBeLessThan(200)
@@ -256,7 +256,7 @@ test("a same-id row updates its fields without being remounted", async () => {
 test("the window stays bounded through a narrow/wide resize and keeps drawing rows", async () => {
   const { fixture } = await render({ ...defaultSettings, tab: "cache", scope: "all" }, { width: 160, height: 45 })
   try {
-    await fixture.waitForFrame((text) => text.includes("row-0000"))
+    await fixture.waitForFrame((text) => text.includes("row-4999"))
     for (const [width, height] of [
       [80, 24],
       [120, 40],
@@ -268,7 +268,7 @@ test("the window stays bounded through a narrow/wide resize and keeps drawing ro
       frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
       expect(frame).toContain("row 1 of 5000")
       expect(mountedRows(fixture).length).toBeLessThan(200)
-      expect(frame).toContain("row-0000")
+      expect(frame).toContain("row-4999")
     }
   } finally {
     fixture.destroy()
@@ -317,7 +317,7 @@ test("last-row navigation through a filtered list reaches and drills the last it
     { report: (input) => ({ ...makeReport(input), requests: [request(10), request(11), request(12)] }) },
   )
   try {
-    await fixture.waitForFrame((text) => text.includes("row-0010"))
+    await fixture.waitForFrame((text) => text.includes("row-0012"))
     expect(fixture.captureCharFrame()).toContain("row 1 of 3")
     dispatch(fixture, "down")
     dispatch(fixture, "down")
@@ -325,8 +325,8 @@ test("last-row navigation through a filtered list reaches and drills the last it
     expect(last).toContain("row 3 of 3")
     dispatch(fixture, "return")
     const detail = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
-    expect(detail).toContain("Request Detail: req_12")
-    expect(queries.at(-1)?.id).toBe("req_12")
+    expect(detail).toContain("Request Detail: req_10")
+    expect(queries.at(-1)?.id).toBe("req_10")
   } finally {
     fixture.destroy()
   }
@@ -392,5 +392,69 @@ test("the Steps and Sessions tabs window their rows the same way", async () => {
     } finally {
       fixture.destroy()
     }
+  }
+})
+
+test("the Cache tab lists newest first and the first row opens its own detail", async () => {
+  const { fixture, queries } = await render(
+    { ...defaultSettings, tab: "cache", scope: "all" },
+    {
+      report: (input) => ({
+        ...makeReport(input),
+        requests: [
+          request(10, { at: NOW - 3_000 }),
+          request(11, { at: NOW - 2_000 }),
+          request(12, { at: NOW - 1_000 }),
+        ],
+      }),
+    },
+  )
+  try {
+    const first = await fixture.waitForFrame((text) => text.includes("row-0012"))
+    // Newest first: the newest row renders above the older ones.
+    expect(first.indexOf("row-0012")).toBeLessThan(first.indexOf("row-0011"))
+    expect(first.indexOf("row-0011")).toBeLessThan(first.indexOf("row-0010"))
+    expect(fixture.captureCharFrame()).toContain("row 1 of 3")
+    // Selecting the first row shows its own (newest) request's detail.
+    dispatch(fixture, "return")
+    const detail = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
+    expect(detail).toContain("Request Detail: req_12")
+    expect(queries.at(-1)?.id).toBe("req_12")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a new request keeps the selection on the same request, not the same row", async () => {
+  let extra: Plus.MonitorRequest[] = []
+  const { fixture } = await render(
+    { ...defaultSettings, tab: "cache", scope: "all" },
+    {
+      report: (input) => ({
+        ...makeReport(input),
+        requests: [
+          request(10, { at: NOW - 3_000 }),
+          request(11, { at: NOW - 2_000 }),
+          request(12, { at: NOW - 1_000 }),
+          ...extra,
+        ],
+      }),
+    },
+  )
+  try {
+    await fixture.waitForFrame((text) => text.includes("row-0012"))
+    expect(fixture.captureCharFrame()).toContain("row 1 of 3")
+    // A newer request arrives at the top; the selection follows req_12 down.
+    extra = [request(13, { at: NOW - 500 })]
+    await sleep(2_500)
+    await fixture.flush()
+    const kept = fixture.captureCharFrame()
+    expect(kept).toContain("row 2 of 4")
+    expect(kept).toContain("row-0012")
+    dispatch(fixture, "return")
+    const detail = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
+    expect(detail).toContain("Request Detail: req_12")
+  } finally {
+    fixture.destroy()
   }
 })
