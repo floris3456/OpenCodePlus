@@ -90,6 +90,9 @@ test("< and > still switch levels both ways", async () => {
   await fixture.waitForFrame((frame) => breadcrumb(frame).trimStart().startsWith("Project"))
 })
 
+// The Teams group, collapsed; it shows an on/off marker only where it holds teams.
+const TEAMS_COLLAPSED = /▸ (?:\S+ )?Teams/
+
 test("the owner, category, row and expansions survive a level switch", async () => {
   await using fixture = await renderInstructionsRoute({ snapshots: [snapshot()], width: 130, height: 45 })
   await reach(fixture, "item:project:build:tool:bash", "bash")
@@ -103,7 +106,7 @@ test("the owner, category, row and expansions survive a level switch", async () 
   await fixture.waitForFrame((frame) => selectedRow(frame).includes("Agents"))
   await moveTo(fixture, "Teams")
   expect(dispatch(fixture, "left")).toBe(true)
-  await fixture.waitForFrame((frame) => sidebar(frame).includes("▸ Teams"))
+  await fixture.waitForFrame((frame) => TEAMS_COLLAPSED.test(sidebar(frame)))
   expect(dispatch(fixture, "tab")).toBe(true)
   await fixture.waitForFrame((frame) => footer(frame).includes("tab sidebar"))
   // One level over: same owner, category, row and expansions (bash open,
@@ -114,11 +117,11 @@ test("the owner, category, row and expansions survive a level switch", async () 
   expect(breadcrumb(global)).toContain("Global › Agents › OpenCode › build › Tools › OpenCode › bash")
   expect(global).toContain("Full text")
   expect(selectedRow(global)).toContain("bash")
-  expect(sidebar(global)).toContain("▸ Teams")
+  expect(sidebar(global)).toMatch(TEAMS_COLLAPSED)
   expect(dispatch(fixture, "<")).toBe(true)
   await fixture.waitForFrame((frame) => breadcrumb(frame).trimStart().startsWith("Project"))
   expect(fixture.captureCharFrame()).toContain("Full text")
-  expect(sidebar(fixture.captureCharFrame())).toContain("▸ Teams")
+  expect(sidebar(fixture.captureCharFrame())).toMatch(TEAMS_COLLAPSED)
 })
 
 test("Presets keep their deliberate separate selection on a level switch", async () => {

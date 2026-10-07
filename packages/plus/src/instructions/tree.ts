@@ -666,6 +666,8 @@ function finalizeLazy(lazy: Lazy): TreeNode {
 export interface GroupToggleRows {
   readonly rows: readonly Lazy[]
   readonly hasTeam: boolean
+  /** A team's member or special agent row (team-kind with its own Enabled control): such groups never toggle. */
+  readonly hasMember: boolean
 }
 
 // Lazies are memoized per tree memo, so one walk per group per memo: a parent
@@ -678,6 +680,7 @@ export function groupToggleRows(lazy: Lazy): GroupToggleRows {
   if (cached !== undefined) return cached
   const rows: Lazy[] = []
   let hasTeam = false
+  let hasMember = false
   const visit = (node: Lazy): void => {
     // A row's sections belong to that row: a category toggles whole rows
     // only, so a row whose whole cannot be toggled (Role/persona, a base
@@ -687,10 +690,15 @@ export function groupToggleRows(lazy: Lazy): GroupToggleRows {
       const nested = groupToggleRows(node)
       rows.push(...nested.rows)
       if (nested.hasTeam) hasTeam = true
+      if (nested.hasMember) hasMember = true
       return
     }
     if (node.kind === "team") {
-      if (node.actions.toggle === true) {
+      // Whole teams are rows of a Teams group (team.setEnabled). A member or
+      // special agent inside a team carries an agent's Enabled control: a
+      // group holding those (a team's Special group) does not toggle.
+      if (node.enabledRow !== undefined) hasMember = true
+      if (node.enabledRow === undefined && node.actions.toggle === true) {
         rows.push(node)
         hasTeam = true
       }
@@ -708,7 +716,7 @@ export function groupToggleRows(lazy: Lazy): GroupToggleRows {
     for (const child of node.children()) visit(child)
   }
   for (const child of lazy.children()) visit(child)
-  const found = { rows, hasTeam }
+  const found = { rows, hasTeam, hasMember }
   groupRowsCache.set(lazy, found)
   return found
 }
@@ -730,7 +738,7 @@ export function groupToggleOf(lazy: Lazy): { readonly toggle: boolean; readonly 
 }
 
 function groupToggleSummary(found: GroupToggleRows): { readonly toggle: boolean; readonly state?: "on" | "off"; readonly summary?: string } {
-  if (found.rows.length === 0) return { toggle: false }
+  if (found.hasMember || found.rows.length === 0) return { toggle: false }
   // Item rows answer their state without resolving their text; entity rows
   // (an agent's Enabled) read it from their badges.
   const states = found.rows
