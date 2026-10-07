@@ -1,7 +1,8 @@
 # plus-1.1.18 / 1.1.19: Monitor load, then model rows with Warming and Compaction, cold-cache compaction
 
-1.1.18 = the Monitor fix alone (section 1, WP-A). 1.1.19 = sections 2–6
-(WPs B–E). The split was decided by the user; see Decisions.
+1.1.18 = the Monitor fix (section 1, WP-A) and the warming-window fix
+(section 1b, WP-W). 1.1.19 = sections 2–9 (WPs B–E, G). The split was decided
+by the user; see Decisions.
 
 Base: `aa1927c988` (= `v2.0.18-plus-1.1.17`). Integration branch `plus-1.1.18`
 (worktree `worktrees/plus-1.1.18/opencode`). Work packages (WPs) run in
@@ -23,6 +24,11 @@ Requests (user, 2026-10-07, on the installed 1.1.17):
    uses dropdowns and single values, so this is inconsistent.
 6. A command that compacts now with the cold-cache model configured for the
    chat's model, at Project, Global or Defaults.
+7. Why did warming show 1h15m when this chat's model is set to 50m? (section 1b)
+8. When a credential runs out, the forced compaction must use the cheap models,
+   and the chat must show which model wrote the summary. (sections 4 and 7)
+9. A notification when a cache miss happens, which says to type `/monitor`.
+   (section 9)
 
 ## 1. Monitor does not load (measured)
 
@@ -75,6 +81,37 @@ Evidence: `run/evidence/plus-1.1.18/analysis/monitor-load.md`.
   row of the same session.
 - **Until it ships:** close the Monitor when not in use (it polls every 1 s).
   Opened from a short chat, or switched to Project scope, it loads quickly.
+
+## 1b. Warming window stuck at 75 min after a turn (WP-W, 1.1.18)
+
+- **Seen once on the live service.** After this chat's turn ended at 15:20:15Z,
+  all five keep-alives up to 15:40 kept the 75-minute "chat is working" window.
+  The chat's own setting is 50m, rounded up to 52m in whole 4-minute pings.
+  Evidence: `run/evidence/plus-1.1.18/analysis/warming-75-after-turn.md`.
+- **Not reproduced since.** It dropped correctly in each of these:
+  - the dev server, with 1 folder and with 7 folders and a 5.5-minute turn;
+  - the live service after 16:00:57 and after 16:37 (`livewatch*.txt`).
+- **The only path to 75 when idle** is `waiting()`. So the busy flag that the
+  `session.execution.*` events maintain stayed set after the turn ended. Each
+  location's Plus instance maintains that flag in its own event stream. A
+  delayed or out-of-order event, or a missed one, leaves the flag set until the
+  chat's next turn ends.
+- **Fix, independent of the cause:**
+  - At each keep-alive, `waiting()` asks core whether the chat, or anything it
+    started, is running now. Core already keeps that state for
+    `/api/session/active`; the fix needs a small read in the plugin context
+    (`session.active`).
+  - The event-driven set stays as the fast path, but it can no longer keep a
+    window at 75 min on its own.
+- **Footer.** When a turn ends, Plus re-decides at once, so the footer shows
+  the configured window then, not at the next keep-alive. Core applies the
+  same window at that keep-alive, which always comes before either window
+  ends.
+- **Tests:**
+  - Unit: a stale `started` without `succeeded` gives the configured window
+    at the next keep-alive.
+  - Live: three idle gaps on the dev server, each dropping to the configured
+    window.
 
 ## 2. Model rows: Model, Effort, Warming ▸, Compaction ▸
 
@@ -273,6 +310,34 @@ Proposed, for the same kind of value everywhere:
   - "Compaction · gemini-3.8-flash-high · 198,713 in · 1,666 out"
   - "✗ Compaction · deepseek-v4.1-flash-cheap · Go usage limit exceeded"
 
+## 9. Cache-miss notice (WP-G, 1.1.19)
+
+When a step in the chat on screen misses the cache, the TUI shows a toast:
+
+> Cache miss · 384,815 tokens not reused · account changed · type /monitor for details
+
+- **What counts as a miss.** The Monitor's own test (`isMiss`: verdict
+  `miss` or `partial`; a drop below 1,024 tokens is rounding). The toast and
+  `/monitor` therefore always agree.
+- **The cause** is the Monitor's cause for that step, in words:
+  - after compaction (expected)
+  - model switched
+  - agent switched
+  - prompt changed (with the first changed part)
+  - cache expired
+  - account changed
+  - unknown
+- **When.** Once per step, when the step's usage is recorded. It analyzes only
+  the new step, using WP-A's per-chat incremental analysis, never the whole
+  history. It sends no request and does not touch the prompt.
+- **Scope.** The chat on screen. A subagent's or team worker's miss shows when
+  that chat is on screen, and always in `/monitor`.
+- **Off switch.** It is on by default and can be turned off; WP-G decides where
+  the switch lives.
+- **Why.** Upstream's "turn token usage" developer view showed the
+  16:11:20Z account switch as a plain 384,815-token bust. The Monitor knows the
+  cause; the toast brings it up when it happens.
+
 ## Cache safety (every WP)
 
 None of these settings may change a chat's request prefix. Edits are model
@@ -287,10 +352,12 @@ byte-identical requests.
 | WP | Release | Content | Depends on |
 | --- | --- | --- | --- |
 | A `p118-monitor` | 1.1.18 | Section 1 (a)–(d), the comparison over the real-DB copy, the golden test | none |
+| W `p118-warming` | 1.1.18 | Section 1b: `waiting()` checks core's running state, plugin-context `session.active`, footer re-decides at turn end, tests | none |
 | B `p119-core-compact` | 1.1.19 | Decision overrides `strategy`, `system`, `compactionFallbacks`, `optional`; a failed compaction records its model (section 7); core tests | none |
 | C `p119-model-fields` | 1.1.19 | Record fields, validation, resolution, decide-hook application, per-chat compact switch, cold detection and arming, account switch uses the model's list (section 4), CPA notice names the armed models, `compaction.cold` RPC, team followup default | B |
 | D `p119-model-tui` | 1.1.19 | Model row categories, Compaction tab removed, list rows (a/d/m), dropdowns (section 6), footer text, model on every compaction line (section 7), `/compact-cold` | C (types), can start on fixtures |
 | E `p119-docs` | 1.1.19 | `tools.instructions` ids for the new fields (`modelfield:<field>:…`, `modelsetting:<field>:…`, list as comma text), `teaching.ts`, `tools.ts`, the `instructions-tools` skill, help and descriptions | C |
+| G `p119-miss-toast` | 1.1.19 | Section 9: per-step miss verdict on record, toast in the chat on screen, the off switch | A |
 | F (later) `monitor-store` | later | Fingerprint deltas, migrating as rows are read | A |
 
 ## Acceptance (live, as in 1.1.17)
@@ -327,6 +394,13 @@ byte-identical requests.
    - with an empty list, CPA's own models write it;
    - the notice and every compaction line, including failed ones, name the
      model.
+9. **Warming after a turn (1.1.18):** in three idle gaps after a turn, the
+   footer and the next keep-alive show the configured window, not 75 min.
+10. **Cache-miss toast (local Qwen):**
+    - an instruction edit mid-chat gives a toast with "prompt changed" and
+      the changed part, and `/monitor` shows the same step as a miss;
+    - a step that hits shows no toast;
+    - with the switch off, no toast.
 
 ## Decisions (user, 2026-10-07)
 
@@ -340,3 +414,8 @@ byte-identical requests.
 5. **Account switch (CPA):** uses the chat model's "Compact cold caches with
    another model" list first. When that list is empty, it uses CPA's own
    `compactionModel` and `compactionFallback`.
+6. **Cache-miss notice:** a toast for each missed step that names the cause and
+   says to type `/monitor` (section 9). The user turns off upstream's "turn
+   token usage" view.
+7. **Warming-window fix in 1.1.18** with the Monitor fix (section 1b), as
+   reported to the user.
