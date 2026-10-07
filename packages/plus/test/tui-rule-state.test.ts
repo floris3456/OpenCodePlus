@@ -213,7 +213,7 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
     expect(mutated.ok).toBe(true)
     if (!mutated.ok) return
 
-    const afterRules = mutated.snapshot.records.filter((record): record is Plus.SnapshotRuleRecord => record.type === "rule")
+    const afterRules = mutated.snapshot!.records.filter((record): record is Plus.SnapshotRuleRecord => record.type === "rule")
     const storedTeamsRule = afterRules.find((record) => record.id === "no-push")
     expect(storedTeamsRule?.catalogue).toBe("teams")
     expect(storedTeamsRule?.message).toBe("pushing is not allowed in this team")
@@ -224,12 +224,12 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
     const storedNoMessageRule = afterRules.find((record) => record.id === "no-fetch")
     expect(storedNoMessageRule?.message).toBeUndefined()
     expect(Object.keys(storedNoMessageRule ?? {}).includes("message")).toBe(false)
-    const storedState = mutated.snapshot.records.find(
+    const storedState = mutated.snapshot!.records.find(
       (record): record is Plus.SnapshotCustomizationRecord => record.type === "customization" && record.item === "perm:shell:no-push",
     )
     expect(storedState?.catalogue).toBe("teams")
     expect(storedState?.state).toBe("on")
-    const storedModel = mutated.snapshot.records.find((record): record is Plus.SnapshotModelRecord => record.type === "model")
+    const storedModel = mutated.snapshot!.records.find((record): record is Plus.SnapshotModelRecord => record.type === "model")
     expect(storedModel?.catalogue).toBe("teams")
 
     // Disk keeps the same identity, including the raw JSONL optional keys.
@@ -282,7 +282,7 @@ describe("TUI whole-set resubmissions retain rule messages and catalogue identit
     expect(mutated.ok).toBe(true)
     if (!mutated.ok) return
 
-    const storedSplits = mutated.snapshot.records.filter((record): record is Plus.SnapshotSplitRecord => record.type === "split")
+    const storedSplits = mutated.snapshot!.records.filter((record): record is Plus.SnapshotSplitRecord => record.type === "split")
     expect(storedSplits).toHaveLength(1)
     expect(storedSplits[0]?.item).toBe("tool:shell")
     expect(storedSplits[0]?.catalogue).toBe("teams")

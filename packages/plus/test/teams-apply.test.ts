@@ -341,7 +341,7 @@ test("a customized team member role survives publication while an uncustomized s
   expect(alphaSystem).not.toContain("crew alpha body")
   expect(await hostSystem(ctx, "beta")).toBe("crew beta body")
   if (!mutated.ok) throw new Error("expected mutate to succeed")
-  const betaRole = mutated.snapshot.items.find((item) => item.id === "system:role" && item.agents?.includes("beta"))
+  const betaRole = mutated.snapshot!.items.find((item) => item.id === "system:role" && item.agents?.includes("beta"))
   if (!betaRole) throw new Error("expected system:role for beta")
   const secondRecords: Plus.SnapshotCustomizationRecord[] = [
     {

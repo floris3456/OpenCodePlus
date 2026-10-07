@@ -86,6 +86,26 @@ export interface SaveStale {
 
 export type SaveResult = SaveSuccess | SaveStale
 
+// The in-memory view of what a successful save just wrote, without re-reading
+// the files. `load` returns project-level records first, then the rest, each
+// file in canonical order; a store with no project-level rows is one global
+// list. Migrations are already applied to `records` (they came from a load),
+// so the flag fields stay false exactly as a fresh load would report.
+export function loadedFromSave(saved: SaveSuccess, records: readonly StoredRecord[]): Loaded {
+  const project = canonical(records.filter((record) => record.level === "project"))
+  const global = canonical(records.filter((record) => record.level !== "project"))
+  return {
+    projectRevision: saved.projectRevision,
+    globalRevision: saved.globalRevision,
+    records: project.length === 0 ? canonical(records) : [...project, ...global],
+    migrated: false,
+    cataloguesMigrated: false,
+    presetsMigrated: false,
+    skillsMigrated: false,
+    splitsMigrated: false,
+  }
+}
+
 const VERSION = 2
 
 const LevelSchema = Schema.Union([

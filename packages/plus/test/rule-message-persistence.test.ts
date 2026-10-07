@@ -461,7 +461,7 @@ describe("rule message persistence across boundaries", () => {
       )
       expect(mutateResult.ok).toBe(true)
       if (mutateResult.ok) {
-        const mutatedRule = mutateResult.snapshot.records.find((r): r is Plus.SnapshotRuleRecord => r.type === "rule" && r.id === "no-push")
+        const mutatedRule = mutateResult.snapshot!.records.find((r): r is Plus.SnapshotRuleRecord => r.type === "rule" && r.id === "no-push")
         expect(mutatedRule?.message).toBe("preserved across mutate")
       }
 
