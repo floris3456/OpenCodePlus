@@ -167,6 +167,18 @@ Findings: `run/evidence/plus-1.1.17/integration/cache-and-retry.md`.
 - **Tools and rules › Commands**: keep a foreground command under about 10
   minutes; longer work in the background; every wait loop has its own limit.
 
+Found in live acceptance and fixed (`run/evidence/plus-1.1.17/live/acceptance.md`):
+
+- Core proposes at each keep-alive the settings Plus returned last time, so
+  the 75-minute window came back as the chat's own and never ended; Plus now
+  keeps each chat's configured duration from its last request. A scheduled
+  provider retry no longer clears a running chat's busy flag.
+- A subagent keeps the model its caller picked (a new session adopted its
+  agent's active model, subagents included, since per-agent model selection).
+- The plain-subagent retry notice reaches a parent at its next step boundary:
+  at once for a background subagent, only when the call ends for a foreground
+  one.
+
 ## Item 6: Parameters (build seat)
 
 - Rows: `param:<toolId>:<name>`, kind `param`, under each tool row's
