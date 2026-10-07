@@ -50,6 +50,7 @@ import {
   stateReviewChoice,
   teamPlan,
   toggle,
+  toggleGroup,
   type ModelReviewChoice,
   type StateReviewChoice,
 } from "../../instructions/ops.js"
@@ -464,6 +465,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   async function toggleRow(node: TreeNode): Promise<boolean> {
     if (node.kind === "team" && node.enabledRow === undefined) return toggleTeamRow(node)
+    if (node.kind === "group") return toggleGroupRow(node)
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = activateModelRow(memoInput(), node.id, treeMemo())
       if ("refusal" in result) {
@@ -473,6 +475,19 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return persistModels(result.models, result.status, result.retryHint)
     }
     const result = toggle(memoInput(), node.enabledRow ?? node.id, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persist(result.records, result.splits, result.status, result.retryHint)
+  }
+
+  // A group row turns its nearest toggleable rows on or off in one write
+  // (ops.toggleGroup): all on means all off, otherwise all on. Team groups
+  // are never toggleable here (the tree leaves their toggle off), so they
+  // keep the refusal the plain toggle path always gave them.
+  async function toggleGroupRow(node: TreeNode): Promise<boolean> {
+    const result = toggleGroup(memoInput(), node.id, treeMemo())
     if ("refusal" in result) {
       setStatus(result.refusal)
       return false

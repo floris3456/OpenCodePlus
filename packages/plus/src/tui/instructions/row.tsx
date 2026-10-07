@@ -57,6 +57,7 @@ export function marksOf(node: TreeNode): string {
 }
 
 export function glyphOf(node: TreeNode): string | undefined {
+  if (node.badges.summary !== undefined) return node.badges.summary
   if (node.badges.state === "on") return "●"
   if (node.badges.state === "off") return "○"
   return undefined
@@ -80,7 +81,7 @@ export function RowLine(props: RowLineProps) {
   const theme = () => props.context.theme
   const node = () => props.row.node
   let armed = false
-  const off = () => node().badges.state === "off"
+  const off = () => node().badges.state === "off" || node().badges.summary !== undefined
   const heading = () => props.row.role === "catalogue" || (props.row.role === "group" && props.row.depth === 0 && !props.sidebar)
   const background = () => {
     if (!props.selected) return undefined

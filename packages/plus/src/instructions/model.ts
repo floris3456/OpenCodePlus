@@ -1407,6 +1407,18 @@ function resolveWhole(input: ChainInput): Resolved {
   }
 }
 
+// The whole row's on/off state alone: the first level in the chain that sets a
+// state, else the fallback. Same answer as `resolveWhole(input).enabled`
+// without splitting or assembling the text, for callers that only need the
+// state (group toggle summaries count every row below a group).
+export function resolveEnabled(input: ChainInput): boolean {
+  const whole = wholeRecords(input)
+  const state = resolutionChain(input.address, input.scopes)
+    .map((node) => valueAt(input, whole, node, null)?.state)
+    .find((value) => value !== undefined)
+  return state === undefined ? fallbackOf(input).enabled : state === "on"
+}
+
 // A section's condition: the nearest level that set one, else the
 // `<!-- requires -->` line under its heading in its text.
 function sectionRequires(

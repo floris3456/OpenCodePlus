@@ -1118,14 +1118,16 @@ test("key availability follows the selected row", async () => {
   })
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], agents: [agentInfo("Implementer")], width: 120, height: 40 })
   try {
-    // A structural row (the sidebar's Agents catalogue): no space/r/s; d
+    // The sidebar's Agents catalogue group toggles its agents' Enabled rows
+    // (plus-1.1.17 group toggle); r/s still do not apply to it, and d on it
     // produces a status refusal.
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await goto(fixture, "group:project:agents", "Agents")
     const rootBinds = binds(fixture)
     expect(rootBinds).toContain("a")
     expect(rootBinds).toContain("d")
-    expect(rootBinds).not.toContain("space")
+    expect(rootBinds).toContain("space")
+    expect(footer(fixture.captureCharFrame())).toContain("space toggle")
     expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
     // Agent row: Space toggles Enabled; ctrl+space selects without a write.
