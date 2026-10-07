@@ -208,6 +208,21 @@ portable-and-remote refusal, optional continuing.
 - **Teams (small, proposed).** A followup to a stopped, cold child without
   `compactWith` uses the child's model list instead of refusing with
   `E_STOPPED`, and still refuses when that list is empty.
+- **Account switch (CPA).** When CPA moves a chat to another account because a
+  credential ran out, the new account's cache is cold, so this is the same case
+  as a cold cache.
+  - Today the CPA plugin (`packages/cliproxyapi`, `quota/controller.ts`) arms
+    that compaction with its own `compactionModel` and `compactionFallback`
+    and marks it `metadata["quota.switch"]`.
+  - Plus's `compaction.decide` sees that mark. When the chat model's list is
+    not empty, it replaces the models with #1, then #2… When the list is
+    empty, CPA's own models stay, as today.
+  - Plus must run after CPA in the hook order. Check the order and test it.
+  - CPA's "Compacting with X (fallback Y) first" notice must name the models
+    that are actually armed, so it is built after the decision.
+  - Seen live on 2026-10-07 at 16:10:56: deepseek-v4.1-flash-cheap (429), then
+    gemini-3.8-flash-high. Opus did not write the summary, but nothing in the
+    chat said which model did (`run/evidence/plus-1.1.18/analysis/account-switch-compaction.md`).
 
 ## 5. `/compact-cold`: compact now with the cold-cache model
 
@@ -245,6 +260,19 @@ Proposed, for the same kind of value everywhere:
 - **Strategy** keeps cycling. **Keep-alive prompt** and **Instructions** keep
   their text editor.
 
+## 7. Every compaction line names its model
+
+- Today the chat's compaction line shows only "Compaction · 198,713 in · 1,666
+  out", or "✗ Compaction · Go usage limit exceeded", while the footer shows the
+  chat's own model. A summary written by a cheap model looks like the chat
+  model wrote it.
+- **Core (WP-B).** A failed compaction records the model it tried. Today only
+  a completed one has `model`. Each fallback attempt is already its own
+  compaction message.
+- **TUI (WP-D).** Show the model on every compaction line, completed or failed:
+  - "Compaction · gemini-3.8-flash-high · 198,713 in · 1,666 out"
+  - "✗ Compaction · deepseek-v4.1-flash-cheap · Go usage limit exceeded"
+
 ## Cache safety (every WP)
 
 None of these settings may change a chat's request prefix. Edits are model
@@ -259,9 +287,9 @@ byte-identical requests.
 | WP | Release | Content | Depends on |
 | --- | --- | --- | --- |
 | A `p118-monitor` | 1.1.18 | Section 1 (a)–(d), the comparison over the real-DB copy, the golden test | none |
-| B `p119-core-compact` | 1.1.19 | Decision overrides `strategy`, `system`, `compactionFallbacks`, `optional`; core tests | none |
-| C `p119-model-fields` | 1.1.19 | Record fields, validation, resolution, decide-hook application, per-chat compact switch, cold detection and arming, `compaction.cold` RPC, team followup default | B |
-| D `p119-model-tui` | 1.1.19 | Model row categories, Compaction tab removed, list rows (a/d/m), dropdowns (section 6), footer text, `/compact-cold` | C (types), can start on fixtures |
+| B `p119-core-compact` | 1.1.19 | Decision overrides `strategy`, `system`, `compactionFallbacks`, `optional`; a failed compaction records its model (section 7); core tests | none |
+| C `p119-model-fields` | 1.1.19 | Record fields, validation, resolution, decide-hook application, per-chat compact switch, cold detection and arming, account switch uses the model's list (section 4), CPA notice names the armed models, `compaction.cold` RPC, team followup default | B |
+| D `p119-model-tui` | 1.1.19 | Model row categories, Compaction tab removed, list rows (a/d/m), dropdowns (section 6), footer text, model on every compaction line (section 7), `/compact-cold` | C (types), can start on fixtures |
 | E `p119-docs` | 1.1.19 | `tools.instructions` ids for the new fields (`modelfield:<field>:…`, `modelsetting:<field>:…`, list as comma text), `teaching.ts`, `tools.ts`, the `instructions-tools` skill, help and descriptions | C |
 | F (later) `monitor-store` | later | Fingerprint deltas, migrating as rows are read | A |
 
@@ -294,6 +322,11 @@ byte-identical requests.
    toast; it does not change the chat's model.
 7. **Prefixes:** provider-received bodies are unchanged by every settings
    edit (cache-safety rule).
+8. **Account switch:** a fake CPA switch on a chat whose model has a list:
+   - the summary is written by #1, then #2 when #1 fails;
+   - with an empty list, CPA's own models write it;
+   - the notice and every compaction line, including failed ones, name the
+     model.
 
 ## Decisions (user, 2026-10-07)
 
@@ -304,3 +337,6 @@ byte-identical requests.
    confirmation; the footer says "cache cold · compacts with <model> first".
 4. **Agent-wide compaction:** per model only. The old tab's values still apply
    and show as inherited; there is no "Every model" row per agent.
+5. **Account switch (CPA):** uses the chat model's "Compact cold caches with
+   another model" list first. When that list is empty, it uses CPA's own
+   `compactionModel` and `compactionFallback`.
