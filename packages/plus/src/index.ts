@@ -250,6 +250,10 @@ export default Plugin.define({
       yield* activate(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
+      // Keep-alives ask core what runs now (process-wide, the same set as
+      // /api/session/active), so a missed session event cannot hold a chat's
+      // waiting window.
+      warmingStore.setActiveReader(() => activeSessionsOf(ctx))
       warmingStore.setCompactionReader((sessionID) =>
         Effect.runPromise(
           ctx.session.context({ sessionID: Session.ID.make(sessionID) }).pipe(
@@ -6253,8 +6257,9 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
         // Only the run events start or end a turn: a move or a scheduled retry
         // must not clear a running chat's busy flag.
-        if (typeof sessionID === "string" && SessionRunEvents.has(event.type)) {
-          const started = event.type === "session.execution.started"
+        const turn = typeof sessionID === "string" && SessionRunEvents.has(event.type)
+        const started = event.type === "session.execution.started"
+        if (turn) {
           warmingStore.running(sessionID, started)
           // Its parent chat keeps warm while it runs (looked up once per start).
           if (started) void parentChatOf(ctx, sessionID).then((parent) => parent === undefined || warmingStore.parent(sessionID, parent))
@@ -6263,9 +6268,11 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
           if (started) state.running.add(sessionID)
           if (!started) state.running.delete(sessionID)
         }
+        // A turn ended: its window (and its parents') shows the configured one at once.
+        const settled = turn && !started ? Effect.runPromise(settleWarming(state, sessionID)) : Promise.resolve()
         // A session starting here without a prompt (a resumed run) is a use too.
-        const used = event.type === "session.execution.started" ? Effect.runPromise(useLocation(ctx, state)) : Promise.resolve()
-        return used.then(() => onSessionEvent(ctx, teamsDataDir(), event))
+        const used = started ? Effect.runPromise(useLocation(ctx, state)) : Promise.resolve()
+        return Promise.all([settled, used]).then(() => onSessionEvent(ctx, teamsDataDir(), event))
       }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus team session event failed", { cause, type: event.type })),
         Effect.asVoid,
@@ -6479,6 +6486,20 @@ function toHostModelRef(wanted: ModelRefLike): Model.Ref {
 
 // The chat that started this one: a subagent's parent session, or a team
 // worker's parent run's chat. Undefined for a top-level chat.
+/** The chats running now, from core: the same set /api/session/active reports. */
+export function activeSessionsOf(ctx: Context): Promise<ReadonlySet<string>> {
+  return Effect.runPromise(
+    Effect.suspend(() => ctx.session.active()).pipe(Effect.map((active) => new Set<string>(Object.keys(active)))),
+  )
+}
+
+export function settleWarming(state: PlusState, sessionID: string): Effect.Effect<void> {
+  return Effect.promise(() => warmingStore.settle(sessionID)).pipe(
+    Effect.flatMap((changed) => Effect.forEach(changed, (chat) => emitWarmingChanged(state, chat), { discard: true })),
+    Effect.catchCause((cause) => Effect.logWarning("plus warming settle failed", { cause, sessionID })),
+  )
+}
+
 export async function parentChatOf(ctx: Context, sessionID: string): Promise<string | undefined> {
   const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
   if (session?.parentID !== undefined) return session.parentID

@@ -140,6 +140,8 @@ interface Tracked {
   readonly window?: WarmingWindow
   readonly source?: WarmingSource
   readonly level?: Level
+  /** The settings the chat's rows decided, before a waiting chat's longer window. */
+  readonly configured?: SessionWarmingSettings
 }
 
 export interface CompactionRecord {
@@ -162,6 +164,14 @@ export interface WarmingStore {
   setCompact(sessionID: string, on: boolean): Promise<WarmingStatus>
   /** Whether the chat runs now: a running chat is using its cache and never compacts from here. */
   running(sessionID: string, running: boolean): void
+  /**
+   * A turn of this chat ended: re-decide its window and its parents' at once,
+   * so they show the configured window instead of the waiting one. Returns the
+   * chats whose window changed.
+   */
+  settle(sessionID: string): Promise<string[]>
+  /** Configure the host's read of the chats running now (core's active set). */
+  setActiveReader(reader: ActiveReader): void
   /** The chat that started this one (a subagent's or team worker's parent): it keeps warm while this runs. */
   parent(sessionID: string, parent: string): void
   /** Invalidate cached compaction truth for this chat. */
@@ -175,11 +185,15 @@ export interface WarmingStore {
 /** Compacts one chat; rejects when the host refuses. */
 export type Compact = (sessionID: string) => Promise<unknown>
 
+/** The chats running now, as the host knows them (the set behind /api/session/active). */
+export type ActiveReader = () => Promise<ReadonlySet<string>>
+
 export interface WarmingStoreOptions {
   readonly now?: () => number
   readonly setTimer?: (run: () => void, ms: number) => unknown
   readonly clearTimer?: (timer: unknown) => void
   readonly compactionHistory?: CompactionReader
+  readonly activeSessions?: ActiveReader
 }
 
 export function warmingChatsPath(): string {
@@ -214,6 +228,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms).unref())
   const clearTimer = options.clearTimer ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   let compactionReader: CompactionReader | undefined = options.compactionHistory
+  let activeReader: ActiveReader | undefined = options.activeSessions
   const compactionCache = new Map<string, Promise<CompactionRecord | undefined>>()
   const lastReal = new Map<string, number>()
   const inMemoryCompaction = new Map<string, number>()
@@ -233,16 +248,35 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   // time, so a waiting chat's longer window would come back as its own: each
   // chat's duration as configured at its last request stands in for it.
   const configuredDuration = new Map<string, number>()
-  // The chat itself runs, or anything it started (at any depth) runs.
-  const waiting = (sessionID: string) =>
-    [...busy].some((running) => {
-      const seen = new Set<string>()
-      for (let current: string | undefined = running; current !== undefined && !seen.has(current); current = parents.get(current)) {
-        if (current === sessionID) return true
-        seen.add(current)
-      }
-      return false
-    })
+  // The chat itself, or anything it started (at any depth), is in `running`.
+  const runsFor = (running: Iterable<string>, sessionID: string) =>
+    [...running].some((id) => ancestry(id).includes(sessionID))
+  // A chat and the chats that started it, nearest first.
+  const ancestry = (sessionID: string) => {
+    const chain: string[] = []
+    for (let current: string | undefined = sessionID; current !== undefined && !chain.includes(current); current = parents.get(current))
+      chain.push(current)
+    return chain
+  }
+  // The session events' busy set: the fast path, kept per Location's event stream.
+  const waiting = (sessionID: string) => runsFor(busy, sessionID)
+  // What runs now, from the host; undefined when it cannot be asked.
+  const readActive = () => (activeReader === undefined ? Promise.resolve(undefined) : activeReader().catch(() => undefined))
+  // At a keep-alive the host's running set decides, so a start event whose end
+  // was missed or arrived out of order cannot hold the waiting window once
+  // nothing runs. Without an answer from the host, the busy set does.
+  const waitingAtKeepAlive = async (sessionID: string) => {
+    const active = await readActive()
+    return active === undefined ? waiting(sessionID) : runsFor(active, sessionID)
+  }
+  // When a turn of `ended` ends: its event cleared the busy flag already; a
+  // busy flag left elsewhere in the chain is checked with the host. The ended
+  // chat itself still shows as running there until its execution settles.
+  const waitingAfterTurn = async (sessionID: string, ended: string) => {
+    if (!waiting(sessionID)) return false
+    const active = await readActive()
+    return active === undefined || runsFor([...active].filter((id) => id !== ended), sessionID)
+  }
   const getCompaction = (sessionID: string): Promise<CompactionRecord | undefined> => {
     if (!compactionReader) return Promise.resolve(undefined)
     let cached = compactionCache.get(sessionID)
@@ -375,9 +409,15 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       const own = configuredDuration.get(event.sessionID)
       const configured = activity || event.settings === undefined || own === undefined ? event.settings : { ...event.settings, duration: own }
       const decided = decideWarming({ configured, rows, chat })
+      // A real request starts while its chat runs: the events' busy set answers.
+      // Before a keep-alive the host is asked what runs now.
+      const waits =
+        !compacted &&
+        decided.settings !== undefined &&
+        (event.phase === "warm" ? await waitingAtKeepAlive(event.sessionID) : waiting(event.sessionID))
       const decision = compacted
         ? { ...decided, settings: undefined }
-        : decided.settings !== undefined && waiting(event.sessionID)
+        : waits && decided.settings !== undefined
           ? { ...decided, settings: { ...decided.settings, duration: Math.max(decided.settings.duration, WAITING_WARMING_MS) } }
           : decided
       event.settings = decision.settings
@@ -401,6 +441,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         ...(window === undefined ? {} : { window }),
         source: decision.source,
         ...(decision.source === "model" && decision.level !== undefined ? { level: decision.level } : {}),
+        ...(compacted || decided.settings === undefined ? {} : { configured: decided.settings }),
       }
       tracked.set(event.sessionID, next)
       if (compact !== undefined) compactors.set(event.sessionID, compact)
@@ -451,6 +492,29 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     running(sessionID, running) {
       if (running) busy.add(sessionID)
       else busy.delete(sessionID)
+    },
+    async settle(sessionID) {
+      const changed: string[] = []
+      for (const chat of ancestry(sessionID)) {
+        const entry = tracked.get(chat)
+        const window = entry?.window
+        if (window === undefined || entry?.configured === undefined) continue
+        // Core applies the same window at its next keep-alive, which always
+        // comes before either window ends.
+        const expires = window.since + entry.configured.duration
+        if (expires === window.expires || (await waitingAfterTurn(chat, sessionID))) continue
+        tracked.set(chat, { ...entry, window: { ...window, expires } })
+        if (coldAt.has(chat)) {
+          coldAt.set(chat, expires)
+          if ((await loadCompact()).has(chat)) schedule(chat, now())
+          else unschedule(chat)
+        }
+        changed.push(chat)
+      }
+      return changed
+    },
+    setActiveReader(reader) {
+      activeReader = reader
     },
     parent(sessionID, parent) {
       // Links outlive a run: an idle subagent still links its own running subagent up.

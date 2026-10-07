@@ -17,7 +17,15 @@ import {
 } from "../src/instructions/model.js"
 import { setModelWarmingRow } from "../src/instructions/ops.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import { createState, warmingRowsOf, decideWarmingFor, parentChatOf, watchHostEvents, type PlusState } from "../src/index.js"
+import {
+  activeSessionsOf,
+  createState,
+  warmingRowsOf,
+  decideWarmingFor,
+  parentChatOf,
+  watchHostEvents,
+  type PlusState,
+} from "../src/index.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS, warmingStore, type WarmingRows } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
@@ -372,6 +380,126 @@ test("a chat waiting on its own running work stays warm up to 75 minutes, then f
   store.running("ses_warm", true)
   expect(await decide("activity", 50, "ses_warm", { row: { warming: { value: "2h", level: "project" } } })).toBe(120 * MINUTE)
   expect(await decide("warm", 54, "ses_warm", { row: { warming: { value: "off", level: "project" } } })).toBeUndefined()
+})
+
+// Like core: each warming request proposes the settings the store returned last time.
+function decider(store: ReturnType<typeof createWarmingStore>) {
+  const proposed = new Map<string, SessionWarming["settings"]>()
+  return async (phase: "activity" | "warm", minutes: number, sessionID = "ses_warm") => {
+    const next = event({
+      sessionID: Session.ID.make(sessionID),
+      phase,
+      now: 1_000_000 + minutes * MINUTE,
+      ...(phase === "warm" && proposed.has(sessionID) ? { settings: proposed.get(sessionID) } : {}),
+    })
+    await store.decide(next, {})
+    proposed.set(sessionID, next.settings)
+    return next.settings?.duration
+  }
+}
+
+test("a start whose end was missed cannot hold the waiting window: each keep-alive asks core what runs", async () => {
+  const running = new Set<string>()
+  const host = { reachable: true }
+  const store = createWarmingStore(await tempFile(), {
+    activeSessions: async () => {
+      if (!host.reachable) throw new Error("host unavailable")
+      return running
+    },
+  })
+  const decide = decider(store)
+  // The turn starts; its end event never arrives, so the busy flag stays set.
+  store.running("ses_warm", true)
+  running.add("ses_warm")
+  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  running.delete("ses_warm")
+  // The next keep-alive gives the configured window, though the stale flag says the chat runs.
+  expect(await decide("warm", 4)).toBe(30 * MINUTE)
+  expect((await store.status("ses_warm", 1_000_000 + 5 * MINUTE)).expires).toBe(1_000_000 + 30 * MINUTE)
+
+  // Controls: while core reports the chat, or a subagent it started, running, the waiting window holds.
+  running.add("ses_warm")
+  expect(await decide("warm", 8)).toBe(WAITING_WARMING_MS)
+  running.delete("ses_warm")
+  store.parent("ses_child", "ses_warm")
+  running.add("ses_child")
+  expect(await decide("warm", 12)).toBe(WAITING_WARMING_MS)
+  running.delete("ses_child")
+  expect(await decide("warm", 16)).toBe(30 * MINUTE)
+  // When core cannot be asked, the session events' busy set answers as before.
+  host.reachable = false
+  expect(await decide("warm", 20)).toBe(WAITING_WARMING_MS)
+})
+
+test("when a turn ends, the chat and the chats that started it show the configured window at once", async () => {
+  const running = new Set<string>()
+  const store = createWarmingStore(await tempFile(), { activeSessions: async () => running })
+  const decide = decider(store)
+  const expires = async (sessionID = "ses_warm") => (await store.status(sessionID, 1_000_000 + MINUTE)).expires
+
+  // The chat's own turn: waiting while it runs, configured as soon as it ends.
+  store.running("ses_warm", true)
+  running.add("ses_warm")
+  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  expect(await expires()).toBe(1_000_000 + WAITING_WARMING_MS)
+  // Core still lists the chat until its execution settles; the ended turn does not count.
+  store.running("ses_warm", false)
+  expect(await store.settle("ses_warm")).toEqual(["ses_warm"])
+  expect(await expires()).toBe(1_000_000 + 30 * MINUTE)
+  expect(await store.settle("ses_warm")).toEqual([])
+  running.delete("ses_warm")
+
+  // A subagent it started runs; a second one too.
+  store.parent("ses_child", "ses_warm")
+  store.parent("ses_second", "ses_warm")
+  store.running("ses_child", true)
+  store.running("ses_second", true)
+  running.add("ses_child")
+  running.add("ses_second")
+  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  // The first ends: the second still runs, so the chat keeps waiting.
+  store.running("ses_child", false)
+  expect(await store.settle("ses_child")).toEqual([])
+  expect(await expires()).toBe(1_000_000 + WAITING_WARMING_MS)
+  // The second's end event is lost. When the first's next turn ends, core says nothing else runs.
+  running.delete("ses_second")
+  store.running("ses_child", true)
+  store.running("ses_child", false)
+  expect(await store.settle("ses_child")).toEqual(["ses_warm"])
+  expect(await expires()).toBe(1_000_000 + 30 * MINUTE)
+})
+
+test("a turn's end event re-decides the chat's window through the host events", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-warming-settle-"))
+  temps.push(dir)
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = dir
+  const lead = Session.ID.make("ses_settle_lead")
+  try {
+    warmingStore.running(lead, true)
+    const activity = event({ sessionID: lead })
+    await warmingStore.decide(activity, {})
+    expect(activity.settings?.duration).toBe(WAITING_WARMING_MS)
+    const ctx = context({
+      event: { subscribe: () => Stream.fromIterable([{ type: "session.execution.succeeded", data: { sessionID: lead } }]) as never },
+      session: { get: (input) => Effect.succeed({ id: input.sessionID } as never) },
+    })
+    await Effect.runPromise(Effect.scoped(Effect.andThen(watchHostEvents(ctx, createState()), Effect.sleep("100 millis"))))
+    expect((await warmingStore.status(lead, 1_000_000 + MINUTE)).expires).toBe(1_000_000 + 30 * MINUTE)
+  } finally {
+    warmingStore.running(lead, false)
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+  }
+})
+
+test("core's running set reaches the store through the plugin context", async () => {
+  const ctx = context({
+    session: { active: () => Effect.succeed({ [Session.ID.make("ses_running")]: { type: "running" as const } }) },
+  })
+  expect([...(await activeSessionsOf(ctx))]).toEqual(["ses_running"])
+  // A failed read rejects; the store then answers from the session events.
+  await expect(activeSessionsOf(context({}))).rejects.toBeDefined()
 })
 
 test("a subagent waiting out a provider retry still keeps its parent chat warm", async () => {
