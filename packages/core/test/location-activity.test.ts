@@ -147,6 +147,35 @@ describe("LocationActivity eviction", () => {
     }),
   )
 
+  it.effect("an evicted folder stays evicted across sweeps until a real session use", () =>
+    Effect.gen(function* () {
+      const map = yield* LocationServiceMap.Service
+      const bus = yield* Bus.Service
+      const activity = yield* LocationActivity.Service
+      const kept = LocationServiceMap.canonical({ directory: AbsolutePath.make("/kept") })
+      const dropped = LocationServiceMap.canonical({ directory: AbsolutePath.make("/dropped") })
+      const sessionID = Session.ID.make("ses_stays_evicted")
+      yield* Location.Service.pipe(Effect.provide(map.get(kept)), Effect.scoped)
+      yield* Location.Service.pipe(Effect.provide(map.get(dropped)), Effect.scoped)
+      expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([kept, dropped])
+
+      // Item 4.1: dropping the folder releases it at once.
+      yield* activity.evict(dropped)
+      expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([kept])
+
+      // Item 4.2: events addressed to the dropped folder must not reopen it,
+      // and later idle sweeps must not resurrect it either.
+      yield* bus.publish(SessionEvent.Execution.Started, { sessionID }, { location: dropped })
+      yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID }, { location: dropped })
+      yield* TestClock.adjust("5 minutes")
+      expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([kept])
+
+      // A real session use opens it again.
+      yield* Location.Service.pipe(Effect.provide(map.get(dropped)), Effect.scoped)
+      expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([kept, dropped])
+    }),
+  )
+
   for (const [count, admission] of [
     [1, "none"],
     [2, "none"],

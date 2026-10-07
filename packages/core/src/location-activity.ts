@@ -125,6 +125,20 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
 
 export const node = makeGlobalNode({
   service: Service,
-  layer: layer(),
+  layer: layer(testOptions()),
   deps: [Bus.node, LocationServiceMap.node, SessionExecution.node, SessionStore.node],
 })
+
+// Test and live-check timing only. Production never sets these: the idle
+// timeout stays 60 minutes and the sweep stays 1 minute. A private server
+// started with OPENCODE_LOCATION_TTL_MS (and optionally
+// OPENCODE_LOCATION_SWEEP_MS) evicts idle folders sooner so the evict/reboot
+// behavior in item 4 can be observed without waiting an hour.
+function testOptions(): { readonly timeToLive?: Duration.Input; readonly sweepInterval?: Duration.Input } {
+  const ttl = Number(process.env.OPENCODE_LOCATION_TTL_MS)
+  const sweep = Number(process.env.OPENCODE_LOCATION_SWEEP_MS)
+  return {
+    ...(Number.isFinite(ttl) && ttl > 0 ? { timeToLive: ttl } : {}),
+    ...(Number.isFinite(sweep) && sweep > 0 ? { sweepInterval: sweep } : {}),
+  }
+}
