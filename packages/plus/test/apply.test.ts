@@ -2029,6 +2029,83 @@ test("the catalog hook rewrites description and pinned for the right agent only"
   expect(Object.keys(missingEvent.tools)).toEqual(["other"])
 })
 
+// B7 / acceptance 3: an MCP tool description and a tool parameter description
+// take sections, and the assembled text reaches the actual provider request
+// payload builder. The tool runs natively (codemode: false) so it installs
+// through the session context hook, whose `tools` map is what the provider
+// receives (`applyToolPlan`: `tool.description` and `editInputSchema`).
+test("MCP tool description and parameter sections reach the request payload", async () => {
+  const HEADED = "# Purpose\n\nRun the thing.\n\n# Usage\n\nPass a flag.\n"
+  const mcpTool = (): Tool.Info & { readonly id: string } => ({
+    id: "docs_search",
+    name: "search",
+    description: HEADED,
+    input: Schema.Struct({ query: Schema.String.annotate({ description: HEADED }) }),
+    options: { codemode: false },
+    origin: { type: "mcp", name: "docs" },
+    execute: () => Effect.die("unused tool.execute"),
+  })
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const agents = agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")])
+  const ctx = context({
+    agent: agents.domain,
+    tool: toolDomainFor([mcpTool()]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  expect(discovered.items.some((item) => item.id === "tool:docs_search" && item.group === "mcp")).toBe(true)
+  expect(discovered.items.some((item) => item.id === "param:docs_search:query")).toBe(true)
+  const records = [
+    // The tool description's Usage section is switched off.
+    makeRecord({ item: "tool:docs_search", agent: "alpha", level: "project", section: "usage", state: "off" }),
+    // The parameter's Purpose section is edited.
+    makeRecord({ item: "param:docs_search:query", agent: "alpha", level: "project", section: "purpose", text: "# Purpose\n\nEdited query docs." }),
+  ]
+  const applied = await apply(
+    ctx,
+    makeInput({
+      items: discovered.items,
+      agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }],
+      scopes: fromBuild(discovered),
+      records,
+    }),
+  )
+  expect(applied.registrations.length).toBeGreaterThanOrEqual(1)
+  expect(callbacks).toHaveLength(1)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const schema = { type: "object", properties: { query: { type: "string", description: HEADED } } }
+  const alpha = sessionEvent(
+    "alpha",
+    { docs_search: { description: HEADED, input: schema } },
+    [{ type: "text", text: "base" }],
+  )
+  await Effect.runPromise(run(alpha))
+  // The provider sees the assembled tool description: the excluded Usage
+  // section is gone, Purpose is present.
+  expect(alpha.tools.docs_search?.description).toContain("Run the thing.")
+  expect(alpha.tools.docs_search?.description).not.toContain("Pass a flag.")
+  // The provider sees the assembled parameter description with the edit.
+  const input = alpha.tools.docs_search?.input as { properties: { query: { description: string } } }
+  expect(input.properties.query.description).toContain("Edited query docs.")
+  expect(input.properties.query.description).not.toContain("Run the thing.")
+  // Another agent keeps the upstream text.
+  const beta = sessionEvent(
+    "beta",
+    { docs_search: { description: HEADED, input: schema } },
+    [{ type: "text", text: "base" }],
+  )
+  await Effect.runPromise(run(beta))
+  expect(beta.tools.docs_search?.description).toContain("Pass a flag.")
+  const betaInput = beta.tools.docs_search?.input as { properties: { query: { description: string } } }
+  expect(betaInput.properties.query.description).toContain("Run the thing.")
+})
+
 test("a namespaced tool joins the catalog by dotted path, not registry id", async () => {
   const catalogCallbacks: ((event: SessionHooks["catalog"]) => Effect.Effect<void>)[] = []
   const namespaced: Tool.Info & { readonly id: string } = {

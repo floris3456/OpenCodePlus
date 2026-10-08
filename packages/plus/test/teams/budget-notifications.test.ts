@@ -11,7 +11,7 @@ import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek } from "../../src/teams/inbox.js"
 import { checkBudgets } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
-import { sessionTokens, sessionTokenUsage } from "../../src/teams/usage.js"
+import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "../../src/teams/usage.js"
 import { render as renderReport } from "../../src/teams/report.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -252,5 +252,119 @@ test("prompt-only followup does not end the pings", async () => {
 
     await checkBudgets(ctx, root, undefined, now + 901_000)
     expect(await peek(root, parent.id)).toHaveLength(2)
+  })
+})
+
+// A completed step is an assistant message carrying its token usage; the
+// prompt size is what that step sent, not what the session spent.
+function assistantStep(input: number, cacheRead: number, cacheWrite: number) {
+  return {
+    type: "assistant",
+    agent: "implementer",
+    model: { providerID: "acme", id: "nova" },
+    tokens: { input, output: 10, reasoning: 5, cache: { read: cacheRead, write: cacheWrite } },
+  }
+}
+
+function contextHarness(historyBySession: Record<string, readonly unknown[]>) {
+  return context({
+    session: {
+      get: () => Effect.succeed({ tokens: { input: 1, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
+      context: (req: { sessionID: unknown }) => Effect.succeed((historyBySession[String(req.sessionID)] ?? []) as never),
+    } as unknown as SessionDomain,
+  })
+}
+
+test("a child's context size is its latest step's input + cache read + cache write", async () => {
+  const ctx = contextHarness({
+    ses_ctx_one: [assistantStep(2_000, 120_000, 1_000)],
+  })
+  const run = baseRun({ id: "w-ctx-one", sessionID: "ses_ctx_one" })
+  expect(await sessionContextTokens(ctx, run)).toBe(123_000)
+})
+
+test("a child with no completed step has no context size", async () => {
+  const ctx = contextHarness({ ses_ctx_none: [] })
+  const run = baseRun({ id: "w-ctx-none", sessionID: "ses_ctx_none" })
+  expect(await sessionContextTokens(ctx, run)).toBeUndefined()
+})
+
+test("context notice fires once when a child's context passes 100k", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })
+    const now = Date.now()
+    const child = baseRun({
+      id: "w-child-ctx",
+      role: "implementer",
+      parent: parent.id,
+      sessionID: "ses_child_ctx",
+      state: "working",
+      createdAt: new Date(now - 10000).toISOString(),
+      attempts: [{ n: 1, state: "streaming", startedAt: new Date(now - 10000).toISOString(), trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const histories: Record<string, readonly unknown[]> = {
+      ses_child_ctx: [assistantStep(2_000, 120_000, 1_000)],
+    }
+    const ctx = contextHarness(histories)
+
+    await checkBudgets(ctx, root, undefined, now)
+
+    const inbox = await peek(root, parent.id)
+    expect(inbox).toHaveLength(1)
+    expect(inbox[0]?.kind).toBe("notify")
+    expect(inbox[0]?.text).toContain("w-child-ctx")
+    expect(inbox[0]?.text).toContain("123k")
+
+    // A larger context later does not speak again: one message per child run.
+    histories.ses_child_ctx = [assistantStep(3_000, 200_000, 1_000)]
+    await checkBudgets(ctx, root, undefined, now + 60_000)
+    expect(await peek(root, parent.id)).toHaveLength(1)
+  })
+})
+
+test("a child below 100k context stays silent", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })
+    const now = Date.now()
+    const child = baseRun({
+      id: "w-child-small",
+      role: "implementer",
+      parent: parent.id,
+      sessionID: "ses_child_small",
+      state: "working",
+      createdAt: new Date(now - 10000).toISOString(),
+      attempts: [{ n: 1, state: "streaming", startedAt: new Date(now - 10000).toISOString(), trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const ctx = contextHarness({ ses_child_small: [assistantStep(10_000, 80_000, 0)] })
+    await checkBudgets(ctx, root, undefined, now)
+    expect(await peek(root, parent.id)).toHaveLength(0)
+  })
+})
+
+test("team_status reports contextTokens from the latest step and null without one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })
+    const child = baseRun({ id: "w-child-status", role: "implementer", parent: parent.id, sessionID: "ses_child_status", state: "working" })
+    const noStep = baseRun({ id: "w-child-nostep", role: "implementer", parent: parent.id, sessionID: "ses_child_nostep", state: "working" })
+    await saveRun(root, { ...parent, children: [child.id, noStep.id] })
+    await saveRun(root, child)
+    await saveRun(root, noStep)
+
+    const ctx = contextHarness({ ses_child_status: [assistantStep(2_000, 120_000, 1_000)] })
+    const api = createTeamApi(ctx, teamState())
+    const status = (await api.status({ runs: [child.id, noStep.id] }, callerFor(parent))) as
+      | { ok: true; value: Array<{ run: string; budget: { contextTokens: number | null } }> }
+      | { ok: false }
+    if (!status.ok) throw new Error("expected status ok")
+    const withStep = status.value.find((entry) => entry.run === child.id)
+    const withoutStep = status.value.find((entry) => entry.run === noStep.id)
+    expect(withStep?.budget.contextTokens).toBe(123_000)
+    expect(withoutStep?.budget.contextTokens).toBeNull()
   })
 })

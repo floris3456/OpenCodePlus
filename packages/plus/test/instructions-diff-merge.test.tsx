@@ -1,7 +1,7 @@
-// The Take result is a real three-way merge proposal: comparison 3 shows
-// yours → merged result, `t` accepts it (clean merge), fast-forwards when the
-// merge equals upstream, and refuses to auto-resolve a conflicted proposal.
-// `e` opens the identical proposal.
+// The Take result is the merge proposal as rows (B13): one row per change
+// (both-changed units give yours and upstream rows), defaults from
+// defaultInclude, ↑/↓ over change rows, Space to include or exclude, t saves
+// the render, u takes upstream, k keeps yours, e edits the render. No markers.
 import { createTestRenderer } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
@@ -67,95 +67,103 @@ async function waitFor(condition: () => boolean): Promise<void> {
   }
 }
 
-// Mine appended a custom tail; upstream changed the middle line: no overlap.
-const clean = {
-  original: "one\ntwo\nthree\n",
-  mine: "one\ntwo\nthree\ncustom tail\n",
-  upstream: "one\ntwo upstream\nthree\n",
+// Five change units on five sentences, separated by unchanged sentences:
+// Alpha (yours only), Gamma (upstream only), Epsilon (both, differently), Eta
+// (both, the same).
+const sides = {
+  original: "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven.\n",
+  mine: "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same.",
+  upstream: "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.",
 }
-const cleanMerged = "one\ntwo upstream\nthree\ncustom tail\n"
+// Defaults: yours and upstream-only units in; the both unit takes yours.
+const defaultMerged = "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
 
-// Mine and upstream changed the same middle line; mine still appended a tail.
-const conflicted = {
-  original: "one\ntwo\nthree\n",
-  mine: "one\nmine two\nthree\ncustom tail\n",
-  upstream: "one\nupstream two\nthree\n",
+function paneFor(threeWay: typeof sides, saved: { resolution: string; edited?: string }[]) {
+  return (context: Plugin.Context) => (
+    <DiffPane
+      context={context}
+      title="Demo item"
+      threeWay={threeWay}
+      active={() => true}
+      onResolve={async (resolution, edited) => {
+        saved.push({ resolution, edited })
+      }}
+    />
+  )
 }
-const conflictedMerged = "one\n<<<<<<< yours\nmine two\n=======\nupstream two\n>>>>>>> upstream\nthree\ncustom tail\n"
 
-test("comparisonsOf Take result contains the clean changes of both sides", () => {
-  const comparisons = comparisonsOf(clean, true)
+test("comparisonsOf Take result is the default merge with no conflict markers", () => {
+  const comparisons = comparisonsOf(sides, true)
   expect(comparisons.map((comparison) => comparison.label)).toEqual(["Upstream change", "Your change", "Take result"])
   const take = comparisons[2]
   if (take === undefined) throw new Error("missing Take result")
   expect(take.from).toBe("yours")
   expect(take.to).toBe("merged result")
-  expect(take.left).toBe(clean.mine)
-  expect(take.right).toBe(cleanMerged)
-  expect(take.right).toContain("custom tail")
-  expect(take.right).toContain("two upstream")
-  expect(take.merged).toEqual({ text: cleanMerged, conflicts: 0 })
+  expect(take.right).toBe(defaultMerged)
+  expect(take.right).not.toContain("<<<<<<<")
 })
 
-test("comparisonsOf keeps markers only around the conflicting region", () => {
-  const take = comparisonsOf(conflicted, true)[2]
-  if (take === undefined) throw new Error("missing Take result")
-  expect(take.right).toBe(conflictedMerged)
-  expect(take.merged?.conflicts).toBe(1)
-  // The clean appended text survives; only the overlap is fenced.
-  expect(take.right).toContain("custom tail")
-  expect(take.right.split("<<<<<<< yours")).toHaveLength(2)
-})
-
-test("Take result shows yours → merged result and t accepts a clean merge", async () => {
+test("Take result rows show the defaults; Space on the upstream row of a both unit includes it; t saves the render", async () => {
   const saved: { resolution: string; edited?: string }[] = []
-  const fixture = await mount((context) => (
-    <DiffPane
-      context={context}
-      title="Demo item"
-      threeWay={clean}
-      active={() => true}
-      onResolve={async (resolution, edited) => {
-        saved.push({ resolution, edited })
-      }}
-    />
-  ))
+  const fixture = await mount(paneFor(sides, saved))
   try {
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
     expect(send(fixture, "3")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
-    // Merely computing and showing the merge resolves nothing.
+    const frame = await fixture.waitForFrame((text) => text.includes("yours → merged result"))
+    expect(frame).toContain("[x] yours  Alpha mine.")
+    expect(frame).toContain("[x] upstream  Gamma upstream.")
+    expect(frame).toContain("[x] yours  Epsilon yours.")
+    expect(frame).toContain("[ ] upstream (conflicts with yours)  Epsilon upstream.")
+    expect(frame).toContain("[x] same  Eta same.")
+    expect(frame).not.toContain("<<<<<<<")
+    // Merely showing the proposal resolves nothing.
     expect(saved).toEqual([])
-    const frame = fixture.captureCharFrame()
-    expect(frame).toContain("custom tail")
-    expect(frame).toContain("two upstream")
-    expect(frame).toContain("needs review")
+    // The cursor starts on the first change row; three ↓ reach the upstream row of Epsilon.
+    for (let step = 0; step < 3; step += 1) expect(send(fixture, "down")).toBe(true)
+    expect(send(fixture, "space")).toBe(true)
+    await fixture.waitForFrame((text) => text.includes("[x] upstream (conflicts with yours)  Epsilon upstream."))
     expect(send(fixture, "t")).toBe(true)
     await waitFor(() => saved.length === 1)
-    expect(saved[0]).toEqual({ resolution: "merge", edited: cleanMerged })
+    expect(saved[0]).toEqual({
+      resolution: "merge",
+      edited: "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nEpsilon upstream.\nZeta six.\nEta same.",
+    })
   } finally {
     fixture.destroy()
   }
 })
 
-test("t fast-forwards when the merged result equals upstream, but only after t", async () => {
+test("u takes upstream outright and k keeps yours", async () => {
   const saved: { resolution: string; edited?: string }[] = []
-  const fixture = await mount((context) => (
-    <DiffPane
-      context={context}
-      title="Demo item"
-      threeWay={{ original: "one\ntwo\n", mine: "one\ntwo\n", upstream: "one\ntwo upstream\n" }}
-      active={() => true}
-      onResolve={async (resolution, edited) => {
-        saved.push({ resolution, edited })
-      }}
-    />
-  ))
+  const fixture = await mount(paneFor(sides, saved))
   try {
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
-    // The review stays until t is pressed.
-    expect(fixture.captureCharFrame()).toContain("needs review")
-    expect(saved).toEqual([])
+    expect(send(fixture, "3")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
+    expect(send(fixture, "u")).toBe(true)
+    await waitFor(() => saved.length === 1)
+    expect(saved[0]).toEqual({ resolution: "take", edited: undefined })
+    expect(send(fixture, "k")).toBe(true)
+    await waitFor(() => saved.length === 2)
+    expect(saved[1]).toEqual({ resolution: "keep", edited: undefined })
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("t saves a merge that equals upstream as take", async () => {
+  const saved: { resolution: string; edited?: string }[] = []
+  const fixture = await mount(paneFor(sides, saved))
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    expect(send(fixture, "3")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
+    // Exclude yours on Alpha; on Epsilon exclude yours and include upstream: the render is upstream.
+    expect(send(fixture, "space")).toBe(true)
+    for (let step = 0; step < 2; step += 1) expect(send(fixture, "down")).toBe(true)
+    expect(send(fixture, "space")).toBe(true)
+    expect(send(fixture, "down")).toBe(true)
+    expect(send(fixture, "space")).toBe(true)
     expect(send(fixture, "t")).toBe(true)
     await waitFor(() => saved.length === 1)
     expect(saved[0]).toEqual({ resolution: "take", edited: undefined })
@@ -164,53 +172,42 @@ test("t fast-forwards when the merged result equals upstream, but only after t",
   }
 })
 
-test("t on a conflicted proposal opens the merged editor and resolves nothing automatically", async () => {
+test("e opens the editor on the rendered text the include set makes", async () => {
   const saved: { resolution: string; edited?: string }[] = []
-  const fixture = await mount((context) => (
-    <DiffPane
-      context={context}
-      title="Demo item"
-      threeWay={conflicted}
-      active={() => true}
-      onResolve={async (resolution, edited) => {
-        saved.push({ resolution, edited })
-      }}
-    />
-  ))
+  const fixture = await mount(paneFor(sides, saved))
   try {
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
-    expect(send(fixture, "t")).toBe(true)
+    expect(send(fixture, "3")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
+    // Exclude yours on Epsilon: the both unit then renders its base.
+    for (let step = 0; step < 2; step += 1) expect(send(fixture, "down")).toBe(true)
+    expect(send(fixture, "space")).toBe(true)
+    expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    const editor = fixture.renderer.currentFocusedEditor
-    expect(editor?.plainText).toBe(conflictedMerged)
-    const notice = fixture.captureCharFrame()
-    expect(notice).toContain("1 conflicting region")
-    expect(notice).toContain("cannot be applied automatically")
+    expect(fixture.renderer.currentFocusedEditor?.plainText).toBe(
+      "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon five.\nZeta six.\nEta same.",
+    )
     expect(saved).toEqual([])
-    // Failure control: saving the markers is refused; zero mutations.
-    expect(send(fixture, "ctrl+s")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
-    expect(saved).toEqual([])
-    editor?.setText("one\nresolved two\nthree\ncustom tail\n")
     expect(send(fixture, "ctrl+s")).toBe(true)
     await waitFor(() => saved.length === 1)
-    expect(saved[0]).toEqual({ resolution: "edit", edited: "one\nresolved two\nthree\ncustom tail\n" })
+    expect(saved[0]).toEqual({
+      resolution: "edit",
+      edited: "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon five.\nZeta six.\nEta same.",
+    })
   } finally {
     fixture.destroy()
   }
 })
 
-test("e opens the identical proposal comparison 3 shows", async () => {
-  const expected = comparisonsOf(conflicted, true)[2]?.right
-  expect(expected).toBe(conflictedMerged)
-  const fixture = await mount((context) => (
-    <DiffPane context={context} title="Demo item" threeWay={conflicted} active={() => true} onResolve={async () => {}} />
-  ))
+test("the Take result keys are named in the footer", async () => {
+  const fixture = await mount(paneFor(sides, []))
   try {
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
-    expect(send(fixture, "e")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    expect(fixture.renderer.currentFocusedEditor?.plainText).toBe(expected)
+    expect(send(fixture, "3")).toBe(true)
+    const frame = await fixture.waitForFrame((text) => text.includes("space"))
+    expect(frame).toContain("u")
+    expect(frame).toContain("take upstream")
+    expect(frame).toContain("save merged")
   } finally {
     fixture.destroy()
   }

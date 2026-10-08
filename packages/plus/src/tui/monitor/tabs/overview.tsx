@@ -125,7 +125,7 @@ export function OverviewTab(props: OverviewTabProps) {
               {(miss, index) => (
                 <box flexDirection="column" paddingLeft={1} minWidth={0} flexShrink={0}>
                   <text fg={theme().text.feedback.error.base} wrapMode="none" truncate flexShrink={1} minWidth={0}>
-                    {`#${index() + 1} [${miss.verdict.toUpperCase()}] ${miss.cause ?? "miss"}${miss.confidence ? ` (${miss.confidence})` : ""}: ${miss.evidence ?? "cache miss"}`}
+                    {`#${index() + 1} [${miss.verdict.toUpperCase()}] ${miss.causeText ?? miss.cause ?? "miss"}${miss.confidence ? ` (${miss.confidence})` : ""}: ${miss.evidence ?? "cache miss"}`}
                   </text>
                   <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={1} minWidth={0}>
                     {`   missed ${formatTokens(miss.missTokens ?? miss.input)} · ${formatCostLabel(miss.missCost)} · ${miss.model ?? miss.agent ?? ""}`}

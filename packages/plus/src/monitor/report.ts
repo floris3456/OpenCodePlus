@@ -44,6 +44,7 @@ interface CachedSession {
   /** The fingerprints were looked up per request (none stored under this session). */
   readonly perRequest: boolean
   readonly fold: SessionFold
+  readonly lastFrom?: number
 }
 
 interface SessionData {
@@ -79,15 +80,37 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   const rows = ledger.getRequests(id)
   const facts = ledger.getContextFacts(id)
   const updated = cached && !cached.perRequest ? updatedFingerprints(ledger, id, cached.fold, changed) : undefined
-  if (cached && updated && updated.size > 0) {
-    const fold = foldSession(rows, facts, updated, { previous: cached.fold, from: firstChange(cached.fold, rows, facts, changed) })
-    cache.set(id, { revision, mark, perRequest: false, fold })
+  if (cached && !cached.perRequest && updated && updated.size > 0) {
+    const from = firstChange(cached.fold, rows, facts, changed)
+    const fold = foldSession(rows, facts, updated, { previous: cached.fold, from })
+    cache.set(id, { revision, mark, perRequest: false, fold, lastFrom: from })
+    return dataOf(fold)
+  }
+  if (cached && cached.perRequest) {
+    const fingerprints = new Map(cached.fold.analysis.fingerprints)
+    for (const r of rows.slice(cached.fold.rows.length)) {
+      fingerprints.set(r.id, ledger.getFingerprint(r.id))
+    }
+    const from = firstChange(cached.fold, rows, facts, [])
+    const fold = foldSession(rows, facts, fingerprints, { previous: cached.fold, from })
+    cache.set(id, { revision, mark, perRequest: true, fold, lastFrom: from })
     return dataOf(fold)
   }
   const loaded = sessionFingerprints(ledger, rows)
   const fold = foldSession(rows, facts, loaded.fingerprints)
-  cache.set(id, { revision, mark, perRequest: loaded.perRequest, fold })
+  cache.set(id, { revision, mark, perRequest: loaded.perRequest, fold, lastFrom: 0 })
   return dataOf(fold)
+}
+
+export function sessionFold(ledger: Ledger, id: string): SessionFold {
+  sessionData(ledger, id)
+  const cached = sessionCache.get(ledger)?.get(id)
+  if (!cached) throw new Error(`Missing fold for session ${id}`)
+  return cached.fold
+}
+
+export function sessionFoldResumeFrom(ledger: Ledger, id: string): number | undefined {
+  return sessionCache.get(ledger)?.get(id)?.lastFrom
 }
 
 function dataOf(fold: SessionFold): SessionData {

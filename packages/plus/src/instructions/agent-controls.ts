@@ -66,7 +66,16 @@ export function controlItems(agent?: string, fields: AgentControls = {}, inherit
 export function controlRecordError(record: Pick<CustomizationRecord, "item" | "section" | "text" | "state" | "pin">): string | undefined {
   if (!record.item.startsWith("setting:") && !record.item.startsWith("compaction:")) return undefined
   if (!isControl(record.item)) return `Unknown agent control ${record.item}`
-  if (record.section !== null || record.pin !== undefined) return `${record.item} does not support sections or pins`
+  if (record.pin !== undefined) return `${record.item} does not support pins`
+  // A sectioned text control: only the agent/member description and the
+  // agent-wide compaction instructions hold text that sections address (B7).
+  // A section record carries the section's text and its on/off state; only the
+  // whole row keeps the scalar/enumerated rules below.
+  const sectioned = record.item === "setting:description" || record.item === "compaction:instructions"
+  if (record.section !== null) {
+    if (!sectioned) return `${record.item} does not support sections`
+    return undefined
+  }
   if (booleanControl(record.item)) return record.text === undefined ? undefined : `${record.item} accepts state on/off, not text`
   if (record.state !== undefined) return `${record.item} accepts text, not state`
   const text = record.text

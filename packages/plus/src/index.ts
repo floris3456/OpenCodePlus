@@ -7,7 +7,6 @@ import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
 import { Agent } from "@opencode/schema/agent"
 import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
-import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
 import { DateTime, Effect, Exit, Queue, Scope, Schema, Semaphore, Stream } from "effect"
@@ -39,12 +38,15 @@ import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { pickModelRow, type ModelPick } from "./instructions/ops.js"
 import {
+  compactionFieldsOf,
+  effectiveCompaction,
   everySettings,
   MODEL_SETTINGS_FIELDS,
   roundedWarmingFor,
   setModelSettingsRecord,
   settingsFor,
   warmingFieldsOf,
+  type CompactionDefaults,
   type HostModel,
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
@@ -52,17 +54,9 @@ import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
-import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type CategoryRecord, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
+import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { deltaOf, deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
-import {
-  assignCategoryRecord,
-  categoryByName,
-  categorySlug,
-  categorySlugFromId,
-  createCategoryRecord,
-  deleteCategoryRecord,
-  renameCategoryRecord,
-} from "./instructions/categories.js"
+import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
 import {
@@ -89,13 +83,18 @@ import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
-import { warmingStore, type WarmingRows } from "./warming.js"
-import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
-import { ledgerAt } from "./monitor/ledger.js"
+import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./warming.js"
+import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
+import { ledgerAt, type Ledger } from "./monitor/ledger.js"
+import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
+import { compactColdNow } from "./compaction/cold-now.js"
+import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
+import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
 import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
+import { chatModelForAgent, currentSessionAgent, currentSessionModel, toHostModelRef } from "./session-model.js"
 
 export interface TeamOwnership {
   readonly team: string
@@ -169,7 +168,8 @@ export interface PlusState {
   /**
    * The provider catalogue (models, variants, host warming) cached from the
    * first read. Navigation, snapshots and pickers reuse it instead of calling
-   * `ctx.model.list()` each time; a host config/agent/skill refresh clears it.
+   * `ctx.model.list()` each time; a host config/agent/skill refresh clears it,
+   * as does a model.updated event, and the catalogue expires after five minutes.
    */
   hostModels?: readonly HostModel[]
   /**
@@ -178,6 +178,8 @@ export interface PlusState {
    * per-request classifier read it instead of listing the catalogue again.
    */
   hostCatalog?: readonly Model.Info[]
+  /** When `hostCatalog` was read; past HOST_CATALOG_TTL_MS the next read lists again. */
+  hostCatalogAt?: number
   /**
    * The in-flight `model.pick` save in this Plus instance, if any.
    * `applySessionModel` awaits it before comparing, so a session created right
@@ -254,6 +256,7 @@ export default Plugin.define({
       // /api/session/active), so a missed session event cannot hold a chat's
       // waiting window.
       warmingStore.setActiveReader(() => activeSessionsOf(ctx))
+      warmingStore.setCompactDefaultsReader((sessionID) => sessionCompactDefaults(ctx, state, sessionID))
       warmingStore.setCompactionReader((sessionID) =>
         Effect.runPromise(
           ctx.session.context({ sessionID: Session.ID.make(sessionID) }).pipe(
@@ -296,6 +299,8 @@ export default Plugin.define({
           yield* useLocation(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
+            // A new prompt is the only place cold compaction may arm.
+            markPromptAdmitted(String(event.sessionID))
           }
         }),
       )
@@ -303,15 +308,7 @@ export default Plugin.define({
         state.sessionPins.markRebuild(String(event.sessionID))
         return Effect.void
       })
-      yield* ctx.session.hook("compaction.decide", (event) => {
-        const model = consumeColdCompaction(event.sessionID)
-        if (model !== undefined) {
-          event.compact = true
-          event.portable = true
-          event.compactionModel = Model.Ref.parse(model)
-        }
-        return Effect.void
-      })
+      yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -535,12 +532,18 @@ function invalidModelSettings(reason: string): SetModelSettingsResult {
   return { ok: false, error: { code: "modelSettings.invalid", message: reason, data: { reason } } }
 }
 
-export type CategoryMutateResult =
-  | { ok: true; value: Plus.CategoryMutateOutput }
-  | { ok: false; error: { code: "category.invalid"; message: string; data: Plus.CategoryInvalid } }
+export type LayoutWriteResult =
+  | { ok: true; value: Plus.LayoutWriteOutput }
+  | { ok: false; error: { code: "layout.invalid"; message: string; data: Plus.LayoutInvalid } }
 
-function invalidCategory(reason: string): CategoryMutateResult {
-  return { ok: false, error: { code: "category.invalid", message: reason, data: { code: "category.invalid", reason } } }
+function invalidLayout(reason: string): LayoutWriteResult {
+  return { ok: false, error: { code: "layout.invalid", message: reason, data: { code: "layout.invalid", reason } } }
+}
+
+// A folder or order keeps its stored `updated` unless its content changed.
+function stamped<T extends { readonly updated: string }>(next: T, previous: T | undefined, updated: string): T {
+  if (previous !== undefined && JSON.stringify({ ...previous, updated: "" }) === JSON.stringify({ ...next, updated: "" })) return previous
+  return { ...next, updated }
 }
 
 export type CreateTeamResult =
@@ -683,7 +686,7 @@ export interface PlusApi {
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
-  readonly category: (input: Plus.CategoryMutateInput & { readonly actor?: Plus.Actor }) => Promise<CategoryMutateResult>
+  readonly layoutWrite: (input: Plus.LayoutWriteInput & { readonly actor?: Plus.Actor }) => Promise<LayoutWriteResult>
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
@@ -760,12 +763,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     config: { readonly protectedAgents: readonly string[] },
   ) => {
     const protectedRow = changed.find(
-      (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord | CategoryRecord> =>
+      (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord | FolderRecord | OrderRecord> =>
         record.type !== "team" &&
         record.type !== "entry" &&
         record.type !== "preset" &&
         record.type !== "modelSettings" &&
-        record.type !== "category" &&
+        record.type !== "folder" &&
+        record.type !== "order" &&
         // A preset's rows are not an agent's, whatever its id.
         record.level !== "preset" &&
         record.agent !== null &&
@@ -775,7 +779,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
   }
   const invalidOf = (rows: readonly StoredRecord[]) =>
     rows.flatMap((record) => {
-      if (record.type === "split" && (record.item.startsWith("setting:") || record.item.startsWith("compaction:")))
+      if (
+        record.type === "split" &&
+        (record.item.startsWith("setting:") || record.item.startsWith("compaction:")) &&
+        record.item !== "setting:description" &&
+        record.item !== "compaction:instructions"
+      )
         return [{ id: record.item, reason: "Agent controls do not support sections" }]
       if (record.type !== "customization") return []
       const reason = controlRecordError(record)
@@ -798,7 +807,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.type === "entry" ||
           record.type === "preset" ||
           record.type === "modelSettings" ||
-          record.type === "category",
+          record.type === "folder" ||
+          record.type === "order",
       ),
     ]
     const refusal = protectedRefusal(input.actor, deltaRows(loaded.records, records), config)
@@ -1141,7 +1151,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const target = { level: input.scope, agent: to.id }
       const moved = await updateRecords(directory, (current) =>
         current.flatMap((record): StoredRecord[] => {
-          if (record.type === "team" || record.type === "entry" || record.type === "preset" || record.type === "modelSettings" || record.type === "category")
+          if (record.type === "team" || record.type === "entry" || record.type === "preset" || record.type === "modelSettings" || record.type === "folder" || record.type === "order")
             return [record]
           if (scopedTo(record, target)) return []
           return [scopedTo(record, source) ? { ...record, agent: to.id } : record]
@@ -1656,6 +1666,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
       })
       if ("error" in parsed) return invalidModelSettings(parsed.error)
+      const compact = compactionFieldsOf({
+        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
+        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
+        ...(input.coldModels === undefined ? {} : { coldModels: input.coldModels }),
+        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
+        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
+        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+      })
+      if ("error" in compact) return invalidModelSettings(compact.error)
       const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
         value === undefined ? undefined : value === null ? null : (parsed.fields[field] ?? null)
       const fields = {
@@ -1665,6 +1684,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.effort === undefined
           ? {}
           : { effort: input.effort === null || input.effort.trim().length === 0 ? null : input.effort.trim() }),
+        ...compact.fields,
       }
       const updated = new Date().toISOString()
       // A warming time rounds up to whole intervals against opencode.json too.
@@ -1707,104 +1727,44 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { record: saved.record ?? null, revision: saved.revision, globalRevision: saved.globalRevision } }
     },
-    category: async (input) => {
+    layoutWrite: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const actor = normalizeActor(input.actor)
       const updated = new Date().toISOString()
-      const attempt = async (): Promise<
-        | { ok: true; id: string; name: string; changed: boolean; revision: number; globalRevision: number; status: string }
-        | { ok: false; reason: string }
-        | "stale"
-      > => {
-        const current = await load(directory)
-        const all = current.records.filter((record): record is CategoryRecord => record.type === "category")
-        const find = (name: string): CategoryRecord | undefined => {
-          const slug = categorySlugFromId(name) ?? categorySlug(name)
-          return categoryByName(all, name) ?? all.find((record) => categorySlug(record.name) === slug)
-        }
-        const write = async (
-          next: readonly CategoryRecord[],
-          value: { id: string; name: string; status: string },
-        ) => {
-          const saved = await save(directory, {
-            expectedProjectRevision: current.projectRevision,
-            expectedGlobalRevision: current.globalRevision,
-            records: [...current.records.filter((record) => record.type !== "category"), ...next],
-          })
-          if (!saved.ok) return "stale" as const
-          return { ok: true as const, ...value, changed: saved.changed.global, revision: saved.projectRevision, globalRevision: saved.globalRevision }
-        }
-        const validName = (name: string): string | undefined => {
-          if (name.length === 0) return "a category needs a name"
-          if (name.includes(":")) return 'a category name cannot contain ":"'
-          return undefined
-        }
-        if (input.action === "create") {
-          const name = input.name?.trim() ?? ""
-          const invalid = validName(name)
-          if (invalid !== undefined) return { ok: false, reason: invalid }
-          if (find(name) !== undefined) return { ok: false, reason: `category "${name}" already exists` }
-          return write(createCategoryRecord(all, name, updated), {
-            id: `category:${categorySlug(name)}`,
-            name,
-            status: `Created category "${name}"`,
-          })
-        }
-        if (input.action === "assign") {
-          const item = input.item?.trim() ?? ""
-          if (item.length === 0) return { ok: false, reason: "assigning a row needs its item id" }
-          const target = input.category === undefined || input.category === null ? null : input.category.trim()
-          if (target !== null && categoryByName(all, target) === undefined)
-            return { ok: false, reason: `category "${target}" does not exist` }
-          const next = assignCategoryRecord(all, item, target, updated)
-          const record = target === null ? undefined : categoryByName(next, target)
-          return write(next, {
-            id: record === undefined ? "category:" : `category:${categorySlug(record.name)}`,
-            name: record?.name ?? "",
-            status: target === null ? `Moved ${item} home` : `Moved ${item} to "${target}"`,
-          })
-        }
-        if (input.action === "rename") {
-          const from = input.name?.trim() ?? ""
-          const to = input.to?.trim() ?? ""
-          const invalid = validName(to)
-          if (from.length === 0) return { ok: false, reason: "renaming needs the current category name" }
-          if (invalid !== undefined) return { ok: false, reason: invalid }
-          const existing = find(from)
-          if (existing === undefined) return { ok: false, reason: `category "${from}" does not exist` }
-          const collision = find(to)
-          if (collision !== undefined && collision.name !== existing.name)
-            return { ok: false, reason: `category "${to}" already exists` }
-          const next = renameCategoryRecord(all, existing.name, to, updated)
-          return write(next, { id: `category:${categorySlug(to)}`, name: to, status: `Renamed category to "${to}"` })
-        }
-        if (input.confirm !== true) return { ok: false, reason: "delete requires confirm:true" }
-        const existing = find(input.name ?? "")
-        if (existing === undefined) return { ok: false, reason: `category "${input.name ?? ""}" does not exist` }
-        return write(deleteCategoryRecord(all, existing.name), {
-          id: `category:${categorySlug(existing.name)}`,
-          name: existing.name,
-          status: `Deleted category "${existing.name}"`,
-        })
-      }
-      let outcome = await attempt()
-      if (outcome === "stale") outcome = await attempt()
-      if (outcome === "stale") return invalidCategory("the store changed concurrently; retry")
-      if (!outcome.ok) return invalidCategory(outcome.reason)
-      if (outcome.changed) {
+      const current = await load(directory)
+      if (current.globalRevision !== input.expectedGlobalRevision)
+        return invalidLayout("the folders changed since they were read; read them again and retry")
+      const refusal = layoutRefusal(input.folders, input.orders)
+      if (refusal !== undefined) return invalidLayout(refusal)
+      const currentFolders = current.records.filter((record): record is FolderRecord => record.type === "folder")
+      const currentOrders = current.records.filter((record): record is OrderRecord => record.type === "order")
+      const folders = input.folders.map((folder) => stamped(folder, currentFolders.find((record) => record.id === folder.id), updated))
+      const orders = input.orders.map((order) => stamped(order, currentOrders.find((record) => record.scope === order.scope), updated))
+      const saved = await save(directory, {
+        expectedProjectRevision: current.projectRevision,
+        expectedGlobalRevision: current.globalRevision,
+        records: [...current.records.filter((record) => record.type !== "folder" && record.type !== "order"), ...folders, ...orders],
+      })
+      if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
+      if (saved.changed.global) {
         await append(globalLogPath(), {
           ts: updated,
           actor,
-          op: "category",
-          target: outcome.id,
-          summary: outcome.status,
-          revision: outcome.globalRevision,
+          op: "layout",
+          target: input.target,
+          summary: input.status,
+          revision: saved.globalRevision,
         })
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return {
         ok: true as const,
-        value: { id: outcome.id, name: outcome.name, revision: outcome.revision, globalRevision: outcome.globalRevision },
+        value: {
+          changed: saved.changed.global,
+          revision: saved.projectRevision,
+          globalRevision: saved.globalRevision,
+          status: input.status,
+        },
       }
     },
     addTeamAgent: async (input) => {
@@ -2604,7 +2564,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
               record.type !== "entry" &&
               record.type !== "preset" &&
               record.type !== "modelSettings" &&
-              record.type !== "category" &&
+              record.type !== "folder" &&
+              record.type !== "order" &&
               nodes.some((node) => scopedTo(record, node))
             ),
         ),
@@ -2657,7 +2618,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const saved = await updateRecords(directory, (records) =>
         records.map((record): StoredRecord => {
           if (record.type === "entry") return same(record, name) ? { ...record, name: to.name, updated } : record
-          if (record.type === "team" || record.type === "preset" || record.type === "modelSettings" || record.type === "category") return record
+          if (record.type === "team" || record.type === "preset" || record.type === "modelSettings" || record.type === "folder" || record.type === "order") return record
           return scopedTo(record, from) ? { ...record, agent: to.name } : record
         }),
       )
@@ -2775,7 +2736,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const removed = (record: StoredRecord) => {
           if (record.type === "link" && targetsPreset(record.preset, input.ref)) return true
           if (record.type === "preset") return owners.some((owner) => presetRecordOwns(record, owner))
-          if (record.type === "team" || record.type === "entry" || record.type === "modelSettings" || record.type === "category") return false
+          if (record.type === "team" || record.type === "entry" || record.type === "modelSettings" || record.type === "folder" || record.type === "order") return false
           return owners.some((owner) => scopedTo(record, owner))
         }
         return { result: { users, elsewhere, orphans: links.filter((record) => targetsPreset(record.preset, input.ref)).length }, records: loaded.records.filter((record) => !removed(record)) }
@@ -3490,10 +3451,10 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!result.ok) return yield* Effect.fail(context.error("modelSettings.invalid", result.error.message, result.error.data))
         return result.value
       }),
-    "category.mutate": (input, context) =>
+    "layout.write": (input, context) =>
       Effect.gen(function* () {
-        const result = yield* Effect.promise(() => api.category(input))
-        if (!result.ok) return yield* Effect.fail(context.error("category.invalid", result.error.message, result.error.data))
+        const result = yield* Effect.promise(() => api.layoutWrite(input))
+        if (!result.ok) return yield* Effect.fail(context.error("layout.invalid", result.error.message, result.error.data))
         return result.value
       }),
     "team.addAgent": (input, context) =>
@@ -3728,6 +3689,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         return result.value
       }),
     "monitor.query": (input) => Effect.promise(() => monitorQuery(ctx, input)),
+    "monitor.step": (input) => Effect.promise(() => monitorStep(ctx, input)),
     "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
     "checks.suggest": () =>
       Effect.promise(async () => {
@@ -3774,10 +3736,13 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "warming.compact": (input) =>
       Effect.gen(function* () {
-        const status = yield* Effect.promise(() => warmingStore.setCompact(input.sessionID, input.on))
+        const chat =
+          input.on === "default" ? "default" : input.on ? ("on" as const) : ("off" as const)
+        const status = yield* Effect.promise(() => warmingStore.setCompact(input.sessionID, chat))
         yield* emitWarmingChanged(state, input.sessionID)
         return status
       }),
+    "compaction.cold": (input) => Effect.promise(() => compactColdNow(ctx, state, input.sessionID)),
   }
 }
 
@@ -3832,28 +3797,125 @@ export function warmingRowsOf(
   agentID: string,
   model: { readonly providerID: string; readonly id: string; readonly variant?: string },
 ): WarmingRows {
-  const agent = dedupeAgents([
-    ...state.cachedAgents.filter((entry) => entry.team !== undefined),
-    ...state.cachedAgents.filter((entry) => entry.team === undefined),
-  ]).find((entry) => entry.id === agentID)
-  const team = agent?.team === undefined ? undefined : { level: scopeLevel(agent.scope), team: agent.team }
-  const runtime =
-    agent === undefined
-      ? { level: "project" as const, scopes: state.cachedScopes }
-      : runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, state.cachedScopes)
-  const target = { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) }
-  const row = resolveModelFields(
-    { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
-    target,
-  )
-  const key = { providerID: model.providerID, modelID: model.id }
-  const modelRow = settingsFor(state.cachedModelSettings, key)
+  const context = modelRowContextOf(state, agentID, model)
+  const row = resolveModelFields(context.input, context.target)
+  const modelRow = settingsFor(state.cachedModelSettings, context.key)
   const everyRow = everySettings(state.cachedModelSettings)
   return {
     ...(Object.keys(row).length === 0 ? {} : { row }),
     ...(modelRow === undefined ? {} : { model: modelRow }),
     ...(everyRow === undefined ? {} : { every: everyRow }),
   }
+}
+
+/**
+ * The chat's model-level compact settings: the effective `compactWarm` (the
+ * per-chat switch's default) and the models cold arming would try when it
+ * applies. Only the model rows and the Defaults › Models rows set these, so no
+ * agent-wide or shared Defaults record is consulted.
+ */
+export function compactDefaultsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+): ChatCompactionDefaults {
+  const modelRow = settingsFor(state.cachedModelSettings, { providerID: model.providerID, modelID: model.id })
+  const everyRow = everySettings(state.cachedModelSettings)
+  const effective = effectiveCompaction({
+    row: compactionRowsOf(state, agentID, model),
+    ...(modelRow === undefined ? {} : { model: modelRow }),
+    ...(everyRow === undefined ? {} : { every: everyRow }),
+  })
+  return {
+    compactWarm: effective.compactWarm.value,
+    compactWarmFrom: effective.compactWarm.from === "built-in" ? "built-in" : "model",
+    // Cold arming only fires while "Compact cold caches with another model" is on.
+    coldModels: effective.coldCompact.value ? effective.coldModels.value : [],
+  }
+}
+
+/** The chat's model-level compact defaults, read from the session's current agent and model. */
+export async function sessionCompactDefaults(
+  ctx: Context,
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  sessionID: string,
+): Promise<ChatCompactionDefaults | undefined> {
+  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
+  if (session?.agent === undefined || session.model === undefined) return undefined
+  const model = session.model
+  return compactDefaultsOf(state, session.agent, {
+    providerID: model.providerID,
+    id: model.id,
+    ...(model.variant === undefined ? {} : { variant: model.variant }),
+  })
+}
+
+// Plus's `compaction.decide`: the per-model settings for (agent, chat model),
+// cold-cache arming at the first step of a new prompt, the CPA account-switch
+// replacement, and the team `compactWith` arming that wins over all of them.
+export function decideCompactionFor(
+  ctx: Context,
+  state: PlusState,
+  event: SessionCompactionDecision,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+): Effect.Effect<void> {
+  return Effect.promise(async () => {
+    // An armed list (a team compactWith, or `compaction.cold`) is the user's
+    // explicit instruction: it wins, and nothing below needs reading.
+    const armed = consumeColdCompaction(event.sessionID)
+    if (armed !== undefined) {
+      decideCompaction(event, { armed })
+      return
+    }
+    // Cold is consulted only at the first auto decision after a prompt: the
+    // mark is consumed whatever the outcome, so later steps of the same turn
+    // never consult it. A manual or overflow decision leaves it for the next
+    // auto step.
+    const cold = event.reason === "auto" && consumePromptAdmitted(event.sessionID) ? await coldFor(ctx, event, ledger) : undefined
+    const agentWide = await compactionDefaultsOf(ctx, event.agent)
+    const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
+    const everyRow = everySettings(state.cachedModelSettings)
+    decideCompaction(event, {
+      rows: compactionRowsOf(state, event.agent, event.model),
+      ...(modelRow === undefined ? {} : { model: modelRow }),
+      ...(everyRow === undefined ? {} : { every: everyRow }),
+      ...(agentWide === undefined ? {} : { agent: agentWide }),
+      ...(cold === undefined ? {} : { cold }),
+    })
+  })
+}
+
+// The agent's old agent-wide compaction policy, as core has it applied.
+async function compactionDefaultsOf(ctx: Context, agentID: Agent.ID): Promise<CompactionDefaults | undefined> {
+  const agent = await Effect.runPromise(ctx.agent.get({ agentID }).pipe(Effect.catchCause(() => Effect.succeed(undefined))))
+  const compaction = agent?.data.compaction
+  if (compaction === undefined) return undefined
+  const model = compaction.model
+  return {
+    ...(compaction.strategy === undefined ? {} : { strategy: compaction.strategy }),
+    ...(model === undefined ? {} : { model: `${model.providerID}/${model.id}${model.variant === undefined ? "" : `#${model.variant}`}` }),
+    ...(compaction.system === undefined ? {} : { instructions: compaction.system }),
+  }
+}
+
+// The chat's window and its last request with that request's fingerprint; the
+// decision module owns the cold test itself.
+async function coldFor(
+  ctx: Context,
+  event: SessionCompactionDecision,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
+): Promise<ColdCompactionState> {
+  const now = Date.now()
+  const status = await warmingStore.status(event.sessionID, now)
+  const rows = ledger.getRequests(event.sessionID)
+  const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
+  const fingerprint = last === undefined ? undefined : ledger.getFingerprint(last.id)
+  return coldStateOf({
+    status,
+    now,
+    ...(last === undefined ? {} : { last }),
+    ...(fingerprint === undefined ? {} : { fingerprint }),
+  })
 }
 
 interface LoadedStores {
@@ -4802,6 +4864,12 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+      ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+      ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+      ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+      ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+      ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+      ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}
@@ -4966,7 +5034,7 @@ async function hostModelsFor(ctx: Context, state: PlusState): Promise<readonly H
 // classification, discovery, validation and the per-request classifier all
 // share one read instead of each listing the catalogue.
 async function hostCatalogFor(ctx: Context, state: PlusState): Promise<readonly Model.Info[]> {
-  if (state.hostCatalog === undefined) {
+  if (state.hostCatalog === undefined || state.hostCatalogAt === undefined || Date.now() - state.hostCatalogAt >= HOST_CATALOG_TTL_MS) {
     const listed = await Effect.runPromise(
       ctx.model.list().pipe(
         Effect.catchCause(() =>
@@ -4975,10 +5043,16 @@ async function hostCatalogFor(ctx: Context, state: PlusState): Promise<readonly 
       ),
     )
     state.hostCatalog = listed.data
+    state.hostCatalogAt = Date.now()
     state.hostModels = hostModelsFrom(listed.data)
   }
   return state.hostCatalog
 }
+
+// Provider catalogues move without a host event Plus watches (models.dev
+// refreshes, provider syncs). model.updated drops the cache at once; this bound
+// covers the rest.
+const HOST_CATALOG_TTL_MS = 5 * 60 * 1000
 
 export const discoverCounter = { count: 0 }
 export function resetDiscoverCounter(): void {
@@ -5077,12 +5151,6 @@ async function teamPolicyRows(
   )
   if (members.length === 0) return []
   return teamPolicyItems(policyMembersOf(members.map((agent) => ({ id: agent.id, team: agent.team }))), await liveRunScopes(teamsDataDir()))
-}
-
-function scopeLevel(scope: "project" | "global" | "defaults"): Level {
-  if (scope === "global") return "global"
-  if (scope === "defaults") return "defaults"
-  return "project"
 }
 
 // Per-agent active-model cache: the answer to "what model should this agent
@@ -6201,7 +6269,8 @@ async function runBuiltinRegistration(
 // The canonical event names, not string guesses: agent and skill reloads
 // publish their Updated events, and config reloads publish Updated whenever
 // the merged config changes. Tool and MCP-config drift arrives through the
-// same config reloads, so these three cover every host change we snapshot.
+// same config reloads, so these cover every host change we snapshot. model.updated
+// is the provider catalogue moving (CPA's sync, the models.dev refresh).
 // Our own apply calls reload(), which republishes agent.updated, but the
 // fingerprint above is unchanged then, so the refresh is a no-op instead of
 // a loop.
@@ -6209,6 +6278,7 @@ const RefreshEvents: Set<string> = new Set([
   Agent.Event.Updated.type,
   Skill.Event.Updated.type,
   Config.Event.Updated.type,
+  Model.Event.Updated.type,
 ])
 
 const SessionModelEvents: Set<string> = new Set(["session.created", "session.agent.selected"])
@@ -6220,6 +6290,12 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
     Stream.filter((event) => RefreshEvents.has(event.type)),
     Stream.runForEach((event) => {
       state.pendingHostChange = true
+      // A provider catalogue moved. Drop it now, not on the refresh below: an
+      // idle folder defers that refresh to its next use.
+      if (event.type === Model.Event.Updated.type) {
+        state.hostCatalog = undefined
+        state.hostModels = undefined
+      }
       // Each Instructions write lands in the global config directory every
       // folder's Config watches, so every folder's skill and agent registries
       // reload and announce it. An idle folder applies that on its next use
@@ -6413,6 +6489,9 @@ function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => v
 
 // A session created with, or switched to, an agent adopts that agent's active
 // model via switchModel, and only when the session's current model differs.
+// An agent switch returns to the chat's last model for that agent, read from
+// the chat's own history, falling back to the agent's active model when the
+// chat has no history for it; a created session always uses the active model.
 // A user pick is saved as that agent's active row through `model.pick` (the
 // Plus TUI calls it when the pick completes), so after the save the pick and
 // the active row agree and this never reverts it. Mid-session
@@ -6449,7 +6528,10 @@ export function applySessionModel(
     const agentID = typeof payload.agent === "string" ? payload.agent : undefined
     const targetAgent = agentID ?? (yield* Effect.promise(() => currentSessionAgent(ctx, sessionID)))
     if (targetAgent === undefined) return
-    const wanted = state.activeModels.get(targetAgent)
+    const wanted =
+      event.type === "session.agent.selected"
+        ? ((yield* Effect.promise(() => chatModelForAgent(ctx, sessionID, targetAgent))) ?? state.activeModels.get(targetAgent))
+        : state.activeModels.get(targetAgent)
     if (wanted === undefined) return
     const current = yield* Effect.promise(() => currentSessionModel(ctx, sessionID))
     if (current !== undefined && sameModelRef(current, wanted)) return
@@ -6476,14 +6558,6 @@ async function refreshActiveModelsIfStale(directory: string, state: PlusState): 
   state.globalRevision = stored.globalRevision
 }
 
-function toHostModelRef(wanted: ModelRefLike): Model.Ref {
-  return Model.Ref.make({
-    providerID: Provider.ID.make(wanted.providerID),
-    id: Model.ID.make(wanted.modelID),
-    ...(wanted.variant === undefined ? {} : { variant: Model.VariantID.make(wanted.variant) }),
-  })
-}
-
 // The chat that started this one: a subagent's parent session, or a team
 // worker's parent run's chat. Undefined for a top-level chat.
 /** The chats running now, from core: the same set /api/session/active reports. */
@@ -6507,36 +6581,6 @@ export async function parentChatOf(ctx: Context, sessionID: string): Promise<str
   if (run?.parent === null || run?.parent === undefined) return undefined
   const parent = await loadRun(teamsDataDir(), run.parent).catch(() => undefined)
   return parent?.sessionID ?? undefined
-}
-
-async function currentSessionAgent(ctx: Context, sessionID: string): Promise<string | undefined> {
-  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
-  const agent = (session as { agent?: unknown } | undefined)?.agent
-  if (typeof agent === "string" && agent.length > 0) return agent
-  // Core accepts an omitted agent and resolves the default itself
-  // (core/src/session.ts create without agent, core/src/agent.ts
-  // resolve/select put the selected default first in list). Mirror that here
-  // so a default-agent session still adopts the default agent's model.
-  const listed = await Effect.runPromise(ctx.agent.list()).catch(() => undefined)
-  const data = (listed as { data?: readonly { id?: unknown }[] } | undefined)?.data
-  const first = data?.[0]?.id
-  if (typeof first === "string" && first.length > 0) return first
-  if (first !== undefined && first !== null) {
-    const text = String(first)
-    if (text.length > 0) return text
-  }
-  return undefined
-}
-
-async function currentSessionModel(ctx: Context, sessionID: string): Promise<ModelRefLike | undefined> {
-  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
-  const model = (session as { model?: { providerID?: unknown; id?: unknown; variant?: unknown } } | undefined)?.model
-  if (model === undefined) return undefined
-  const providerID = typeof model.providerID === "string" ? model.providerID : String(model.providerID ?? "")
-  const modelID = typeof model.id === "string" ? model.id : String(model.id ?? "")
-  if (providerID.length === 0 || modelID.length === 0) return undefined
-  if (typeof model.variant === "string" && model.variant.length > 0) return { providerID, modelID, variant: model.variant }
-  return { providerID, modelID }
 }
 
 const refreshProcessSemaphore = Effect.runSync(Semaphore.make(1))
@@ -6793,6 +6837,12 @@ function toSnapshot(
             ...(record.warming === undefined ? {} : { warming: record.warming }),
             ...(record.interval === undefined ? {} : { interval: record.interval }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+            ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+            ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+            ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+            ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+            ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+            ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
             ...(record.originalCandidate === undefined ? {} : { originalCandidate: { ...record.originalCandidate } }),
             updated: record.updated,
@@ -6826,7 +6876,8 @@ function toSnapshot(
         record.type === "entry" ||
         record.type === "preset" ||
         record.type === "modelSettings" ||
-        record.type === "category"
+        record.type === "folder" ||
+        record.type === "order"
       )
         return []
       return [
@@ -6852,8 +6903,11 @@ function toSnapshot(
       ]
     }),
     ...snapshotPresetState(loaded.records),
-    categories: loaded.records
-      .filter((record): record is CategoryRecord => record.type === "category")
+    folders: loaded.records
+      .filter((record): record is FolderRecord => record.type === "folder")
+      .map((record) => ({ ...record, items: [...record.items] })),
+    orders: loaded.records
+      .filter((record): record is OrderRecord => record.type === "order")
       .map((record) => ({ ...record, items: [...record.items] })),
     modelSettings: modelSettingsOf(loaded.records).map((record) => ({ ...record })),
     hostModels: discovered.hostModels.map((entry) => ({

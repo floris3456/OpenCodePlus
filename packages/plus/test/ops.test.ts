@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { addModelRecord, fingerprint, resolveResolution } from "../src/instructions/model.js"
+import { addModelRecord, fingerprint, resolve, resolveResolution, resolveSplit } from "../src/instructions/model.js"
 import type { CustomizationRecord, ModelRecord } from "../src/instructions/model.js"
 import { modelFieldItemId } from "../src/instructions/model-settings.js"
 import { expandedTree } from "../src/instructions/tree.js"
@@ -11,6 +11,7 @@ import {
   refusalFor,
   removalPlan,
   removeModelRow,
+  dropSectionText,
   reset,
   resetModelFieldRow,
   resetModelRow,
@@ -241,6 +242,9 @@ test("saveSplit success and refusal on an unsplittable row", () => {
   const bad = saveSplit(input, findId(input, "mcp:sample"), [{ id: "a", name: "A", start: 0 }])
   if (!("refusal" in bad)) throw new Error("expected refusal")
   expect(bad.refusal).toBe(`"sample" cannot be split`)
+  const enabled = saveSplit(input, findId(input, "setting:enabled"), [{ id: "a", name: "A", start: 0 }])
+  if (!("refusal" in enabled)) throw new Error("expected refusal")
+  expect(enabled.refusal).toBe(`"Enabled" cannot be split`)
 })
 
 test("addSection appends the boundary and customization pair", () => {
@@ -261,6 +265,9 @@ test("addSection appends the boundary and customization pair", () => {
   const bad = addSection(input, findId(input, "mcp:sample"), "Flags", "x")
   if (!("refusal" in bad)) throw new Error("expected refusal")
   expect(bad.refusal).toBe(`"sample" does not support sections`)
+  const enabled = addSection(input, findId(input, "setting:enabled"), "Flags", "x")
+  if (!("refusal" in enabled)) throw new Error("expected refusal")
+  expect(enabled.refusal).toBe(`"Enabled" does not support sections`)
 })
 
 test("resolveReview keep/take/edit match resolveResolution", () => {
@@ -676,6 +683,400 @@ test("row ids round-trip items with colons, sections, agents, and colon teams", 
   expect(colonPlan.team).toBe("my:team")
   expect(fingerprint("upstream")).not.toBe(fingerprint("other"))
 })
+
+test("heading-derived item addSection on section S adds child after S's last descendant and writes into last leaf only", () => {
+  const headingText = [
+    "## A",
+    "A text.",
+    "",
+    "### A1",
+    "A1 text.",
+    "",
+    "### A2",
+    "A2 text.",
+    "",
+    "## B",
+    "B text.",
+  ].join("\n")
+  const item = {
+    id: "system:heading-doc",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Heading Doc",
+    text: headingText,
+    enabled: true,
+    fingerprint: fingerprint(headingText),
+  }
+  const input = baseInput({ items: [...baseInput().items, item] })
+  const sectionARowId = findId(input, "system:heading-doc:a")
+  const ok = addSection(input, sectionARowId, "New", "New text.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  // 1. Split is still kind: "heading", no split record added
+  expect(ok.splits.some((s) => s.item === "system:heading-doc")).toBe(false)
+
+  // 2. The only customization written is on A2's address
+  const customizations = ok.records.filter((r) => r.item === "system:heading-doc")
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].section).toBe("a/a2")
+
+  // 3. Section "New" exists with depth of A + 1 whose parent is A, B is unchanged
+  const address = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  const split = resolveSplit({
+    text: resolved.fullText ?? resolved.assembled ?? resolved.text,
+    title: item.title,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(split.kind).toBe("heading")
+  const sectionA = split.sections.find((s) => s.id === "a")
+  expect(sectionA).toBeDefined()
+  const sectionNew = split.sections.find((s) => s.name === "New")
+  if (!sectionNew) throw new Error("expected section New to exist")
+  expect(sectionNew.depth).toBe(sectionA!.depth + 1)
+  expect(sectionNew.id.startsWith("a/")).toBe(true)
+  const sectionB = split.sections.find((s) => s.id === "b")
+  expect(sectionB).toBeDefined()
+  expect(sectionB?.depth).toBe(sectionA!.depth)
+  expect(resolved.assembled).toContain("### New\n\nNew text.")
+  expect(resolved.assembled).toContain("B text.")
+})
+
+test("heading-derived item customization on A1 survives addSection on A", () => {
+  const headingText = [
+    "## A",
+    "A text.",
+    "",
+    "### A1",
+    "A1 text.",
+    "",
+    "### A2",
+    "A2 text.",
+    "",
+    "## B",
+    "B text.",
+  ].join("\n")
+  const item = {
+    id: "system:heading-doc",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Heading Doc",
+    text: headingText,
+    enabled: true,
+    fingerprint: fingerprint(headingText),
+  }
+  const a1Override: CustomizationRecord = {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item: "system:heading-doc",
+    section: "a/a1",
+    text: "### A1\n\nCustom A1 text.",
+    basedOn: fingerprint("### A1\nA1 text."),
+    updated: "2026-10-08T00:00:00.000Z",
+  }
+  const input = baseInput({
+    items: [...baseInput().items, item],
+    records: [a1Override],
+  })
+  const sectionARowId = findId(input, "system:heading-doc:a")
+  const ok = addSection(input, sectionARowId, "New", "New text.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  const address = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(resolved.assembled).toContain("Custom A1 text.")
+  expect(resolved.assembled).toContain("### New\n\nNew text.")
+})
+
+// Sections a, a/x (under a) and b, each customized at Project. Section ids are
+// heading paths: a take on a clears a and a/x and keeps the sibling b; a take on
+// the item clears all three. The address is what resolveReview passes for the row.
+test("take on a section clears that section and its descendants, not its sibling; take on the item clears all", () => {
+  const records = ["a", "a/x", "b"].map(
+    (section): CustomizationRecord => ({
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "system:heading-doc",
+      section,
+      text: `${section} mine.`,
+      basedOn: "fp-old",
+      basedOnText: "old",
+      updated: "2026-10-08T00:00:00.000Z",
+    }),
+  )
+  const textSections = (kept: readonly CustomizationRecord[]) => kept.filter((record) => record.text !== undefined).map((record) => record.section)
+  const section = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: "a" }
+  expect(textSections(dropSectionText(records, section))).toEqual(["b"])
+  expect(textSections(dropSectionText(records, { ...section, section: null }))).toEqual([])
+})
+
+test("heading-derived item addSection on leaf section writes into that section only", () => {
+  const headingText = [
+    "## A",
+    "A text.",
+    "",
+    "### A1",
+    "A1 text.",
+    "",
+    "### A2",
+    "A2 text.",
+  ].join("\n")
+  const item = {
+    id: "system:heading-doc",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Heading Doc",
+    text: headingText,
+    enabled: true,
+    fingerprint: fingerprint(headingText),
+  }
+  const input = baseInput({ items: [...baseInput().items, item] })
+  const a2RowId = findId(input, "system:heading-doc:a/a2")
+  const ok = addSection(input, a2RowId, "LeafChild", "LeafChild content.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  const customizations = ok.records.filter((r) => r.item === "system:heading-doc")
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].section).toBe("a/a2")
+  expect(customizations[0].text).toContain("#### LeafChild\n\nLeafChild content.")
+})
+
+test("heading-derived item addSection on item row appends at top depth and split stays heading", () => {
+  const headingText = [
+    "## A",
+    "A text.",
+    "",
+    "## B",
+    "B text.",
+  ].join("\n")
+  const item = {
+    id: "system:heading-doc",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Heading Doc",
+    text: headingText,
+    enabled: true,
+    fingerprint: fingerprint(headingText),
+  }
+  const input = baseInput({ items: [...baseInput().items, item] })
+  const itemRowId = findId(input, "item:project:alpha:system:heading-doc")
+  const ok = addSection(input, itemRowId, "C", "C content.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  expect(ok.splits.some((s) => s.item === "system:heading-doc")).toBe(false)
+  const customizations = ok.records.filter((r) => r.item === "system:heading-doc")
+  expect(customizations).toHaveLength(1)
+  expect(customizations[0].section).toBe("b")
+  expect(customizations[0].text).toContain("## C\n\nC content.")
+})
+
+test("manual item with sections A and B: Global customizes A, Project adds A.1 without item-level record, showing A(Global) + A.1 + B and not shadowed on Global change", () => {
+  const manualText = "A original text.\nB original text.\n"
+  const item = {
+    id: "system:manual-ab",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Manual AB",
+    text: manualText,
+    enabled: true,
+    fingerprint: fingerprint(manualText),
+  }
+  const splitRecord = {
+    type: "split" as const,
+    level: "defaults" as const,
+    agent: null,
+    item: "system:manual-ab",
+    boundaries: [
+      { id: "a", name: "A", start: 0, depth: 0 },
+      { id: "b", name: "B", start: 17, depth: 0 },
+    ],
+    updated: "2026-10-08T00:00:00.000Z",
+  }
+  const globalCustomization: CustomizationRecord = {
+    type: "customization",
+    level: "global",
+    agent: "alpha",
+    item: "system:manual-ab",
+    section: "a",
+    text: "A global custom text.",
+    basedOn: fingerprint("A original text.\n"),
+    updated: "2026-10-08T00:00:00.000Z",
+  }
+  const input = baseInput({
+    items: [...baseInput().items, item],
+    records: [splitRecord, globalCustomization],
+  })
+  const sectionARowId = findId(input, "system:manual-ab:a")
+  const ok = addSection(input, sectionARowId, "A.1", "A.1 child text.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  // 1. No item-level record is written at Project (assert the records)
+  const projectRecords = ok.records.filter((r) => r.item === "system:manual-ab" && r.level === "project")
+  expect(projectRecords.some((r) => r.section === null)).toBe(false)
+  const a1Record = projectRecords.find((r) => r.text === "A.1 child text.")
+  expect(a1Record).toBeDefined()
+
+  // 2. Project resolved text is A(Global) + A.1 + B in that order
+  const address = { level: "project" as const, agent: "alpha", item: "system:manual-ab", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(["alpha"]), defaults: new Set() },
+    address,
+  })
+  expect(resolved.assembled).toBe("A global custom text.\n\nA.1 child text.\n\nB original text.")
+
+  // 3. Tree shows A.1 as A's child
+  const inputAfterAdd = baseInput({
+    items: [...baseInput().items, item],
+    records: [...ok.records, ...ok.splits],
+  })
+  const nodes = expandedTree(inputAfterAdd)
+  const aNode = nodes.find((n) => n.id.endsWith("system:manual-ab:a"))
+  const a1Node = nodes.find((n) => n.label === "A.1")
+  expect(aNode).toBeDefined()
+  expect(a1Node).toBeDefined()
+  expect(a1Node?.kind).toBe("section")
+  expect(a1Node?.depth).toBe(aNode!.depth + 1)
+
+  // 4. Then change Global's A text again: Project resolved text shows new Global A text, still followed by A.1 (not shadowed)
+  const updatedGlobalRecords = ok.records.map((r) =>
+    r.level === "global" && r.item === "system:manual-ab" && r.section === "a"
+      ? { ...r, text: "New Global A text." }
+      : r,
+  )
+  const resolvedUpdated = resolve({
+    upstream: item,
+    records: updatedGlobalRecords,
+    splits: ok.splits,
+    scopes: { global: new Set(["alpha"]), defaults: new Set() },
+    address,
+  })
+  expect(resolvedUpdated.assembled).toBe("New Global A text.\n\nA.1 child text.\n\nB original text.")
+})
+
+test("a on the last section of a manual item appends at the end", () => {
+  const manualText = "A original text.\nB original text.\n"
+  const item = {
+    id: "system:manual-ab",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Manual AB",
+    text: manualText,
+    enabled: true,
+    fingerprint: fingerprint(manualText),
+  }
+  const splitRecord = {
+    type: "split" as const,
+    level: "defaults" as const,
+    agent: null,
+    item: "system:manual-ab",
+    boundaries: [
+      { id: "a", name: "A", start: 0, depth: 0 },
+      { id: "b", name: "B", start: 17, depth: 0 },
+    ],
+    updated: "2026-10-08T00:00:00.000Z",
+  }
+  const input = baseInput({
+    items: [...baseInput().items, item],
+    records: [splitRecord],
+  })
+  const sectionBRowId = findId(input, "system:manual-ab:b")
+  const ok = addSection(input, sectionBRowId, "B.1", "B.1 child text.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  const nextSplit = ok.splits.find((s) => s.item === "system:manual-ab" && s.level === "project")
+  expect(nextSplit).toBeDefined()
+  const b1Boundary = nextSplit?.boundaries.find((b) => b.name === "B.1")
+  expect(b1Boundary).toBeDefined()
+  expect(b1Boundary?.start).toBe(manualText.length)
+  expect(b1Boundary?.depth).toBe(1)
+
+  const address = { level: "project" as const, agent: "alpha", item: "system:manual-ab", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(resolved.assembled).toBe("A original text.\nB original text.\n\nB.1 child text.")
+})
+
+test("added section can be toggled off and edited with assembled text reflecting it", () => {
+  const headingText = [
+    "## A",
+    "A text.",
+    "",
+    "## B",
+    "B text.",
+  ].join("\n")
+  const item = {
+    id: "system:heading-doc",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Heading Doc",
+    text: headingText,
+    enabled: true,
+    fingerprint: fingerprint(headingText),
+  }
+  const input = baseInput({ items: [...baseInput().items, item] })
+  const sectionARowId = findId(input, "system:heading-doc:a")
+  const ok = addSection(input, sectionARowId, "Child", "Child text.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  // Next input after adding section
+  const inputAfterAdd = baseInput({
+    items: [...baseInput().items, item],
+    records: [...ok.records, ...ok.splits],
+  })
+  const childRowId = findId(inputAfterAdd, "system:heading-doc:a/child")
+
+  // Toggle child off
+  const toggled = setEnabled(inputAfterAdd, childRowId, false)
+  if ("refusal" in toggled) throw new Error(`expected toggle success: ${toggled.refusal}`)
+  const address = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: null }
+  const resolvedOff = resolve({
+    upstream: item,
+    records: toggled.records,
+    splits: toggled.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(resolvedOff.assembled).not.toContain("Child text.")
+  expect(resolvedOff.assembled).toContain("A text.")
+  expect(resolvedOff.assembled).toContain("B text.")
+
+  // Edit child
+  const edited = saveText(inputAfterAdd, childRowId, "### Child\n\nEdited child text.")
+  if ("refusal" in edited) throw new Error(`expected edit success: ${edited.refusal}`)
+  const resolvedEdited = resolve({
+    upstream: item,
+    records: edited.records,
+    splits: edited.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(resolvedEdited.assembled).toContain("Edited child text.")
+})
+
 
 test("removalPlan on team member row returns team.removeAgent or refusal for shipped defaults", () => {
   const input = baseInput({

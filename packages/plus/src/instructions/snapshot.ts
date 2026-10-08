@@ -25,7 +25,6 @@ import {
   type ModelSettingsKey,
   type ModelSettingsRecord,
 } from "./model-settings.js"
-import type { CategoryRecord } from "./categories.js"
 import type { MemoInput, TeamInput } from "./tree.js"
 
 export function itemOf(item: Plus.SnapshotItem): Item {
@@ -140,6 +139,12 @@ function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
     ...(record.warming === undefined ? {} : { warming: record.warming }),
     ...(record.interval === undefined ? {} : { interval: record.interval }),
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+    ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+    ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+    ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+    ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+    ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+    ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
     ...(record.originalCandidate === undefined
       ? {}
@@ -215,6 +220,12 @@ export function modelSettingsRecordOf(record: Plus.SnapshotModelSettingsRecord):
     ...(record.interval === undefined ? {} : { interval: record.interval }),
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.effort === undefined ? {} : { effort: record.effort }),
+    ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+    ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+    ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+    ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+    ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+    ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
     updated: record.updated,
   }
 }
@@ -234,17 +245,6 @@ export function hostModelOf(record: Plus.SnapshotHostModel): HostModel {
             ...(record.warming.prompt === undefined ? {} : { prompt: record.warming.prompt }),
           },
         }),
-  }
-}
-
-export function categoryOf(record: Plus.SnapshotCategoryRecord): CategoryRecord {
-  return {
-    type: "category",
-    level: "global",
-    name: record.name,
-    order: record.order,
-    items: [...record.items],
-    updated: record.updated,
   }
 }
 
@@ -300,7 +300,8 @@ function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
     teams: (snapshot.teams ?? []).map(teamOf),
     modelSettings: (snapshot.modelSettings ?? []).map(modelSettingsRecordOf),
     hostModels: (snapshot.hostModels ?? []).map(hostModelOf),
-    categories: (snapshot.categories ?? []).map(categoryOf),
+    folders: snapshot.folders ?? [],
+    orders: snapshot.orders ?? [],
     ...presetStateOfSnapshot(snapshot),
   }
 }

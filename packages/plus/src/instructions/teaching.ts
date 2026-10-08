@@ -62,7 +62,7 @@ Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead
 
 ## Categories
 
-\`create({ kind: "category", name })\` adds a user category after Settings · Models · Compaction · Tools · Base · System · MCP; it is a tab for every owner at every level. \`set({ id, category: "<name>" | null })\` moves the whole item row (with its children) into that category or back to its home category. \`delete({ id: "category:<slug>", confirm: true })\` deletes a category and returns its rows home; the id is printed by \`create\` and likewise accepts a category's tree row id. \`list({ where: "category:<name>" })\` lists the rows in one category, in every owner. Assignments are display only: toggling, editing, inheritance and enforcement never change.
+\`create({ kind: "folder", name, id: "<tab or folder row id>" })\` adds a folder in that tab (or inside that folder); \`set({ id: "<folder row id>", rename: "<name>" })\` renames it; \`delete({ id: "<folder row id>", confirm: true })\` deletes it and its rows return in place. \`move({ id, into?, before?, after? })\` moves a row or folder into a folder or a tab's top level, or before or after a sibling in the same list; rows move only inside their own tab. Folders and order are display only: toggling, editing, inheritance and enforcement never change.
 
 Permission rows hang directly off each OpenCode/Plus tool row (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`. \`server:<name>\` matches a server's own \`mcp:<name>\` row as well as the rows under it, e.g. \`list({ where: "server:search" })\`.
 

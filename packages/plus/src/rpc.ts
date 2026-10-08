@@ -149,6 +149,7 @@ export const Boundary = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   start: Schema.Number,
+  depth: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.Boundary" })
 
 export type RecordState = typeof RecordState.Type
@@ -217,6 +218,12 @@ export const SnapshotModelRecord = Schema.Struct({
   warming: Schema.optionalKey(Schema.String),
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
+  compactWarm: Schema.optionalKey(Schema.String),
+  coldCompact: Schema.optionalKey(Schema.String),
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  compactionStrategy: Schema.optionalKey(Schema.String),
+  compactionModel: Schema.optionalKey(Schema.String),
+  compactionInstructions: Schema.optionalKey(Schema.String),
   removed: Schema.optionalKey(Schema.Literal(true)),
   originalCandidate: Schema.optionalKey(OriginalCandidate),
   updated: Schema.String,
@@ -236,6 +243,12 @@ export const SnapshotModelSettingsRecord = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
+  compactWarm: Schema.optionalKey(Schema.String),
+  coldCompact: Schema.optionalKey(Schema.String),
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  compactionStrategy: Schema.optionalKey(Schema.String),
+  compactionModel: Schema.optionalKey(Schema.String),
+  compactionInstructions: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotModelSettingsRecord" })
 
@@ -334,18 +347,29 @@ export const SnapshotPresetRecord = Schema.Struct({
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotPresetRecord" })
 
-// A user category (plan plus-1.1.12 T8): a user-named, display-only group of
-// item rows. Always global; carried in the Snapshot's own `categories` field
-// so instructions.mutate cannot drop it, like teams and links.
-export interface SnapshotCategoryRecord extends Schema.Schema.Type<typeof SnapshotCategoryRecord> {}
-export const SnapshotCategoryRecord = Schema.Struct({
-  type: Schema.Literal("category"),
+// Folders and display order (plus-1.2.0, folders.ts): global records carried in
+// the Snapshot's own `folders` and `orders` fields, so instructions.mutate
+// cannot drop them, like teams and links.
+export interface SnapshotFolderRecord extends Schema.Schema.Type<typeof SnapshotFolderRecord> {}
+export const SnapshotFolderRecord = Schema.Struct({
+  type: Schema.Literal("folder"),
   level: Schema.Literal("global"),
+  tab: Schema.String,
+  id: Schema.String,
   name: Schema.String,
-  order: Schema.Number,
+  parent: Schema.optionalKey(Schema.String),
   items: Schema.Array(Schema.String),
   updated: Schema.String,
-}).annotate({ identifier: "Plus.SnapshotCategoryRecord" })
+}).annotate({ identifier: "Plus.SnapshotFolderRecord" })
+
+export interface SnapshotOrderRecord extends Schema.Schema.Type<typeof SnapshotOrderRecord> {}
+export const SnapshotOrderRecord = Schema.Struct({
+  type: Schema.Literal("order"),
+  level: Schema.Literal("global"),
+  scope: Schema.String,
+  items: Schema.Array(Schema.String),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotOrderRecord" })
 
 // Every preset as the create pickers and the tree list them (Native, Plus,
 // User agent presets, then team presets each followed by its members). Native
@@ -448,7 +472,8 @@ export const Snapshot = Schema.Struct({
   links: Schema.optionalKey(Schema.Array(SnapshotLinkRecord)),
   entries: Schema.optionalKey(Schema.Array(SnapshotEntryRecord)),
   presets: Schema.optionalKey(Schema.Array(SnapshotPresetRecord)),
-  categories: Schema.optionalKey(Schema.Array(SnapshotCategoryRecord)),
+  folders: Schema.optionalKey(Schema.Array(SnapshotFolderRecord)),
+  orders: Schema.optionalKey(Schema.Array(SnapshotOrderRecord)),
   modelSettings: Schema.optionalKey(Schema.Array(SnapshotModelSettingsRecord)),
   hostModels: Schema.optionalKey(Schema.Array(SnapshotHostModel)),
   listing: Schema.optionalKey(Schema.Array(PresetListEntry)),
@@ -801,6 +826,12 @@ export const SetModelSettingsInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.NullOr(Schema.String)),
   prompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   effort: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactWarm: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldCompact: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldModels: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate({ identifier: "Plus.SetModelSettingsInput" })
 
 export interface SetModelSettingsOutput extends Schema.Schema.Type<typeof SetModelSettingsOutput> {}
@@ -816,47 +847,33 @@ export const ModelSettingsInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.ModelSettingsInvalid" })
 
-// User categories (plan plus-1.1.12 T8): create a category, move an item row
-// into one or back home, rename it, or delete it (rows return home). All
-// records live in the global store, so there is no level or scope.
-export type CategoryAction = typeof CategoryAction.Type
-export const CategoryAction = Schema.Union([
-  Schema.Literal("create"),
-  Schema.Literal("assign"),
-  Schema.Literal("rename"),
-  Schema.Literal("delete"),
-]).annotate({ identifier: "Plus.CategoryAction" })
-
-export interface CategoryMutateInput extends Schema.Schema.Type<typeof CategoryMutateInput> {}
-export const CategoryMutateInput = Schema.Struct({
-  action: CategoryAction,
-  /** create/rename: the category name (create) or the existing name/id (rename). */
-  name: Schema.optionalKey(Schema.String),
-  /** create/rename: the new name. */
-  to: Schema.optionalKey(Schema.String),
-  /** assign: the whole row's item id. */
-  item: Schema.optionalKey(Schema.String),
-  /** assign: the target category name, or null to move the row back home. */
-  category: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  /** delete: required. */
-  confirm: Schema.optionalKey(Schema.Boolean),
+// Folders and display order (plus-1.2.0, S1a): one write replaces the whole
+// folder and order sets. The plan (ops.ts planMove, folder plans) is made from
+// the snapshot at `expectedGlobalRevision`; a newer store refuses the write.
+export interface LayoutWriteInput extends Schema.Schema.Type<typeof LayoutWriteInput> {}
+export const LayoutWriteInput = Schema.Struct({
+  folders: Schema.Array(SnapshotFolderRecord),
+  orders: Schema.Array(SnapshotOrderRecord),
+  expectedGlobalRevision: Schema.Number,
+  /** The row or folder the change is about (the log's target). */
+  target: Schema.String,
+  status: Schema.String,
   actor: Schema.optionalKey(Actor),
-}).annotate({ identifier: "Plus.CategoryMutateInput" })
+}).annotate({ identifier: "Plus.LayoutWriteInput" })
 
-export interface CategoryMutateOutput extends Schema.Schema.Type<typeof CategoryMutateOutput> {}
-export const CategoryMutateOutput = Schema.Struct({
-  /** The category's id (`category:<slug>`) and name. */
-  id: Schema.String,
-  name: Schema.String,
+export interface LayoutWriteOutput extends Schema.Schema.Type<typeof LayoutWriteOutput> {}
+export const LayoutWriteOutput = Schema.Struct({
+  changed: Schema.Boolean,
   revision: Schema.Number,
   globalRevision: Schema.Number,
-}).annotate({ identifier: "Plus.CategoryMutateOutput" })
+  status: Schema.String,
+}).annotate({ identifier: "Plus.LayoutWriteOutput" })
 
-export interface CategoryInvalid extends Schema.Schema.Type<typeof CategoryInvalid> {}
-export const CategoryInvalid = Schema.Struct({
+export interface LayoutInvalid extends Schema.Schema.Type<typeof LayoutInvalid> {}
+export const LayoutInvalid = Schema.Struct({
   code: Schema.String,
   reason: Schema.String,
-}).annotate({ identifier: "Plus.CategoryInvalid" })
+}).annotate({ identifier: "Plus.LayoutInvalid" })
 
 export interface TeamRef extends Schema.Schema.Type<typeof TeamRef> {}
 export const TeamRef = Schema.Struct({
@@ -1151,12 +1168,26 @@ export const WarmingSetInput = Schema.Struct({
 }).annotate({ identifier: "Plus.WarmingSetInput" })
 
 // Compact before cold, per chat: on compacts an idle chat right before its
-// cache goes cold. Off in every new chat.
+// cache goes cold. "default" removes the chat's override, so the model's
+// effective `compactWarm` decides.
 export interface WarmingCompactInput extends Schema.Schema.Type<typeof WarmingCompactInput> {}
 export const WarmingCompactInput = Schema.Struct({
   sessionID: Schema.String,
-  on: Schema.Boolean,
+  on: Schema.Union([Schema.Boolean, Schema.Literal("default")]),
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
+
+// `/compact-cold`: compact now with the chat's cold-cache list, written by #1
+// with #2… as fallbacks. `no-list` names the Instructions row that adds one.
+export interface CompactColdInput extends Schema.Schema.Type<typeof CompactColdInput> {}
+export const CompactColdInput = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.CompactColdInput" })
+
+export type CompactColdResult = Schema.Schema.Type<typeof CompactColdResult>
+export const CompactColdResult = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), models: Schema.Array(Schema.String) }),
+  Schema.Struct({ ok: Schema.Literal(false), reason: Schema.Literal("no-list"), where: Schema.String }),
+]).annotate({ identifier: "Plus.CompactColdResult" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
 // Project checks (.opencodeplus/checks.json in the main checkout): what a team
@@ -1192,8 +1223,12 @@ export const ChecksInvalid = Schema.Struct({ reason: Schema.String }).annotate({
 export const WarmingStatus = Schema.Struct({
   sessionID: Schema.String,
   chat: Schema.Literals(["on", "off", "default"]),
-  /** Compact before cold is on for this chat; absent from an older server. */
+  /** The effective compact before cold for this chat; absent from an older server. */
   compact: Schema.optionalKey(Schema.Boolean),
+  /** The effective value's source: the chat's own switch, or its model. */
+  compactSource: Schema.optionalKey(Schema.Literals(["chat", "model"])),
+  /** The models cold arming would compact with first, when it applies. */
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
   /** When it compacts this chat, while a compaction is scheduled. */
   compactAt: Schema.optionalKey(Schema.Number),
   /** Latest compaction completed after the last real request; absent otherwise. */
@@ -1254,6 +1289,28 @@ export const MonitorQueryInput = Schema.Struct({
   /** A second window read with the same scope and filters, for side-by-side comparison. */
   compare: Schema.optionalKey(MonitorWindow),
 }).annotate({ identifier: "Plus.MonitorQueryInput" })
+
+export interface MonitorStepInput extends Schema.Schema.Type<typeof MonitorStepInput> {}
+export const MonitorStepInput = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.MonitorStepInput" })
+
+export type MonitorStepResult = Schema.Schema.Type<typeof MonitorStepResult>
+export const MonitorStepResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    stepID: Schema.String,
+    requestID: Schema.String,
+    miss: Schema.Boolean,
+    notReused: Schema.Number,
+    cause: Schema.optionalKey(Schema.String),
+    causeText: Schema.String,
+    changedPart: Schema.optionalKey(Schema.String),
+  }),
+]).annotate({ identifier: "Plus.MonitorStepResult" })
 
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
@@ -1355,9 +1412,11 @@ export const MonitorRequest = Schema.Struct({
       "prefix-changed",
       "cache-expired",
       "account-changed",
+      "account-changed-compacted-first",
       "unknown",
     ]),
   ),
+  causeText: Schema.optionalKey(Schema.String),
   confidence: Schema.optionalKey(Schema.Literals(["certain", "likely", "unknown"])),
   evidence: Schema.optionalKey(Schema.String),
   expected: Schema.optionalKey(Schema.Number),
@@ -2029,9 +2088,13 @@ const PortableWarmingSetInput = Schema.toStandardSchemaV1(WarmingSetInput.annota
 const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
   WarmingCompactInput.annotate({ identifier: "Plus.WarmingCompactInput" }),
 )
+const PortableCompactColdInput = Schema.toStandardSchemaV1(CompactColdInput)
+const PortableCompactColdResult = Schema.toStandardSchemaV1(CompactColdResult)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
+const PortableMonitorStepInput = Schema.toStandardSchemaV1(MonitorStepInput.annotate({ identifier: "Plus.MonitorStepInput" }))
+const PortableMonitorStepResult = Schema.toStandardSchemaV1(MonitorStepResult.annotate({ identifier: "Plus.MonitorStepResult" }))
 const PortableMonitorReport = Schema.toStandardSchemaV1(MonitorReport.annotate({ identifier: "Plus.MonitorReport" }))
 const PortableMonitorMarkInput = Schema.toStandardSchemaV1(MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }))
 const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
@@ -2083,14 +2146,14 @@ const PortableSetModelSettingsOutput = Schema.toStandardSchemaV1(
 const PortableModelSettingsInvalid = Schema.toStandardSchemaV1(
   ModelSettingsInvalid.annotate({ identifier: "Plus.ModelSettingsInvalid" }),
 )
-const PortableCategoryMutateInput = Schema.toStandardSchemaV1(
-  CategoryMutateInput.annotate({ identifier: "Plus.CategoryMutateInput" }),
+const PortableLayoutWriteInput = Schema.toStandardSchemaV1(
+  LayoutWriteInput.annotate({ identifier: "Plus.LayoutWriteInput" }),
 )
-const PortableCategoryMutateOutput = Schema.toStandardSchemaV1(
-  CategoryMutateOutput.annotate({ identifier: "Plus.CategoryMutateOutput" }),
+const PortableLayoutWriteOutput = Schema.toStandardSchemaV1(
+  LayoutWriteOutput.annotate({ identifier: "Plus.LayoutWriteOutput" }),
 )
-const PortableCategoryInvalid = Schema.toStandardSchemaV1(
-  CategoryInvalid.annotate({ identifier: "Plus.CategoryInvalid" }),
+const PortableLayoutInvalid = Schema.toStandardSchemaV1(
+  LayoutInvalid.annotate({ identifier: "Plus.LayoutInvalid" }),
 )
 const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ identifier: "Plus.TeamInvalid" }))
 const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
@@ -2328,11 +2391,11 @@ export const Definition = Rpc.define({
         "modelSettings.invalid": PortableModelSettingsInvalid,
       },
     },
-    "category.mutate": {
-      input: PortableCategoryMutateInput,
-      output: PortableCategoryMutateOutput,
+    "layout.write": {
+      input: PortableLayoutWriteInput,
+      output: PortableLayoutWriteOutput,
       errors: {
-        "category.invalid": PortableCategoryInvalid,
+        "layout.invalid": PortableLayoutInvalid,
       },
     },
     "team.addAgent": {
@@ -2453,9 +2516,19 @@ export const Definition = Rpc.define({
       output: PortableWarmingStatus,
       errors: {},
     },
+    "compaction.cold": {
+      input: PortableCompactColdInput,
+      output: PortableCompactColdResult,
+      errors: {},
+    },
     "monitor.query": {
       input: PortableMonitorQueryInput,
       output: PortableMonitorReport,
+      errors: {},
+    },
+    "monitor.step": {
+      input: PortableMonitorStepInput,
+      output: PortableMonitorStepResult,
       errors: {},
     },
     "monitor.mark": {

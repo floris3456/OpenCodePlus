@@ -16,6 +16,7 @@ import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { FollowupInput } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { consumeColdCompaction } from "../../src/teams/cold-compaction.js"
 import { warmingStore } from "../../src/warming.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -454,6 +455,83 @@ test("followup on a cold child the caller stopped fails E_STOPPED naming compact
     const error = rejected(result)
     expect(error.code).toBe("E_STOPPED")
     expect(error.message).toContain("compactWith")
+    expect(error.message).toContain("Compact cold caches with another model (a adds one)")
+  })
+})
+
+// A stopped, cold child whose chat runs on gemini-3.8-flash-high, with cold
+// lists set on that model's row and the session recording each compaction.
+async function coldStoppedChild(root: string, sessionID: string) {
+  const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", {
+    state: "stopped",
+    stoppedBy: "main-0123456789abcdef",
+    sessionID,
+  })
+  await saveRun(root, parent)
+  await saveRun(root, child)
+  const now = Date.now()
+  await warmingStore.decide(
+    {
+      sessionID: Session.ID.make(sessionID),
+      agent: Agent.ID.make("implementer"),
+      model: Model.Ref.make({ providerID: Provider.ID.make("cliproxyapi"), id: Model.ID.make("gemini-3.8-flash-high") }),
+      phase: "warm",
+      since: now - 300000,
+      now: now - 300000,
+      settings: { prompt: "ping", interval: 60000, duration: 120000 },
+    },
+    {},
+  )
+  const state = {
+    ...teamState(),
+    cachedModelSettings: [
+      {
+        type: "modelSettings" as const,
+        level: "defaults" as const,
+        updated: "2026-01-01T00:00:00.000Z",
+        providerID: "cliproxyapi",
+        modelID: "gemini-3.8-flash-high",
+        coldCompact: "on",
+        coldModels: ["cliproxyapi/claude-haiku-5-5", "cliproxyapi/deepseek-v4.1-flash-cheap"],
+      },
+    ],
+  }
+  const compacted: Array<readonly string[] | undefined> = []
+  const sessions = recordSession()
+  const ctx = context({
+    session: {
+      ...sessions.domain,
+      get: () =>
+        Effect.succeed({
+          id: Session.ID.make(sessionID),
+          agent: "implementer",
+          model: { providerID: "cliproxyapi", id: "gemini-3.8-flash-high" },
+        }),
+      compact: () => {
+        compacted.push(consumeColdCompaction(sessionID))
+        return Effect.succeed(undefined as never)
+      },
+    } as unknown as SessionDomain,
+  })
+  return { parent, child, state, ctx, compacted }
+}
+
+test("followup on a cold stopped child without compactWith compacts with the child's own cold list", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child, state, ctx, compacted } = await coldStoppedChild(root, "ses_stopped_cold_list")
+    const api = createTeamApi(ctx, state)
+    const result = await api.followup(followupInput({ run: child.id }), callerFor(parent))
+    expect(required(result)).toMatchObject({ state: "admitted" })
+    expect(compacted).toEqual([["cliproxyapi/claude-haiku-5-5", "cliproxyapi/deepseek-v4.1-flash-cheap"]])
+  })
+})
+
+test("followup with compactWith arms that one model, not the child's cold list", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child, state, ctx, compacted } = await coldStoppedChild(root, "ses_stopped_cold_explicit")
+    const api = createTeamApi(ctx, state)
+    await api.followup(followupInput({ run: child.id, compactWith: "cliproxyapi/deepseek-v4.1-flash-cheap" }), callerFor(parent))
+    expect(compacted).toEqual([["cliproxyapi/deepseek-v4.1-flash-cheap"]])
   })
 })
 

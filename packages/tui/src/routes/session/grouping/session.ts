@@ -1,4 +1,9 @@
-import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
+import type {
+  SessionMessageAgentSelected,
+  SessionMessageAssistant,
+  SessionMessageInfo,
+  SessionMessageModelSelected,
+} from "@opencode/client"
 import { groupEntries, mergeGroups, splitGroups, type GroupNode } from "./tree"
 
 export type PartRef = {
@@ -17,6 +22,8 @@ export type SessionEntry =
   | { type: "part"; ref: PartRef }
   | { type: "assistant-footer"; messageID: string }
   | { type: "turn-usage"; messageIDs: string[]; previousCache?: CacheUsage }
+  /** Optimistic switch row drawn with a pending prompt until its durable message arrives. */
+  | { type: "switch-pending"; message: SessionMessageAgentSelected | SessionMessageModelSelected }
 
 export type GroupKind = "activity" | "reasoning" | "exploration" | "instructions"
 export type SessionNode = GroupNode<SessionEntry, GroupKind>

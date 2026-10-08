@@ -1,4 +1,4 @@
-import { catalogueOf, resolve, resolveEnabled, resolveSplit } from "./model.js"
+import { catalogueOf, resolve, resolveEnabled, resolveSplit, scopedTo } from "./model.js"
 import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
 import type {
@@ -18,7 +18,7 @@ import type {
 } from "./model.js"
 import type { Split } from "./sections.js"
 import type { TeamLevel } from "./teams.js"
-import type { CategoryRecord } from "./categories.js"
+import type { FolderRecord, OrderRecord } from "./folders.js"
 
 export interface TeamInput {
   /** Teams exist at project, global and defaults; team presets are not TeamInputs. */
@@ -38,8 +38,9 @@ export interface MemoInput extends PresetState {
   readonly modelSettings?: readonly ModelSettingsRecord[]
   /** Per-model host configuration (opencode.json) and catalog variants, for the Defaults › Models rows. */
   readonly hostModels?: readonly HostModel[]
-  /** User categories (plan plus-1.1.12 T8): display-only groups of item rows, global. */
-  readonly categories?: readonly CategoryRecord[]
+  /** Folders of rows inside each tab, and the display order of tab tops and the sidebar (display only). */
+  readonly folders?: readonly FolderRecord[]
+  readonly orders?: readonly OrderRecord[]
 }
 
 export interface BuildContext {
@@ -61,8 +62,10 @@ export interface BuildContext {
   readonly modelSettings: readonly ModelSettingsRecord[]
   /** Per-model host configuration and catalog variants. */
   readonly hostModels: readonly HostModel[]
-  /** User categories (display-only groups of item rows), in record order. */
-  readonly categories: readonly CategoryRecord[]
+  /** Folders, in record order. */
+  readonly folders: readonly FolderRecord[]
+  /** Display orders, in record order. */
+  readonly orders: readonly OrderRecord[]
 }
 
 export function contextOf(input: MemoInput): BuildContext {
@@ -88,7 +91,8 @@ export function contextOf(input: MemoInput): BuildContext {
     teams: input.teams ?? [],
     modelSettings: input.modelSettings ?? [],
     hostModels: input.hostModels ?? [],
-    categories: input.categories ?? [],
+    folders: input.folders ?? [],
+    orders: input.orders ?? [],
   }
 }
 
@@ -282,12 +286,16 @@ export function splitOf(memo: Memo, level: Level, owner: string | null, item: It
   const cached = memo.split.get(key)
   if (cached !== undefined) return cached
   const whole = wholeOf(memo, level, owner, item, catalogue, team)
+  const addr = addressOf(level, owner, item.id, null, catalogue, team)
+  const hasManual = memo.ctx.splits.some((s) => s.item === item.id && scopedTo(s, addr))
+  const hasSectionOverrides = memo.ctx.customizations.some((c) => c.item === item.id && c.section !== null && c.text !== undefined && scopedTo(c, addr))
+  const text = !hasManual && hasSectionOverrides ? (whole.fullText ?? whole.assembled ?? whole.text) : whole.text
   const split = resolveSplit({
-    text: whole.text,
+    text,
     title: item.title,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,
-    address: addressOf(level, owner, item.id, null, catalogue, team),
+    address: addr,
   })
   memo.split.set(key, split)
   return split

@@ -95,6 +95,7 @@ import {
   createSessionRows,
   legacyTurns,
   messageBoundaryIDs,
+  promptPendingSwitches,
   resolvePart,
   sessionRowID,
   turnDuration,
@@ -281,6 +282,14 @@ export function Session(props: {
     (id) => {
       if (id === sessionID) setRowsSynced(true)
     },
+    () =>
+      promptPendingSwitches({
+        pending: data.session.pending.list(route.sessionID),
+        previousAgent: session()?.agent,
+        previousModel: session()?.model,
+        agent: local.agent.current()?.id,
+        model: local.model.selection(),
+      }),
   )
   const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
   const anchors = createTimelineAnchors()
@@ -1577,6 +1586,9 @@ function SessionEntryView(props: { row: SessionEntry; message: SessionRowViewPro
       <Match when={props.row.type === "compaction-queued"}>
         <CompactionQueued />
       </Match>
+      <Match when={props.row.type === "switch-pending" ? props.row : undefined}>
+        {(row) => <SessionSwitchMessageV2 message={row().message} />}
+      </Match>
       <Match when={props.row.type === "part" ? props.row : undefined}>
         {(row) => <SessionPartView partRef={row().ref} message={props.message} images={props.images} />}
       </Match>
@@ -2021,8 +2033,26 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
   const plugins = usePlugin()
   const status = () => props.message.status
   const cancelled = () => props.message.status === "failed" && props.message.error.type === "aborted"
+  // Every compaction line names the model that wrote (or tried to write) the
+  // summary, which may differ from the chat's own model. A failed compaction
+  // carries it once core records the attempted model; older rows have none.
+  const model = createMemo(() => {
+    const ref = "model" in props.message ? props.message.model : undefined
+    if (!ref) return
+    const name = ctx.models().find((item) => item.providerID === ref.providerID && item.id === ref.id)?.name
+    return `${name ?? ref.id}${ref.variant ? ` (${ref.variant})` : ""}`
+  })
+  // A failed compaction puts a short error's first line on the line itself
+  // ("✗ Compaction · model · error"); the rest, or a long error, shows below.
+  const failure = createMemo(() =>
+    props.message.status === "failed" && !cancelled() ? props.message.error.message.trim() : "",
+  )
+  const headline = () => {
+    const first = failure().split("\n")[0]
+    return first.length <= 72 ? first : ""
+  }
   const text = () =>
-    props.message.status === "failed" ? (cancelled() ? "" : props.message.error.message) : props.message.summary
+    props.message.status === "failed" ? failure().slice(headline().length) : props.message.summary
   const content = createMemo(() => text().trim())
   const color = () => (status() === "failed" && !cancelled() ? theme.text.feedback.error.base : theme.text.muted)
   // Usage of the compaction request itself; the resulting context size only shows on the next assistant step.
@@ -2054,8 +2084,14 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
               ? "Provider compaction"
               : "Compaction"}
           </text>
+          <Show when={model()}>
+            <text fg={color()}>· {model()}</text>
+          </Show>
           <Show when={cancelled()}>
             <text fg={color()}>· cancelled</text>
+          </Show>
+          <Show when={headline()}>
+            <text fg={color()}>· {headline()}</text>
           </Show>
           <Show when={usage()}>
             <text fg={color()}>· {usage()}</text>

@@ -1,13 +1,14 @@
 diff --git a/node_modules/@opentui/core/.bun-tag-1db9d276e4d6a951 b/.bun-tag-1db9d276e4d6a951
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@opentui/core/.bun-tag-e1d1e85b5fa329ca b/.bun-tag-e1d1e85b5fa329ca
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/chunk-bun-9gqvxy8c.js b/chunk-bun-9gqvxy8c.js
-index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f982867197a430c8 100644
+index a688fc1ab712acd2bdff182911b88472aed527b9..e78058fc587aa6de6de5ad5ac178a02e4c298d92 100644
 --- a/chunk-bun-9gqvxy8c.js
 +++ b/chunk-bun-9gqvxy8c.js
-@@ -5166,8 +5166,62 @@
-   if (codepoint === 0 && text === "") {
-     return null;
+@@ -5168,6 +5168,60 @@ function parseKittyKeyboard(sequence) {
    }
    return key;
  }
@@ -68,10 +69,7 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
  
  // src/lib/parse.keypress.ts
  var metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/;
-@@ -5379,7 +5433,13 @@
-   if (options.useKittyKeyboard) {
-     const kittyResult = parseKittyKeyboard(s);
-     if (kittyResult) {
+@@ -5382,6 +5436,12 @@ var parseKeypress = (s = "", options = {}) => {
        return kittyResult;
      }
    }
@@ -82,6 +80,8 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
 +    }
 +  }
    const modifyOtherKeysMatch = modifyOtherKeysRe.exec(s);
+   if (modifyOtherKeysMatch) {
+     const modifier = parseInt(modifyOtherKeysMatch[1], 10) - 1;
 @@ -6208,7 +6268,7 @@ class ASCIIFontSelectionHelper {
  }
  // src/lib/stdin-parser.ts
@@ -115,16 +115,13 @@ index a688fc1ab712acd2bdff182911b88472aed527b9..bdc07fd42e993498631e06d1f9828671
    }
    drain(onEvent) {
      this.ensureAlive();
-@@ -6749,9 +6817,9 @@ class StdinParser {
-     this.suspendedPixelResolutionPrefixLength = this.pending.length;
-     this.clearTimeout();
+@@ -6751,7 +6819,7 @@ class StdinParser {
    }
    resumePendingTimeout() {
      this.ensureAlive();
 -    if (this.pending.length === 0)
--      this.pendingTimeoutPaused = false;
 +    if (!this.hasPendingPixelResolutionResponse())
-+      this.pendingTimeoutPaused = false;
+       this.pendingTimeoutPaused = false;
      this.reconcileTimeoutState();
    }
 @@ -6784,6 +6852,12 @@ class StdinParser {
@@ -363,12 +360,10 @@ index db548a77a33608f7d57dc3d3d96443855bb61e95..a5061477a4505daaf04f3aad91a30727
      if (this.memorySnapshotTimer) {
        this.clock.clearInterval(this.memorySnapshotTimer);
 diff --git a/chunk-node-f647ts9q.js b/chunk-node-f647ts9q.js
-index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e2730eb4b 100644
+index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..8f7f4ce174d415301fc6be458e06bfc00e513fd2 100644
 --- a/chunk-node-f647ts9q.js
 +++ b/chunk-node-f647ts9q.js
-@@ -5197,8 +5197,62 @@
-   if (codepoint === 0 && text === "") {
-     return null;
+@@ -5199,6 +5199,60 @@ function parseKittyKeyboard(sequence) {
    }
    return key;
  }
@@ -429,10 +424,7 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
  
  // src/lib/parse.keypress.ts
  var metaKeyCodeRe = /^(?:\x1b)([a-zA-Z0-9])$/;
-@@ -5410,7 +5464,13 @@
-   if (options.useKittyKeyboard) {
-     const kittyResult = parseKittyKeyboard(s);
-     if (kittyResult) {
+@@ -5413,6 +5467,12 @@ var parseKeypress = (s = "", options = {}) => {
        return kittyResult;
      }
    }
@@ -443,6 +435,8 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
 +    }
 +  }
    const modifyOtherKeysMatch = modifyOtherKeysRe.exec(s);
+   if (modifyOtherKeysMatch) {
+     const modifier = parseInt(modifyOtherKeysMatch[1], 10) - 1;
 @@ -6239,7 +6299,7 @@ class ASCIIFontSelectionHelper {
  }
  // src/lib/stdin-parser.ts
@@ -476,16 +470,13 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
    }
    drain(onEvent) {
      this.ensureAlive();
-@@ -6780,9 +6848,9 @@ class StdinParser {
-     this.suspendedPixelResolutionPrefixLength = this.pending.length;
-     this.clearTimeout();
+@@ -6782,7 +6850,7 @@ class StdinParser {
    }
    resumePendingTimeout() {
      this.ensureAlive();
 -    if (this.pending.length === 0)
--      this.pendingTimeoutPaused = false;
 +    if (!this.hasPendingPixelResolutionResponse())
-+      this.pendingTimeoutPaused = false;
+       this.pendingTimeoutPaused = false;
      this.reconcileTimeoutState();
    }
 @@ -6815,6 +6883,12 @@ class StdinParser {
@@ -501,6 +492,32 @@ index 79ac5288da91205e1a61ff1efe9640f7e242cb5d..d0d1b92e6c06a2ed05823561785c306e
        switch (this.state.tag) {
          case "ground": {
            this.unitStart = this.cursor;
+diff --git a/index.bun.js b/index.bun.js
+index e7dd1a318cd29ad9b59696a27e3fae0064ec1260..d0bcaadc5993415258915ff61aeeb4a5751a1c34 100644
+--- a/index.bun.js
++++ b/index.bun.js
+@@ -12035,8 +12035,6 @@ class MarkdownRenderable extends Renderable {
+     return this.createChunk(text, "default");
+   }
+   createInitialStyledText(token) {
+-    if (!this._streaming)
+-      return;
+     const chunks = [];
+     if ("tokens" in token && Array.isArray(token.tokens)) {
+       this.renderInlineContent(token.tokens, chunks);
+diff --git a/index.node.js b/index.node.js
+index 77c786b3e49fe6e0ec5e1ca3115cc6a5a22a6307..982ecdd177dfd1e6a922e988b2dae44aa571a605 100644
+--- a/index.node.js
++++ b/index.node.js
+@@ -12034,8 +12034,6 @@ class MarkdownRenderable extends Renderable {
+     return this.createChunk(text, "default");
+   }
+   createInitialStyledText(token) {
+-    if (!this._streaming)
+-      return;
+     const chunks = [];
+     if ("tokens" in token && Array.isArray(token.tokens)) {
+       this.renderInlineContent(token.tokens, chunks);
 diff --git a/lib/stdin-parser.d.ts b/lib/stdin-parser.d.ts
 index 9eac23a0a6726f6a9e089a8bc6e801b9ba29e2fc..28c758a943af8e4b374694a0e3ef8401bad4793b 100644
 --- a/lib/stdin-parser.d.ts

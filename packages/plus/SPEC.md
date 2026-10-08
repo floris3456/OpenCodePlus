@@ -1162,6 +1162,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `modelSettings.set` | `{ providerID?, modelID?, warming?, interval?, prompt?, effort? }` (strings set, `null` clears, absent leaves; no ids = Every model) | `SetModelSettingsOutput` (`{ record: SnapshotModelSettingsRecord \| null, revision, globalRevision }`) | `modelSettings.invalid` |
 | `warming.status` | `{ sessionID }` | `WarmingStatus` (`{ sessionID, chat: on\|off\|default, active, source?, level?, since?, expires?, interval?, lastWarm?, now }`) | — |
 | `warming.set` | `{ sessionID, chat: on\|off\|default }` | `WarmingStatus` | — |
+| `compaction.cold` | `{ sessionID }` | `{ ok: true, models }` after arming the chat's cold list (#1 writes, #2… fall back) and asking core for a manual compaction; `{ ok: false, reason: "no-list", where }` when the list is empty, with no compaction | — |
 | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
 | `rule.remove` | `{ level, agent, tool, id, actor? }` | `RuleRef` | `rule.missing`, `rule.invalid`, `agent.protected` |
 | `rule.update` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.invalid`, `agent.protected` |

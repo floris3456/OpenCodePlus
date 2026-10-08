@@ -1,4 +1,10 @@
-import type { SessionInboxEnqueued, SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
+import type {
+  SessionInboxEnqueued,
+  SessionMessageAgentSelected,
+  SessionMessageAssistant,
+  SessionMessageInfo,
+  SessionMessageModelSelected,
+} from "@opencode/client"
 import { createEffect, on, onCleanup, type Accessor } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useConfig } from "../../config"
@@ -43,7 +49,11 @@ export async function completeGroupBoundary(input: {
   }
 }
 
-export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessionID: string) => void) {
+export function createSessionRows(
+  sessionID: Accessor<string>,
+  onSynced?: (sessionID: string) => void,
+  switches: () => readonly PendingSwitch[] = () => [],
+) {
   const data = useData()
   const client = useClient()
   const config = useConfig()
@@ -66,6 +76,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
       inputs,
       turnTokens(),
       verbosity(),
+      switches(),
     )
     partitionPending(rows, pendingPermissions())
     const position = rows.findIndex((row) => row.type === "message" && inputs.has(row.messageID))
@@ -137,7 +148,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
       () =>
         data.session.pending.list(sessionID()).flatMap((item) => {
           if (item.type === "compaction") return [`${item.id}:compaction`]
-          if (item.type === "user" && item.delivery === "queue") return [`${item.id}:queue`]
+          if (item.type === "user") return [`${item.id}:${item.delivery}`]
           return []
         }),
       () => setRows(reconcile(reduce())),
@@ -310,15 +321,59 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
   return rows
 }
 
+export type PendingSwitchMessage =
+  | Pick<SessionMessageAgentSelected, "type" | "agent" | "previous">
+  | Pick<SessionMessageModelSelected, "type" | "model" | "previous">
+
+/** A switch the pending prompt will commit, drawn before its durable message arrives. */
+export type PendingSwitch = {
+  messageID: string
+  switch: PendingSwitchMessage
+}
+
+/**
+ * The switch rows a pending prompt should draw optimistically: its composer agent
+ * and model against the chat's last recorded ones, for steered prompts only.
+ */
+export function promptPendingSwitches(input: {
+  pending: readonly { id: string; type: string; delivery?: string }[]
+  previousAgent: string | undefined
+  previousModel: { providerID: string; id: string; variant?: string } | undefined
+  agent: string | undefined
+  model: { providerID: string; modelID: string; variant?: string } | undefined
+}): PendingSwitch[] {
+  return input.pending.flatMap((item): PendingSwitch[] => {
+    if (item.type !== "user" || item.delivery === "queue") return []
+    const switches: PendingSwitch[] = []
+    if (input.agent && input.previousAgent !== input.agent)
+      switches.push({
+        messageID: item.id,
+        switch: { type: "agent-switched", agent: input.agent, previous: input.previousAgent },
+      })
+    if (input.model && !sameModel(input.model, input.previousModel))
+      switches.push({
+        messageID: item.id,
+        switch: {
+          type: "model-switched",
+          model: { providerID: input.model.providerID, id: input.model.modelID, variant: input.model.variant },
+          previous: input.previousModel,
+        },
+      })
+    return switches
+  })
+}
+
 export function reduceSessionRows(
   messages: SessionMessageInfo[],
   inputs = new Set<string>(),
   turnTokens = false,
   verbosity: Verbosity = defaultVerbosity,
+  switches: readonly PendingSwitch[] = [],
 ) {
   const isInput = (message: SessionMessageInfo) => inputs.has(message.id)
   const pendingCompactions = messages.filter((message) => message.type === "compaction" && message.status === "running")
   const pending = new Set([...pendingCompactions.map((message) => message.id), ...inputs])
+  const pendingSwitches = switches.filter((item) => inputs.has(item.messageID) && !durableSwitch(messages, item.switch))
   const usage = turnTokens
     ? { steps: [] as SessionMessageAssistant[], previousTurnCache: undefined as CacheUsage | undefined }
     : undefined
@@ -352,6 +407,23 @@ export function reduceSessionRows(
       }
       if (message.type === "synthetic" && !message.description?.trim()) return rows
       if (message.type === "compaction" && message.status === "completed" && usage) usage.previousTurnCache = undefined
+      if (pending.has(message.id)) {
+        for (const item of pendingSwitches) {
+          if (item.messageID !== message.id) continue
+          rows.push({
+            entry: {
+              type: "switch-pending",
+              message: {
+                id: `pending-switch:${message.id}:${item.switch.type}`,
+                time: { created: message.time.created },
+                ...item.switch,
+              } as SessionMessageAgentSelected | SessionMessageModelSelected,
+            },
+            path: [],
+            closesPrevious: true,
+          })
+        }
+      }
       rows.push({
         entry: { type: "message", messageID: message.id },
         path: messagePath(message, verbosity),
@@ -378,6 +450,27 @@ export function reduceSessionRows(
     return rows
   }, [])
   return projectEntries(entries)
+}
+
+/** A pending prompt's switch is optimistic until its durable row is the newest of its kind. */
+function durableSwitch(messages: SessionMessageInfo[], pending: PendingSwitchMessage) {
+  const latest = messages.findLast((message) => message.type === pending.type)
+  if (pending.type === "agent-switched") return latest?.type === "agent-switched" && latest.agent === pending.agent
+  return latest?.type === "model-switched" && modelKey(latest.model) === modelKey(pending.model)
+}
+
+function modelKey(model: { providerID: string; id: string; variant?: string }) {
+  return `${model.providerID}/${model.id}/${model.variant ?? "default"}`
+}
+
+function sameModel(
+  current: { providerID: string; modelID: string; variant?: string },
+  previous: { providerID: string; id: string; variant?: string } | undefined,
+) {
+  if (!previous) return false
+  return (
+    modelKey({ providerID: current.providerID, id: current.modelID, variant: current.variant }) === modelKey(previous)
+  )
 }
 
 export function cacheReuseDrop(previous: CacheUsage | undefined, current: CacheUsage) {

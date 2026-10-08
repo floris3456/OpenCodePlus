@@ -158,7 +158,7 @@ test("origin subgroups describe each population at every level and in Presets", 
 })
 
 test("every shared Defaults inventory category describes both catalogues", () => {
-  for (const category of ["settings", "models", "compaction", "tools", "base", "system", "mcp"] as const) {
+  for (const category of ["settings", "models", "tools", "base", "system", "mcp"] as const) {
     expect(detail(`group:defaults::${category}`)).toBeDefined()
     expect(detail(`group:defaults:/teams:${category}`)).toBeDefined()
   }
@@ -171,7 +171,7 @@ test("every shared Defaults inventory category describes both catalogues", () =>
 })
 
 test("owner categories name the agent, member, preset or maintenance agent they belong to", () => {
-  for (const category of ["settings", "models", "compaction", "tools", "base", "system"] as const) {
+  for (const category of ["settings", "models", "tools", "base", "system"] as const) {
     expect(detail(`group:project:alice:${category}`)).toBeDefined()
     expect(detail(`group:project:crew/:mate:${category}`)).toBeDefined()
     expect(detail(`group:project:crew/:special:compaction:${category}`)).toBeDefined()

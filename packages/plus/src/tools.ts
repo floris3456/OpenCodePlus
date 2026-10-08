@@ -4,6 +4,7 @@ import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
+import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
 import {
   activateModelRow,
   addSection,
@@ -19,7 +20,14 @@ import {
   isModelRowId,
   isPermRowId,
   parseModelText,
+  planFolderCreate,
+  planFolderDelete,
+  planFolderRename,
+  planRowMove,
   removalPlan,
+  rowToken,
+  type LayoutChange,
+  type LayoutRecords,
   removeModelRow,
   reset,
   resetModelFieldRow,
@@ -64,7 +72,7 @@ import {
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
-import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
+import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
 import { buildTreeMemo } from "./instructions/tree.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
@@ -79,15 +87,18 @@ import {
   modelDefaultValue,
   modelDefaultView,
   modelSettingEffective,
+  MODEL_DEFAULT_FIELDS,
+  MODEL_SETTINGS_FIELDS,
   parseModelDefaultItemId,
   parseModelFieldItemId,
   parseModelSettingItemId,
   settingsFor,
+  type ModelDefaultField,
   type ModelSettingsField,
   type ModelSettingsKey,
 } from "./instructions/model-settings.js"
 import { presetListing } from "./instructions/presets.js"
-import { categorySlugFromId, isCategoryGroupId } from "./instructions/categories.js"
+import { folderIdOfRef } from "./instructions/folders.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
@@ -108,21 +119,26 @@ const ShowDescription =
   "Resolved rows expose stateFrom and textFrom owner identities separately; from remains the state-source label.\n" +
   "Views: resolved (default), upstream, mine, diff, record, sections, assembled (agent rows only).\n" +
   "Team and member rows carry no text: resolved returns the entity (level, team, enabled/members, or member registered), record nests it under record.\n" +
-  "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary.\n" +
+  "Diff returns two unified diffs (original→mine, original→upstream), a one-line summary, and merge: the merge units (id, kind, yours, upstream, base, included) with the default merged text.\n" +
   "A Defaults › Models row resolves to a summary with each effective keep-alive value and the layer it came from."
 
 const SetDescription =
   "Save an override, toggle, pin, set when shown, activate a model, resolve review or relink (TUI Enter/Space/p/w/k/t/e/l).\n" +
   "On a group row id, state on|off turns every row under it on or off in one write (a bare id toggles the group: all on means all off, otherwise all on); protected rows are skipped and named, team groups refuse.\n" +
   "Enabling a team is exclusive across loaded project/global/defaults records; disabledTeams reports the other teams disabled by this save.\n" +
-  "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
+  "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review, with resolve merge and include:[unit ids from show's merge.units] save that merge (no include = the defaults; a merge equal to upstream is a take).\n" +
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
-  "category moves the row into a user category by name, or null moves it back to its home category; the row and its children then list there in every owner (display only).\n" +
+  "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
+
+const MoveDescription =
+  "Move a row or folder (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
+  "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
+  "Moves are display only: nothing here changes what the model sees. Sections cannot move yet."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -142,7 +158,7 @@ const CreateDescription =
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
   "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
-  "category (name; a user category other rows move into),\n" +
+  "folder (name, id = the tab row or folder row to create it in; a folder groups rows inside one tab, display only),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
@@ -224,7 +240,12 @@ const SetInput = Schema.Struct({
       "condition (the level above, or the section's own <!-- requires --> line, decides). Shown as \"shown when\".",
   }),
   active: Schema.optionalKey(Schema.Boolean),
-  resolve: Schema.optionalKey(Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit")])),
+  resolve: Schema.optionalKey(
+    Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit"), Schema.Literal("merge")]),
+  ),
+  include: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+    description: "With resolve merge: the unit ids (show's merge.units) to include; omitted = the defaults.",
+  }),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -234,17 +255,19 @@ const SetInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
-  category: Schema.optionalKey(Schema.NullOr(Schema.String)).annotate({
-    description:
-      "Move this whole item row into a user category by name, or null to move it back to its home category. " +
-      "Display only: rows and their children list under the category in every owner.",
-  }),
   rename: Schema.optionalKey(Schema.String).annotate({
     description:
-      "Rename this agent, on-disk team member or Project/Global team row to this new name/id. " +
+      "Rename this agent, on-disk team member or Project/Global team row to this new name/id, or a folder row to a new name. " +
       "Everything that names it follows in one store revision; built-ins, shipped Defaults rows, " +
       "ancestor-backed agents and Protected agents (tool actor) refuse.",
   }),
+})
+
+const MoveInput = Schema.Struct({
+  id: Schema.String,
+  into: Schema.optionalKey(Schema.String),
+  before: Schema.optionalKey(Schema.String),
+  after: Schema.optionalKey(Schema.String),
 })
 
 const ResetInput = Schema.Struct({
@@ -254,7 +277,7 @@ const ResetInput = Schema.Struct({
 const SplitInput = Schema.Struct({
   id: Schema.String,
   boundaries: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, start: Schema.Number })),
+    Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, start: Schema.Number, depth: Schema.optionalKey(Schema.Number) })),
   ),
   add: Schema.optionalKey(Schema.Struct({ name: Schema.String, text: Schema.String })),
 })
@@ -274,7 +297,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("preset"),
     Schema.Literal("teamPreset"),
     Schema.Literal("presetMember"),
-    Schema.Literal("category"),
+    Schema.Literal("folder"),
   ]),
   id: Schema.optionalKey(Schema.String),
   scope: Schema.optionalKey(
@@ -374,23 +397,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (input.category !== undefined) {
-            const item = node.address?.item
-            if (node.kind !== "item" || item === undefined || node.address?.section !== null || isCategoryGroupId(node.id))
-              return yield* Effect.fail(new Tool.Error({ message: `category.invalid: "${node.label}" is not an item row that can be moved` }))
-            const moved = yield* Effect.promise(() =>
-              api.category({ action: "assign", item, category: input.category ?? null, actor }),
-            )
-            if (!moved.ok) return yield* Effect.fail(new Tool.Error({ message: `${moved.error.code}: ${moved.error.message}` }))
-            return {
-              output: {
-                id: input.id,
-                category: input.category,
-                status: input.category === null ? `Moved "${node.label}" home` : `Moved "${node.label}" to "${input.category}"`,
-                revision: moved.value.revision,
-                globalRevision: moved.value.globalRevision,
-              },
-            }
+          const folderId = folderIdOfRef(rowToken(node) ?? "")
+          if (folderId !== undefined) {
+            if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
+            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString()), actor)
+            return { output: { id: input.id, ...applied } }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
           if (isModelFieldRowId(input.id)) return yield* setModelField(api, snapshot, memo, input.id, actor, input)
@@ -411,10 +422,33 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
-          const op = computeSet(memo, input, treeMemo)
+          if (input.include !== undefined && input.resolve !== "merge")
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
+          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+        }),
+    })
+    editor.add({
+      name: "move",
+      description: MoveDescription,
+      input: MoveInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: (input, context) =>
+        Effect.gen(function* () {
+          const actor = actorFrom(context)
+          const snapshot = yield* snapshotOrFail(api)
+          const memo = memoFromSnapshot(snapshot)
+          const node = findRow(memo, input.id)
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+          const protectedAgent = protectedOf(snapshot, node)
+          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          const change = planRowMove(memo, layoutOf(snapshot), input.id, input, new Date().toISOString())
+          const applied = yield* applyLayout(api, snapshot, change, actor)
+          return { output: { id: input.id, ...applied } }
         }),
     })
     editor.add({
@@ -498,13 +532,10 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const categoryName = categoryIdOf(input.id)
-          if (categoryName !== undefined) {
-            const removed = yield* Effect.promise(() =>
-              api.category({ action: "delete", name: categoryName, confirm: true, actor }),
-            )
-            if (!removed.ok) return yield* Effect.fail(new Tool.Error({ message: `${removed.error.code}: ${removed.error.message}` }))
-            return { output: { id: input.id, status: `Deleted category "${removed.value.name}"`, revision: removed.value.revision, globalRevision: removed.value.globalRevision } }
+          const folderId = folderIdOfInput(memo, input.id)
+          if (folderId !== undefined) {
+            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString()), actor)
+            return { output: { id: input.id, ...applied } }
           }
           const node = findRow(memo, input.id)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
@@ -632,11 +663,41 @@ function isOwnerLevel(value: string | undefined): value is "project" | "global" 
   return value === "project" || value === "global" || value === "defaults"
 }
 
-// The category a delete id names: a `category:<slug>` id or any category group
-// row id (`…:category:<slug>`).
-function categoryIdOf(id: string): string | undefined {
-  if (!id.startsWith("category:") && !isCategoryGroupId(id)) return undefined
-  return categorySlugFromId(id)
+// The folder a delete id names: `folder:<id>` or a folder row's id.
+function folderIdOfInput(memo: MemoInput, id: string): string | undefined {
+  if (id.startsWith("folder:")) return id.slice("folder:".length)
+  const node = findRow(memo, id)
+  const token = node === undefined ? undefined : rowToken(node)
+  return token === undefined ? undefined : folderIdOfRef(token)
+}
+
+function layoutOf(snapshot: Plus.Snapshot): LayoutRecords {
+  return { folders: snapshot.folders ?? [], orders: snapshot.orders ?? [] }
+}
+
+// One layout write for a planned change: the whole folder and order set, logged once.
+function applyLayout(api: PlusApi, snapshot: Plus.Snapshot, change: LayoutChange, actor: Plus.Actor) {
+  return Effect.gen(function* () {
+    if ("refusal" in change) return yield* Effect.fail(new Tool.Error({ message: change.refusal }))
+    const written = yield* Effect.promise(() =>
+      api.layoutWrite({
+        folders: [...change.layout.folders],
+        orders: [...change.layout.orders],
+        expectedGlobalRevision: snapshot.globalRevision,
+        target: change.target,
+        status: change.status,
+        actor,
+      }),
+    )
+    if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: `${written.error.code}: ${written.error.message}` }))
+    return {
+      target: change.target,
+      status: change.status,
+      changed: written.value.changed,
+      revision: written.value.revision,
+      globalRevision: written.value.globalRevision,
+    }
+  })
 }
 
 function protectedError(agent: string): Tool.Error {
@@ -787,7 +848,7 @@ function computeSet(
     state?: "on" | "off"
     pin?: boolean
     requires?: readonly string[] | null
-    resolve?: "keep" | "take" | "edit"
+    resolve?: "keep" | "take" | "edit" | "merge"
   },
   // The resolution memo built once for this tool call. Only the first op reads
   // it: a follow-up op runs against the interim records the first produced, so
@@ -941,7 +1002,7 @@ function setModel(
     state?: "on" | "off"
     pin?: boolean
     active?: boolean
-    resolve?: "keep" | "take" | "edit"
+    resolve?: "keep" | "take" | "edit" | "merge"
     warming?: string
     interval?: string
     prompt?: string
@@ -1068,10 +1129,16 @@ function setModelDefaults(
     interval?: string
     prompt?: string
     effort?: string
+    compactWarm?: string
+    coldCompact?: string
+    coldModels?: readonly string[]
+    compactionStrategy?: string
+    compactionModel?: string
+    compactionInstructions?: string
     text?: string
     pin?: boolean
     active?: boolean
-    resolve?: "keep" | "take" | "edit"
+    resolve?: "keep" | "take" | "edit" | "merge"
     mode?: "primary" | "subagent" | "all"
   },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
@@ -1086,6 +1153,12 @@ function setModelDefaults(
       input.interval === undefined &&
       input.prompt === undefined &&
       input.effort === undefined &&
+      input.compactWarm === undefined &&
+      input.coldCompact === undefined &&
+      input.coldModels === undefined &&
+      input.compactionStrategy === undefined &&
+      input.compactionModel === undefined &&
+      input.compactionInstructions === undefined &&
       input.state === undefined
     )
       return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
@@ -1099,6 +1172,12 @@ function setModelDefaults(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
+        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
+        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
+        ...(input.coldModels === undefined ? {} : { coldModels: [...input.coldModels] }),
+        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
+        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
+        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
         actor,
       }),
     )
@@ -1112,7 +1191,7 @@ function clearModelDefaults(
   node: TreeNode,
   actor: Plus.Actor,
   verb: "reset" | "remove",
-  fields: readonly ModelSettingsField[] = ["warming", "interval", "prompt", "effort"],
+  fields: readonly ModelDefaultField[] = [...MODEL_DEFAULT_FIELDS],
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const key = defaultsKeyOf(node)
@@ -1160,7 +1239,7 @@ function setPerm(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
+  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit" | "merge"; label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
   treeMemo?: Memo,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
@@ -1325,7 +1404,7 @@ function setTeam(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { state?: "on" | "off"; text?: string; pin?: boolean; resolve?: "keep" | "take" | "edit" },
+  input: { state?: "on" | "off"; text?: string; pin?: boolean; resolve?: "keep" | "take" | "edit" | "merge" },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
@@ -1473,7 +1552,14 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           id,
           view,
           label: node.label,
-          ...(setting === undefined ? {} : { field: setting.field, value: modelSettingEffective(resolved, setting.field) ?? null }),
+          ...(setting === undefined
+            ? {}
+            : {
+                field: setting.field,
+                value: (MODEL_SETTINGS_FIELDS as readonly string[]).includes(setting.field)
+                  ? (modelSettingEffective(resolved, setting.field as ModelSettingsField) ?? null)
+                  : null,
+              }),
           summary: modelDefaultValue(resolved),
           warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
           interval: { value: resolved.interval.value, from: resolved.interval.from },
@@ -1600,13 +1686,71 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const split = resolveSplit({ text: resolved.text, title: upstream.title, splits, scopes, address })
       return { output: { id, view, sections: split.sections.map((section) => section.id) } }
     }
-    const three = threeWay(chain)
-    if (three === undefined) return { output: { id, view: "diff", mineDiff: "", upstreamDiff: "", summary: "no changes" } }
+    const proposal = mergeProposal(memo, buildTreeMemo(memo), node)
+    if (proposal === undefined) return { output: { id, view: "diff", mineDiff: "", upstreamDiff: "", summary: "no changes" } }
+    const { three, entries } = proposal
     const mineDiff = unifiedDiff(three.original, three.mine, { from: "original", to: "mine" })
     const upstreamDiff = unifiedDiff(three.original, three.upstream, { from: "original", to: "upstream" })
     const summary = `mine differs by ${changedLines(three.original, three.mine)} lines, upstream by ${changedLines(three.original, three.upstream)} lines`
-    return { output: { id, view: "diff", mineDiff, upstreamDiff, summary } }
+    return { output: { id, view: "diff", mineDiff, upstreamDiff, summary, merge: mergeOutput(entries) } }
   })
+}
+
+// The merge proposal of one row, built from the same context `set` resolves
+// against, so the unit ids `show` returns are the ids `set` accepts.
+function mergeProposal(memo: MemoInput, treeMemo: Memo, node: TreeNode): { three: ThreeWay; entries: MergeEntry[] } | undefined {
+  const address = node.address
+  if (address === undefined) return undefined
+  const upstream = upstreamOf({ ...memo, items: treeMemo.ctx.items }, address)
+  if (upstream === undefined) return undefined
+  const three = threeWay({
+    upstream,
+    records: treeMemo.ctx.customizations,
+    splits: treeMemo.ctx.splits,
+    scopes: treeMemo.ctx.scopes,
+    address,
+  })
+  if (three === undefined) return undefined
+  return { three, entries: mergeUnits(three.original, three.mine, three.upstream) }
+}
+
+function mergeIds(entries: readonly MergeEntry[]): string[] {
+  return entries.flatMap((entry) => (entry.type === "unchanged" ? [] : entry.upstreamId === undefined ? [entry.id] : [entry.id, entry.upstreamId]))
+}
+
+function mergeOutput(entries: readonly MergeEntry[]) {
+  const defaults = defaultInclude(entries)
+  const units = entries.flatMap((entry) =>
+    entry.type === "unchanged"
+      ? []
+      : mergeIds([entry]).map((id) => ({
+          id,
+          kind: entry.kind,
+          yours: entry.yours.join(""),
+          upstream: entry.upstream.join(""),
+          base: entry.base.join(""),
+          included: defaults.has(id),
+        })),
+  )
+  return { units, text: renderMerge(entries, defaults) }
+}
+
+// `set` with resolve merge: the include set (default: the defaults) renders the
+// merged text; a render equal to upstream is a take, as the screen's t saves it.
+function mergeOp(memo: MemoInput, treeMemo: Memo, node: TreeNode, input: { id: string; text?: string; include?: readonly string[] }) {
+  if (input.text !== undefined)
+    return { refusal: `"${node.label}" merges by include, not text: resolve merge takes include; edit takes text` }
+  const proposal = mergeProposal(memo, treeMemo, node)
+  if (proposal === undefined) return { refusal: resolveRefusalForLabel(node.label) }
+  const valid = mergeIds(proposal.entries)
+  const unknown = (input.include ?? []).find((id) => !valid.includes(id))
+  if (unknown !== undefined)
+    return { refusal: `"${node.label}" has no merge unit "${unknown}": valid units are ${valid.join(", ") || "none"}` }
+  const include = input.include === undefined ? defaultInclude(proposal.entries) : new Set(input.include)
+  const text = renderMerge(proposal.entries, include)
+  if (withoutFinalNewline(text) === withoutFinalNewline(proposal.three.upstream))
+    return resolveReview(memo, input.id, "take", undefined, undefined, treeMemo)
+  return resolveReview(memo, input.id, "merge", text, undefined, treeMemo)
 }
 
 function upstreamOf(memo: MemoInput, address: Pick<Address, "item" | "agent" | "team" | "memberOf">) {
@@ -1687,7 +1831,7 @@ function createRow(
       | "preset"
       | "teamPreset"
       | "presetMember"
-      | "category"
+      | "folder"
     id?: string
     scope?: "project" | "global" | "defaults" | "preset"
     preset?: string | Plus.PresetRef
@@ -1713,12 +1857,12 @@ function createRow(
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    if (input.kind === "category") {
-      const name = input.name?.trim() ?? ""
-      if (name.length === 0) return yield* Effect.fail(new Tool.Error({ message: "create category requires name" }))
-      const created = yield* Effect.promise(() => api.category({ action: "create", name, actor }))
-      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: { id: created.value.id, item: created.value.name, name: created.value.name, revision: created.value.revision, globalRevision: created.value.globalRevision } }
+    if (input.kind === "folder") {
+      if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create folder requires id: the tab row or folder row to create it in" }))
+      const snapshot = yield* snapshotOrFail(api)
+      const memo = memoFromSnapshot(snapshot)
+      const applied = yield* applyLayout(api, snapshot, planFolderCreate(memo, layoutOf(snapshot), input.id, input.name ?? "", new Date().toISOString()), actor)
+      return { output: { id: applied.target, item: applied.target, ...applied } }
     }
     if (input.kind === "agent") {
       if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create agent requires id" }))

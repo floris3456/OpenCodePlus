@@ -3,14 +3,14 @@ import type { Registration } from "@opencode/plugin/effect/registration"
 import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import { Permission } from "@opencode/schema/permission"
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Exit, Schema, Scope, Stream } from "effect"
+import { Effect, Exit, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { runRegistration } from "../instructions/apply.js"
 import { teamsDataDir } from "../instructions/paths.js"
 import { append, type ToolCallOutcome } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
-import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
+import { rowState, unattendedMessage, type PermissionTable } from "../instructions/permission-enforce.js"
 import { toolGuidance, toolSurfaces, type TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
@@ -49,7 +49,7 @@ const CheckpointDescription = "Commit chosen files in your own worktree."
 const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
 const StopDescription =
   "Stop a child run you no longer need: now, or after its turn while it works (force ends it now). A followup after a stop needs compactWith once the child is cold."
-const StatusDescription = "State, latest report, checks and HEAD of your run and your children."
+const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
 const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again.\n" + toolGuidance
@@ -180,7 +180,6 @@ function handleExecuteAfter(
   state: TeamAuditState,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
-    if (!event.tool.startsWith("team_")) return
     if (event.status !== "error") return
     const key = callKey(String(event.sessionID), String(event.messageID), String(event.id))
     // Leave the call state alone for a rejection with feedback: the replied
@@ -195,6 +194,9 @@ function handleExecuteAfter(
 
     const sessionID = String(event.sessionID)
     const found = yield* Effect.promise(() => bySession(teamsDataDir(), sessionID))
+    // A refusal of any other tool is audited only inside a delegated run: a
+    // chat's refusals stay out of the team audit, and a run's are not watched.
+    if (!event.tool.startsWith("team_") && found?.kind !== "w") return
 
     yield* appendToolCall({
       run: found?.id ?? null,
@@ -308,8 +310,30 @@ async function installHook(ctx: Context, state: TeamAuditState): Promise<Registr
   )
 }
 
+// The safety net behind the evaluate hook, which already refuses a delegated
+// run's ask before it is published. Only an ask that reaches the stream anyway
+// gets here, and it is answered at once because nobody watches the run.
+function rejectUnattended(ctx: Context, data: unknown): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const request = Option.getOrUndefined(Schema.decodeUnknownOption(Permission.Request)(data))
+    if (request === undefined) return
+    const run = yield* Effect.promise(() => bySession(teamsDataDir(), String(request.sessionID)))
+    if (run?.kind !== "w") return
+    yield* ctx.permission
+      .reply({
+        sessionID: request.sessionID,
+        requestID: request.id,
+        decision: "reject",
+        message: unattendedMessage(request.action, request.resources),
+      })
+      .pipe(Effect.catchCause((cause) => Effect.logWarning("plus team delegated ask rejection failed", { cause })))
+  })
+}
+
 // Both permission events share one subscription so they stay ordered: the
-// request is always remembered before the reply that resolves it arrives.
+// request is always remembered before the reply that resolves it arrives. The
+// rejection reply therefore follows the remembering, and its Replied event is
+// audited against the call that asked.
 async function listenPermissionEvents(ctx: Context, state: TeamAuditState): Promise<Registration> {
   return Effect.runPromise(
     Effect.gen(function* () {
@@ -318,7 +342,10 @@ async function listenPermissionEvents(ctx: Context, state: TeamAuditState): Prom
         Stream.filter((event) => PermissionEvents.has(event.type)),
         Stream.runForEach((event) =>
           event.type === Permission.Event.Asked.type
-            ? Effect.sync(() => rememberAsked(event.data, state))
+            ? Effect.andThen(
+                Effect.sync(() => rememberAsked(event.data, state)),
+                rejectUnattended(ctx, event.data),
+              )
             : handleReplied(event.data, state),
         ),
         Effect.catchCause((cause) =>

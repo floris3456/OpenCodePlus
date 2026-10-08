@@ -22,7 +22,7 @@ import { checkFiles, missingCheckFiles } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
 import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
-import { sessionTokens, sessionTokenUsage } from "./usage.js"
+import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
@@ -156,7 +156,7 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
   return {
     delegate: (input, caller) => guarded(() => lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => delegateHandler(ctx, state, input, caller))),
     finish: (input, caller) => guarded(() => finishHandler(input, caller, state.permissions)),
-    followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller, state.permissions)),
+    followup: (input, caller) => guarded(() => followupHandler(ctx, state, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
@@ -908,6 +908,7 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
         cacheReads: (await sessionTokenUsage(ctx, record))?.cacheRead ?? null,
         usageBasis: "Session-cumulative",
       },
+      contextTokens: (await sessionContextTokens(ctx, record)) ?? null,
     },
     inbox: pending.map((item) => ({ id: item.id, from: item.from, kind: item.kind, text: item.text })),
   })
@@ -1233,6 +1234,7 @@ async function statusOf(ctx: Context, root: string, id: string) {
   const taskState = record.task === null ? null : await taskStateOf(root, record.task)
   const usage = await sessionTokenUsage(ctx, record)
   const tokensUsed = usage?.used
+  const contextTokens = await sessionContextTokens(ctx, record)
   const exhaustion = budgetExhaustion(record, { tokensUsed })
   return {
     run: record.id,
@@ -1272,6 +1274,7 @@ async function statusOf(ctx: Context, root: string, id: string) {
       tokensUsed: tokensUsed ?? null,
       cacheReads: usage?.cacheRead ?? null,
       usageBasis: "Session-cumulative",
+      contextTokens: contextTokens ?? null,
       tokens: record.budget.tokens ?? 0,
       overBy: exhaustion.overBy,
       exhausted: exhaustion.exhausted,

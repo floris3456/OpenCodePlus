@@ -104,11 +104,15 @@ const reviewText = {
   upstream: upstreamLines.join("\n") + "\n",
 }
 
-/** Every content line either side of a comparison can show (tab 3 is yours → the merged result). */
+/**
+ * Every content line either side of a comparison can show. Tab 3 is the merge
+ * as rows: the whole text is one unit (no sentence breaks), both sides changed
+ * it, so yours is the default and the upstream side is a row of its own.
+ */
 function expectedLinesOf(tab: number): string[] {
   if (tab === 1) return [...sourceLines, ...upstreamLines]
   if (tab === 2) return [...sourceLines, ...mineLines]
-  return [...mineLines, `UPSTREAM ${numbered(100)}`]
+  return [...mineLines, ...upstreamLines]
 }
 
 async function selectTab(fixture: Fixture, tab: number): Promise<void> {
@@ -128,6 +132,8 @@ test("each review comparison renders both sides in full, far from the changes", 
       expect(fixture.captureCharFrame()).toContain("line001")
       const frames = await scrollUntil(fixture, "line120")
       expect(frames[frames.length - 1]).toContain("line120")
+      // Tab 3 lists yours (all lines) before the excluded upstream row: scroll on to it.
+      if (tab === 3) frames.push(...(await scrollUntil(fixture, `UPSTREAM ${numbered(100)}`)))
       const rendered = frames.join("\n")
       expect(rendered).toContain("line060")
       const missing = expectedLinesOf(tab).filter((line) => !rendered.includes(line))
@@ -148,8 +154,9 @@ test("switching comparisons at one scroll offset keeps the unchanged text visibl
     expect(frames[frames.length - 1]).toContain("line060")
     await selectTab(fixture, 2)
     expect(fixture.captureCharFrame()).toContain("line060")
+    // Take result is a row list with its own scroll, so it opens at the top.
     await selectTab(fixture, 3)
-    expect(fixture.captureCharFrame()).toContain("line060")
+    expect(fixture.captureCharFrame()).toContain("line001")
   } finally {
     fixture.destroy()
   }
@@ -175,6 +182,8 @@ test("narrow unified mode is complete for every comparison and v still toggles",
       expect(fixture.captureCharFrame()).toContain("line001")
       const frames = await scrollUntil(fixture, "line120")
       expect(frames[frames.length - 1]).toContain("line120")
+      // Tab 3 lists yours (all lines) before the excluded upstream row: scroll on to it.
+      if (tab === 3) frames.push(...(await scrollUntil(fixture, `UPSTREAM ${numbered(100)}`)))
       const rendered = frames.join("\n")
       const missing = expectedLinesOf(tab).filter((line) => !rendered.includes(line))
       expect(missing).toEqual([])
@@ -214,11 +223,12 @@ test("text without a final newline renders its last line in every comparison", a
     expect(fixture.captureCharFrame()).toContain("BETA")
     await selectTab(fixture, 3)
     const frame = fixture.captureCharFrame()
-    // Take result is yours → the merged result: upstream's clean change is
-    // applied onto yours, so upstream's own last line is not a side any more.
+    // Take result: both sides changed the one paragraph, so yours is the
+    // default row and upstream's row stays visible, excluded until Space.
     expect(frame).toContain("BETA")
+    expect(frame).toContain("alpha")
+    expect(frame).toContain("[ ] upstream (conflicts with yours)")
     expect(frame).toContain("ALPHA")
-    expect(frame).not.toContain("beta")
     expect(frame).not.toContain("Error parsing diff")
   } finally {
     fixture.destroy()

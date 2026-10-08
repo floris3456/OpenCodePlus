@@ -386,7 +386,7 @@ test("add agent asks the name, then the preset, on the Project Agents group", as
 })
 
 test("a on an instruction row adds a section with split plus customization records", async () => {
-  const body = "# Purpose\n\na\n\n# Usage\n\nb\n"
+  const body = "guide body text\n"
   const after: Snapshot = createSnapshot({
     // The rebuilt tree still has the agent the section was added under.
     agents: [projectAgent("Implementer")],
@@ -611,6 +611,41 @@ test("a on a tool row adds a section", async () => {
     await fixture.waitForFrame((frame) => selectedRow(frame).includes("bash") && /[▸▾]/.test(selectedRow(frame)))
     await showSection(fixture, "Flags")
     expect(listPane(fixture.captureCharFrame())).toContain("Flags")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a section row opens the add-section dialog directly without category fallback", async () => {
+  const headingText = "## Main\nMain content.\n"
+  const before = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "system:guide",
+        kind: "system",
+        group: "project",
+        title: "Guide",
+        text: headingText,
+        enabled: true,
+        fingerprint: "fp-guide",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [before],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["SubSection", "sub content"] },
+  })
+  try {
+    await goto(fixture, "item:project:Implementer:system:guide", "Guide")
+    await showSection(fixture, "Main")
+    await goto(fixture, "section:project:Implementer:system:guide:main", "Main")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes('Added "SubSection"'))
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+    expect(fixture.fake.dialogPrompts.map((entry) => entry[0])).toEqual(["Section name", "Section text"])
   } finally {
     fixture.destroy()
   }
@@ -1011,7 +1046,11 @@ test("no model field command binding normalizes onto the reset key r", async () 
     await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
+    // The Warming group row, then its Warming field row inside it.
     await moveTo(fixture, "Warming")
+    await expand(fixture)
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("Warming"))
     // The keymap lowercases each comma-separated token: a bind of "R" is a
     // second `r` and would win over the reset command.
     const tokens = binds(fixture).flatMap((bind) => bind.split(",")).map((token) => token.trim().toLowerCase())
@@ -1260,34 +1299,24 @@ test("enter on a yellow node opens the three-pane diff and k keeps mine", async 
   }
 })
 
-test("t on a conflicted Take result opens the merged editor and cannot save until resolved", async () => {
+test("t on a both-changed unit saves yours as the merge, with no markers", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    expect(fixture.fake.mutateInputs).toEqual([])
     dispatch(fixture, "t")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    const editor = fixture.renderer.currentFocusedEditor
-    // The same proposal e opens: both sides changed the only line, so the
-    // markers are present and nothing has been persisted or acknowledged.
-    expect(editor?.plainText).toBe("<<<<<<< yours\nmine\n=======\nnew-upstream\n>>>>>>> upstream")
-    expect(fixture.captureCharFrame()).toContain("cannot be applied automatically")
-    expect(fixture.fake.mutateInputs).toEqual([])
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
-    expect(fixture.fake.mutateInputs).toEqual([])
-    editor?.setText("merged text")
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes('Edited "sample"'))
+    await fixture.waitForFrame((frame) => frame.includes('Merged "sample"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
-    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "merged text" })
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "mine" })
+    expect(JSON.stringify(fixture.fake.mutateInputs[0].records)).not.toContain("<<<<<<<")
   } finally {
     fixture.destroy()
   }
 })
 
-test("t on a clean merge persists the merged text and clears the review only after t", async () => {
+test("t on a both-changed paragraph saves yours and clears the review only after t", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [mergeSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
@@ -1305,7 +1334,7 @@ test("t on a clean merge persists the merged text and clears the review only aft
     expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({
       type: "customization",
       item: "mcp:sample",
-      text: "one\ntwo upstream\nthree\nfour\ncustom tail\n",
+      text: "one\ntwo\nthree\nfour\ncustom tail",
       basedOn: fingerprint("one\ntwo upstream\nthree\nfour\n"),
       basedOnText: "one\ntwo upstream\nthree\nfour\n",
       acknowledged: fingerprint("one\ntwo upstream\nthree\nfour\n"),
@@ -1349,11 +1378,9 @@ test("enter on a yellow node resolves e edit through the route", async () => {
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
     expect(editor).toBeDefined()
-    // e edits a merge of the upstream change onto yours; both changed the
-    // same line, so the draft carries conflict markers and cannot be saved.
-    expect(editor?.plainText).toBe("<<<<<<< yours\nmine\n=======\nnew-upstream\n>>>>>>> upstream")
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
+    // e edits the merged rows as the include set renders them; both sides
+    // changed the one unit, so yours is the draft: no markers, and it saves.
+    expect(editor?.plainText).toBe("mine")
     expect(fixture.fake.mutateInputs.length).toBe(0)
     editor?.setText("merged text")
     dispatch(fixture, "ctrl+s")
@@ -3924,7 +3951,7 @@ test("take on a state review drops yours; with text under review too the diff fo
     const record = second.fake.mutateInputs[0].records.find((entry) => entry.type === "customization" && entry.item === "tool:bash")
     expect(record).toMatchObject({ text: "mine", basedOnText: "old" })
     expect(record !== undefined && "state" in record).toBe(false)
-    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t take merged")))
+    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t save merged")))
   } finally {
     second.destroy()
   }
@@ -4034,7 +4061,7 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     snapshots: [snapshot],
     width: 160,
     models,
-    dialogs: { selects: ["acme", "nova-2", "high"], prompts: ["45m"] },
+    dialogs: { selects: ["acme", "nova-2", "custom…", "high"], prompts: ["45m"] },
   })
   try {
     await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
@@ -4044,7 +4071,9 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
     const open = listPane(fixture.captureCharFrame())
-    for (const label of ["Model", "Effort", "Warming", "Ping every"]) expect(open).toContain(label)
+    // The row shows Model, Effort and the Warming and Compaction groups; the
+    // group's fields appear when it opens.
+    for (const label of ["Model", "Effort", "Warming", "Compaction"]) expect(open).toContain(label)
     // The Model field picks from the host catalog and writes only that field
     // (the candidate is replaced in place).
     await moveTo(fixture, "Model")
@@ -4053,14 +4082,24 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     expect(fixture.fake.selectInputs.map((input) => input.title)).toEqual(["Model provider", "Model"])
     const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
     expect(own).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-2" })])
-    // The Warming field prompts for its own value and writes it alone.
+    // The Warming group opens into its fields; the Warming field is a dropdown
+    // whose Custom… asks for its own value and writes it alone.
     await moveTo(fixture, "Warming")
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Ping every"))
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("off · built-in"))
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.mutateInputs.length === 2)
+    expect(fixture.fake.selectInputs.find((input) => input.title === "Warming · acme/nova-1")?.options.map((option) => option.title)).toEqual([
+      "Inherit", "Off", "On", "15m", "30m", "45m", "1h", "1h30m", "2h", "4h", "8h", "Custom…",
+    ])
     expect(fixture.fake.promptInputs.at(-1)?.title).toBe("Warming · acme/nova-1")
     const warming = fixture.fake.mutateInputs[1].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
     expect(warming).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-1", warming: "45m" })])
-    // The Effort picker names the candidate, not the row label ("Effort").
+    // The Effort picker names the candidate, not the row label ("Effort"):
+    // up from the Warming field passes the Warming group to reach it.
+    dispatch(fixture, "up")
     dispatch(fixture, "up")
     await fixture.waitForFrame((frame) => selectedRow(frame).includes("Effort"))
     dispatch(fixture, "return")
@@ -4128,7 +4167,7 @@ test("a Defaults › Models row opens into its fields, and enter on a field edit
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
     width: 160,
-    dialogs: { prompts: ["5m", "45m"] },
+    dialogs: { selects: ["custom…", "custom…"], prompts: ["5m", "45m"] },
   })
   try {
     await goto(fixture, "item:defaults:/models:modeldefault:acme/nova-1", "acme/nova-1")
@@ -4136,6 +4175,10 @@ test("a Defaults › Models row opens into its fields, and enter on a field edit
     expect(listPane(fixture.captureCharFrame())).not.toContain("Ping every")
     // Enter (like →) opens the row instead of asking for every field in turn.
     expect(dispatch(fixture, "return")).toBe(true)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Warming"))
+    // The Warming group opens into its fields.
+    await moveTo(fixture, "Warming")
+    await expand(fixture)
     await fixture.waitForFrame((frame) => listPane(frame).includes("Keep-alive prompt"))
     const open = listPane(fixture.captureCharFrame())
     for (const label of ["Warming", "Ping every", "Keep-alive prompt", "Effort"]) expect(open).toContain(label)
@@ -4146,6 +4189,11 @@ test("a Defaults › Models row opens into its fields, and enter on a field edit
     await moveTo(fixture, "Ping every")
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.modelSettingsSets.length === 1)
+    // Ping every is a dropdown: Inherit names the value below with its source;
+    // unknown lifetime offers the 5m list. Custom… asks for the time.
+    expect(fixture.fake.selectInputs[0]?.options.map((option) => option.title)).toEqual([
+      "Inherit (now 3m30s · opencode.json)", "1m", "2m", "3m", "4m", "4m30s", "Custom…",
+    ])
     expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? "", input.placeholder ?? ""])).toEqual([
       ["Ping every · acme/nova-1", "", "3m30s"],
     ])
@@ -4172,7 +4220,7 @@ test("the filter reaches a Defaults › Models field row inside its closed model
     agents: [projectAgent("alice")],
     hostModels: [{ providerID: "acme", modelID: "nova-1", variants: [] }],
   })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { prompts: ["low"] } })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { selects: ["custom…"], prompts: ["low"] } })
   try {
     await goto(fixture, "item:defaults:/models:modelsetting:effort:*", "Effort")
     dispatch(fixture, "return")

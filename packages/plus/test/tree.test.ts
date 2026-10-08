@@ -142,7 +142,6 @@ test("Implementer subtree shape under the project root", () => {
   expect(childrenOf(nodes, "agent:project:Implementer").map((node) => node.label)).toEqual([
     "Settings",
     "Models",
-    "Compaction",
     "Tools",
     "Base",
     "System",
@@ -178,7 +177,7 @@ test("identical subtree under each of the three roots", () => {
   ] as const) {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
-    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Compaction", "Tools", "Base", "System"])
+    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Base", "System"])
   }
 })
 
@@ -195,7 +194,6 @@ test("Defaults holds two catalogues with the Models section between them, each o
     "group:defaults:agents:user",
     "group:defaults::settings",
     "group:defaults::models",
-    "group:defaults::compaction",
     "group:defaults::tools",
     "group:defaults::base",
     "group:defaults::system",
@@ -204,7 +202,6 @@ test("Defaults holds two catalogues with the Models section between them, each o
   expect(childrenOf(nodes, "group:defaults:teams").map((node) => node.id)).toEqual([
     "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
-    "group:defaults:/teams:compaction",
     "group:defaults:/teams:tools",
     "group:defaults:/teams:base",
     "group:defaults:/teams:system",
@@ -356,7 +353,6 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
     "group:project:crew/:CrewMate:settings",
     "group:project:crew/:CrewMate:models",
-    "group:project:crew/:CrewMate:compaction",
     "group:project:crew/:CrewMate:tools",
     "group:project:crew/:CrewMate:base",
     "group:project:crew/:CrewMate:system",
@@ -566,7 +562,6 @@ test("team Special group row and special agent subtrees across all three levels"
       expect(agentKids.map((k) => k.id)).toEqual([
         `group:${level}:crew/:special:${id}:settings`,
         `group:${level}:crew/:special:${id}:models`,
-        `group:${level}:crew/:special:${id}:compaction`,
         `group:${level}:crew/:special:${id}:tools`,
         `group:${level}:crew/:special:${id}:base`,
         `group:${level}:crew/:special:${id}:system`,
@@ -656,7 +651,6 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     "team:defaults:ship",
     "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
-    "group:defaults:/teams:compaction",
     "group:defaults:/teams:tools",
     "group:defaults:/teams:base",
     "group:defaults:/teams:system",
@@ -778,6 +772,7 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
   expect(sections.map((node) => node.depth)).toEqual([6, 6])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
+  expect(sections.every((node) => node.add === "section")).toBe(true)
 })
 
 test("a lone top-level heading is not an extra level: children render directly and its body is Introduction", () => {
@@ -1044,7 +1039,6 @@ test("expansion emits only expanded children", () => {
     "agent:project:Implementer",
     "group:project:Implementer:settings",
     "group:project:Implementer:models",
-    "group:project:Implementer:compaction",
     "group:project:Implementer:tools",
     "group:project:Implementer:base",
     "group:project:Implementer:system",
@@ -1074,7 +1068,6 @@ test("expansion emits only expanded children", () => {
     "group:defaults:agents:user",
     "group:defaults::settings",
     "group:defaults::models",
-    "group:defaults::compaction",
     "group:defaults::tools",
     "group:defaults::base",
     "group:defaults::system",
@@ -1385,12 +1378,58 @@ test("Models group follows Settings under every agent with toggle/remove-only ro
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   for (const id of ["agent:project:Implementer", "agent:global:Helper", "agent:defaults:Template"]) {
     const labels = childrenOf(nodes, id).map((node) => node.label)
-    expect(labels.slice(0, 3)).toEqual(["Settings", "Models", "Compaction"])
+    expect(labels.slice(0, 2)).toEqual(["Settings", "Models"])
+    expect(labels).not.toContain("Compaction")
   }
   const group = nodes.find((node) => node.id === "group:project:Implementer:models")
   expect(group?.label).toBe("Models")
   expect(group?.add).toBe("model")
   expect(nodes.find((node) => node.id === "group:defaults::models")?.add).toBe("model")
+})
+
+// plus-1.1.18 §2: an agent/member/preset model row opens into Model, Effort,
+// Warming ▸ and Compaction ▸; Warming holds its fields, Compact before cold and
+// the cold-cache list; Compaction its Strategy, Model and Instructions.
+test("a model row opens into Model, Effort, Warming and Compaction groups with the right grandchildren", () => {
+  const records = [
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova", coldCompact: "on", coldModels: ["a/one", "b/two"], updated: UPDATED },
+  ]
+  const nodes = expandAll({ items: [], records, agents: [{ id: "alpha", scope: "project" as const }] })
+  const modelRow = "item:project:alpha:model:acme/nova"
+  expect(childrenOf(nodes, modelRow).map((node) => node.label)).toEqual(["Model", "Effort", "Warming", "Compaction"])
+  const warming = "group:project:alpha:modelgroup:acme/nova:warming"
+  expect(nodes.find((node) => node.id === warming)?.badges.value).toBe("off")
+  expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
+    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Compact cold caches with another model",
+  ])
+  const cold = "group:project:alpha:modelgroup:acme/nova:cold"
+  expect(nodes.find((node) => node.id === cold)?.badges.value).toBe("on · a/one → b/two")
+  expect(childrenOf(nodes, cold).map((node) => node.badges.value)).toEqual(["1 a/one", "2 b/two"])
+  const compaction = "group:project:alpha:modelgroup:acme/nova:compaction"
+  expect(nodes.find((node) => node.id === compaction)?.badges.value).toBe("Auto")
+  expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Model", "Instructions"])
+  // The group rows carry no toggle: Space on them does nothing.
+  for (const id of [warming, compaction]) expect(nodes.find((node) => node.id === id)?.actions?.toggle).toBe(false)
+})
+
+test("a Defaults › Models row has the same groups minus Model", () => {
+  const nodes = expandAll({
+    items: [],
+    records: [],
+    agents: [{ id: "alpha", scope: "defaults" as const }],
+    modelSettings: [
+      { type: "modelSettings" as const, level: "defaults" as const, providerID: "acme", modelID: "nova", warming: "30m", updated: UPDATED },
+    ],
+    hostModels: [{ providerID: "acme", modelID: "nova", variants: [] }],
+  })
+  const row = "item:defaults:/models:modeldefault:acme/nova"
+  expect(childrenOf(nodes, row).map((node) => node.label)).toEqual(["Effort", "Warming", "Compaction"])
+  const warming = "group:defaults:/models:modeldefault:acme/nova:warming"
+  expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
+    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Compact cold caches with another model",
+  ])
+  const compaction = "group:defaults:/models:modeldefault:acme/nova:compaction"
+  expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Model", "Instructions"])
 })
 
 test("model union shows chain candidates with source badges and one active winner", () => {
@@ -1404,7 +1443,9 @@ test("model union shows chain candidates with source badges and one active winne
     { type: "model" as const, level: "defaults" as const, agent: null, providerID: "acme", modelID: "nova-4", updated: UPDATED },
   ]
   const nodes = expandAll({ items: [], records, agents: modelAgents })
-  const projectRows = nodes.filter((node) => node.id.startsWith("item:project:alpha:model:"))
+  const modelRow = (prefix: string) => (node: TreeNode) =>
+    node.id.startsWith(prefix) && node.address?.item.startsWith("model:") === true
+  const projectRows = nodes.filter(modelRow("item:project:alpha:"))
   expect(projectRows.map((node) => node.id).sort()).toEqual([
     "item:project:alpha:model:acme/nova-1",
     "item:project:alpha:model:acme/nova-2",
@@ -1423,7 +1464,7 @@ test("model union shows chain candidates with source badges and one active winne
   }
   expect(byId.get("item:project:alpha:model:acme/nova-2")?.actions?.remove).toBe(true)
   expect(byId.get("item:project:alpha:model:acme/nova-3")?.actions?.reset).toBe(false)
-  const globalRows = nodes.filter((node) => node.id.startsWith("item:global:alpha:model:"))
+  const globalRows = nodes.filter(modelRow("item:global:alpha:"))
   expect(globalRows.some((node) => node.id === "item:global:alpha:model:acme/nova-2")).toBe(false)
   expect(globalRows.map((node) => node.id).sort()).toEqual([
     "item:global:alpha:model:acme/nova-1",

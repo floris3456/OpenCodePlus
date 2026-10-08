@@ -378,9 +378,336 @@ Added 2026-10-08 afternoon (findings 11–14)
   child's context passes 100k tokens, like the budget notices, and
   `team_status` shows each child's context size. No forced compaction:
   compacting mid-task loses the details the worker is using.
+
+Added 2026-10-08 evening (build seat, continuing the run)
+
+- **B26. Finding 11's cause, and where the refusal sits.** The row "Outside
+  this checkout (external_directory)" installs a core rule only when it is
+  off (deny). On, it installs nothing, and core's built-in answer for an
+  unmatched `external_directory` is **ask**. The Orchestrator and Planner
+  presets (and members made from them) leave it on; only the worker presets
+  (`inside`) turn it off. So a delegated orchestrator that reads a dev home
+  asks, and nobody answers. Fix in two layers: (1) Plus's permission
+  `evaluate` hook (`permission-enforce.ts`) turns any remaining `ask` in a
+  delegated run (`deps.headless`) into `deny` before the ask is published,
+  with a message that names the action and resource and says nobody answers
+  asks in a delegated run, and records the refusal in the run's audit;
+  (2) the B22 net in the teams layer: a `permission.asked` event for a
+  delegated run's session (an ask raised by any other path) is rejected at
+  once and audited. A top-level chat, and a subagent of the user's chat,
+  still ask as before. The presets are not changed: an interactive
+  orchestrator may still be asked.
+- **B27. Change notes (X4), the details of B21.** The prompt boundary reads
+  the session's own agent from the session (`ctx.session.get`) and checks
+  only that agent. An empty pinned role is replaced in the pin by the current
+  one without a note (its next request carries the role in the system prompt:
+  one prefix change, not a note). The steered synthetic message is the only
+  delivery; a change found while preparing a request mid-turn arrives at the
+  next step boundary, not in the request being prepared. A warming ping may
+  admit the note (it is durable and outside the cached prefix). An adopted
+  role also drops the pinned system prompt for that agent, so the next request
+  carries the role (one prefix change).
+- **B28. GPT cache (G1 result, G2 fix).** G1
+  (`run/evidence/plus-1.2.0/gpt-cache/G1-report.md`): GPT steps keep their
+  prefix (1 lost of 1,359 eligible steps; Gemini loses 37%, provider-side).
+  GPT's misses are summary compactions: 10 on 2026-10-05 sent 2.0M uncached
+  tokens, because the summary request is not the chat's request plus one
+  message. Core gives it the compaction agent's system prompt and runs the
+  `compaction` content hook, where Plus applies none of its `context`
+  shaping (pinned system prompt, tool plans, instruction parts, scrub,
+  narrowing); every other plugin already mirrors its `context` transform on
+  `compaction`. Fix, for a summary compaction **on the chat's own model**
+  (same provider, model and variant): (G2a, core `compaction.ts`) the request
+  keeps the chat agent's system prompt, and the compaction system text (the
+  agent's compaction system, else the compaction agent's) moves into the
+  final user message ahead of the summary prompt; (G2b, Plus `apply.ts`,
+  `index.ts` compaction hook) Plus's `compaction` hook applies the same
+  shaping as its `context` hook from the session's pin, without notes or
+  moving the pin, then marks the rebuild as today. Another model compacting:
+  unchanged. Proof: the compaction request's system parts, tools and history
+  equal the previous step's up to the summary message (fingerprints), and a
+  live same-model compaction reads the history from cache (acceptance 2).
+- **B29. The preparation bound (X2) is 120 s.** Measured (Monitor ledger,
+  13,872 steps, step start to request sent): p50 6 ms, p99 68 ms. The 21
+  cases above 10 s are all CPA quota-retry waits (about 362 s each) before
+  the one recorded attempt, not preparation. 120 s is over 1,000× p99 and
+  still ends a silent hang. The bound covers request preparation only, never
+  provider retries, the summary request or the stream. The step fails with an
+  error naming the stage, and the hook and its plugin when a hook was
+  running; the chat takes the next message.
+  Amended after X2's first commit (`f9d3fcc0a4`), which bounded only the
+  request's content hooks: finding 13's step "never started", so the hang
+  can sit anywhere between the end of the tool call and the step start.
+  Each preparation stage of a step is bounded on its own at 120 s: loading
+  the context (`context.select`/`load`, the `session.catalog` hook), the
+  compaction decision (`compaction.decide` only, never the summary it
+  arms), and the request's content hooks (`session.context`,
+  `model.request`). Prompt admission (`SessionPrompt.prepare`, the
+  `session.prompt` hook) is not a step: a hang there leaves the prompt
+  unadmitted, not a chat "working" for hours, so it is out of X2.
+- **B30. WP-B (C2) details, `compaction.decide` overrides.** As
+  `plus-1.1.18.md` §2 and §7, made exact: `strategy` replaces the agent's
+  compaction strategy for this compaction (a portable decision with
+  `remote`, from either side, is still refused); `system` replaces the
+  agent's compaction system text (on the chat's own model it travels in the
+  final user message, B28); `compactionFallbacks`, when present, is the whole
+  fallback list and replaces `compactionFallback`, which otherwise means a
+  list of one; each model that fails is recorded as its own failed
+  compaction (auto) before the next is tried, as the single fallback is
+  today. `optional: true`, when every model failed, returns `skipped` for an
+  `auto` trigger, so the step runs uncompacted; `manual` and `overflow`
+  ignore it (a manual compaction reports its failure; an overflow cannot
+  continue uncompacted). A failed compaction records the model that tried
+  it (`model` on the failed message, as on the completed one): the
+  summarizing model for a summary, the chat's model for native.
+- **B31. I1 split in two, and how `a` writes (B6 made exact).** I1a: `a`
+  on a section and nesting; I1b: sections on every text kind (B7). `a` on a
+  section of a **heading-derived** item writes a heading one level deeper
+  (`#` × (section depth + 1), at least `##`) with the new text at the end of
+  the hovered section's span (after its last descendant). The write is an
+  edit of the **last leaf section inside that span** (the hovered section
+  itself when it has no children), at the level being edited, so no parent
+  or whole-item customization is created that would shadow its children
+  (finding 12d). `a` on a heading-derived item row appends a heading at the
+  item's top heading depth at the end of the text, the same way. The item
+  stays heading-derived; the new section appears as a child row at once.
+  For a **manual** split (and `block`/`whole` items, which become manual as
+  today), boundaries gain an optional `depth` (absent = 0; old stores read
+  unchanged); `a` on a manual section adds a boundary with depth + 1 at the
+  end of its span, listed right after the section's last descendant (a
+  boundary listed earlier wins a tie of starts). The new text lives only in
+  that section's own record, whose upstream slice is empty, as today's
+  end-of-item add does: the item text and the other boundaries do not move,
+  and no whole-item record is written (amended after I1a's review: writing
+  the item text would shadow lower levels' section edits, finding 12d). Section
+  rows get `add: "section"`, so `route.tsx` never falls back to the tab's
+  category from a section. The tools API: `split({ id: <section id>, add })`
+  adds a child of that section, `split({ id: <item id>, add })` a top-level
+  one (today's call, now heading-preserving).
+- **B32. I2 (WP-D) in three parts, one after another in the instructions
+  lane** (all edit `tree.ts`): I2a the model row layout of `plus-1.1.18.md`
+  §2 (Model, Effort, Warming ▸ with Compact before cold and the cold-model
+  list, Compaction ▸ Strategy/Model/Instructions) for agent, member, preset
+  and Defaults › Models rows, writing C1's fields; the Compaction tab goes
+  and the agent tabs renumber; the list takes `a` (catalogue picker), `d`,
+  and `m` with B8's keys (↑/↓, Enter drops, Esc restores), which S1 later
+  generalizes to every row. I2b the dropdowns of §6 (Ping every, Warming,
+  Defaults › Models Effort, Compaction › Model with Inherit; Custom… keeps
+  today's prompt). I2c Defaults › Models speed (decision 15): `hostCatalog`
+  expires after 5 min and drops on the model-updated event (added to
+  `RefreshEvents`), model rows memoized per (catalogue revision, store
+  revision). The footer text and `/compact-cold` belong to C3, which owns
+  cold detection.
+- **B33. WP-G (G4, the cache-miss toast), where it lives.** As
+  `plus-1.1.18.md` §9. The TUI asks, the server answers: when a step of the
+  chat on screen ends (an assistant message with usage, from the client's
+  sync data), the Plus TUI calls a new RPC `monitor.step({ sessionID })`,
+  which folds only that session's new rows incrementally (WP-A's cached
+  fold) and returns the latest step's verdict, tokens not reused and cause.
+  No timer, no polling while idle; if the step's row is not recorded yet the
+  RPC says `pending` and the TUI asks once more on the next session event.
+  The toast (warning variant): "Cache miss · N tokens not reused · <cause> ·
+  type /monitor for details", once per step, only when `isMiss` holds (a
+  drop under 1,024 tokens is rounding). Cause words map the Monitor's cause
+  chain (after compaction (expected), model switched, agent switched, prompt
+  changed · <first changed part>, cache expired, account changed, unknown);
+  a compaction armed by a CPA account switch (`quota.switch` metadata) makes
+  the cause "account changed · compacted first", in the toast and in
+  `/monitor` alike. Off switch: a TUI preference (default on), toggled from
+  the command palette ("Cache-miss notices: turn off/on") and the slash
+  command `/miss-notices`; it hides the toast only, the Monitor is
+  unchanged.
+- **B34. C3 (WP-C runtime) in three parts.** C3a, Plus's
+  `compaction.decide` (a new module, one wiring line in `index.ts`
+  replacing today's inline hook): resolve the C1 fields for (the event's
+  agent, the chat's model) with `resolveModelCompactionFields` and set
+  `strategy`, `compactionModel` and `system` when a level sets them; cold
+  arming per `plus-1.1.18.md` §4 (first step of a new prompt, cold = the
+  warming window ended, else idle longer than the Monitor's `cacheLifetime`,
+  unknown never cold, running never cold, compacted since the last request
+  skipped) sets `compact`, `portable`, `compactionModel` = #1,
+  `compactionFallbacks` = #2…, `optional`; a CPA `quota.switch` decision
+  takes the chat model's list when it is not empty (Plus's hook runs after
+  CPA's, tested); the team `compactWith` arming keeps priority. CPA's
+  "Compacting with X (fallback Y) first" notice is built from the final
+  decision, so it names the armed models. C3b, the per-chat switch and the
+  footer: `compactWarm` gives the model default; the chat switch becomes
+  on/off/default (`compact.json` entries read as on), `<leader>j` and
+  `/compact-warm` flip the effective value, "follow the model settings"
+  resets both switches, and the footer and `warming.status` name the source
+  ("· model setting" / "· this chat") and the cold arming ("cache cold ·
+  compacts with <model> first"). C3c, `compaction.cold({ sessionID })` RPC,
+  `/compact-cold` with its palette entry and toasts (§5), and the team
+  followup default (a stopped cold child without `compactWith` uses its
+  model's list; refuses with `E_STOPPED` when empty).
+- **B35. WP-F (G5): fingerprints stored as deltas.** Measured
+  (`run/evidence/plus-1.2.0/monitor-store/F0-measure.md`): the workspace
+  ledger is 2.16 GB, 97.7% of it `request_fingerprint.message_prefixes`,
+  and 99.9% of a long session's entries repeat its previous fingerprint. A
+  fingerprint row stores its message list as a delta: `prefix_base` (the
+  session's previous fingerprint's request id), `prefix_shared` (how many
+  leading entries equal the base's) and only the entries after them. Every
+  64th row of a session, and the first, is a keyframe (full list, no base),
+  so reading one row walks at most 63 rows; reading a session in order
+  rebuilds each list from the one before. System parts, tools and options
+  stay as they are (2% of the size). Migration happens as rows are read: a
+  session read in order rewrites its legacy full rows as deltas in one
+  transaction (the change triggers then move its revision once; the next
+  read folds once more and writes nothing). Retention deletes keep chains
+  whole: before rows are deleted, the first surviving row of each session
+  becomes a keyframe. No VACUUM in 1.2.0: freed pages are reused, so the
+  file stops growing; it shrinks only by a manual VACUUM (documented). Proof:
+  over a **copy** of the real ledger, every session's verdicts, causes and
+  reports are identical before and after migration, the copy's
+  `request_fingerprint` pages drop by over 90%, and single-row reads return
+  the same lists.
+- **B36. H2 (the twitch), from the live reproduction**
+  (`run/evidence/plus-1.2.0/chat-twitch/H2-report.md`, frame captures at
+  ~400 frames a second). With H1 in, a model pick or agent switch on an idle
+  chat changes only the prompt line. Three causes remain, fixed in two parts.
+  H2a: (1) the "reload": whenever the chat is mounted again (back from
+  Instructions, another chat, a dialog route), every completed assistant text
+  is blank for a frame or more, because `@opentui/core` 0.5.10
+  `MarkdownRenderable.createInitialStyledText` builds the immediate styled
+  text only while `streaming` is on, so completed blocks are created with
+  `drawUnstyledText: false` and wait for the asynchronous Tree-sitter
+  highlight (unchanged in 0.5.17). Fix in the existing
+  `patches/@opentui%2Fcore@0.5.10.patch`: build it whatever the streaming
+  state (the streaming path already draws every block this way), so text is
+  drawn at once and the highlight restyles it in place. Proof: a completed
+  markdown's first rendered frame contains its text. (2) While a reply
+  streams, a trailing line that is only a list marker in progress (digits
+  with an optional `.` or `)`, or a lone `-`, `*`, `+`) is held back from the
+  content until the line grows or the reply completes, so `4` of `42.` never
+  renders as a line and then vanishes (TUI `TextPart`). H2b: (3) the first
+  prompt after an agent or model change jumps the transcript three times in
+  ~64 ms: the sent message, then the "Switched agent"/"Switched model" rows
+  inserted above it, then the instructions-updated row, as separate sync
+  events. The pending prompt carries its agent and model; when they differ
+  from the chat's last ones, the TUI draws the switch rows with the pending
+  message in the same frame, and the durable rows take their place without a
+  height change. The instructions-updated row cannot be predicted and stays.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
+- **B37. Q1: a forgotten quota enrollment no longer pauses a chat for good**
+  (user, 2026-10-08: "constant Quota coordination unavailable (401);
+  generation is paused" on 1.1.18). The service log
+  (`run/evidence/plus-1.2.0/quota-401/Q1-log.md`) shows the pattern on two
+  CPA restarts (13:53 and 17:03 UTC): "did not acknowledge", then 404/502
+  while CPA starts, then 401 for 30–45 minutes, polled every 30 s by warming
+  and on every step. 401 at `generation > 0` means CPA no longer knows the
+  chat's capability (it lost its enrollments); `QuotaController.read` treats
+  401 as "unenrolled" only at generation 0, so every later poll throws, the
+  refusal stays, `headers()` refuses the model request, and the request that
+  would enroll the chat again is never sent. Fix (`cliproxyapi/src/quota/
+  controller.ts`, compaction lane owns it; C3a/C3b do not touch it): a 401
+  from a bridge whose health answers `protocol: 1` is "not enrolled" at any
+  generation; the route resets `generation` and `cursor` to 0 (keeps its
+  capability; notice ids are idempotent), clears the refusal and saves, so
+  the next model request enrolls it as a new chat (the existing opaque
+  checkpoint path compacts if CPA requires it). A 401 whose health probe
+  fails still pauses.
+- **B38. I1b scope, after the worker's map**
+  (`run/evidence/plus-1.2.0/i1b/report.md`). Sections now reach their
+  consumer for MCP tool descriptions, tool parameter descriptions and agent
+  and member descriptions (assembled text in the request / `agent.description`).
+  The MCP **server** row is not sectioned: its text is the server's
+  configuration, nothing reads it per request, so a section switch there
+  would do nothing. Keep-alive prompts and the per-model compaction
+  instructions (C1) stay whole in 1.2.0: they are model-record fields, not
+  item rows, and sectioning them needs a second assembly and write path,
+  which B7 forbids; they move to the next release with the model rows'
+  item conversion. The agent-wide `compaction:instructions` control takes
+  sections where it is still listed.
+- **B39. What a parent section's customization means (finding 12d made
+  exact; replaces B25's premise).** Measured on the user's store
+  (`run/evidence/plus-1.2.0/i3/12d-real.md`): Simple-Build › `build-seat`
+  has a Global customization (13:20) whose text is the section's **full
+  span**, child headings included (its `basedOnText` is the full span: the
+  editor writes it), and Global customizations of its children, e.g.
+  `build-seat/agent-routing` (12:37). On 1.1.18 the parent's text replaces
+  the span, so the child edit never reaches the model (the reported bug).
+  On plus-1.2.0 since I1a (`7c73fda978`) a parent's text is taken as its
+  own body and the children are appended, so the same store would send
+  Agent Routing, Merges, Worktrees … twice. The rule for 1.2.0:
+  1. A customization of a heading-derived section (or of a whole
+     heading-derived item) is its full span. Assembly derives that text's
+     headings again (the same `derive`, at the section's depth) and takes
+     its own body and children from it: no duplicates.
+  2. A child customization at the same level as the parent's, or at a more
+     specific one (Project over Global over Defaults), replaces that child
+     inside the parent's text. A child at a less specific level loses to
+     the parent's copy.
+  3. A child whose heading the parent's text no longer has is not sent.
+  4. The editor of a parent shows the effective span (rule 2 applied), and
+     saving a parent at a level drops that level's customizations of the
+     children inside it (their text is in the parent now), so a parent
+     edit is never undone by an older child record. Children at more
+     specific levels stay.
+  5. Manual splits keep 1.1.18's rule: a parent's text replaces the span.
+  6. B25's notice remains for the writes that rules 2, 3 and 5 still hide:
+     saved, plus the shadowing row's id, label and level.
+  Proof: over a copy of the user's records, Simple-Build's assembled prompt
+  has each `build-seat` heading once and carries the 12:37 Agent Routing
+  text; on the old code the same copy loses it (1.1.18) or duplicates it
+  (I1a).
+- **B40. The structure lane in six parts** (all edit the instructions hot
+  files; workers are Haiku now, so each part is one bounded change).
+  S1a folders and order as data: `folder` and `order` records replacing
+  `category` with a load migration (B1, B2, B4), the tree listing folders
+  inside their tab, ops and a `tools.instructions.move` for rows, folders and
+  sections (B3: a section move rewrites the item's text at the edited
+  level). S3 the merge screen and API on M1's `merge-units.ts` (B13, B14):
+  it runs beside S1a because it edits `diff-pane.tsx`, `src/tools.ts`'s
+  `resolve` and the merge write, not the tree. S1b the TUI move mode (B8),
+  sidebar reorder (B5), the category tabs gone, after S1a. S2a links as data:
+  `rowlink` records with the `requires` migration (B4, B9–B11), write-time
+  switches, gates and marker stripping for every text kind (B12), and
+  `tools.instructions.link`, after S1a. S2b the TUI `L` (decision 11), after
+  S2a and S1b. S4 (WP-E docs, ids, teaching, the `instructions-tools` skill,
+  help) last, beside L1 (the CLI, after S2a: it calls `move` and `link`).
+  I2c runs beside S1a and S3 once I2b and I3 land: it edits only
+  `index.ts`'s catalogue functions and `tree.ts`'s Defaults › Models region
+  (`lazyModelsSection`), S1a only the category/folder region of `tree.ts`,
+  so `tree.ts` is shared by region for that window as `index.ts` is (B20).
+- **B41. The merge ignores the text's final newline** (S3's live check:
+  stored `text` and `basedOnText` lose it, the live upstream keeps it, so the
+  last unit of every real row looked changed on both sides). `mergeUnits`
+  compares and renders the three texts with trailing newlines removed; a
+  saved merge has none (as stored texts), and a merge equal to upstream
+  without it is a take. `take` on an item follows upstream for the whole
+  row: its section customizations at that level go in the same write; a
+  `take` on a section drops only the text of that section's descendants at
+  that level, never a sibling's. Sentence units stay as B13 has them (a
+  paragraph without sentence punctuation is one unit), but units are
+  compared without their trailing whitespace: the space that separates a
+  sentence from the next one is not a change to it, so appending a sentence
+  changes one unit, not two.
+
+## Resumption (2026-10-09)
+
+The owner resumed the halted run with DeepSeek Flash subagents at low reasoning;
+no new Haiku workers. At most five background workers, isolated worktrees, no
+team runs. S1a rows/folders, S3 and I3 are merged at `eea4f3163d`; acceptance 2
+has its G3 evidence. Remaining acceptance is not inferred from unit tests.
+
+- S1b owns TUI move controls and sidebar display ordering. S2a owns link data,
+  tool operations and request-time gates. They can run together by named regions
+  (TUI versus link operations). L1 can finish generic CLI dispatch and RPC wiring
+  beside them; final link/move parity waits for their integration.
+- Section moves remain open: the S1a brief required preserving child overrides,
+  while B39 parent saves fold same-level child edits into the parent and remove
+  their records. The proposed fold-on-move rule has not been approved. Keep the
+  current refusal until this is settled; do not call S1/acceptance 4 complete.
+- S1b extends display order to existing origin groups and sidebar owner lists;
+  built-in group headings stay fixed, rows reorder within their list or enter/
+  leave same-tab folders. Display-only moves must not alter assembled prompts.
+- S2a's tool contract is `link({id, target?, type?, enabled?})`: without target,
+  inspect outgoing and incoming links; with target, upsert a link whose primary
+  is id. Type defaults to `either`; `enabled:false` masks the pair/type at this
+  level, including upstream links. Types and ownership follow B9–B12. Both ends
+  must be in the same owner/level view; invalid links refuse without writing.
 
 ## Design notes per area
 

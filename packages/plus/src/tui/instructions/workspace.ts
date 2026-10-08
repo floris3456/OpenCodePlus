@@ -10,7 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -25,11 +25,11 @@ export function isLevelId(value: unknown): value is LevelId {
   return LEVELS.some((level) => level.id === value)
 }
 
-export const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$|:category(:[^:]*)?$/
+export const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$/
 
-/** A user category's name when `node` is one of its group rows (T8), else undefined. */
-export function userCategoryName(node: TreeNode | undefined): string | undefined {
-  if (node?.kind !== "group" || !/:category(:[^:]*)?$/.test(node.id)) return undefined
+/** A folder's name when `node` is one of its group rows (S1a), else undefined. */
+export function folderName(node: TreeNode | undefined): string | undefined {
+  if (node?.kind !== "group" || !node.id.includes(":folder:")) return undefined
   return node.label
 }
 
@@ -213,16 +213,7 @@ function sliceOf(
   const category = categories.find((node) => node.id === input.category) ?? categories[0]
   if (category === undefined) return { nav, owner, categories, list: [] }
   const categoryIndex = rows.findIndex((node) => node.id === category.id)
-  // A user category's own list leads with the category row itself, so R and d
-  // reach it with rows present; the rows (and their children) follow one indent
-  // in. Built-in categories keep their current list (no header).
-  const list =
-    userCategoryName(category) === undefined
-      ? subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth, open))
-      : [
-          listRow(category, category.depth - 1, open),
-          ...subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth - 1, open)),
-        ]
+  const list = subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth, open))
   return { nav, owner, categories, category, list }
 }
 
@@ -239,13 +230,17 @@ function listRow(node: TreeNode, base: number, open: ReadonlySet<string>): Row {
   }
 }
 
-/** Rows that can hold children: a model row opens into its field rows; sections, rule rows, controls and field rows are leaves. */
+/** Rows that can hold children: a model row opens into its field rows; sections, rule rows and scalar controls are leaves. */
 export function canExpand(node: TreeNode): boolean {
   if (node.kind === "section") return false
   if (isModelSettingRowId(node.id) || isModelFieldRowId(node.id)) return false
-  if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
+  // B7: a sectioned text control (the description, the agent-wide compaction
+  // instructions) expands into its sections; every scalar/enumerated control
+  // stays a leaf.
+  if (node.kind === "item" && controlKind(node.address?.item) !== undefined)
+    return node.address?.item === "setting:description" || node.address?.item === "compaction:instructions"
   if (node.address?.item.startsWith("perm:") === true) return false
-  if (node.address?.item.startsWith("param:") === true) return false
+  if (node.address !== undefined && (isColdModelItemId(node.address.item) || isColdDefaultItemId(node.address.item))) return false
   return true
 }
 
@@ -376,11 +371,13 @@ export interface ToolCount {
  * owner's Tools group and count the tool rows under it. The caller caches the
  * result per snapshot, so no level-wide sweep runs after a load.
  *
- * `ownerKey` is the sidebar key: an owner row id, or `<catalogue group>#every`
- * for Defaults' shared inventories.
+ * `ownerKey` is the sidebar key: an owner row id, or `<catalogue group>#<suffix>`
+ * (`#every`, `#models`) for Defaults' shared inventories. A key with a suffix
+ * the row ids do not carry must still resolve by its group id: a miss here walks
+ * the whole skeleton on every render (the Defaults › Models open took over a second).
  */
 export function toolCountOf(memo: Memo, ownerKey: string, codemode: (item: string) => boolean): ToolCount | undefined {
-  const owner = findLazy(memo, ownerKey.endsWith("#every") ? ownerKey.slice(0, -"#every".length) : ownerKey)
+  const owner = findLazy(memo, ownerKey.replace(/#.*$/, ""))
   const group = owner?.children().find((child) => child.kind === "group" && child.id.endsWith(":tools"))
   if (group === undefined) return undefined
   const rows = toolRows(group)

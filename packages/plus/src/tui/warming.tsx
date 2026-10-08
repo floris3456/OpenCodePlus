@@ -33,24 +33,33 @@ export function warmingLabel(
   if (status === undefined) return undefined
   if (status.compacted) return { text: "compacted", tone: "muted" }
 
+  // Compact before cold names its source ("· this chat" / "· model setting"),
+  // and, when cold arming applies, the model it compacts with first.
+  const source = status.compactSource === "chat" ? " · this chat" : status.compactSource === "model" ? " · model setting" : ""
+  const coldFirst = status.coldModels?.[0]
+  const coldArms = (cold: string) => (coldFirst === undefined ? cold : `cache cold · compacts with ${coldFirst} first`)
+
   if (status.compact) {
     const deadline = status.compactAt ?? (status.active && status.expires !== undefined ? status.expires : undefined)
     if (deadline !== undefined) {
-      if (deadline > now) return { text: `compact cache warm · ${formatRemaining(deadline - now)} left`, tone: "muted" }
-      return { text: "compact cache cold", tone: "warning" }
+      if (deadline > now) return { text: `compact cache warm · ${formatRemaining(deadline - now)} left${source}`, tone: "muted" }
+      return { text: `${coldArms("compact cache cold")}${source}`, tone: "warning" }
     }
-    if (status.expires !== undefined) return { text: "compact cache cold", tone: "warning" }
+    if (status.expires !== undefined) return { text: `${coldArms("compact cache cold")}${source}`, tone: "warning" }
     if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
-    if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
-    return undefined
+    if (status.chat === "on") return { text: `cache warming on · starts after the next reply${source}`, tone: "muted" }
+    return { text: `compact before cold on · starts after the next reply${source}`, tone: "muted" }
   }
+
+  // Off for this chat alone: say so, so the switch's state is visible.
+  if (status.compactSource === "chat") return { text: "compact before cold off · this chat", tone: "muted" }
 
   if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
   if (status.active && status.expires !== undefined && status.expires > now)
     return { text: `cache warm · ${formatRemaining(status.expires - now)} left`, tone: "muted" }
   if (status.expires !== undefined)
     return {
-      text: status.chat === "on" ? "cache cold · warming starts after the next reply" : "cache cold",
+      text: status.chat === "on" ? "cache cold · warming starts after the next reply" : `${coldArms("cache cold")}`,
       tone: "warning",
     }
   if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
@@ -161,6 +170,7 @@ export function createWarming(context: Plugin.Context) {
     }
     const sessionID = route.sessionID
     const current = tracked.sessionID === sessionID ? status() : await plus["warming.status"]({ sessionID }).catch(() => undefined)
+    // Flip the effective value: it is on (from the chat or the model) -> off.
     const on = current?.compact !== true
     const next = await plus["warming.compact"]({ sessionID, on }).catch((error: unknown) => {
       context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
@@ -171,9 +181,48 @@ export function createWarming(context: Plugin.Context) {
     context.ui.toast.show({
       variant: "info",
       message: on
-        ? "Compact before cold on: this chat compacts right before its cache goes cold"
+        ? "Compact before cold on for this chat: it compacts right before its cache goes cold"
         : "Compact before cold off for this chat",
     })
+  }
+
+  // Compacts this chat now with its cold-cache list; the chat's compaction line
+  // then names the model that wrote the summary.
+  async function compactCold(): Promise<void> {
+    const route = context.ui.router.current()
+    if (route.type !== "session") {
+      context.ui.toast.show({ variant: "warning", message: "Open a chat to compact it with the cold-cache model" })
+      return
+    }
+    const next = await plus["compaction.cold"]({ sessionID: route.sessionID }).catch((error: unknown) => {
+      context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+      return undefined
+    })
+    if (next === undefined) return
+    if (!next.ok) {
+      context.ui.toast.show({ variant: "warning", message: next.where })
+      return
+    }
+    const [first, ...fallbacks] = next.models
+    context.ui.toast.show({
+      variant: "info",
+      message: `Compacting with ${first}${fallbacks.length === 0 ? "" : ` (fallback ${fallbacks.join(", ")})`}`,
+    })
+  }
+
+  async function followCompact(): Promise<void> {
+    const route = context.ui.router.current()
+    if (route.type !== "session") {
+      context.ui.toast.show({ variant: "warning", message: "Open a chat to follow the model settings" })
+      return
+    }
+    const next = await plus["warming.compact"]({ sessionID: route.sessionID, on: "default" }).catch((error: unknown) => {
+      context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+      return undefined
+    })
+    if (next === undefined) return
+    if (tracked.sessionID === route.sessionID) setStatus(next)
+    context.ui.toast.show({ variant: "info", message: "Compact before cold for this chat follows the model settings" })
   }
 
   async function follow(): Promise<void> {
@@ -215,6 +264,8 @@ export function createWarming(context: Plugin.Context) {
   return {
     toggle,
     toggleCompact,
+    compactCold,
+    followCompact,
     follow,
     Footer,
     dispose() {

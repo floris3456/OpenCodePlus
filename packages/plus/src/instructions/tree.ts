@@ -7,6 +7,7 @@ import {
   canReset,
   catalogueOf,
   entrySpecificity,
+  formatDuration,
   hasModelActiveAt,
   modelCandidates,
   modelRuntimeScope,
@@ -37,9 +38,18 @@ import type {
   SplitRecord,
   TeamRef,
 } from "./model.js"
-import { categoryByItem, categorySlug, orderedCategories, type CategoryRecord } from "./categories.js"
+import { folderIdOfRef, folderRef, orderOf, tabOfGroupId, type FolderRecord } from "./folders.js"
 import { fromLabel } from "./from-label.js"
 import {
+  COLD_ITEM_SEGMENT,
+  coldCompactSummary,
+  coldDefaultItemId,
+  coldListRowId,
+  coldListValue,
+  coldModelItemId,
+  compactionFromWords,
+  COLD_COMPACT_LABEL,
+  effectiveCompaction,
   hostModelOf,
   modelDefaultItemId,
   modelDefaultKeys,
@@ -52,19 +62,26 @@ import {
   modelSettingRowId,
   modelSettingValue,
   everySettings,
+  isEvery,
+  resolveModelCompactionFields,
   settingsFor,
   defaultEffort,
   modelSettingEffective,
+  isDefaultSwitchField,
   modelFieldItemId,
   MODEL_FIELD_LABELS,
-  MODEL_FIELD_NAMES,
   MODEL_SETTING_LABELS,
-  MODEL_SETTINGS_FIELDS,
   MODELS_GROUP_ID,
   MODELS_OWNER,
+  MODEL_DEFAULT_PREFIX,
+  type CompactionFrom,
+  type CompactionDefaults,
+  type EffectiveCompaction,
   type HostWarming,
+  type ModelDefaultField,
   type ModelDefaultView,
   type ModelFieldName,
+  type ModelSettingsField,
   type ModelSettingsKey,
   type ModelSettingsRecord,
 } from "./model-settings.js"
@@ -142,7 +159,7 @@ export type AddKind =
   | "rule"
   | "preset"
   | "team-preset"
-  | "category"
+  | "folder"
 
 /**
  * What an agent, team, member, entry or preset row stands for: the owner of
@@ -337,7 +354,23 @@ declare module "./resolve-memo.js" {
     reviewCountCache?: Map<string, number>
     selfReviewCache?: Map<string, boolean>
     controlItems?: readonly Item[]
+    modelViewCache?: Map<string, ModelDefaultView>
   }
+}
+
+// Defaults › Models views, once per memo and row: workspaceOf re-emits the rows on each pass,
+// and a memo is rebuilt whenever the store or the catalogue changes (a new snapshot).
+function cachedModelView(memo: Memo, id: string, compute: () => ModelDefaultView): ModelDefaultView {
+  let cache = memo.modelViewCache
+  if (cache === undefined) {
+    cache = new Map<string, ModelDefaultView>()
+    memo.modelViewCache = cache
+  }
+  const cached = cache.get(id)
+  if (cached !== undefined) return cached
+  const value = compute()
+  cache.set(id, value)
+  return value
 }
 
 function cachedReviewCount(memo: Memo, id: string, compute: () => number): number {
@@ -854,7 +887,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
   const address: Address = { level: "defaults", agent: null, item, section: null }
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
   const view = (): ModelDefaultView =>
-    modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+    cachedModelView(memo, item, () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   // The row opens (→) into one row per field; each field edits on its own.
   return {
     id: modelDefaultRowId(key),
@@ -866,22 +899,143 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
     selfReview: () => false,
     partial: () => ({ value: modelDefaultValue(view()), ...(record === undefined ? {} : { modified: true as const }) }),
     reviewCount: () => 0,
-    children: () =>
-      MODEL_SETTINGS_FIELDS.map((field): Lazy => {
-        const own = record?.[field] !== undefined
-        return {
-          id: modelSettingRowId(key, field),
-          kind: "item",
-          label: MODEL_SETTING_LABELS[field],
-          depth: 3,
-          address: { level: "defaults", agent: null, item: modelSettingItemId(key, field), section: null },
-          actions: { toggle: false, edit: true, reset: own, remove: false, split: false, pin: false },
-          selfReview: () => false,
-          partial: () => ({ value: modelSettingValue(view(), field, record), ...(own ? { modified: true as const } : {}) }),
-          reviewCount: () => 0,
-          children: () => [],
-        }
+    // Model rows have no Model field; the rest is the same layout as an agent
+    // model row: Effort, the Warming group (Warming, Ping every, Keep-alive
+    // prompt, Compact before cold and the cold-cache list) and Compaction.
+    children: () => [
+      lazyModelDefaultField(ctx, memo, key, record, "effort", 3),
+      modelGroup(memo, {
+        id: defaultGroupRowId(key, "warming"),
+        label: "Warming",
+        depth: 3,
+        summary: () => defaultsWarmingSummary(ctx, memo, key, record),
+        children: [
+          () => lazyModelDefaultField(ctx, memo, key, record, "warming", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "interval", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "prompt", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactWarm", 4),
+          () => lazyDefaultColdGroup(ctx, memo, key, record, 4),
+        ],
       }),
+      modelGroup(memo, {
+        id: defaultGroupRowId(key, "compaction"),
+        label: "Compaction",
+        depth: 3,
+        summary: () => compactionStrategyWord(defaultsCompaction(ctx, key, record).strategy.value),
+        children: [
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionStrategy", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionModel", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInstructions", 4),
+        ],
+      }),
+    ],
+  }
+}
+
+// The Defaults › Models compaction layers: the model's own row, then Every
+// model, then built-in (model-settings.ts). The agent-wide rows are per agent
+// and do not show on the shared Defaults surface.
+function defaultsCompaction(ctx: BuildContext, key: ModelSettingsKey, record: ModelSettingsRecord | undefined): EffectiveCompaction {
+  const every = everySettings(ctx.modelSettings)
+  if (isEvery(key)) return effectiveCompaction({ ...(record === undefined ? {} : { model: record }) })
+  return effectiveCompaction({
+    ...(record === undefined ? {} : { model: record }),
+    ...(every === undefined ? {} : { every }),
+  })
+}
+
+function defaultsWarmingSummary(ctx: BuildContext, memo: Memo, key: ModelSettingsKey, record: ModelSettingsRecord | undefined): string {
+  const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
+  const view = cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
+  return view.on.value ? `${formatDuration(view.duration.value)} · every ${formatDuration(view.interval.value)}` : "off"
+}
+
+// One field row under a Defaults › Models row. Warming fields read the
+// keep-alive view; the compaction fields read the compaction view; every row
+// reports its own value and, when inherited, its source.
+function lazyModelDefaultField(
+  ctx: BuildContext,
+  memo: Memo,
+  key: ModelSettingsKey,
+  record: ModelSettingsRecord | undefined,
+  field: ModelDefaultField,
+  depth: number,
+): Lazy {
+  const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
+  const view = (): ModelDefaultView =>
+    cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
+  const own = record?.[field] !== undefined
+  const switchField = isDefaultSwitchField(field)
+  const value = (): string => {
+    if (field === "compactionStrategy") {
+      const strategy = defaultsCompaction(ctx, key, record).strategy
+      return own ? compactionStrategyWord(strategy.value) : `${compactionStrategyWord(strategy.value)} · ${compactionSource(strategy.from)}`
+    }
+    if (field === "compactionModel") {
+      const model = defaultsCompaction(ctx, key, record).model
+      const text = model.value ?? "Inherited model"
+      return own ? text : `${text} · ${compactionSource(model.from)}`
+    }
+    if (field === "compactionInstructions") {
+      const instructions = defaultsCompaction(ctx, key, record).instructions
+      const text = instructions.value === undefined ? "Empty prompt" : instructions.value.length > 24 ? `${instructions.value.slice(0, 23)}…` : instructions.value
+      return own ? text : `${text} · ${compactionSource(instructions.from)}`
+    }
+    if (field === "compactWarm") {
+      const compactWarm = defaultsCompaction(ctx, key, record).compactWarm
+      return own ? (compactWarm.value ? "on" : "off") : `${compactWarm.value ? "on" : "off"} · ${compactionSource(compactWarm.from)}`
+    }
+    return modelSettingValue(view(), field as ModelSettingsField, record)
+  }
+  return {
+    id: modelSettingRowId(key, field),
+    kind: "item",
+    label: MODEL_SETTING_LABELS[field],
+    depth,
+    address: { level: "defaults", agent: null, item: modelSettingItemId(key, field), section: null },
+    actions: { toggle: switchField, edit: !switchField, reset: own, remove: false, split: false, pin: false },
+    selfReview: () => false,
+    partial: () => ({ value: value(), ...(own ? { modified: true as const } : {}) }),
+    reviewCount: () => 0,
+    children: () => [],
+  }
+}
+
+// The Defaults cold-cache group, the same shape as an agent row's.
+function lazyDefaultColdGroup(
+  ctx: BuildContext,
+  memo: Memo,
+  key: ModelSettingsKey,
+  record: ModelSettingsRecord | undefined,
+  depth: number,
+): Lazy {
+  const id = defaultGroupRowId(key, "cold")
+  const effective = (): EffectiveCompaction => defaultsCompaction(ctx, key, record)
+  const kids = (): readonly Lazy[] =>
+    effective().coldModels.value.map((model, index): Lazy => ({
+      id: defaultColdRowId(key, index),
+      kind: "item",
+      label: model,
+      depth: depth + 1,
+      address: { level: "defaults", agent: null, item: coldDefaultItemId(key, index), section: null },
+      actions: { toggle: false, edit: false, reset: false, remove: true, split: false, pin: false },
+      selfReview: () => false,
+      partial: () => ({ value: coldListValue(index, model) }),
+      reviewCount: () => 0,
+      children: () => [],
+    }))
+  const own = record?.coldCompact !== undefined
+  return {
+    id,
+    kind: "group",
+    label: COLD_COMPACT_LABEL,
+    depth,
+    address: { level: "defaults", agent: null, item: modelSettingItemId(key, "coldCompact"), section: null },
+    actions: { toggle: true, edit: false, reset: own, remove: false, split: false, pin: false },
+    selfReview: () => false,
+    partial: () => ({ value: coldCompactSummary(effective().coldCompact.value, effective().coldModels.value) }),
+    reviewCount: () => cachedReviewCount(memo, id, () => rollup(kids())),
+    children: kids,
   }
 }
 
@@ -1008,10 +1162,9 @@ function lazyPresetTeam(ctx: BuildContext, memo: Memo, entry: PresetEntry): Lazy
 // chain falls through to, so an inventory row at any other level would address
 // records no agent ever reads.
 function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, depth: number): readonly Lazy[] {
-  return withUserCategories(memo, `group:defaults:${ownerSegment(null, catalogue)}`, depth, [
+  return withFolders(memo, [
     lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
-    lazyControls(memo, "compaction", "defaults", null, depth, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyBase(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySystem(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
@@ -1019,47 +1172,72 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
   ])
 }
 
-// The built-in category tabs every owner has, in order, then the user's own
-// categories after them. A row assigned to a user category is dropped from its
-// home subtree (with its children) and listed under the category instead, in
-// every owner's list. No categories: the home groups are returned untouched so
-// the existing tree is byte-identical.
-function withUserCategories(
-  memo: Memo,
-  prefix: string,
-  depth: number,
-  groups: readonly Lazy[],
-): readonly Lazy[] {
-  const categories = memo.ctx.categories
-  if (categories.length === 0) return groups
-  const byItem = categoryByItem(categories)
-  return [
-    ...groups.map((group) => dropAssigned(group, byItem)),
-    ...orderedCategories(categories).map((category) => userCategoryGroup(memo, prefix, depth, category, groups, byItem)),
-  ]
+// Folders and display order (folders.ts). Each tab group keeps its rows except
+// those a folder holds; a folder lists its rows (with their children) in its
+// items order, and child folders in place. The tab's top level follows its
+// order record: listed folders and rows first, in that order, then the rest as
+// they were (folders before rows). A tab with neither a folder nor an order is
+// returned as it is.
+function withFolders(memo: Memo, groups: readonly Lazy[]): readonly Lazy[] {
+  if (memo.ctx.folders.length === 0 && memo.ctx.orders.length === 0) return groups
+  return groups.map((group) => arrangeTab(memo, group))
 }
 
-function userCategoryGroup(
-  memo: Memo,
-  prefix: string,
-  depth: number,
-  category: CategoryRecord,
-  homeGroups: readonly Lazy[],
-  byItem: ReadonlyMap<string, string>,
-): Lazy {
-  return branch(memo, {
-    kind: "group",
-    id: `${prefix}:category:${categorySlug(category.name)}`,
-    label: category.name,
-    depth,
-    actions: noActions(),
-    children: () => collectAssigned(homeGroups, category.name, byItem, depth + 1),
-  })
+function arrangeTab(memo: Memo, group: Lazy): Lazy {
+  const tab = tabOfGroupId(group.id)
+  if (tab === undefined) return group
+  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab)
+  const listed = orderOf(memo.ctx.orders, `tab:${tab}`)?.items ?? []
+  if (folders.length === 0 && listed.length === 0) return group
+  const byItem = new Map(folders.flatMap((folder) => folder.items.filter((entry) => folderIdOfRef(entry) === undefined).map((item) => [item, folder.id] as const)))
+  const referenced = new Set(folders.flatMap((folder) => folder.items.flatMap((entry) => folderIdOfRef(entry) ?? [])))
+  const folderPrefix = `${group.id}:folder:`
+  const tokenOf = (lazy: Lazy): string | undefined => {
+    if (lazy.id.startsWith(folderPrefix)) return folderRef(lazy.id.slice(folderPrefix.length))
+    return lazy.address?.section === null ? lazy.address.item : undefined
+  }
+  return {
+    ...group,
+    children: () => {
+      const home = group.children()
+      const rows = indexRows(home, byItem)
+      const folderRow = (folder: FolderRecord, depth: number, seen: ReadonlySet<string>): Lazy =>
+        branch(memo, {
+          kind: "group",
+          id: `${folderPrefix}${folder.id}`,
+          label: folder.name,
+          depth,
+          actions: noActions(),
+          children: () =>
+            folder.items.flatMap((entry): Lazy[] => {
+              const child = folderIdOfRef(entry)
+              if (child !== undefined) {
+                const sub = folders.find((candidate) => candidate.id === child)
+                return sub === undefined || seen.has(child) ? [] : [folderRow(sub, depth + 1, new Set([...seen, child]))]
+              }
+              const row = rows.get(entry)
+              return row === undefined ? [] : [rebase(row, depth + 1 - row.depth)]
+            }),
+        })
+      const topFolders = folders.filter((folder) => !referenced.has(folder.id)).map((folder) => folderRow(folder, group.depth + 1, new Set([folder.id])))
+      const kept = home.filter((child) => assignedItem(child, byItem) === undefined).map((child) => dropAssigned(child, byItem))
+      const defaults = [...topFolders, ...kept]
+      return [
+        ...listed.flatMap((ref) => defaults.filter((lazy) => tokenOf(lazy) === ref)),
+        ...defaults.filter((lazy) => {
+          const token = tokenOf(lazy)
+          return token === undefined || !listed.includes(token)
+        }),
+      ]
+    },
+  }
 }
 
 // The item a row stands for, when it is a whole row (never a section) and an
 // assignment names it. Group rows have no address and are never assignable.
-function assignedCategory(lazy: Lazy, byItem: ReadonlyMap<string, string>): string | undefined {
+// The folder id a whole item row is held in, when it is held (group rows and
+// section rows never are).
+function assignedItem(lazy: Lazy, byItem: ReadonlyMap<string, string>): string | undefined {
   const address = lazy.address
   if (address === undefined || address.section !== null) return undefined
   return byItem.get(address.item)
@@ -1074,24 +1252,19 @@ function dropAssigned(lazy: Lazy, byItem: ReadonlyMap<string, string>): Lazy {
     children: () =>
       lazy
         .children()
-        .filter((child) => assignedCategory(child, byItem) === undefined)
+        .filter((child) => assignedItem(child, byItem) === undefined)
         .map((child) => dropAssigned(child, byItem)),
   }
 }
 
-// The assigned rows, in home tree order, flattened under the category so a
-// moved row lists directly under it. Depths are rebased so the row and its
-// descendants render at the category's own indent.
-function collectAssigned(
-  groups: readonly Lazy[],
-  name: string,
-  byItem: ReadonlyMap<string, string>,
-  targetDepth: number,
-): Lazy[] {
-  const out: Lazy[] = []
+// The held rows by item id, in home tree order (the first one found wins).
+// A folder lists them under itself at its own indent (rebase).
+function indexRows(groups: readonly Lazy[], byItem: ReadonlyMap<string, string>): Map<string, Lazy> {
+  const out = new Map<string, Lazy>()
   const visit = (lazy: Lazy) => {
-    if (assignedCategory(lazy, byItem) === name) {
-      out.push(rebase(lazy, targetDepth - lazy.depth))
+    const item = lazy.address?.section === null ? lazy.address.item : undefined
+    if (item !== undefined && byItem.has(item)) {
+      if (!out.has(item)) out.set(item, lazy)
       return
     }
     if (lazy.kind === "section") return
@@ -1208,10 +1381,9 @@ function lazyOwnerRow(
     ...(row.owner === undefined ? {} : { owner: row.owner }),
     actions: { ...noActions(), remove: row.remove },
     children: () =>
-      withUserCategories(memo, `group:${row.level}:${row.id}`, row.depth + 1, [
+      withFolders(memo, [
         lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
         lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-        lazyControls(memo, "compaction", row.level, row.id, row.depth + 1),
         lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
@@ -1529,10 +1701,9 @@ function lazyTeamMember(
     // the member's `<team>/:<member>` owner path instead of colliding with
     // the stand-alone agent's.
     children: () =>
-      withUserCategories(memo, memberGroup, depth + 1, [
+      withFolders(memo, [
         lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
-        lazyControls(memo, "compaction", level, owner, depth + 1, teamRef, "teams", memberPath),
         lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
         lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
         lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
@@ -1571,10 +1742,9 @@ function lazyTeamSpecialAgent(
     depth: 4,
     actions: noActions(),
     children: () =>
-      withUserCategories(memo, specialGroup, 5, [
+      withFolders(memo, [
         lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
         lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
-        lazyControls(memo, "compaction", level, owner, 5, teamRef, "teams", specialPath),
         lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
         lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
         lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
@@ -1703,12 +1873,18 @@ function lazyControl(
     ? "Remote compaction uses the provider. Local model and instructions are retained; choose Auto or Local to edit them."
     : undefined
   const toggle = controlKind(item.id) === "toggle"
+  // B7: a free-text control's text reaches its consumer, so it takes sections
+  // like any other text row: the agent/member description and the agent-wide
+  // compaction instructions. Mode, strategy, model, color and steps are
+  // enumerated or scalar values, not text to section.
+  const sectioned = item.id === "setting:description" || item.id === "compaction:instructions"
   return {
     id,
     kind: "item",
     label: item.title[0].toUpperCase() + item.title.slice(1),
     depth,
     address,
+    ...(sectioned ? { add: "section" as const } : {}),
     get actions() {
       const available = disabled() === undefined
       return {
@@ -1716,6 +1892,7 @@ function lazyControl(
         toggle: toggle && available,
         edit: !toggle && available,
         reset: available && canReset(memo.ctx.customizations, address),
+        ...(sectioned ? { split: available } : {}),
       }
     },
     selfReview: () => flagOf(memo, level, owner, item, null, catalogue, teamRef),
@@ -1725,7 +1902,7 @@ function lazyControl(
       const reason = disabled()
       return {
         ...(toggle ? { state: resolved.enabled ? "on" as const : "off" as const } : {}),
-        value: controlValue(item.id, resolved.text, resolved.enabled),
+        value: controlValue(item.id, resolved.assembled, resolved.enabled),
         modified: resolved.modified,
         source: resolved.source,
         from,
@@ -1735,7 +1912,10 @@ function lazyControl(
       }
     },
     reviewCount: () => 0,
-    children: () => [],
+    children: () =>
+      sectioned
+        ? sectionKids(memo.ctx, memo, level, owner, item, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath)
+        : [],
   }
 }
 
@@ -1988,18 +2168,330 @@ function lazyModelItem(
       }
     },
     reviewCount: () => 0,
-    // The row opens into one field per model field, the same layout as
-    // Defaults › Models: Model, Effort, Warming, Ping every, Keep-alive prompt.
-    children: () =>
-      MODEL_FIELD_NAMES.map((field) =>
-        lazyModelField(memo, ctx, level, owner, candidate, field, depth + 1, teamRef, catalogue, ownerPath),
-      ),
+    // The row opens into Model and Effort, then the Warming and Compaction
+    // group rows; Warming holds its fields, Compact before cold and the
+    // cold-cache list, Compaction its strategy, model and instructions.
+    children: () => modelRowChildren(memo, ctx, level, owner, candidate, id, depth + 1, teamRef, catalogue, ownerPath),
   }
 }
 
 interface ModelFieldInfo {
   readonly value: string
   readonly own: boolean
+}
+
+// The children of an agent/member/preset model row: Model and Effort, then the
+// Warming and Compaction group rows (plus-1.1.18 §2). Warming and Compaction
+// carry no address and no toggle: their fields differ in kind, so Space does
+// nothing. Only the cold-cache group is itself a switch, and it opens into the
+// numbered model list.
+function modelRowChildren(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  modelRowId: string,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): readonly Lazy[] {
+  const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
+  return [
+    lazyModelField(memo, ctx, level, owner, candidate, "model", depth, teamRef, catalogue, ownerPath),
+    lazyModelField(memo, ctx, level, owner, candidate, "effort", depth, teamRef, catalogue, ownerPath),
+    modelGroup(memo, {
+      id: modelGroupRowId(modelRowId, "warming"),
+      label: "Warming",
+      depth,
+      summary: () => warmingGroupSummary(memo, ctx, level, owner, candidate, teamRef, catalogue),
+      children: [
+        () => lazyModelField(memo, ctx, level, owner, candidate, "warming", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "interval", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "prompt", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "compactWarm", depth + 1, teamRef, catalogue, ownerPath),
+        () => coldListGroup(memo, ctx, level, owner, candidate, modelRowId, depth + 1, teamRef, catalogue, ownerPath),
+      ],
+    }),
+    modelGroup(memo, {
+      id: modelGroupRowId(modelRowId, "compaction"),
+      label: "Compaction",
+      depth,
+      summary: () => compactionGroupSummary(memo, ctx, level, owner, candidate, teamRef, catalogue),
+      children: [
+        () => lazyModelField(memo, ctx, level, owner, candidate, "compactionStrategy", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "compactionModel", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "compactionInstructions", depth + 1, teamRef, catalogue, ownerPath),
+      ],
+    }),
+  ]
+}
+
+// A plain group row: no address, no toggle, a summary line and children. Space
+// on it does nothing (its fields differ in kind).
+function modelGroup(
+  memo: Memo,
+  args: {
+    readonly id: string
+    readonly label: string
+    readonly depth: number
+    readonly summary: () => string
+    readonly children: readonly (() => Lazy)[]
+  },
+): Lazy {
+  const kids = (): readonly Lazy[] => cachedKids(memo, args.id, () => args.children.map((build) => build()))
+  return {
+    id: args.id,
+    kind: "group",
+    label: args.label,
+    depth: args.depth,
+    actions: noActions(),
+    selfReview: () => false,
+    partial: () => ({ value: args.summary() }),
+    reviewCount: () => cachedReviewCount(memo, args.id, () => rollup(kids())),
+    children: kids,
+  }
+}
+
+// The cold-cache group: the switch itself (Space toggles `coldCompact`, `r`
+// inherits) plus the numbered list of models that compact a cold cache.
+function coldListGroup(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  modelRowId: string,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const id = modelGroupRowId(modelRowId, "cold")
+  const itemId = modelFieldItemId(targetOf(candidate), "coldCompact")
+  const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
+  const rows = (): readonly string[] => coldListOf(memo, ctx, level, owner, candidate, teamRef, catalogue).value
+  const on = (): boolean => coldCompactOf(memo, ctx, level, owner, candidate, teamRef, catalogue)
+  const own = (): boolean => coldOwnAt(ctx, level, owner, candidate, teamRef, catalogue)
+  const kids = (): readonly Lazy[] =>
+    rows().map((model, index): Lazy => ({
+      id: modelColdRowId(modelRowId, index),
+      kind: "item",
+      label: model,
+      depth: depth + 1,
+      address: { ...address, item: coldModelItemId(targetOf(candidate), index) },
+      actions: { toggle: false, edit: false, reset: false, remove: true, split: false, pin: false },
+      selfReview: () => false,
+      partial: () => ({ value: coldListValue(index, model) }),
+      reviewCount: () => 0,
+      children: () => [],
+    }))
+  return {
+    id,
+    kind: "group",
+    label: COLD_COMPACT_LABEL,
+    depth,
+    address,
+    actions: { toggle: true, edit: false, reset: own(), remove: false, split: false, pin: false },
+    selfReview: () => false,
+    partial: () => ({ value: coldCompactSummary(on(), rows()) }),
+    reviewCount: () => cachedReviewCount(memo, id, () => rollup(kids())),
+    children: kids,
+  }
+}
+
+function targetOf(candidate: { providerID: string; modelID: string; variant?: string }): { providerID: string; modelID: string; variant?: string } {
+  return { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
+}
+
+// A nested group under a model row, addressed so `:model:` never appears: the
+// `isModelRowId`/`isModelDefaultRowId` checks stay true only for the model row
+// itself, never for its groups or field rows.
+function modelGroupRowId(modelRowId: string, suffix: string): string {
+  return `${modelRowId.replace(/^item:/, "group:").replace(/:model:/, ":modelgroup:")}:${suffix}`
+}
+
+// A cold-cache list row under a model row: an item id with its own marker.
+function modelColdRowId(modelRowId: string, index: number): string {
+  return `${modelRowId.replace(/:model:/, ":coldmodel:")}:${COLD_ITEM_SEGMENT}:${index}`
+}
+
+// A nested group or cold-list row under a Defaults › Models row: `group:` for
+// the groups and a distinct `item:` marker for the rows, so only the model row
+// itself answers `isModelDefaultRowId`.
+function defaultGroupRowId(key: ModelSettingsKey, suffix: string): string {
+  return `${modelDefaultRowId(key).replace(/^item:/, "group:")}:${suffix}`
+}
+
+function defaultColdRowId(key: ModelSettingsKey, index: number): string {
+  return `item:defaults:${MODELS_OWNER}:modelcold:${modelDefaultItemId(key).slice(MODEL_DEFAULT_PREFIX.length)}:${COLD_ITEM_SEGMENT}:${index}`
+}
+
+// The effective compaction for one agent model row: the row's own chain, then
+// the agent's old agent-wide rows, then Defaults › Models, Every model, the
+// shared Defaults rows and opencode.json (model-settings.ts).
+function effectiveCompactionFor(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): EffectiveCompaction {
+  const target = targetOf(candidate)
+  const row = resolveModelCompactionFields(
+    { models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) },
+    target,
+  )
+  const { agent, agents } = agentWideCompaction(memo, level, owner, teamRef, catalogue)
+  const model = settingsFor(ctx.modelSettings, target)
+  const every = everySettings(ctx.modelSettings)
+  return effectiveCompaction({
+    row,
+    ...(agent === undefined ? {} : { agent }),
+    ...(agents === undefined ? {} : { agents }),
+    ...(model === undefined ? {} : { model }),
+    ...(every === undefined ? {} : { every }),
+  })
+}
+
+// The old agent-wide `compaction:*` rows, still applied by resolution: the
+// owner's own chain (labelled `agent-wide`) and the shared Defaults rows
+// (labelled `every agent`). The UI never writes them again.
+function agentWideCompaction(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): { agent?: CompactionDefaults; agents?: CompactionDefaults } {
+  if (owner === null) return {}
+  const items = itemsForControls(memo)
+  const value = (itemId: string, atLevel: Level, atOwner: string | null): { readonly text: string; readonly level: boolean } | undefined => {
+    const address = addressOf(atLevel, atOwner, itemId, null, teamRef, catalogue)
+    const item = controlItemFor(items, address)
+    if (item === undefined) return undefined
+    const resolved = wholeOf(memo, atLevel, atOwner, item, catalogue, teamRef)
+    // The text reaches core as the assembled body (section edits and
+    // exclusions applied), the same body apply installs.
+    const text = resolved.assembled
+    // The backend's default rows carry "" for the model and instructions; an
+    // empty text there is "inherit", not an explicit empty prompt.
+    if (text.length === 0 && (itemId === "compaction:model" || itemId === "compaction:instructions")) return undefined
+    return { text, level: resolved.textFrom.kind === "level" }
+  }
+  const own = (itemId: string): string | undefined => {
+    const found = value(itemId, level, owner)
+    return found === undefined || !found.level ? undefined : found.text
+  }
+  const shared = (itemId: string): string | undefined => {
+    const text = value(itemId, "defaults", null)?.text
+    // The backend's default rows carry the built-in values (auto, "", ""); a
+    // value equal to the built-in is "not set" here, not an every-agent layer.
+    if (itemId === "compaction:strategy" && text === "auto") return undefined
+    return text
+  }
+  const agentFields = {
+    ...(own("compaction:strategy") === undefined ? {} : { strategy: own("compaction:strategy") }),
+    ...(own("compaction:model") === undefined ? {} : { model: own("compaction:model") }),
+    ...(own("compaction:instructions") === undefined ? {} : { instructions: own("compaction:instructions") }),
+  }
+  const agentsFields = {
+    ...(shared("compaction:strategy") === undefined ? {} : { strategy: shared("compaction:strategy") }),
+    ...(shared("compaction:model") === undefined ? {} : { model: shared("compaction:model") }),
+    ...(shared("compaction:instructions") === undefined ? {} : { instructions: shared("compaction:instructions") }),
+  }
+  return {
+    ...(Object.keys(agentFields).length === 0 ? {} : { agent: agentFields }),
+    ...(Object.keys(agentsFields).length === 0 ? {} : { agents: agentsFields }),
+  }
+}
+
+function coldCompactOf(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): boolean {
+  return effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue).coldCompact.value
+}
+
+function coldListOf(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): EffectiveCompaction["coldModels"] {
+  return effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue).coldModels
+}
+
+// Whether this level's own model row sets the coldCompact switch or the list.
+function coldOwnAt(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): boolean {
+  const target = targetOf(candidate)
+  const scope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }
+  return ctx.models.some(
+    (record) => record.removed !== true && scopedTo(record, scope) && sameModelCandidate(record, target) && record.coldCompact !== undefined,
+  )
+}
+
+function warmingGroupSummary(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): string {
+  const target = targetOf(candidate)
+  const rowScope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }
+  const fields = resolveModelFields({ models: ctx.models, scopes: ctx.scopes, ...rowScope }, target)
+  const host = hostModelOf(ctx.hostModels, { providerID: candidate.providerID, modelID: candidate.modelID })
+  const modelSetting = settingsFor(ctx.modelSettings, target)
+  const view = modelDefaultViewOf(modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+  const warming = fields.warming ?? (view.on.value ? { value: formatDuration(view.duration.value), level: view.duration.from as Level } : { value: "off", level: view.on.from as Level })
+  const interval = fields.interval ?? { value: formatDuration(view.interval.value), level: view.interval.from as Level }
+  return warming.value === "off" ? "off" : `${warming.value} · every ${interval.value}`
+}
+
+function compactionGroupSummary(
+  memo: Memo,
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+): string {
+  const compaction = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)
+  return compactionStrategyWord(compaction.strategy.value)
+}
+
+function compactionStrategyWord(strategy: string): string {
+  return strategy[0].toUpperCase() + strategy.slice(1)
+}
+
+// The source word a compaction field shows: the level's own name, else the
+// agent-wide / every-agent / defaults words.
+function compactionSource(from: CompactionFrom): string {
+  if (from === "agent") return "agent-wide"
+  if (from === "agents") return "every agent"
+  return defaultsSource(from)
 }
 
 // One field row under an agent/member/preset model row. The effective value
@@ -2071,32 +2563,77 @@ function lazyModelField(
       const inherited = defaultEffort({ ...(modelSetting === undefined ? {} : { model: modelSetting }), ...(everySettings(ctx.modelSettings) === undefined ? {} : { every: everySettings(ctx.modelSettings) }), ...(host?.variants === undefined ? {} : { variants: host.variants }) })
       return inherited === undefined ? { value: "none", own: false } : { value: `${inherited.value} · ${defaultsSource(inherited.from)}`, own: false }
     }
+    if (field === "compactWarm") {
+      const compaction = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)
+      const compactWarm = compaction.compactWarm
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactWarm")
+      return { value: own ? (compactWarm.value ? "on" : "off") : `${compactWarm.value ? "on" : "off"} · ${compactionSource(compactWarm.from)}`, own }
+    }
+    if (field === "compactionStrategy") {
+      const compaction = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)
+      const strategy = compaction.strategy
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactionStrategy")
+      const text = compactionStrategyWord(strategy.value)
+      return { value: own ? text : `${text} · ${compactionSource(strategy.from)}`, own }
+    }
+    if (field === "compactionModel") {
+      const compaction = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)
+      const model = compaction.model
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactionModel")
+      const text = model.value ?? "Inherited model"
+      return { value: own ? text : `${text} · ${compactionSource(model.from)}`, own }
+    }
+    if (field === "compactionInstructions") {
+      const compaction = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)
+      const instructions = compaction.instructions
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactionInstructions")
+      const text = instructions.value === undefined ? "Empty prompt" : instructions.value.length > 24 ? `${instructions.value.slice(0, 23)}…` : instructions.value
+      return { value: own ? text : `${text} · ${compactionSource(instructions.from)}`, own }
+    }
     // Warming / Ping every / Keep-alive prompt: the effective value wherever
     // the agent's chain sets it, not only at this row's level. An inherited
     // value names its own level; the Defaults › Models fallback names the
     // settings surface it came from.
-    const resolved = fields[field]
+    const resolved = fields[field as "warming" | "interval" | "prompt"]
     if (resolved !== undefined) {
       const own = resolved.level === level
       return { value: own ? resolved.value : `${resolved.value} · ${levelWord(resolved.level)}`, own }
     }
-    const effective = modelSettingEffective(view, field)
+    const effective = modelSettingEffective(view, field as "warming" | "interval" | "prompt")
     if (effective === undefined) return { value: "none", own: false }
     return { value: `${effective.text} · ${defaultsSource(effective.from)}`, own: false }
   }
   const current = info()
+  const switchField = field === "compactWarm"
   return {
     id: rowIdOf("item", level, owner, itemId, catalogue, ownerPath),
     kind: "item",
     label: MODEL_FIELD_LABELS[field],
     depth,
     address,
-    actions: { toggle: false, edit: true, reset: current.own, remove: false, split: false, pin: false },
+    actions: { toggle: switchField, edit: !switchField, reset: current.own, remove: false, split: false, pin: false },
     selfReview: () => false,
     partial: () => ({ value: info().value, ...(info().own ? { modified: true as const } : {}) }),
     reviewCount: () => 0,
     children: () => [],
   }
+}
+
+// Whether this level's own model row sets one compaction field for the target.
+function ownCompactionField(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string },
+  teamRef: RowTeam | undefined,
+  catalogue: Catalogue | undefined,
+  field: "compactWarm" | "compactionStrategy" | "compactionModel" | "compactionInstructions",
+): boolean {
+  const target = targetOf(candidate)
+  const scope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }
+  return ctx.models.some(
+    (record) => record.removed !== true && scopedTo(record, scope) && sameModelCandidate(record, target) && record[field] !== undefined,
+  )
 }
 
 // Where an inherited Defaults › Models value came from, in the words the
@@ -2993,18 +3530,21 @@ function lazyParamRow(
     label: `${item.title}: ${item.paramType ?? "any"}${item.required === true ? " (required)" : ""}`,
     depth,
     address,
+    // B7: a parameter's text is its description, so it takes sections like any
+    // other text row (heading-derived, or a manual split and `a` on sections).
+    add: "section",
     actions: {
       toggle: item.required !== true,
       edit: true,
       reset: canReset(memo.ctx.customizations, address),
       remove: false,
-      split: false,
+      split: true,
       pin: false,
     },
     selfReview: () => cachedSelfReview(memo, id, () => flagOf(memo, level, owner, item, null, catalogue, teamRef)),
     partial: () => permBadges(memo, level, owner, item, teamRef, catalogue),
     reviewCount: () => 0,
-    children: () => [],
+    children: () => sectionKids(memo.ctx, memo, level, owner, item, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath),
   }
 }
 
@@ -3213,6 +3753,7 @@ function lazySection(
     depth,
     ...(options?.introduction === true ? { introduction: true as const } : {}),
     address,
+    add: "section",
     actions: {
       toggle: true,
       // A wrapper's own body is presentation: an edit would store its section

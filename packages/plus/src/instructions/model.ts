@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
-import { assembleWithOverrides, assembleWithSpans, derive, manual, slice, type SectionSpan, type Split } from "./sections.js"
+import { assembleWithOverrides, derive, manual, renderSections, slice, type Override, type SectionSpan, type Shadow, type Split } from "./sections.js"
 import { markerIn, stripMarkers } from "./requires.js"
 
 // `preset` holds the human's edits of presets (DESIGN §1); its records live
@@ -959,7 +959,7 @@ export interface SplitRecord {
   readonly team?: TeamRef
   /** Shared-inventory rows only (`agent === null`); absent means the Agents catalogue. */
   readonly catalogue?: Catalogue
-  readonly boundaries: readonly { id: string; name: string; start: number }[]
+  readonly boundaries: readonly { id: string; name: string; start: number; depth?: number }[]
   readonly updated: string
 }
 
@@ -1041,6 +1041,8 @@ export interface Resolved {
   readonly fullText?: string
   /** Section spans in fullText for display ranges. */
   readonly spans?: ReadonlyMap<string, SectionSpan>
+  /** Section overrides the assembled text does not send, with the section or item that replaces each (sections.ts `renderSections`). */
+  readonly shadows?: ReadonlyMap<string, Shadow>
   readonly enabled: boolean
   readonly pinned: boolean
   readonly source: Level | "upstream"
@@ -1639,10 +1641,12 @@ export function resolveWhole(input: ChainInput): Resolved {
     scopes: input.scopes,
     address: input.address,
   })
-  const excluded = new Set(
-    split.sections.map((section) => section.id).filter((id) => sectionState(input, chain, id) === "off"),
-  )
   const overridden = sectionOverrides(input, chain)
+  const wholeRank = textAt === -1 ? Infinity : textAt
+  const full = renderSections(text, split, new Set(), overridden, wholeRank)
+  const excluded = new Set(
+    [...full.spans.keys()].filter((id) => sectionState(input, chain, id) === "off"),
+  )
   const reviewOf = reviewParts(input, own, () => aboveWholeFingerprint(input, whole, chain))
   const requires =
     requiresAt === -1 ? undefined : { ids: values[requiresAt]?.requires ?? [], from: chain[requiresAt].from, here: own?.requires !== undefined }
@@ -1650,12 +1654,14 @@ export function resolveWhole(input: ChainInput): Resolved {
   // Gated for one agent: a section whose condition it does not meet goes,
   // with its subsections; the row's own condition failing sends nothing.
   if (gate !== undefined)
-    for (const section of split.sections) {
-      const ids = sectionRequires(input, chain, section.id, overridden.get(section.id) ?? slice(text, section))?.ids
-      if (ids !== undefined && !gate(ids)) excluded.add(section.id)
+    for (const [id, span] of full.spans) {
+      const ids = sectionRequires(input, chain, id, full.text.slice(span.start, span.end))?.ids
+      if (ids !== undefined && !gate(ids)) excluded.add(id)
     }
-  const { text: fullAssembled, spans } = assembleWithSpans(text, split, overridden)
-  const assembled = assembleWithOverrides(text, split, excluded, overridden)
+  const fullAssembled = full.text
+  const spans = full.spans
+  const assembledRendered = renderSections(text, split, excluded, overridden, wholeRank)
+  const assembled = assembledRendered.text
 
   const hasOwnSectionText = split.sections.some((sec) => {
     const ownSec = at(sectionRecords(input, sec.id), input.address)
@@ -1698,6 +1704,7 @@ export function resolveWhole(input: ChainInput): Resolved {
     assembled: gate === undefined ? assembled : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
     fullText: fullAssembled,
     spans,
+    shadows: assembledRendered.shadows,
     enabled: stateAt === -1 ? fallback.enabled : values[stateAt]?.state === "on",
     pinned: pinAt === -1 ? (input.upstream.pinned ?? false) : (values[pinAt]?.pin ?? false),
     source,
@@ -1724,6 +1731,13 @@ export function resolveEnabled(input: ChainInput): boolean {
     .map((node) => valueAt(input, whole, node, null)?.state)
     .find((value) => value !== undefined)
   return state === undefined ? fallbackOf(input).enabled : state === "on"
+}
+
+// The section override at this address that the assembled text does not send,
+// and the section or item text that replaces it (B25). Read from the same
+// resolution the assembly uses, so a write is reported exactly when it is hidden.
+export function shadowOf(input: ChainInput, id: string): Shadow | undefined {
+  return resolveWhole({ ...input, address: { ...input.address, section: null } }).shadows?.get(id)
 }
 
 // A section's condition: the nearest level that set one, else the
@@ -1757,8 +1771,11 @@ function resolveSection(input: ChainInput): Resolved {
   if (cached !== undefined) return cached
 
   const whole = resolveWhole({ ...input, address: { ...input.address, section: null } })
+  const hasManual = input.splits.some((s) => s.item === input.address.item && scopedTo(s, input.address))
+  const hasSectionOverrides = input.records.some((c) => c.item === input.address.item && c.section !== null && c.text !== undefined && scopedTo(c, input.address))
+  const baseText = !hasManual && hasSectionOverrides ? (whole.fullText ?? whole.assembled ?? whole.text) : whole.text
   const split = resolveSplit({
-    text: whole.text,
+    text: baseText,
     title: input.upstream.title,
     splits: input.splits,
     scopes: input.scopes,
@@ -1769,8 +1786,11 @@ function resolveSection(input: ChainInput): Resolved {
   const values = chain.map((node) => valueAt(input, sectioned, node, id))
   const textAt = values.findIndex((value) => value?.text !== undefined)
   const stateAt = values.findIndex((value) => value?.state !== undefined)
-  const upstreamSlice = definition === undefined ? "" : slice(whole.text, definition)
-  const text = textAt === -1 ? upstreamSlice : (values[textAt]?.text ?? "")
+  const upstreamSlice = definition === undefined ? "" : slice(baseText, definition)
+  // A heading-derived parent with children shows its effective span: its own text
+  // with the child customizations that win over it (rule 2 of B39) applied.
+  const hasChildren = !hasManual && split.sections.some((section) => section.id.startsWith(`${id}/`))
+  const text = textAt === -1 || hasChildren ? upstreamSlice : (values[textAt]?.text ?? "")
   const own = at(sectioned, input.address)
   const sourceNode = textAt === -1 ? (stateAt === -1 ? undefined : chain[stateAt]) : chain[textAt]
   const reviewOf = reviewParts(input, own, () => aboveSectionFingerprint(input, id))
@@ -1947,9 +1967,9 @@ function aboveSectionFingerprint(input: ChainInput, id: string): string {
 // upstream slice; exclusions still drop a parent with its children, and a
 // child edit cannot resurrect an excluded parent.
 const sectionOverridesCacheLimit = 5000
-const sectionOverridesCache = new Map<string, Map<string, string>>()
+const sectionOverridesCache = new Map<string, Map<string, Override>>()
 
-export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[]): Map<string, string> {
+export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[]): Map<string, Override> {
   const chainKey = chainContentKey(chain)
   const recordsEntry = itemRecordsIndex(input.records).get(input.address.item) ?? emptyItemRecordsEntry
   const recordsHash = recordsEntry.hash
@@ -1970,11 +1990,21 @@ export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[])
     scopes: input.scopes,
     address: input.address,
   })
-  const out = new Map<string, string>()
+  const overrideOf = (id: string): Override | undefined =>
+    chain.flatMap((node, rank): Override[] => {
+      const text = sectionTextAt(input, node, id)
+      return text === undefined ? [] : [{ text, rank }]
+    })[0]
+  const out = new Map<string, Override>()
   for (const section of split.sections) {
-    const override = chain.map((node) => sectionTextAt(input, node, section.id)).find((text) => text !== undefined)
+    const override = overrideOf(section.id)
     if (override === undefined) continue
     out.set(section.id, override)
+  }
+  for (const record of recordsEntry.records) {
+    if (record.section === null || out.has(record.section)) continue
+    const override = overrideOf(record.section)
+    if (override !== undefined) out.set(record.section, override)
   }
   if (sectionOverridesCache.size >= sectionOverridesCacheLimit) {
     const oldest = sectionOverridesCache.keys().next()

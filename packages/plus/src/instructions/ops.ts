@@ -1,6 +1,22 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
-import { hostModelOf, parseModelFieldItemId, type ModelFieldName } from "./model-settings.js"
+import {
+  coldModelItemId,
+  effectiveCompaction,
+  everySettings,
+  hostModelOf,
+  parseColdDefaultItemId,
+  parseColdModelItemId,
+  parseModelFieldItemId,
+  parseModelSettingItemId,
+  resolveModelCompactionFields,
+  settingsFor,
+  setModelCompaction,
+  type ModelCompactionField,
+  type ModelCompactionFieldValues,
+  type ModelFieldName,
+  type ModelSettingsKey,
+} from "./model-settings.js"
 import {
   acknowledgeActiveModel,
   activateModel,
@@ -40,6 +56,7 @@ import {
   scopedTo,
   setModelSettings,
   setModelWarming,
+  shadowOf,
   tombstoneModelRecord,
   upstreamForEdit,
 } from "./model.js"
@@ -58,16 +75,287 @@ import type {
   RecordScope,
   ReviewPart,
   RuleRecord,
+  Scopes,
   SplitRecord,
   TeamRef,
 } from "./model.js"
+import {
+  ancestorsOf,
+  createFolderRecord,
+  deleteFolderRecord,
+  folderIdOfRef,
+  folderOf,
+  folderRef,
+  renameFolderRecord,
+  reparent,
+  setOrder,
+  splitLayout,
+  tabOfGroupId,
+  tabOfItem,
+  type FolderRecord,
+  type OrderRecord,
+} from "./folders.js"
 import { presetOfAddress } from "./presets.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
-import { collectSkeleton, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
+import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { derive, manual, slice } from "./sections.js"
+import { derive, headingSpan, manual, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
+
+// Folders and display order (S1a). A move is planned from the folder and order
+// records plus the tab's top-level tokens in display order, then written as one
+// layout write. A token is an item id or `folder:<id>`; `into` is `folder:<id>`
+// or `tab:<tab>`. A row moves only inside its own tab.
+export interface LayoutRecords {
+  readonly folders: readonly FolderRecord[]
+  readonly orders: readonly OrderRecord[]
+}
+
+export interface MoveTarget {
+  readonly into?: string | undefined
+  readonly before?: string | undefined
+  readonly after?: string | undefined
+}
+
+export type LayoutChange = { readonly target: string; readonly status: string; readonly layout: LayoutRecords } | { readonly refusal: string }
+
+export type LayoutPlan = LayoutRecords | { readonly refusal: string }
+
+type Container = { readonly folder: FolderRecord } | { readonly tab: string }
+
+function containerKey(container: Container): string {
+  return "folder" in container ? folderRef(container.folder.id) : `tab:${container.tab}`
+}
+
+function describeContainer(container: Container): string {
+  return "folder" in container ? `folder "${container.folder.name}"` : `the top level of ${container.tab}`
+}
+
+function tabOfToken(folders: readonly FolderRecord[], token: string): string | undefined {
+  const id = folderIdOfRef(token)
+  return id === undefined ? tabOfItem(token) : folderOf(folders, id)?.tab
+}
+
+function containerOfToken(folders: readonly FolderRecord[], token: string): Container | undefined {
+  const holder = folders.find((folder) => folder.items.includes(token))
+  if (holder !== undefined) return { folder: holder }
+  const tab = tabOfToken(folders, token)
+  return tab === undefined ? undefined : { tab }
+}
+
+function containerOfRef(folders: readonly FolderRecord[], ref: string): Container | undefined {
+  if (ref.startsWith("tab:")) return { tab: ref.slice("tab:".length) }
+  const id = folderIdOfRef(ref)
+  const folder = id === undefined ? undefined : folderOf(folders, id)
+  return folder === undefined ? undefined : { folder }
+}
+
+function insertBeside(list: readonly string[], token: string, target: MoveTarget): string[] | undefined {
+  const sibling = target.before ?? target.after
+  if (sibling === undefined) return [...list, token]
+  const index = list.indexOf(sibling)
+  if (index === -1) return undefined
+  const at = target.after === undefined ? index : index + 1
+  return [...list.slice(0, at), token, ...list.slice(at)]
+}
+
+// `inOriginGroup`: the row sits inside one of its tab's origin subgroups (Tools › native),
+// so the tab's top level cannot hold it; moving it out of a folder sends it back home.
+export function planMove(
+  records: LayoutRecords,
+  token: string,
+  top: readonly string[],
+  target: MoveTarget,
+  updated: string,
+  inOriginGroup = false,
+): LayoutPlan {
+  const { folders } = records
+  const movedId = folderIdOfRef(token)
+  const moved = movedId === undefined ? undefined : folderOf(folders, movedId)
+  const sourceTab = tabOfToken(folders, token)
+  if (sourceTab === undefined || (movedId !== undefined && moved === undefined)) return { refusal: `"${token}" is not a row or folder that can move` }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  if (target.into === undefined && target.before === undefined && target.after === undefined)
+    return { refusal: "say where it goes: into a folder or tab, or before or after a row" }
+  const sibling = target.before ?? target.after
+  if (sibling === token) return { refusal: `"${token}" cannot go beside itself` }
+  const into = target.into === undefined ? undefined : containerOfRef(folders, target.into)
+  if (target.into !== undefined && into === undefined) return { refusal: `"${target.into}" is not a folder or a tab` }
+  const beside = sibling === undefined ? undefined : containerOfToken(folders, sibling)
+  if (sibling !== undefined && beside === undefined) return { refusal: `"${sibling}" is not a row that can be placed beside` }
+  const dest = into ?? beside
+  if (dest === undefined) return { refusal: "say where it goes: into a folder or tab, or before or after a row" }
+  if (into !== undefined && beside !== undefined && containerKey(into) !== containerKey(beside))
+    return { refusal: `"${sibling}" is not in ${describeContainer(into)}` }
+  const destTab = "folder" in dest ? dest.folder.tab : dest.tab
+  if (destTab !== sourceTab) return { refusal: `"${token}" is in ${sourceTab}; it moves only within ${sourceTab}, not into ${destTab}` }
+  if (moved !== undefined && "folder" in dest && (dest.folder.id === moved.id || ancestorsOf(folders, dest.folder.id).includes(moved.id)))
+    return { refusal: `folder "${moved.name}" cannot move into itself or into one of its own folders` }
+  const destFolder = "folder" in dest ? dest.folder.id : undefined
+  const inFolder = folders.some((folder) => folder.items.includes(token))
+  const cleared = folders.map((folder) =>
+    folder.items.includes(token) ? { ...folder, items: folder.items.filter((item) => item !== token), updated } : folder,
+  )
+  const topCleared = top.filter((entry) => entry !== token)
+  if (destFolder === undefined && inOriginGroup && sibling !== undefined)
+    return { refusal: `"${token}" sits in an origin group of ${sourceTab}; it cannot go beside "${sibling}" at the top level` }
+  const list = destFolder === undefined ? topCleared : (cleared.find((folder) => folder.id === destFolder)?.items ?? [])
+  const inserted = destFolder === undefined && inOriginGroup ? topCleared : insertBeside(list, token, target)
+  if (inserted === undefined) return { refusal: `"${sibling}" is not in ${describeContainer(dest)}` }
+  const placed = cleared.map((folder) => {
+    const next = folder.id === destFolder ? { ...folder, items: inserted, updated } : folder
+    return moved?.id === folder.id ? reparent(next, destFolder) : next
+  })
+  const writesTop = !inFolder || destFolder === undefined
+  const orders = writesTop ? setOrder(records.orders, sourceTab, destFolder === undefined ? inserted : topCleared, updated) : [...records.orders]
+  return { folders: placed, orders }
+}
+
+const FOLDER_MARK = ":folder:"
+
+// The token a tree row stands for: a folder, a tab (`tab:<tab>`), or a whole item row. Sections, groups and
+// built-in structure have none.
+export function rowToken(node: TreeNode): string | undefined {
+  if (node.kind === "group") {
+    const at = node.id.indexOf(FOLDER_MARK)
+    if (at !== -1) return folderRef(node.id.slice(at + FOLDER_MARK.length))
+    // A tab group is `group:<level>:<owner>:<tab>`; an origin subgroup (Tools › mcp) has one more segment.
+    const tab = node.id.split(":").length === 4 ? tabOfGroupId(node.id) : undefined
+    return tab === undefined ? undefined : `tab:${tab}`
+  }
+  return node.address?.section === null ? node.address.item : undefined
+}
+
+// The index of the tab group a row sits in (nearest tab ancestor), in a flat list of rows in display order.
+export function tabGroupIndex(nodes: readonly TreeNode[], index: number): number | undefined {
+  const row = nodes[index]
+  if (row === undefined) return undefined
+  let depth = row.depth
+  for (let at = index - 1; at >= 0 && depth > 0; at--) {
+    const candidate = nodes[at]
+    if (candidate === undefined || candidate.depth >= depth) continue
+    if (rowToken(candidate)?.startsWith("tab:") === true) return at
+    depth = candidate.depth
+  }
+  return undefined
+}
+
+// The tokens directly under a tab group, in display order (folders and rows at the tab's top level).
+export function topLevelTokens(nodes: readonly TreeNode[], tabIndex: number): string[] {
+  const group = nodes[tabIndex]
+  if (group === undefined) return []
+  const rest = nodes.slice(tabIndex + 1)
+  const end = rest.findIndex((node) => node.depth <= group.depth)
+  const within = end === -1 ? rest : rest.slice(0, end)
+  return within.flatMap((node) => {
+    if (node.depth !== group.depth + 1) return []
+    const token = rowToken(node)
+    return token === undefined ? [] : [token]
+  })
+}
+
+export interface RowTarget {
+  readonly into?: string | undefined
+  readonly before?: string | undefined
+  readonly after?: string | undefined
+}
+
+type Anchor = { readonly token: string; readonly label: string } | { readonly refusal: string }
+
+// Move a row or folder (by tree row id) within its tab. Sections cannot move yet.
+export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: string, target: RowTarget, updated: string): LayoutChange {
+  const nodes = expandedTree(memo)
+  const at = nodes.findIndex((node) => node.id === rowId)
+  const node = nodes[at]
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
+  const token = rowToken(node)
+  if (token === undefined || token.startsWith("tab:")) return { refusal: `"${node.label}" is built-in structure and cannot move` }
+  const tabIndex = tabGroupIndex(nodes, at)
+  const tab = tabIndex === undefined ? undefined : nodes[tabIndex]
+  if (tabIndex === undefined || tab === undefined) return { refusal: `"${node.label}" is not in a tab` }
+  const anchorOf = (id: string | undefined): Anchor | undefined => {
+    if (id === undefined) return undefined
+    if (id.startsWith("folder:") || id.startsWith("tab:")) return { token: id, label: folderOf(layout.folders, folderIdOfRef(id) ?? "")?.name ?? id }
+    const index = nodes.findIndex((candidate) => candidate.id === id)
+    const anchor = nodes[index]
+    if (anchor === undefined) return { refusal: unknownRowRefusal(id) }
+    const anchorToken = rowToken(anchor)
+    if (anchorToken === undefined) return { refusal: `"${anchor.label}" cannot be a destination` }
+    if (index !== tabIndex && tabGroupIndex(nodes, index) !== tabIndex)
+      return { refusal: `"${anchor.label}" is not in ${tab.label}; rows move only inside their own tab` }
+    return { token: anchorToken, label: anchor.label }
+  }
+  const into = anchorOf(target.into)
+  const before = anchorOf(target.before)
+  const after = anchorOf(target.after)
+  const failure = [into, before, after].find((anchor): anchor is { readonly refusal: string } => anchor !== undefined && "refusal" in anchor)
+  if (failure !== undefined) return { refusal: failure.refusal }
+  const tokenOf = (anchor: Anchor | undefined): string | undefined => (anchor !== undefined && "token" in anchor ? anchor.token : undefined)
+  const inOriginGroup = !token.startsWith("folder:") && node.depth !== tab.depth + 1
+  const plan = planMove(
+    layout,
+    token,
+    topLevelTokens(nodes, tabIndex),
+    { into: tokenOf(into), before: tokenOf(before), after: tokenOf(after) },
+    updated,
+    inOriginGroup,
+  )
+  if ("refusal" in plan) return plan
+  const where =
+    into !== undefined && "token" in into
+      ? into.token.startsWith("tab:")
+        ? `to the top of ${tab.label}`
+        : `into "${into.label}"`
+      : before !== undefined && "token" in before
+        ? `before "${before.label}"`
+        : after !== undefined && "token" in after
+          ? `after "${after.label}"`
+          : ""
+  return { target: token, status: `Moved "${node.label}" ${where}`, layout: plan }
+}
+
+// A folder created in a tab's top level or inside a folder, listed last there.
+export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string): LayoutChange {
+  const trimmed = name.trim()
+  if (trimmed === "") return { refusal: "a folder needs a name" }
+  const nodes = expandedTree(memo)
+  const at = nodes.findIndex((node) => node.id === rowId)
+  const node = nodes[at]
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const token = rowToken(node)
+  const folderId = token === undefined ? undefined : folderIdOfRef(token)
+  const parent = folderId === undefined ? undefined : folderOf(layout.folders, folderId)
+  const tab = token?.startsWith("tab:") === true ? token.slice("tab:".length) : parent?.tab
+  if (tab === undefined) return { refusal: `"${node.label}" is not a tab or folder` }
+  const created = splitLayout(
+    createFolderRecord([...layout.folders, ...layout.orders], { tab, name: trimmed, ...(parent === undefined ? {} : { parent: parent.id }) }, updated),
+  )
+  const folder = created.folders.at(-1)
+  if (folder === undefined) return { refusal: "the folder was not created" }
+  const orders =
+    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, at), folderRef(folder.id)], updated) : created.orders
+  return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: { folders: created.folders, orders } }
+}
+
+export function planFolderRename(layout: LayoutRecords, id: string, name: string, updated: string): LayoutChange {
+  const folder = folderOf(layout.folders, id)
+  const trimmed = name.trim()
+  if (folder === undefined) return { refusal: `folder "${id}" does not exist` }
+  if (trimmed === "") return { refusal: "a folder needs a name" }
+  const next = splitLayout(renameFolderRecord([...layout.folders, ...layout.orders], id, trimmed, updated))
+  return { target: folderRef(id), status: `Renamed folder "${folder.name}" to "${trimmed}"`, layout: next }
+}
+
+// A deleted folder's rows and child folders take its place in the list it sat in.
+export function planFolderDelete(layout: LayoutRecords, id: string, updated: string): LayoutChange {
+  const folder = folderOf(layout.folders, id)
+  if (folder === undefined) return { refusal: `folder "${id}" does not exist` }
+  const where = folder.parent === undefined ? `the top level of ${folder.tab}` : `folder "${folderOf(layout.folders, folder.parent)?.name ?? folder.parent}"`
+  const next = splitLayout(deleteFolderRecord([...layout.folders, ...layout.orders], id, updated))
+  return { target: folderRef(id), status: `Deleted folder "${folder.name}"; its rows returned to ${where}`, layout: next }
+}
 
 export interface OpSuccess {
   readonly records: CustomizationRecord[]
@@ -75,6 +363,8 @@ export interface OpSuccess {
   readonly models?: readonly ModelRecord[]
   readonly status: string
   readonly retryHint: string
+  /** Set when the write is saved but the assembled text does not send it (B25): names the row that replaces it. */
+  readonly notice?: string
 }
 
 export interface OpFailure {
@@ -892,20 +1182,81 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
   const next = merge(chain.customizations, chain.address, { text }, chain.upstream, memo.ctx.scopes, chain.splits)
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
   const created = next.find((record) => sameAddress(record, chain.address))
-  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
-    return {
-      records: chain.customizations,
-      splits: chain.splits,
-      status: `Saved "${node.label}"`,
-      retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
-    }
+  const unchanged = existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created)
+  const records = unchanged ? chain.customizations : withoutInnerChildren(memo, chain, next, text)
+  const notice = hiddenNotice(memo, chain, records)
   return {
-    records: next,
+    records,
     splits: chain.splits,
-    status: `Saved "${node.label}"`,
+    status: notice ?? `Saved "${node.label}"`,
     retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
+    ...(notice === undefined ? {} : { notice }),
   }
 }
+
+// A parent section's text now holds the child sections inside its span: the
+// child texts saved at this same level are dropped, so the parent's edit is
+// not undone by an older child record (B39 rule 4). Children saved at a more
+// specific level stay.
+function withoutInnerChildren(
+  memo: Memo,
+  chain: { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] },
+  records: CustomizationRecord[],
+  text: string,
+): CustomizationRecord[] {
+  const sectionId = chain.address.section
+  if (sectionId === null) return records
+  const itemText = resolve({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: memo.ctx.scopes,
+    address: { ...chain.address, section: null },
+  }).text
+  const depth = resolveSplit({
+    text: itemText,
+    title: chain.upstream.title,
+    splits: chain.splits,
+    scopes: memo.ctx.scopes,
+    address: chain.address,
+  }).sections.find((section) => section.id === sectionId)?.depth ?? 0
+  return headingSpan(text, depth).inner.reduce((out, child) => {
+    const address: Address = { ...chain.address, section: `${sectionId}/${child.rel}` }
+    const stored = out.some((record) => record.text !== undefined && sameAddress(record, address))
+    return stored ? merge(out, address, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits) : out
+  }, records)
+}
+
+// B25: a section write that the assembled text does not send says so, naming
+// the row that replaces it. A shared (Defaults) write is checked for every
+// agent the item applies to, since it reaches each of them. Read from the same
+// resolution the assembly uses.
+function hiddenNotice(
+  memo: Memo,
+  chain: { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] },
+  records: readonly CustomizationRecord[],
+): string | undefined {
+  const sectionId = chain.address.section
+  if (sectionId === null) return undefined
+  // An agent sees its own text from Project down, so a Defaults or Global write
+  // is checked there: a Project copy hides it even though the write's own chain
+  // does not include Project.
+  const viewers: Address[] =
+    chain.address.agent === null
+      ? memo.ctx.agents.filter((agent) => applies(chain.upstream, agent.id)).map((agent) => ({ ...chain.address, level: "project", agent: agent.id }))
+      : [{ ...chain.address, level: "project" }]
+  return viewers.flatMap((address): string[] => {
+    const shadow = shadowOf({ upstream: chain.upstream, records, splits: chain.splits, scopes: memo.ctx.scopes, address }, sectionId)
+    const node = shadow === undefined ? undefined : resolutionChain(address, memo.ctx.scopes)[shadow.rank]
+    if (shadow === undefined || node === undefined) return []
+    const owner = node.team !== undefined && node.agent !== null ? `${node.team.team}/:${node.agent}` : (node.agent ?? (node.catalogue === "teams" ? "/teams" : ""))
+    const label = shadow.by === null ? chain.upstream.title : shadow.name
+    const row = shadow.by === null ? `item:${node.level}:${owner}:${chain.address.item}` : `section:${node.level}:${owner}:${chain.address.item}:${shadow.by}`
+    return [`Saved, but "${label}" (${row}) at ${levelNames[node.level]} replaces this text; edit or reset that row for this change to take effect.`]
+  })[0]
+}
+
+const levelNames: Record<Level, string> = { project: "Project", global: "Global", defaults: "Defaults", preset: "Preset" }
 
 export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpResult {
   const found = findNode(input, rowId, sharedMemo)
@@ -1002,30 +1353,110 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   const node = found.node
   const memo = found.memo
   const address = node.address
-  if (!address || node.kind !== "item") return { refusal: `"${node.label}" does not support sections` }
-  if (node.actions?.split !== true) return { refusal: `"${node.label}" does not support sections` }
+  if (!address || (node.kind !== "item" && node.kind !== "section")) return { refusal: `"${node.label}" does not support sections` }
+  if (node.kind === "item" && node.actions?.split !== true) return { refusal: `"${node.label}" does not support sections` }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  const currentText = resolvedTextOf(memo, chain)
+
+  const itemAddress: Address = { ...address, section: null }
+  const currentText = resolvedTextOf(memo, { ...chain, address: itemAddress })
   const preview = resolveSplit({
     text: currentText,
     title: chain.upstream.title,
     splits: chain.splits,
     scopes: memo.ctx.scopes,
-    address: chain.address,
+    address: itemAddress,
   })
-  const existing =
-    preview.kind === "manual"
-      ? preview.sections
-          .filter((section) => section.id !== "preamble")
-          .map((section) => ({ id: section.id, name: section.name, start: section.start }))
-      : [{ id: "existing", name: chain.upstream.title, start: 0 }]
-  const nextStart = currentText.length
+
+  if (preview.kind === "heading") {
+    const isSection = node.kind === "section"
+    const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
+    if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
+
+    const sectionsInSpan = targetSection !== undefined
+      ? preview.sections.filter((s) => s.start >= targetSection.start && s.end <= targetSection.end)
+      : preview.sections
+    const lastLeaf = sectionsInSpan[sectionsInSpan.length - 1] ?? targetSection ?? preview.sections[preview.sections.length - 1]
+    if (lastLeaf === undefined) return { refusal: `Could not add "${name}" to "${node.label}"` }
+
+    const hashCount = targetSection !== undefined
+      ? Math.max(2, targetSection.depth + 2)
+      : (() => {
+          const wrapper = wrappingSection(preview)
+          const nonPreamble = preview.sections.filter((s) => s.id !== "preamble")
+          const topDepth = wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 1)
+          return Math.max(2, topDepth + 1)
+        })()
+
+    const hashes = "#".repeat(hashCount)
+    const headingLine = `${hashes} ${name}`
+    const body = text.trim()
+    const sectionBlock = body.length > 0 ? `${headingLine}\n\n${body}` : headingLine
+
+    const leafAddress: Address = { ...itemAddress, section: lastLeaf.id }
+    const currentLeafText = resolve({
+      upstream: chain.upstream,
+      records: chain.customizations,
+      splits: chain.splits,
+      scopes: memo.ctx.scopes,
+      address: leafAddress,
+    }).text
+    const trimmedLeaf = currentLeafText.trimEnd()
+    const newLeafText = trimmedLeaf.length > 0 ? `${trimmedLeaf}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
+
+    const nextCustomizations = merge(
+      chain.customizations,
+      leafAddress,
+      { text: newLeafText },
+      chain.upstream,
+      memo.ctx.scopes,
+      chain.splits,
+    )
+
+    return {
+      records: nextCustomizations,
+      splits: chain.splits,
+      status: `Added "${name}" to "${node.label}"`,
+      retryHint: `added "${name}" against a stale revision; retry to apply`,
+    }
+  }
+
+  const isSection = node.kind === "section"
+  const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
+  if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
+
+  const existingSplit = chain.splits.find((record) => record.item === address.item && scopedTo(record, address))
+  const existing: Boundary[] =
+    existingSplit !== undefined
+      ? [...existingSplit.boundaries]
+      : preview.kind === "manual" || preview.kind === "block"
+        ? preview.sections
+            .filter((section) => section.id !== "preamble")
+            .map((section) => ({ id: section.id, name: section.name, start: section.start, depth: section.depth }))
+        : [{ id: "existing", name: chain.upstream.title, start: 0, depth: 0 }]
+
+  const insertPos = targetSection !== undefined ? targetSection.end : currentText.length
+  const newDepth = targetSection !== undefined ? (targetSection.depth ?? 0) + 1 : 0
   const used = new Set(existing.map((entry) => entry.id))
-  const boundaries = [...existing, { id: claim(slugify(name), used), name, start: nextStart }]
-  const split = manual(currentText, boundaries)
-  const added = split.sections.find((section) => section.start === nextStart && section.name === name)
-  if (!added) return { refusal: `Could not add "${name}" to "${node.label}"` }
+  const newId = claim(slugify(name), used)
+  const newBoundary: Boundary = { id: newId, name, start: insertPos, depth: newDepth }
+
+  let insertIndex = existing.length
+  if (targetSection !== undefined) {
+    const targetIdx = existing.findIndex((b) => b.id === targetSection.id)
+    if (targetIdx !== -1) {
+      insertIndex = targetIdx + 1
+      while (
+        insertIndex < existing.length &&
+        (existing[insertIndex].start < targetSection.end ||
+          (existing[insertIndex].depth ?? 0) > (targetSection.depth ?? 0))
+      ) {
+        insertIndex += 1
+      }
+    }
+  }
+  const boundaries = [...existing.slice(0, insertIndex), newBoundary, ...existing.slice(insertIndex)]
+
   const rest = chain.splits.filter((record) => !(record.item === address.item && scopedTo(record, address)))
   const nextSplits: SplitRecord[] = [
     ...rest,
@@ -1040,8 +1471,10 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
       updated: now(),
     },
   ]
-  const sectionAddress: Address = { ...address, section: added.id }
-  const sectionUpstream = upstreamSliceOf(split, currentText, added.id)
+
+  const sectionAddress: Address = { ...itemAddress, section: newId }
+  const split = manual(currentText, boundaries)
+  const sectionUpstream = upstreamSliceOf(split, currentText, newId)
   const nextCustomizations = merge(
     chain.customizations,
     sectionAddress,
@@ -1050,6 +1483,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     memo.ctx.scopes,
     nextSplits,
   )
+
   return {
     records: nextCustomizations,
     splits: nextSplits,
@@ -1105,7 +1539,7 @@ export function resolveReview(
   }
   if (resolution === "take") {
     return {
-      records: next,
+      records: dropSectionText(next, chain.address),
       splits: chain.splits,
       status: `Took upstream for "${node.label}"`,
       retryHint: `resolved "${node.label}" against a stale revision; retry`,
@@ -1210,6 +1644,22 @@ export function modelReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
 // Keep: the own active model re-records the active model above it now, so the
 // review clears and yours stays. Take: the own active flag goes, so the model
 // above wins again.
+// Take follows upstream for the whole row (B41): the text of the item's
+// section customizations at the same level goes in the same write. A section
+// record keeps only the state, pin or condition it carries.
+// Section ids are heading paths, so `a/x` is under `a` and `ab` is not. A take
+// on the item clears every section at its level; a take on a section clears
+// that section and its descendants, never a sibling or an ancestor.
+export function dropSectionText(records: readonly CustomizationRecord[], address: Address): CustomizationRecord[] {
+  return records.flatMap((record) => {
+    if (record.item !== address.item || record.section === null || record.text === undefined || !scopedTo(record, address)) return [record]
+    if (address.section !== null && record.section !== address.section && !record.section.startsWith(`${address.section}/`)) return [record]
+    const cleared = { ...record, text: undefined, basedOnText: undefined, acknowledged: undefined }
+    if (cleared.state === undefined && cleared.pin === undefined && cleared.requires === undefined) return []
+    return [cleared]
+  })
+}
+
 export function resolveModelReview(input: MemoInput, rowId: string, resolution: "keep" | "take", sharedMemo?: Memo): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
@@ -1641,15 +2091,20 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   })
-  // Write level: the winner's own Project/Global row, else Global, else the
-  // agent's own tier when Global is not in its chain.
+  // Write level: for an agent (not a team member), always the chat's Project
+  // level so other projects are never affected. For a team member, keep the
+  // level that supplies the model, else Global, else the team's tier,
+  // because member resolution and tree rows sit at the team's definition
+  // level and cannot resolve a Project-level member row.
   const winnerSource = effective?.source
   const writeLevel: Level =
-    winnerSource === "project" || winnerSource === "global"
-      ? winnerSource
-      : runtime.scopes.global.has(pick.agent)
-        ? "global"
-        : owner.level
+    owner.kind === "agent"
+      ? "project"
+      : winnerSource === "project" || winnerSource === "global"
+        ? winnerSource
+        : runtime.scopes.global.has(pick.agent)
+          ? "global"
+          : owner.level
   const ownerPath = owner.kind === "member" ? `${owner.team}/:${pick.agent}` : pick.agent
   const rowId = `item:${writeLevel}:${ownerPath}:${modelItemId(target)}`
   // The rows shown at the write level: the union down the chain from there.
@@ -2216,6 +2671,235 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
 
   return { refusal: `"${found.node.label}" is not a model field` }
 }
+
+// The compaction fields on an agent/member/preset model row (plus-1.1.18 §2).
+// `setModelCompactionRow` sets or, with null, clears one or more fields at the
+// row's level; the cold-cache list is edited as a whole, one write per action.
+
+export function setModelCompactionRow(
+  input: MemoInput,
+  rowId: string,
+  fields: ModelCompactionFieldValues,
+  sharedMemo?: Memo,
+): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" is not a model field` }
+  // A field row and a cold-cache row (its group switch or a list row) both
+  // name the model to write; the list row's item carries its target too.
+  const target = parseModelFieldItemId(address.item)?.target ?? parseColdModelItemId(address.item)?.target
+  if (target === undefined) return { refusal: `"${node.label}" is not a model field` }
+  const models = modelsOfInput(input)
+  const next = setModelCompaction(models, modelScopeOf(address), target, fields, now())
+  if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
+  return { models: next, status: `Updated "${node.label}"`, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
+}
+
+// Space on an agent model row's compaction switch (`compactWarm` field or the
+// cold-cache group): writes the inverse of the effective value.
+export function toggleModelCompactionSwitch(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
+  const parsed = parseModuleCompactionSwitch(node)
+  if ("refusal" in parsed) return parsed
+  const on = effectiveSwitch(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target, parsed.field)
+  return setModelCompactionRow(input, rowId, { [parsed.field]: on ? "off" : "on" } as ModelCompactionFieldValues, sharedMemo)
+}
+
+function parseModuleCompactionSwitch(node: { readonly address?: Address; readonly label: string }): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly field: "compactWarm" | "coldCompact" } | { readonly refusal: string } {
+  const parsed = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
+  const field = parsed?.field === "compactWarm" || parsed?.field === "coldCompact" ? parsed.field : undefined
+  if (parsed === undefined || field === undefined) return { refusal: `"${node.label}" is not a compaction switch` }
+  return { target: parsed.target, field }
+}
+
+// The effective value of compactWarm/coldCompact for one model row's chain,
+// from the model rows and Defaults › Models (the agent-wide switch has no
+// agent-wide seat: C1 resolves these two from the model row and below only).
+function effectiveSwitch(
+  input: MemoInput,
+  scopes: Scopes,
+  scope: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+  field: "compactWarm" | "coldCompact",
+): boolean {
+  const row = resolveModelCompactionFields(
+    { models: input.records.filter((record): record is ModelRecord => record.type === "model"), scopes, ...scope },
+    target,
+  )
+  const modelSettings = input.modelSettings ?? []
+  const model = settingsFor(modelSettings, target)
+  const every = everySettings(modelSettings)
+  return effectiveCompaction({
+    row,
+    ...(model === undefined ? {} : { model }),
+    ...(every === undefined ? {} : { every }),
+  })[field].value
+}
+
+// The effective cold-cache list for one model row's chain (row, then model,
+// then Every model, then built-in).
+function effectiveColdList(
+  input: MemoInput,
+  scopes: Scopes,
+  scope: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+): readonly string[] {
+  const row = resolveModelCompactionFields(
+    { models: input.records.filter((record): record is ModelRecord => record.type === "model"), scopes, ...scope },
+    target,
+  )
+  const modelSettings = input.modelSettings ?? []
+  const model = settingsFor(modelSettings, target)
+  const every = everySettings(modelSettings)
+  return effectiveCompaction({
+    row,
+    ...(model === undefined ? {} : { model }),
+    ...(every === undefined ? {} : { every }),
+  }).coldModels.value
+}
+
+/**
+ * `a` on an agent cold-cache list: append through the catalogue picker. The
+ * row's address is either the group's switch item or a list row's item; both
+ * name the target. An inherited list is copied to this level first, so one
+ * write holds the whole new order.
+ */
+export function addColdModelRow(input: MemoInput, rowId: string, model: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const target = coldTargetOf(address.item)
+  if (target === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const current = effectiveColdList(input, found.memo.ctx.scopes, modelScopeOf(address), target)
+  if (current.includes(model)) return { refusal: `"${model}" is already in the cold-cache list` }
+  return setModelCompactionRow(input, rowId, { coldModels: [...current, model] }, sharedMemo)
+}
+
+/** `d` on an agent cold-cache list row: drop that entry, keeping the order. */
+export function removeColdModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  const parsed = address === undefined ? undefined : parseColdModelItemId(address.item)
+  if (address === undefined || parsed === undefined) return { refusal: `"${node.label}" is not a cold-cache list row` }
+  const current = effectiveColdList(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target)
+  if (parsed.index >= current.length) return { refusal: `"${node.label}" is no longer in the list` }
+  const next = current.filter((_, index) => index !== parsed.index)
+  return setModelCompactionRow(input, rowId, { coldModels: next }, sharedMemo)
+}
+
+/** `m` then ↑/↓ on an agent cold-cache list row: move one entry, one write on drop. */
+export function moveColdModelRow(input: MemoInput, rowId: string, delta: -1 | 1, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  const parsed = address === undefined ? undefined : parseColdModelItemId(address.item)
+  if (address === undefined || parsed === undefined) return { refusal: `"${node.label}" is not a cold-cache list row` }
+  const current = effectiveColdList(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target)
+  const to = parsed.index + delta
+  if (to < 0 || to >= current.length) return { refusal: `"${node.label}" is already at the edge of the list` }
+  const next = [...current]
+  const [moved] = next.splice(parsed.index, 1)
+  if (moved === undefined) return { refusal: `"${node.label}" is no longer in the list` }
+  next.splice(to, 0, moved)
+  return setModelCompactionRow(input, rowId, { coldModels: next }, sharedMemo)
+}
+
+/** The effective cold-cache list a model row resolves to, for the move draft's base. */
+export function coldListForItem(input: MemoInput, address: Address, scopes: Scopes): readonly string[] | undefined {
+  const list = parseColdModelItemId(address.item)
+  const field = parseModelFieldItemId(address.item)
+  const target = list?.target ?? (field !== undefined && field.field === "coldCompact" ? field.target : undefined)
+  if (target === undefined) return undefined
+  return effectiveColdList(input, scopes, modelScopeOf(address), target)
+}
+
+/** The target an agent cold-cache row names (its switch item or a list row). */
+function coldTargetOf(item: string): { providerID: string; modelID: string; variant?: string } | undefined {
+  const list = parseColdModelItemId(item)
+  if (list !== undefined) return list.target
+  const field = parseModelFieldItemId(item)
+  if (field !== undefined && field.field === "coldCompact") return field.target
+  return undefined
+}
+
+// Defaults › Models cold-cache list edits return the fields modelSettings.set
+// needs; the caller writes them through the RPC.
+
+/** A Defaults cold-cache edit's result: the row's key and the whole new list. */
+export interface DefaultColdEdit {
+  readonly key: ModelSettingsKey
+  readonly coldModels: readonly string[]
+}
+
+/** `a` on a Defaults cold-cache list: copy the inherited list and append. */
+export function addDefaultColdModel(input: MemoInput, rowId: string, model: string, sharedMemo?: Memo): DefaultColdEdit | { readonly refusal: string } {
+  return defaultColdEdit(input, rowId, (current) => (current.includes(model) ? { refusal: `"${model}" is already in the cold-cache list` } : { models: [...current, model] }), sharedMemo)
+}
+
+/** `d` on a Defaults cold-cache list row. */
+export function removeDefaultColdModel(input: MemoInput, rowId: string, sharedMemo?: Memo): DefaultColdEdit | { readonly refusal: string } {
+  return defaultColdEdit(input, rowId, (current, index) => {
+    if (index === undefined || index >= current.length) return { refusal: "that row is no longer in the list" }
+    return { models: current.filter((_, at) => at !== index) }
+  }, sharedMemo)
+}
+
+/** `m` then ↑/↓ on a Defaults cold-cache list row. */
+export function moveDefaultColdModel(input: MemoInput, rowId: string, delta: -1 | 1, sharedMemo?: Memo): DefaultColdEdit | { readonly refusal: string } {
+  return defaultColdEdit(input, rowId, (current, index) => {
+    if (index === undefined) return { refusal: "that row is not a list row" }
+    const to = index + delta
+    if (to < 0 || to >= current.length) return { refusal: "that row is already at the edge of the list" }
+    const next = [...current]
+    const [moved] = next.splice(index, 1)
+    if (moved === undefined) return { refusal: "that row is no longer in the list" }
+    next.splice(to, 0, moved)
+    return { models: next }
+  }, sharedMemo)
+}
+
+function defaultColdEdit(
+  input: MemoInput,
+  rowId: string,
+  edit: (current: readonly string[], index: number | undefined) => { readonly models: readonly string[] } | { readonly refusal: string },
+  sharedMemo?: Memo,
+): DefaultColdEdit | { readonly refusal: string } {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const item = node.address?.item
+  if (item === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const setting = parseModelSettingItemId(item)
+  const list = parseColdDefaultItemId(item)
+  const key = setting?.key ?? list?.key
+  if (key === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const current = defaultColdList(input, key)
+  const outcome = edit(current, list?.index)
+  if ("refusal" in outcome) return outcome
+  return { key, coldModels: outcome.models }
+}
+
+/** The effective cold-cache list of one Defaults › Models row. */
+export function defaultColdList(input: MemoInput, key: ModelSettingsKey): readonly string[] {
+  const modelSettings = input.modelSettings ?? []
+  const record = settingsFor(modelSettings, key)
+  const every = everySettings(modelSettings)
+  if (key.providerID === undefined && key.modelID === undefined) return effectiveCompaction({ ...(record === undefined ? {} : { model: record }) }).coldModels.value
+  return effectiveCompaction({ ...(record === undefined ? {} : { model: record }), ...(every === undefined ? {} : { every }) }).coldModels.value
+}
+// `coldModelItemId` is re-exported for the tree's list rows.
+export { coldModelItemId }
 
 export function isModelRowId(rowId: string): boolean {
   return rowId.includes(":model:")
