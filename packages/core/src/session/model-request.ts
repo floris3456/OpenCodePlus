@@ -24,7 +24,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import type { Content } from "@opencode/schema/tool"
-import { Cause, Context, type Duration, Effect, Layer, Result, Stream } from "effect"
+import { Cause, Context, type Duration, Effect, Layer, Option, Result, Schema, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { App } from "../app.js"
@@ -234,6 +234,42 @@ export const boundImages = (messages: LLMRequest["messages"]) => {
   )
 }
 
+const decodeHookMessage = Schema.decodeUnknownOption(Message)
+
+function normalizeStringContent(candidate: unknown): unknown {
+  if (typeof candidate !== "object" || candidate === null) return candidate
+  const content = (candidate as { content?: unknown }).content
+  if (typeof content !== "string") return candidate
+  return { ...candidate, content: [Message.text(content)] }
+}
+
+// Validates only what the hook produced at the hook boundary. Messages the
+// hook left untouched (identical to a pre-hook input message) pass through
+// as-is, so history is never re-decoded; added or replaced messages with
+// plain-string content are normalized to one text part, and anything else
+// that does not decode against the core message schema is dropped (its index
+// is reported) so a plugin's malformed message never fails the step.
+function sanitizeHookMessages(
+  candidates: ReadonlyArray<unknown>,
+  untouched: ReadonlySet<unknown>,
+): {
+  readonly messages: Array<Message>
+  readonly dropped: Array<number>
+} {
+  const messages: Array<Message> = []
+  const dropped: Array<number> = []
+  for (const [index, candidate] of candidates.entries()) {
+    if (untouched.has(candidate)) {
+      messages.push(candidate as Message)
+      continue
+    }
+    const decoded = decodeHookMessage(normalizeStringContent(candidate))
+    if (Option.isSome(decoded)) messages.push(decoded.value)
+    else dropped.push(index)
+  }
+  return { messages, dropped }
+}
+
 /** Placeholder shell and read definitions a Zen free-tier request lacks; none for any other model. */
 const freeTierPlaceholders = (model: SessionRunnerModel.Resolved, declared: ReadonlyMap<string, unknown>) => {
   if (model.ref.providerID !== Provider.ID.opencode) return []
@@ -280,6 +316,10 @@ export const layer = Layer.effect(
       const given = new Map(
         tools.definitions.map((t) => [{ description: t.description, input: { ...t.inputSchema } }, t] as const),
       )
+      // Snapshot the pre-hook messages first: hooks mutate the draft's
+      // messages array in place, so anything not identical to these after the
+      // hook is hook-produced and needs validating at the boundary.
+      const untouched = new Set<unknown>(input.messages)
       // Hooks see the default output limit and may change or remove it. Titles and generate keep the provider default,
       // because their reasoning is hard to budget.
       const shaped = yield* shape(
@@ -296,6 +336,12 @@ export const layer = Layer.effect(
         },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )
+      const checked = sanitizeHookMessages(shaped.messages, untouched)
+      if (checked.dropped.length > 0)
+        yield* Effect.logWarning("Dropping malformed messages from session hook", {
+          kind,
+          index: checked.dropped,
+        })
       // Match by identity first, then by key. Entries matching neither were invented by a
       // hook and are dropped. `t.name` stays the real name so execution can map renames back.
       const byName = new Map(tools.definitions.map((t) => [t.name, t]))
@@ -326,7 +372,7 @@ export const layer = Layer.effect(
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         system: shaped.system,
-        messages: boundImages(unsupportedParts(shaped.messages, model.capabilities)),
+        messages: boundImages(unsupportedParts(checked.messages, model.capabilities)),
         tools: [...Array.from(hooked, ([name, t]) => ({ ...t, name })), ...placeholders],
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,
@@ -431,7 +477,7 @@ export const layer = Layer.effect(
           : undefined
 
       return {
-        event: shaped,
+        event: { ...shaped, messages: checked.messages },
         request,
         options: {
           ...(http ? { http } : {}),
