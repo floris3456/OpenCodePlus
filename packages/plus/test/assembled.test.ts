@@ -250,17 +250,17 @@ test("reports a natively denied tool as absent once the denial is installed", as
     list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
   }
   const tools = toolHarness([{ id: "reader", description: "native tool", options: { codemode: false } }])
-  const hooks = { current: 0 }
+  const hooks: string[] = []
   const ctx = context({
     location,
     agent: agents.domain,
     skill,
     tool: tools.domain,
     session: {
-      hook: () =>
+      hook: (name) =>
         Effect.sync(() => {
-          hooks.current++
-          return { dispose: Effect.sync(() => { hooks.current-- }) }
+          hooks.push(name)
+          return { dispose: Effect.sync(() => { hooks.splice(hooks.indexOf(name), 1) }) }
         }),
     },
     mcp: fullContext({ directory: project }).mcp,
@@ -281,7 +281,7 @@ test("reports a natively denied tool as absent once the denial is installed", as
   // The native denial installs through the session context hook, which the
   // registry seam cannot observe per agent: apply publishes the installed
   // tool plans to state, and assembled observes that installed plan set.
-  expect(hooks.current).toBe(1)
+  expect(hooks.toSorted()).toEqual(["compaction", "context"])
   const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
   expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("reader")
 })
@@ -342,17 +342,17 @@ test("disposal clears the installed set, so after teardown a stale record cannot
     list: () => Effect.succeed({ location, data: Array.from(skillState.state.values()) }),
   }
   const tools = toolHarness([{ id: "reader", description: "native tool", options: { codemode: false } }])
-  const hooks = { current: 0 }
+  const hooks: string[] = []
   const ctx = context({
     location,
     agent: agents.domain,
     skill,
     tool: tools.domain,
     session: {
-      hook: () =>
+      hook: (name) =>
         Effect.sync(() => {
-          hooks.current++
-          return { dispose: Effect.sync(() => { hooks.current-- }) }
+          hooks.push(name)
+          return { dispose: Effect.sync(() => { hooks.splice(hooks.indexOf(name), 1) }) }
         }),
     },
     mcp: fullContext({ directory: project }).mcp,
@@ -369,7 +369,7 @@ test("disposal clears the installed set, so after teardown a stale record cannot
     ),
   )
   expect(mutated.ok).toBe(true)
-  expect(hooks.current).toBe(1)
+  expect(hooks.toSorted()).toEqual(["compaction", "context"])
   expect(state.installedTools).toEqual([
     { agent: "alpha", tool: "reader", enabled: false, text: "native tool" },
   ])
@@ -378,7 +378,7 @@ test("disposal clears the installed set, so after teardown a stale record cannot
 
   // Teardown / deactivate: disposes applied registrations and clears installed tool plans
   await Effect.runPromise(deactivate(state))
-  expect(hooks.current).toBe(0)
+  expect(hooks).toEqual([])
   expect(state.installedTools).toEqual([])
 
   // The record remains stored on disk, but after teardown the host serves the tool
