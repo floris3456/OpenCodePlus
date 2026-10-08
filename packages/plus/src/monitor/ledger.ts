@@ -24,6 +24,19 @@ const SCHEMA_VERSION = 2
 
 export const HOUR = 3_600_000
 
+// How many rows may chain on one keyframe before the next keyframe (B35). Every
+// 64th row of a session, and its first, stores a full list, so decoding a
+// single row walks at most 63 bases.
+const KEYFRAME_INTERVAL = 64
+
+// How many leading entries two message lists share, compared entry by entry.
+function sharedPrefix(base: readonly unknown[], list: readonly unknown[]): number {
+  const max = Math.min(base.length, list.length)
+  let i = 0
+  while (i < max && JSON.stringify(base[i]) === JSON.stringify(list[i])) i++
+  return i
+}
+
 // One call row's contribution to its hour, signed: +1 on insert, -1 on
 // delete, and both (old out, new in) on update.
 function rollupUpsert(row: "new" | "old", sign: 1 | -1): string {
@@ -241,6 +254,16 @@ create table if not exists request_fingerprint (
   options_hash text not null default '',
   options_keys text not null default '{}',
   message_prefixes text not null default '[]',
+  -- Message lists are stored as deltas against the session's previous
+  -- fingerprint (by created then rowid): prefix_base names that row's request
+  -- id, prefix_shared how many leading entries equal its decoded list, and
+  -- message_prefixes holds only the entries after them. A keyframe (every 64th
+  -- row of a session and its first) has prefix_base null and the full list;
+  -- prefix_depth is 0. A legacy row (all three null) is a keyframe, so older
+  -- files read unchanged. See B35 in docs/plans/plus-1.2.0.md.
+  prefix_base text,
+  prefix_shared integer,
+  prefix_depth integer,
   cache_key text,
   cache_control text,
   body_hash text not null,
@@ -475,6 +498,9 @@ export interface Ledger {
 }
 
 /** `monitor.db` next to the teams data, under the XDG data directory. */
+// Freed pages are reused in place, so pruning stops the file growing but does
+// not shrink it; only a manual `VACUUM` reclaims the space. 1.2.0 deliberately
+// does not vacuum the ledger.
 export function defaultLedgerPath(): string {
   return path.join(path.dirname(teamsDataDir()), "monitor.db")
 }
@@ -502,6 +528,9 @@ export function createLedger(file: string): Ledger {
   const fingerprintColumns = db.query<{ name: string }, []>("pragma table_info(request_fingerprint)").all()
   for (const name of ["previous_response_id", "response_id"]) {
     if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} text`)
+  }
+  for (const [name, type] of [["prefix_base", "text"], ["prefix_shared", "integer"], ["prefix_depth", "integer"]] as const) {
+    if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} ${type}`)
   }
   if (
     !db
@@ -598,8 +627,8 @@ export function createLedger(file: string): Ledger {
       message_id = coalesce($message, message_id)
     where id = $id`)
   const upsertFingerprint = db.query(`
-    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, cache_key, cache_control, body_hash, created, previous_response_id, response_id)
-    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $cacheKey, $cacheControl, $bodyHash, $created, $previousResponse, $response)
+    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, prefix_base, prefix_shared, prefix_depth, cache_key, cache_control, body_hash, created, previous_response_id, response_id)
+    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $prefixBase, $prefixShared, $prefixDepth, $cacheKey, $cacheControl, $bodyHash, $created, $previousResponse, $response)
     on conflict(request_id) do update set
       protocol = excluded.protocol,
       system_parts = excluded.system_parts,
@@ -607,6 +636,9 @@ export function createLedger(file: string): Ledger {
       options_hash = excluded.options_hash,
       options_keys = excluded.options_keys,
       message_prefixes = excluded.message_prefixes,
+      prefix_base = excluded.prefix_base,
+      prefix_shared = excluded.prefix_shared,
+      prefix_depth = excluded.prefix_depth,
       cache_key = excluded.cache_key,
       cache_control = excluded.cache_control,
       body_hash = excluded.body_hash,
@@ -626,9 +658,43 @@ export function createLedger(file: string): Ledger {
   const findFingerprint = db.query<Record<string, unknown>, [string]>(
     "select * from request_fingerprint where request_id = ?",
   )
-  const findSessionFingerprints = db.query<Record<string, unknown>, [string]>(
-    "select * from request_fingerprint where session_id = ? order by created asc",
+  const fingerprintRow = db.query<Record<string, unknown>, [string]>(
+    "select request_id, session_id, prefix_base, prefix_shared, prefix_depth, message_prefixes, created, rowid from request_fingerprint where request_id = ?",
   )
+  const sessionFingerprintRows = db.query<Record<string, unknown>, [string]>(
+    "select * from request_fingerprint where session_id = ? order by created asc, rowid asc",
+  )
+  const sessionFingerprintCount = db.query<{ n: number }, [string]>(
+    "select count(*) as n from request_fingerprint where session_id = ?",
+  )
+  const lastSessionFingerprint = db.query<Record<string, unknown>, [string, string]>(
+    "select request_id, prefix_base, prefix_shared, prefix_depth, message_prefixes from request_fingerprint where session_id = ? and request_id != ? order by created desc, rowid desc limit 1",
+  )
+  const fingerprintPosition = db.query<{ n: number }, [string, number, number, number]>(
+    "select count(*) as n from request_fingerprint where session_id = ? and (created < ? or (created = ? and rowid < ?))",
+  )
+  const fingerprintBase = db.query<Record<string, unknown>, [string, number, number, number]>(
+    "select request_id, prefix_base, prefix_shared, prefix_depth, message_prefixes from request_fingerprint where session_id = ? and (created < ? or (created = ? and rowid < ?)) order by created desc, rowid desc limit 1",
+  )
+  const fingerprintRun = db.query<Record<string, unknown>, [string, number, number, number]>(
+    "select request_id, prefix_base, prefix_shared, prefix_depth, message_prefixes, created, rowid from request_fingerprint where session_id = ? and (created > ? or (created = ? and rowid >= ?)) order by created asc, rowid asc limit 64",
+  )
+  const updateFingerprintPrefix = db.query(
+    "update request_fingerprint set message_prefixes = $prefixes, prefix_base = $base, prefix_shared = $shared, prefix_depth = $depth where request_id = $id",
+  )
+  const affectedFingerprintSessions = db.query<{ session_id: string }, [number]>(
+    "select distinct session_id from request_fingerprint where created < ?",
+  )
+  const firstSurvivingFingerprint = db.query<{ request_id: string; prefix_base: string | null }, [string, number]>(
+    "select request_id, prefix_base from request_fingerprint where session_id = ? and created >= ? order by created asc, rowid asc limit 1",
+  )
+  const sessionFingerprintChange = db.query<{ request_id: string; rev: number }, [string]>(
+    "select request_id, rev from fingerprint_change where session_id = ?",
+  )
+  const restoreFingerprintChange = db.query(
+    "insert into fingerprint_change (request_id, session_id, rev) values ($id, $session, $rev) on conflict(request_id) do update set session_id = excluded.session_id, rev = excluded.rev",
+  )
+  const deleteFingerprintChange = db.query("delete from fingerprint_change where request_id = ?")
   const findContextFacts = db.query<Record<string, unknown>, [string]>(
     "select * from context_fact where session_id = ? order by at asc",
   )
@@ -671,6 +737,209 @@ export function createLedger(file: string): Ledger {
       $started: step.started,
     })
     bumpEpoch.run({ $session: step.sessionID, $epoch: step.epoch, $idx: step.idx })
+  })
+
+  // -- Fingerprint message-list deltas (B35) --------------------------------
+  //
+  // Rows are ordered by (created, rowid). A keyframe (prefix_base null) holds
+  // the full list; a delta names its base and stores only the entries after
+  // prefix_shared equal entries. Every 64th row of a session, and its first, is
+  // a keyframe, so a single-row read walks at most 63 bases and a session read
+  // in order rebuilds each list from the one before it.
+  const decodeTail = (row: Record<string, unknown>): MessagePrefixFingerprint[] =>
+    JSON.parse(String(row.message_prefixes || "[]"))
+
+  // Walk one row's chain back to its keyframe and rebuild the full list.
+  const decodeFingerprintList = (row: Record<string, unknown>): MessagePrefixFingerprint[] => {
+    const chain: Record<string, unknown>[] = []
+    let current = row
+    for (let depth = 0; current.prefix_base !== null && depth < 4096; depth++) {
+      chain.push(current)
+      const base = fingerprintRow.get(String(current.prefix_base))
+      if (!base) break
+      current = base
+    }
+    let list = decodeTail(current)
+    for (let i = chain.length - 1; i >= 0; i--) {
+      list = [...list.slice(0, Number(chain[i]!.prefix_shared ?? 0)), ...decodeTail(chain[i]!)]
+    }
+    return list
+  }
+
+  // The full list of a row held in memory: its stored tail is already full
+  // when the row is a keyframe or a legacy row, otherwise walk its base.
+  const fullListOf = (row: Record<string, unknown>): MessagePrefixFingerprint[] =>
+    row.prefix_base === null ? decodeTail(row) : decodeFingerprintList(row)
+
+  // Rebuild every list of a session in one ordered pass, using the previous
+  // row for a delta and falling back to a walk only for a broken chain.
+  const decodeSessionLists = (rows: readonly Record<string, unknown>[]): MessagePrefixFingerprint[][] => {
+    const lists: MessagePrefixFingerprint[][] = []
+    let previous: MessagePrefixFingerprint[] | undefined
+    let previousId: string | undefined
+    for (const row of rows) {
+      const list =
+        row.prefix_base === null
+          ? decodeTail(row)
+          : previous !== undefined && row.prefix_base === previousId
+            ? [...previous.slice(0, Number(row.prefix_shared ?? 0)), ...decodeTail(row)]
+            : decodeFingerprintList(row)
+      lists.push(list)
+      previous = list
+      previousId = String(row.request_id)
+    }
+    return lists
+  }
+
+  // Persist one row's message list as a delta against `base`, or as a keyframe.
+  const writeFingerprintDelta = (
+    requestID: string,
+    list: readonly MessagePrefixFingerprint[],
+    keyframe: boolean,
+    base: { id: string; depth: number; list: readonly MessagePrefixFingerprint[] } | undefined,
+  ): void => {
+    if (keyframe || base === undefined) {
+      updateFingerprintPrefix.run({ $prefixes: JSON.stringify(list), $base: null, $shared: 0, $depth: 0, $id: requestID })
+      return
+    }
+    const shared = sharedPrefix(base.list, list)
+    updateFingerprintPrefix.run({
+      $prefixes: JSON.stringify(list.slice(shared)),
+      $base: base.id,
+      $shared: shared,
+      $depth: base.depth + 1,
+      $id: requestID,
+    })
+  }
+
+  // Rewrite every row of a session as a delta, keeping the 64-row keyframe
+  // rule. Used for in-place migration and for a rare reordered insert. The
+  // rewrite preserves each row's decoded list, so it restores the
+  // `fingerprint_change` marks the update trigger added: an analysis cached
+  // before the rewrite has the same data and must not reload it. `session_change`
+  // still moves, which is the migration the caller reports.
+  const reencodeSession = (sessionID: string): void => {
+    const rows = sessionFingerprintRows.all(sessionID)
+    if (rows.length === 0) return
+    const marks = new Map(sessionFingerprintChange.all(sessionID).map((row) => [String(row.request_id), Number(row.rev)]))
+    const lists = decodeSessionLists(rows)
+    rows.forEach((row, i) =>
+      writeFingerprintDelta(
+        String(row.request_id),
+        lists[i]!,
+        i % KEYFRAME_INTERVAL === 0,
+        i === 0 ? undefined : { id: String(rows[i - 1]!.request_id), depth: (i - 1) % KEYFRAME_INTERVAL, list: lists[i - 1]! },
+      ),
+    )
+    for (const row of rows) {
+      const requestID = String(row.request_id)
+      const rev = marks.get(requestID)
+      if (rev === undefined) deleteFingerprintChange.run(requestID)
+      else restoreFingerprintChange.run(requestID, sessionID, rev)
+    }
+  }
+
+  // The `upsertFingerprint` bindings, with the message-list columns given by
+  // the encoding step rather than the caller's full list.
+  const writeFingerprintRow = (
+    fp: RequestFingerprintData,
+    messagePrefixes: string,
+    prefixBase: string | null,
+    prefixShared: number | null,
+    prefixDepth: number | null,
+    created: number,
+  ): void => {
+    upsertFingerprint.run({
+      $requestId: fp.requestID,
+      $session: fp.sessionID,
+      $protocol: fp.protocol,
+      $systemParts: JSON.stringify(fp.systemParts),
+      $tools: JSON.stringify(fp.tools),
+      $optionsHash: fp.optionsHash,
+      $optionsKeys: JSON.stringify(fp.optionsKeys),
+      $messagePrefixes: messagePrefixes,
+      $prefixBase: prefixBase,
+      $prefixShared: prefixShared,
+      $prefixDepth: prefixDepth,
+      $cacheKey: fp.cacheKey ?? null,
+      $previousResponse: fp.previousResponseId ?? null,
+      $response: fp.responseId ?? null,
+      $cacheControl: fp.cacheControl ? JSON.stringify(fp.cacheControl) : null,
+      $bodyHash: fp.bodyHash,
+      $created: created,
+    })
+  }
+
+  // Store `fp` as a delta against the session's previous fingerprint. A row
+  // whose list changed rewrites the rows that chain on it; a row inserted out
+  // of order rewrites the session. One transaction.
+  const storeFingerprint = db.transaction((fp: RequestFingerprintData) => {
+    const created = fp.created ?? Date.now()
+    const existing = fingerprintRow.get(fp.requestID)
+    if (existing && existing.prefix_depth !== null) {
+      const at = [Number(existing.created), Number(existing.created), Number(existing.rowid)] as const
+      if (JSON.stringify(fullListOf(existing)) === JSON.stringify(fp.messagePrefixes)) {
+        // The list is unchanged: keep the stored delta and just refresh the
+        // other columns, so no chained row is rewritten.
+        writeFingerprintRow(
+          fp,
+          String(existing.message_prefixes),
+          existing.prefix_base as string | null,
+          existing.prefix_shared as number | null,
+          existing.prefix_depth as number | null,
+          Number(existing.created),
+        )
+        return
+      }
+      const position = fingerprintPosition.get(fp.sessionID, ...at)?.n ?? 0
+      const baseRow = fingerprintBase.get(fp.sessionID, ...at)
+      const base =
+        baseRow === null
+          ? undefined
+          : { id: String(baseRow.request_id), depth: Number(baseRow.prefix_depth ?? 0), list: fullListOf(baseRow) }
+      const nextKeyframe = position - (position % KEYFRAME_INTERVAL) + KEYFRAME_INTERVAL
+      const run = fingerprintRun.all(fp.sessionID, ...at).slice(0, nextKeyframe - position)
+      // Decode the run's current lists through its own chain before any rewrite.
+      const runLists = decodeSessionLists(run)
+      let previous: { id: string; depth: number; list: readonly MessagePrefixFingerprint[] } | undefined = base
+      run.forEach((row, index) => {
+        const keyframe = (position + index) % KEYFRAME_INTERVAL === 0
+        const list: readonly MessagePrefixFingerprint[] = index === 0 ? fp.messagePrefixes : runLists[index]!
+        const shared = previous === undefined ? 0 : sharedPrefix(previous.list, list)
+        const depth = previous === undefined ? 0 : previous.depth + 1
+        const encoded = keyframe || previous === undefined ? JSON.stringify(list) : JSON.stringify(list.slice(shared))
+        if (index === 0) {
+          writeFingerprintRow(
+            fp,
+            encoded,
+            keyframe || previous === undefined ? null : previous.id,
+            keyframe || previous === undefined ? 0 : shared,
+            keyframe ? 0 : depth,
+            Number(existing.created),
+          )
+        } else {
+          writeFingerprintDelta(String(row.request_id), list, keyframe, previous)
+        }
+        previous = { id: String(row.request_id), depth: keyframe ? 0 : depth, list }
+      })
+      return
+    }
+    // A new row. The fast path appends at the end of the session; an insert
+    // that reorders the session rewrites it in one pass.
+    const last = lastSessionFingerprint.get(fp.sessionID, fp.requestID)
+    if (last && Number(last.created ?? 0) > created) {
+      writeFingerprintRow(fp, JSON.stringify(fp.messagePrefixes), null, 0, 0, created)
+      reencodeSession(fp.sessionID)
+      return
+    }
+    const keyframe = (sessionFingerprintCount.get(fp.sessionID)?.n ?? 0) % KEYFRAME_INTERVAL === 0
+    writeFingerprintRow(fp, JSON.stringify(fp.messagePrefixes), null, 0, 0, created)
+    if (keyframe || last === null) return
+    writeFingerprintDelta(fp.requestID, fp.messagePrefixes, false, {
+      id: String(last.request_id),
+      depth: Number(last.prefix_depth ?? 0),
+      list: fullListOf(last),
+    })
   })
 
   return {
@@ -740,6 +1009,22 @@ export function createLedger(file: string): Ledger {
     mark: (label, at) => insertMark.get(at, label)?.id ?? 0,
     prune: (before) => {
       db.transaction(() => {
+        // Before rows go, the first surviving row of each affected session
+        // becomes a keyframe, so no chain points at a deleted base. Decode it
+        // through its chain while that chain is still whole.
+        affectedFingerprintSessions.all(before).forEach(({ session_id }) => {
+          const first = firstSurvivingFingerprint.get(session_id, before)
+          if (first === null || first.prefix_base === null) return
+          const row = fingerprintRow.get(first.request_id)
+          if (row === null) return
+          updateFingerprintPrefix.run({
+            $prefixes: JSON.stringify(decodeFingerprintList(row)),
+            $base: null,
+            $shared: 0,
+            $depth: 0,
+            $id: first.request_id,
+          })
+        })
         db.query("delete from call where started < ?").run(before)
         db.query("delete from step where started < ?").run(before)
         db.query("delete from request where started < ?").run(before)
@@ -788,23 +1073,7 @@ export function createLedger(file: string): Ledger {
         $cost: end.usage?.cost ?? null,
         $message: end.messageID ?? null,
       }),
-    requestFingerprint: (fp) =>
-      upsertFingerprint.run({
-        $requestId: fp.requestID,
-        $session: fp.sessionID,
-        $protocol: fp.protocol,
-        $systemParts: JSON.stringify(fp.systemParts),
-        $tools: JSON.stringify(fp.tools),
-        $optionsHash: fp.optionsHash,
-        $optionsKeys: JSON.stringify(fp.optionsKeys),
-        $messagePrefixes: JSON.stringify(fp.messagePrefixes),
-        $cacheKey: fp.cacheKey ?? null,
-        $previousResponse: fp.previousResponseId ?? null,
-        $response: fp.responseId ?? null,
-        $cacheControl: fp.cacheControl ? JSON.stringify(fp.cacheControl) : null,
-        $bodyHash: fp.bodyHash,
-        $created: fp.created ?? Date.now(),
-      }),
+    requestFingerprint: (fp) => storeFingerprint(fp),
     contextFact: (fact) =>
       insertContextFact.run({
         $session: fact.sessionID,
@@ -822,9 +1091,18 @@ export function createLedger(file: string): Ledger {
     getRequests: (sessionID) => findSessionRequests.all(sessionID).map(toRequestRow),
     getFingerprint: (requestID) => {
       const row = findFingerprint.get(requestID)
-      return row ? toFingerprintData(row) : undefined
+      if (!row) return undefined
+      return toFingerprintData(row, decodeFingerprintList(row))
     },
-    getFingerprints: (sessionID) => findSessionFingerprints.all(sessionID).map(toFingerprintData),
+    getFingerprints: (sessionID) => {
+      const rows = sessionFingerprintRows.all(sessionID)
+      const lists = decodeSessionLists(rows)
+      // A legacy file's rows hold full lists and null prefix columns. Reading
+      // the session migrates it in place, once: the next read finds no legacy
+      // row and writes nothing.
+      if (rows.some((row) => row.prefix_depth === null)) db.transaction(() => reencodeSession(sessionID))()
+      return rows.map((row, index) => toFingerprintData(row, lists[index]!))
+    },
     getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
     revision: () => `${totalChanges.get()?.n ?? 0}:${dataVersion.get()?.data_version ?? 0}`,
     sessionRevision: (sessionID) => sessionRevision.get(sessionID)?.rev ?? 0,
@@ -863,7 +1141,7 @@ function toRequestRow(row: Record<string, unknown>): RequestRow {
   }
 }
 
-function toFingerprintData(row: Record<string, unknown>): RequestFingerprintData {
+function toFingerprintData(row: Record<string, unknown>, messagePrefixes: readonly MessagePrefixFingerprint[]): RequestFingerprintData {
   return {
     requestID: String(row.request_id),
     sessionID: String(row.session_id),
@@ -872,7 +1150,7 @@ function toFingerprintData(row: Record<string, unknown>): RequestFingerprintData
     tools: JSON.parse(String(row.tools || "[]")),
     optionsHash: String(row.options_hash || ""),
     optionsKeys: JSON.parse(String(row.options_keys || "{}")),
-    messagePrefixes: JSON.parse(String(row.message_prefixes || "[]")),
+    messagePrefixes,
     cacheKey: typeof row.cache_key === "string" ? row.cache_key : undefined,
     previousResponseId: typeof row.previous_response_id === "string" ? row.previous_response_id : undefined,
     responseId: typeof row.response_id === "string" ? row.response_id : undefined,
