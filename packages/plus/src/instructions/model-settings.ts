@@ -7,8 +7,15 @@ import {
   parseModelItemId,
   parsePrompt,
   parseWarming,
+  addModelRecord,
+  resolveModelField,
+  scopedTo,
   WARMING_MAX_MS,
   type Level,
+  type ModelInput,
+  type ModelRecord,
+  type ModelRefLike,
+  type RecordScope,
   type ModelWarmingFields,
   type ResolvedModelFields,
 } from "./model.js"
@@ -27,7 +34,7 @@ import {
 // field by field, so a row that sets only the interval still inherits the
 // warming time. A chat's own on/off switch overrides whether warming runs.
 
-export interface ModelSettingsRecord {
+export interface ModelSettingsRecord extends ModelCompactionFields {
   readonly type: "modelSettings"
   readonly level: "defaults"
   /** Absent together with modelID: the Every model row. */
@@ -87,6 +94,12 @@ export const BUILT_IN_WARMING = {
  * built-in default, or the chat's own switch.
  */
 export type SettingFrom = Level | "model" | "config" | "every" | "host" | "built-in" | "chat"
+
+/**
+ * Compaction also inherits the agent's agent-wide rows (`agent`, the old
+ * Compaction tab) and the shared Defaults rows for every agent (`agents`).
+ */
+export type CompactionFrom = SettingFrom | "agent" | "agents"
 
 export interface Effective<T> {
   readonly value: T
@@ -266,23 +279,28 @@ export function hostModelOf(
   return hostModels.find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)
 }
 
-/** Set fields on a Defaults › Models row (null clears one); a row left with no field is removed. */
+/**
+ * Set fields on a Defaults › Models row (null clears one); a row left with no
+ * field is removed. Fields the call does not name, the compaction fields
+ * included, are kept.
+ */
 export function setModelSettingsRecord(
   records: readonly ModelSettingsRecord[],
   key: ModelSettingsKey,
-  fields: { readonly [field in ModelSettingsField]?: string | null },
+  fields: { readonly [field in ModelSettingsField]?: string | null } & ModelCompactionFieldValues,
   updated: string,
 ): ModelSettingsRecord[] {
   const current = settingsFor(records, key)
-  const values = Object.fromEntries(
-    MODEL_SETTINGS_FIELDS.flatMap((field) => {
+  const named: readonly (ModelSettingsField | ModelCompactionField)[] = [...MODEL_SETTINGS_FIELDS, ...MODEL_COMPACTION_FIELDS]
+  const values: Record<string, string | readonly string[]> = Object.fromEntries(
+    named.flatMap((field) => {
       const next = fields[field] === undefined ? current?.[field] : fields[field]
       return next === undefined || next === null ? [] : [[field, next]]
     }),
   )
   const rest = records.filter((record) => !sameSettingsKey(record, key))
   if (Object.keys(values).length === 0) return rest
-  const unchanged = current !== undefined && MODEL_SETTINGS_FIELDS.every((field) => current[field] === values[field])
+  const unchanged = current !== undefined && named.every((field) => sameFieldValue(current[field], values[field]))
   if (unchanged) return [...records]
   return [
     ...rest,
@@ -364,6 +382,287 @@ function promptField(text: string): string | null | { readonly error: string } {
   const parsed = parsePrompt(text)
   if ("error" in parsed) return parsed
   return parsed.prompt
+}
+
+// Compaction per model. An agent, member or preset model row and a Defaults ›
+// Models row carry the same optional fields; absent inherits, so a store
+// without them behaves, and sends, exactly as before. Text fields are stored
+// in canonical form, the cold-cache models as a list in try order.
+
+/** The compaction fields of a model row and of a Defaults › Models row. */
+export interface ModelCompactionFields {
+  /** Compact before cold for chats on this model: "on" or "off". */
+  readonly compactWarm?: string
+  /** Compact cold caches with another model: "on" or "off". */
+  readonly coldCompact?: string
+  /** The models that compact a cold cache, "provider/model[#variant]", in try order. */
+  readonly coldModels?: readonly string[]
+  /** "auto", "local" or "remote". */
+  readonly compactionStrategy?: string
+  /** The model that writes the summary, "provider/model[#variant]". */
+  readonly compactionModel?: string
+  /** The summary request's instructions; "" is an empty prompt. */
+  readonly compactionInstructions?: string
+}
+
+// `ModelRecord` is declared in model.ts; its compaction fields are declared
+// here, next to their validation and resolution.
+declare module "./model.js" {
+  interface ModelRecord extends ModelCompactionFields {}
+}
+
+export type ModelCompactionField = keyof ModelCompactionFields
+export const MODEL_COMPACTION_FIELDS: readonly ModelCompactionField[] = [
+  "compactWarm",
+  "coldCompact",
+  "coldModels",
+  "compactionStrategy",
+  "compactionModel",
+  "compactionInstructions",
+]
+
+/** One save's compaction fields in stored form: a value sets, null clears (the level below decides again), absent leaves alone. */
+export type ModelCompactionFieldValues = {
+  readonly [field in ModelCompactionField]?: NonNullable<ModelCompactionFields[field]> | null
+}
+
+export type CompactionStrategy = "auto" | "local" | "remote"
+export const COMPACTION_STRATEGIES: readonly CompactionStrategy[] = ["auto", "local", "remote"]
+
+// The form the compaction model has always taken: provider/model[#variant].
+const MODEL_REF = /^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/
+
+/**
+ * Validate compaction fields as a person typed them or a tool sent them.
+ * Text is trimmed into canonical form. "" clears a field (null), except the
+ * instructions, where "" is an explicit empty prompt; null always clears. The
+ * cold-cache models take a list or comma-separated text; an explicit empty
+ * list is this level's own "no models", over any list inherited from below.
+ */
+export function compactionFieldsOf(input: {
+  readonly compactWarm?: string | null
+  readonly coldCompact?: string | null
+  readonly coldModels?: string | readonly string[] | null
+  readonly compactionStrategy?: string | null
+  readonly compactionModel?: string | null
+  readonly compactionInstructions?: string | null
+}): { readonly fields: ModelCompactionFieldValues } | { readonly error: string } {
+  const checked = {
+    compactWarm: switchField(input.compactWarm, "Compact before cold"),
+    coldCompact: switchField(input.coldCompact, "Compact cold caches with another model"),
+    coldModels: coldModelsField(input.coldModels),
+    compactionStrategy: strategyField(input.compactionStrategy),
+    compactionModel: modelRefField(input.compactionModel),
+    compactionInstructions: input.compactionInstructions,
+  }
+  const error = Object.values(checked).find((value): value is { readonly error: string } => typeof value === "object" && value !== null && "error" in value)
+  if (error !== undefined) return error
+  return { fields: Object.fromEntries(Object.entries(checked).filter(([, value]) => value !== undefined)) as ModelCompactionFieldValues }
+}
+
+function switchField(text: string | null | undefined, label: string): string | null | undefined | { readonly error: string } {
+  if (text === undefined || text === null) return text
+  const value = text.trim().toLowerCase()
+  if (value.length === 0) return null
+  if (value === "on" || value === "off") return value
+  return { error: `${label} must be on or off, got "${text.trim()}"` }
+}
+
+function strategyField(text: string | null | undefined): string | null | undefined | { readonly error: string } {
+  if (text === undefined || text === null) return text
+  const value = text.trim().toLowerCase()
+  if (value.length === 0) return null
+  if (COMPACTION_STRATEGIES.some((strategy) => strategy === value)) return value
+  return { error: `Compaction strategy must be auto, local or remote, got "${text.trim()}"` }
+}
+
+function modelRefField(text: string | null | undefined): string | null | undefined | { readonly error: string } {
+  if (text === undefined || text === null) return text
+  const value = text.trim()
+  if (value.length === 0) return null
+  if (MODEL_REF.test(value)) return value
+  return { error: `A compaction model is provider/model with an optional #variant, got "${value}"` }
+}
+
+function coldModelsField(
+  value: string | readonly string[] | null | undefined,
+): readonly string[] | null | undefined | { readonly error: string } {
+  if (value === undefined || value === null) return value
+  if (typeof value === "string" && value.trim().length === 0) return null
+  const models = (typeof value === "string" ? value.split(",") : value).map((entry) => entry.trim())
+  const bad = models.find((entry) => !MODEL_REF.test(entry))
+  if (bad !== undefined) return { error: `A cold-cache model is provider/model with an optional #variant, got "${bad}"` }
+  const twice = models.find((entry, index) => models.indexOf(entry) !== index)
+  if (twice !== undefined) return { error: `"${twice}" is listed twice; each model is tried once` }
+  return models
+}
+
+/** What each compaction field resolves to in an agent's model rows, with the level that set it. */
+export type ResolvedCompactionFields = {
+  readonly [field in ModelCompactionField]?: { readonly value: NonNullable<ModelCompactionFields[field]>; readonly level: Level }
+}
+
+/**
+ * The compaction fields an agent's model rows set for `target`, down the
+ * agent's chain exactly as its warming fields resolve: the first record for
+ * that model (same variant, else the variant-less row) that sets the field,
+ * tombstones hiding. The cold-cache list resolves as a whole: the first row
+ * that sets a list wins.
+ */
+export function resolveModelCompactionFields(input: ModelInput, target: ModelRefLike): ResolvedCompactionFields {
+  return Object.fromEntries(
+    MODEL_COMPACTION_FIELDS.flatMap((field) => {
+      // model.ts owns the chain walk; each record that sets `field` stands in
+      // for it with its own index in the warming slot.
+      const found = resolveModelField(
+        { ...input, models: input.models.map((record, index) => ({ ...record, warming: record[field] === undefined ? undefined : String(index) })) },
+        target,
+        "warming",
+      )
+      return found === undefined ? [] : [[field, { value: input.models[Number(found.value)][field], level: found.level }]]
+    }),
+  )
+}
+
+/**
+ * Set (or with null clear) compaction fields on the candidate at this
+ * address, planting an inactive candidate row when the model is only
+ * inherited here, as setModelSettings does for the warming fields. Every
+ * other field of the row is kept. Clearing only fields no record here sets
+ * returns an identical list.
+ */
+export function setModelCompaction(
+  models: readonly ModelRecord[],
+  address: RecordScope,
+  target: { readonly providerID: string; readonly modelID: string; readonly variant?: string },
+  fields: ModelCompactionFieldValues,
+  updated: string,
+): ModelRecord[] {
+  const wanted = (record: ModelRecord) =>
+    record.removed !== true &&
+    scopedTo(record, address) &&
+    record.providerID === target.providerID &&
+    record.modelID === target.modelID &&
+    record.variant === target.variant
+  const named = MODEL_COMPACTION_FIELDS.filter((field) => fields[field] !== undefined)
+  const sets = named.some((field) => fields[field] !== null)
+  if (!sets && !models.some((record) => wanted(record) && named.some((field) => record[field] !== undefined))) return [...models]
+  return addModelRecord(models, address, target, updated).map((record) => {
+    if (!wanted(record)) return record
+    const kept = Object.entries(record).filter(([key]) => !named.some((field) => field === key))
+    const set = named.flatMap((field) => (fields[field] === null ? [] : [[field, fields[field]]]))
+    return { ...Object.fromEntries([...kept, ...set]), updated } as ModelRecord
+  })
+}
+
+/**
+ * Compaction settings Plus reads but does not own per model, in their stored
+ * text form: an agent's agent-wide `compaction:*` rows (the old Compaction
+ * tab), the shared Defaults rows for every agent, or what opencode.json and
+ * the compaction maintenance agent configure. A model of "" inherits.
+ */
+export interface CompactionDefaults {
+  readonly strategy?: string
+  readonly model?: string
+  readonly instructions?: string
+}
+
+export interface CompactionEffective<T> {
+  readonly value: T
+  readonly from: CompactionFrom
+}
+
+export interface EffectiveCompaction {
+  readonly compactWarm: CompactionEffective<boolean>
+  readonly coldCompact: CompactionEffective<boolean>
+  /** The cold-cache models in try order; only used while coldCompact is on. */
+  readonly coldModels: CompactionEffective<readonly string[]>
+  readonly strategy: CompactionEffective<CompactionStrategy>
+  /** Undefined when no layer names one: the maintenance compaction model, else the chat's own model. */
+  readonly model: CompactionEffective<string | undefined>
+  /** Undefined when no layer sets them: the maintenance compaction agent's prompt. */
+  readonly instructions: CompactionEffective<string | undefined>
+}
+
+/** Where a compaction value came from, in words for the inspector, the tools and the footer. */
+export function compactionFromWords(from: CompactionFrom): string {
+  if (from === "agent") return "this agent's Compaction rows (agent-wide)"
+  if (from === "agents") return "Defaults › Compaction (every agent)"
+  if (from === "config") return "opencode.json or the compaction agent"
+  return fromWords(from)
+}
+
+/**
+ * The compaction settings for one agent on one model, field by field.
+ *
+ *   compact before cold, cold-cache switch and list: the agent's model row
+ *   (down its chain) > Defaults › Models › this model > Every model > built-in
+ *   (off, off, no models)
+ *
+ *   strategy, model, instructions: the agent's model row > the agent's
+ *   agent-wide rows > Defaults › Models › this model > Every model > the
+ *   shared Defaults rows for every agent > opencode.json or the maintenance
+ *   agent > built-in (auto, none, none)
+ *
+ * A stored value that no longer parses sets nothing, so the level below decides.
+ */
+export function effectiveCompaction(input: {
+  readonly row?: ResolvedCompactionFields
+  readonly agent?: CompactionDefaults
+  readonly model?: ModelSettingsRecord
+  readonly every?: ModelSettingsRecord
+  readonly agents?: CompactionDefaults
+  readonly config?: CompactionDefaults
+}): EffectiveCompaction {
+  const row = input.row ?? {}
+  const own = <F extends ModelCompactionField>(field: F) => [
+    [row[field]?.level ?? "defaults", row[field]?.value] as const,
+    ["model", input.model?.[field]] as const,
+    ["every", input.every?.[field]] as const,
+  ]
+  const shared = (key: keyof CompactionDefaults, field: ModelCompactionField) => {
+    const [fromRow, fromModel, fromEvery] = own(field)
+    return [
+      fromRow,
+      ["agent", input.agent?.[key]] as const,
+      fromModel,
+      fromEvery,
+      ["agents", input.agents?.[key]] as const,
+      ["config", input.config?.[key]] as const,
+    ]
+  }
+  return {
+    compactWarm: firstSet(own("compactWarm"), switchOf, false),
+    coldCompact: firstSet(own("coldCompact"), switchOf, false),
+    coldModels: firstSet(own("coldModels"), (value) => (Array.isArray(value) ? value.filter((entry) => MODEL_REF.test(entry)) : undefined), []),
+    strategy: firstSet(shared("strategy", "compactionStrategy"), (value) => COMPACTION_STRATEGIES.find((strategy) => strategy === value), "auto"),
+    model: firstSet<string | undefined>(shared("model", "compactionModel"), (value) => (typeof value === "string" && MODEL_REF.test(value) ? value : undefined), undefined),
+    instructions: firstSet<string | undefined>(shared("instructions", "compactionInstructions"), (value) => (typeof value === "string" ? value : undefined), undefined),
+  }
+}
+
+// The first layer whose stored value parses, else the built-in value.
+function firstSet<T>(
+  layers: readonly (readonly [CompactionFrom, string | readonly string[] | undefined])[],
+  parse: (value: string | readonly string[]) => T | undefined,
+  builtIn: T,
+): CompactionEffective<T> {
+  for (const [from, stored] of layers) {
+    const value = stored === undefined ? undefined : parse(stored)
+    if (value !== undefined) return { value, from }
+  }
+  return { value: builtIn, from: "built-in" }
+}
+
+function switchOf(value: string | readonly string[]): boolean | undefined {
+  if (value === "on") return true
+  if (value === "off") return false
+  return undefined
+}
+
+function sameFieldValue(left: string | readonly string[] | undefined, right: string | readonly string[] | undefined): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((entry, index) => entry === right[index])
+  return left === right
 }
 
 /** Where one layer's value shows in a compact row summary. */
