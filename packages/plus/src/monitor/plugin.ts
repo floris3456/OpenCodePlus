@@ -6,12 +6,14 @@ import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/paths.js"
-import type { MonitorMark, MonitorQueryInput, MonitorReport } from "../rpc.js"
+import type { MonitorMark, MonitorQueryInput, MonitorReport, MonitorStepInput, MonitorStepResult } from "../rpc.js"
 import { bySession, inferRunTeam, loadRun } from "../teams/run.js"
+import { causeWords, isMiss } from "./cache.js"
 import { createCollector, MonitorEvents, type Collector } from "./collector.js"
 import { fingerprintWireBody, sha256, type NamedSystemPart } from "./fingerprint.js"
 import { endRequestWindow, ledgerAt, RETENTION_DAYS, type ContextFact, type Ledger, type SessionFacts } from "./ledger.js"
 import { queryMonitor } from "./query.js"
+import { sessionFold } from "./report.js"
 
 const DAY = 86_400_000
 
@@ -307,7 +309,7 @@ export function watchMonitor(
   const stream = ctx.event.subscribe().pipe(
     Stream.filter((event) => MonitorEvents.has(event.type)),
     Stream.runForEach((event) =>
-      Effect.try(() => collector()?.observe(event as { type: string; data?: unknown; created?: number })).pipe(
+      Effect.try(() => collector()?.observe(event)).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus monitor event failed", { cause, type: event.type })),
       ),
     ),
@@ -341,6 +343,38 @@ export async function monitorQuery(ctx: Context, input: MonitorQueryInput, ledge
     directory: ctx.location.directory,
     ...(facts === undefined ? {} : { states: facts.states, agents: facts.agents }),
   })
+}
+
+export async function monitorStep(
+  ctx: Context,
+  input: MonitorStepInput,
+  ledger: Ledger = ledgerAt(),
+): Promise<MonitorStepResult> {
+  const fold = sessionFold(ledger, input.sessionID)
+  if (!fold.rows.length) return { status: "pending" }
+  const index = fold.rows.findLastIndex((r) => r.kind !== "ping" && !r.isTitle)
+  if (index < 0) return { status: "pending" }
+  const row = fold.rows[index]!
+  if (row.ended === undefined || row.status === "running") return { status: "pending" }
+  const detail = fold.analysis.details[index]
+  if (!detail) return { status: "pending" }
+  const req = detail.request
+  const changedPart =
+    detail.segments.find((c) => c.name !== "cache markers")?.name ?? detail.firstDivergence
+  const notReused = req.missTokens ?? 0
+  const miss = isMiss(req)
+  const cause = req.cause
+  const causeText = req.causeText ?? causeWords(cause, changedPart)
+  return {
+    status: "ready",
+    stepID: req.messageID ?? req.id,
+    requestID: req.id,
+    miss,
+    notReused,
+    ...(cause === undefined ? {} : { cause }),
+    causeText,
+    ...(changedPart === undefined ? {} : { changedPart }),
+  }
 }
 
 interface HostSessionFacts {

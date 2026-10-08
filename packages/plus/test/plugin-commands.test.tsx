@@ -31,6 +31,8 @@ function createHarness(): CommandsHarness {
       }),
     },
     data: {
+      on: () => () => {},
+      listen: () => () => {},
       location: {
         default: () => undefined,
         agent: { list: () => [], sync: async () => {} },

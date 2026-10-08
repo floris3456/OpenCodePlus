@@ -92,7 +92,7 @@ import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-b
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
-import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
+import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { registerMonitorTools } from "./monitor/tools.js"
@@ -3737,6 +3737,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         return result.value
       }),
     "monitor.query": (input) => Effect.promise(() => monitorQuery(ctx, input)),
+    "monitor.step": (input) => Effect.promise(() => monitorStep(ctx, input)),
     "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
     "checks.suggest": () =>
       Effect.promise(async () => {

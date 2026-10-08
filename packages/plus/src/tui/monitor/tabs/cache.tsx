@@ -149,7 +149,7 @@ export function CacheTab(props: CacheTabProps) {
                           {`[${req.verdict.toUpperCase()}]`}
                         </text>
                         <text fg={req.cause ? theme().text.feedback.warning.base : theme().text.muted} width={causeWidth()} wrapMode="none" truncate>
-                          {req.cause ?? "—"}
+                          {req.causeText ?? req.cause ?? "—"}
                         </text>
                         <Show when={showAgent()}>
                           {/* One column short of the header: a truncated model name never runs into In. */}
@@ -199,7 +199,7 @@ export function CacheTab(props: CacheTabProps) {
                   {`[${req.verdict.toUpperCase()}] `}
                 </text>
                 <text fg={theme().text.base}>
-                  {`Cause: ${req.cause ?? "none"}${req.confidence ? ` (${req.confidence})` : ""}`}
+                  {`Cause: ${req.causeText ?? req.cause ?? "none"}${req.confidence ? ` (${req.confidence})` : ""}`}
                 </text>
                 <Show when={req.expected !== undefined}>
                   <text fg={theme().text.muted}>
