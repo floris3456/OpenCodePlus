@@ -25,7 +25,6 @@ import {
   type ModelSettingsKey,
   type ModelSettingsRecord,
 } from "./model-settings.js"
-import type { CategoryRecord } from "./categories.js"
 import type { MemoInput, TeamInput } from "./tree.js"
 
 export function itemOf(item: Plus.SnapshotItem): Item {
@@ -249,17 +248,6 @@ export function hostModelOf(record: Plus.SnapshotHostModel): HostModel {
   }
 }
 
-export function categoryOf(record: Plus.SnapshotCategoryRecord): CategoryRecord {
-  return {
-    type: "category",
-    level: "global",
-    name: record.name,
-    order: record.order,
-    items: [...record.items],
-    updated: record.updated,
-  }
-}
-
 /** What one Defaults › Models row resolves to now, from the snapshot alone (tree rows, inspector, dialogs). */
 export function modelDefaultsViewOf(
   snapshot: Plus.Snapshot,
@@ -312,7 +300,8 @@ function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
     teams: (snapshot.teams ?? []).map(teamOf),
     modelSettings: (snapshot.modelSettings ?? []).map(modelSettingsRecordOf),
     hostModels: (snapshot.hostModels ?? []).map(hostModelOf),
-    categories: (snapshot.categories ?? []).map(categoryOf),
+    folders: snapshot.folders ?? [],
+    orders: snapshot.orders ?? [],
     ...presetStateOfSnapshot(snapshot),
   }
 }

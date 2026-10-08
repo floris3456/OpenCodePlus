@@ -54,17 +54,9 @@ import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
-import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type CategoryRecord, type EntryRecord, type LinkRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
+import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { deltaOf, deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
-import {
-  assignCategoryRecord,
-  categoryByName,
-  categorySlug,
-  categorySlugFromId,
-  createCategoryRecord,
-  deleteCategoryRecord,
-  renameCategoryRecord,
-} from "./instructions/categories.js"
+import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
 import {
@@ -540,12 +532,18 @@ function invalidModelSettings(reason: string): SetModelSettingsResult {
   return { ok: false, error: { code: "modelSettings.invalid", message: reason, data: { reason } } }
 }
 
-export type CategoryMutateResult =
-  | { ok: true; value: Plus.CategoryMutateOutput }
-  | { ok: false; error: { code: "category.invalid"; message: string; data: Plus.CategoryInvalid } }
+export type LayoutWriteResult =
+  | { ok: true; value: Plus.LayoutWriteOutput }
+  | { ok: false; error: { code: "layout.invalid"; message: string; data: Plus.LayoutInvalid } }
 
-function invalidCategory(reason: string): CategoryMutateResult {
-  return { ok: false, error: { code: "category.invalid", message: reason, data: { code: "category.invalid", reason } } }
+function invalidLayout(reason: string): LayoutWriteResult {
+  return { ok: false, error: { code: "layout.invalid", message: reason, data: { code: "layout.invalid", reason } } }
+}
+
+// A folder or order keeps its stored `updated` unless its content changed.
+function stamped<T extends { readonly updated: string }>(next: T, previous: T | undefined, updated: string): T {
+  if (previous !== undefined && JSON.stringify({ ...previous, updated: "" }) === JSON.stringify({ ...next, updated: "" })) return previous
+  return { ...next, updated }
 }
 
 export type CreateTeamResult =
@@ -688,7 +686,7 @@ export interface PlusApi {
   readonly createTeam: (input: Plus.CreateTeamInput & { readonly actor?: Plus.Actor }) => Promise<CreateTeamResult>
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
-  readonly category: (input: Plus.CategoryMutateInput & { readonly actor?: Plus.Actor }) => Promise<CategoryMutateResult>
+  readonly layoutWrite: (input: Plus.LayoutWriteInput & { readonly actor?: Plus.Actor }) => Promise<LayoutWriteResult>
   readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
@@ -765,12 +763,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     config: { readonly protectedAgents: readonly string[] },
   ) => {
     const protectedRow = changed.find(
-      (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord | CategoryRecord> =>
+      (record): record is Exclude<StoredRecord, TeamRecord | EntryRecord | PresetRecord | ModelSettingsRecord | FolderRecord | OrderRecord> =>
         record.type !== "team" &&
         record.type !== "entry" &&
         record.type !== "preset" &&
         record.type !== "modelSettings" &&
-        record.type !== "category" &&
+        record.type !== "folder" &&
+        record.type !== "order" &&
         // A preset's rows are not an agent's, whatever its id.
         record.level !== "preset" &&
         record.agent !== null &&
@@ -808,7 +807,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.type === "entry" ||
           record.type === "preset" ||
           record.type === "modelSettings" ||
-          record.type === "category",
+          record.type === "folder" ||
+          record.type === "order",
       ),
     ]
     const refusal = protectedRefusal(input.actor, deltaRows(loaded.records, records), config)
@@ -1151,7 +1151,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const target = { level: input.scope, agent: to.id }
       const moved = await updateRecords(directory, (current) =>
         current.flatMap((record): StoredRecord[] => {
-          if (record.type === "team" || record.type === "entry" || record.type === "preset" || record.type === "modelSettings" || record.type === "category")
+          if (record.type === "team" || record.type === "entry" || record.type === "preset" || record.type === "modelSettings" || record.type === "folder" || record.type === "order")
             return [record]
           if (scopedTo(record, target)) return []
           return [scopedTo(record, source) ? { ...record, agent: to.id } : record]
@@ -1727,104 +1727,44 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return { ok: true as const, value: { record: saved.record ?? null, revision: saved.revision, globalRevision: saved.globalRevision } }
     },
-    category: async (input) => {
+    layoutWrite: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
       const actor = normalizeActor(input.actor)
       const updated = new Date().toISOString()
-      const attempt = async (): Promise<
-        | { ok: true; id: string; name: string; changed: boolean; revision: number; globalRevision: number; status: string }
-        | { ok: false; reason: string }
-        | "stale"
-      > => {
-        const current = await load(directory)
-        const all = current.records.filter((record): record is CategoryRecord => record.type === "category")
-        const find = (name: string): CategoryRecord | undefined => {
-          const slug = categorySlugFromId(name) ?? categorySlug(name)
-          return categoryByName(all, name) ?? all.find((record) => categorySlug(record.name) === slug)
-        }
-        const write = async (
-          next: readonly CategoryRecord[],
-          value: { id: string; name: string; status: string },
-        ) => {
-          const saved = await save(directory, {
-            expectedProjectRevision: current.projectRevision,
-            expectedGlobalRevision: current.globalRevision,
-            records: [...current.records.filter((record) => record.type !== "category"), ...next],
-          })
-          if (!saved.ok) return "stale" as const
-          return { ok: true as const, ...value, changed: saved.changed.global, revision: saved.projectRevision, globalRevision: saved.globalRevision }
-        }
-        const validName = (name: string): string | undefined => {
-          if (name.length === 0) return "a category needs a name"
-          if (name.includes(":")) return 'a category name cannot contain ":"'
-          return undefined
-        }
-        if (input.action === "create") {
-          const name = input.name?.trim() ?? ""
-          const invalid = validName(name)
-          if (invalid !== undefined) return { ok: false, reason: invalid }
-          if (find(name) !== undefined) return { ok: false, reason: `category "${name}" already exists` }
-          return write(createCategoryRecord(all, name, updated), {
-            id: `category:${categorySlug(name)}`,
-            name,
-            status: `Created category "${name}"`,
-          })
-        }
-        if (input.action === "assign") {
-          const item = input.item?.trim() ?? ""
-          if (item.length === 0) return { ok: false, reason: "assigning a row needs its item id" }
-          const target = input.category === undefined || input.category === null ? null : input.category.trim()
-          if (target !== null && categoryByName(all, target) === undefined)
-            return { ok: false, reason: `category "${target}" does not exist` }
-          const next = assignCategoryRecord(all, item, target, updated)
-          const record = target === null ? undefined : categoryByName(next, target)
-          return write(next, {
-            id: record === undefined ? "category:" : `category:${categorySlug(record.name)}`,
-            name: record?.name ?? "",
-            status: target === null ? `Moved ${item} home` : `Moved ${item} to "${target}"`,
-          })
-        }
-        if (input.action === "rename") {
-          const from = input.name?.trim() ?? ""
-          const to = input.to?.trim() ?? ""
-          const invalid = validName(to)
-          if (from.length === 0) return { ok: false, reason: "renaming needs the current category name" }
-          if (invalid !== undefined) return { ok: false, reason: invalid }
-          const existing = find(from)
-          if (existing === undefined) return { ok: false, reason: `category "${from}" does not exist` }
-          const collision = find(to)
-          if (collision !== undefined && collision.name !== existing.name)
-            return { ok: false, reason: `category "${to}" already exists` }
-          const next = renameCategoryRecord(all, existing.name, to, updated)
-          return write(next, { id: `category:${categorySlug(to)}`, name: to, status: `Renamed category to "${to}"` })
-        }
-        if (input.confirm !== true) return { ok: false, reason: "delete requires confirm:true" }
-        const existing = find(input.name ?? "")
-        if (existing === undefined) return { ok: false, reason: `category "${input.name ?? ""}" does not exist` }
-        return write(deleteCategoryRecord(all, existing.name), {
-          id: `category:${categorySlug(existing.name)}`,
-          name: existing.name,
-          status: `Deleted category "${existing.name}"`,
-        })
-      }
-      let outcome = await attempt()
-      if (outcome === "stale") outcome = await attempt()
-      if (outcome === "stale") return invalidCategory("the store changed concurrently; retry")
-      if (!outcome.ok) return invalidCategory(outcome.reason)
-      if (outcome.changed) {
+      const current = await load(directory)
+      if (current.globalRevision !== input.expectedGlobalRevision)
+        return invalidLayout("the folders changed since they were read; read them again and retry")
+      const refusal = layoutRefusal(input.folders, input.orders)
+      if (refusal !== undefined) return invalidLayout(refusal)
+      const currentFolders = current.records.filter((record): record is FolderRecord => record.type === "folder")
+      const currentOrders = current.records.filter((record): record is OrderRecord => record.type === "order")
+      const folders = input.folders.map((folder) => stamped(folder, currentFolders.find((record) => record.id === folder.id), updated))
+      const orders = input.orders.map((order) => stamped(order, currentOrders.find((record) => record.scope === order.scope), updated))
+      const saved = await save(directory, {
+        expectedProjectRevision: current.projectRevision,
+        expectedGlobalRevision: current.globalRevision,
+        records: [...current.records.filter((record) => record.type !== "folder" && record.type !== "order"), ...folders, ...orders],
+      })
+      if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
+      if (saved.changed.global) {
         await append(globalLogPath(), {
           ts: updated,
           actor,
-          op: "category",
-          target: outcome.id,
-          summary: outcome.status,
-          revision: outcome.globalRevision,
+          op: "layout",
+          target: input.target,
+          summary: input.status,
+          revision: saved.globalRevision,
         })
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return {
         ok: true as const,
-        value: { id: outcome.id, name: outcome.name, revision: outcome.revision, globalRevision: outcome.globalRevision },
+        value: {
+          changed: saved.changed.global,
+          revision: saved.projectRevision,
+          globalRevision: saved.globalRevision,
+          status: input.status,
+        },
       }
     },
     addTeamAgent: async (input) => {
@@ -2624,7 +2564,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
               record.type !== "entry" &&
               record.type !== "preset" &&
               record.type !== "modelSettings" &&
-              record.type !== "category" &&
+              record.type !== "folder" &&
+              record.type !== "order" &&
               nodes.some((node) => scopedTo(record, node))
             ),
         ),
@@ -2677,7 +2618,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const saved = await updateRecords(directory, (records) =>
         records.map((record): StoredRecord => {
           if (record.type === "entry") return same(record, name) ? { ...record, name: to.name, updated } : record
-          if (record.type === "team" || record.type === "preset" || record.type === "modelSettings" || record.type === "category") return record
+          if (record.type === "team" || record.type === "preset" || record.type === "modelSettings" || record.type === "folder" || record.type === "order") return record
           return scopedTo(record, from) ? { ...record, agent: to.name } : record
         }),
       )
@@ -2795,7 +2736,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const removed = (record: StoredRecord) => {
           if (record.type === "link" && targetsPreset(record.preset, input.ref)) return true
           if (record.type === "preset") return owners.some((owner) => presetRecordOwns(record, owner))
-          if (record.type === "team" || record.type === "entry" || record.type === "modelSettings" || record.type === "category") return false
+          if (record.type === "team" || record.type === "entry" || record.type === "modelSettings" || record.type === "folder" || record.type === "order") return false
           return owners.some((owner) => scopedTo(record, owner))
         }
         return { result: { users, elsewhere, orphans: links.filter((record) => targetsPreset(record.preset, input.ref)).length }, records: loaded.records.filter((record) => !removed(record)) }
@@ -3510,10 +3451,10 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!result.ok) return yield* Effect.fail(context.error("modelSettings.invalid", result.error.message, result.error.data))
         return result.value
       }),
-    "category.mutate": (input, context) =>
+    "layout.write": (input, context) =>
       Effect.gen(function* () {
-        const result = yield* Effect.promise(() => api.category(input))
-        if (!result.ok) return yield* Effect.fail(context.error("category.invalid", result.error.message, result.error.data))
+        const result = yield* Effect.promise(() => api.layoutWrite(input))
+        if (!result.ok) return yield* Effect.fail(context.error("layout.invalid", result.error.message, result.error.data))
         return result.value
       }),
     "team.addAgent": (input, context) =>
@@ -6935,7 +6876,8 @@ function toSnapshot(
         record.type === "entry" ||
         record.type === "preset" ||
         record.type === "modelSettings" ||
-        record.type === "category"
+        record.type === "folder" ||
+        record.type === "order"
       )
         return []
       return [
@@ -6961,8 +6903,11 @@ function toSnapshot(
       ]
     }),
     ...snapshotPresetState(loaded.records),
-    categories: loaded.records
-      .filter((record): record is CategoryRecord => record.type === "category")
+    folders: loaded.records
+      .filter((record): record is FolderRecord => record.type === "folder")
+      .map((record) => ({ ...record, items: [...record.items] })),
+    orders: loaded.records
+      .filter((record): record is OrderRecord => record.type === "order")
       .map((record) => ({ ...record, items: [...record.items] })),
     modelSettings: modelSettingsOf(loaded.records).map((record) => ({ ...record })),
     hostModels: discovered.hostModels.map((entry) => ({

@@ -18,7 +18,7 @@ import type {
 } from "./model.js"
 import type { Split } from "./sections.js"
 import type { TeamLevel } from "./teams.js"
-import type { CategoryRecord } from "./categories.js"
+import type { FolderRecord, OrderRecord } from "./folders.js"
 
 export interface TeamInput {
   /** Teams exist at project, global and defaults; team presets are not TeamInputs. */
@@ -38,8 +38,9 @@ export interface MemoInput extends PresetState {
   readonly modelSettings?: readonly ModelSettingsRecord[]
   /** Per-model host configuration (opencode.json) and catalog variants, for the Defaults › Models rows. */
   readonly hostModels?: readonly HostModel[]
-  /** User categories (plan plus-1.1.12 T8): display-only groups of item rows, global. */
-  readonly categories?: readonly CategoryRecord[]
+  /** Folders of rows inside each tab, and the display order of tab tops and the sidebar (display only). */
+  readonly folders?: readonly FolderRecord[]
+  readonly orders?: readonly OrderRecord[]
 }
 
 export interface BuildContext {
@@ -61,8 +62,10 @@ export interface BuildContext {
   readonly modelSettings: readonly ModelSettingsRecord[]
   /** Per-model host configuration and catalog variants. */
   readonly hostModels: readonly HostModel[]
-  /** User categories (display-only groups of item rows), in record order. */
-  readonly categories: readonly CategoryRecord[]
+  /** Folders, in record order. */
+  readonly folders: readonly FolderRecord[]
+  /** Display orders, in record order. */
+  readonly orders: readonly OrderRecord[]
 }
 
 export function contextOf(input: MemoInput): BuildContext {
@@ -88,7 +91,8 @@ export function contextOf(input: MemoInput): BuildContext {
     teams: input.teams ?? [],
     modelSettings: input.modelSettings ?? [],
     hostModels: input.hostModels ?? [],
-    categories: input.categories ?? [],
+    folders: input.folders ?? [],
+    orders: input.orders ?? [],
   }
 }
 

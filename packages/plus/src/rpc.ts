@@ -347,18 +347,29 @@ export const SnapshotPresetRecord = Schema.Struct({
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotPresetRecord" })
 
-// A user category (plan plus-1.1.12 T8): a user-named, display-only group of
-// item rows. Always global; carried in the Snapshot's own `categories` field
-// so instructions.mutate cannot drop it, like teams and links.
-export interface SnapshotCategoryRecord extends Schema.Schema.Type<typeof SnapshotCategoryRecord> {}
-export const SnapshotCategoryRecord = Schema.Struct({
-  type: Schema.Literal("category"),
+// Folders and display order (plus-1.2.0, folders.ts): global records carried in
+// the Snapshot's own `folders` and `orders` fields, so instructions.mutate
+// cannot drop them, like teams and links.
+export interface SnapshotFolderRecord extends Schema.Schema.Type<typeof SnapshotFolderRecord> {}
+export const SnapshotFolderRecord = Schema.Struct({
+  type: Schema.Literal("folder"),
   level: Schema.Literal("global"),
+  tab: Schema.String,
+  id: Schema.String,
   name: Schema.String,
-  order: Schema.Number,
+  parent: Schema.optionalKey(Schema.String),
   items: Schema.Array(Schema.String),
   updated: Schema.String,
-}).annotate({ identifier: "Plus.SnapshotCategoryRecord" })
+}).annotate({ identifier: "Plus.SnapshotFolderRecord" })
+
+export interface SnapshotOrderRecord extends Schema.Schema.Type<typeof SnapshotOrderRecord> {}
+export const SnapshotOrderRecord = Schema.Struct({
+  type: Schema.Literal("order"),
+  level: Schema.Literal("global"),
+  scope: Schema.String,
+  items: Schema.Array(Schema.String),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotOrderRecord" })
 
 // Every preset as the create pickers and the tree list them (Native, Plus,
 // User agent presets, then team presets each followed by its members). Native
@@ -461,7 +472,8 @@ export const Snapshot = Schema.Struct({
   links: Schema.optionalKey(Schema.Array(SnapshotLinkRecord)),
   entries: Schema.optionalKey(Schema.Array(SnapshotEntryRecord)),
   presets: Schema.optionalKey(Schema.Array(SnapshotPresetRecord)),
-  categories: Schema.optionalKey(Schema.Array(SnapshotCategoryRecord)),
+  folders: Schema.optionalKey(Schema.Array(SnapshotFolderRecord)),
+  orders: Schema.optionalKey(Schema.Array(SnapshotOrderRecord)),
   modelSettings: Schema.optionalKey(Schema.Array(SnapshotModelSettingsRecord)),
   hostModels: Schema.optionalKey(Schema.Array(SnapshotHostModel)),
   listing: Schema.optionalKey(Schema.Array(PresetListEntry)),
@@ -811,47 +823,33 @@ export const ModelSettingsInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.ModelSettingsInvalid" })
 
-// User categories (plan plus-1.1.12 T8): create a category, move an item row
-// into one or back home, rename it, or delete it (rows return home). All
-// records live in the global store, so there is no level or scope.
-export type CategoryAction = typeof CategoryAction.Type
-export const CategoryAction = Schema.Union([
-  Schema.Literal("create"),
-  Schema.Literal("assign"),
-  Schema.Literal("rename"),
-  Schema.Literal("delete"),
-]).annotate({ identifier: "Plus.CategoryAction" })
-
-export interface CategoryMutateInput extends Schema.Schema.Type<typeof CategoryMutateInput> {}
-export const CategoryMutateInput = Schema.Struct({
-  action: CategoryAction,
-  /** create/rename: the category name (create) or the existing name/id (rename). */
-  name: Schema.optionalKey(Schema.String),
-  /** create/rename: the new name. */
-  to: Schema.optionalKey(Schema.String),
-  /** assign: the whole row's item id. */
-  item: Schema.optionalKey(Schema.String),
-  /** assign: the target category name, or null to move the row back home. */
-  category: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  /** delete: required. */
-  confirm: Schema.optionalKey(Schema.Boolean),
+// Folders and display order (plus-1.2.0, S1a): one write replaces the whole
+// folder and order sets. The plan (ops.ts planMove, folder plans) is made from
+// the snapshot at `expectedGlobalRevision`; a newer store refuses the write.
+export interface LayoutWriteInput extends Schema.Schema.Type<typeof LayoutWriteInput> {}
+export const LayoutWriteInput = Schema.Struct({
+  folders: Schema.Array(SnapshotFolderRecord),
+  orders: Schema.Array(SnapshotOrderRecord),
+  expectedGlobalRevision: Schema.Number,
+  /** The row or folder the change is about (the log's target). */
+  target: Schema.String,
+  status: Schema.String,
   actor: Schema.optionalKey(Actor),
-}).annotate({ identifier: "Plus.CategoryMutateInput" })
+}).annotate({ identifier: "Plus.LayoutWriteInput" })
 
-export interface CategoryMutateOutput extends Schema.Schema.Type<typeof CategoryMutateOutput> {}
-export const CategoryMutateOutput = Schema.Struct({
-  /** The category's id (`category:<slug>`) and name. */
-  id: Schema.String,
-  name: Schema.String,
+export interface LayoutWriteOutput extends Schema.Schema.Type<typeof LayoutWriteOutput> {}
+export const LayoutWriteOutput = Schema.Struct({
+  changed: Schema.Boolean,
   revision: Schema.Number,
   globalRevision: Schema.Number,
-}).annotate({ identifier: "Plus.CategoryMutateOutput" })
+  status: Schema.String,
+}).annotate({ identifier: "Plus.LayoutWriteOutput" })
 
-export interface CategoryInvalid extends Schema.Schema.Type<typeof CategoryInvalid> {}
-export const CategoryInvalid = Schema.Struct({
+export interface LayoutInvalid extends Schema.Schema.Type<typeof LayoutInvalid> {}
+export const LayoutInvalid = Schema.Struct({
   code: Schema.String,
   reason: Schema.String,
-}).annotate({ identifier: "Plus.CategoryInvalid" })
+}).annotate({ identifier: "Plus.LayoutInvalid" })
 
 export interface TeamRef extends Schema.Schema.Type<typeof TeamRef> {}
 export const TeamRef = Schema.Struct({
@@ -2113,14 +2111,14 @@ const PortableSetModelSettingsOutput = Schema.toStandardSchemaV1(
 const PortableModelSettingsInvalid = Schema.toStandardSchemaV1(
   ModelSettingsInvalid.annotate({ identifier: "Plus.ModelSettingsInvalid" }),
 )
-const PortableCategoryMutateInput = Schema.toStandardSchemaV1(
-  CategoryMutateInput.annotate({ identifier: "Plus.CategoryMutateInput" }),
+const PortableLayoutWriteInput = Schema.toStandardSchemaV1(
+  LayoutWriteInput.annotate({ identifier: "Plus.LayoutWriteInput" }),
 )
-const PortableCategoryMutateOutput = Schema.toStandardSchemaV1(
-  CategoryMutateOutput.annotate({ identifier: "Plus.CategoryMutateOutput" }),
+const PortableLayoutWriteOutput = Schema.toStandardSchemaV1(
+  LayoutWriteOutput.annotate({ identifier: "Plus.LayoutWriteOutput" }),
 )
-const PortableCategoryInvalid = Schema.toStandardSchemaV1(
-  CategoryInvalid.annotate({ identifier: "Plus.CategoryInvalid" }),
+const PortableLayoutInvalid = Schema.toStandardSchemaV1(
+  LayoutInvalid.annotate({ identifier: "Plus.LayoutInvalid" }),
 )
 const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ identifier: "Plus.TeamInvalid" }))
 const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
@@ -2348,11 +2346,11 @@ export const Definition = Rpc.define({
         "modelSettings.invalid": PortableModelSettingsInvalid,
       },
     },
-    "category.mutate": {
-      input: PortableCategoryMutateInput,
-      output: PortableCategoryMutateOutput,
+    "layout.write": {
+      input: PortableLayoutWriteInput,
+      output: PortableLayoutWriteOutput,
       errors: {
-        "category.invalid": PortableCategoryInvalid,
+        "layout.invalid": PortableLayoutInvalid,
       },
     },
     "team.addAgent": {

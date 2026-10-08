@@ -38,7 +38,7 @@ import type {
   SplitRecord,
   TeamRef,
 } from "./model.js"
-import { categoryByItem, categorySlug, orderedCategories, type CategoryRecord } from "./categories.js"
+import { folderIdOfRef, folderRef, orderOf, tabOfGroupId, type FolderRecord } from "./folders.js"
 import { fromLabel } from "./from-label.js"
 import {
   COLD_ITEM_SEGMENT,
@@ -159,7 +159,7 @@ export type AddKind =
   | "rule"
   | "preset"
   | "team-preset"
-  | "category"
+  | "folder"
 
 /**
  * What an agent, team, member, entry or preset row stands for: the owner of
@@ -1162,7 +1162,7 @@ function lazyPresetTeam(ctx: BuildContext, memo: Memo, entry: PresetEntry): Lazy
 // chain falls through to, so an inventory row at any other level would address
 // records no agent ever reads.
 function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, depth: number): readonly Lazy[] {
-  return withUserCategories(memo, `group:defaults:${ownerSegment(null, catalogue)}`, depth, [
+  return withFolders(memo, [
     lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
@@ -1172,47 +1172,72 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
   ])
 }
 
-// The built-in category tabs every owner has, in order, then the user's own
-// categories after them. A row assigned to a user category is dropped from its
-// home subtree (with its children) and listed under the category instead, in
-// every owner's list. No categories: the home groups are returned untouched so
-// the existing tree is byte-identical.
-function withUserCategories(
-  memo: Memo,
-  prefix: string,
-  depth: number,
-  groups: readonly Lazy[],
-): readonly Lazy[] {
-  const categories = memo.ctx.categories
-  if (categories.length === 0) return groups
-  const byItem = categoryByItem(categories)
-  return [
-    ...groups.map((group) => dropAssigned(group, byItem)),
-    ...orderedCategories(categories).map((category) => userCategoryGroup(memo, prefix, depth, category, groups, byItem)),
-  ]
+// Folders and display order (folders.ts). Each tab group keeps its rows except
+// those a folder holds; a folder lists its rows (with their children) in its
+// items order, and child folders in place. The tab's top level follows its
+// order record: listed folders and rows first, in that order, then the rest as
+// they were (folders before rows). A tab with neither a folder nor an order is
+// returned as it is.
+function withFolders(memo: Memo, groups: readonly Lazy[]): readonly Lazy[] {
+  if (memo.ctx.folders.length === 0 && memo.ctx.orders.length === 0) return groups
+  return groups.map((group) => arrangeTab(memo, group))
 }
 
-function userCategoryGroup(
-  memo: Memo,
-  prefix: string,
-  depth: number,
-  category: CategoryRecord,
-  homeGroups: readonly Lazy[],
-  byItem: ReadonlyMap<string, string>,
-): Lazy {
-  return branch(memo, {
-    kind: "group",
-    id: `${prefix}:category:${categorySlug(category.name)}`,
-    label: category.name,
-    depth,
-    actions: noActions(),
-    children: () => collectAssigned(homeGroups, category.name, byItem, depth + 1),
-  })
+function arrangeTab(memo: Memo, group: Lazy): Lazy {
+  const tab = tabOfGroupId(group.id)
+  if (tab === undefined) return group
+  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab)
+  const listed = orderOf(memo.ctx.orders, `tab:${tab}`)?.items ?? []
+  if (folders.length === 0 && listed.length === 0) return group
+  const byItem = new Map(folders.flatMap((folder) => folder.items.filter((entry) => folderIdOfRef(entry) === undefined).map((item) => [item, folder.id] as const)))
+  const referenced = new Set(folders.flatMap((folder) => folder.items.flatMap((entry) => folderIdOfRef(entry) ?? [])))
+  const folderPrefix = `${group.id}:folder:`
+  const tokenOf = (lazy: Lazy): string | undefined => {
+    if (lazy.id.startsWith(folderPrefix)) return folderRef(lazy.id.slice(folderPrefix.length))
+    return lazy.address?.section === null ? lazy.address.item : undefined
+  }
+  return {
+    ...group,
+    children: () => {
+      const home = group.children()
+      const rows = indexRows(home, byItem)
+      const folderRow = (folder: FolderRecord, depth: number, seen: ReadonlySet<string>): Lazy =>
+        branch(memo, {
+          kind: "group",
+          id: `${folderPrefix}${folder.id}`,
+          label: folder.name,
+          depth,
+          actions: noActions(),
+          children: () =>
+            folder.items.flatMap((entry): Lazy[] => {
+              const child = folderIdOfRef(entry)
+              if (child !== undefined) {
+                const sub = folders.find((candidate) => candidate.id === child)
+                return sub === undefined || seen.has(child) ? [] : [folderRow(sub, depth + 1, new Set([...seen, child]))]
+              }
+              const row = rows.get(entry)
+              return row === undefined ? [] : [rebase(row, depth + 1 - row.depth)]
+            }),
+        })
+      const topFolders = folders.filter((folder) => !referenced.has(folder.id)).map((folder) => folderRow(folder, group.depth + 1, new Set([folder.id])))
+      const kept = home.filter((child) => assignedItem(child, byItem) === undefined).map((child) => dropAssigned(child, byItem))
+      const defaults = [...topFolders, ...kept]
+      return [
+        ...listed.flatMap((ref) => defaults.filter((lazy) => tokenOf(lazy) === ref)),
+        ...defaults.filter((lazy) => {
+          const token = tokenOf(lazy)
+          return token === undefined || !listed.includes(token)
+        }),
+      ]
+    },
+  }
 }
 
 // The item a row stands for, when it is a whole row (never a section) and an
 // assignment names it. Group rows have no address and are never assignable.
-function assignedCategory(lazy: Lazy, byItem: ReadonlyMap<string, string>): string | undefined {
+// The folder id a whole item row is held in, when it is held (group rows and
+// section rows never are).
+function assignedItem(lazy: Lazy, byItem: ReadonlyMap<string, string>): string | undefined {
   const address = lazy.address
   if (address === undefined || address.section !== null) return undefined
   return byItem.get(address.item)
@@ -1227,24 +1252,19 @@ function dropAssigned(lazy: Lazy, byItem: ReadonlyMap<string, string>): Lazy {
     children: () =>
       lazy
         .children()
-        .filter((child) => assignedCategory(child, byItem) === undefined)
+        .filter((child) => assignedItem(child, byItem) === undefined)
         .map((child) => dropAssigned(child, byItem)),
   }
 }
 
-// The assigned rows, in home tree order, flattened under the category so a
-// moved row lists directly under it. Depths are rebased so the row and its
-// descendants render at the category's own indent.
-function collectAssigned(
-  groups: readonly Lazy[],
-  name: string,
-  byItem: ReadonlyMap<string, string>,
-  targetDepth: number,
-): Lazy[] {
-  const out: Lazy[] = []
+// The held rows by item id, in home tree order (the first one found wins).
+// A folder lists them under itself at its own indent (rebase).
+function indexRows(groups: readonly Lazy[], byItem: ReadonlyMap<string, string>): Map<string, Lazy> {
+  const out = new Map<string, Lazy>()
   const visit = (lazy: Lazy) => {
-    if (assignedCategory(lazy, byItem) === name) {
-      out.push(rebase(lazy, targetDepth - lazy.depth))
+    const item = lazy.address?.section === null ? lazy.address.item : undefined
+    if (item !== undefined && byItem.has(item)) {
+      if (!out.has(item)) out.set(item, lazy)
       return
     }
     if (lazy.kind === "section") return
@@ -1361,7 +1381,7 @@ function lazyOwnerRow(
     ...(row.owner === undefined ? {} : { owner: row.owner }),
     actions: { ...noActions(), remove: row.remove },
     children: () =>
-      withUserCategories(memo, `group:${row.level}:${row.id}`, row.depth + 1, [
+      withFolders(memo, [
         lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
         lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
@@ -1681,7 +1701,7 @@ function lazyTeamMember(
     // the member's `<team>/:<member>` owner path instead of colliding with
     // the stand-alone agent's.
     children: () =>
-      withUserCategories(memo, memberGroup, depth + 1, [
+      withFolders(memo, [
         lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
         lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
@@ -1722,7 +1742,7 @@ function lazyTeamSpecialAgent(
     depth: 4,
     actions: noActions(),
     children: () =>
-      withUserCategories(memo, specialGroup, 5, [
+      withFolders(memo, [
         lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
         lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
         lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),

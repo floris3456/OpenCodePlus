@@ -79,13 +79,283 @@ import type {
   SplitRecord,
   TeamRef,
 } from "./model.js"
+import {
+  ancestorsOf,
+  createFolderRecord,
+  deleteFolderRecord,
+  folderIdOfRef,
+  folderOf,
+  folderRef,
+  renameFolderRecord,
+  reparent,
+  setOrder,
+  splitLayout,
+  tabOfGroupId,
+  tabOfItem,
+  type FolderRecord,
+  type OrderRecord,
+} from "./folders.js"
 import { presetOfAddress } from "./presets.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
-import { collectSkeleton, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
+import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
+
+// Folders and display order (S1a). A move is planned from the folder and order
+// records plus the tab's top-level tokens in display order, then written as one
+// layout write. A token is an item id or `folder:<id>`; `into` is `folder:<id>`
+// or `tab:<tab>`. A row moves only inside its own tab.
+export interface LayoutRecords {
+  readonly folders: readonly FolderRecord[]
+  readonly orders: readonly OrderRecord[]
+}
+
+export interface MoveTarget {
+  readonly into?: string | undefined
+  readonly before?: string | undefined
+  readonly after?: string | undefined
+}
+
+export type LayoutChange = { readonly target: string; readonly status: string; readonly layout: LayoutRecords } | { readonly refusal: string }
+
+export type LayoutPlan = LayoutRecords | { readonly refusal: string }
+
+type Container = { readonly folder: FolderRecord } | { readonly tab: string }
+
+function containerKey(container: Container): string {
+  return "folder" in container ? folderRef(container.folder.id) : `tab:${container.tab}`
+}
+
+function describeContainer(container: Container): string {
+  return "folder" in container ? `folder "${container.folder.name}"` : `the top level of ${container.tab}`
+}
+
+function tabOfToken(folders: readonly FolderRecord[], token: string): string | undefined {
+  const id = folderIdOfRef(token)
+  return id === undefined ? tabOfItem(token) : folderOf(folders, id)?.tab
+}
+
+function containerOfToken(folders: readonly FolderRecord[], token: string): Container | undefined {
+  const holder = folders.find((folder) => folder.items.includes(token))
+  if (holder !== undefined) return { folder: holder }
+  const tab = tabOfToken(folders, token)
+  return tab === undefined ? undefined : { tab }
+}
+
+function containerOfRef(folders: readonly FolderRecord[], ref: string): Container | undefined {
+  if (ref.startsWith("tab:")) return { tab: ref.slice("tab:".length) }
+  const id = folderIdOfRef(ref)
+  const folder = id === undefined ? undefined : folderOf(folders, id)
+  return folder === undefined ? undefined : { folder }
+}
+
+function insertBeside(list: readonly string[], token: string, target: MoveTarget): string[] | undefined {
+  const sibling = target.before ?? target.after
+  if (sibling === undefined) return [...list, token]
+  const index = list.indexOf(sibling)
+  if (index === -1) return undefined
+  const at = target.after === undefined ? index : index + 1
+  return [...list.slice(0, at), token, ...list.slice(at)]
+}
+
+// `inOriginGroup`: the row sits inside one of its tab's origin subgroups (Tools › native),
+// so the tab's top level cannot hold it; moving it out of a folder sends it back home.
+export function planMove(
+  records: LayoutRecords,
+  token: string,
+  top: readonly string[],
+  target: MoveTarget,
+  updated: string,
+  inOriginGroup = false,
+): LayoutPlan {
+  const { folders } = records
+  const movedId = folderIdOfRef(token)
+  const moved = movedId === undefined ? undefined : folderOf(folders, movedId)
+  const sourceTab = tabOfToken(folders, token)
+  if (sourceTab === undefined || (movedId !== undefined && moved === undefined)) return { refusal: `"${token}" is not a row or folder that can move` }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  if (target.into === undefined && target.before === undefined && target.after === undefined)
+    return { refusal: "say where it goes: into a folder or tab, or before or after a row" }
+  const sibling = target.before ?? target.after
+  if (sibling === token) return { refusal: `"${token}" cannot go beside itself` }
+  const into = target.into === undefined ? undefined : containerOfRef(folders, target.into)
+  if (target.into !== undefined && into === undefined) return { refusal: `"${target.into}" is not a folder or a tab` }
+  const beside = sibling === undefined ? undefined : containerOfToken(folders, sibling)
+  if (sibling !== undefined && beside === undefined) return { refusal: `"${sibling}" is not a row that can be placed beside` }
+  const dest = into ?? beside
+  if (dest === undefined) return { refusal: "say where it goes: into a folder or tab, or before or after a row" }
+  if (into !== undefined && beside !== undefined && containerKey(into) !== containerKey(beside))
+    return { refusal: `"${sibling}" is not in ${describeContainer(into)}` }
+  const destTab = "folder" in dest ? dest.folder.tab : dest.tab
+  if (destTab !== sourceTab) return { refusal: `"${token}" is in ${sourceTab}; it moves only within ${sourceTab}, not into ${destTab}` }
+  if (moved !== undefined && "folder" in dest && (dest.folder.id === moved.id || ancestorsOf(folders, dest.folder.id).includes(moved.id)))
+    return { refusal: `folder "${moved.name}" cannot move into itself or into one of its own folders` }
+  const destFolder = "folder" in dest ? dest.folder.id : undefined
+  const inFolder = folders.some((folder) => folder.items.includes(token))
+  const cleared = folders.map((folder) =>
+    folder.items.includes(token) ? { ...folder, items: folder.items.filter((item) => item !== token), updated } : folder,
+  )
+  const topCleared = top.filter((entry) => entry !== token)
+  if (destFolder === undefined && inOriginGroup && sibling !== undefined)
+    return { refusal: `"${token}" sits in an origin group of ${sourceTab}; it cannot go beside "${sibling}" at the top level` }
+  const list = destFolder === undefined ? topCleared : (cleared.find((folder) => folder.id === destFolder)?.items ?? [])
+  const inserted = destFolder === undefined && inOriginGroup ? topCleared : insertBeside(list, token, target)
+  if (inserted === undefined) return { refusal: `"${sibling}" is not in ${describeContainer(dest)}` }
+  const placed = cleared.map((folder) => {
+    const next = folder.id === destFolder ? { ...folder, items: inserted, updated } : folder
+    return moved?.id === folder.id ? reparent(next, destFolder) : next
+  })
+  const writesTop = !inFolder || destFolder === undefined
+  const orders = writesTop ? setOrder(records.orders, sourceTab, destFolder === undefined ? inserted : topCleared, updated) : [...records.orders]
+  return { folders: placed, orders }
+}
+
+const FOLDER_MARK = ":folder:"
+
+// The token a tree row stands for: a folder, a tab (`tab:<tab>`), or a whole item row. Sections, groups and
+// built-in structure have none.
+export function rowToken(node: TreeNode): string | undefined {
+  if (node.kind === "group") {
+    const at = node.id.indexOf(FOLDER_MARK)
+    if (at !== -1) return folderRef(node.id.slice(at + FOLDER_MARK.length))
+    // A tab group is `group:<level>:<owner>:<tab>`; an origin subgroup (Tools › mcp) has one more segment.
+    const tab = node.id.split(":").length === 4 ? tabOfGroupId(node.id) : undefined
+    return tab === undefined ? undefined : `tab:${tab}`
+  }
+  return node.address?.section === null ? node.address.item : undefined
+}
+
+// The index of the tab group a row sits in (nearest tab ancestor), in a flat list of rows in display order.
+export function tabGroupIndex(nodes: readonly TreeNode[], index: number): number | undefined {
+  const row = nodes[index]
+  if (row === undefined) return undefined
+  let depth = row.depth
+  for (let at = index - 1; at >= 0 && depth > 0; at--) {
+    const candidate = nodes[at]
+    if (candidate === undefined || candidate.depth >= depth) continue
+    if (rowToken(candidate)?.startsWith("tab:") === true) return at
+    depth = candidate.depth
+  }
+  return undefined
+}
+
+// The tokens directly under a tab group, in display order (folders and rows at the tab's top level).
+export function topLevelTokens(nodes: readonly TreeNode[], tabIndex: number): string[] {
+  const group = nodes[tabIndex]
+  if (group === undefined) return []
+  const rest = nodes.slice(tabIndex + 1)
+  const end = rest.findIndex((node) => node.depth <= group.depth)
+  const within = end === -1 ? rest : rest.slice(0, end)
+  return within.flatMap((node) => {
+    if (node.depth !== group.depth + 1) return []
+    const token = rowToken(node)
+    return token === undefined ? [] : [token]
+  })
+}
+
+export interface RowTarget {
+  readonly into?: string | undefined
+  readonly before?: string | undefined
+  readonly after?: string | undefined
+}
+
+type Anchor = { readonly token: string; readonly label: string } | { readonly refusal: string }
+
+// Move a row or folder (by tree row id) within its tab. Sections cannot move yet.
+export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: string, target: RowTarget, updated: string): LayoutChange {
+  const nodes = expandedTree(memo)
+  const at = nodes.findIndex((node) => node.id === rowId)
+  const node = nodes[at]
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
+  const token = rowToken(node)
+  if (token === undefined || token.startsWith("tab:")) return { refusal: `"${node.label}" is built-in structure and cannot move` }
+  const tabIndex = tabGroupIndex(nodes, at)
+  const tab = tabIndex === undefined ? undefined : nodes[tabIndex]
+  if (tabIndex === undefined || tab === undefined) return { refusal: `"${node.label}" is not in a tab` }
+  const anchorOf = (id: string | undefined): Anchor | undefined => {
+    if (id === undefined) return undefined
+    if (id.startsWith("folder:") || id.startsWith("tab:")) return { token: id, label: folderOf(layout.folders, folderIdOfRef(id) ?? "")?.name ?? id }
+    const index = nodes.findIndex((candidate) => candidate.id === id)
+    const anchor = nodes[index]
+    if (anchor === undefined) return { refusal: unknownRowRefusal(id) }
+    const anchorToken = rowToken(anchor)
+    if (anchorToken === undefined) return { refusal: `"${anchor.label}" cannot be a destination` }
+    if (index !== tabIndex && tabGroupIndex(nodes, index) !== tabIndex)
+      return { refusal: `"${anchor.label}" is not in ${tab.label}; rows move only inside their own tab` }
+    return { token: anchorToken, label: anchor.label }
+  }
+  const into = anchorOf(target.into)
+  const before = anchorOf(target.before)
+  const after = anchorOf(target.after)
+  const failure = [into, before, after].find((anchor): anchor is { readonly refusal: string } => anchor !== undefined && "refusal" in anchor)
+  if (failure !== undefined) return { refusal: failure.refusal }
+  const tokenOf = (anchor: Anchor | undefined): string | undefined => (anchor !== undefined && "token" in anchor ? anchor.token : undefined)
+  const inOriginGroup = !token.startsWith("folder:") && node.depth !== tab.depth + 1
+  const plan = planMove(
+    layout,
+    token,
+    topLevelTokens(nodes, tabIndex),
+    { into: tokenOf(into), before: tokenOf(before), after: tokenOf(after) },
+    updated,
+    inOriginGroup,
+  )
+  if ("refusal" in plan) return plan
+  const where =
+    into !== undefined && "token" in into
+      ? into.token.startsWith("tab:")
+        ? `to the top of ${tab.label}`
+        : `into "${into.label}"`
+      : before !== undefined && "token" in before
+        ? `before "${before.label}"`
+        : after !== undefined && "token" in after
+          ? `after "${after.label}"`
+          : ""
+  return { target: token, status: `Moved "${node.label}" ${where}`, layout: plan }
+}
+
+// A folder created in a tab's top level or inside a folder, listed last there.
+export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string): LayoutChange {
+  const trimmed = name.trim()
+  if (trimmed === "") return { refusal: "a folder needs a name" }
+  const nodes = expandedTree(memo)
+  const at = nodes.findIndex((node) => node.id === rowId)
+  const node = nodes[at]
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const token = rowToken(node)
+  const folderId = token === undefined ? undefined : folderIdOfRef(token)
+  const parent = folderId === undefined ? undefined : folderOf(layout.folders, folderId)
+  const tab = token?.startsWith("tab:") === true ? token.slice("tab:".length) : parent?.tab
+  if (tab === undefined) return { refusal: `"${node.label}" is not a tab or folder` }
+  const created = splitLayout(
+    createFolderRecord([...layout.folders, ...layout.orders], { tab, name: trimmed, ...(parent === undefined ? {} : { parent: parent.id }) }, updated),
+  )
+  const folder = created.folders.at(-1)
+  if (folder === undefined) return { refusal: "the folder was not created" }
+  const orders =
+    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, at), folderRef(folder.id)], updated) : created.orders
+  return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: { folders: created.folders, orders } }
+}
+
+export function planFolderRename(layout: LayoutRecords, id: string, name: string, updated: string): LayoutChange {
+  const folder = folderOf(layout.folders, id)
+  const trimmed = name.trim()
+  if (folder === undefined) return { refusal: `folder "${id}" does not exist` }
+  if (trimmed === "") return { refusal: "a folder needs a name" }
+  const next = splitLayout(renameFolderRecord([...layout.folders, ...layout.orders], id, trimmed, updated))
+  return { target: folderRef(id), status: `Renamed folder "${folder.name}" to "${trimmed}"`, layout: next }
+}
+
+// A deleted folder's rows and child folders take its place in the list it sat in.
+export function planFolderDelete(layout: LayoutRecords, id: string, updated: string): LayoutChange {
+  const folder = folderOf(layout.folders, id)
+  if (folder === undefined) return { refusal: `folder "${id}" does not exist` }
+  const where = folder.parent === undefined ? `the top level of ${folder.tab}` : `folder "${folderOf(layout.folders, folder.parent)?.name ?? folder.parent}"`
+  const next = splitLayout(deleteFolderRecord([...layout.folders, ...layout.orders], id, updated))
+  return { target: folderRef(id), status: `Deleted folder "${folder.name}"; its rows returned to ${where}`, layout: next }
+}
 
 export interface OpSuccess {
   readonly records: CustomizationRecord[]

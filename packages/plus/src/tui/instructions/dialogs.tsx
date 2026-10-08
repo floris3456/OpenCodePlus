@@ -21,7 +21,8 @@ import {
   type ModelSettingsField,
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
-import { homeCategoryLabel, orderedCategories } from "../../instructions/categories.js"
+import { folderIdOfRef, tabOfItem } from "../../instructions/folders.js"
+import { rowToken } from "../../instructions/ops.js"
 import { parseModelText } from "../../instructions/ops.js"
 import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
@@ -85,7 +86,7 @@ export function createInstructionsDialogs(
           { title: "Team", value: "team" },
           { title: "Model", value: "model" },
           { title: "Permission rule", value: "rule" },
-          { title: "Category", value: "category" },
+          { title: "Folder", value: "folder" },
         ],
       })
       if (disposed) return
@@ -94,15 +95,15 @@ export function createInstructionsDialogs(
       return
     }
     // Models carries a direct add (`add: "model"`): `a` there keeps the group
-    // context but first offers Model or Category. The generic picker above
+    // context but first offers Model or Folder. The generic picker above
     // stays the fallback for rows with no direct add.
     if (kind === "model") {
-      const picked = await context.ui.dialog.select<"model" | "category">({
+      const picked = await context.ui.dialog.select<"model" | "folder">({
         title: "Add",
         placeholder: "Select what to add",
         options: [
           { title: "Model", value: "model" },
-          { title: "Category", value: "category" },
+          { title: "Folder", value: "folder" },
         ],
       })
       if (disposed) return
@@ -137,7 +138,7 @@ export function createInstructionsDialogs(
     if (kind === "section") return addSection(node)
     if (kind === "model") return addModel(node)
     if (kind === "rule") return addRule(node)
-    if (kind === "category") return addCategory()
+    if (kind === "folder") return addFolder(node)
     return addMcp()
   }
 
@@ -1330,67 +1331,75 @@ export function createInstructionsDialogs(
     }
   }
 
-  // a → Category: a user-named tab after the built-in categories. Empty spaces
-// around the name are trimmed; the store refuses an empty or duplicate name.
-  async function addCategory(): Promise<void> {
+  // a on a tab or folder row: a folder listed last there, holding rows of that
+  // tab. Empty names are refused here; the planner refuses an empty name too.
+  async function addFolder(node: TreeNode | undefined): Promise<void> {
     if (disposed) return
+    if (node === undefined) {
+      context.ui.toast.show({ variant: "error", message: "Select a tab or a folder to add a folder in" })
+      return
+    }
     const raw = await context.ui.dialog.prompt({
-      title: "Category name",
-      description: "Your own tab after the built-in categories; move rows into it with m.",
+      title: "Folder name",
+      description: "A folder groups rows inside this tab; move rows into it with m.",
       placeholder: "Mine",
     })
     if (disposed || raw === undefined) return
     const name = raw.trim()
     if (name.length === 0) {
-      context.ui.toast.show({ variant: "error", message: "Category name cannot be empty" })
+      context.ui.toast.show({ variant: "error", message: "Folder name cannot be empty" })
       return
     }
-    await state.createCategory(name)
+    await state.createFolder(node, name)
   }
 
-  // m on any item row: move it (and its children) into a user category, or
-  // back to its home category. Display only; every owner lists it there.
+  // m on an item row or a folder: move it into a folder of its tab, or to the
+  // tab's top level. Display only; every owner lists it there.
   async function move(node: TreeNode | undefined): Promise<void> {
     if (disposed || node === undefined) return
-    const item = node.address?.item
-    if (node.kind !== "item" || item === undefined || node.address?.section !== null) {
+    const token = rowToken(node)
+    if (token === undefined || token.startsWith("tab:")) {
       state.setStatus(`"${node.label}" is not a row that can be moved`)
       return
     }
     const current = await currentSnapshot()
     if (disposed || current === undefined) return
-    const HOME = "\u0000home"
+    const movedFolder = folderIdOfRef(token)
+    const tab = movedFolder === undefined ? tabOfItem(token) : current.folders?.find((folder) => folder.id === movedFolder)?.tab
+    if (tab === undefined) {
+      state.setStatus(`"${node.label}" is not a row that can be moved`)
+      return
+    }
     const picked = await context.ui.dialog.select<string>({
       title: `Move "${node.label}"`,
-      placeholder: "Pick a category",
+      placeholder: "Pick a folder, or the top level",
       options: [
-        { title: `Back to ${homeCategoryLabel(item)} (home)`, value: HOME },
-        ...orderedCategories(current.categories ?? []).map((category) => ({
-          title: category.name,
-          value: category.name,
-        })),
+        { title: `Top level of ${tab}`, value: `tab:${tab}` },
+        ...(current.folders ?? [])
+          .filter((folder) => folder.tab === tab && folder.id !== movedFolder)
+          .map((folder) => ({ title: folder.name, value: `folder:${folder.id}` })),
       ],
     })
     if (disposed || picked === undefined) return
-    await state.assignCategory(node, picked === HOME ? null : picked)
+    await state.moveRow(node, { into: picked })
   }
 
-  // R on a user category: rename it (items and order follow).
-  async function renameCategory(node: TreeNode | undefined): Promise<void> {
+  // R on a folder: rename it (its rows and its place stay).
+  async function renameFolder(node: TreeNode | undefined): Promise<void> {
     if (disposed || node === undefined) return
     const raw = await context.ui.dialog.prompt({
-      title: "Rename category",
-      description: "The category's rows follow; the home categories never change.",
+      title: "Rename folder",
+      description: "The folder's rows and its place stay.",
       value: node.label,
     })
     if (disposed || raw === undefined) return
     const name = raw.trim()
     if (name.length === 0) {
-      context.ui.toast.show({ variant: "error", message: "Category name cannot be empty" })
+      context.ui.toast.show({ variant: "error", message: "Folder name cannot be empty" })
       return
     }
     if (name === node.label) return
-    await state.renameCategory(node, name)
+    await state.renameFolder(node, name)
   }
 
   // R on an agent, member or team row: rename it (prefilled, validated like
@@ -1437,21 +1446,21 @@ export function createInstructionsDialogs(
     return { row, expand }
   }
 
-  // d on a user category: delete it after confirmation; its rows go home.
-  async function deleteCategory(node: TreeNode | undefined): Promise<void> {
+  // d on a folder: delete it after confirmation; its rows return to its place.
+  async function deleteFolder(node: TreeNode | undefined): Promise<void> {
     if (disposed || node === undefined) return
     const confirmed = await context.ui.dialog.confirm({
-      title: `Delete category "${node.label}"?`,
-      message: `Delete category "${node.label}"? Its rows return to their home categories. This cannot be undone.`,
+      title: `Delete folder "${node.label}"?`,
+      message: `Delete folder "${node.label}"? Its rows return to the place it held in its tab. This cannot be undone.`,
     })
     if (disposed || confirmed !== true) {
-      if (!disposed) state.setStatus(`Delete of category "${node.label}" cancelled`)
+      if (!disposed) state.setStatus(`Delete of folder "${node.label}" cancelled`)
       return
     }
-    await state.deleteCategory(node)
+    await state.deleteFolder(node)
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, move, renameCategory, renameRow, deleteCategory, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, move, renameFolder, renameRow, deleteFolder, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

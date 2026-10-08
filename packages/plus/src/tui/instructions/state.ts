@@ -30,7 +30,7 @@ import {
   type HostModel,
   type ModelSettingsRecord,
 } from "../../instructions/model-settings.js"
-import { agentOf, categoryOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, modelSettingsRecordOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
+import { agentOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, modelSettingsRecordOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
   addColdModelRow,
@@ -66,7 +66,16 @@ import {
   toggleGroup,
   type ModelReviewChoice,
   type StateReviewChoice,
+  planFolderCreate,
+  planFolderDelete,
+  planFolderRename,
+  planRowMove,
+  rowToken,
+  type LayoutChange,
+  type LayoutRecords,
+  type RowTarget,
 } from "../../instructions/ops.js"
+import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
 import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
@@ -308,11 +317,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const current = snapshot()
     if (!current) return []
     return (current.modelSettings ?? []).map(modelSettingsRecordOf)
-  })
-
-  const categoriesForTree = createMemo(() => {
-    const current = snapshot()
-    return current === undefined ? [] : (current.categories ?? []).map(categoryOf)
   })
 
   const hostModelsForTree = createMemo<HostModel[]>(() => {
@@ -657,7 +661,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       teams: teamsForTree(),
       modelSettings: modelSettingsForTree(),
       hostModels: hostModelsForTree(),
-      categories: categoriesForTree(),
+      folders: snapshot()?.folders ?? [],
+      orders: snapshot()?.orders ?? [],
       ...presetStateForTree(),
     }
   }
@@ -852,24 +857,33 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     }
   }
 
-  // User categories (plan plus-1.1.12 T8): create/rename/delete a category, or
-  // move the selected item row into one (null = back home). The write is a
-  // global-store record; refresh re-reads the snapshot the way a server event
-  // would, so every view updates from the same record.
-  async function categoryAction(
-    input: { action: "create" | "assign" | "rename" | "delete"; name?: string; to?: string; item?: string; category?: string | null; confirm?: boolean },
-    success: string,
-  ): Promise<boolean> {
+  // Folders and display order (S1a): each change is planned by ops.ts from the
+  // snapshot it was read on, then written as one layout write. Refresh re-reads
+  // the snapshot the way a server event would, so every view updates from it.
+  async function layoutAction(change: LayoutChange): Promise<boolean> {
+    if ("refusal" in change) {
+      setStatus(change.refusal)
+      return false
+    }
+    const revision = snapshot()?.globalRevision ?? 0
     await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
     try {
-      const result = await plus["category.mutate"](input, { location: context.location })
+      await plus["layout.write"](
+        {
+          folders: [...change.layout.folders],
+          orders: [...change.layout.orders],
+          expectedGlobalRevision: revision,
+          target: change.target,
+          status: change.status,
+        },
+        { location: context.location },
+      )
       if (disposed || requestGen !== generation) return false
-      void result
       await refresh()
       if (disposed) return false
-      setStatus(success)
+      setStatus(change.status)
       return true
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return false
@@ -880,24 +894,34 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     }
   }
 
-  function createCategory(name: string): Promise<boolean> {
-    return categoryAction({ action: "create", name }, `Created category "${name}"`)
+  function layoutNow(): LayoutRecords {
+    return { folders: snapshot()?.folders ?? [], orders: snapshot()?.orders ?? [] }
   }
 
-  function assignCategory(node: TreeNode, category: string | null): Promise<boolean> {
-    const item = node.address?.item
-    if (node.kind !== "item" || item === undefined || node.address?.section !== null) {
-      setStatus(`"${node.label}" is not a row that can be moved`)
+  function createFolder(node: TreeNode, name: string): Promise<boolean> {
+    return layoutAction(planFolderCreate(memoInput(), layoutNow(), node.id, name, new Date().toISOString()))
+  }
+
+  function moveRow(node: TreeNode, target: RowTarget): Promise<boolean> {
+    return layoutAction(planRowMove(memoInput(), layoutNow(), node.id, target, new Date().toISOString()))
+  }
+
+  function renameFolder(node: TreeNode, to: string): Promise<boolean> {
+    const id = folderIdOfRef(rowToken(node) ?? "")
+    if (id === undefined) {
+      setStatus(`"${node.label}" is not a folder`)
       return Promise.resolve(false)
     }
-    return categoryAction(
-      { action: "assign", item, category },
-      category === null ? `Moved "${node.label}" home` : `Moved "${node.label}" to "${category}"`,
-    )
+    return layoutAction(planFolderRename(layoutNow(), id, to, new Date().toISOString()))
   }
 
-  function renameCategory(node: TreeNode, to: string): Promise<boolean> {
-    return categoryAction({ action: "rename", name: node.label, to }, `Renamed category to "${to}"`)
+  function deleteFolder(node: TreeNode): Promise<boolean> {
+    const id = folderIdOfRef(rowToken(node) ?? "")
+    if (id === undefined) {
+      setStatus(`"${node.label}" is not a folder`)
+      return Promise.resolve(false)
+    }
+    return layoutAction(planFolderDelete(layoutNow(), id, new Date().toISOString()))
   }
 
   // T6: rename a renamable row through the same RPC path the palette and the
@@ -945,10 +969,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     } finally {
       if (!disposed && requestGen === generation) setLoading(false)
     }
-  }
-
-  function deleteCategory(node: TreeNode): Promise<boolean> {
-    return categoryAction({ action: "delete", name: node.label, confirm: true }, `Deleted category "${node.label}"`)
   }
 
   async function setEnabledRow(node: TreeNode, value: boolean): Promise<boolean> {
@@ -1608,11 +1628,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     saveSplit: saveSplitRow,
     addSection: addSectionRow,
     createTeam,
-    createCategory,
-    assignCategory,
-    renameCategory,
+    createFolder,
+    moveRow,
+    renameFolder,
     renameRow,
-    deleteCategory,
+    deleteFolder,
     splitPreview,
     resolvedText,
     threeWay: threeWayFor,
