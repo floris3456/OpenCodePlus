@@ -256,6 +256,12 @@ export function snapshotRecordOf(record: StoredRecord): Plus.SnapshotRecord | un
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+      ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+      ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+      ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+      ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+      ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+      ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}

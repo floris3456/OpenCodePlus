@@ -233,7 +233,7 @@ test("a catalog model with no warming and no record still lists in Defaults › 
     { providerID: "deepseek", modelID: "v4-flash" },
   ])
   // The tree row exists for the warming-less model.
-  const rows = expandedTree(memoInputOf(snapshot)).filter((row) => row.id.startsWith("item:defaults:/models:modeldefault:"))
+  const rows = expandedTree(memoInputOf(snapshot)).filter((row) => isModelDefaultRowId(row.id))
   expect(rows.map((row) => row.label)).toEqual(["Every model", "anthropic/claude", "deepseek/v4-flash"])
   // Listing wrote nothing: no modelSettings rows, same revisions.
   const after = await load(project)
@@ -393,6 +393,46 @@ test("a mutate carries the Defaults › Models rows over and cannot drop them", 
   ).toEqual(["*/*", "anthropic/claude"])
 })
 
+// The delta path a TUI model-row write takes: the upsert's compaction fields
+// survive the server's toRecord and the snapshot round trip.
+test("a model mutate delta keeps the per-model compaction fields", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  const before = await load(project)
+  const after = await api.mutate({
+    expectedRevision: before.projectRevision,
+    expectedGlobalRevision: before.globalRevision,
+    changes: {
+      upsert: [{
+        type: "model",
+        level: "project",
+        agent: "build",
+        providerID: "anthropic",
+        modelID: "claude",
+        coldCompact: "on",
+        coldModels: ["cheap/one", "cheap/two"],
+        compactionStrategy: "local",
+        updated: UPDATED,
+      }],
+      remove: [],
+    },
+  })
+  if (!after.ok) throw new Error(`mutate refused: ${after.error.message}`)
+  const stored = (await load(project)).records.find((entry): entry is ModelRecord => entry.type === "model")
+  expect(stored).toMatchObject({ coldCompact: "on", coldModels: ["cheap/one", "cheap/two"], compactionStrategy: "local" })
+  const snapshot = (await api.snapshot()).value
+  expect(snapshot.records.find((entry) => entry.type === "model")).toMatchObject({
+    coldCompact: "on",
+    coldModels: ["cheap/one", "cheap/two"],
+    compactionStrategy: "local",
+  })
+})
+
 test("Defaults › Models rows render Every model first with per-model rows and their values", async () => {
   const project = await tempProject()
   const ctx = fullContext({
@@ -407,7 +447,7 @@ test("Defaults › Models rows render Every model first with per-model rows and 
   const api = createPlusApi(ctx, createState())
   await api.setModelSettings({ warming: "on", interval: "5m" })
   const snapshot = (await api.snapshot()).value
-  const rows = expandedTree(memoInputOf(snapshot)).filter((row) => row.id.startsWith("item:defaults:/models:modeldefault:"))
+  const rows = expandedTree(memoInputOf(snapshot)).filter((row) => isModelDefaultRowId(row.id))
   expect(rows.map((row) => row.label)).toEqual(["Every model", "anthropic/claude", "openai/gpt-6-astra"])
   // The Every model row shows its own values; the others inherit them, so the
   // summary names the source.
@@ -579,25 +619,27 @@ test("a Defaults › Models row opens into one field row per field", async () =>
   const api = createPlusApi(ctx, createState())
   await api.setModelSettings({ warming: "30m", interval: "4m" })
   const rows = expandedTree(memoInputOf((await api.snapshot()).value))
-  const at = rows.findIndex((row) => row.id === "item:defaults:/models:modeldefault:*")
-  const fields = rows.slice(at + 1, at + 5)
-  expect(fields.map((row) => [row.label, row.depth, row.badges.value])).toEqual([
-    ["Warming", 3, "32m"],
-    ["Ping every", 3, "4m"],
-    ["Keep-alive prompt", 3, `${BUILT_IN_WARMING.prompt.slice(0, 23)}… · built-in`],
-    ["Effort", 3, "none"],
-  ])
-  expect(fields.map((row) => row.actions)).toEqual([
+  const find = (id: string) => rows.find((row) => row.id === id)
+  // The Defaults row has no Model field: Effort, the Warming group and the
+  // Compaction group.
+  expect(find("item:defaults:/models:modeldefault:*")?.label).toBe("Every model")
+  expect(find("item:defaults:/models:modelsetting:effort:*")?.depth).toBe(3)
+  expect(find("group:defaults:/models:modeldefault:*:warming")?.label).toBe("Warming")
+  expect(find("group:defaults:/models:modeldefault:*:compaction")?.label).toBe("Compaction")
+  const warmingField = (field: string) => find(`item:defaults:/models:modelsetting:${field}:*`)
+  expect([warmingField("warming")?.depth, warmingField("warming")?.badges.value]).toEqual([4, "32m"])
+  expect([warmingField("interval")?.depth, warmingField("interval")?.badges.value]).toEqual([4, "4m"])
+  expect(warmingField("prompt")?.badges.value).toBe(`${BUILT_IN_WARMING.prompt.slice(0, 23)}… · built-in`)
+  expect([warmingField("compactWarm")?.depth, warmingField("compactWarm")?.badges.value]).toEqual([4, "off · built-in"])
+  expect(find("group:defaults:/models:modeldefault:*:cold")?.badges.value).toBe("off")
+  expect([warmingField("warming")?.actions, warmingField("interval")?.actions]).toEqual([
     { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },
     { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },
-    { toggle: false, edit: true, reset: false, remove: false, split: false, pin: false },
-    { toggle: false, edit: true, reset: false, remove: false, split: false, pin: false },
   ])
-  expect(fields[0]?.badges.modified).toBe(true)
-  expect(fields[2]?.badges.modified).toBeUndefined()
+  expect(warmingField("warming")?.badges.modified).toBe(true)
+  expect(warmingField("prompt")?.badges.modified).toBeUndefined()
   // The model row inherits every field and says where from.
-  const claude = rows.findIndex((row) => row.id === "item:defaults:/models:modeldefault:anthropic/claude")
-  expect(rows.slice(claude + 1, claude + 3).map((row) => row.badges.value)).toEqual(["32m · every model", "4m · every model"])
+  expect(find("group:defaults:/models:modeldefault:anthropic/claude:warming")?.badges.value).toBe("32m · every 4m")
   const view = modelDefaultView({ record: record({ warming: "on" }), every: record({ interval: "4m" }) })
   expect(modelSettingValue(view, "warming", record({ warming: "on" }))).toBe("on · 32m")
 })
@@ -645,13 +687,16 @@ test("an agent's model row opens into field rows and one field edits and resets 
   const rows = expandedTree(memoInputOf((await api.snapshot()).value))
   const at = rows.findIndex((row) => row.id === "item:project:build:model:anthropic/claude")
   expect(at).toBeGreaterThanOrEqual(0)
-  const fields = rows.slice(at + 1, at + 6)
-  expect(fields.map((row) => row.label)).toEqual(["Model", "Effort", "Warming", "Ping every", "Keep-alive prompt"])
+  const fields = rows.filter((row) => row.id.startsWith("item:project:build:modelfield:"))
+  expect(fields.map((row) => row.label)).toEqual([
+    "Model", "Effort", "Warming", "Ping every", "Keep-alive prompt",
+    "Compact before cold", "Strategy", "Model", "Instructions",
+  ])
   // The row is inherited (the agent's upstream model), so Model and Warming
   // name where they came from; none of the fields is local yet.
   expect(fields[0]?.badges.value).toBe("anthropic/claude · upstream")
   expect(fields[2]?.badges.value).toBe("off · built-in")
-  expect(fields.every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
+  expect(fields.filter((row) => row.address?.item !== "modelfield:compactWarm:anthropic/claude").every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
   const target = { providerID: "anthropic", modelID: "claude" }
   const fieldRow = (field: Parameters<typeof modelFieldItemId>[1]) => `item:project:build:${modelFieldItemId(target, field)}`
 
@@ -905,7 +950,7 @@ test("Model reset of inherited inactive candidate restores that candidate and le
   // Verify Global candidate A is still active in the snapshot!
   const snap1 = memoInputOf((await api.snapshot()).value)
   const rows1 = expandedTree(snap1)
-  const modelRows1 = rows1.filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows1 = rows1.filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows1.map((r) => r.label)).toEqual(["anthropic/claude", "google/gemini@high"])
   const activeRow1 = modelRows1.find((r) => r.badges.active === true)
   expect(activeRow1?.label).toBe("anthropic/claude")
@@ -921,7 +966,7 @@ test("Model reset of inherited inactive candidate restores that candidate and le
   // Verify tree rows: B is back, and A remains active!
   const snap2 = memoInputOf((await api.snapshot()).value)
   const rows2 = expandedTree(snap2)
-  const modelRows2 = rows2.filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows2 = rows2.filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows2.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5@high"])
   const activeRow2 = modelRows2.find((r) => r.badges.active === true)
   expect(activeRow2?.label).toBe("anthropic/claude")
@@ -1220,7 +1265,7 @@ test("no-warming control: B@high->C->effort low->activate->reset Model->B@low ac
   expect(bHigh).toMatchObject({ providerID: "openai", modelID: "gpt-5", variant: "high", active: true })
   expect(bHigh).not.toHaveProperty("warming")
   // The active model in the snapshot is B@high.
-  const rows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:"))
+  const rows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(rows.find((r) => r.badges.active === true)?.label).toBe("openai/gpt-5@high")
   void beforeReset
 })
@@ -1380,7 +1425,7 @@ test("Model reset restores a local-only original that never existed above", asyn
   await runOk(reset, { id: fieldRow("model", candidateC) })
   expect(await projectLocal()).toMatchObject({ providerID: "openai", modelID: "gpt-5", variant: "high" })
   expect(await projectLocal()).not.toHaveProperty("originalCandidate")
-  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5@high"])
   expect(modelRows.find((r) => r.badges.active === true)?.label).toBe("anthropic/claude")
 })
@@ -1449,7 +1494,7 @@ test("inherited inactive B beside active A: edit Model and Warming, reset both, 
   expect(after.projectRevision).toBe(before.projectRevision)
   expect(after.records).toEqual(before.records)
   // A is still the active model.
-  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows.find((r) => r.badges.active === true)?.label).toBe("anthropic/claude")
 })
 
@@ -1508,7 +1553,7 @@ test("local-only inactive B@high -> Effort low -> resetEffort restores B@high wi
     (r): r is ModelRecord => r.type === "model" && r.level === "global" && r.agent === "build",
   )
   expect(globalStill).toMatchObject({ providerID: "anthropic", modelID: "claude", active: true })
-  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows = expandedTree(memoInputOf((await api.snapshot()).value)).filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5@high"])
   expect(modelRows.find((r) => r.badges.active === true)?.label).toBe("anthropic/claude")
 })
@@ -1584,7 +1629,7 @@ test("Inherited row edit maintains one visible row, tombstone old candidate, and
   // Exactly one visible row for anthropic/claude; openai/gpt-5 is tombstoned.
   const snap1 = memoInputOf((await api.snapshot()).value)
   const rows1 = expandedTree(snap1)
-  const modelRows1 = rows1.filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows1 = rows1.filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows1.map((r) => r.label)).toEqual(["anthropic/claude"])
 
   // Re-add openai/gpt-5: clears tombstone, both rows are visible.
@@ -1592,7 +1637,7 @@ test("Inherited row edit maintains one visible row, tombstone old candidate, and
 
   const snap2 = memoInputOf((await api.snapshot()).value)
   const rows2 = expandedTree(snap2)
-  const modelRows2 = rows2.filter((r) => r.id.startsWith("item:project:build:model:"))
+  const modelRows2 = rows2.filter((r) => r.id.startsWith("item:project:build:model:") && r.address?.item.startsWith("model:") === true)
   expect(modelRows2.map((r) => r.label)).toEqual(["anthropic/claude", "openai/gpt-5"])
 })
 

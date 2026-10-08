@@ -141,7 +141,6 @@ test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode t
   expect(childIds(nodes, "agent:preset:build")).toEqual([
     "group:preset:build:settings",
     "group:preset:build:models",
-    "group:preset:build:compaction",
     "group:preset:build:tools",
     "group:preset:build:base",
     "group:preset:build:system",
@@ -155,7 +154,6 @@ test("the Basic team preset lists its member presets with the agent groups and t
   expect(childIds(nodes, "team:preset:basic:planner")).toEqual([
     "group:preset:basic/:planner:settings",
     "group:preset:basic/:planner:models",
-    "group:preset:basic/:planner:compaction",
     "group:preset:basic/:planner:tools",
     "group:preset:basic/:planner:base",
     "group:preset:basic/:planner:system",

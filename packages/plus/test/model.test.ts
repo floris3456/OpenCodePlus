@@ -738,12 +738,19 @@ test("model field rows name the level that set an inherited value, not the Defau
   }
   const rows = expandedTree(memo)
   const fields = rows.filter((row) => row.id.startsWith("item:project:alpha:modelfield:"))
+  // The row's layout (plus-1.1.18 §2): Model, Effort, then Warming's fields
+  // (Warming, Ping every, Keep-alive prompt, Compact before cold) and
+  // Compaction's (Strategy, Model, Instructions).
   expect(fields.map((row) => [row.label, row.badges.value, row.actions?.reset])).toEqual([
     ["Model", "acme/nova@high · global", false],
     ["Effort", "high · global", false],
     ["Warming", "30m · global", false],
     ["Ping every", "4m · global", false],
     ["Keep-alive prompt", "keep alive · global", false],
+    ["Compact before cold", "off · built-in", false],
+    ["Strategy", "Auto · built-in", false],
+    ["Model", "Inherited model · built-in", false],
+    ["Instructions", "Empty prompt · built-in", false],
   ])
 })
 

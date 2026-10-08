@@ -421,6 +421,13 @@ export const MODEL_COMPACTION_FIELDS: readonly ModelCompactionField[] = [
   "compactionInstructions",
 ]
 
+/** A Defaults › Models field row: the warming fields plus the compaction fields. */
+export type ModelDefaultField = ModelSettingsField | ModelCompactionField
+export const MODEL_DEFAULT_FIELDS: readonly ModelDefaultField[] = [...MODEL_SETTINGS_FIELDS, ...MODEL_COMPACTION_FIELDS]
+
+/** The switch fields a model row toggles with Space (never edited as text). */
+export const MODEL_SWITCH_FIELDS: readonly ModelCompactionField[] = ["compactWarm", "coldCompact"]
+
 /** One save's compaction fields in stored form: a value sets, null clears (the level below decides again), absent leaves alone. */
 export type ModelCompactionFieldValues = {
   readonly [field in ModelCompactionField]?: NonNullable<ModelCompactionFields[field]> | null
@@ -821,21 +828,21 @@ export function isModelDefaultRowId(rowId: string): boolean {
 // code that handles the whole row never takes a field row.
 export const MODEL_SETTING_PREFIX = "modelsetting:"
 
-export function modelSettingItemId(key: ModelSettingsKey, field: ModelSettingsField): string {
+export function modelSettingItemId(key: ModelSettingsKey, field: ModelDefaultField): string {
   return `${MODEL_SETTING_PREFIX}${field}:${modelDefaultItemId(key).slice(MODEL_DEFAULT_PREFIX.length)}`
 }
 
-export function modelSettingRowId(key: ModelSettingsKey, field: ModelSettingsField): string {
+export function modelSettingRowId(key: ModelSettingsKey, field: ModelDefaultField): string {
   return `item:defaults:${MODELS_OWNER}:${modelSettingItemId(key, field)}`
 }
 
 export function parseModelSettingItemId(
   item: string,
-): { readonly key: ModelSettingsKey; readonly field: ModelSettingsField } | undefined {
+): { readonly key: ModelSettingsKey; readonly field: ModelDefaultField } | undefined {
   if (!item.startsWith(MODEL_SETTING_PREFIX)) return undefined
   const rest = item.slice(MODEL_SETTING_PREFIX.length)
   const colon = rest.indexOf(":")
-  const field = MODEL_SETTINGS_FIELDS.find((entry) => entry === rest.slice(0, colon))
+  const field = MODEL_DEFAULT_FIELDS.find((entry) => entry === rest.slice(0, colon))
   if (colon === -1 || field === undefined) return undefined
   const key = parseModelDefaultItemId(`${MODEL_DEFAULT_PREFIX}${rest.slice(colon + 1)}`)
   return key === undefined ? undefined : { key, field }
@@ -851,20 +858,57 @@ export function modelSettingParentRowId(rowId: string): string | undefined {
   return parsed === undefined ? undefined : modelDefaultRowId(parsed.key)
 }
 
-export const MODEL_SETTING_LABELS: Record<ModelSettingsField, string> = {
+/** The cold-cache group's own label; its summary is the switch plus the list. */
+export const COLD_COMPACT_LABEL = "Compact cold caches with another model"
+
+export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
   warming: "Warming",
   interval: "Ping every",
   prompt: "Keep-alive prompt",
   effort: "Effort",
+  compactWarm: "Compact before cold",
+  coldCompact: COLD_COMPACT_LABEL,
+  coldModels: "Cold-cache models",
+  compactionStrategy: "Strategy",
+  compactionModel: "Model",
+  compactionInstructions: "Instructions",
+}
+
+/** Whether a Defaults field row is a switch (Space) rather than a text/cycle row. */
+export function isDefaultSwitchField(field: ModelDefaultField): field is "compactWarm" | "coldCompact" {
+  return field === "compactWarm" || field === "coldCompact"
 }
 
 // An agent/member/preset model row opens into the same field rows as a
-// Defaults › Models row: Model, Effort, Warming, Ping every, Keep-alive
-// prompt. The item id carries the field and the candidate, so
+// Defaults › Models row, grouped: Model, Effort under the row, the Warming
+// group (Warming, Ping every, Keep-alive prompt, Compact before cold and the
+// cold-cache list) and the Compaction group (Strategy, Model, Instructions).
+// The item id carries the field and the candidate, so
 // `item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`
 // never collides with a `model:` row or a Defaults `modelsetting:` row.
-export type ModelFieldName = "model" | "effort" | "warming" | "interval" | "prompt"
-export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = ["model", "effort", "warming", "interval", "prompt"]
+export type ModelFieldName =
+  | "model"
+  | "effort"
+  | "warming"
+  | "interval"
+  | "prompt"
+  | "compactWarm"
+  | "coldCompact"
+  | "compactionStrategy"
+  | "compactionModel"
+  | "compactionInstructions"
+export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
+  "model",
+  "effort",
+  "warming",
+  "interval",
+  "prompt",
+  "compactWarm",
+  "coldCompact",
+  "compactionStrategy",
+  "compactionModel",
+  "compactionInstructions",
+]
 export const MODEL_FIELD_PREFIX = "modelfield:"
 
 export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
@@ -873,6 +917,11 @@ export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
   warming: "Warming",
   interval: "Ping every",
   prompt: "Keep-alive prompt",
+  compactWarm: "Compact before cold",
+  coldCompact: COLD_COMPACT_LABEL,
+  compactionStrategy: "Strategy",
+  compactionModel: "Model",
+  compactionInstructions: "Instructions",
 }
 
 export function modelFieldItemId(
@@ -926,4 +975,87 @@ export function modelSettingEffective(
   if (field === "interval") return { text: formatDuration(view.interval.value), from: view.interval.from }
   if (field === "prompt") return { text: view.prompt.value, from: view.prompt.from }
   return view.effort === undefined ? undefined : { text: view.effort.value, from: view.effort.from }
+}
+
+// The cold-cache list under the model rows. Its rows are numbered by try
+// order; `a` appends through the catalogue picker, `d` removes, `m` moves.
+// The ids hang off the model row so they never collide with a field row:
+// `item:<level>:<owner>:model:<target>:cold:<n>`, and their address carries a
+// `coldmodel:`/`colddefault:` item with the target (or Defaults key) and index.
+export const COLD_ITEM_SEGMENT = "cold"
+
+export function coldListRowId(modelRowId: string, index: number): string {
+  return `${modelRowId}:${COLD_ITEM_SEGMENT}:${index}`
+}
+
+export function parseColdListIndex(rowId: string): number | undefined {
+  const at = rowId.lastIndexOf(`:${COLD_ITEM_SEGMENT}:`)
+  if (at === -1) return undefined
+  const index = Number(rowId.slice(at + COLD_ITEM_SEGMENT.length + 2))
+  return Number.isInteger(index) && index >= 0 ? index : undefined
+}
+
+export function isColdListRowId(rowId: string): boolean {
+  return parseColdListIndex(rowId) !== undefined
+}
+
+// An agent cold-list row's address item: `coldmodel:<target>:<index>`.
+export const COLD_MODEL_PREFIX = "coldmodel:"
+
+export function coldModelItemId(target: { readonly providerID: string; readonly modelID: string; readonly variant?: string }, index: number): string {
+  const base = `${target.providerID}/${target.modelID}`
+  return `${COLD_MODEL_PREFIX}${target.variant === undefined ? base : `${base}@${target.variant}`}:${index}`
+}
+
+export function parseColdModelItemId(
+  item: string,
+): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly index: number } | undefined {
+  if (!item.startsWith(COLD_MODEL_PREFIX)) return undefined
+  const rest = item.slice(COLD_MODEL_PREFIX.length)
+  const colon = rest.lastIndexOf(":")
+  if (colon <= 0) return undefined
+  const index = Number(rest.slice(colon + 1))
+  if (!Number.isInteger(index) || index < 0) return undefined
+  const target = parseModelItemId(`model:${rest.slice(0, colon)}`)
+  return target === undefined ? undefined : { target, index }
+}
+
+export function isColdModelItemId(item: string): boolean {
+  return item.startsWith(COLD_MODEL_PREFIX)
+}
+
+// A Defaults cold-list row's address item: `colddefault:<key or *>:<index>`.
+export const COLD_DEFAULT_PREFIX = "colddefault:"
+
+export function coldDefaultItemId(key: ModelSettingsKey, index: number): string {
+  return `${COLD_DEFAULT_PREFIX}${modelDefaultItemId(key).slice(MODEL_DEFAULT_PREFIX.length)}:${index}`
+}
+
+export function parseColdDefaultItemId(
+  item: string,
+): { readonly key: ModelSettingsKey; readonly index: number } | undefined {
+  if (!item.startsWith(COLD_DEFAULT_PREFIX)) return undefined
+  const rest = item.slice(COLD_DEFAULT_PREFIX.length)
+  const colon = rest.lastIndexOf(":")
+  if (colon <= 0) return undefined
+  const index = Number(rest.slice(colon + 1))
+  if (!Number.isInteger(index) || index < 0) return undefined
+  const key = parseModelDefaultItemId(`${MODEL_DEFAULT_PREFIX}${rest.slice(0, colon)}`)
+  return key === undefined ? undefined : { key, index }
+}
+
+export function isColdDefaultItemId(item: string): boolean {
+  return item.startsWith(COLD_DEFAULT_PREFIX)
+}
+
+/** One cold-cache list row's summary: its position in try order. */
+export function coldListValue(index: number, model: string): string {
+  return `${index + 1} ${model}`
+}
+
+/** The cold-cache group's one-line summary: the switch and, when it is on, the list. */
+export function coldCompactSummary(on: boolean, models: readonly string[]): string {
+  if (!on) return "off"
+  if (models.length === 0) return "on · no models · a adds one"
+  return `on · ${models.join(" → ")}`
 }

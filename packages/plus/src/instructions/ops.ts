@@ -1,6 +1,22 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
-import { hostModelOf, parseModelFieldItemId, type ModelFieldName } from "./model-settings.js"
+import {
+  coldModelItemId,
+  effectiveCompaction,
+  everySettings,
+  hostModelOf,
+  parseColdDefaultItemId,
+  parseColdModelItemId,
+  parseModelFieldItemId,
+  parseModelSettingItemId,
+  resolveModelCompactionFields,
+  settingsFor,
+  setModelCompaction,
+  type ModelCompactionField,
+  type ModelCompactionFieldValues,
+  type ModelFieldName,
+  type ModelSettingsKey,
+} from "./model-settings.js"
 import {
   acknowledgeActiveModel,
   activateModel,
@@ -58,6 +74,7 @@ import type {
   RecordScope,
   ReviewPart,
   RuleRecord,
+  Scopes,
   SplitRecord,
   TeamRef,
 } from "./model.js"
@@ -2304,6 +2321,235 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
 
   return { refusal: `"${found.node.label}" is not a model field` }
 }
+
+// The compaction fields on an agent/member/preset model row (plus-1.1.18 §2).
+// `setModelCompactionRow` sets or, with null, clears one or more fields at the
+// row's level; the cold-cache list is edited as a whole, one write per action.
+
+export function setModelCompactionRow(
+  input: MemoInput,
+  rowId: string,
+  fields: ModelCompactionFieldValues,
+  sharedMemo?: Memo,
+): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" is not a model field` }
+  // A field row and a cold-cache row (its group switch or a list row) both
+  // name the model to write; the list row's item carries its target too.
+  const target = parseModelFieldItemId(address.item)?.target ?? parseColdModelItemId(address.item)?.target
+  if (target === undefined) return { refusal: `"${node.label}" is not a model field` }
+  const models = modelsOfInput(input)
+  const next = setModelCompaction(models, modelScopeOf(address), target, fields, now())
+  if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${node.label}" has no changes to save` }
+  return { models: next, status: `Updated "${node.label}"`, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
+}
+
+// Space on an agent model row's compaction switch (`compactWarm` field or the
+// cold-cache group): writes the inverse of the effective value.
+export function toggleModelCompactionSwitch(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
+  const parsed = parseModuleCompactionSwitch(node)
+  if ("refusal" in parsed) return parsed
+  const on = effectiveSwitch(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target, parsed.field)
+  return setModelCompactionRow(input, rowId, { [parsed.field]: on ? "off" : "on" } as ModelCompactionFieldValues, sharedMemo)
+}
+
+function parseModuleCompactionSwitch(node: { readonly address?: Address; readonly label: string }): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly field: "compactWarm" | "coldCompact" } | { readonly refusal: string } {
+  const parsed = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
+  const field = parsed?.field === "compactWarm" || parsed?.field === "coldCompact" ? parsed.field : undefined
+  if (parsed === undefined || field === undefined) return { refusal: `"${node.label}" is not a compaction switch` }
+  return { target: parsed.target, field }
+}
+
+// The effective value of compactWarm/coldCompact for one model row's chain,
+// from the model rows and Defaults › Models (the agent-wide switch has no
+// agent-wide seat: C1 resolves these two from the model row and below only).
+function effectiveSwitch(
+  input: MemoInput,
+  scopes: Scopes,
+  scope: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+  field: "compactWarm" | "coldCompact",
+): boolean {
+  const row = resolveModelCompactionFields(
+    { models: input.records.filter((record): record is ModelRecord => record.type === "model"), scopes, ...scope },
+    target,
+  )
+  const modelSettings = input.modelSettings ?? []
+  const model = settingsFor(modelSettings, target)
+  const every = everySettings(modelSettings)
+  return effectiveCompaction({
+    row,
+    ...(model === undefined ? {} : { model }),
+    ...(every === undefined ? {} : { every }),
+  })[field].value
+}
+
+// The effective cold-cache list for one model row's chain (row, then model,
+// then Every model, then built-in).
+function effectiveColdList(
+  input: MemoInput,
+  scopes: Scopes,
+  scope: RecordScope,
+  target: { providerID: string; modelID: string; variant?: string },
+): readonly string[] {
+  const row = resolveModelCompactionFields(
+    { models: input.records.filter((record): record is ModelRecord => record.type === "model"), scopes, ...scope },
+    target,
+  )
+  const modelSettings = input.modelSettings ?? []
+  const model = settingsFor(modelSettings, target)
+  const every = everySettings(modelSettings)
+  return effectiveCompaction({
+    row,
+    ...(model === undefined ? {} : { model }),
+    ...(every === undefined ? {} : { every }),
+  }).coldModels.value
+}
+
+/**
+ * `a` on an agent cold-cache list: append through the catalogue picker. The
+ * row's address is either the group's switch item or a list row's item; both
+ * name the target. An inherited list is copied to this level first, so one
+ * write holds the whole new order.
+ */
+export function addColdModelRow(input: MemoInput, rowId: string, model: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const target = coldTargetOf(address.item)
+  if (target === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const current = effectiveColdList(input, found.memo.ctx.scopes, modelScopeOf(address), target)
+  if (current.includes(model)) return { refusal: `"${model}" is already in the cold-cache list` }
+  return setModelCompactionRow(input, rowId, { coldModels: [...current, model] }, sharedMemo)
+}
+
+/** `d` on an agent cold-cache list row: drop that entry, keeping the order. */
+export function removeColdModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  const parsed = address === undefined ? undefined : parseColdModelItemId(address.item)
+  if (address === undefined || parsed === undefined) return { refusal: `"${node.label}" is not a cold-cache list row` }
+  const current = effectiveColdList(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target)
+  if (parsed.index >= current.length) return { refusal: `"${node.label}" is no longer in the list` }
+  const next = current.filter((_, index) => index !== parsed.index)
+  return setModelCompactionRow(input, rowId, { coldModels: next }, sharedMemo)
+}
+
+/** `m` then ↑/↓ on an agent cold-cache list row: move one entry, one write on drop. */
+export function moveColdModelRow(input: MemoInput, rowId: string, delta: -1 | 1, sharedMemo?: Memo): ModelOpResult {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  const parsed = address === undefined ? undefined : parseColdModelItemId(address.item)
+  if (address === undefined || parsed === undefined) return { refusal: `"${node.label}" is not a cold-cache list row` }
+  const current = effectiveColdList(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target)
+  const to = parsed.index + delta
+  if (to < 0 || to >= current.length) return { refusal: `"${node.label}" is already at the edge of the list` }
+  const next = [...current]
+  const [moved] = next.splice(parsed.index, 1)
+  if (moved === undefined) return { refusal: `"${node.label}" is no longer in the list` }
+  next.splice(to, 0, moved)
+  return setModelCompactionRow(input, rowId, { coldModels: next }, sharedMemo)
+}
+
+/** The effective cold-cache list a model row resolves to, for the move draft's base. */
+export function coldListForItem(input: MemoInput, address: Address, scopes: Scopes): readonly string[] | undefined {
+  const list = parseColdModelItemId(address.item)
+  const field = parseModelFieldItemId(address.item)
+  const target = list?.target ?? (field !== undefined && field.field === "coldCompact" ? field.target : undefined)
+  if (target === undefined) return undefined
+  return effectiveColdList(input, scopes, modelScopeOf(address), target)
+}
+
+/** The target an agent cold-cache row names (its switch item or a list row). */
+function coldTargetOf(item: string): { providerID: string; modelID: string; variant?: string } | undefined {
+  const list = parseColdModelItemId(item)
+  if (list !== undefined) return list.target
+  const field = parseModelFieldItemId(item)
+  if (field !== undefined && field.field === "coldCompact") return field.target
+  return undefined
+}
+
+// Defaults › Models cold-cache list edits return the fields modelSettings.set
+// needs; the caller writes them through the RPC.
+
+/** A Defaults cold-cache edit's result: the row's key and the whole new list. */
+export interface DefaultColdEdit {
+  readonly key: ModelSettingsKey
+  readonly coldModels: readonly string[]
+}
+
+/** `a` on a Defaults cold-cache list: copy the inherited list and append. */
+export function addDefaultColdModel(input: MemoInput, rowId: string, model: string, sharedMemo?: Memo): DefaultColdEdit | { readonly refusal: string } {
+  return defaultColdEdit(input, rowId, (current) => (current.includes(model) ? { refusal: `"${model}" is already in the cold-cache list` } : { models: [...current, model] }), sharedMemo)
+}
+
+/** `d` on a Defaults cold-cache list row. */
+export function removeDefaultColdModel(input: MemoInput, rowId: string, sharedMemo?: Memo): DefaultColdEdit | { readonly refusal: string } {
+  return defaultColdEdit(input, rowId, (current, index) => {
+    if (index === undefined || index >= current.length) return { refusal: "that row is no longer in the list" }
+    return { models: current.filter((_, at) => at !== index) }
+  }, sharedMemo)
+}
+
+/** `m` then ↑/↓ on a Defaults cold-cache list row. */
+export function moveDefaultColdModel(input: MemoInput, rowId: string, delta: -1 | 1, sharedMemo?: Memo): DefaultColdEdit | { readonly refusal: string } {
+  return defaultColdEdit(input, rowId, (current, index) => {
+    if (index === undefined) return { refusal: "that row is not a list row" }
+    const to = index + delta
+    if (to < 0 || to >= current.length) return { refusal: "that row is already at the edge of the list" }
+    const next = [...current]
+    const [moved] = next.splice(index, 1)
+    if (moved === undefined) return { refusal: "that row is no longer in the list" }
+    next.splice(to, 0, moved)
+    return { models: next }
+  }, sharedMemo)
+}
+
+function defaultColdEdit(
+  input: MemoInput,
+  rowId: string,
+  edit: (current: readonly string[], index: number | undefined) => { readonly models: readonly string[] } | { readonly refusal: string },
+  sharedMemo?: Memo,
+): DefaultColdEdit | { readonly refusal: string } {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const item = node.address?.item
+  if (item === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const setting = parseModelSettingItemId(item)
+  const list = parseColdDefaultItemId(item)
+  const key = setting?.key ?? list?.key
+  if (key === undefined) return { refusal: `"${node.label}" is not a cold-cache list` }
+  const current = defaultColdList(input, key)
+  const outcome = edit(current, list?.index)
+  if ("refusal" in outcome) return outcome
+  return { key, coldModels: outcome.models }
+}
+
+/** The effective cold-cache list of one Defaults › Models row. */
+export function defaultColdList(input: MemoInput, key: ModelSettingsKey): readonly string[] {
+  const modelSettings = input.modelSettings ?? []
+  const record = settingsFor(modelSettings, key)
+  const every = everySettings(modelSettings)
+  if (key.providerID === undefined && key.modelID === undefined) return effectiveCompaction({ ...(record === undefined ? {} : { model: record }) }).coldModels.value
+  return effectiveCompaction({ ...(record === undefined ? {} : { model: record }), ...(every === undefined ? {} : { every }) }).coldModels.value
+}
+// `coldModelItemId` is re-exported for the tree's list rows.
+export { coldModelItemId }
 
 export function isModelRowId(rowId: string): boolean {
   return rowId.includes(":model:")

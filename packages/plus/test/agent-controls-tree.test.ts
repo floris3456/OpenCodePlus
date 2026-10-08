@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
-import { reset, saveText, toggle } from "../src/instructions/ops.js"
+import { reset, toggle } from "../src/instructions/ops.js"
 import { query } from "../src/instructions/query.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { buildMemo, expandedTree, type TreeNode } from "../src/instructions/tree.js"
 import { controlDetail, provenanceLine, resolvedText, sectionRows } from "../src/tui/instructions/detail-pane.js"
 import { isExpandableRow } from "../src/tui/instructions/tree-pane.js"
 import { controlItems, controlRecord, controlSnapshot } from "./agent-controls-fixture.js"
+import { createSnapshot } from "./tui.js"
 
 function row(nodes: readonly TreeNode[], id: string): TreeNode {
   const node = nodes.find((node) => node.id === id)
@@ -13,7 +14,7 @@ function row(nodes: readonly TreeNode[], id: string): TreeNode {
   return node
 }
 
-test("all agent, member, preset and Defaults owners expose discovered Settings and Compaction with stable ids", () => {
+test("all agent, member, preset and Defaults owners expose discovered Settings with stable ids and no Compaction tab", () => {
   const snapshot = controlSnapshot([], {
     teams: [{ level: "project", team: "crew", enabled: true, agents: ["build"] }],
     entries: [
@@ -29,8 +30,8 @@ test("all agent, member, preset and Defaults owners expose discovered Settings a
     "defaults:", "defaults:/teams",
   ]) {
     expect(row(nodes, `group:${owner}:settings`).label).toBe("Settings")
-    expect(row(nodes, `group:${owner}:compaction`).label).toBe("Compaction")
-    for (const item of controlItems()) {
+    expect(nodes.some((node) => node.id === `group:${owner}:compaction`)).toBe(false)
+    for (const item of controlItems().filter((item) => item.kind === "setting")) {
       const control = row(nodes, `item:${owner}:${item.id}`)
       expect(control.label).toBe(item.title[0].toUpperCase() + item.title.slice(1))
       expect(control.address?.item).toBe(item.id)
@@ -44,7 +45,6 @@ test("all agent, member, preset and Defaults owners expose discovered Settings a
     level: "project", agent: "build", item: "setting:mode", section: null,
     memberOf: { level: "project", team: "crew" }, catalogue: "teams",
   })
-  expect(row(nodes, "item:defaults:crew*/:*member*:compaction:model").address?.team).toEqual({ level: "defaults", team: "crew*" })
 })
 
 test("controls come from Items; missing shared defaults use the backend helper instead of an agent baseline", () => {
@@ -72,7 +72,7 @@ test("detail facts resolve identically through the shared memo", () => {
   const snapshot = controlSnapshot([
     controlRecord("setting:mode", { level: "global", text: "subagent" }),
     controlRecord("setting:mode", { text: "all", basedOnText: "subagent", basedOn: controlItems()[1].fingerprint }),
-    controlRecord("compaction:model", { text: "acme/small", basedOnText: "acme/big", basedOn: controlItems()[0].fingerprint }),
+    controlRecord("setting:description", { text: "Careful", basedOnText: "Plain", basedOn: controlItems()[0].fingerprint }),
   ], { teams: [{ level: "project", team: "crew", enabled: true, agents: ["build"] }] })
   const input = memoInputOf(snapshot)
   const memo = buildMemo(input)
@@ -82,7 +82,7 @@ test("detail facts resolve identically through the shared memo", () => {
     "team:project:crew:build",
     "item:project:build:setting:mode",
     "item:project:crew/:build:setting:mode",
-    "item:project:build:compaction:model",
+    "item:project:build:setting:description",
   ]) {
     const node = row(nodes, id)
     expect(resolvedText(node, snapshot, memo)).toBe(resolvedText(node, snapshot))
@@ -113,16 +113,14 @@ test("team control baselines resolve by controlTeam in tree and details instead 
     expect(resolvedText(node, snapshot)).toBe(text)
   }
   expect(row(nodes, "team:project:crew:worker").badges).toMatchObject({ state: "on", hidden: true, mode: "subagent" })
-  expect(row(nodes, "item:project:crew/:worker:compaction:model").badges.disabled).toBeUndefined()
-  expect(row(nodes, "item:project:other/:worker:compaction:model").badges.disabled).toContain("Remote")
 })
 
 test("tree and detail show actual text provenance; reset reveals inherited mode without crossing catalogue defaults", () => {
   const snapshot = controlSnapshot([
     controlRecord("setting:mode", { level: "global", text: "subagent" }),
     controlRecord("setting:mode", { text: "all", basedOnText: "subagent", basedOn: controlItems()[1].fingerprint }),
-    controlRecord("compaction:model", { level: "defaults", agent: null, text: "acme/agent" }),
-    controlRecord("compaction:model", { level: "defaults", agent: null, catalogue: "teams", text: "acme/team" }),
+    controlRecord("setting:description", { level: "defaults", agent: null, text: "Defaults description" }),
+    controlRecord("setting:description", { level: "defaults", agent: null, catalogue: "teams", text: "Defaults team description" }),
   ], { teams: [{ level: "project", team: "crew", enabled: true, agents: ["build"] }] })
   const input = memoInputOf(snapshot)
   const nodes = expandedTree(input)
@@ -134,8 +132,8 @@ test("tree and detail show actual text provenance; reset reveals inherited mode 
   const inherited = row(expandedTree({ ...input, records: dropped.records }), mode.id)
   expect(inherited.badges.value).toBe("Subagent")
   expect(inherited.badges.fromLabel).toBe("from global")
-  expect(row(nodes, "item:project:build:compaction:model").badges.value).toBe("acme/agent")
-  expect(row(nodes, "item:project:crew/:build:compaction:model").badges.value).toBe("acme/team")
+  expect(row(nodes, "item:project:build:setting:description").badges.value).toBe("Defaults description")
+  expect(row(nodes, "item:project:crew/:build:setting:description").badges.value).toBe("Defaults team description")
 })
 
 test("agent enabled and hidden resolve separately and off agents keep their editable controls", () => {
@@ -156,22 +154,38 @@ test("agent enabled and hidden resolve separately and off agents keep their edit
   expect(enabled.records.find((record) => record.item === "setting:hidden")?.state).toBe("on")
 })
 
-test("linked preset values and inherited Remote strategy resolve through the existing chain", () => {
+test("linked preset values resolve through the existing chain", () => {
   const snapshot = controlSnapshot([
     controlRecord("setting:mode", { level: "preset", agent: "mine", text: "all" }),
-    controlRecord("compaction:strategy", { level: "preset", agent: "mine", text: "remote" }),
-    controlRecord("compaction:model", { level: "preset", agent: "mine", text: "acme/preset" }),
+    controlRecord("setting:description", { level: "preset", agent: "mine", text: "Preset description" }),
   ], {
     presets: [{ type: "preset", level: "preset", kind: "agent", id: "mine", updated: "2026-09-26" }],
     links: [{ type: "link", level: "project", agent: "build", preset: { kind: "agent", id: "mine" }, updated: "2026-09-26" }],
   })
   const nodes = expandedTree(memoInputOf(snapshot))
   expect(row(nodes, "item:project:build:setting:mode").badges).toMatchObject({ value: "All", fromLabel: "from preset mine" })
-  const model = row(nodes, "item:project:build:compaction:model")
-  expect(model.badges.value).toBe("acme/preset")
-  expect(model.badges.disabled).toContain("Remote")
-  expect(provenanceLine(model, snapshot)).toBe("value: from preset mine")
-  expect(row(nodes, "item:global:build:compaction:model").badges.disabled).toBeUndefined()
+  const description = row(nodes, "item:project:build:setting:description")
+  expect(description.badges.value).toBe("Preset description")
+  expect(provenanceLine(description, snapshot)).toBe("value: from preset mine")
+})
+
+// plus-1.1.18 §2: the old agent-wide `compaction:*` rows still apply and show
+// as the inherited source on the model row's Compaction fields; the UI never
+// rewrites them.
+test("an old agent-wide compaction:strategy row shows as · agent-wide on the model row", () => {
+  const base = controlSnapshot([controlRecord("compaction:strategy", { text: "local" })])
+  const snapshot = createSnapshot({
+    agents: base.agents,
+    items: base.items,
+    records: [
+      ...base.records,
+      { type: "model", level: "project", agent: "build", providerID: "acme", modelID: "nova", updated: "2026-09-26" },
+    ],
+  })
+  const nodes = expandedTree(memoInputOf(snapshot))
+  const strategy = row(nodes, "item:project:build:modelfield:compactionStrategy:acme/nova")
+  expect(strategy.badges.value).toBe("Local · agent-wide")
+  expect(row(nodes, "group:project:build:modelgroup:acme/nova:compaction").badges.value).toBe("Local")
 })
 
 test("member-preset controls reset their team-scoped override without changing the agent preset", () => {
@@ -193,27 +207,4 @@ test("member-preset controls reset their team-scoped override without changing t
   expect(entity.records).toEqual([preset])
 })
 
-test("Remote disables local model/instructions actions without hiding values or their provenance; Local restores them", () => {
-  const snapshot = controlSnapshot([
-    controlRecord("compaction:strategy", { text: "remote" }),
-    controlRecord("compaction:model", { text: "acme/small" }),
-    controlRecord("compaction:instructions", { text: "Keep decisions.\nKeep tests." }),
-  ])
-  const input = memoInputOf(snapshot)
-  const nodes = expandedTree(input)
-  for (const id of ["compaction:model", "compaction:instructions"]) {
-    const control = row(nodes, `item:project:build:${id}`)
-    expect(control.badges.disabled).toContain("retained")
-    expect(control.actions).toMatchObject({ edit: false, reset: false, toggle: false, split: false, remove: false })
-    expect(sectionRows(control, snapshot)).toEqual([])
-    expect(saveText(input, control.id, "discarded")).toHaveProperty("refusal")
-    expect(reset(input, control.id)).toHaveProperty("refusal")
-  }
-  expect(row(nodes, "item:project:build:compaction:model").badges.value).toBe("acme/small")
-  const local = saveText(input, "item:project:build:compaction:strategy", "local")
-  if ("refusal" in local) throw new Error(local.refusal)
-  const restored = row(expandedTree({ ...input, records: local.records }), "item:project:build:compaction:model")
-  expect(restored.badges.disabled).toBeUndefined()
-  expect(restored.badges.value).toBe("acme/small")
-  expect(restored.actions).toMatchObject({ edit: true, reset: true })
-})
+

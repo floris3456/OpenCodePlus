@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { badgeLabels } from "../../instructions/from-label.js"
 import { controlKind, type TreeNode } from "../../instructions/tree.js"
-import { isModelFieldRowId, isModelSettingRowId } from "../../instructions/model-settings.js"
+import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId } from "../../instructions/model-settings.js"
 
 // The badge words are shared with `instructions_list` (from-label.ts).
 export { badgeLabels }
@@ -23,6 +23,7 @@ export function isExpandableRow(node: TreeNode, visibleChildren: boolean, expand
   if (node.kind === "section") return false
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   if (isModelFieldRowId(node.id) || isModelSettingRowId(node.id)) return false
+  if (node.address !== undefined && (isColdModelItemId(node.address.item) || isColdDefaultItemId(node.address.item))) return false
   if (node.address?.item.startsWith("perm:")) return false
   if (visibleChildren) return true
   if (expanded.has(node.id)) return false
