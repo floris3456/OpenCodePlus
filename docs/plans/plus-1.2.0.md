@@ -590,6 +590,24 @@ Added 2026-10-08 evening (build seat, continuing the run)
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
+- **B37. Q1: a forgotten quota enrollment no longer pauses a chat for good**
+  (user, 2026-10-08: "constant Quota coordination unavailable (401);
+  generation is paused" on 1.1.18). The service log
+  (`run/evidence/plus-1.2.0/quota-401/Q1-log.md`) shows the pattern on two
+  CPA restarts (13:53 and 17:03 UTC): "did not acknowledge", then 404/502
+  while CPA starts, then 401 for 30–45 minutes, polled every 30 s by warming
+  and on every step. 401 at `generation > 0` means CPA no longer knows the
+  chat's capability (it lost its enrollments); `QuotaController.read` treats
+  401 as "unenrolled" only at generation 0, so every later poll throws, the
+  refusal stays, `headers()` refuses the model request, and the request that
+  would enroll the chat again is never sent. Fix (`cliproxyapi/src/quota/
+  controller.ts`, compaction lane owns it; C3a/C3b do not touch it): a 401
+  from a bridge whose health answers `protocol: 1` is "not enrolled" at any
+  generation; the route resets `generation` and `cursor` to 0 (keeps its
+  capability; notice ids are idempotent), clears the refusal and saves, so
+  the next model request enrolls it as a new chat (the existing opaque
+  checkpoint path compacts if CPA requires it). A 401 whose health probe
+  fails still pauses.
 
 ## Design notes per area
 
