@@ -108,6 +108,15 @@ export default Plugin.define({
               run: () => warming.toggleCompact(),
             },
             {
+              id: "plus.compact.cold-now",
+              title: "Compact now with the cold-cache model",
+              description: "Compact this chat now with the models under Compact cold caches with another model; #1 writes the summary, the rest fall back",
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "compact-cold" },
+              run: () => void warming.compactCold(),
+            },
+            {
               id: "plus.compact.follow",
               title: "Compact before cold: follow the model settings",
               description: "Drop this chat's on/off override; its model's Compact before cold setting decides again",

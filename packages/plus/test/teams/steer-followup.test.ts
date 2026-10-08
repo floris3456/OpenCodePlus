@@ -237,16 +237,13 @@ test("cold stopped child with compactWith runs one compaction then resumes", asy
     }
     await warmingStore.decide(event, {})
 
-    let compactionModelUsed: string | undefined
+    let compactionModelsUsed: readonly string[] | undefined
     let promptCalled = false
     const ctx = context({
       session: {
         get: () => Effect.succeed({ id: Session.ID.make(child.sessionID!) }),
         compact: () => {
-          const model = consumeColdCompaction(child.sessionID!)
-          if (model !== undefined) {
-            compactionModelUsed = model
-          }
+          compactionModelsUsed = consumeColdCompaction(child.sessionID!)
           return Effect.succeed(undefined as never)
         },
         prompt: () => {
@@ -268,7 +265,7 @@ test("cold stopped child with compactWith runs one compaction then resumes", asy
     )
 
     expect(res.ok).toBe(true)
-    expect(compactionModelUsed).toBe("cliproxyapi/deepseek-v4.1-flash-cheap")
+    expect(compactionModelsUsed).toEqual(["cliproxyapi/deepseek-v4.1-flash-cheap"])
     expect(promptCalled).toBe(true)
     const updated = await loadRun(root, child.id)
     expect(updated?.state).toBe("working")

@@ -10,6 +10,8 @@ import { queue } from "./merge.js"
 import { requireSession, requireWorktree } from "./availability.js"
 import { consumeStopIntent, deliverInbox, withoutHold } from "./lifecycle.js"
 import { armColdCompaction, isSessionWarm } from "./cold-compaction.js"
+import { coldPlanOf } from "../compaction/cold-now.js"
+import type { PlusState } from "../index.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { bound, mayReach, relationOf, row } from "./reach.js"
 import {
@@ -62,16 +64,17 @@ function signatureOf(input: unknown): string {
 
 export async function followupHandler(
   ctx: Context,
+  state: PlusState,
   args: FollowupInput,
   caller: TeamCaller,
   table?: PermissionTable,
 ): Promise<TeamApiResult> {
   // Serialize admissions/replays for this parent; the Session prompt is an
   // admission call, not a wait for model execution.
-  return lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => followupLocked(ctx, args, caller, table))
+  return lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => followupLocked(ctx, state, args, caller, table))
 }
 
-async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
+async function followupLocked(ctx: Context, state: PlusState, args: FollowupInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
@@ -131,11 +134,18 @@ async function followupLocked(ctx: Context, args: FollowupInput, caller: TeamCal
   if (child.state === "stopped") {
     const warm = child.sessionID ? await isSessionWarm(child.sessionID) : false
     if (!warm) {
-      if (args.compactWith === undefined || args.compactWith.trim().length === 0)
-        return fail("E_STOPPED", `Run ${child.id} is stopped and cold: pass compactWith to compact before resuming.`, "compactWith")
+      const explicit = args.compactWith?.trim()
+      const cold = explicit || child.sessionID === null ? undefined : await coldPlanOf(ctx, state, child.sessionID)
+      const models = explicit ? [explicit] : (cold?.models ?? [])
+      if (models.length === 0)
+        return fail(
+          "E_STOPPED",
+          `Run ${child.id} is stopped and cold: pass compactWith to compact before resuming${cold === undefined ? "" : `, or add a model to ${cold.where}`}.`,
+          "compactWith",
+        )
       if (child.sessionID === null)
         return fail("E_INTERNAL", `Run ${child.id} has no session to compact.`)
-      armColdCompaction(child.sessionID, args.compactWith.trim())
+      armColdCompaction(child.sessionID, models)
       await Effect.runPromise(ctx.session.compact({ sessionID: Session.ID.make(child.sessionID) }))
     }
   }

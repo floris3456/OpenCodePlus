@@ -1154,6 +1154,19 @@ export const WarmingCompactInput = Schema.Struct({
   on: Schema.Union([Schema.Boolean, Schema.Literal("default")]),
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
 
+// `/compact-cold`: compact now with the chat's cold-cache list, written by #1
+// with #2… as fallbacks. `no-list` names the Instructions row that adds one.
+export interface CompactColdInput extends Schema.Schema.Type<typeof CompactColdInput> {}
+export const CompactColdInput = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.CompactColdInput" })
+
+export type CompactColdResult = Schema.Schema.Type<typeof CompactColdResult>
+export const CompactColdResult = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), models: Schema.Array(Schema.String) }),
+  Schema.Struct({ ok: Schema.Literal(false), reason: Schema.Literal("no-list"), where: Schema.String }),
+]).annotate({ identifier: "Plus.CompactColdResult" })
+
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
 // Project checks (.opencodeplus/checks.json in the main checkout): what a team
 // run may be given as checks. `suggest` reads what the project's manifests
@@ -2053,6 +2066,8 @@ const PortableWarmingSetInput = Schema.toStandardSchemaV1(WarmingSetInput.annota
 const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
   WarmingCompactInput.annotate({ identifier: "Plus.WarmingCompactInput" }),
 )
+const PortableCompactColdInput = Schema.toStandardSchemaV1(CompactColdInput)
+const PortableCompactColdResult = Schema.toStandardSchemaV1(CompactColdResult)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
@@ -2456,6 +2471,11 @@ export const Definition = Rpc.define({
     "warming.compact": {
       input: PortableWarmingCompactInput,
       output: PortableWarmingStatus,
+      errors: {},
+    },
+    "compaction.cold": {
+      input: PortableCompactColdInput,
+      output: PortableCompactColdResult,
       errors: {},
     },
     "monitor.query": {
