@@ -322,8 +322,8 @@ export const layer = Layer.effect(
       const local = (chosen: Agent.Compaction["model"]) =>
         localize(trigger, chosen).pipe(
           Effect.catch((cause) => Effect.fail<Failure>({ error: toSessionError(cause) })),
-          Effect.flatMap((owner) =>
-            summarize(owner, budget, settings.keep).pipe(Effect.map((result) => ({ owner, result }))),
+          Effect.flatMap(({ owner, instruction }) =>
+            summarize(owner, budget, settings.keep, instruction).pipe(Effect.map((result) => ({ owner, result }))),
           ),
         )
       const fallback = decision.compactionFallback
@@ -363,6 +363,10 @@ export const layer = Layer.effect(
      * `compaction` agent supplies defaults the active agent may partially override. A model chosen by the
      * compaction decision outranks both. A provider checkpoint hides the durable transcript it replaced, so
      * local summaries always read it back from history.
+     *
+     * A summary written by the chat's own model keeps the chat agent's system prompt so the request shares the
+     * chat's cached prefix; the compaction system text then moves into the final user message (see `summarize`).
+     * Any other model keeps the compaction system prompt as the request's system.
      */
     const localize = Effect.fn("SessionCompaction.localize")(function* (
       trigger: Trigger,
@@ -379,17 +383,29 @@ export const layer = Layer.effect(
         trigger.reason === "overflow" || context.messages.some(SessionProviderContext.isCheckpoint)
           ? yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
           : context.messages
+      const compactionSystem = config?.system ?? fallback?.system
+      const sameModel =
+        model.ref.providerID === context.model.ref.providerID &&
+        model.ref.id === context.model.ref.id &&
+        model.ref.variant === context.model.ref.variant
       return {
-        ...trigger,
-        context: {
-          ...context,
-          model,
-          messages,
-          agent: {
-            ...context.agent,
-            info: { ...context.agent.info, system: config?.system ?? fallback?.system ?? context.agent.info.system },
+        owner: {
+          ...trigger,
+          context: {
+            ...context,
+            model,
+            messages,
+            agent: {
+              ...context.agent,
+              info: {
+                ...context.agent.info,
+                system: sameModel ? context.agent.info.system : (compactionSystem ?? context.agent.info.system),
+              },
+            },
           },
         },
+        /** The chat's own model carries this at the head of the summary prompt instead of the system. */
+        instruction: sameModel ? compactionSystem : undefined,
       }
     })
 
@@ -400,6 +416,10 @@ export const layer = Layer.effect(
      * The model is sent the older part, then the summary prompt:
      *
      *   [system][S1 + "E9 E10"][E11 … E18][prompt]    plus one nudge if the reply skips the template
+     *
+     * On the chat's own model the compaction system text, when one exists, leads the final user message:
+     *
+     *   [chat system][S1 + "E9 E10"][E11 … E18][compaction system + prompt]
      *
      * Later requests open with the checkpoint as one user message:
      *
@@ -416,13 +436,17 @@ export const layer = Layer.effect(
       trigger: Trigger,
       budget: number,
       keep: number,
+      instruction: string | undefined,
     ): Effect.fn.Return<Result, Failure> {
       const context = trigger.context
       const split = splitConversation(context.messages, keep)
       if (!split) return yield* Effect.fail(NOTHING_TO_COMPACT)
 
       const previous = previousCompaction(context.messages)
-      const prompt = buildPrompt(previous !== undefined, previous?.summary.includes(LEGACY_HEADING) ?? false)
+      const summaryPrompt = buildPrompt(previous !== undefined, previous?.summary.includes(LEGACY_HEADING) ?? false)
+      // The chat's own model has no compaction system prompt ahead of the history, so any compaction system
+      // text travels with the summary prompt as one ordinary user message.
+      const prompt = instruction === undefined ? summaryPrompt : `${instruction}\n\n${summaryPrompt}`
       const headings = SUMMARY_TEMPLATE.split("\n").filter((line) => line.startsWith("##"))
       const filled = (text: string) => text.split("\n").some((line) => headings.includes(line.trim()))
       const prepared = yield* prepare(context, split.older, budget)
