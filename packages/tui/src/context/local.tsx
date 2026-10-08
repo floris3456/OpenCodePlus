@@ -336,6 +336,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         }
       }
 
+      function historySelection(sessionID: string, agentID: string): ModelSelection | undefined {
+        const messages = data.session.message.list(sessionID)
+        for (let index = messages.length - 1; index >= 0; index--) {
+          const message = messages[index]
+          if (!message || message.type !== "assistant" || message.agent !== agentID) continue
+          return {
+            providerID: message.model.providerID,
+            modelID: message.model.id,
+            variant: normalizeModelVariant(message.model.variant),
+          }
+        }
+      }
+
       function sessionSelection(sessionID: string) {
         const current = agent.current()
         if (!current) return
@@ -343,6 +356,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         const selected = [
           selectionState.selectionBySessionAgent[sessionID]?.[current.id],
           !session?.agent || session.agent === current.id ? durableSelection(sessionID) : undefined,
+          historySelection(sessionID, current.id),
         ].find((selection) => selection && isModelValid(selection))
         if (selected) {
           const info = models()?.find((item) => item.providerID === selected.providerID && item.id === selected.modelID)
@@ -383,34 +397,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return `${model.providerID}/${model.id}${model.variant === undefined ? "" : `:${model.variant}`}`
       }
 
-      // T4: an agent's configured model can change while the TUI runs (an
-      // Instructions activation or a tool). `agent.updated` carries no payload,
-      // so compare the re-listed agent's model. When it moves, remembered picks
-      // for that agent are stale: clear the new-session pick and reseed every
-      // session's draft from the new model. Reseeding, not deleting, also
-      // overrides a session's durable model so an open chat shows — and its next
-      // message sends — the activation. A later manual pick overwrites the draft
-      // and wins until that agent's model changes again.
+      // Existing chats keep their model when an agent's configured model
+      // changes elsewhere (a pick, Ctrl+T, an Instructions activation,
+      // another project); only the new-chat default for this location
+      // follows the agent's model. `agent.updated` carries no payload, so
+      // compare the re-listed agent's model keyed by location and agent.
+      // Seeing an agent for the first time in a location is not a change.
       const configuredAgentModels = new Map<string, string>()
       createEffect(() => {
         const listed = data.location.agent.list(location.ref) ?? []
         const changed: string[] = []
         for (const item of listed) {
+          const seen = locationAgentKey(item.id)
           const key = agentModelKey(item.model)
-          if (configuredAgentModels.has(item.id) && configuredAgentModels.get(item.id) !== key) changed.push(item.id)
-          configuredAgentModels.set(item.id, key)
+          if (configuredAgentModels.has(seen) && configuredAgentModels.get(seen) !== key) changed.push(item.id)
+          configuredAgentModels.set(seen, key)
         }
         if (changed.length === 0) return
         batch(() => {
           for (const agentID of changed) {
-            const configured = listed.find((item) => item.id === agentID)?.model
             setSelectionState("newSessionModelByLocationAgent", locationAgentKey(agentID), undefined)
-            const selection = configured && {
-              providerID: configured.providerID,
-              modelID: configured.id,
-              variant: normalizeModelVariant(configured.variant),
-            }
-            for (const item of data.session.list()) setSessionSelection(item.id, agentID, selection)
           }
         })
       })
