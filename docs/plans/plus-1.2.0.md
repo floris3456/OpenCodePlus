@@ -1,7 +1,9 @@
 # plus-1.2.0: Instructions folders, move, links and merge; chat model isolation; service handover; the 1.1.19 plan
 
-Status: **requests, findings and decisions recorded (2026-10-08). The plan
-itself (work packages, file ownership, order, checks) is still to be written.**
+Status: **planned (2026-10-08).** Requests, findings and the user's decisions
+first; then the build seat's decisions (B1…), the design per area, the lanes
+and work packages with file ownership and order, checks, acceptance and the
+release.
 
 Base: `610ae2976e` (= tag `v2.0.18-plus-1.1.18`). Release line `plus-1.2.0`
 (`worktrees/plus-1.2.0/opencode`, receives merges only). This plan is on
@@ -186,8 +188,226 @@ Assumptions recorded with the decisions (not contradicted by the user):
 17. **GPT cache misses** (cliproxyapi/gpt-*) are investigated and fixed in
     1.2.0, first, by Heavy-Implementer.
 
-## Open
-- Existing global category tabs: how they become folders (proposal: one
-  folder per tab its items belong to, same name).
-- Where display order and folders are stored (proposal: global, like
-  categories today; section order is text, per level like any edit).
+## Decisions by the build seat (2026-10-08, autonomous)
+
+Weighed for the user (intuitive, consistent with the TUI), the agent (what the
+model receives, the prompt cache) and the system (speed, little load-bearing
+behaviour). Each has its reason.
+
+Structure and storage
+
+- **B1. Category tabs become folders** of the same name, one in each tab that
+  holds one of its rows; an empty category becomes an empty folder in Tools.
+  The tabs go away. Reason: nothing the user made is lost, and it lands where
+  its rows already live.
+- **B2. Folders and display order are global and agent-independent**, keyed
+  by tab kind and item id, like categories today. Reason: tools and system
+  files share ids across agents; arranging once is what a user expects;
+  per-agent layouts multiply work for no gain to the model (display only).
+- **B3. Section order is text.** Moving a section rewrites the item's text at
+  the level being edited, like any edit (decision 6). A section moves only
+  inside its own item. Reason: a cross-item move would change two prompts and
+  blur ownership.
+- **B4. One store record per concept, migrated at load** like the existing
+  `migrate*` passes: `folder` (tab, id, name, parent, order, items) and
+  `order` (scope, items) replace `category`; `rowlink` holds every link type,
+  and a customization's `requires` list migrates into `rowlink` records.
+  Reason: one source of truth per concept; no dual read paths.
+- **B5. No folders in the left sidebar.** Agents, teams and members can be
+  reordered there (display only). Reason: they are already grouped; folders
+  were asked for inside tabs (decision 5).
+
+Sections
+
+- **B6. Heading-derived texts stay heading-derived.** `a` on a section
+  inserts a heading one level deeper at the end of that section, so the split
+  is still derived from the text; manual splits gain an optional depth for
+  nesting. Today's flattening of a heading-derived item into a manual split
+  goes. Reason: the text the model reads carries the structure; no hidden
+  offsets to drift.
+- **B7. Sections on every text row** (assumption 2): MCP server and tool
+  descriptions, tool parameter descriptions, agent and member descriptions,
+  keep-alive prompts, compaction instructions. Each kind assembles through the
+  same section path as tools and system rows.
+
+Move mode
+
+- **B8. `m` picks up, ↑/↓ move, → enters the folder or section below, ←
+  leaves it, Enter drops (one write), Esc restores.** The row shows a "moving"
+  marker and the footer names the keys. Rows that cannot move (level tabs,
+  group rows of built-in structure, protected rows) say why on `m`. In the
+  cold-cache model list `m` is the same mode and changes the try order.
+
+Links
+
+- **B9. Link types:** `either` (default: turning one on saves the other off),
+  `oneway` (primary on saves this off; this on leaves the primary alone),
+  `shownWhenOn`, `shownWhenOff` (the "Shown when" gates). Switch types act at
+  write time in the same save (like exclusive models and teams), so a request
+  never evaluates them. Gates act when the request is built, as `requires`
+  does today, for every text kind.
+- **B10. No cascade.** A switch acts one hop: turning A on turns its linked
+  rows off, and their own links do not fire. Reason: predictable, no loops.
+- **B11. Links belong to an owner and a level** (agent or member, or none for
+  every agent at Defaults) and inherit down the chain like other records.
+  Shipped markers show as upstream links; a user can turn an upstream link off
+  at a level with a tombstone (as model rows do).
+- **B12. Markers never reach the model raw**: gates are evaluated and every
+  marker is stripped for every text kind (tool descriptions, skills, base
+  prompts, parameters, MCP), not only system rows.
+
+Merge
+
+- **B13. Sentence rows.** Units: a heading, a list item, a table row, a fenced
+  block (atomic), and the sentences of a prose paragraph. Defaults: changes
+  only yours → included; only upstream → included; both changed the same unit
+  → yours included, upstream shown excluded and highlighted (decision 8);
+  identical changes → one row. Keys: Space include/exclude, `k` keep yours,
+  `u` take upstream, `t` save the merge as shown, `e` edit the merged text.
+  A merge equal to upstream is saved as "take" (follow upstream).
+- **B14. The tools API carries the proposal**: `show({view:"diff"})` returns
+  the units with ids and defaults; `set({resolve:"merge", include:[ids]})`
+  saves a choice; `take | keep | edit` stay.
+
+Chat models
+
+- **B15. A chat's model memory per agent comes from its own history** (the
+  last assistant message of that agent), not a new store. Reason: core
+  already records it; nothing to migrate or keep in sync.
+- **B16. The TUI's new-chat default** follows the agent's active model for the
+  current project (keyed by location and agent); it never rewrites an
+  existing chat. The T4 test is rewritten to assert this.
+
+Service and CLI
+
+- **B17. Replacing an idle service reuses `/update`'s stop path** (terminals
+  handed over). With chats running, the prompt comes before the TUI takes the
+  screen: "Replace now (running chats pause and resume after the restart) /
+  Use the old one / Quit". Use the old one connects with a warning, as an
+  explicit `--server` does. Without a terminal: never replace a busy service.
+- **B18. The bash CLI calls the same functions as `tools.instructions`**
+  through one Plus RPC (`instructions.tool`), so the grammar, ids, refusals
+  and log are identical; the log records the actor as `cli`. Output is the
+  tool's JSON; exit 1 on a refusal (message on stderr), 2 on usage errors.
+  Text comes from `--text`, `--text-file` or stdin (`-`). An old service
+  without the RPC gets a clear "replace the service" error.
+
+Runtime
+
+- **B19. A malformed plugin message never fails a step** (finding 10): core
+  normalizes string content to a text part and drops anything else that does
+  not decode, with a warning naming the hook.
+- **B20. `plus/src/index.ts` (7,000 lines) is shared by region**: lanes may
+  edit the functions they name in it; new logic goes into new modules with a
+  wiring line in `index.ts`. Every other hot file has one owner at a time
+  (below). Reason: a file lock on `index.ts` would serialize the release.
+
+## Design notes per area
+
+- **`a` on a section** (finding 2): section rows get their own add action
+  (child section, B6); the category fallback to `instruction.create` is never
+  reached from a section.
+- **Model leak** (finding 3, decisions 2–4, B15–B16): the T4 effect only
+  updates the new-chat default; `applySessionModel` on an agent switch uses the
+  chat's last model for that agent, else the agent's active model for the
+  chat's project; `pickModelRow` always writes the chat's Project level.
+- **Defaults › Models** (finding 7, decision 15): `hostCatalog` gets an expiry
+  (5 min) and is dropped on the model-updated event (added to
+  `RefreshEvents`); model rows are memoized per (catalogue revision, store
+  revision) so `workspaceOf` passes reuse them.
+- **Twitch** (finding 4, decision 14): reproduce live first (a streaming reply,
+  then a model and an agent change, then an Instructions edit) with frame
+  captures; fix the causes found. Expected: reconnect resync must not clear
+  and re-reduce the rows; T4's reseed goes with B16.
+- **1.1.19 work**: as written in `plus-1.1.18.md` sections 2–9, with its
+  cache-safety rule. Section 7's TUI line ("every compaction line names its
+  model") is in `tui/src/routes/session/index.tsx`, so it moves to the chat
+  lane, which owns that file.
+
+## Lanes and work packages
+
+Purpose branches `plus-1.2.0_<lane>` cut from `plus-1.2.0`; each lane merges
+`plus-1.2.0` before it starts a package that depends on another lane.
+
+| Lane (branch) | Who | Packages, in order | Starts |
+| --- | --- | --- | --- |
+| `note-crash` | Flash-C-Worker | N1 finding 10, both sides, tests | now |
+| `gpt-cache` | Orchestrator → Heavy-Worker | G1 investigate, G2 fix, G3 before/after; then WP-G (miss toast) and WP-F (Monitor deltas) | now |
+| `compaction` | Orchestrator | C1 = WP-C data (store fields, validation, resolution in `model-settings.ts`); C2 = WP-B (core); C3 = WP-C runtime (decide hook, cold detection and arming, per-chat compact switch, CPA notice, `compaction.cold` RPC, `/compact-cold`, team followup default) | now |
+| `instructions` | Orchestrator | I0 `pickModelRow` → Project; I1 sections (`a`, nesting, every text kind); I2 = WP-D model rows, dropdowns, Compaction tab removed, Defaults › Models cache and memo (after C1) | now |
+| `structure` | Orchestrator | S1 folders and move; S2 links; S3 merge UI; S4 = WP-E docs, ids, teaching, skill, help for everything new | after `instructions` lands |
+| `merge-engine` | Flash-C-Worker | M1 sentence merge in `diff-lines.ts` (structured result, B13), tests | when a slot frees |
+| `chat-models` | Orchestrator | H1 T4 and per-chat model memory; H2 twitch; H3 compaction line names its model | now |
+| `service` | Flash-C-Worker | V1 replace if idle, else ask (B17), tests | when a slot frees |
+| `cli` | Orchestrator or worker | L1 `instructions.tool` RPC and `opencodeplus instructions …` (B18) | after S2 lands (link, move exist) |
+
+### Hot-file owners (one at a time)
+
+| File (`packages/…`) | Owner, in order |
+| --- | --- |
+| `plus/src/instructions/tree.ts`, `tui/instructions/route.tsx`, `dialogs.tsx`, `state.ts`, `help.tsx`, `workspace.ts` | instructions → structure |
+| `plus/src/instructions/ops.ts`, `model.ts`, `sections.ts`, `requires.ts`, `categories.ts`, `apply.ts`, `cache-safe.ts`, `tools.ts`, `teaching.ts` | instructions → structure (apply.ts: note-crash first, one hunk; gpt-cache only by arrangement with the build seat) |
+| `plus/src/instructions/store.ts`, `model-settings.ts` | compaction (C1) → instructions → structure |
+| `plus/src/instructions/diff-lines.ts` | merge-engine → structure |
+| `plus/src/tui/instructions/diff-pane.tsx` | structure |
+| `tui/src/context/local.tsx`, `tui/src/routes/session/*`, `client/src/solid/*` | chat-models |
+| `core/src/session/model-request.ts` | note-crash → gpt-cache |
+| `core/src/session/compaction*.ts`, plugin hook types | compaction |
+| `cliproxyapi/src/quota/*` | compaction (gpt-cache does not edit it) |
+| `cliproxyapi/src/*` (rest), `ai/src/*` | gpt-cache |
+| `plus/src/monitor/*` | gpt-cache |
+| `cli/src/services/*`, `client/src/effect/service.ts`, `client/src/promise/service.ts` | service |
+| `plus/bin/opencodeplus`, `cli/src/commands/*` (new command) | cli |
+| `plus/src/index.ts`, `plus/src/rpc.ts` | shared by named region (B20) |
+
+## Checks
+
+- Per package: the focused tests it adds or touches, `bun typecheck` in each
+  touched package, then `bun run check` at the repo root before the lane is
+  merged. Tests run from package directories only.
+- The build seat reads each diff, merges the lane into `plus-1.2.0`, and runs
+  the lane's focused tests there.
+
+## Acceptance (live, dev home only: `pilotty spawn --name <run> opencodeplus-dev .`)
+
+TUI changes at a narrow (100×30) and a wide (200×50) size. One pass per area
+at the end; fix and retest only what fails. Evidence:
+`run/evidence/plus-1.2.0/acceptance/`.
+
+1. **Crash:** an Instructions edit mid-turn; the next step runs (no "Session
+   failed").
+2. **GPT cache:** the before/after per-step miss rate on the same script.
+3. **Sections:** `a` on System › Role › … › a section adds a child section; a
+   heading-derived item stays heading-derived; an MCP description and a tool
+   parameter take a section.
+4. **Folders and move:** make a folder in Tools, move rows in and out, reorder,
+   nest; reorder the sidebar; move a section (the request text changes order);
+   Esc restores; old category tabs appear as folders.
+5. **Links:** `L` from row A to row B, either type: A on saves B off; one-way;
+   a gate hides a tool-description section from the model; a shipped marker
+   shows as an upstream link; no marker reaches the provider (captured body).
+6. **Merge:** a row with both-sides changes shows sentence rows with the
+   defaults of B13; Space, `u`, `k`, `t`, `e` work; the saved text is right.
+7. **Chat models:** two chats on one agent in two projects; a `/models` pick in
+   one changes neither the other chat nor the other project, and saves at its
+   Project level; an agent switch in a chat returns to that chat's last model
+   for the agent.
+8. **Twitch:** frame captures while a reply streams across a model change show
+   no full redraw or jump.
+9. **Defaults › Models:** opens fast the second time; a model-updated event
+   refreshes it.
+10. **Service:** an older service with no chats is replaced with a notice; with
+    a chat running, the prompt appears; Use the old one connects.
+11. **CLI:** `opencodeplus instructions list/show/set/link/move` against the
+    dev service, matching the tool's results and log.
+12. **1.1.19 items:** acceptance 2–8 and 10 of `plus-1.1.18.md`.
+
+## Release
+
+Load the release procedure (`config/skills/opencodeplus-release/SKILL.md` in
+the workspace, `docs/releases.md`, the operator guide and contracts) and
+follow it: gates and a local native build at the final `plus-1.2.0` commit,
+annotated tag `v2.0.18-plus-1.2.0`, push branch and tag, the tag's
+`ocp-build` run, `ocp-release.yml` with approval, then qualification of the
+published bytes in an owned isolated prefix. The shared service on 40375 is
+never touched; the user runs `/update`.
