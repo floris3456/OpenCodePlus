@@ -1313,9 +1313,13 @@ export function modelReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
 // Take follows upstream for the whole row (B41): the text of the item's
 // section customizations at the same level goes in the same write. A section
 // record keeps only the state, pin or condition it carries.
-function dropSectionText(records: readonly CustomizationRecord[], address: Address): CustomizationRecord[] {
+// Section ids are heading paths, so `a/x` is under `a` and `ab` is not. A take
+// on the item clears every section at its level; a take on a section clears
+// that section and its descendants, never a sibling or an ancestor.
+export function dropSectionText(records: readonly CustomizationRecord[], address: Address): CustomizationRecord[] {
   return records.flatMap((record) => {
     if (record.item !== address.item || record.section === null || record.text === undefined || !scopedTo(record, address)) return [record]
+    if (address.section !== null && record.section !== address.section && !record.section.startsWith(`${address.section}/`)) return [record]
     const cleared = { ...record, text: undefined, basedOnText: undefined, acknowledged: undefined }
     if (cleared.state === undefined && cleared.pin === undefined && cleared.requires === undefined) return []
     return [cleared]

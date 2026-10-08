@@ -11,6 +11,7 @@ import {
   refusalFor,
   removalPlan,
   removeModelRow,
+  dropSectionText,
   reset,
   resetModelFieldRow,
   resetModelRow,
@@ -800,6 +801,29 @@ test("heading-derived item customization on A1 survives addSection on A", () => 
   })
   expect(resolved.assembled).toContain("Custom A1 text.")
   expect(resolved.assembled).toContain("### New\n\nNew text.")
+})
+
+// Sections a, a/x (under a) and b, each customized at Project. Section ids are
+// heading paths: a take on a clears a and a/x and keeps the sibling b; a take on
+// the item clears all three. The address is what resolveReview passes for the row.
+test("take on a section clears that section and its descendants, not its sibling; take on the item clears all", () => {
+  const records = ["a", "a/x", "b"].map(
+    (section): CustomizationRecord => ({
+      type: "customization",
+      level: "project",
+      agent: "alpha",
+      item: "system:heading-doc",
+      section,
+      text: `${section} mine.`,
+      basedOn: "fp-old",
+      basedOnText: "old",
+      updated: "2026-10-08T00:00:00.000Z",
+    }),
+  )
+  const textSections = (kept: readonly CustomizationRecord[]) => kept.filter((record) => record.text !== undefined).map((record) => record.section)
+  const section = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: "a" }
+  expect(textSections(dropSectionText(records, section))).toEqual(["b"])
+  expect(textSections(dropSectionText(records, { ...section, section: null }))).toEqual([])
 })
 
 test("heading-derived item addSection on leaf section writes into that section only", () => {
