@@ -685,6 +685,30 @@ Added 2026-10-08 evening (build seat, continuing the run)
   sentence from the next one is not a change to it, so appending a sentence
   changes one unit, not two.
 
+## Resumption (2026-10-09)
+
+The owner resumed the halted run with DeepSeek Flash subagents at low reasoning;
+no new Haiku workers. At most five background workers, isolated worktrees, no
+team runs. S1a rows/folders, S3 and I3 are merged at `eea4f3163d`; acceptance 2
+has its G3 evidence. Remaining acceptance is not inferred from unit tests.
+
+- S1b owns TUI move controls and sidebar display ordering. S2a owns link data,
+  tool operations and request-time gates. They can run together by named regions
+  (TUI versus link operations). L1 can finish generic CLI dispatch and RPC wiring
+  beside them; final link/move parity waits for their integration.
+- Section moves remain open: the S1a brief required preserving child overrides,
+  while B39 parent saves fold same-level child edits into the parent and remove
+  their records. The proposed fold-on-move rule has not been approved. Keep the
+  current refusal until this is settled; do not call S1/acceptance 4 complete.
+- S1b extends display order to existing origin groups and sidebar owner lists;
+  built-in group headings stay fixed, rows reorder within their list or enter/
+  leave same-tab folders. Display-only moves must not alter assembled prompts.
+- S2a's tool contract is `link({id, target?, type?, enabled?})`: without target,
+  inspect outgoing and incoming links; with target, upsert a link whose primary
+  is id. Type defaults to `either`; `enabled:false` masks the pair/type at this
+  level, including upstream links. Types and ownership follow B9–B12. Both ends
+  must be in the same owner/level view; invalid links refuse without writing.
+
 ## Design notes per area
 
 - **`a` on a section** (finding 2): section rows get their own add action
