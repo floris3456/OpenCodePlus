@@ -140,6 +140,24 @@ test("parity fields apply, hidden is independent of enabled, and optional values
   expect(f.agents.state.get("build")).toMatchObject({ hidden: true, color: "#123456", steps: 4 })
 })
 
+test("a sectioned description reaches the agent apply installs", async () => {
+  const description = "# Role\n\nBase role.\n\n# Details\n\nBase details."
+  const f = await fixture([{ ...agentInfo("build"), description }])
+  expect(f.agents.state.get("build")?.description).toContain("Base details.")
+
+  // An edited section's text reaches the host description the model reads.
+  await f.edit(saveText(memoInputOf(await f.snapshot()), "section:project:build:setting:description:details", "# Details\n\nEdited details."))
+  const installed = f.agents.state.get("build")?.description ?? ""
+  expect(installed).toContain("Edited details.")
+  expect(installed).not.toContain("Base details.")
+  expect(installed).toContain("Base role.")
+  // A section switched off is absent.
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "section:project:build:setting:description:details", false))
+  const excluded = f.agents.state.get("build")?.description ?? ""
+  expect(excluded).toContain("Base role.")
+  expect(excluded).not.toContain("Edited details.")
+})
+
 test("compaction inherits active model and global instructions, retains local overrides while remote, and resets", async () => {
   const f = await fixture()
   const initial = await f.snapshot()

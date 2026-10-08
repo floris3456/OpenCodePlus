@@ -303,7 +303,9 @@ test("can reads the row actions including pin", () => {
   expect(ids("can:reset")).toContain(bash)
   expect(ids("can:reset")).not.toContain("item:project:Implementer:tool:odd-name")
   expect(ids("can:split")).toContain(bash)
-  expect(ids("can:split")).not.toContain("item:defaults::mcp:sample")
+  // B7: MCP server rows and the description control take sections too.
+  expect(ids("can:split")).toContain("item:defaults::mcp:sample")
+  expect(ids("can:split")).toContain("item:project:Implementer:setting:description")
   expect(ids("can:remove")).toContain("item:project:Implementer:skill:proj-one")
   expect(ids("can:remove")).not.toContain(bash)
   expect(ids("can:edit")).toContain(bash)

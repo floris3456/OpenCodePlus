@@ -35,6 +35,11 @@ test("all agent, member, preset and Defaults owners expose discovered Settings w
       const control = row(nodes, `item:${owner}:${item.id}`)
       expect(control.label).toBe(item.title[0].toUpperCase() + item.title.slice(1))
       expect(control.address?.item).toBe(item.id)
+      // B7: the description takes sections, so it may be expandable; every
+      // other setting control is a scalar/enumerated leaf with no sections.
+      const sectioned = item.id === "setting:description"
+      expect(control.add === "section").toBe(sectioned)
+      if (sectioned) continue
       expect(isExpandableRow(control, false, new Set())).toBe(false)
       expect(nodes.some((node) => node.id.startsWith(`section:${owner}:${item.id}:`))).toBe(false)
     }

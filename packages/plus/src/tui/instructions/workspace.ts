@@ -239,13 +239,16 @@ function listRow(node: TreeNode, base: number, open: ReadonlySet<string>): Row {
   }
 }
 
-/** Rows that can hold children: a model row opens into its field rows; sections, rule rows, controls and field rows are leaves. */
+/** Rows that can hold children: a model row opens into its field rows; sections, rule rows and scalar controls are leaves. */
 export function canExpand(node: TreeNode): boolean {
   if (node.kind === "section") return false
   if (isModelSettingRowId(node.id) || isModelFieldRowId(node.id)) return false
-  if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
+  // B7: a sectioned text control (the description, the agent-wide compaction
+  // instructions) expands into its sections; every scalar/enumerated control
+  // stays a leaf.
+  if (node.kind === "item" && controlKind(node.address?.item) !== undefined)
+    return node.address?.item === "setting:description" || node.address?.item === "compaction:instructions"
   if (node.address?.item.startsWith("perm:") === true) return false
-  if (node.address?.item.startsWith("param:") === true) return false
   if (node.address !== undefined && (isColdModelItemId(node.address.item) || isColdDefaultItemId(node.address.item))) return false
   return true
 }

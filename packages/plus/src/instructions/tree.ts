@@ -1836,12 +1836,18 @@ function lazyControl(
     ? "Remote compaction uses the provider. Local model and instructions are retained; choose Auto or Local to edit them."
     : undefined
   const toggle = controlKind(item.id) === "toggle"
+  // B7: a free-text control's text reaches its consumer, so it takes sections
+  // like any other text row: the agent/member description and the agent-wide
+  // compaction instructions. Mode, strategy, model, color and steps are
+  // enumerated or scalar values, not text to section.
+  const sectioned = item.id === "setting:description" || item.id === "compaction:instructions"
   return {
     id,
     kind: "item",
     label: item.title[0].toUpperCase() + item.title.slice(1),
     depth,
     address,
+    ...(sectioned ? { add: "section" as const } : {}),
     get actions() {
       const available = disabled() === undefined
       return {
@@ -1849,6 +1855,7 @@ function lazyControl(
         toggle: toggle && available,
         edit: !toggle && available,
         reset: available && canReset(memo.ctx.customizations, address),
+        ...(sectioned ? { split: available } : {}),
       }
     },
     selfReview: () => flagOf(memo, level, owner, item, null, catalogue, teamRef),
@@ -1858,7 +1865,7 @@ function lazyControl(
       const reason = disabled()
       return {
         ...(toggle ? { state: resolved.enabled ? "on" as const : "off" as const } : {}),
-        value: controlValue(item.id, resolved.text, resolved.enabled),
+        value: controlValue(item.id, resolved.assembled, resolved.enabled),
         modified: resolved.modified,
         source: resolved.source,
         from,
@@ -1868,7 +1875,10 @@ function lazyControl(
       }
     },
     reviewCount: () => 0,
-    children: () => [],
+    children: () =>
+      sectioned
+        ? sectionKids(memo.ctx, memo, level, owner, item, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath)
+        : [],
   }
 }
 
@@ -2327,10 +2337,13 @@ function agentWideCompaction(
     const item = controlItemFor(items, address)
     if (item === undefined) return undefined
     const resolved = wholeOf(memo, atLevel, atOwner, item, catalogue, teamRef)
+    // The text reaches core as the assembled body (section edits and
+    // exclusions applied), the same body apply installs.
+    const text = resolved.assembled
     // The backend's default rows carry "" for the model and instructions; an
     // empty text there is "inherit", not an explicit empty prompt.
-    if (resolved.text.length === 0 && (itemId === "compaction:model" || itemId === "compaction:instructions")) return undefined
-    return { text: resolved.text, level: resolved.textFrom.kind === "level" }
+    if (text.length === 0 && (itemId === "compaction:model" || itemId === "compaction:instructions")) return undefined
+    return { text, level: resolved.textFrom.kind === "level" }
   }
   const own = (itemId: string): string | undefined => {
     const found = value(itemId, level, owner)
@@ -3187,8 +3200,12 @@ function lazyItem(
   const codemode = item.kind === "tool" && item.codemode === true
   const executable = item.execute === true
   const wholeNoToggle = item.id === "system:role" || item.kind === "base"
+  // B7: every text row takes sections, MCP server rows (kind "mcp") included.
+  // A server row's text is its configuration; it has no per-request consumer,
+  // so its sections are the assembled readback and its own display.
   const splittable =
-    !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
+    !executable &&
+    (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base" || item.kind === "mcp")
   const perm = item.kind === "perm"
   const hostRules = canHostPermRules(item)
   const rowId = rowIdOf("item", level, owner, item.id, catalogue, ownerPath)
@@ -3480,18 +3497,21 @@ function lazyParamRow(
     label: `${item.title}: ${item.paramType ?? "any"}${item.required === true ? " (required)" : ""}`,
     depth,
     address,
+    // B7: a parameter's text is its description, so it takes sections like any
+    // other text row (heading-derived, or a manual split and `a` on sections).
+    add: "section",
     actions: {
       toggle: item.required !== true,
       edit: true,
       reset: canReset(memo.ctx.customizations, address),
       remove: false,
-      split: false,
+      split: true,
       pin: false,
     },
     selfReview: () => cachedSelfReview(memo, id, () => flagOf(memo, level, owner, item, null, catalogue, teamRef)),
     partial: () => permBadges(memo, level, owner, item, teamRef, catalogue),
     reviewCount: () => 0,
-    children: () => [],
+    children: () => sectionKids(memo.ctx, memo, level, owner, item, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath),
   }
 }
 
