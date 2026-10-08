@@ -77,6 +77,11 @@ function modelSetting(key: string, value: string | undefined): { ref?: Model.Ref
   }
 }
 
+/** The `provider/model[#variant]` label of a resolved model reference. */
+function modelLabel(ref: Model.Ref): string {
+  return `${ref.providerID}/${ref.id}${ref.variant === undefined ? "" : `#${ref.variant}`}`
+}
+
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
 export class QuotaController {
   private readonly routes = new Map<string, Promise<Route>>()
@@ -460,6 +465,26 @@ export class QuotaController {
       return routes.some((value) => value.session === session && value.decision?.portable === true)
     }
     return route.stored.replay || !!route.decision?.boundary.checkpoint
+  }
+  /**
+   * The compaction has started, after every plugin's `compaction.decide` ran: when CPA armed this
+   * chat's account switch, the switching notice names the models the final decision chose (Plus may
+   * have replaced CPA's own list), not the ones CPA configured.
+   */
+  async compacting(session: string, provider: string, model: string) {
+    const route = await this.route(session, provider, model)
+    if (route.stored.switching === undefined) return
+    const decision = route.decision
+    if (decision?.metadata?.["quota.switch"] !== true) return
+    const models = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
+    const first = decision.compactionModel ? modelLabel(decision.compactionModel) : undefined
+    route.notices = [
+      {
+        sessionID: session,
+        kind: "switching",
+        text: `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${first ?? "the agent's compaction model"}${models.length > 0 ? ` (fallback ${models.map(modelLabel).join(", ")})` : ""} first.`,
+      },
+    ]
   }
   /**
    * A refusal does not end the warming window: each ping asks again in headers(), and one still refused

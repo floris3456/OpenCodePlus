@@ -514,6 +514,46 @@ test("the account-switch decision carries the fallback model; a malformed one is
   )
 })
 
+test("the compaction start notice names the models the final decision armed, not CPA's list", async () => {
+  const f = fixture("proxy/cpa-model")
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  // The retry notice still names CPA's configured model.
+  expect((await f.controller.status("ses_test"))[0]?.text).toContain("Compacting with proxy/cpa-model first.")
+  // CPA's decide arms its own models and marks the switch; the same event object is what Plus's
+  // decide sees afterwards and mutates (Plus runs in the `post` plugin list, CPA in `pre`).
+  const switched = f.event()
+  await f.controller.decide(switched)
+  expect(switched.metadata).toMatchObject({ "quota.switch": true })
+  // Plus replaces CPA's models with the chat model's cold list (empty fallbacks dropped).
+  switched.compactionModel = Model.Ref.parse("proxy/plus-one#high")
+  switched.compactionFallbacks = [Model.Ref.parse("proxy/plus-two")]
+  delete switched.compactionFallback
+  await f.controller.compacting("ses_test", "proxy", "model")
+  expect((await f.controller.status("ses_test"))[0]?.text).toBe(
+    "Small is used up; this chat compacts before it continues on Large. Compacting with proxy/plus-one#high (fallback proxy/plus-two) first.",
+  )
+})
+
+test("with an empty chat-model list the start notice keeps CPA's own models", async () => {
+  const f = fixture("proxy/cpa-model", "proxy/cpa-fallback")
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  const switched = f.event()
+  await f.controller.decide(switched)
+  // Plus had no list: it left CPA's models in place. The notice names them.
+  await f.controller.compacting("ses_test", "proxy", "model")
+  expect((await f.controller.status("ses_test"))[0]?.text).toContain(
+    "Compacting with proxy/cpa-model (fallback proxy/cpa-fallback) first.",
+  )
+})
+
 test("quota follows the current routes: a provider that loses its route is neither polled nor shown", async () => {
   const f = fixture()
   f.state.known = true
