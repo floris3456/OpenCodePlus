@@ -717,7 +717,7 @@ function causeStep(
   const reverts = between.filter((f) => f.kind === "revert").map((f) => ({ at: f.at }))
   const compactions = between.filter((f) => f.kind === "compaction")
   const compacted = compactions.length > 0
-  const quotaSwitchCompacted = compacted && compactions.some((f) => f.detail?.["quota.switch"] === true || f.detail?.quotaSwitch === true)
+  const quotaSwitchCompacted = compacted && compactions.some((f) => f.detail?.["quota.switch"] === true)
   const switched =
     last !== undefined && (last.provider !== r.provider || last.model !== r.model || last.variant !== r.variant)
   const agent = last !== undefined && last.agent !== r.agent

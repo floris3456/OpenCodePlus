@@ -19,6 +19,7 @@ function createHarness(): MissToastHarness {
   const layers: ((() => { commands?: readonly TestKeymapCommand[] }))[] = []
   const slotRenders: ((props: object) => unknown)[] = []
   const toasts: Array<{ variant?: string; message: string }> = []
+  const onHandlers = new Map<string, Set<(event: any) => void>>()
   const listeners = new Set<(event: { details: { type: string; data?: Record<string, unknown> } }) => void>()
   const storeCells = new Map<string, unknown>()
   let currentRoute: unknown = { type: "session", sessionID: "ses_1" }
@@ -51,6 +52,12 @@ function createHarness(): MissToastHarness {
         default: () => undefined,
         agent: { list: () => [], sync: async () => {} },
         model: { list: () => [], sync: async () => {} },
+      },
+      on: (type: string, handler: (event: any) => void) => {
+        const set = onHandlers.get(type) ?? new Set()
+        onHandlers.set(type, set)
+        set.add(handler)
+        return () => set.delete(handler)
       },
       listen: (handler: (event: { details: { type: string; data?: Record<string, unknown> } }) => void) => {
         listeners.add(handler)
@@ -120,6 +127,12 @@ function createHarness(): MissToastHarness {
     commands: () => layers.flatMap((fn) => fn().commands ?? []),
     toasts,
     emit: async (event) => {
+      const handlers = onHandlers.get(event.type)
+      if (handlers) {
+        for (const handler of handlers) {
+          handler(event)
+        }
+      }
       for (const listener of listeners) {
         listener({ details: event })
       }

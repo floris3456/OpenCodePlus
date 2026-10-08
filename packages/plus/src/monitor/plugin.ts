@@ -309,7 +309,7 @@ export function watchMonitor(
   const stream = ctx.event.subscribe().pipe(
     Stream.filter((event) => MonitorEvents.has(event.type)),
     Stream.runForEach((event) =>
-      Effect.try(() => collector()?.observe(event as { type: string; data?: unknown; created?: number })).pipe(
+      Effect.try(() => collector()?.observe(event)).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus monitor event failed", { cause, type: event.type })),
       ),
     ),

@@ -29,10 +29,8 @@ export function createMissToast(context: Plugin.Context): MissToast {
 
   function screenSessionID(): string | undefined {
     const route = context.ui.router.current()
-    if (route && typeof route === "object" && "type" in route && route.type === "session" && "sessionID" in route && typeof route.sessionID === "string") {
-      return route.sessionID
-    }
-    return undefined
+    if (route.type !== "session") return undefined
+    return route.sessionID
   }
 
   const lastToastedBySession = new Map<string, string>()
@@ -59,38 +57,18 @@ export function createMissToast(context: Plugin.Context): MissToast {
     })
   }
 
-  function handleEvent(event: { type?: string; data?: unknown }) {
-    if (!event || typeof event.type !== "string") return
-    const data = (event.data ?? {}) as Record<string, unknown>
-    const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined
-    if (!sessionID) return
-    if (screenSessionID() !== sessionID) return
+  const unsubscribeStep = context.data.on("session.step.ended", (event) => {
+    if (event.data.sessionID !== screenSessionID()) return
+    void checkStep(event.data.sessionID)
+  })
 
-    const isStepEnd =
-      (event.type === "session.step.ended" || event.type === "session.step.failed") &&
-      data.tokens !== null &&
-      typeof data.tokens === "object"
-
-    if (isStepEnd) {
-      void checkStep(sessionID)
-      return
-    }
-
-    if (pendingRetry.has(sessionID)) {
-      pendingRetry.delete(sessionID)
-      void checkStep(sessionID)
-    }
-  }
-
-  let unsubscribeData: (() => void) | undefined = undefined
-  if (typeof context.data?.listen === "function") {
-    unsubscribeData = context.data.listen((event: { details?: { type?: string; data?: unknown }; type?: string; data?: unknown }) => {
-      handleEvent(event.details ?? event)
-    })
-  } else if (typeof context.data?.on === "function") {
-    const onMethod = context.data.on as unknown as (type: string, handler: (event: unknown) => void) => () => void
-    unsubscribeData = onMethod("session.step.ended", (event: unknown) => handleEvent(event as { type?: string; data?: unknown }))
-  }
+  const unsubscribeNext = context.data.listen((event) => {
+    const sessionID = screenSessionID()
+    if (sessionID === undefined || !pendingRetry.has(sessionID)) return
+    if ("sessionID" in event.details.data && event.details.data.sessionID !== sessionID) return
+    pendingRetry.delete(sessionID)
+    void checkStep(sessionID)
+  })
 
   context.keymap.layer(() => ({
     mode: "global",
@@ -107,7 +85,8 @@ export function createMissToast(context: Plugin.Context): MissToast {
   }))
 
   function dispose() {
-    unsubscribeData?.()
+    unsubscribeStep()
+    unsubscribeNext()
   }
 
   return {
