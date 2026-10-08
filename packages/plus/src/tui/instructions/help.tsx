@@ -37,7 +37,7 @@ export const HELP: readonly HelpGroup[] = [
       ["p", "pin a Code Mode tool"],
       ["w", "shown when: send a system row or section only while chosen rows are on"],
       ["s", "split text into sections"],
-      ["m", "move a row (with its children) into one of your categories, or back home · on a cold-cache model list: pick it up, ↑/↓ reorder, enter drops, esc restores"],
+      ["m", "move a row or folder into a folder of its tab, or to the tab's top level · on a cold-cache model list: pick it up, ↑/↓ reorder, enter drops, esc restores"],
       ["shift+r", "rename a user category, user agent, team member or team"],
     ],
   ],

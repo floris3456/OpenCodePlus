@@ -25,11 +25,11 @@ export function isLevelId(value: unknown): value is LevelId {
   return LEVELS.some((level) => level.id === value)
 }
 
-export const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$|:category(:[^:]*)?$/
+export const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$/
 
-/** A user category's name when `node` is one of its group rows (T8), else undefined. */
-export function userCategoryName(node: TreeNode | undefined): string | undefined {
-  if (node?.kind !== "group" || !/:category(:[^:]*)?$/.test(node.id)) return undefined
+/** A folder's name when `node` is one of its group rows (S1a), else undefined. */
+export function folderName(node: TreeNode | undefined): string | undefined {
+  if (node?.kind !== "group" || !node.id.includes(":folder:")) return undefined
   return node.label
 }
 
@@ -213,16 +213,7 @@ function sliceOf(
   const category = categories.find((node) => node.id === input.category) ?? categories[0]
   if (category === undefined) return { nav, owner, categories, list: [] }
   const categoryIndex = rows.findIndex((node) => node.id === category.id)
-  // A user category's own list leads with the category row itself, so R and d
-  // reach it with rows present; the rows (and their children) follow one indent
-  // in. Built-in categories keep their current list (no header).
-  const list =
-    userCategoryName(category) === undefined
-      ? subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth, open))
-      : [
-          listRow(category, category.depth - 1, open),
-          ...subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth - 1, open)),
-        ]
+  const list = subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth, open))
   return { nav, owner, categories, category, list }
 }
 

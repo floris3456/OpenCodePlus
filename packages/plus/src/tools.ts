@@ -20,7 +20,14 @@ import {
   isModelRowId,
   isPermRowId,
   parseModelText,
+  planFolderCreate,
+  planFolderDelete,
+  planFolderRename,
+  planRowMove,
   removalPlan,
+  rowToken,
+  type LayoutChange,
+  type LayoutRecords,
   removeModelRow,
   reset,
   resetModelFieldRow,
@@ -91,7 +98,7 @@ import {
   type ModelSettingsKey,
 } from "./instructions/model-settings.js"
 import { presetListing } from "./instructions/presets.js"
-import { categorySlugFromId, isCategoryGroupId } from "./instructions/categories.js"
+import { folderIdOfRef } from "./instructions/folders.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
@@ -125,8 +132,13 @@ const SetDescription =
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
-  "category moves the row into a user category by name, or null moves it back to its home category; the row and its children then list there in every owner (display only).\n" +
+  "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
+
+const MoveDescription =
+  "Move a row or folder (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
+  "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
+  "Moves are display only: nothing here changes what the model sees. Sections cannot move yet."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -146,7 +158,7 @@ const CreateDescription =
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
   "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
-  "category (name; a user category other rows move into),\n" +
+  "folder (name, id = the tab row or folder row to create it in; a folder groups rows inside one tab, display only),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
@@ -243,17 +255,19 @@ const SetInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
-  category: Schema.optionalKey(Schema.NullOr(Schema.String)).annotate({
-    description:
-      "Move this whole item row into a user category by name, or null to move it back to its home category. " +
-      "Display only: rows and their children list under the category in every owner.",
-  }),
   rename: Schema.optionalKey(Schema.String).annotate({
     description:
-      "Rename this agent, on-disk team member or Project/Global team row to this new name/id. " +
+      "Rename this agent, on-disk team member or Project/Global team row to this new name/id, or a folder row to a new name. " +
       "Everything that names it follows in one store revision; built-ins, shipped Defaults rows, " +
       "ancestor-backed agents and Protected agents (tool actor) refuse.",
   }),
+})
+
+const MoveInput = Schema.Struct({
+  id: Schema.String,
+  into: Schema.optionalKey(Schema.String),
+  before: Schema.optionalKey(Schema.String),
+  after: Schema.optionalKey(Schema.String),
 })
 
 const ResetInput = Schema.Struct({
@@ -283,7 +297,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("preset"),
     Schema.Literal("teamPreset"),
     Schema.Literal("presetMember"),
-    Schema.Literal("category"),
+    Schema.Literal("folder"),
   ]),
   id: Schema.optionalKey(Schema.String),
   scope: Schema.optionalKey(
@@ -383,23 +397,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (input.category !== undefined) {
-            const item = node.address?.item
-            if (node.kind !== "item" || item === undefined || node.address?.section !== null || isCategoryGroupId(node.id))
-              return yield* Effect.fail(new Tool.Error({ message: `category.invalid: "${node.label}" is not an item row that can be moved` }))
-            const moved = yield* Effect.promise(() =>
-              api.category({ action: "assign", item, category: input.category ?? null, actor }),
-            )
-            if (!moved.ok) return yield* Effect.fail(new Tool.Error({ message: `${moved.error.code}: ${moved.error.message}` }))
-            return {
-              output: {
-                id: input.id,
-                category: input.category,
-                status: input.category === null ? `Moved "${node.label}" home` : `Moved "${node.label}" to "${input.category}"`,
-                revision: moved.value.revision,
-                globalRevision: moved.value.globalRevision,
-              },
-            }
+          const folderId = folderIdOfRef(rowToken(node) ?? "")
+          if (folderId !== undefined) {
+            if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
+            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString()), actor)
+            return { output: { id: input.id, ...applied } }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
           if (isModelFieldRowId(input.id)) return yield* setModelField(api, snapshot, memo, input.id, actor, input)
@@ -426,6 +428,27 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+        }),
+    })
+    editor.add({
+      name: "move",
+      description: MoveDescription,
+      input: MoveInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: (input, context) =>
+        Effect.gen(function* () {
+          const actor = actorFrom(context)
+          const snapshot = yield* snapshotOrFail(api)
+          const memo = memoFromSnapshot(snapshot)
+          const node = findRow(memo, input.id)
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+          const protectedAgent = protectedOf(snapshot, node)
+          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          const change = planRowMove(memo, layoutOf(snapshot), input.id, input, new Date().toISOString())
+          const applied = yield* applyLayout(api, snapshot, change, actor)
+          return { output: { id: input.id, ...applied } }
         }),
     })
     editor.add({
@@ -509,13 +532,10 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const categoryName = categoryIdOf(input.id)
-          if (categoryName !== undefined) {
-            const removed = yield* Effect.promise(() =>
-              api.category({ action: "delete", name: categoryName, confirm: true, actor }),
-            )
-            if (!removed.ok) return yield* Effect.fail(new Tool.Error({ message: `${removed.error.code}: ${removed.error.message}` }))
-            return { output: { id: input.id, status: `Deleted category "${removed.value.name}"`, revision: removed.value.revision, globalRevision: removed.value.globalRevision } }
+          const folderId = folderIdOfInput(memo, input.id)
+          if (folderId !== undefined) {
+            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString()), actor)
+            return { output: { id: input.id, ...applied } }
           }
           const node = findRow(memo, input.id)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
@@ -643,11 +663,41 @@ function isOwnerLevel(value: string | undefined): value is "project" | "global" 
   return value === "project" || value === "global" || value === "defaults"
 }
 
-// The category a delete id names: a `category:<slug>` id or any category group
-// row id (`…:category:<slug>`).
-function categoryIdOf(id: string): string | undefined {
-  if (!id.startsWith("category:") && !isCategoryGroupId(id)) return undefined
-  return categorySlugFromId(id)
+// The folder a delete id names: `folder:<id>` or a folder row's id.
+function folderIdOfInput(memo: MemoInput, id: string): string | undefined {
+  if (id.startsWith("folder:")) return id.slice("folder:".length)
+  const node = findRow(memo, id)
+  const token = node === undefined ? undefined : rowToken(node)
+  return token === undefined ? undefined : folderIdOfRef(token)
+}
+
+function layoutOf(snapshot: Plus.Snapshot): LayoutRecords {
+  return { folders: snapshot.folders ?? [], orders: snapshot.orders ?? [] }
+}
+
+// One layout write for a planned change: the whole folder and order set, logged once.
+function applyLayout(api: PlusApi, snapshot: Plus.Snapshot, change: LayoutChange, actor: Plus.Actor) {
+  return Effect.gen(function* () {
+    if ("refusal" in change) return yield* Effect.fail(new Tool.Error({ message: change.refusal }))
+    const written = yield* Effect.promise(() =>
+      api.layoutWrite({
+        folders: [...change.layout.folders],
+        orders: [...change.layout.orders],
+        expectedGlobalRevision: snapshot.globalRevision,
+        target: change.target,
+        status: change.status,
+        actor,
+      }),
+    )
+    if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: `${written.error.code}: ${written.error.message}` }))
+    return {
+      target: change.target,
+      status: change.status,
+      changed: written.value.changed,
+      revision: written.value.revision,
+      globalRevision: written.value.globalRevision,
+    }
+  })
 }
 
 function protectedError(agent: string): Tool.Error {
@@ -1781,7 +1831,7 @@ function createRow(
       | "preset"
       | "teamPreset"
       | "presetMember"
-      | "category"
+      | "folder"
     id?: string
     scope?: "project" | "global" | "defaults" | "preset"
     preset?: string | Plus.PresetRef
@@ -1807,12 +1857,12 @@ function createRow(
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    if (input.kind === "category") {
-      const name = input.name?.trim() ?? ""
-      if (name.length === 0) return yield* Effect.fail(new Tool.Error({ message: "create category requires name" }))
-      const created = yield* Effect.promise(() => api.category({ action: "create", name, actor }))
-      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
-      return { output: { id: created.value.id, item: created.value.name, name: created.value.name, revision: created.value.revision, globalRevision: created.value.globalRevision } }
+    if (input.kind === "folder") {
+      if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create folder requires id: the tab row or folder row to create it in" }))
+      const snapshot = yield* snapshotOrFail(api)
+      const memo = memoFromSnapshot(snapshot)
+      const applied = yield* applyLayout(api, snapshot, planFolderCreate(memo, layoutOf(snapshot), input.id, input.name ?? "", new Date().toISOString()), actor)
+      return { output: { id: applied.target, item: applied.target, ...applied } }
     }
     if (input.kind === "agent") {
       if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create agent requires id" }))

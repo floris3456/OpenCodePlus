@@ -555,7 +555,12 @@ test("agent.rename moves the agent's link and its own records to the new id", as
   const owners = records
     .filter(
       (record) =>
-        record.type !== "team" && record.type !== "entry" && record.type !== "preset" && record.type !== "modelSettings" && record.type !== "category",
+        record.type !== "team" &&
+        record.type !== "entry" &&
+        record.type !== "preset" &&
+        record.type !== "modelSettings" &&
+        record.type !== "folder" &&
+        record.type !== "order",
     )
     .map((record) => `${record.type} ${record.level}/${record.agent}${record.team === undefined ? "" : `@${record.team.team}`}`)
     .toSorted()

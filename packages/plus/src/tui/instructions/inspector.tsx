@@ -25,7 +25,7 @@ import {
   displayLevel,
 } from "./detail-pane.js"
 import { structureDetail } from "./descriptions.js"
-import { categoryOfItem, homeCategoryLabel } from "../../instructions/categories.js"
+import { folderHolding } from "../../instructions/folders.js"
 import { toolWords, type Row, type ToolCount } from "./workspace.js"
 
 export interface InspectorProps {
@@ -189,8 +189,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   if (address !== undefined) facts.push(["address", address, "subdued"])
   const item = node.address?.item
   if (item !== undefined && node.address?.section === null) {
-    const holding = categoryOfItem(snapshot.categories ?? [], item)
-    if (holding !== undefined) facts.push(["category", `${holding.name} (home: ${homeCategoryLabel(item)})`])
+    const holding = folderHolding(snapshot.folders ?? [], item)
+    if (holding !== undefined) facts.push(["folder", holding.name])
   }
   if (node.kind === "group" || node.kind === "root" || (node.kind === "team" && node.address === undefined && children.length > 0)) {
     const stated = children.filter((row) => row.node.badges.state !== undefined)

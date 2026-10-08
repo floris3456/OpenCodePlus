@@ -413,7 +413,7 @@ test("activation in a child worktree installs the parent project's agents and to
         const toolIds = await installedToolIds(ctx)
         expect(toolIds).toContain("team_delegate")
         expect(toolIds).toContain("team_status")
-        expect(toolIds.filter((id) => id.startsWith("instructions_"))).toHaveLength(8)
+        expect(toolIds.filter((id) => id.startsWith("instructions_"))).toHaveLength(9)
         const listed = await Effect.runPromise(ctx.agent.list())
         expect(listed.data.map((agent) => String(agent.id))).toContain("alpha")
         console.log(

@@ -856,7 +856,7 @@ test("delete without confirm refuses and deletes nothing", async () => {
 test("every tool carries the plugin origin, no pinned, and namespace/codemode/permission set", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(8)
+  expect(registered).toHaveLength(9)
   for (const tool of registered) {
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
     expect(tool.options?.namespace).toBe("instructions")
@@ -869,7 +869,7 @@ test("every tool carries the plugin origin, no pinned, and namespace/codemode/pe
 test("every tool first description line is within 120 characters", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(8)
+  expect(registered).toHaveLength(9)
   for (const tool of registered) {
     const first = tool.description.split("\n", 1)[0] ?? ""
     expect(first.length).toBeLessThanOrEqual(120)
@@ -907,7 +907,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
   await Effect.runPromise(activate(ctx, state))
-  expect(await toolIds()).toHaveLength(8)
+  expect(await toolIds()).toHaveLength(9)
   expect(await skillIds()).toContain(teachingSkillId)
   // Only the install side: the harness instruction domain disposes to a no-op,
   // so the disposal proof below rests on the skill, tool and MCP domains.
@@ -927,7 +927,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   const installed = [...state.tooling]
   await Effect.runPromise(activate(ctx, state))
   expect(state.tooling).toEqual(installed)
-  expect(await toolIds()).toHaveLength(8)
+  expect(await toolIds()).toHaveLength(9)
   await Effect.runPromise(deactivate(state))
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)

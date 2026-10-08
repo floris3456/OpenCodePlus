@@ -27,7 +27,7 @@ import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { renameCandidateOf } from "./rename.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
-import { ancestry, canExpand, CATEGORY, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, userCategoryName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, canExpand, CATEGORY, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, folderName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -1046,18 +1046,18 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       void state.removeColdModel(node)
       return
     }
-    // Only an explicit category header (the row a user category leads its own
-    // list with) targets the category. Content rows and sidebar rows keep
-    // their own delete path: a selected category never hijacks d.
-    if (userCategoryName(node) !== undefined) {
-      void dialogs.deleteCategory(node)
+    // Only a folder row targets the folder. Content rows and sidebar rows keep
+    // their own delete path: a selected folder never hijacks their d.
+    if (folderName(node) !== undefined) {
+      void dialogs.deleteFolder(node)
       return
     }
     void state.remove(node)
   }
 
   // m on a cold-cache list row: pick it up (↑/↓ move, Enter drops, Esc
-// restores); elsewhere on an item row: move it into a user category or home.
+// restores); elsewhere on an item row or a folder: move it into a folder or
+// the tab's top level.
   function moveToCategory() {
     const node = current()
     if (node === undefined) return
@@ -1080,16 +1080,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     state.cancelColdMove()
   }
 
-  // R on a user category: rename the selected category, whatever pane holds
-  // the cursor.
-  function renameCategory() {
+  // R on a folder row: rename the folder.
+  function renameFolderRow() {
     const node = current()
-    const target = userCategoryName(node) !== undefined ? node : workspace().category
-    if (target) void dialogs.renameCategory(target)
+    if (folderName(node) !== undefined) void dialogs.renameFolder(node)
   }
 
-  // R on an agent, member or team row renames that row; otherwise R keeps the
-  // category rename. Dispatch by row kind so both keep working.
+  // R on an agent, member or team row renames that row; otherwise R renames
+  // the selected folder. Dispatch by row kind so both keep working.
   async function renameCurrent(): Promise<void> {
     const node = current()
     if (renameCandidateOf(node, state.snapshot()) !== undefined) {
@@ -1097,7 +1095,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       if (renamed !== undefined) selectRenamed(renamed.row, renamed.expand)
       return
     }
-    renameCategory()
+    renameFolderRow()
   }
 
   // Ask the reveal path for the renamed row: it switches to the row's level,
@@ -1490,8 +1488,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
     if (node?.kind === "item" && node.address !== undefined && node.address.section === null) hints.push(["m", "move"])
-    if (renameCandidateOf(node, state.snapshot())?.target !== undefined || userCategoryName(workspace().category) !== undefined) hints.push(["shift+r", "rename"])
-    if (node?.actions?.remove === true || userCategoryName(node) !== undefined) hints.push(["d", "delete"])
+    if (renameCandidateOf(node, state.snapshot())?.target !== undefined || folderName(node) !== undefined) hints.push(["shift+r", "rename"])
+    if (node?.actions?.remove === true || folderName(node) !== undefined) hints.push(["d", "delete"])
     if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
     if (node?.actions?.split === true) hints.push(["s", "split"])
     if ((workspace().levels.find((entry) => entry.id === level())?.review ?? 0) > 0) hints.push(["n", "next review"])
@@ -1773,9 +1771,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               ? state.filter().trim().length === 0
                 ? "Type to filter"
                 : "No matches"
-              : userCategoryName(workspace().category) !== undefined
-                ? "No rows yet · m on a row moves it here"
-                : workspace().category?.add === undefined
+              : workspace().category?.add === undefined
                   ? "Nothing here"
                   : "Nothing here yet · a adds one"}
           </text>

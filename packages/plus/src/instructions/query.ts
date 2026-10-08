@@ -14,7 +14,7 @@ import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, ty
 import { materialize, skeletonOf, teamsOwnerSegment, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
-import { categoryByItem } from "./categories.js"
+import { folderNameByItem } from "./folders.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -89,8 +89,8 @@ interface QueryState {
   readonly splits: Map<string, SplitRecord[]>
   readonly agents: Map<string, AgentSource>
   readonly items: Map<string, Item[]>
-  /** item id → the user category that holds the row (T8). */
-  readonly categories: ReadonlyMap<string, string>
+  /** item id → the name of the folder that holds the row. */
+  readonly folders: ReadonlyMap<string, string>
 }
 
 /**
@@ -231,7 +231,7 @@ function queryState(memo: Memo): QueryState {
     list.push(item)
     items.set(item.id, list)
   }
-  return { memo, recs, splits, items, agents: new Map(memo.ctx.agents.map((agent) => [agent.id, agent])), categories: categoryByItem(memo.ctx.categories) }
+  return { memo, recs, splits, items, agents: new Map(memo.ctx.agents.map((agent) => [agent.id, agent])), folders: folderNameByItem(memo.ctx.folders) }
 }
 
 function recsAt(state: QueryState, item: string, section: string | null): readonly CustomizationRecord[] {
@@ -369,7 +369,7 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
   return out
 }
 
-const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool", "category"])
+const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool", "folder"])
 // pinned is resolved state like state:/modified: (per-row resolve through the
 // shared memo), so it must not propagate: a section inherits its whole row's
 // pin for display, but enumeration cannot skip sections from the item test.
@@ -893,7 +893,7 @@ const structuralKeys = new Set([
   "label",
   "updated",
   "team",
-  "category",
+  "folder",
   "acked",
   "excluded",
   "dead",
@@ -1257,11 +1257,11 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
         return alts.some((alt) => names.includes(lower(alt)))
       }
     }
-    case "category": {
+    case "folder": {
       return (candidate) => {
         const address = candidate.address
         if (address === undefined || address.section !== null) return false
-        const name = state.categories.get(address.item)
+        const name = state.folders.get(address.item)
         return name !== undefined && alts.some((alt) => lower(name) === lower(alt))
       }
     }

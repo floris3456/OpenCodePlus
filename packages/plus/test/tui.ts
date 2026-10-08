@@ -12,7 +12,7 @@ import { createSnapshotCache, type SnapshotCache } from "../src/tui/snapshot-cac
 import { Definition } from "../src/rpc.js"
 import type {
   AddMcpInput,
-  CategoryMutateInput,
+  LayoutWriteInput,
   CreateAgentInput,
   CreateBaseInput,
   CreateInstructionInput,
@@ -54,7 +54,8 @@ export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
     ...(overrides?.entries === undefined ? {} : { entries: overrides.entries }),
     ...(overrides?.presets === undefined ? {} : { presets: overrides.presets }),
     ...(overrides?.teams === undefined ? {} : { teams: overrides.teams }),
-    ...(overrides?.categories === undefined ? {} : { categories: overrides.categories }),
+    ...(overrides?.folders === undefined ? {} : { folders: overrides.folders }),
+    ...(overrides?.orders === undefined ? {} : { orders: overrides.orders }),
     ...(overrides?.modelSettings === undefined ? {} : { modelSettings: overrides.modelSettings }),
     ...(overrides?.hostModels === undefined ? {} : { hostModels: overrides.hostModels }),
     ...(overrides?.listing === undefined ? {} : { listing: overrides.listing }),
@@ -155,7 +156,7 @@ export interface FakeRpc {
   readonly linkSets: LinkSetInput[]
   readonly modelAdds: ModelAddInput[]
   readonly modelRemoves: { level: string; agent: string | null; providerID: string; modelID: string; variant?: string }[]
-  readonly categoryMutates: CategoryMutateInput[]
+  readonly layoutWrites: LayoutWriteInput[]
   readonly modelSettingsSets: SetModelSettingsInput[]
   /** Every toast shown, in order. */
   readonly toasts: { variant?: string; message: string }[]
@@ -293,7 +294,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     linkSets: [],
     modelAdds: [],
     modelRemoves: [],
-    categoryMutates: [],
+    layoutWrites: [],
     toasts: [],
     promptInputs: [],
     selectInputs: [],
@@ -517,10 +518,10 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fail("model.add")
           return { level: input.level, agent: input.agent, providerID: input.providerID, modelID: input.modelID }
         },
-        "category.mutate": async (input: CategoryMutateInput) => {
-          fake.categoryMutates.push(input)
-          fail("category.mutate")
-          return { id: `category:${input.name ?? ""}`, name: input.name ?? "", revision: 1, globalRevision: 1 }
+        "layout.write": async (input: LayoutWriteInput) => {
+          fake.layoutWrites.push(input)
+          fail("layout.write")
+          return { changed: true, revision: 1, globalRevision: 1, status: input.status }
         },
         "modelSettings.set": async (input: SetModelSettingsInput) => {
           fake.modelSettingsSets.push(input)

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { Option, Schema } from "effect"
-import type { CategoryRecord } from "./categories.js"
+import { folderRef, tabKeys, tabOfItem, uniqueFolderId, type FolderRecord, type OrderRecord } from "./folders.js"
 import type { Boundary } from "./sections.js"
 import { assembleWithOverrides, derive, manual, slice } from "./sections.js"
 import type {
@@ -29,7 +29,7 @@ export type { CustomizationRecord, SplitRecord }
 export type { ModelRecord, ModelSettingsRecord, OriginalCandidate, RuleRecord }
 export type { TeamRecord }
 export type { EntryRecord, LinkRecord, PresetRecord }
-export type { CategoryRecord }
+export type { FolderRecord, OrderRecord }
 export type StoredRecord =
   | CustomizationRecord
   | SplitRecord
@@ -40,7 +40,19 @@ export type StoredRecord =
   | LinkRecord
   | EntryRecord
   | PresetRecord
-  | CategoryRecord
+  | FolderRecord
+  | OrderRecord
+
+// A category record (plus-1.1.12) is read only: the load migrates it into
+// folders and order records (migrateCategories), so it never reaches a caller.
+interface LegacyCategory {
+  readonly type: "category"
+  readonly level: "global"
+  readonly name: string
+  readonly order: number
+  readonly items: readonly string[]
+  readonly updated: string
+}
 export type RecordState = "on" | "off"
 
 export type { Level }
@@ -60,6 +72,8 @@ export interface Loaded {
   readonly splitsMigrated: boolean
   /** True when this load converted a whole-row override on a split row into section overrides. */
   readonly wholeRowsMigrated: boolean
+  /** True when this load turned category records into folders and order records. */
+  readonly foldersMigrated: boolean
 }
 
 export interface SaveInput {
@@ -104,6 +118,7 @@ export function loadedFromSave(saved: SaveSuccess, records: readonly StoredRecor
     skillsMigrated: false,
     splitsMigrated: false,
     wholeRowsMigrated: false,
+    foldersMigrated: false,
   }
 }
 
@@ -295,9 +310,8 @@ const V2Preset = Schema.Struct({
   updated: Schema.String,
 })
 
-// A user category (plan plus-1.1.12 T8): user-named, display-only groups of
-// item rows. Always at level global so it lives in the global store; absent
-// records mean no categories.
+// A user category (plan plus-1.1.12 T8). Read only: migrateCategories turns it
+// into folders at load, and it is never written again.
 const V2Category = Schema.Struct({
   type: Schema.Literal("category"),
   level: Schema.Literal("global"),
@@ -307,7 +321,40 @@ const V2Category = Schema.Struct({
   updated: Schema.String,
 })
 
-const V2Record = Schema.Union([V2Customization, V2Split, V2Team, V2Model, V2ModelSettings, V2Rule, V2Link, V2Entry, V2Preset, V2Category])
+// Folders and display order (folders.ts): always global.
+const V2Folder = Schema.Struct({
+  type: Schema.Literal("folder"),
+  level: Schema.Literal("global"),
+  tab: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+  parent: Schema.optional(Schema.String),
+  items: Schema.Array(Schema.String),
+  updated: Schema.String,
+})
+
+const V2Order = Schema.Struct({
+  type: Schema.Literal("order"),
+  level: Schema.Literal("global"),
+  scope: Schema.String,
+  items: Schema.Array(Schema.String),
+  updated: Schema.String,
+})
+
+const V2Record = Schema.Union([
+  V2Customization,
+  V2Split,
+  V2Team,
+  V2Model,
+  V2ModelSettings,
+  V2Rule,
+  V2Link,
+  V2Entry,
+  V2Preset,
+  V2Category,
+  V2Folder,
+  V2Order,
+])
 
 const V2Header = Schema.Struct({
   version: Schema.Literal(2),
@@ -341,7 +388,7 @@ const gates = new Map<string, Promise<void>>()
 
 interface ParsedFile {
   readonly revision: number
-  readonly records: readonly StoredRecord[]
+  readonly records: readonly (StoredRecord | LegacyCategory)[]
   readonly migrated: boolean
 }
 
@@ -351,7 +398,8 @@ export async function load(projectDir: string): Promise<Loaded> {
   const projectParsed = parseFile(project)
   const globalParsed = parseFile(global)
   if (!projectParsed.migrated && !globalParsed.migrated) {
-    const catalogues = migrateCatalogues([...projectParsed.records, ...globalParsed.records])
+    const folders = migrateCategories([...projectParsed.records, ...globalParsed.records])
+    const catalogues = migrateCatalogues(folders.records)
     const presets = migrateRemovedPresets(catalogues.records)
     const skills = migrateSkillPermissions(presets.records)
     const splits = migrateSplitRows(skills.records)
@@ -366,11 +414,13 @@ export async function load(projectDir: string): Promise<Loaded> {
       skillsMigrated: skills.migrated,
       splitsMigrated: splits.migrated,
       wholeRowsMigrated: wholeRows.migrated,
+      foldersMigrated: folders.migrated,
     }
   }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
   // those route into the global store, not the project file.
-  const catalogues = migrateCatalogues(projectParsed.records.concat(globalParsed.records))
+  const folders = migrateCategories(projectParsed.records.concat(globalParsed.records))
+  const catalogues = migrateCatalogues(folders.records)
   const presets = migrateRemovedPresets(catalogues.records)
   const skills = migrateSkillPermissions(presets.records)
   const splits = migrateSplitRows(skills.records)
@@ -386,7 +436,45 @@ export async function load(projectDir: string): Promise<Loaded> {
     skillsMigrated: skills.migrated,
     splitsMigrated: splits.migrated,
     wholeRowsMigrated: wholeRows.migrated,
+    foldersMigrated: folders.migrated,
   }
+}
+
+// Categories (plus-1.1.12) became folders (plus-1.2.0, B1, B4): each category
+// is one folder in every tab that holds one of its items, with its name and its
+// items in order, and a category with no items is an empty folder in Tools. A
+// tab's top level lists its folders in the categories' order. An item held by
+// two categories stays with the first, as the tabs showed it. The category
+// records are gone after this, so there is one source of truth.
+//
+// Idempotent: a store with no category record is returned untouched.
+export function migrateCategories(records: readonly (StoredRecord | LegacyCategory)[]): {
+  records: StoredRecord[]
+  migrated: boolean
+} {
+  const rest = records.flatMap((record): StoredRecord[] => (record.type === "category" ? [] : [record]))
+  const categories = records
+    .flatMap((record): LegacyCategory[] => (record.type === "category" ? [record] : []))
+    .toSorted((left, right) => left.order - right.order || left.name.localeCompare(right.name))
+  if (categories.length === 0) return { records: rest, migrated: false }
+  const holder = new Map<string, string>()
+  for (const category of categories) for (const item of category.items) if (!holder.has(item)) holder.set(item, category.name)
+  const folders: FolderRecord[] = []
+  for (const category of categories) {
+    const held = category.items.filter((item) => holder.get(item) === category.name)
+    const tabs = tabKeys.filter((tab) => held.some((item) => tabOfItem(item) === tab))
+    for (const tab of tabs.length === 0 ? ["tools"] : tabs) {
+      const items = held.filter((item) => tabOfItem(item) === tab)
+      const id = uniqueFolderId(folders, tab, category.name)
+      folders.push({ type: "folder", level: "global", tab, id, name: category.name, items, updated: category.updated })
+    }
+  }
+  const orders = tabKeys.flatMap((tab): OrderRecord[] => {
+    const inTab = folders.filter((folder) => folder.tab === tab)
+    if (inTab.length === 0) return []
+    return [{ type: "order", level: "global", scope: `tab:${tab}`, items: inTab.map((folder) => folderRef(folder.id)), updated: inTab[inTab.length - 1]!.updated }]
+  })
+  return { records: [...rest, ...folders, ...orders], migrated: true }
 }
 
 // Skills once had two switches per agent: the skill row and a "skill" tool
@@ -773,25 +861,33 @@ export async function updateGated<T>(
 // lands in one revision the log can name (one line per migration). A store
 // that needs nothing is read and left alone; a concurrent writer that wins
 // the revision race simply migrates on its own next load.
-export async function ensureCatalogues(
-  projectDir: string,
-): Promise<{ migrated: boolean; presetsMigrated: boolean; skillsMigrated: boolean; splitsMigrated: boolean; wholeRowsMigrated: boolean; loaded: Loaded; revision: number }> {
+export async function ensureCatalogues(projectDir: string): Promise<{
+  migrated: boolean
+  presetsMigrated: boolean
+  skillsMigrated: boolean
+  splitsMigrated: boolean
+  wholeRowsMigrated: boolean
+  foldersMigrated: boolean
+  loaded: Loaded
+  revision: number
+}> {
   const current = await load(projectDir)
-  if (!current.cataloguesMigrated && !current.presetsMigrated && !current.skillsMigrated && !current.splitsMigrated && !current.wholeRowsMigrated)
-    return { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, loaded: current, revision: current.globalRevision }
+  const none = { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, foldersMigrated: false }
+  if (!current.cataloguesMigrated && !current.presetsMigrated && !current.skillsMigrated && !current.splitsMigrated && !current.wholeRowsMigrated && !current.foldersMigrated)
+    return { ...none, loaded: current, revision: current.globalRevision }
   const saved = await save(projectDir, {
     expectedProjectRevision: current.projectRevision,
     expectedGlobalRevision: current.globalRevision,
     records: current.records,
   }, { readTriggeredMigration: true })
-  if (!saved.ok)
-    return { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, loaded: saved.current, revision: saved.current.globalRevision }
+  if (!saved.ok) return { ...none, loaded: saved.current, revision: saved.current.globalRevision }
   return {
     migrated: current.cataloguesMigrated,
     presetsMigrated: current.presetsMigrated,
     skillsMigrated: current.skillsMigrated,
     splitsMigrated: current.splitsMigrated,
     wholeRowsMigrated: current.wholeRowsMigrated,
+    foldersMigrated: current.foldersMigrated,
     loaded: await load(projectDir),
     revision: saved.globalRevision,
   }
@@ -809,7 +905,7 @@ async function write(projectDir: string, input: SaveInput, options?: SaveOptions
   // catalogue duplication and the retired-preset move are the same situation:
   // both sides of `same` are already migrated (the load applied them in
   // memory), so only these flags make the moved records reach disk.
-  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated
+  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated || current.foldersMigrated
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
   // A read-triggered migration never writes a missing project store, and a
   // forced rewrite still never writes an empty one into a directory that has
@@ -956,10 +1052,25 @@ function route(records: readonly StoredRecord[]): { project: StoredRecord[]; glo
   return { project: canonical(project), global: canonical(global) }
 }
 
-function parseV2(lines: string[]): StoredRecord[] {
-  return lines.flatMap((line): StoredRecord[] => {
+function parseV2(lines: string[]): (StoredRecord | LegacyCategory)[] {
+  return lines.flatMap((line): (StoredRecord | LegacyCategory)[] => {
     const record = Option.getOrUndefined(decodeV2Record(line))
     if (record === undefined) return []
+    if (record.type === "category") return [record]
+    if (record.type === "folder")
+      return [
+        {
+          type: "folder",
+          level: "global",
+          tab: record.tab,
+          id: record.id,
+          name: record.name,
+          ...(record.parent === undefined ? {} : { parent: record.parent }),
+          items: [...record.items],
+          updated: record.updated,
+        },
+      ]
+    if (record.type === "order") return [{ type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }]
     if (record.type === "team")
       return [
         {
@@ -1006,7 +1117,7 @@ function parseV2(lines: string[]): StoredRecord[] {
         },
       ]
     if (record.type === "modelSettings") return [stable(record)]
-    if (record.type === "link" || record.type === "entry" || record.type === "preset" || record.type === "category") return [stable(record)]
+    if (record.type === "link" || record.type === "entry" || record.type === "preset") return [stable(record)]
     if (record.type === "rule")
       return [
         {
@@ -1130,7 +1241,8 @@ function compareRecords(left: StoredRecord, right: StoredRecord): number {
 // pattern and name; presets by kind, team and id. All end with `updated`.
 function sortKey(record: StoredRecord): string[] {
   if (record.type === "team") return ["team", record.team, record.level, String(record.enabled), record.updated]
-  if (record.type === "category") return ["category", record.name, String(record.order), record.updated]
+  if (record.type === "folder") return ["folder", record.tab, record.id, record.updated]
+  if (record.type === "order") return ["order", record.scope, record.updated]
   if (record.type === "modelSettings")
     return ["modelSettings", record.providerID ?? "", record.modelID ?? "", record.updated]
   if (record.type === "entry") return ["entry", record.catalogue, record.team ?? "", record.name, record.updated]
@@ -1234,15 +1346,19 @@ export function stable(record: StoredRecord): StoredRecord {
       enabled: record.enabled,
       updated: record.updated,
     }
-  if (record.type === "category")
+  if (record.type === "folder")
     return {
-      type: "category",
+      type: "folder",
       level: "global",
+      tab: record.tab,
+      id: record.id,
       name: record.name,
-      order: record.order,
+      ...(record.parent === undefined ? {} : { parent: record.parent }),
       items: [...record.items],
       updated: record.updated,
     }
+  if (record.type === "order")
+    return { type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }
   if (record.type === "modelSettings")
     return {
       type: "modelSettings",

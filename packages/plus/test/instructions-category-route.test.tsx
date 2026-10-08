@@ -1,18 +1,9 @@
+// Folders in the Instructions route (plus-1.2.0 S1a): `a` offers a folder next to
+// a model, `m` moves a row into a folder of its tab through one layout write, and
+// the key bindings keep shift+r for rename. The user category tabs are gone.
 import { afterEach, expect, test } from "bun:test"
 import { createSnapshot, renderInstructionsRoute, type TestFixture } from "./tui.js"
-import {
-  binds,
-  breadcrumb,
-  category,
-  dispatch,
-  footer,
-  gotoLevel,
-  levelOf,
-  moveTo,
-  selectedRow,
-  sleep,
-  toSidebar,
-} from "./instructions-nav.js"
+import { binds, category, dispatch, footer, gotoLevel, levelOf, moveTo, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
 
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
@@ -49,7 +40,9 @@ function projectAgent(id: string, origin: "native" | "special" | "plus" | "user"
   return { id, scope: "project" as const, fileBacked: true, origin }
 }
 
-test("a in Models offers Category and Model; picking Model preserves context without scope prompt", async () => {
+const UPDATED = "2026-01-01T00:00:00.000Z"
+
+test("a in Models offers Folder and Model; picking Model preserves context without scope prompt", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
     records: [
@@ -60,7 +53,7 @@ test("a in Models offers Category and Model; picking Model preserves context wit
         providerID: "openai",
         modelID: "gpt-4o",
         active: true,
-        updated: "2026-01-01T00:00:00.000Z",
+        updated: UPDATED,
       },
     ],
   })
@@ -87,16 +80,17 @@ test("a in Models offers Category and Model; picking Model preserves context wit
     const addSelect = fixture.fake.selectInputs[0]
     expect(addSelect.options).toEqual([
       { title: "Model", value: "model" },
-      { title: "Category", value: "category" },
+      { title: "Folder", value: "folder" },
     ])
   } finally {
     fixture.destroy()
   }
 })
 
-test("a in Models offers Category; picking Category prompts for name and creates category", async () => {
+test("m moves a model row into a folder of its tab through one layout write", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
+    folders: [{ type: "folder", level: "global", tab: "models", id: "models:work", name: "Work", items: [], updated: UPDATED }],
     records: [
       {
         type: "model",
@@ -105,55 +99,7 @@ test("a in Models offers Category; picking Category prompts for name and creates
         providerID: "openai",
         modelID: "gpt-4o",
         active: true,
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    dialogs: { selects: ["category"], prompts: ["Work"] },
-  })
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await goto(fixture, "agent:project:Implementer", "Implementer")
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    await category(fixture, "Models")
-    expect(dispatch(fixture, "a")).toBe(true)
-    await until(fixture, () => fixture.fake.categoryMutates.length === 1)
-    expect(fixture.fake.categoryMutates[0]).toEqual({
-      action: "create",
-      name: "Work",
-    })
-    expect(fixture.fake.dialogSelects.map(([title]) => title)).toEqual(["Add"])
-    expect(fixture.fake.dialogPrompts.map(([title]) => title)).toEqual(["Category name"])
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("m moves inactive candidate into category, and m offers back to home category", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("Implementer")],
-    categories: [
-      {
-        type: "category",
-        level: "global",
-        name: "Work",
-        order: 1,
-        items: [],
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-    records: [
-      {
-        type: "model",
-        level: "project",
-        agent: "Implementer",
-        providerID: "openai",
-        modelID: "gpt-4o",
-        active: true,
-        updated: "2026-01-01T00:00:00.000Z",
+        updated: UPDATED,
       },
       {
         type: "model",
@@ -161,13 +107,13 @@ test("m moves inactive candidate into category, and m offers back to home catego
         agent: "Implementer",
         providerID: "anthropic",
         modelID: "claude-sonnet",
-        updated: "2026-01-01T00:00:00.000Z",
+        updated: UPDATED,
       },
     ],
   })
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
-    dialogs: { selects: ["Work"] },
+    dialogs: { selects: ["folder:models:work"] },
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
@@ -177,238 +123,12 @@ test("m moves inactive candidate into category, and m offers back to home catego
     await category(fixture, "Models")
     await moveTo(fixture, "claude-sonnet")
     expect(dispatch(fixture, "m")).toBe(true)
-    await until(fixture, () => fixture.fake.categoryMutates.length === 1)
-    expect(fixture.fake.categoryMutates[0]).toEqual({
-      action: "assign",
-      item: "model:anthropic/claude-sonnet",
-      category: "Work",
-    })
-    const moveSelect = fixture.fake.selectInputs[0]
-    expect(moveSelect.options[0].title).toContain("home")
-    expect(moveSelect.options.some((opt) => opt.value === "Work")).toBe(true)
+    await until(fixture, () => fixture.fake.layoutWrites.length === 1)
+    const write = fixture.fake.layoutWrites[0]
+    expect(write?.folders.find((folder) => folder.id === "models:work")?.items).toEqual(["model:anthropic/claude-sonnet"])
+    expect(fixture.fake.selectInputs[0].options.map((option) => option.title)).toEqual(["Top level of models", "Work"])
   } finally {
     fixture.destroy()
-  }
-})
-
-test("content d on model inside user category removes model, does not delete category", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("Implementer")],
-    categories: [
-      {
-        type: "category",
-        level: "global",
-        name: "Work",
-        order: 1,
-        items: ["model:anthropic/claude-sonnet"],
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-    records: [
-      {
-        type: "model",
-        level: "project",
-        agent: "Implementer",
-        providerID: "openai",
-        modelID: "gpt-4o",
-        active: true,
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-      {
-        type: "model",
-        level: "project",
-        agent: "Implementer",
-        providerID: "anthropic",
-        modelID: "claude-sonnet",
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    dialogs: { confirms: [true] },
-  })
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await goto(fixture, "agent:project:Implementer", "Implementer")
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    await category(fixture, "Work")
-    // Navigate to the model row (down from header)
-    dispatch(fixture, "down")
-    await until(fixture, (frame) => selectedRow(frame).includes("claude-sonnet"))
-    expect(dispatch(fixture, "d")).toBe(true)
-    await until(fixture, () => fixture.fake.dialogConfirms.length === 1)
-    const confirmInput = fixture.fake.dialogConfirms[0][0] as { title?: string; message?: string }
-    expect(confirmInput.title).toContain("Remove")
-    expect(confirmInput.title).not.toContain("Delete category")
-    await until(fixture, () => fixture.fake.modelRemoves.length === 1)
-    expect(fixture.fake.modelRemoves[0]).toEqual({
-      level: "project",
-      agent: "Implementer",
-      providerID: "anthropic",
-      modelID: "claude-sonnet",
-    })
-    expect(fixture.fake.categoryMutates.some((m) => m.action === "delete")).toBe(false)
-    await until(fixture, (frame) => frame.includes('Removed "anthropic/claude-sonnet"') && breadcrumb(frame).includes("Work"))
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("effective d inside user category retains original refusal and does not delete category", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("Implementer")],
-    categories: [
-      {
-        type: "category",
-        level: "global",
-        name: "Work",
-        order: 1,
-        items: ["model:openai/gpt-4o"],
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-    records: [
-      {
-        type: "model",
-        level: "project",
-        agent: "Implementer",
-        providerID: "openai",
-        modelID: "gpt-4o",
-        active: true,
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-  })
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await goto(fixture, "agent:project:Implementer", "Implementer")
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    await category(fixture, "Work")
-    // Move down to the active model row
-    dispatch(fixture, "down")
-    await until(fixture, (frame) => selectedRow(frame).includes("gpt-4o"))
-    expect(dispatch(fixture, "d")).toBe(true)
-    await sleep(200)
-    expect(fixture.fake.dialogConfirms.length).toBe(0)
-    expect(fixture.fake.categoryMutates.length).toBe(0)
-    await until(fixture, (frame) => frame.includes("active model here"))
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("sidebar d deletes owner agent, not selected user category", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("Implementer"), projectAgent("Helper")],
-    categories: [
-      {
-        type: "category",
-        level: "global",
-        name: "Work",
-        order: 1,
-        items: [],
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    dialogs: { confirms: [true] },
-  })
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await goto(fixture, "agent:project:Implementer", "Implementer")
-    dispatch(fixture, "right")
-    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    await category(fixture, "Work")
-    await toSidebar(fixture)
-    await until(fixture, (frame) => footer(frame).includes("tab list") || footer(frame).includes("esc close"))
-    expect(dispatch(fixture, "d")).toBe(true)
-    await until(fixture, () => fixture.fake.dialogConfirms.length === 1)
-    const confirmInput = fixture.fake.dialogConfirms[0][0] as { title?: string }
-    expect(confirmInput.title).toContain("Implementer")
-    expect(confirmInput.title).not.toContain("Work")
-    await until(fixture, () => fixture.fake.agentDeletes.length === 1)
-    expect(fixture.fake.agentDeletes[0]).toEqual({ scope: "project", id: "Implementer" })
-    expect(fixture.fake.categoryMutates.length).toBe(0)
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("explicit category header d cancel makes no change; confirm deletes category", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("Implementer")],
-    categories: [
-      {
-        type: "category",
-        level: "global",
-        name: "Work",
-        order: 1,
-        items: ["model:openai/gpt-4o"],
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-    records: [
-      {
-        type: "model",
-        level: "project",
-        agent: "Implementer",
-        providerID: "openai",
-        modelID: "gpt-4o",
-        active: true,
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  })
-  const fixtureCancel = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    dialogs: { confirms: [false] },
-  })
-  try {
-    await fixtureCancel.waitForFrame((frame) => frame.includes("Instructions"))
-    await goto(fixtureCancel, "agent:project:Implementer", "Implementer")
-    dispatch(fixtureCancel, "right")
-    await fixtureCancel.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    await category(fixtureCancel, "Work")
-    await until(fixtureCancel, (frame) => selectedRow(frame).includes("Work"))
-    expect(dispatch(fixtureCancel, "d")).toBe(true)
-    await until(fixtureCancel, () => fixtureCancel.fake.dialogConfirms.length === 1)
-    const confirmInput = fixtureCancel.fake.dialogConfirms[0][0] as { title?: string }
-    expect(confirmInput.title).toContain('Delete category "Work"?')
-    expect(fixtureCancel.fake.categoryMutates.length).toBe(0)
-    await until(fixtureCancel, (frame) => frame.includes("cancelled"))
-  } finally {
-    fixtureCancel.destroy()
-  }
-
-  const fixtureConfirm = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    dialogs: { confirms: [true] },
-  })
-  try {
-    await fixtureConfirm.waitForFrame((frame) => frame.includes("Instructions"))
-    await goto(fixtureConfirm, "agent:project:Implementer", "Implementer")
-    dispatch(fixtureConfirm, "right")
-    await fixtureConfirm.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    await category(fixtureConfirm, "Work")
-    await until(fixtureConfirm, (frame) => selectedRow(frame).includes("Work"))
-    expect(dispatch(fixtureConfirm, "d")).toBe(true)
-    await until(fixtureConfirm, () => fixtureConfirm.fake.dialogConfirms.length === 1)
-    await until(fixtureConfirm, () => fixtureConfirm.fake.categoryMutates.length === 1)
-    expect(fixtureConfirm.fake.categoryMutates[0]).toEqual({
-      action: "delete",
-      name: "Work",
-      confirm: true,
-    })
-  } finally {
-    fixtureConfirm.destroy()
   }
 })
 
@@ -423,7 +143,7 @@ test("key bindings have explicit shift+r rename and lowercase r reset without ba
         providerID: "openai",
         modelID: "gpt-4o",
         active: true,
-        updated: "2026-01-01T00:00:00.000Z",
+        updated: UPDATED,
       },
     ],
   })
@@ -435,51 +155,6 @@ test("key bindings have explicit shift+r rename and lowercase r reset without ba
     const activeBinds = binds(fixture)
     expect(activeBinds.includes("shift+r")).toBe(true)
     expect(activeBinds.includes("R")).toBe(false)
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("filter category:<name> reaches user category and focuses list header", async () => {
-  const snapshot = createSnapshot({
-    agents: [projectAgent("Implementer")],
-    categories: [
-      {
-        type: "category",
-        level: "global",
-        name: "Work",
-        order: 1,
-        items: ["model:openai/gpt-4o"],
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-    records: [
-      {
-        type: "model",
-        level: "project",
-        agent: "Implementer",
-        providerID: "openai",
-        modelID: "gpt-4o",
-        active: true,
-        updated: "2026-01-01T00:00:00.000Z",
-      },
-    ],
-  })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-  })
-  try {
-    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    await toSidebar(fixture)
-    expect(dispatch(fixture, "/")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("words or key:value"))
-    await sleep(20)
-    await fixture.typeText("category:Work")
-    await sleep(250)
-    await until(fixture, (frame) => frame.includes("esc clear filter") && selectedRow(frame).includes("gpt-4o"))
-    dispatch(fixture, "return")
-    await until(fixture, (frame) => !frame.includes("esc clear filter") && breadcrumb(frame).includes("Work"))
-    expect(footer(fixture.captureCharFrame())).toContain("esc sidebar")
   } finally {
     fixture.destroy()
   }

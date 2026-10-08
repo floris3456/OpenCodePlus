@@ -46,7 +46,8 @@ export function recordTarget(record: StoredRecord): string {
   if (record.type === "model")
     return `model:${record.level}:${record.agent ?? ""}:${record.providerID}/${record.modelID}${record.variant === undefined ? "" : `@${record.variant}`}`
   if (record.type === "rule") return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
-  if (record.type === "category") return `category:${record.name}`
+  if (record.type === "folder") return `folder:${record.id}`
+  if (record.type === "order") return `order:${record.scope}`
   const agent = record.agent ?? ""
   if (record.type === "split") return `item:${record.level}:${agent}:${record.item}`
   if (record.section !== null) return `section:${record.level}:${agent}:${record.item}:${record.section}`
