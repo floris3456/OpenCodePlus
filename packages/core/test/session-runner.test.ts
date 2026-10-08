@@ -44,6 +44,7 @@ import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SessionProviderContext } from "@opencode/core/session/provider-context"
+import { SessionRequestPrepare } from "@opencode/core/session/request-prepare"
 import { Money } from "@opencode/schema/money"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionExecution } from "@opencode/core/session/execution"
@@ -77,7 +78,7 @@ import { SessionSystemPrompt } from "@opencode/core/session/system-prompt"
 import { ID, Model } from "@opencode/core/model"
 import { Location } from "@opencode/core/location"
 import { Provider } from "@opencode/core/provider"
-import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Schema, Scope, Stream } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { asc, desc, eq, sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -6697,5 +6698,84 @@ describe("SessionRunnerLLM", () => {
     expect(defect).toBeInstanceOf(Error)
     if (!(defect instanceof Error)) return
     expect(defect.message).toBe("Tool input delta before start: call-1")
+  })
+
+  scenario("fails a step whose request preparation exceeds the bound and accepts the next prompt", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const hanging = yield* Ref.make(true)
+    const entered = yield* Deferred.make<void>()
+    yield* hooks.register("session", "context", () =>
+      Effect.flatMap(Ref.get(hanging), (hold) =>
+        hold ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)) : Effect.void,
+      ),
+    )
+    yield* s.admit("Hang in the context hook")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust(SessionRequestPrepare.TIMEOUT)
+    const exit = yield* Fiber.await(running)
+
+    expect(Exit.isFailure(exit)).toBeTrue()
+    expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+      error: {
+        type: "session.step.prepare-timeout",
+        message: "Request preparation did not finish within 120s (stuck in the session.context hook)",
+      },
+    })
+    expect(s.requests).toHaveLength(0)
+    // The timed-out preparation must not leave the execution claim stuck: the next prompt runs.
+    const execution = yield* SessionExecution.Service
+    expect(yield* execution.isActive(sessionID)).toBeFalse()
+    yield* Ref.set(hanging, false)
+    yield* s.llm.push(TestLLM.text("Recovered", "after-prepare-timeout"))
+    yield* s.runPrompt("Run after the timeout")
+
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Hang in the context hook"),
+      Expected.user("Run after the timeout"),
+      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
+    ])
+  })
+
+  scenario("names the registering plugin when a preparation hook hangs", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const entered = yield* Deferred.make<void>()
+    yield* hooks
+      .register("session", "context", () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)))
+      .pipe(Effect.provideService(PluginHooks.CurrentPlugin, "@opencode/plus"))
+
+    yield* s.admit("Hang under a named plugin")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust(SessionRequestPrepare.TIMEOUT)
+    const exit = yield* Fiber.await(running)
+
+    expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+      error: {
+        message: "Request preparation did not finish within 120s (stuck in the session.context hook of @opencode/plus)",
+      },
+    })
+  })
+
+  scenario("keeps a step whose request preparation completes under the bound", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const entered = yield* Deferred.make<void>()
+    yield* hooks.register("session", "context", () =>
+      Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.sleep("5 seconds"))),
+    )
+    yield* s.llm.push(TestLLM.text("Bounded but done", "under-prepare-bound"))
+
+    yield* s.admit("Prepare under the bound")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust("5 seconds")
+    yield* Fiber.join(running)
+
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Prepare under the bound"),
+      Expected.assistant({ finish: "stop" }, [Expected.text("Bounded but done")]),
+    ])
   })
 })

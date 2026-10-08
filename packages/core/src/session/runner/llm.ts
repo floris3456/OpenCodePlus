@@ -15,6 +15,7 @@ import { SessionHistory } from "../history.js"
 import { SessionProviderContext } from "../provider-context.js"
 import { SessionModelRequest } from "../model-request.js"
 import { SessionModelTransport } from "../model-transport.js"
+import { SessionRequestPrepare } from "../request-prepare.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
@@ -228,6 +229,11 @@ const layer = Layer.effect(
           initial: loaded.initial,
           messages: loaded.messages,
         })
+        // Bound the step's request preparation, which runs the model-request content hooks
+        // (session.context, session.model.request), so a stuck hook fails the Step instead of
+        // leaving the Session "working" forever. The stream itself and provider retries start
+        // after this point and are never bounded here.
+        const prepareTimeout = yield* SessionRequestPrepare.Timeout
         const prepared = yield* context.request.primary({
           session: loaded.session,
           agent: loaded.agent.id,
@@ -241,7 +247,24 @@ const layer = Layer.effect(
           toolChoice: stepLimitReached ? "none" : undefined,
           webSocket: "session",
           inputTokens: SessionCompaction.estimatePrompt(loaded),
-        })
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: prepareTimeout,
+            orElse: () =>
+              Effect.flatMap(
+                context.hooks.stage,
+                (stage) =>
+                  Effect.fail(
+                    new StepFailedError({
+                      error: {
+                        type: "session.step.prepare-timeout",
+                        message: SessionRequestPrepare.message(prepareTimeout, stage),
+                      },
+                    }),
+                  ),
+              ),
+          }),
+        )
         const outcome = yield* steps.attempt({
           isLocationClosed: lifecycle.isClosed,
           sessionID,
@@ -364,6 +387,7 @@ export const node = makeLocationNode({
     llmClient,
     SessionContext.node,
     SessionModelTransport.node,
+    SessionRequestPrepare.node,
     SessionStore.node,
     SessionCompaction.node,
     Plugin.node,

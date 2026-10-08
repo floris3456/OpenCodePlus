@@ -6,9 +6,17 @@ import type { ShellHooks } from "@opencode/plugin/effect/shell"
 import type { ToolFailures, ToolHooks } from "@opencode/plugin/effect/tool"
 import type { ModelHookOptions } from "@opencode/plugin/effect/registration"
 import type { PermissionHooks } from "@opencode/plugin/effect/permission"
-import { Context, Effect, Layer, Scope } from "effect"
+import { Context, Effect, Layer, Ref, Scope } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { State } from "../state.js"
+
+/**
+ * The plugin whose effect is currently loading, read when a hook registers so a later timeout can
+ * name the registering plugin. Set by the plugin loader around `plugin.effect`.
+ */
+export const CurrentPlugin = Context.Reference<string | undefined>("@opencode/PluginHooks/CurrentPlugin", {
+  defaultValue: () => undefined,
+})
 
 export interface Domains {
   readonly aisdk: AISDKHooks
@@ -30,7 +38,14 @@ interface Failures extends Record<keyof Domains, unknown> {
 }
 
 type Callback<Event, Error> = (event: Event) => Effect.Effect<void, Error>
-type Entry = { readonly callback: Function; readonly options?: ModelHookOptions }
+type Entry = { readonly callback: Function; readonly options?: ModelHookOptions; readonly plugin?: string }
+
+/** The hook a preparation is currently inside, read only when a preparation bound fires. */
+export interface Stage {
+  readonly domain: keyof Domains
+  readonly name: string
+  readonly plugin?: string
+}
 
 const eventProviderID = (event: unknown) => {
   if (typeof event !== "object" || event === null || !("model" in event)) return undefined
@@ -56,6 +71,11 @@ export interface Interface {
     name: Name,
     event: Domains[Domain][Name],
   ) => Effect.Effect<Domains[Domain][Name], Failures[Domain][Name]>
+  /**
+   * The hook currently running, or undefined outside a hook. A request-preparation bound reads it
+   * when the timeout fires to name what hung; it is not a stable identity under concurrency.
+   */
+  readonly stage: Effect.Effect<Stage | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/PluginHooks") {}
@@ -65,13 +85,15 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const callbacks = new Map<string, Entry[]>()
     const key = (domain: keyof Domains, name: PropertyKey) => `${domain}.${String(name)}`
+    const stage = yield* Ref.make<Stage | undefined>(undefined)
 
     const register: Interface["register"] = Effect.fn("PluginHooks.register")(
       function* (domain, name, callback, options) {
         const scope = yield* Scope.Scope
+        const plugin = yield* CurrentPlugin
         const id = key(domain, name)
         let active = true
-        const entry = { callback, options }
+        const entry = { callback, options, ...(plugin === undefined ? {} : { plugin }) }
         callbacks.set(id, [...(callbacks.get(id) ?? []), entry])
         const dispose = Effect.sync(() => {
           if (!active) return
@@ -88,9 +110,15 @@ const layer = Layer.effect(
     const trigger: Interface["trigger"] = Effect.fnUntraced(function* (domain, name, event) {
       for (const entry of callbacks.get(key(domain, name)) ?? []) {
         if (entry.options?.providerID !== undefined && entry.options.providerID !== eventProviderID(event)) continue
+        yield* Ref.set(
+          stage,
+          entry.plugin === undefined ? { domain, name: String(name) } : { domain, name: String(name), plugin: entry.plugin },
+        )
         const result: Effect.Effect<void, Failures[typeof domain][typeof name]> = entry.callback(event)
         yield* result
       }
+      // A hung hook never clears the slot, so the preparation bound can still name it.
+      yield* Ref.set(stage, undefined)
       return event
     })
 
@@ -101,7 +129,7 @@ const layer = Layer.effect(
         ),
       )
 
-    return Service.of({ has, register, trigger })
+    return Service.of({ has, register, trigger, stage: Ref.get(stage) })
   }),
 )
 
