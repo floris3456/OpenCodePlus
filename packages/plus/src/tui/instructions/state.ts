@@ -987,7 +987,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(result.refusal)
       return false
     }
-    return persist(result.records, result.splits, result.status, result.retryHint)
+    const saved = await persist(result.records, result.splits, result.status, result.retryHint)
+    if (result.notice !== undefined) context.ui.toast.show({ variant: "warning", message: result.notice })
+    return saved
   }
 
   async function resetNode(node: TreeNode): Promise<boolean> {
