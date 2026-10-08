@@ -696,10 +696,16 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   tool operations and request-time gates. They can run together by named regions
   (TUI versus link operations). L1 can finish generic CLI dispatch and RPC wiring
   beside them; final link/move parity waits for their integration.
-- Section moves remain open: the S1a brief required preserving child overrides,
-  while B39 parent saves fold same-level child edits into the parent and remove
-  their records. The proposed fold-on-move rule has not been approved. Keep the
-  current refusal until this is settled; do not call S1/acceptance 4 complete.
+- **B42, autonomous completion:** the owner now delegates remaining implementation
+  decisions and explicitly authorizes end-to-end release. Section moves follow
+  B3/B39: reorder effective text within the same item/parent; fold consumed
+  same-level child text overrides into the rewritten parent, removing only those
+  consumed text fields (preserve switches/other fields). More-specific overrides
+  and stable section ids remain. This replaces the older requirement to retain
+  consumed same-level text records: their effective content must survive, without
+  duplicate headings or loss on reload. Refuse invalid/cross-item moves atomically.
+  Test existing child edits, nested/manual sections, more-specific overrides and
+  request-text order before calling acceptance4 complete.
 - S1b extends display order to existing origin groups and sidebar owner lists;
   built-in group headings stay fixed, rows reorder within their list or enter/
   leave same-tab folders. Display-only moves must not alter assembled prompts.
@@ -755,6 +761,14 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   owns movement/layout. The compaction tool fix must verify comma-list text
   parsing through the actual Defaults field-row tool dispatch too, not just
   through `compactionFieldsOf` directly.
+- The reused Haiku-General **preset**, with explicit DeepSeek model override,
+  had remote compaction configured. After all workers settled, the authorized
+  correction to local compaction was saved/read back (globalRevision754).
+  Resume bounded tasks on the exact deepseek-flash alias; no Claude models.
+  CLI review fixes own dispatcher/transport scoping; model fields own model
+  setters; rowlink switches own toggle/assembly; section moves own section move
+  helpers; existing move UI live acceptance is separate. Maximum five workers,
+  two live slots, focused tests and unchanged mandatory gates.
 
 ## Design notes per area
 
