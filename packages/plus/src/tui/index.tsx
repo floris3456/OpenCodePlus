@@ -108,6 +108,14 @@ export default Plugin.define({
               run: () => warming.toggleCompact(),
             },
             {
+              id: "plus.compact.follow",
+              title: "Compact before cold: follow the model settings",
+              description: "Drop this chat's on/off override; its model's Compact before cold setting decides again",
+              group: "OpenCodePlus",
+              palette: true,
+              run: () => warming.followCompact(),
+            },
+            {
               id: "plus.warming.follow",
               title: "Cache warming: follow the model settings for this chat",
               group: "OpenCodePlus",

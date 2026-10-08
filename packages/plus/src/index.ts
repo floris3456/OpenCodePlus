@@ -39,6 +39,7 @@ import { memoInputOf } from "./instructions/snapshot.js"
 import { pickModelRow, type ModelPick } from "./instructions/ops.js"
 import {
   compactionFieldsOf,
+  effectiveCompaction,
   everySettings,
   MODEL_SETTINGS_FIELDS,
   resolveModelCompactionFields,
@@ -91,7 +92,7 @@ import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
-import { warmingStore, type WarmingRows } from "./warming.js"
+import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
@@ -259,6 +260,7 @@ export default Plugin.define({
       // /api/session/active), so a missed session event cannot hold a chat's
       // waiting window.
       warmingStore.setActiveReader(() => activeSessionsOf(ctx))
+      warmingStore.setCompactDefaultsReader((sessionID) => sessionCompactDefaults(ctx, state, sessionID))
       warmingStore.setCompactionReader((sessionID) =>
         Effect.runPromise(
           ctx.session.context({ sessionID: Session.ID.make(sessionID) }).pipe(
@@ -3784,7 +3786,9 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "warming.compact": (input) =>
       Effect.gen(function* () {
-        const status = yield* Effect.promise(() => warmingStore.setCompact(input.sessionID, input.on))
+        const chat =
+          input.on === "default" ? "default" : input.on ? ("on" as const) : ("off" as const)
+        const status = yield* Effect.promise(() => warmingStore.setCompact(input.sessionID, chat))
         yield* emitWarmingChanged(state, input.sessionID)
         return status
       }),
@@ -3885,6 +3889,48 @@ export function compactionRowsOf(
 ) {
   const context = modelRowContextOf(state, agentID, model)
   return resolveModelCompactionFields(context.input, context.target)
+}
+
+/**
+ * The chat's model-level compact settings: the effective `compactWarm` (the
+ * per-chat switch's default) and the models cold arming would try when it
+ * applies. Only the model rows and the Defaults › Models rows set these, so no
+ * agent-wide or shared Defaults record is consulted.
+ */
+export function compactDefaultsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+): ChatCompactionDefaults {
+  const modelRow = settingsFor(state.cachedModelSettings, { providerID: model.providerID, modelID: model.id })
+  const everyRow = everySettings(state.cachedModelSettings)
+  const effective = effectiveCompaction({
+    row: compactionRowsOf(state, agentID, model),
+    ...(modelRow === undefined ? {} : { model: modelRow }),
+    ...(everyRow === undefined ? {} : { every: everyRow }),
+  })
+  return {
+    compactWarm: effective.compactWarm.value,
+    compactWarmFrom: effective.compactWarm.from === "built-in" ? "built-in" : "model",
+    // Cold arming only fires while "Compact cold caches with another model" is on.
+    coldModels: effective.coldCompact.value ? effective.coldModels.value : [],
+  }
+}
+
+/** The chat's model-level compact defaults, read from the session's current agent and model. */
+export async function sessionCompactDefaults(
+  ctx: Context,
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  sessionID: string,
+): Promise<ChatCompactionDefaults | undefined> {
+  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
+  if (session?.agent === undefined || session.model === undefined) return undefined
+  const model = session.model
+  return compactDefaultsOf(state, session.agent, {
+    providerID: model.providerID,
+    id: model.id,
+    ...(model.variant === undefined ? {} : { variant: model.variant }),
+  })
 }
 
 // Plus's `compaction.decide`: the per-model settings for (agent, chat model),
