@@ -4073,7 +4073,7 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     snapshots: [snapshot],
     width: 160,
     models,
-    dialogs: { selects: ["acme", "nova-2", "high"], prompts: ["45m"] },
+    dialogs: { selects: ["acme", "nova-2", "custom…", "high"], prompts: ["45m"] },
   })
   try {
     await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
@@ -4094,8 +4094,8 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     expect(fixture.fake.selectInputs.map((input) => input.title)).toEqual(["Model provider", "Model"])
     const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
     expect(own).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-2" })])
-    // The Warming group opens into its fields; the Warming field prompts for
-    // its own value and writes it alone.
+    // The Warming group opens into its fields; the Warming field is a dropdown
+    // whose Custom… asks for its own value and writes it alone.
     await moveTo(fixture, "Warming")
     await expand(fixture)
     await fixture.waitForFrame((frame) => listPane(frame).includes("Ping every"))
@@ -4103,6 +4103,9 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     await fixture.waitForFrame((frame) => selectedRow(frame).includes("off · built-in"))
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.mutateInputs.length === 2)
+    expect(fixture.fake.selectInputs.find((input) => input.title === "Warming · acme/nova-1")?.options.map((option) => option.title)).toEqual([
+      "Inherit", "Off", "On", "15m", "30m", "45m", "1h", "1h30m", "2h", "4h", "8h", "Custom…",
+    ])
     expect(fixture.fake.promptInputs.at(-1)?.title).toBe("Warming · acme/nova-1")
     const warming = fixture.fake.mutateInputs[1].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
     expect(warming).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-1", warming: "45m" })])
@@ -4176,7 +4179,7 @@ test("a Defaults › Models row opens into its fields, and enter on a field edit
   const fixture = await renderInstructionsRoute({
     snapshots: [snapshot],
     width: 160,
-    dialogs: { prompts: ["5m", "45m"] },
+    dialogs: { selects: ["custom…", "custom…"], prompts: ["5m", "45m"] },
   })
   try {
     await goto(fixture, "item:defaults:/models:modeldefault:acme/nova-1", "acme/nova-1")
@@ -4198,6 +4201,11 @@ test("a Defaults › Models row opens into its fields, and enter on a field edit
     await moveTo(fixture, "Ping every")
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.modelSettingsSets.length === 1)
+    // Ping every is a dropdown: Inherit names the value below with its source;
+    // unknown lifetime offers the 5m list. Custom… asks for the time.
+    expect(fixture.fake.selectInputs[0]?.options.map((option) => option.title)).toEqual([
+      "Inherit (now 3m30s · opencode.json)", "1m", "2m", "3m", "4m", "4m30s", "Custom…",
+    ])
     expect(fixture.fake.promptInputs.map((input) => [input.title, input.value ?? "", input.placeholder ?? ""])).toEqual([
       ["Ping every · acme/nova-1", "", "3m30s"],
     ])
@@ -4224,7 +4232,7 @@ test("the filter reaches a Defaults › Models field row inside its closed model
     agents: [projectAgent("alice")],
     hostModels: [{ providerID: "acme", modelID: "nova-1", variants: [] }],
   })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { prompts: ["low"] } })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, dialogs: { selects: ["custom…"], prompts: ["low"] } })
   try {
     await goto(fixture, "item:defaults:/models:modelsetting:effort:*", "Effort")
     dispatch(fixture, "return")
