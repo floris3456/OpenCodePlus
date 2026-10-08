@@ -404,7 +404,38 @@ Added 2026-10-08 evening (build seat, continuing the run)
   one prefix change, not a note). The steered synthetic message is the only
   delivery; a change found while preparing a request mid-turn arrives at the
   next step boundary, not in the request being prepared. A warming ping may
-  admit the note (it is durable and outside the cached prefix).
+  admit the note (it is durable and outside the cached prefix). An adopted
+  role also drops the pinned system prompt for that agent, so the next request
+  carries the role (one prefix change).
+- **B28. GPT cache (G1 result, G2 fix).** G1
+  (`run/evidence/plus-1.2.0/gpt-cache/G1-report.md`): GPT steps keep their
+  prefix (1 lost of 1,359 eligible steps; Gemini loses 37%, provider-side).
+  GPT's misses are summary compactions: 10 on 2026-10-05 sent 2.0M uncached
+  tokens, because the summary request is not the chat's request plus one
+  message. Core gives it the compaction agent's system prompt and runs the
+  `compaction` content hook, where Plus applies none of its `context`
+  shaping (pinned system prompt, tool plans, instruction parts, scrub,
+  narrowing); every other plugin already mirrors its `context` transform on
+  `compaction`. Fix, for a summary compaction **on the chat's own model**
+  (same provider, model and variant): (G2a, core `compaction.ts`) the request
+  keeps the chat agent's system prompt, and the compaction system text (the
+  agent's compaction system, else the compaction agent's) moves into the
+  final user message ahead of the summary prompt; (G2b, Plus `apply.ts`,
+  `index.ts` compaction hook) Plus's `compaction` hook applies the same
+  shaping as its `context` hook from the session's pin, without notes or
+  moving the pin, then marks the rebuild as today. Another model compacting:
+  unchanged. Proof: the compaction request's system parts, tools and history
+  equal the previous step's up to the summary message (fingerprints), and a
+  live same-model compaction reads the history from cache (acceptance 2).
+- **B29. The preparation bound (X2) is 120 s.** Measured (Monitor ledger,
+  13,872 steps, step start to request sent): p50 6 ms, p99 68 ms. The 21
+  cases above 10 s are all CPA quota-retry waits (about 362 s each) before
+  the one recorded attempt, not preparation. 120 s is over 1,000× p99 and
+  still ends a silent hang. The bound covers request preparation only
+  (`SessionPrompt.prepare` and the plugin hooks it runs), never provider
+  retries or the stream. The step fails with an error naming the stage, and
+  the hook and its plugin when a hook was running; the chat takes the next
+  message.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
