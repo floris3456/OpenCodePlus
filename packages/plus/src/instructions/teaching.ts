@@ -88,14 +88,14 @@ Compaction rows are \`compaction:strategy\`, \`compaction:model\`, and \`compact
 
 ## Per-model compaction
 
-Compaction, warming and the cold-cache list are model settings: they never change a chat's request prefix. A model can set them at any level, and a store without the fields behaves and sends exactly as before.
+Compaction, warming and the cold-cache list are model settings: editing them does not itself rewrite an existing chat's prompt prefix — the next actual compaction does. A model can set them at any level, and a store without the fields behaves and sends exactly as before.
 
 - A **Defaults › Models field row** \`item:defaults:/models:modelsetting:<field>:<* or provider/model>\` sets one field for Every model (\`*\`) or one model. \`set({ id, text })\` writes it; empty text clears it so the level below decides:
   - \`compactWarm\`, \`coldCompact\`: \`on\` or \`off\`.
   - \`coldModels\`: the try order as a comma list, e.g. \`a/one#high, b/two\`; each is \`provider/model[#variant]\`, listed once.
   - \`compactionStrategy\`: \`auto\`, \`local\` or \`remote\`.
   - \`compactionModel\`: \`provider/model[#variant]\`.
-  - \`compactionInstructions\`: the summary prompt; \`""\` is an explicit empty prompt.
+  - \`compactionInstructions\`: the summary prompt; \`""\` is an explicit empty summary prompt, unlike the other fields where \`""\` just clears the override. \`reset\` resumes inheritance.
 - An **agent/member/preset model row** exposes the same fields as \`modelfield:<field>:<provider>/<model>[@variant]\` field rows under its \`item:<level>:<owner>:model:…\` row: \`compactWarm\`, the \`coldCompact\` cold-cache group (whose list rows are \`item:<level>:<owner>:coldmodel:<model>:cold:<index>\`, in try order) and the Compaction group's \`compactionStrategy\`, \`compactionModel\` and \`compactionInstructions\`. The TUI edits them (Warming ▸ "Compact before cold" and the cold-cache list, Compaction ▸ Strategy/Model/Instructions); each field row shows its effective value and, when inherited, its source.
 
 Resolution, field by field:

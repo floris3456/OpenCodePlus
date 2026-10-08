@@ -248,6 +248,40 @@ test("documented compaction values validate with the real field parser", async (
   expect("error" in compactionFieldsOf({ coldModels: "a/one, a/one" })).toBe(true)
 })
 
+test("the skill states the empty-instructions rule and the prompt-prefix timing", async () => {
+  // Review point 1: empty compactionInstructions is an explicit empty summary
+  // prompt, and reset resumes inheritance, unlike the other empty fields.
+  expect(teachingSkillContent).toContain("explicit empty summary prompt")
+  expect(teachingSkillContent).toContain("unlike the other fields")
+  expect(teachingSkillContent).toContain("`reset` resumes inheritance")
+  // The real parser keeps that distinction: "" clears every other compaction
+  // field to null, but stores an explicit "" for the instructions.
+  const cleared = compactionFieldsOf({
+    compactWarm: "",
+    coldCompact: "",
+    coldModels: "",
+    compactionStrategy: "",
+    compactionModel: "",
+    compactionInstructions: "",
+  })
+  if (!("fields" in cleared)) throw new Error("expected the cleared field values to parse")
+  expect(cleared.fields).toEqual({
+    compactWarm: null,
+    coldCompact: null,
+    coldModels: null,
+    compactionStrategy: null,
+    compactionModel: null,
+    compactionInstructions: "",
+  })
+  const reset = compactionFieldsOf({ compactionInstructions: null })
+  expect("fields" in reset && reset.fields.compactionInstructions).toBeNull()
+
+  // Review point 2: setting edits alone do not rewrite a chat's prompt prefix;
+  // the next actual compaction does.
+  expect(teachingSkillContent).toContain("editing them does not itself rewrite an existing chat's prompt prefix")
+  expect(teachingSkillContent).toContain("the next actual compaction does")
+})
+
 test("documented merge kinds, defaults and B41 match the real engine", async () => {
   const original = "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven."
   const mine = "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
