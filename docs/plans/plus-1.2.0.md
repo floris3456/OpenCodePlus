@@ -535,6 +535,53 @@ Added 2026-10-08 evening (build seat, continuing the run)
   `/compact-cold` with its palette entry and toasts (§5), and the team
   followup default (a stopped cold child without `compactWith` uses its
   model's list; refuses with `E_STOPPED` when empty).
+- **B35. WP-F (G5): fingerprints stored as deltas.** Measured
+  (`run/evidence/plus-1.2.0/monitor-store/F0-measure.md`): the workspace
+  ledger is 2.16 GB, 97.7% of it `request_fingerprint.message_prefixes`,
+  and 99.9% of a long session's entries repeat its previous fingerprint. A
+  fingerprint row stores its message list as a delta: `prefix_base` (the
+  session's previous fingerprint's request id), `prefix_shared` (how many
+  leading entries equal the base's) and only the entries after them. Every
+  64th row of a session, and the first, is a keyframe (full list, no base),
+  so reading one row walks at most 63 rows; reading a session in order
+  rebuilds each list from the one before. System parts, tools and options
+  stay as they are (2% of the size). Migration happens as rows are read: a
+  session read in order rewrites its legacy full rows as deltas in one
+  transaction (the change triggers then move its revision once; the next
+  read folds once more and writes nothing). Retention deletes keep chains
+  whole: before rows are deleted, the first surviving row of each session
+  becomes a keyframe. No VACUUM in 1.2.0: freed pages are reused, so the
+  file stops growing; it shrinks only by a manual VACUUM (documented). Proof:
+  over a **copy** of the real ledger, every session's verdicts, causes and
+  reports are identical before and after migration, the copy's
+  `request_fingerprint` pages drop by over 90%, and single-row reads return
+  the same lists.
+- **B36. H2 (the twitch), from the live reproduction**
+  (`run/evidence/plus-1.2.0/chat-twitch/H2-report.md`, frame captures at
+  ~400 frames a second). With H1 in, a model pick or agent switch on an idle
+  chat changes only the prompt line. Three causes remain, fixed in two parts.
+  H2a: (1) the "reload": whenever the chat is mounted again (back from
+  Instructions, another chat, a dialog route), every completed assistant text
+  is blank for a frame or more, because `@opentui/core` 0.5.10
+  `MarkdownRenderable.createInitialStyledText` builds the immediate styled
+  text only while `streaming` is on, so completed blocks are created with
+  `drawUnstyledText: false` and wait for the asynchronous Tree-sitter
+  highlight (unchanged in 0.5.17). Fix in the existing
+  `patches/@opentui%2Fcore@0.5.10.patch`: build it whatever the streaming
+  state (the streaming path already draws every block this way), so text is
+  drawn at once and the highlight restyles it in place. Proof: a completed
+  markdown's first rendered frame contains its text. (2) While a reply
+  streams, a trailing line that is only a list marker in progress (digits
+  with an optional `.` or `)`, or a lone `-`, `*`, `+`) is held back from the
+  content until the line grows or the reply completes, so `4` of `42.` never
+  renders as a line and then vanishes (TUI `TextPart`). H2b: (3) the first
+  prompt after an agent or model change jumps the transcript three times in
+  ~64 ms: the sent message, then the "Switched agent"/"Switched model" rows
+  inserted above it, then the instructions-updated row, as separate sync
+  events. The pending prompt carries its agent and model; when they differ
+  from the chat's last ones, the TUI draws the switch rows with the pending
+  message in the same frame, and the durable rows take their place without a
+  height change. The instructions-updated row cannot be predicted and stays.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
