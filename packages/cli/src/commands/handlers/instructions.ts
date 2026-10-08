@@ -3,12 +3,13 @@
 //
 // The per-op flags are dynamic (each op's JSON Schema from
 // `instructions.ops`), so the full grammar is parsed from the raw argv tail
-// (see parseInstructionsArgs): Effect's static Spec only declares the stable
-// surface (`--json`, `--text`, `--text-file`) plus a variadic tail, and the
-// handler re-parses `process.argv`. Bare dynamic flags therefore need
-// pre-dispatch interception to work end to end (reported as a wiring need);
-// through Effect dispatch they arrive after `--`, which Effect strips into
-// the tail. Exit 1 on a refusal (message on stderr), 2 on a usage error.
+// (see parseInstructionsArgs): the static Spec (InstructionsCommand in
+// ../commands) only declares the stable surface (`--json`, `--text`,
+// `--text-file`) plus a variadic tail, and the handler re-parses
+// `process.argv`. Bare dynamic flags therefore need pre-dispatch interception
+// to work end to end (reported as a wiring need); through Effect dispatch they
+// arrive after `--`, which Effect strips into the tail. Exit 1 on a refusal
+// (message on stderr), 2 on a usage error.
 
 import { EOL } from "node:os"
 import { OpenCode } from "@opencode/client"
@@ -17,7 +18,7 @@ import { Product } from "@opencode/util/product"
 import { Effect, Option } from "effect"
 import { isRefusal } from "../../../../plus/src/instructions-cli.js"
 import { Definition } from "../../../../plus/src/rpc.js"
-import { Commands } from "../commands"
+import { InstructionsCommand } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { ServerConnection } from "../../services/server-connection"
 import { ServiceHandover } from "../../services/service-handover"
@@ -228,7 +229,7 @@ export async function runInstructionsCommand(argv: readonly string[], deps: Inst
 }
 
 export default Runtime.handler(
-  Commands.commands.instructions,
+  InstructionsCommand,
   Effect.fn("cli.instructions")(function* (input) {
     const raw = tailAfterInstructions(process.argv)
     const server = yield* ServerConnection.resolve({

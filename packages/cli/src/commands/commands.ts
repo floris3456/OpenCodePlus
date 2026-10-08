@@ -114,28 +114,6 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         param: Flag.keyValuePair("param").pipe(Flag.withDescription("OpenAPI path or query parameter"), Flag.optional),
       },
     }),
-    Spec.make("instructions", {
-      description: "Run an instructions op from the service (OpenCodePlus only; bare run lists ops)",
-      params: {
-        ...ServerParams,
-        args: Argument.string("args").pipe(
-          Argument.withDescription("Op, optional id, and op params (dynamic --<param> flags go after --)"),
-          Argument.variadic({ min: 0 }),
-        ),
-        json: Flag.string("json").pipe(
-          Flag.withDescription("Object params as a JSON object (merged under explicit flags)"),
-          Flag.optional,
-        ),
-        text: Flag.string("text").pipe(
-          Flag.withDescription("Fill text directly (- reads stdin)"),
-          Flag.optional,
-        ),
-        textFile: Flag.string("text-file").pipe(
-          Flag.withDescription("Fill text from a file"),
-          Flag.optional,
-        ),
-      },
-    }),
     Spec.make("debug", {
       description: "Debugging and troubleshooting tools",
       commands: [
@@ -571,3 +549,27 @@ type RelaxedCommands = Omit<BaseCommands, "commands"> & {
 }
 
 export const Commands: RelaxedCommands = Root
+
+// `opencodeplus instructions <op> [<id>] [--<param> value …] [--json '<obj>']`
+// (Plus product only). Deliberately NOT attached to Root yet: attaching it
+// without the `instructions` entries in the plus.ts/index.ts handlers maps
+// crashes CLI startup (`Runtime.handlers` throws on a command without a
+// handler), and those maps live outside this lane's scope. Part 2 attaches
+// this node to Root.commands together with the map entries (plus.ts only, so
+// the command stays Plus-only; plus-build.test.ts's handler literals follow).
+export const InstructionsCommand = Spec.make("instructions", {
+  description: "Run an instructions op from the service (OpenCodePlus only; bare run lists ops)",
+  params: {
+    ...ServerParams,
+    args: Argument.string("args").pipe(
+      Argument.withDescription("Op, optional id, and op params (dynamic --<param> flags go after --)"),
+      Argument.variadic({ min: 0 }),
+    ),
+    json: Flag.string("json").pipe(
+      Flag.withDescription("Object params as a JSON object (merged under explicit flags)"),
+      Flag.optional,
+    ),
+    text: Flag.string("text").pipe(Flag.withDescription("Fill text directly (- reads stdin)"), Flag.optional),
+    textFile: Flag.string("text-file").pipe(Flag.withDescription("Fill text from a file"), Flag.optional),
+  },
+})
