@@ -305,15 +305,18 @@ export async function checkAndEmitChangeNote(
 }
 
 // A role the pin never had (the agent had none at the first request) is taken
-// into the pin without a note: the model never saw it, and later edits must
-// diff against it. The PlanSet is shared by every session pinned at its
-// version, so the roles map is copied instead of edited in place.
+// into the pin without a note: later edits must diff against it. The model
+// gets the role through the system prompt instead: dropping the pinned system
+// prompt makes the next request re-pin the current one, role included (one
+// prefix change, no note). The PlanSet is shared by every session pinned at
+// its version, so the roles map is copied instead of edited in place.
 function adoptEmptyPinnedRole(pin: SessionPin, current: PlanSet, agent: string): void {
   const pinnedRole = pin.planSet.roles.get(agent) ?? ""
   const currentRole = current.roles.get(agent) ?? ""
   if (pinnedRole.length > 0 || currentRole.length === 0) return
   pin.planSet = { ...pin.planSet, roles: new Map(pin.planSet.roles).set(agent, currentRole) }
   pin.pinnedRoles.set(agent, currentRole)
+  pin.pinnedSystem0.delete(agent)
 }
 
 export const handlePromptBoundary = Effect.fnUntraced(function* (

@@ -705,11 +705,22 @@ test("a role gained after the pin is adopted silently, and its later change is a
   await Effect.runPromise(hook(sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
 
   // The role appears: adopted into the pin, so no note is returned or admitted
-  await applyPublishParts(ctx, state, alphaPlan("You are helpful.\n\n## Rules\nBe nice."))
+  const withRole = "You are helpful.\n\n## Rules\nBe nice."
+  await applyPublishParts(ctx, state, alphaPlan(withRole))
   const note = await checkAndEmitChangeNote(ctx, sessionPins.getPin("ses_gained")!, state.currentPlanSet!, "alpha", "ses_gained")
   expect(note).toBeUndefined()
   hook = contextCallbacks.at(-1)!
-  await Effect.runPromise(hook(sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
+
+  // The request after the adoption carries the role in its system prompt
+  const adopted = sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: withRole }])
+  await Effect.runPromise(hook(adopted))
+  expect(adopted.system[0]?.text).toContain("Be nice.")
+  expect(synthetics).toHaveLength(0)
+
+  // The request after that keeps the same system prompt
+  const following = sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: withRole }])
+  await Effect.runPromise(hook(following))
+  expect(following.system[0]?.text).toBe(adopted.system[0]?.text)
   expect(synthetics).toHaveLength(0)
 
   // The role changes again: announced once, against the adopted text
