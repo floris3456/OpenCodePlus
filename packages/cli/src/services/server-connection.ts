@@ -1,15 +1,18 @@
 import { Service, type Endpoint, type EnsureOptions } from "@opencode/client/effect/service"
 import { ClientError, isUnauthorizedError, OpenCode } from "@opencode/client/promise"
 import { OPENCODE_VERSION } from "../version"
-import { Effect, Redacted } from "effect"
+import { Effect, Option, Redacted } from "effect"
 import { Env } from "../env"
+import { Product } from "@opencode/util/product"
 import { ServiceConfig } from "./service-config"
+import { ServiceHandover } from "./service-handover"
 import { Standalone } from "./standalone"
 
 export type Args = {
   readonly server?: string
   readonly standalone?: boolean
-  readonly mismatch?: "replace" | "ignore" | "error"
+  readonly mismatch?: "replace" | "ignore" | "error" | "handover"
+  readonly ask?: ServiceHandover.Ask
   readonly onStart?: EnsureOptions["onStart"]
 }
 
@@ -42,10 +45,9 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
     return { endpoint: yield* Standalone.start() } satisfies Resolved
   }
 
-  const mismatch = args.mismatch ?? "ignore"
-  const options = yield* ServiceConfig.options({ checkVersion: mismatch !== "ignore" })
+  const options = yield* ServiceConfig.options({ checkVersion: args.mismatch !== undefined && args.mismatch !== "ignore" })
   return {
-    endpoint: yield* resolveManaged({ ...options, onStart: args.onStart }, mismatch),
+    endpoint: yield* resolveManaged({ ...options, onStart: args.onStart }, args),
     service: managedService(options),
   } satisfies Resolved
 })
@@ -71,9 +73,25 @@ export const shutdownPersistentPty = Effect.fn("cli.server-connection.shutdown-p
   yield* Effect.tryPromise(() => client.experimental.persistentPty.shutdown())
 })
 
-const resolveManaged = Effect.fnUntraced(function* (options: EnsureOptions, mismatch: NonNullable<Args["mismatch"]>) {
+const resolveManaged = Effect.fnUntraced(function* (options: EnsureOptions, args: Args) {
+  const mismatch = args.mismatch ?? "ignore"
   if (mismatch === "replace") return yield* Service.ensure(options)
-  if (mismatch === "ignore") return yield* Service.ensure({ ...options, version: undefined })
+  if (mismatch === "handover") {
+    if (Product.namespace !== "opencodeplus") return yield* Service.ensure(options)
+    if (args.ask === undefined) return yield* Effect.fail(new Error("A version-mismatched service needs a person to decide"))
+    return yield* ServiceHandover.resolveTui(options, { ask: args.ask })
+  }
+  if (mismatch === "ignore") {
+    const endpoint = yield* Service.ensure({ ...options, version: undefined })
+    if (Product.namespace === "opencodeplus") {
+      const running = yield* ServiceHandover.serverVersion(endpoint).pipe(Effect.option)
+      if (Option.isSome(running) && running.value !== OPENCODE_VERSION)
+        process.stderr.write(
+          `Warning: Background service has version ${running.value}; this client is ${OPENCODE_VERSION}. Continuing anyway.\n`,
+        )
+    }
+    return endpoint
+  }
 
   const compatible = yield* Service.discover(options)
   if (compatible !== undefined) return compatible

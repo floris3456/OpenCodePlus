@@ -6,6 +6,8 @@ import { Runtime } from "../../framework/runtime"
 import { Config } from "../../config"
 import { Context, Effect, Fiber, FileSystem, Option, Queue } from "effect"
 import { ServerConnection } from "../../services/server-connection"
+import { ServiceHandover } from "../../services/service-handover"
+import { askHandover } from "../../services/service-handover-ask"
 import { Updater } from "../../services/updater"
 import { PlusUpdate } from "../../services/plus-update"
 import { Product } from "@opencode/util/product"
@@ -33,7 +35,8 @@ export default Runtime.handler(Commands, (input) =>
     const server = yield* ServerConnection.resolve({
       server: requestedServer,
       standalone: input.standalone,
-      mismatch: "replace",
+      mismatch: "handover",
+      ask: askHandover,
       onStart: (reason, previousVersion) => {
         Queue.offerUnsafe(serviceStarts, { reason, previousVersion })
         if (reason === "version-mismatch" && preflight.begin(previousVersion)) return
@@ -44,6 +47,10 @@ export default Runtime.handler(Commands, (input) =>
         )
       },
     }).pipe(
+      Effect.catchIf(
+        (error) => error instanceof ServiceHandover.HandoverQuit,
+        () => Effect.sync(() => process.exit(0)),
+      ),
       Effect.tapError(() =>
         Effect.promise(() => preflight.fail("OpenCode update could not start the new background service")),
       ),
