@@ -70,20 +70,6 @@ export function createMissToast(context: Plugin.Context): MissToast {
     void checkStep(sessionID)
   })
 
-  context.keymap.layer(() => ({
-    mode: "global",
-    commands: [
-      {
-        id: "plus.miss-notices.toggle",
-        title: `Cache-miss notices: turn ${enabled() ? "off" : "on"}`,
-        group: "OpenCodePlus",
-        palette: true,
-        slash: { name: "miss-notices" },
-        run: () => void toggle(),
-      },
-    ],
-  }))
-
   function dispose() {
     unsubscribeStep()
     unsubscribeNext()

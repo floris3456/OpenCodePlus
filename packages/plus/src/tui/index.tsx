@@ -82,6 +82,14 @@ export default Plugin.define({
               run: () => void openProjectChecks(context),
             },
             {
+              id: "plus.miss-notices.toggle",
+              title: `Cache-miss notices: turn ${missToast.enabled() ? "off" : "on"}`,
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "miss-notices" },
+              run: () => void missToast.toggle(),
+            },
+            {
               id: "plus.warming.toggle",
               title: "Cache warming on/off for this chat",
               group: "OpenCodePlus",

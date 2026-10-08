@@ -152,7 +152,11 @@ function createHarness(): MissToastHarness {
 test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off switch, and command toggle", async () => {
   const harness = createHarness()
   const cleanup = await plusPlugin.setup(harness.context)
+  // The off switch is a keymap command owned by the mounted plugin slot: without
+  // a rendered slot it is not reachable, so it appears only after mountSlot.
+  expect(harness.commands().find((c) => c.slash?.name === "miss-notices")).toBeUndefined()
   harness.mountSlot()
+  expect(harness.commands().find((c) => c.slash?.name === "miss-notices")).toBeDefined()
 
   // 1. A step-end event for the chat on screen with a miss shows exactly one toast with the exact text
   await harness.emit({
