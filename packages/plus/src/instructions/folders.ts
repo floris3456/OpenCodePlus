@@ -29,6 +29,16 @@ export interface OrderRecord {
 /** The tab keys the tree uses for a row's group (`group:<level>:<owner>:<tab>`). */
 export const tabKeys = ["settings", "models", "compaction", "tools", "base", "system", "mcp"] as const
 
+/**
+ * The order scope of one non-tab list: the direct children of a tree group that
+ * is neither a tab nor a folder. S1b uses it for a tab's origin subgroups
+ * (Tools › OpenCode, Tools › MCP) and for the sidebar's owner lists (agents,
+ * teams, members) without touching the built-in headings they sit under.
+ */
+export function groupScope(groupId: string): string {
+  return `group:${groupId}`
+}
+
 /** The tab an item row belongs to (the tab its inspector names as its home). */
 export function tabOfItem(item: string): string {
   if (item.startsWith("model:") || item.startsWith("modeldefault:") || item.startsWith("modelsetting:")) return "models"
@@ -183,7 +193,7 @@ export function layoutRefusal(folders: readonly FolderRecord[], orders: readonly
   const cyclic = folders.find((folder) => ancestorsOf(folders, folder.id).includes(folder.id))
   if (cyclic !== undefined) return `folder "${cyclic.name}" cannot sit inside itself`
   const badScope = orders.find(
-    (order) => order.scope !== "sidebar" && !tabKeys.some((tab) => order.scope === `tab:${tab}`),
+    (order) => order.scope !== "sidebar" && !order.scope.startsWith("group:") && !tabKeys.some((tab) => order.scope === `tab:${tab}`),
   )
   if (badScope !== undefined) return `order "${badScope.scope}" names no list`
   return undefined
@@ -214,7 +224,16 @@ export function setOrder(
   items: readonly string[],
   updated: string,
 ): OrderRecord[] {
-  const scope = `tab:${tab}`
+  return setOrderScope(orders, `tab:${tab}`, items, updated)
+}
+
+/** Replace the order record for an arbitrary scope with `items`, creating the record when none exists. */
+export function setOrderScope(
+  orders: readonly OrderRecord[],
+  scope: string,
+  items: readonly string[],
+  updated: string,
+): OrderRecord[] {
   if (orderOf(orders, scope) === undefined)
     return [...orders, { type: "order", level: "global", scope, items: [...items], updated }]
   return orders.map((order) => (order.scope === scope ? { ...order, items: [...items], updated } : order))

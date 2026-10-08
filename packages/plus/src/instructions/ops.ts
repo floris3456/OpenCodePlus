@@ -86,9 +86,11 @@ import {
   folderIdOfRef,
   folderOf,
   folderRef,
+  groupScope,
   renameFolderRecord,
   reparent,
   setOrder,
+  setOrderScope,
   splitLayout,
   tabOfGroupId,
   tabOfItem,
@@ -314,6 +316,88 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
           ? `after "${after.label}"`
           : ""
   return { target: token, status: `Moved "${node.label}" ${where}`, layout: plan }
+}
+
+// The display token a row contributes to an ordered list: an item id, a
+// `folder:<id>` ref, or an owner row id (an agent, a team, a team member).
+// Built-in group headings and tab groups have none, so they cannot move.
+export function listToken(node: TreeNode): string | undefined {
+  if (node.address !== undefined) return node.address.section === null ? node.address.item : undefined
+  const at = node.id.indexOf(FOLDER_MARK)
+  if (at !== -1) return folderRef(node.id.slice(at + FOLDER_MARK.length))
+  return node.kind === "agent" || node.kind === "team" ? node.id : undefined
+}
+
+// The nearest ancestor of `nodes[index]` (the row one indent shallower).
+function parentOf(nodes: readonly TreeNode[], index: number): TreeNode | undefined {
+  const depth = nodes[index]?.depth
+  if (depth === undefined || depth === 0) return undefined
+  for (let at = index - 1; at >= 0; at--) if ((nodes[at]?.depth ?? -1) < depth) return nodes[at]
+  return undefined
+}
+
+// The rows directly under `parent`, in display order.
+function directChildNodes(nodes: readonly TreeNode[], parent: TreeNode): TreeNode[] {
+  const index = nodes.findIndex((node) => node.id === parent.id)
+  if (index === -1) return []
+  const out: TreeNode[] = []
+  for (let at = index + 1; at < nodes.length; at++) {
+    const row = nodes[at]!
+    if (row.depth <= parent.depth) break
+    if (row.depth === parent.depth + 1) out.push(row)
+  }
+  return out
+}
+
+/**
+ * Reorder a row or owner within a non-tab list group (a tab's origin subgroup
+ * or a sidebar catalogue list), recorded as a `group:<id>` order. No folders
+ * and no nesting: the row keeps its group and only changes its place among its
+ * siblings. Built-in group headings have no token and refuse.
+ */
+export function planGroupMove(
+  memo: MemoInput,
+  layout: LayoutRecords,
+  rowId: string,
+  target: RowTarget,
+  updated: string,
+): LayoutChange {
+  const nodes = expandedTree(memo)
+  const at = nodes.findIndex((node) => node.id === rowId)
+  const node = nodes[at]
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
+  const token = listToken(node)
+  if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }
+  if (target.into !== undefined) return { refusal: `"${node.label}" reorders in its own list; it cannot enter a folder here` }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  const siblingId = target.before ?? target.after
+  if (siblingId === undefined) return { refusal: "say where it goes: before or after a row" }
+  if (siblingId === rowId) return { refusal: `"${node.label}" cannot go beside itself` }
+  const siblingAt = nodes.findIndex((candidate) => candidate.id === siblingId)
+  const sibling = nodes[siblingAt]
+  if (sibling === undefined) return { refusal: unknownRowRefusal(siblingId) }
+  const parent = parentOf(nodes, at)
+  const siblingParent = parentOf(nodes, siblingAt)
+  if (parent === undefined || siblingParent === undefined || parent.id !== siblingParent.id)
+    return { refusal: `"${sibling.label}" is not in the same list` }
+  if (rowToken(parent) !== undefined) return { refusal: `"${node.label}" moves through its tab's folders` }
+  const anchor = listToken(sibling)
+  if (anchor === undefined) return { refusal: `"${sibling.label}" cannot be a destination` }
+  const siblings = directChildNodes(nodes, parent).flatMap((child) => {
+    const entry = listToken(child)
+    return entry === undefined ? [] : [entry]
+  })
+  const without = siblings.filter((entry) => entry !== token)
+  const index = without.indexOf(anchor)
+  if (index === -1) return { refusal: `"${sibling.label}" is not in the same list` }
+  const insertAt = target.after === undefined ? index : index + 1
+  const items = [...without.slice(0, insertAt), token, ...without.slice(insertAt)]
+  return {
+    target: token,
+    status: `Moved "${node.label}" ${target.after === undefined ? "before" : "after"} "${sibling.label}"`,
+    layout: { folders: layout.folders, orders: setOrderScope(layout.orders, groupScope(parent.id), items, updated) },
+  }
 }
 
 // A folder created in a tab's top level or inside a folder, listed last there.

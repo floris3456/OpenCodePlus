@@ -38,7 +38,7 @@ import type {
   SplitRecord,
   TeamRef,
 } from "./model.js"
-import { folderIdOfRef, folderRef, orderOf, tabOfGroupId, type FolderRecord } from "./folders.js"
+import { folderIdOfRef, folderRef, groupScope, orderOf, tabOfGroupId, type FolderRecord } from "./folders.js"
 import { fromLabel } from "./from-label.js"
 import {
   COLD_ITEM_SEGMENT,
@@ -816,7 +816,7 @@ interface BranchArgs {
 // `address` lets a structural row show an item's detail (a tool's
 // Description group shows the tool's whole text) while its actions stay off.
 function branch(memo: Memo, args: BranchArgs, address?: Address): Lazy {
-  const kids = (): readonly Lazy[] => cachedKids(memo, args.id, args.children)
+  const kids = (): readonly Lazy[] => arrangeList(memo, args.id, cachedKids(memo, args.id, args.children))
   return {
     id: args.id,
     kind: args.kind,
@@ -1181,6 +1181,30 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
 function withFolders(memo: Memo, groups: readonly Lazy[]): readonly Lazy[] {
   if (memo.ctx.folders.length === 0 && memo.ctx.orders.length === 0) return groups
   return groups.map((group) => arrangeTab(memo, group))
+}
+
+// The display token a lazy contributes to a `group:<id>` order: an item id, a
+// folder ref, or an owner row id (agent, team, member). Group headings have none.
+function lazyListToken(lazy: Lazy): string | undefined {
+  const at = lazy.id.indexOf(":folder:")
+  if (at !== -1) return folderRef(lazy.id.slice(at + ":folder:".length))
+  if (lazy.kind === "agent" || lazy.kind === "team") return lazy.id
+  return lazy.address?.section === null ? lazy.address.item : undefined
+}
+
+// One group's direct children in the order a `group:<id>` record names: listed
+// tokens first in that order, the rest as they were. A group with no such record
+// is returned untouched (S1b).
+function arrangeList(memo: Memo, id: string, home: readonly Lazy[]): readonly Lazy[] {
+  const listed = orderOf(memo.ctx.orders, groupScope(id))?.items
+  if (listed === undefined || listed.length === 0) return home
+  return [
+    ...listed.flatMap((ref) => home.filter((lazy) => lazyListToken(lazy) === ref)),
+    ...home.filter((lazy) => {
+      const token = lazyListToken(lazy)
+      return token === undefined || !listed.includes(token)
+    }),
+  ]
 }
 
 function arrangeTab(memo: Memo, group: Lazy): Lazy {
