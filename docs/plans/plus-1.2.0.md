@@ -473,8 +473,13 @@ Added 2026-10-08 evening (build seat, continuing the run)
   stays heading-derived; the new section appears as a child row at once.
   For a **manual** split (and `block`/`whole` items, which become manual as
   today), boundaries gain an optional `depth` (absent = 0; old stores read
-  unchanged); `a` on a manual section inserts the text at the end of its
-  span and adds a boundary with depth + 1, shifting later boundaries. Section
+  unchanged); `a` on a manual section adds a boundary with depth + 1 at the
+  end of its span, listed right after the section's last descendant (a
+  boundary listed earlier wins a tie of starts). The new text lives only in
+  that section's own record, whose upstream slice is empty, as today's
+  end-of-item add does: the item text and the other boundaries do not move,
+  and no whole-item record is written (amended after I1a's review: writing
+  the item text would shadow lower levels' section edits, finding 12d). Section
   rows get `add: "section"`, so `route.tsx` never falls back to the tab's
   category from a section. The tools API: `split({ id: <section id>, add })`
   adds a child of that section, `split({ id: <item id>, add })` a top-level
