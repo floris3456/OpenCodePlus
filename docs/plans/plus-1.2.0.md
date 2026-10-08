@@ -378,6 +378,33 @@ Added 2026-10-08 afternoon (findings 11–14)
   child's context passes 100k tokens, like the budget notices, and
   `team_status` shows each child's context size. No forced compaction:
   compacting mid-task loses the details the worker is using.
+
+Added 2026-10-08 evening (build seat, continuing the run)
+
+- **B26. Finding 11's cause, and where the refusal sits.** The row "Outside
+  this checkout (external_directory)" installs a core rule only when it is
+  off (deny). On, it installs nothing, and core's built-in answer for an
+  unmatched `external_directory` is **ask**. The Orchestrator and Planner
+  presets (and members made from them) leave it on; only the worker presets
+  (`inside`) turn it off. So a delegated orchestrator that reads a dev home
+  asks, and nobody answers. Fix in two layers: (1) Plus's permission
+  `evaluate` hook (`permission-enforce.ts`) turns any remaining `ask` in a
+  delegated run (`deps.headless`) into `deny` before the ask is published,
+  with a message that names the action and resource and says nobody answers
+  asks in a delegated run, and records the refusal in the run's audit;
+  (2) the B22 net in the teams layer: a `permission.asked` event for a
+  delegated run's session (an ask raised by any other path) is rejected at
+  once and audited. A top-level chat, and a subagent of the user's chat,
+  still ask as before. The presets are not changed: an interactive
+  orchestrator may still be asked.
+- **B27. Change notes (X4), the details of B21.** The prompt boundary reads
+  the session's own agent from the session (`ctx.session.get`) and checks
+  only that agent. An empty pinned role is replaced in the pin by the current
+  one without a note (its next request carries the role in the system prompt:
+  one prefix change, not a note). The steered synthetic message is the only
+  delivery; a change found while preparing a request mid-turn arrives at the
+  next step boundary, not in the request being prepared. A warming ping may
+  admit the note (it is durable and outside the cached prefix).
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
