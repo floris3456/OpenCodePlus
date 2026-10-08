@@ -218,7 +218,9 @@ export async function onSessionEvent(
       const admitted = last === undefined || isAttemptTerminal(last.state)
         ? attemptTransition(startAttempt(record, { trigger }), "admitted", "admit")
         : record
-      return withoutRetrying(transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger))
+      // deliverInbox moves a run to working before it prompts, so an idle or
+      // stopped run starting here was started from outside: a held run resumes.
+      return withoutHold(withoutRetrying(transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger)))
     })
     if (working === undefined || !applied.changed) return undefined
     return working
@@ -283,7 +285,14 @@ export async function onSessionEvent(
 
   const outcome = SessionOutcomes[event.type]
   if (outcome === undefined) return undefined
-  return onSessionIdle(ctx, root, run, outcome, Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error)))
+  return onSessionIdle(
+    ctx,
+    root,
+    run,
+    outcome,
+    Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error)),
+    outcome === "interrupted" && payload.reason === "inactivity",
+  )
 }
 
 // A chat may move between checkouts. A root run with no open children follows
@@ -394,6 +403,7 @@ export async function onSessionIdle(
   run: RunRecord,
   outcome: SessionOutcome = "idle",
   error?: AttemptError,
+  inactive = false,
 ): Promise<RunRecord> {
   // The settle, the notify bookkeeping and a pending stop transition in one
   // state-lock hold: this pass must not save a record it read before a
@@ -404,7 +414,10 @@ export async function onSessionIdle(
     if (isTerminal(current.state)) return current
     const ended = await settleAttempt(root, current, outcome, error)
     // A stop ends a waiting attempt too: nobody will continue it.
-    const idle = toIdle(current.stopRequested === true ? interruptOpenAttempt(ended) : ended)
+    const settledIdle = toIdle(current.stopRequested === true ? interruptOpenAttempt(ended) : ended)
+    // A turn the host stopped after an hour of silence most likely hung; the
+    // next team news would prompt it straight back into the same hang.
+    const idle = inactive ? { ...settledIdle, held: { at: new Date().toISOString(), reason: "inactivity" as const } } : settledIdle
     const attempt = idle.attempts[idle.attempts.length - 1]
     const announce =
       idle.parent !== null &&
@@ -458,6 +471,14 @@ function withoutRetrying(run: RunRecord): RunRecord {
   if (run.retrying === undefined) return run
   const next = { ...run }
   delete next.retrying
+  return next
+}
+
+/** A hold ends when someone resumes the run: a prompt in its chat or its parent's team_followup. */
+export function withoutHold(run: RunRecord): RunRecord {
+  if (run.held === undefined) return run
+  const next = { ...run }
+  delete next.held
   return next
 }
 
@@ -558,6 +579,13 @@ export function childSettledText(
   const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    if (run.held !== undefined) {
+      lines.push(
+        "No session activity for an hour, so the host stopped it; it is held and nothing resumes it on its own. It most likely hung (a permission ask nobody answers, a stuck tool or a silent model).",
+      )
+      lines.push("next: read team_status and team_diff for it, then team_followup to resume it or team_stop.")
+      return lines.join("\n")
+    }
     // The host says why: a provider or quota error is the member's model being
     // unavailable, not the Brief going wrong, so another member can take it.
     const error = attempt.error
@@ -628,7 +656,8 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
   if (sessionID === null || sessionID === undefined) return run
   const delivery: { text: string; items: InboxItem[]; previous?: RunRecord } = { text: "", items: [] }
   const working = await updateRun(root, run.id, async (current) => {
-    if (current.state !== "idle" || current.worktree === "removed") return current
+    // A held run keeps its inbox; it is delivered once someone resumes the run.
+    if (current.state !== "idle" || current.worktree === "removed" || current.held !== undefined) return current
     // Only the last attempt may be open (run.ts attemptTransition).
     if (current.attempts.slice(0, -1).some((attempt) => !isAttemptTerminal(attempt.state))) return current
     const items = await peek(root, run.id)

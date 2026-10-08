@@ -112,6 +112,10 @@ export interface RunRecord {
       message: string
     }
   }
+  /** The host stopped this run's turn after an hour without session activity.
+   * Nothing prompts a held run on its own: its inbox waits until someone
+   * resumes it (a prompt in its chat, or its parent's team_followup). */
+  held?: { at: string; reason: "inactivity" }
   worktree?: WorktreeState
   promotedFrom?: string
   /** Where the chat moved after this run was tied to a folder, when the run stays behind. Cleared once a team call reports it. */
