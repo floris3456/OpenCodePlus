@@ -473,8 +473,13 @@ Added 2026-10-08 evening (build seat, continuing the run)
   stays heading-derived; the new section appears as a child row at once.
   For a **manual** split (and `block`/`whole` items, which become manual as
   today), boundaries gain an optional `depth` (absent = 0; old stores read
-  unchanged); `a` on a manual section inserts the text at the end of its
-  span and adds a boundary with depth + 1, shifting later boundaries. Section
+  unchanged); `a` on a manual section adds a boundary with depth + 1 at the
+  end of its span, listed right after the section's last descendant (a
+  boundary listed earlier wins a tie of starts). The new text lives only in
+  that section's own record, whose upstream slice is empty, as today's
+  end-of-item add does: the item text and the other boundaries do not move,
+  and no whole-item record is written (amended after I1a's review: writing
+  the item text would shadow lower levels' section edits, finding 12d). Section
   rows get `add: "section"`, so `route.tsx` never falls back to the tab's
   category from a section. The tools API: `split({ id: <section id>, add })`
   adds a child of that section, `split({ id: <item id>, add })` a top-level
@@ -512,9 +517,97 @@ Added 2026-10-08 evening (build seat, continuing the run)
   the command palette ("Cache-miss notices: turn off/on") and the slash
   command `/miss-notices`; it hides the toast only, the Monitor is
   unchanged.
+- **B34. C3 (WP-C runtime) in three parts.** C3a, Plus's
+  `compaction.decide` (a new module, one wiring line in `index.ts`
+  replacing today's inline hook): resolve the C1 fields for (the event's
+  agent, the chat's model) with `resolveModelCompactionFields` and set
+  `strategy`, `compactionModel` and `system` when a level sets them; cold
+  arming per `plus-1.1.18.md` §4 (first step of a new prompt, cold = the
+  warming window ended, else idle longer than the Monitor's `cacheLifetime`,
+  unknown never cold, running never cold, compacted since the last request
+  skipped) sets `compact`, `portable`, `compactionModel` = #1,
+  `compactionFallbacks` = #2…, `optional`; a CPA `quota.switch` decision
+  takes the chat model's list when it is not empty (Plus's hook runs after
+  CPA's, tested); the team `compactWith` arming keeps priority. CPA's
+  "Compacting with X (fallback Y) first" notice is built from the final
+  decision, so it names the armed models. C3b, the per-chat switch and the
+  footer: `compactWarm` gives the model default; the chat switch becomes
+  on/off/default (`compact.json` entries read as on), `<leader>j` and
+  `/compact-warm` flip the effective value, "follow the model settings"
+  resets both switches, and the footer and `warming.status` name the source
+  ("· model setting" / "· this chat") and the cold arming ("cache cold ·
+  compacts with <model> first"). C3c, `compaction.cold({ sessionID })` RPC,
+  `/compact-cold` with its palette entry and toasts (§5), and the team
+  followup default (a stopped cold child without `compactWith` uses its
+  model's list; refuses with `E_STOPPED` when empty).
+- **B35. WP-F (G5): fingerprints stored as deltas.** Measured
+  (`run/evidence/plus-1.2.0/monitor-store/F0-measure.md`): the workspace
+  ledger is 2.16 GB, 97.7% of it `request_fingerprint.message_prefixes`,
+  and 99.9% of a long session's entries repeat its previous fingerprint. A
+  fingerprint row stores its message list as a delta: `prefix_base` (the
+  session's previous fingerprint's request id), `prefix_shared` (how many
+  leading entries equal the base's) and only the entries after them. Every
+  64th row of a session, and the first, is a keyframe (full list, no base),
+  so reading one row walks at most 63 rows; reading a session in order
+  rebuilds each list from the one before. System parts, tools and options
+  stay as they are (2% of the size). Migration happens as rows are read: a
+  session read in order rewrites its legacy full rows as deltas in one
+  transaction (the change triggers then move its revision once; the next
+  read folds once more and writes nothing). Retention deletes keep chains
+  whole: before rows are deleted, the first surviving row of each session
+  becomes a keyframe. No VACUUM in 1.2.0: freed pages are reused, so the
+  file stops growing; it shrinks only by a manual VACUUM (documented). Proof:
+  over a **copy** of the real ledger, every session's verdicts, causes and
+  reports are identical before and after migration, the copy's
+  `request_fingerprint` pages drop by over 90%, and single-row reads return
+  the same lists.
+- **B36. H2 (the twitch), from the live reproduction**
+  (`run/evidence/plus-1.2.0/chat-twitch/H2-report.md`, frame captures at
+  ~400 frames a second). With H1 in, a model pick or agent switch on an idle
+  chat changes only the prompt line. Three causes remain, fixed in two parts.
+  H2a: (1) the "reload": whenever the chat is mounted again (back from
+  Instructions, another chat, a dialog route), every completed assistant text
+  is blank for a frame or more, because `@opentui/core` 0.5.10
+  `MarkdownRenderable.createInitialStyledText` builds the immediate styled
+  text only while `streaming` is on, so completed blocks are created with
+  `drawUnstyledText: false` and wait for the asynchronous Tree-sitter
+  highlight (unchanged in 0.5.17). Fix in the existing
+  `patches/@opentui%2Fcore@0.5.10.patch`: build it whatever the streaming
+  state (the streaming path already draws every block this way), so text is
+  drawn at once and the highlight restyles it in place. Proof: a completed
+  markdown's first rendered frame contains its text. (2) While a reply
+  streams, a trailing line that is only a list marker in progress (digits
+  with an optional `.` or `)`, or a lone `-`, `*`, `+`) is held back from the
+  content until the line grows or the reply completes, so `4` of `42.` never
+  renders as a line and then vanishes (TUI `TextPart`). H2b: (3) the first
+  prompt after an agent or model change jumps the transcript three times in
+  ~64 ms: the sent message, then the "Switched agent"/"Switched model" rows
+  inserted above it, then the instructions-updated row, as separate sync
+  events. The pending prompt carries its agent and model; when they differ
+  from the chat's last ones, the TUI draws the switch rows with the pending
+  message in the same frame, and the durable rows take their place without a
+  height change. The instructions-updated row cannot be predicted and stays.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
+- **B37. Q1: a forgotten quota enrollment no longer pauses a chat for good**
+  (user, 2026-10-08: "constant Quota coordination unavailable (401);
+  generation is paused" on 1.1.18). The service log
+  (`run/evidence/plus-1.2.0/quota-401/Q1-log.md`) shows the pattern on two
+  CPA restarts (13:53 and 17:03 UTC): "did not acknowledge", then 404/502
+  while CPA starts, then 401 for 30–45 minutes, polled every 30 s by warming
+  and on every step. 401 at `generation > 0` means CPA no longer knows the
+  chat's capability (it lost its enrollments); `QuotaController.read` treats
+  401 as "unenrolled" only at generation 0, so every later poll throws, the
+  refusal stays, `headers()` refuses the model request, and the request that
+  would enroll the chat again is never sent. Fix (`cliproxyapi/src/quota/
+  controller.ts`, compaction lane owns it; C3a/C3b do not touch it): a 401
+  from a bridge whose health answers `protocol: 1` is "not enrolled" at any
+  generation; the route resets `generation` and `cursor` to 0 (keeps its
+  capability; notice ids are idempotent), clears the refusal and saves, so
+  the next model request enrolls it as a new chat (the existing opaque
+  checkpoint path compacts if CPA requires it). A 401 whose health probe
+  fails still pauses.
 
 ## Design notes per area
 

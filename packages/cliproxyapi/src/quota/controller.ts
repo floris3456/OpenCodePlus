@@ -77,6 +77,11 @@ function modelSetting(key: string, value: string | undefined): { ref?: Model.Ref
   }
 }
 
+/** The `provider/model[#variant]` label of a resolved model reference. */
+function modelLabel(ref: Model.Ref): string {
+  return `${ref.providerID}/${ref.id}${ref.variant === undefined ? "" : `#${ref.variant}`}`
+}
+
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
 export class QuotaController {
   private readonly routes = new Map<string, Promise<Route>>()
@@ -189,7 +194,7 @@ export class QuotaController {
         redirect: "error",
       })
       .catch(unanswered)
-    if (response.status === 401 && route.stored.generation === 0) {
+    if (response.status === 401) {
       const health = await this.io
         .fetch(route.endpoint, { signal: AbortSignal.timeout(5000), redirect: "error" })
         .catch(unanswered)
@@ -202,11 +207,17 @@ export class QuotaController {
       )(data)
       if (!health.ok) throw new Error("Quota plugin is unavailable")
       route.mode = status.mode
+      // A bridge that answers its health probe but not the authenticated events endpoint has no
+      // binding for this chat: it forgot the enrollment (a CPA restart), at any generation, not just
+      // when none was stored. Reset to a fresh enrollment; the capability stays (notice ids are
+      // idempotent), so the next model request carries generation 0 and CPA enrolls it as a new chat.
+      route.stored = { ...route.stored, generation: 0, cursor: 0 }
       // The bridge is reachable again: an earlier transient failure must not keep
       // an unenrolled chat paused (it never reaches the snapshot path below).
       this.recover(route)
       // Enrollment happens on a model request, which polls again from response().
       route.unenrolledUntil = this.io.now() + UNENROLLED_BACKOFF
+      await this.save(route)
       return
     }
     if (!response.ok) throw new Error(`Quota coordination unavailable (${response.status}); generation is paused`)
@@ -460,6 +471,26 @@ export class QuotaController {
       return routes.some((value) => value.session === session && value.decision?.portable === true)
     }
     return route.stored.replay || !!route.decision?.boundary.checkpoint
+  }
+  /**
+   * The compaction has started, after every plugin's `compaction.decide` ran: when CPA armed this
+   * chat's account switch, the switching notice names the models the final decision chose (Plus may
+   * have replaced CPA's own list), not the ones CPA configured.
+   */
+  async compacting(session: string, provider: string, model: string) {
+    const route = await this.route(session, provider, model)
+    if (route.stored.switching === undefined) return
+    const decision = route.decision
+    if (decision?.metadata?.["quota.switch"] !== true) return
+    const models = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
+    const first = decision.compactionModel ? modelLabel(decision.compactionModel) : undefined
+    route.notices = [
+      {
+        sessionID: session,
+        kind: "switching",
+        text: `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${first ?? "the agent's compaction model"}${models.length > 0 ? ` (fallback ${models.map(modelLabel).join(", ")})` : ""} first.`,
+      },
+    ]
   }
   /**
    * A refusal does not end the warming window: each ping asks again in headers(), and one still refused

@@ -38,12 +38,15 @@ import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { pickModelRow, type ModelPick } from "./instructions/ops.js"
 import {
+  compactionFieldsOf,
   everySettings,
   MODEL_SETTINGS_FIELDS,
+  resolveModelCompactionFields,
   roundedWarmingFor,
   setModelSettingsRecord,
   settingsFor,
   warmingFieldsOf,
+  type CompactionDefaults,
   type HostModel,
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
@@ -90,10 +93,12 @@ import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
-import { ledgerAt } from "./monitor/ledger.js"
+import { ledgerAt, type Ledger } from "./monitor/ledger.js"
+import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
+import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
 import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 import { chatModelForAgent, currentSessionAgent, currentSessionModel, toHostModelRef } from "./session-model.js"
 
@@ -296,6 +301,8 @@ export default Plugin.define({
           yield* useLocation(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
+            // A new prompt is the only place cold compaction may arm.
+            markPromptAdmitted(String(event.sessionID))
           }
         }),
       )
@@ -303,15 +310,7 @@ export default Plugin.define({
         state.sessionPins.markRebuild(String(event.sessionID))
         return Effect.void
       })
-      yield* ctx.session.hook("compaction.decide", (event) => {
-        const model = consumeColdCompaction(event.sessionID)
-        if (model !== undefined) {
-          event.compact = true
-          event.portable = true
-          event.compactionModel = Model.Ref.parse(model)
-        }
-        return Effect.void
-      })
+      yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -1656,6 +1655,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
       })
       if ("error" in parsed) return invalidModelSettings(parsed.error)
+      const compact = compactionFieldsOf({
+        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
+        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
+        ...(input.coldModels === undefined ? {} : { coldModels: input.coldModels }),
+        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
+        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
+        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+      })
+      if ("error" in compact) return invalidModelSettings(compact.error)
       const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
         value === undefined ? undefined : value === null ? null : (parsed.fields[field] ?? null)
       const fields = {
@@ -1665,6 +1673,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.effort === undefined
           ? {}
           : { effort: input.effort === null || input.effort.trim().length === 0 ? null : input.effort.trim() }),
+        ...compact.fields,
       }
       const updated = new Date().toISOString()
       // A warming time rounds up to whole intervals against opencode.json too.
@@ -3828,11 +3837,13 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
   )
 }
 
-export function warmingRowsOf(
+// The (agent, model) resolution inputs a warming or compaction decision walks:
+// the agent's model rows down its runtime chain plus the Defaults › Models rows.
+export function modelRowContextOf(
   state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
   agentID: string,
   model: { readonly providerID: string; readonly id: string; readonly variant?: string },
-): WarmingRows {
+) {
   const agent = dedupeAgents([
     ...state.cachedAgents.filter((entry) => entry.team !== undefined),
     ...state.cachedAgents.filter((entry) => entry.team === undefined),
@@ -3843,18 +3854,105 @@ export function warmingRowsOf(
       ? { level: "project" as const, scopes: state.cachedScopes }
       : runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, state.cachedScopes)
   const target = { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) }
-  const row = resolveModelFields(
-    { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
+  return {
+    input: { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
     target,
-  )
-  const key = { providerID: model.providerID, modelID: model.id }
-  const modelRow = settingsFor(state.cachedModelSettings, key)
+    key: { providerID: model.providerID, modelID: model.id },
+  }
+}
+
+export function warmingRowsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+): WarmingRows {
+  const context = modelRowContextOf(state, agentID, model)
+  const row = resolveModelFields(context.input, context.target)
+  const modelRow = settingsFor(state.cachedModelSettings, context.key)
   const everyRow = everySettings(state.cachedModelSettings)
   return {
     ...(Object.keys(row).length === 0 ? {} : { row }),
     ...(modelRow === undefined ? {} : { model: modelRow }),
     ...(everyRow === undefined ? {} : { every: everyRow }),
   }
+}
+
+/** The compaction fields the agent's model rows set for this chat's model. */
+export function compactionRowsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+) {
+  const context = modelRowContextOf(state, agentID, model)
+  return resolveModelCompactionFields(context.input, context.target)
+}
+
+// Plus's `compaction.decide`: the per-model settings for (agent, chat model),
+// cold-cache arming at the first step of a new prompt, the CPA account-switch
+// replacement, and the team `compactWith` arming that wins over all of them.
+export function decideCompactionFor(
+  ctx: Context,
+  state: PlusState,
+  event: SessionCompactionDecision,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+): Effect.Effect<void> {
+  return Effect.promise(async () => {
+    // A team compactWith arming is the user's explicit instruction: it wins,
+    // and nothing below needs reading.
+    const teamModel = consumeColdCompaction(event.sessionID)
+    if (teamModel !== undefined) {
+      decideCompaction(event, { teamModel })
+      return
+    }
+    // Cold is consulted only at the first auto decision after a prompt: the
+    // mark is consumed whatever the outcome, so later steps of the same turn
+    // never consult it. A manual or overflow decision leaves it for the next
+    // auto step.
+    const cold = event.reason === "auto" && consumePromptAdmitted(event.sessionID) ? await coldFor(ctx, event, ledger) : undefined
+    const agentWide = await compactionDefaultsOf(ctx, event.agent)
+    const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
+    const everyRow = everySettings(state.cachedModelSettings)
+    decideCompaction(event, {
+      rows: compactionRowsOf(state, event.agent, event.model),
+      ...(modelRow === undefined ? {} : { model: modelRow }),
+      ...(everyRow === undefined ? {} : { every: everyRow }),
+      ...(agentWide === undefined ? {} : { agent: agentWide }),
+      ...(cold === undefined ? {} : { cold }),
+    })
+  })
+}
+
+// The agent's old agent-wide compaction policy, as core has it applied.
+async function compactionDefaultsOf(ctx: Context, agentID: Agent.ID): Promise<CompactionDefaults | undefined> {
+  const agent = await Effect.runPromise(ctx.agent.get({ agentID }).pipe(Effect.catchCause(() => Effect.succeed(undefined))))
+  const compaction = agent?.data.compaction
+  if (compaction === undefined) return undefined
+  const model = compaction.model
+  return {
+    ...(compaction.strategy === undefined ? {} : { strategy: compaction.strategy }),
+    ...(model === undefined ? {} : { model: `${model.providerID}/${model.id}${model.variant === undefined ? "" : `#${model.variant}`}` }),
+    ...(compaction.system === undefined ? {} : { instructions: compaction.system }),
+  }
+}
+
+// The chat's window and its last request with that request's fingerprint; the
+// decision module owns the cold test itself.
+async function coldFor(
+  ctx: Context,
+  event: SessionCompactionDecision,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
+): Promise<ColdCompactionState> {
+  const now = Date.now()
+  const status = await warmingStore.status(event.sessionID, now)
+  const rows = ledger.getRequests(event.sessionID)
+  const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
+  const fingerprint = last === undefined ? undefined : ledger.getFingerprint(last.id)
+  return coldStateOf({
+    status,
+    now,
+    ...(last === undefined ? {} : { last }),
+    ...(fingerprint === undefined ? {} : { fingerprint }),
+  })
 }
 
 interface LoadedStores {
@@ -4803,6 +4901,12 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+      ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+      ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+      ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+      ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+      ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+      ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}
@@ -6762,6 +6866,12 @@ function toSnapshot(
             ...(record.warming === undefined ? {} : { warming: record.warming }),
             ...(record.interval === undefined ? {} : { interval: record.interval }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+            ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+            ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+            ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+            ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+            ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+            ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
             ...(record.originalCandidate === undefined ? {} : { originalCandidate: { ...record.originalCandidate } }),
             updated: record.updated,

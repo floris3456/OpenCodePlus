@@ -6,7 +6,7 @@ import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseModelFieldItemId } from "../../instructions/model-settings.js"
+import { isDefaultSwitchField, isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseColdDefaultItemId, parseColdModelItemId, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -1001,6 +1001,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function toggle() {
     const node = current()
     if (!node) return
+    if (isCompactionSwitch(node)) {
+      void state.toggleModelSwitch(node)
+      return
+    }
     if (canToggle(node) || requiredParam(node)) {
       void state.toggle(node)
       return
@@ -1017,6 +1021,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   // else the generic picker.
   function add() {
     const node = current()
+    if (isColdListRow(node)) {
+      void dialogs.addColdModel(node!)
+      return
+    }
     const category = workspace().category
     const tool = node?.kind === "item" && node.address?.item.startsWith("tool:") === true && node.actions?.split === true
     if (focus() === "list" && node !== undefined && node.add === undefined && !tool && category?.add !== undefined) {
@@ -1029,6 +1037,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function remove() {
     const node = current()
     if (node === undefined) return
+    // A cold-cache list row drops its entry (never the whole model row).
+    if (isColdListRow(node) && parseColdModelItemId(node.address?.item ?? "") !== undefined) {
+      void state.removeColdModel(node)
+      return
+    }
+    if (isColdListRow(node) && parseColdDefaultItemId(node.address?.item ?? "") !== undefined) {
+      void state.removeColdModel(node)
+      return
+    }
     // Only an explicit category header (the row a user category leads its own
     // list with) targets the category. Content rows and sidebar rows keep
     // their own delete path: a selected category never hijacks d.
@@ -1039,10 +1056,28 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     void state.remove(node)
   }
 
-  // m on an item row: move it (with its children) into a user category or home.
+  // m on a cold-cache list row: pick it up (↑/↓ move, Enter drops, Esc
+// restores); elsewhere on an item row: move it into a user category or home.
   function moveToCategory() {
     const node = current()
-    if (node) void dialogs.move(node)
+    if (node === undefined) return
+    if (isColdListRow(node) && (parseColdModelItemId(node.address?.item ?? "") !== undefined || parseColdDefaultItemId(node.address?.item ?? "") !== undefined)) {
+      state.beginColdMove(node)
+      return
+    }
+    void dialogs.move(node)
+  }
+
+  function moveColdBy(delta: -1 | 1) {
+    state.moveColdDraft(delta)
+  }
+
+  async function commitColdMove() {
+    await state.commitColdMove()
+  }
+
+  function cancelColdMove() {
+    state.cancelColdMove()
   }
 
   // R on a user category: rename the selected category, whatever pane holds
@@ -1146,6 +1181,26 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   function isModelDefaultRow(node: TreeNode): boolean {
     return isModelDefaultRowId(node.id)
+  }
+
+  // A cold-cache group (its switch plus the numbered list) or one of its rows.
+  function isColdListRow(node: TreeNode | undefined): boolean {
+    const item = node?.address?.item
+    if (item === undefined) return false
+    if (parseColdModelItemId(item) !== undefined || parseColdDefaultItemId(item) !== undefined) return true
+    return parseModelSettingItemId(item)?.field === "coldCompact" || parseModelFieldItemId(item)?.field === "coldCompact"
+  }
+
+  // The compaction switch rows (Space toggles): the `Compact before cold` field
+  // and the cold-cache group, on an agent model row or a Defaults model row.
+  function isCompactionSwitch(node: TreeNode | undefined): boolean {
+    if (node?.actions?.toggle !== true) return false
+    const item = node.address?.item
+    if (item === undefined) return false
+    const modelField = parseModelFieldItemId(item)
+    if (modelField !== undefined && (modelField.field === "compactWarm" || modelField.field === "coldCompact")) return true
+    const setting = parseModelSettingItemId(item)
+    return setting !== undefined && isDefaultSwitchField(setting.field)
   }
 
   // Enter on a normal row opens the editor; on a review row the review: a
@@ -1404,6 +1459,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     if (state.snapshot() === undefined) return [["esc", "back"]]
     if (filtering()) return [["type", "to filter"], ["↑↓", "move"], ["enter", "go to"], ["ctrl+space", "toggle"], ["esc", "clear filter"]]
+    if (state.coldMove() !== undefined) return [["↑↓", "move in try order"], ["enter", "drop"], ["esc", "cancel"]]
     const node = current()
     const row = currentRow()
     const hints: [string, string][] = [["↑↓", "move"]]
@@ -1469,6 +1525,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           { bind: "return", title: "Go to result", group: "Instructions", run: enter },
           { bind: "ctrl+space", title: "Toggle", group: "Instructions", run: toggle },
           { bind: "escape", title: "Clear filter", group: "Instructions", run: escape },
+        ],
+      }
+    // Moving a cold-cache entry: ↑/↓ change the try order in a draft, Enter
+    // drops (one write), Esc restores (no write).
+    if (state.coldMove() !== undefined)
+      return {
+        commands: [
+          { bind: "up", title: "Move earlier", group: "Instructions", run: () => moveColdBy(-1) },
+          { bind: "down", title: "Move later", group: "Instructions", run: () => moveColdBy(1) },
+          { bind: "return", title: "Drop here", group: "Instructions", run: () => void commitColdMove() },
+          { bind: "escape", title: "Cancel move", group: "Instructions", run: cancelColdMove },
         ],
       }
     const node = current()

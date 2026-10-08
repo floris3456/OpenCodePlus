@@ -228,3 +228,39 @@ test("assembled spans stay on their sections when blank-line runs collapse befor
   expect(span).toEqual({ start: assembled.text.indexOf("# Beta"), end: assembled.text.length })
   expect(assembled.text.slice(span?.start, span?.end)).toBe("# Beta\n\nbeta")
 })
+
+test("manual split with depth preserves hierarchy in assemble and parentIndexes, while without depth behaves as golden", () => {
+  const text = "Alpha content.\nChild content.\nBeta content.\n"
+  const goldenBoundaries = [
+    { id: "alpha", name: "Alpha", start: 0 },
+    { id: "beta", name: "Beta", start: text.indexOf("Beta content.") },
+  ]
+  const goldenSplit = manual(text, goldenBoundaries)
+  expect(goldenSplit.sections).toHaveLength(2)
+  expect(goldenSplit.sections[0].depth).toBe(0)
+  expect(goldenSplit.sections[1].depth).toBe(0)
+  expect(goldenSplit.sections[0].end).toBe(goldenBoundaries[1].start)
+  expect(goldenSplit.sections[1].end).toBe(text.length)
+  const goldenAssembled = assemble(text, goldenSplit, new Set())
+  expect(goldenAssembled).toBe("Alpha content.\nChild content.\nBeta content.")
+
+  // With depth
+  const nestedBoundaries = [
+    { id: "alpha", name: "Alpha", start: 0, depth: 0 },
+    { id: "child", name: "Child", start: text.indexOf("Child content."), depth: 1 },
+    { id: "beta", name: "Beta", start: text.indexOf("Beta content."), depth: 0 },
+  ]
+  const nestedSplit = manual(text, nestedBoundaries)
+  expect(nestedSplit.sections[0].depth).toBe(0)
+  expect(nestedSplit.sections[0].end).toBe(nestedBoundaries[2].start)
+  expect(nestedSplit.sections[1].depth).toBe(1)
+  expect(nestedSplit.sections[1].end).toBe(nestedBoundaries[2].start)
+  expect(nestedSplit.sections[2].depth).toBe(0)
+  expect(nestedSplit.sections[2].end).toBe(text.length)
+
+  const nestedAssembled = assemble(text, nestedSplit, new Set(["child"]))
+  expect(nestedAssembled).not.toContain("Child content.")
+  expect(nestedAssembled).toContain("Alpha content.")
+  expect(nestedAssembled).toContain("Beta content.")
+})
+

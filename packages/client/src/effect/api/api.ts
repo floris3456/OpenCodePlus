@@ -1238,6 +1238,7 @@ export type SessionLogOutput =
           readonly data: {
             readonly sessionID: Session.ID
             readonly reason: "auto" | "manual"
+            readonly model?: Model.Ref | undefined
             readonly error: { readonly type: string; readonly message: string; readonly status?: number | undefined }
             readonly inputID?: SessionMessage.ID | undefined
             readonly cost?: (number & Brand.Brand<"Money.USD">) | undefined

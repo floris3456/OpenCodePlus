@@ -149,6 +149,7 @@ export const Boundary = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   start: Schema.Number,
+  depth: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.Boundary" })
 
 export type RecordState = typeof RecordState.Type
@@ -217,6 +218,12 @@ export const SnapshotModelRecord = Schema.Struct({
   warming: Schema.optionalKey(Schema.String),
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
+  compactWarm: Schema.optionalKey(Schema.String),
+  coldCompact: Schema.optionalKey(Schema.String),
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  compactionStrategy: Schema.optionalKey(Schema.String),
+  compactionModel: Schema.optionalKey(Schema.String),
+  compactionInstructions: Schema.optionalKey(Schema.String),
   removed: Schema.optionalKey(Schema.Literal(true)),
   originalCandidate: Schema.optionalKey(OriginalCandidate),
   updated: Schema.String,
@@ -236,6 +243,12 @@ export const SnapshotModelSettingsRecord = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
+  compactWarm: Schema.optionalKey(Schema.String),
+  coldCompact: Schema.optionalKey(Schema.String),
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  compactionStrategy: Schema.optionalKey(Schema.String),
+  compactionModel: Schema.optionalKey(Schema.String),
+  compactionInstructions: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotModelSettingsRecord" })
 
@@ -777,6 +790,12 @@ export const SetModelSettingsInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.NullOr(Schema.String)),
   prompt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   effort: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactWarm: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldCompact: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldModels: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))),
+  compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate({ identifier: "Plus.SetModelSettingsInput" })
 
 export interface SetModelSettingsOutput extends Schema.Schema.Type<typeof SetModelSettingsOutput> {}

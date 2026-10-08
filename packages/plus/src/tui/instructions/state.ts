@@ -18,10 +18,13 @@ import { deltaOf, keyIdentity, recordIdentity, snapshotRecordOf, type Delta } fr
 import type { StoredRecord } from "../../instructions/store.js"
 import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import {
+  isDefaultSwitchField,
   isEvery,
   isModelDefaultRowId,
   isModelFieldRowId,
   modelDefaultItemId,
+  parseColdDefaultItemId,
+  parseColdModelItemId,
   parseModelDefaultItemId,
   parseModelSettingItemId,
   type HostModel,
@@ -30,8 +33,16 @@ import {
 import { agentOf, categoryOf, contextOfSnapshot, hostModelOf, itemOf, modelDefaultsViewOf, modelSettingsRecordOf, presetStateOfSnapshot, recordOf, teamOf } from "../../instructions/snapshot.js"
 import {
   activateModelRow,
+  addColdModelRow,
+  addDefaultColdModel,
   addSection,
+  coldListForItem,
+  defaultColdList,
   findRow,
+  removeColdModelRow,
+  removeDefaultColdModel,
+  setModelCompactionRow,
+  toggleModelCompactionSwitch,
   isModelRowId,
   isPermRowId,
   modelReviewChoice,
@@ -141,6 +152,12 @@ export function toRpcRecords(
         ...(record.warming === undefined ? {} : { warming: record.warming }),
         ...(record.interval === undefined ? {} : { interval: record.interval }),
         ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+        ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+        ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+        ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+        ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+        ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+        ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
         ...(record.removed === undefined ? {} : { removed: record.removed }),
         ...(record.originalCandidate === undefined
           ? {}
@@ -976,7 +993,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   async function resetNode(node: TreeNode): Promise<boolean> {
     if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
     const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
-    if (setting !== undefined) return editModelSettings(node, { [setting.field]: null })
+    if (setting !== undefined) {
+      // The cold-cache group's reset drops this level's switch and list.
+      if (setting.field === "coldCompact") return editModelSettings(node, { coldCompact: null, coldModels: null })
+      return editModelSettings(node, { [setting.field]: null })
+    }
     if (isModelFieldRowId(node.id)) {
       const result = resetModelFieldRow(memoInput(), node.id, treeMemo())
       if ("refusal" in result) {
@@ -985,6 +1006,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       }
       return persistModels(result.models, result.status, result.retryHint)
     }
+    // The compaction switch rows: the cold-cache group and the coldCompact
+    // field carry no `modelfield:` row id on a switch, so clear the field here.
+    const switchItem = node.address?.item
+    if (switchItem !== undefined && parseColdModelItemId(switchItem) !== undefined) return setModelCompaction(node, { coldModels: null })
+    if (switchItem !== undefined && node.id.endsWith(":cold"))
+      return setModelCompaction(node, { coldCompact: null, coldModels: null })
+    if (switchItem !== undefined && switchItem.includes("modelfield:compactWarm:")) return setModelCompaction(node, { compactWarm: null })
     if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = resetModelRow(memoInput(), node.id, treeMemo())
@@ -1112,6 +1140,20 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persistModels(result.models, result.status, result.retryHint)
   }
 
+  // One compaction field on an agent/member/preset model row: set at this
+  // level (null clears it so the level below decides), one write.
+  async function setModelCompaction(
+    node: TreeNode,
+    fields: { compactWarm?: string | null; coldCompact?: string | null; coldModels?: readonly string[] | null; compactionStrategy?: string | null; compactionModel?: string | null; compactionInstructions?: string | null },
+  ): Promise<boolean> {
+    const result = setModelCompactionRow(memoInput(), node.id, fields, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
+  }
+
   /** What a Defaults › Models row resolves to now, for the inspector and its edit dialog. */
   function modelDefaultsView(node: TreeNode) {
     const current = snapshot()
@@ -1123,7 +1165,18 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // field), so this is its own call, not the inventory mutate.
   async function editModelSettings(
     node: TreeNode,
-    fields: { warming?: string | null; interval?: string | null; prompt?: string | null; effort?: string | null },
+    fields: {
+      warming?: string | null
+      interval?: string | null
+      prompt?: string | null
+      effort?: string | null
+      compactWarm?: string | null
+      coldCompact?: string | null
+      coldModels?: readonly string[] | null
+      compactionStrategy?: string | null
+      compactionModel?: string | null
+      compactionInstructions?: string | null
+    },
   ): Promise<boolean> {
     const current = snapshot()
     if (!current) {
@@ -1384,8 +1437,145 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     unsubscribeInstructions()
   }
 
+  // Space on a compaction switch: the field row (`Compact before cold`) or the
+  // cold-cache group. Agent rows write the model inventory; Defaults field
+  // rows write through modelSettings.set.
+  async function toggleModelSwitch(node: TreeNode): Promise<boolean> {
+    const item = node.address?.item
+    if (item === undefined) {
+      setStatus(`"${node.label}" cannot be toggled`)
+      return false
+    }
+    const setting = parseModelSettingItemId(item)
+    if (setting !== undefined && isDefaultSwitchField(setting.field)) {
+      const on = (node.badges.value ?? "").startsWith("on")
+      return editModelSettings(node, { [setting.field]: on ? "off" : "on" } as never)
+    }
+    const result = toggleModelCompactionSwitch(memoInput(), node.id, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
+  }
+
+  // The strategy a Defaults compaction field cycles from: the first word of the
+  // row's shown value (Auto / Local / Remote).
+  function modelCompactionView(node: TreeNode): string | undefined {
+    const value = node.badges.value
+    if (value === undefined) return undefined
+    const word = value.split(" ")[0]
+    return word === undefined ? undefined : word.toLowerCase()
+  }
+
+  // a on a cold-cache list: append through the catalogue picker. The route
+  // picks the model and calls this with it.
+  async function addColdModel(node: TreeNode, model: string): Promise<boolean> {
+    const item = node.address?.item
+    if (item !== undefined && isDefaultColdNode(item)) {
+      const edit = addDefaultColdModel(memoInput(), node.id, model, treeMemo())
+      if ("refusal" in edit) {
+        setStatus(edit.refusal)
+        return false
+      }
+      return editModelSettings(node, { coldModels: edit.coldModels } as never)
+    }
+    const result = addColdModelRow(memoInput(), node.id, model, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
+  }
+
+  // d on a cold-cache list row.
+  async function removeColdModel(node: TreeNode): Promise<boolean> {
+    const item = node.address?.item
+    if (item !== undefined && isDefaultColdNode(item)) {
+      const edit = removeDefaultColdModel(memoInput(), node.id, treeMemo())
+      if ("refusal" in edit) {
+        setStatus(edit.refusal)
+        return false
+      }
+      return editModelSettings(node, { coldModels: edit.coldModels } as never)
+    }
+    const result = removeColdModelRow(memoInput(), node.id, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
+  }
+
+  // m picks a list row up; ↑/↓ move it in a draft; Enter drops (one write);
+  // Esc restores (no write). The draft is keyed by the row id and the list.
+  const [coldMove, setColdMove] = createSignal<{ readonly rowId: string; readonly models: readonly string[]; readonly index: number }>()
+  function beginColdMove(node: TreeNode): boolean {
+    const item = node.address?.item
+    if (item === undefined) return false
+    const defaults = parseColdDefaultItemId(item)
+    if (defaults !== undefined) {
+      setColdMove({ rowId: node.id, models: defaultColdList(memoInput(), defaults.key), index: defaults.index })
+      return true
+    }
+    const agent = parseColdModelItemId(item)
+    const memo = treeMemo()
+    const address = node.address
+    const found = agent === undefined || address === undefined || memo === undefined ? undefined : coldListForItem(memoInput(), address, memo.ctx.scopes)
+    if (agent === undefined || found === undefined) {
+      setStatus(`"${node.label}" is not a cold-cache list row`)
+      return false
+    }
+    setColdMove({ rowId: node.id, models: found, index: agent.index })
+    return true
+  }
+  function moveColdDraft(delta: -1 | 1): boolean {
+    const move = coldMove()
+    if (move === undefined) return false
+    const to = move.index + delta
+    if (to < 0 || to >= move.models.length) return false
+    const models = [...move.models]
+    const [moved] = models.splice(move.index, 1)
+    if (moved === undefined) return false
+    models.splice(to, 0, moved)
+    setColdMove({ ...move, models, index: to })
+    return true
+  }
+  async function commitColdMove(): Promise<boolean> {
+    const move = coldMove()
+    if (move === undefined) return false
+    setColdMove(undefined)
+    const node = findRow(memoInput(), move.rowId, treeMemo())
+    if (node === undefined) {
+      setStatus("That row is gone")
+      return false
+    }
+    const item = node.address?.item
+    if (item !== undefined && parseColdDefaultItemId(item) !== undefined) return editModelSettings(node, { coldModels: move.models } as never)
+    const result = setModelCompactionRow(memoInput(), node.id, { coldModels: move.models }, treeMemo())
+    if ("refusal" in result) {
+      setStatus(result.refusal)
+      return false
+    }
+    return persistModels(result.models, result.status, result.retryHint)
+  }
+  function cancelColdMove(): boolean {
+    const had = coldMove() !== undefined
+    setColdMove(undefined)
+    return had
+  }
+
   return {
     snapshot,
+    coldMove,
+    toggleModelSwitch,
+    modelCompactionView,
+    addColdModel,
+    removeColdModel,
+    beginColdMove,
+    moveColdDraft,
+    commitColdMove,
+    cancelColdMove,
     memo: treeMemo,
     nodes,
     matched: (): ReadonlySet<string> => {
@@ -1429,6 +1619,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     resolveModel,
     editModelField,
     editModelSettings,
+    setModelCompaction,
     modelDefaultsView,
     reveal,
     revealed,
@@ -1452,6 +1643,13 @@ function roundedNote(typed: string | null | undefined, stored: string | undefine
   const parsed = parseWarming(typed)
   if ("error" in parsed || formatWarming(parsed) === stored) return ""
   return ` (${formatWarming(parsed)} rounds up to ${stored}: whole ${interval === undefined ? "" : `${formatDuration(interval)} `}pings)`
+}
+
+// Whether a row's item id belongs to a Defaults › Models cold-cache list: the
+// group's switch item or one of its numbered list rows.
+function isDefaultColdNode(item: string): boolean {
+  if (parseColdDefaultItemId(item) !== undefined) return true
+  return parseModelSettingItemId(item)?.field === "coldCompact"
 }
 
 function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord | null): string {

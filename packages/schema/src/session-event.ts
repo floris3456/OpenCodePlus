@@ -629,6 +629,7 @@ export namespace Compaction {
     schema: {
       ...Base,
       reason: Started.data.fields.reason,
+      model: SessionMessage.CompactionFailed.fields.model,
       error: SessionError.Error,
       inputID: SessionMessage.ID.pipe(optional),
       cost: SessionMessage.CompactionFailed.fields.cost,

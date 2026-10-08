@@ -131,7 +131,6 @@ test("a row assigned to a category moves with its children and delete returns it
   expect(childrenOf(nodes, agent).map((node) => node.label)).toEqual([
     "Settings",
     "Models",
-    "Compaction",
     "Tools",
     "Base",
     "System",
@@ -181,7 +180,6 @@ test("the workspace shows the user category tab and lists its rows", () => {
   expect(workspace.categories.map((category) => category.label)).toEqual([
     "Settings",
     "Models",
-    "Compaction",
     "Tools",
     "Base",
     "System",

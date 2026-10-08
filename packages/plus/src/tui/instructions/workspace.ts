@@ -10,7 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -246,6 +246,7 @@ export function canExpand(node: TreeNode): boolean {
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   if (node.address?.item.startsWith("perm:") === true) return false
   if (node.address?.item.startsWith("param:") === true) return false
+  if (node.address !== undefined && (isColdModelItemId(node.address.item) || isColdDefaultItemId(node.address.item))) return false
   return true
 }
 
