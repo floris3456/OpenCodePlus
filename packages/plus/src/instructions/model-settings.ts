@@ -1,7 +1,6 @@
 import { ConfigWarming } from "@opencode/schema/config/warming"
 import { Duration, Option, Schema } from "effect"
 import { cacheLifetime } from "../monitor/cache.js"
-import type { RequestRow } from "../monitor/ledger.js"
 import {
   formatDuration,
   formatWarming,
@@ -1065,7 +1064,7 @@ export function coldCompactSummary(on: boolean, models: readonly string[]): stri
 /** The cache lifetime the monitor assumes for a model row's provider and model; undefined for Every model or when unknown. */
 export function cacheLifetimeOf(key: ModelSettingsKey): number | undefined {
   if (key.providerID === undefined || key.modelID === undefined) return undefined
-  return cacheLifetime({ provider: key.providerID, model: key.modelID } as unknown as RequestRow)
+  return cacheLifetime({ provider: key.providerID, model: key.modelID })
 }
 
 /** Ping every's dropdown values: the times below the cache lifetime. An unknown lifetime gets the 5m list. */
