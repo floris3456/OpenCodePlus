@@ -18,6 +18,17 @@ type Segment = {
 export const promptTokens = (r: RequestRow) => r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens
 export const isMiss = (r: MonitorRequest) => r.verdict === "miss" || r.verdict === "partial"
 
+export function causeWords(cause: string | undefined, changedPart?: string): string {
+  if (cause === "compacted") return "after compaction (expected)"
+  if (cause === "model-switch") return "model switched"
+  if (cause === "agent-switch") return "agent switched"
+  if (cause === "prefix-changed") return changedPart ? `prompt changed · ${changedPart}` : "prompt changed"
+  if (cause === "cache-expired") return "cache expired"
+  if (cause === "account-changed") return "account changed"
+  if (cause === "account-changed-compacted-first") return "account changed · compacted first"
+  return "unknown"
+}
+
 type SegmentInfo = {
   readonly segments: Segment[]
   readonly totalTokens: number
@@ -668,6 +679,7 @@ interface CauseStep {
   readonly reverts: MonitorRequestDetail["reverts"]
   readonly verdict: MonitorRequest["verdict"]
   readonly cause: MonitorRequest["cause"]
+  readonly causeText: string
   readonly confidence: MonitorRequest["confidence"]
   readonly evidence: string
   /** Exact reusable tokens not read when the drop-based partial rule applies. */
@@ -703,7 +715,9 @@ function causeStep(
       keys: Array.isArray(f.detail?.keys) ? f.detail.keys.filter((k): k is string => typeof k === "string") : [],
     }))
   const reverts = between.filter((f) => f.kind === "revert").map((f) => ({ at: f.at }))
-  const compacted = between.some((f) => f.kind === "compaction")
+  const compactions = between.filter((f) => f.kind === "compaction")
+  const compacted = compactions.length > 0
+  const quotaSwitchCompacted = compacted && compactions.some((f) => f.detail?.["quota.switch"] === true || f.detail?.quotaSwitch === true)
   const switched =
     last !== undefined && (last.provider !== r.provider || last.model !== r.model || last.variant !== r.variant)
   const agent = last !== undefined && last.agent !== r.agent
@@ -718,6 +732,7 @@ function causeStep(
       reverts,
       verdict: "none",
       cause: "unknown",
+      causeText: "unknown",
       confidence: "unknown",
       evidence: "Request still running; no usage reported yet",
       missOverride: undefined,
@@ -732,6 +747,7 @@ function causeStep(
       reverts,
       verdict: "error",
       cause: undefined,
+      causeText: "unknown",
       confidence: "unknown",
       evidence: "Request failed; no cache usage was reported",
       missOverride: undefined,
@@ -773,27 +789,32 @@ function causeStep(
               ? "partial"
               : "hit"
 
-  const cause: MonitorRequest["cause"] = compacted
-    ? "compacted"
-    : switched
-      ? "model-switch"
-      : agent
-        ? "agent-switch"
-        : changed
-          ? "prefix-changed"
-          : expired && verdict !== "hit" && (diff.reusable || warmRead > 0)
-            ? "cache-expired"
-            : accounts.length
-              ? "account-changed"
-              : "unknown"
+  const cause: MonitorRequest["cause"] = quotaSwitchCompacted
+    ? "account-changed-compacted-first"
+    : compacted
+      ? "compacted"
+      : switched
+        ? "model-switch"
+        : agent
+          ? "agent-switch"
+          : changed
+            ? "prefix-changed"
+            : expired && verdict !== "hit" && (diff.reusable || warmRead > 0)
+              ? "cache-expired"
+              : accounts.length
+                ? "account-changed"
+                : "unknown"
 
   const confidence: MonitorRequest["confidence"] =
     cause === "unknown" ? "unknown" : cause === "cache-expired" || cause === "account-changed" ? "likely" : "certain"
 
   const firstNamed = diff.changes.find((c) => c.name !== "cache markers") ?? diff.changes[0]
+  const causeText = causeWords(cause, firstNamed?.name)
   const evidence =
-    cause === "compacted"
-      ? "First request after compaction; cold start expected"
+    cause === "account-changed-compacted-first"
+      ? "First request after compaction armed by provider account switch; cold start expected"
+      : cause === "compacted"
+        ? "First request after compaction; cold start expected"
       : cause === "model-switch"
         ? `Model / variant switched: ${last?.provider}/${last?.model}/${last?.variant ?? "default"} → ${r.provider}/${r.model}/${r.variant ?? "default"}`
         : cause === "agent-switch"
@@ -818,6 +839,7 @@ function causeStep(
     reverts,
     verdict,
     cause,
+    causeText,
     confidence,
     evidence,
     // A partial bust's exact unreused prefix is the read drop; the segment
@@ -1039,6 +1061,7 @@ export function foldSession(
       cost: r.cost,
       verdict: cause.verdict,
       ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
+      causeText: cause.causeText,
       confidence: cause.verdict === "hit" && expected !== undefined ? "certain" : cause.confidence,
       evidence:
         cause.verdict === "hit" && cause.cause === "unknown"

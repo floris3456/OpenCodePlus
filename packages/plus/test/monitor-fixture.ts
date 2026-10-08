@@ -74,7 +74,7 @@ export function script(sessionID: string, clock: { now: number }) {
     user() {
       push("session.inbox.delivered", { inboxID: "msg_user" })
     },
-    compact(tokens: ReturnType<typeof usage>) {
+    compact(tokens: ReturnType<typeof usage>, extra?: Record<string, unknown>) {
       push("session.compaction.ended", {
         reason: "auto",
         model: { id: "m1", providerID: "p" },
@@ -82,6 +82,7 @@ export function script(sessionID: string, clock: { now: number }) {
         recent: "",
         cost: 0,
         tokens,
+        ...extra,
       })
     },
     created(extra: Record<string, unknown>) {

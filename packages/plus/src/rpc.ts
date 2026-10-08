@@ -1231,6 +1231,28 @@ export const MonitorQueryInput = Schema.Struct({
   compare: Schema.optionalKey(MonitorWindow),
 }).annotate({ identifier: "Plus.MonitorQueryInput" })
 
+export interface MonitorStepInput extends Schema.Schema.Type<typeof MonitorStepInput> {}
+export const MonitorStepInput = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.MonitorStepInput" })
+
+export type MonitorStepResult = Schema.Schema.Type<typeof MonitorStepResult>
+export const MonitorStepResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    stepID: Schema.String,
+    requestID: Schema.String,
+    miss: Schema.Boolean,
+    notReused: Schema.Number,
+    cause: Schema.optionalKey(Schema.String),
+    causeText: Schema.String,
+    changedPart: Schema.optionalKey(Schema.String),
+  }),
+]).annotate({ identifier: "Plus.MonitorStepResult" })
+
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
   requests: Schema.optionalKey(Schema.Number),
@@ -1331,9 +1353,11 @@ export const MonitorRequest = Schema.Struct({
       "prefix-changed",
       "cache-expired",
       "account-changed",
+      "account-changed-compacted-first",
       "unknown",
     ]),
   ),
+  causeText: Schema.optionalKey(Schema.String),
   confidence: Schema.optionalKey(Schema.Literals(["certain", "likely", "unknown"])),
   evidence: Schema.optionalKey(Schema.String),
   expected: Schema.optionalKey(Schema.Number),
@@ -2008,6 +2032,8 @@ const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
+const PortableMonitorStepInput = Schema.toStandardSchemaV1(MonitorStepInput.annotate({ identifier: "Plus.MonitorStepInput" }))
+const PortableMonitorStepResult = Schema.toStandardSchemaV1(MonitorStepResult.annotate({ identifier: "Plus.MonitorStepResult" }))
 const PortableMonitorReport = Schema.toStandardSchemaV1(MonitorReport.annotate({ identifier: "Plus.MonitorReport" }))
 const PortableMonitorMarkInput = Schema.toStandardSchemaV1(MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }))
 const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
@@ -2411,6 +2437,11 @@ export const Definition = Rpc.define({
     "monitor.query": {
       input: PortableMonitorQueryInput,
       output: PortableMonitorReport,
+      errors: {},
+    },
+    "monitor.step": {
+      input: PortableMonitorStepInput,
+      output: PortableMonitorStepResult,
       errors: {},
     },
     "monitor.mark": {

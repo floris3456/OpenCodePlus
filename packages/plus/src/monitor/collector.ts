@@ -355,7 +355,7 @@ export function createCollector(options: CollectorOptions): Collector {
     return previous.calls.map((call, index) => ({ callID: call.id, resultTokens: parts[index] ?? 0, measured: true }))
   }
 
-  function compacted(sessionID: string, data: Data, failed = false) {
+  function compacted(sessionID: string, data: Data, metadata?: Record<string, unknown>, failed = false) {
     const at = now()
     const messageID = `compaction:${at}`
     if (ledger.getRequests(sessionID).some((row) => row.messageID === messageID)) return
@@ -364,13 +364,23 @@ export function createCollector(options: CollectorOptions): Collector {
       | { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
       | undefined
     const model = data.model as { id?: string; providerID?: string; variant?: string } | undefined
+    const dataMeta = data.metadata as Record<string, unknown> | undefined
+    const quotaSwitch =
+      metadata?.["quota.switch"] === true ||
+      dataMeta?.["quota.switch"] === true ||
+      data["quota.switch"] === true
     state.idx += 1
     if (!failed) state.epoch += 1
     ledger.contextFact({
       sessionID,
       at,
       kind: failed ? "compaction_failed" : "compaction",
-      detail: { epoch: state.epoch, tokens, model },
+      detail: {
+        epoch: state.epoch,
+        tokens,
+        model,
+        ...(quotaSwitch ? { "quota.switch": true, quotaSwitch: true } : {}),
+      },
     })
     ledger.stepStarted({
       sessionID,
@@ -444,8 +454,9 @@ export function createCollector(options: CollectorOptions): Collector {
       if (event.type === "session.tool.called") return called(sessionID, data)
       if (event.type === "session.tool.success") return settled(sessionID, data, "completed")
       if (event.type === "session.tool.failed") return settled(sessionID, data, "error")
-      if (event.type === "session.compaction.ended") return compacted(sessionID, data)
-      if (event.type === "session.compaction.failed") return compacted(sessionID, data, true)
+      const eventMeta = (event as { metadata?: Record<string, unknown> }).metadata
+      if (event.type === "session.compaction.ended") return compacted(sessionID, data, eventMeta, false)
+      if (event.type === "session.compaction.failed") return compacted(sessionID, data, eventMeta, true)
       if (event.type === "session.compaction.started") return ledger.contextFact({ sessionID, at: now(), kind: "compaction_started" })
       if (event.type === "session.instructions.updated") {
         const delta = data.delta as Record<string, unknown> | undefined
