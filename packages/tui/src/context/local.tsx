@@ -337,15 +337,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
 
       function historySelection(sessionID: string, agentID: string): ModelSelection | undefined {
-        const messages = data.session.message.list(sessionID)
-        for (let index = messages.length - 1; index >= 0; index--) {
-          const message = messages[index]
-          if (!message || message.type !== "assistant" || message.agent !== agentID) continue
-          return {
-            providerID: message.model.providerID,
-            modelID: message.model.id,
-            variant: normalizeModelVariant(message.model.variant),
-          }
+        // The chat's own model memory per agent: its last assistant message
+        // by that agent (B15). Used when the chat switches to another agent.
+        const message = data.session.message
+          .list(sessionID)
+          .findLast((item) => item.type === "assistant" && item.agent === agentID)
+        if (message?.type !== "assistant") return
+        return {
+          providerID: message.model.providerID,
+          modelID: message.model.id,
+          variant: normalizeModelVariant(message.model.variant),
         }
       }
 
