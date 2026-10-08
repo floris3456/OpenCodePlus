@@ -2835,6 +2835,34 @@ describe("SessionRunnerLLM", () => {
     expect((yield* s.session.get(sessionID))?.tokens.input).toBe(50)
   })
 
+  scenario("runs an optional auto compaction whose every model failed, then the step uncompacted", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.optional = true
+      }),
+    )
+    // The summary request is rejected outright; the step still runs.
+    yield* s.llm.push(
+      TestLLM.complete({ reason: { normalized: "content-filter" } }),
+      TestLLM.text("Answer without compaction", "answer"),
+    )
+    yield* s.runPrompt("Keep this task")
+
+    const messages = yield* s.messages
+    expect(messages.some((message) => message.type === "compaction" && message.status === "failed")).toBe(true)
+    expect(messages.some((message) => message.type === "compaction" && message.status === "completed")).toBe(false)
+    // The step ran uncompacted against the original history.
+    expect(s.requests).toHaveLength(2)
+    expect(userTexts(s.requests.at(-1)!).join("\n")).toContain("Keep this task")
+    const assistant = requireAssistant(messages)
+    expect(assistant.content.some((part) => part.type === "text" && part.text === "Answer without compaction")).toBe(
+      true,
+    )
+  })
+
   scenario("bounds compaction network retries across a template correction", function* (s) {
     yield* s.llm.push(TestLLM.text("Earlier answer", "history"))
     yield* s.runPrompt("Earlier question")

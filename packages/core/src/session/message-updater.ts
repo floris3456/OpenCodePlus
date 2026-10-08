@@ -468,6 +468,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
             status: "failed",
             metadata: current?.metadata ?? event.metadata,
             reason: event.data.reason,
+            model: event.data.model,
             error: event.data.error,
             cost: event.data.cost,
             tokens: event.data.tokens,
