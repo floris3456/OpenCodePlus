@@ -479,6 +479,20 @@ Added 2026-10-08 evening (build seat, continuing the run)
   category from a section. The tools API: `split({ id: <section id>, add })`
   adds a child of that section, `split({ id: <item id>, add })` a top-level
   one (today's call, now heading-preserving).
+- **B32. I2 (WP-D) in three parts, one after another in the instructions
+  lane** (all edit `tree.ts`): I2a the model row layout of `plus-1.1.18.md`
+  §2 (Model, Effort, Warming ▸ with Compact before cold and the cold-model
+  list, Compaction ▸ Strategy/Model/Instructions) for agent, member, preset
+  and Defaults › Models rows, writing C1's fields; the Compaction tab goes
+  and the agent tabs renumber; the list takes `a` (catalogue picker), `d`,
+  and `m` with B8's keys (↑/↓, Enter drops, Esc restores), which S1 later
+  generalizes to every row. I2b the dropdowns of §6 (Ping every, Warming,
+  Defaults › Models Effort, Compaction › Model with Inherit; Custom… keeps
+  today's prompt). I2c Defaults › Models speed (decision 15): `hostCatalog`
+  expires after 5 min and drops on the model-updated event (added to
+  `RefreshEvents`), model rows memoized per (catalogue revision, store
+  revision). The footer text and `/compact-cold` belong to C3, which owns
+  cold detection.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
