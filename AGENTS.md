@@ -8,17 +8,15 @@
 
 ## Live V2 TUI Testing
 
-- Run `bun run dev:live` from a development worktree to test its TUI against the currently elected `opencode` background server and live sessions.
-- Pass a directory after the script when needed, for example `bun run dev:live /path/to/project`.
-- The script discovers the server with `opencode service status`, injects its private local credential from `opencode service get password`, and uses the `dev` TUI storage channel so tabs and other client-local state match the installed client.
-- Prefer `dev:live` over plain `bun run dev` for this workflow. An implicit managed-service connection may replace the live server when the worktree client version differs; explicit `--server` warns and continues without replacing it.
+- Live-test a development worktree with its own build in a home of its own: `pilotty spawn --name <run> opencodeplus-dev .` from the worktree.
+- Never run `bun run dev:live` or plain `bun run dev` from a development or team worktree: they attach to, or may replace, the shared service and its live sessions.
 
 ## V2 TUI Stories
 
 - When a user asks for a TUI story, add a fixture-driven story under `packages/tui/src/feature-plugins/system/storybook` and register it in `index.tsx`.
 - Render the real production component rather than a visual copy. Keep submissions and other side effects local to the story so it is safe to explore repeatedly.
 - Expose the meaningful state dimensions through story keybindings and list them in `StoryFooter`; include a reset command when combinations can leave the fixture in a confusing state.
-- Run a specific story with `OPENCODE_STORY=<story-id> bun run dev:live` from the development worktree, and exercise narrow and wide terminal sizes when layout is relevant.
+- Run a specific story with `pilotty spawn --name <run> env OPENCODE_STORY=<story-id> opencodeplus-dev .` from the development worktree, and exercise narrow and wide terminal sizes when layout is relevant.
 
 ## TUI Theme Tokens
 
