@@ -825,3 +825,87 @@ test("compaction hook shapes request from pin for same model and leaves others u
   expect(compactionNoPin.system).toEqual(noPinSystem)
   expect(compactionNoPin.tools).toEqual(noPinTools)
 })
+
+test("variant model retains variant on repin and shapes matching compaction while ignoring different variant", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, compactionCallbacks, synthetics } = createHarness()
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  const input1 = alphaPlan("You are helpful.\n\n## Rules\nBe nice.")
+  await applyPublishParts(ctx, state, input1)
+  const contextHook = contextCallbacks.at(-1)!
+
+  // 1. Establish pin with a variant model
+  const turn1 = sessionEvent(
+    "ses_variant_cache",
+    "alpha",
+    { reader: { description: "raw tool desc", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful.\n\n## Rules\nBe nice." }],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "high" },
+  )
+  await Effect.runPromise(contextHook(turn1))
+
+  const pin = sessionPins.getPin("ses_variant_cache")
+  expect(pin).toBeDefined()
+  expect(pin!.model.variant).toBe("high")
+
+  // 2. Repinned directly with pin.model (the path at ~line 340 in cache-safe.ts)
+  sessionPins.repinSession("ses_variant_cache", pin!.model, state.currentPlanSet!)
+  expect(pin!.model.variant).toBe("high")
+
+  // Next step re-establishes pinned system for the session
+  const turn2 = sessionEvent(
+    "ses_variant_cache",
+    "alpha",
+    { reader: { description: "raw tool desc", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful.\n\n## Rules\nBe nice." }],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "high" },
+  )
+  await Effect.runPromise(contextHook(turn2))
+  expect(pin!.pinnedSystem0.get("alpha")).toBe(turn1.system[0]?.text)
+
+  const compactionHook = compactionCallbacks.at(-1)!
+  expect(compactionHook).toBeDefined()
+
+  // 3. Same-model compaction event with matching variant is shaped from the pin
+  const compactionSameVariant = sessionEvent(
+    "ses_variant_cache",
+    "alpha",
+    { reader: { description: "raw tool desc", input: { type: "object" } } },
+    [{ type: "text", text: "Raw unshaped system text" }],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "high" },
+  )
+  await Effect.runPromise(compactionHook(compactionSameVariant))
+
+  expect(compactionSameVariant.system[0]?.text).toBe(turn1.system[0]?.text)
+  expect(compactionSameVariant.tools).toEqual(turn1.tools)
+  expect(synthetics).toHaveLength(0)
+
+  // 4. Compaction with a different variant is left untouched
+  const diffVariantTools = { reader: { description: "raw tool desc", input: { type: "object" as const } } }
+  const diffVariantSystem = [{ type: "text" as const, text: "Raw unshaped system text" }]
+  const compactionDiffVariant = sessionEvent(
+    "ses_variant_cache",
+    "alpha",
+    { ...diffVariantTools },
+    [...diffVariantSystem],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "low" },
+  )
+  await Effect.runPromise(compactionHook(compactionDiffVariant))
+  expect(compactionDiffVariant.system).toEqual(diffVariantSystem)
+  expect(compactionDiffVariant.tools).toEqual(diffVariantTools)
+
+  // 5. Compaction without variant is also left untouched
+  const noVariantTools = { reader: { description: "raw tool desc", input: { type: "object" as const } } }
+  const noVariantSystem = [{ type: "text" as const, text: "Raw unshaped system text" }]
+  const compactionNoVariant = sessionEvent(
+    "ses_variant_cache",
+    "alpha",
+    { ...noVariantTools },
+    [...noVariantSystem],
+    { providerID: "anthropic", id: "claude-3-5-sonnet" },
+  )
+  await Effect.runPromise(compactionHook(compactionNoVariant))
+  expect(compactionNoVariant.system).toEqual(noVariantSystem)
+  expect(compactionNoVariant.tools).toEqual(noVariantTools)
+})

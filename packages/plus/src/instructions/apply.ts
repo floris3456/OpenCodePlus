@@ -1576,7 +1576,6 @@ export async function installSessionPlans(
 
           if (pin === undefined) {
             pin = pinManager.pinSession(sessionID, event.model, activePlanSet)
-            recordPinModel(pin, event.model)
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
             applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
@@ -1592,7 +1591,6 @@ export async function installSessionPlans(
           const rebuild = yield* Effect.promise(() => isRebuildMoment(pin!, event, Date.now()))
           if (rebuild) {
             pin = pinManager.repinSession(sessionID, event.model, activePlanSet)
-            recordPinModel(pin, event.model)
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
             applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
@@ -1679,18 +1677,6 @@ function sameModel(
   const aVariant = a.variant === undefined ? undefined : String(a.variant)
   const bVariant = b.variant === undefined ? undefined : String(b.variant)
   return aVariant === bVariant
-}
-
-function recordPinModel(
-  pin: SessionPin,
-  model: { readonly providerID: unknown; readonly id: unknown; readonly variant?: unknown },
-): void {
-  const target = pin.model as { providerID: string; id: string; variant?: string }
-  if (model.variant !== undefined) {
-    target.variant = String(model.variant)
-    return
-  }
-  delete target.variant
 }
 
 function applyPinnedSystem0(
