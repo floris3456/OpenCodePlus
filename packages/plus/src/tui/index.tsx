@@ -10,6 +10,7 @@ import { createModelPick } from "./model-pick.js"
 import { createMonitor } from "./monitor/index.js"
 import { openProjectChecks } from "./project-checks.js"
 import { createChatRefresh } from "./refresh.js"
+import { createMissToast } from "./miss-toast.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -25,6 +26,7 @@ export default Plugin.define({
     const modelPick = createModelPick(context)
     const monitor = createMonitor(context)
     const refresh = createChatRefresh(context)
+    const missToast = createMissToast(context)
     const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
@@ -152,6 +154,7 @@ export default Plugin.define({
       monitor.dispose()
       agents.dispose()
       activeTeam.dispose()
+      missToast.dispose()
       snapshots.dispose()
     }
   },
