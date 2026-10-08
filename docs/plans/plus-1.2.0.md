@@ -512,6 +512,29 @@ Added 2026-10-08 evening (build seat, continuing the run)
   the command palette ("Cache-miss notices: turn off/on") and the slash
   command `/miss-notices`; it hides the toast only, the Monitor is
   unchanged.
+- **B34. C3 (WP-C runtime) in three parts.** C3a, Plus's
+  `compaction.decide` (a new module, one wiring line in `index.ts`
+  replacing today's inline hook): resolve the C1 fields for (the event's
+  agent, the chat's model) with `resolveModelCompactionFields` and set
+  `strategy`, `compactionModel` and `system` when a level sets them; cold
+  arming per `plus-1.1.18.md` §4 (first step of a new prompt, cold = the
+  warming window ended, else idle longer than the Monitor's `cacheLifetime`,
+  unknown never cold, running never cold, compacted since the last request
+  skipped) sets `compact`, `portable`, `compactionModel` = #1,
+  `compactionFallbacks` = #2…, `optional`; a CPA `quota.switch` decision
+  takes the chat model's list when it is not empty (Plus's hook runs after
+  CPA's, tested); the team `compactWith` arming keeps priority. CPA's
+  "Compacting with X (fallback Y) first" notice is built from the final
+  decision, so it names the armed models. C3b, the per-chat switch and the
+  footer: `compactWarm` gives the model default; the chat switch becomes
+  on/off/default (`compact.json` entries read as on), `<leader>j` and
+  `/compact-warm` flip the effective value, "follow the model settings"
+  resets both switches, and the footer and `warming.status` name the source
+  ("· model setting" / "· this chat") and the cold arming ("cache cold ·
+  compacts with <model> first"). C3c, `compaction.cold({ sessionID })` RPC,
+  `/compact-cold` with its palette entry and toasts (§5), and the team
+  followup default (a stopped cold child without `compactWith` uses its
+  model's list; refuses with `E_STOPPED` when empty).
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
