@@ -166,6 +166,9 @@ export function createFetch(override?: FetchHandler, events?: ReturnType<typeof 
     if (url.pathname === "/api/experimental/migration/v1") return json({ status: "completed" })
     if (url.pathname === "/api/rpc/opencode.plus/project.status")
       return json({ output: { enabled: false, directory: "" } })
+    // Other Plus RPCs (teams, quota) are not part of these fixtures: answer as
+    // a server without the Plus plugin would.
+    if (url.pathname.startsWith("/api/rpc/opencode.plus")) return new Response(null, { status: 404 })
     throw new Error(`unexpected request: ${url.pathname}`)
   }
   fetch.preconnect = () => {}
