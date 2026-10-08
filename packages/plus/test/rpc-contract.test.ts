@@ -63,6 +63,7 @@ test("every method and event is declared", () => {
     "modelSettings.set",
     "category.mutate",
     "monitor.query",
+    "monitor.step",
     "monitor.mark",
   ]
 

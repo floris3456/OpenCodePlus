@@ -608,6 +608,18 @@ Added 2026-10-08 evening (build seat, continuing the run)
   the next model request enrolls it as a new chat (the existing opaque
   checkpoint path compacts if CPA requires it). A 401 whose health probe
   fails still pauses.
+- **B38. I1b scope, after the worker's map**
+  (`run/evidence/plus-1.2.0/i1b/report.md`). Sections now reach their
+  consumer for MCP tool descriptions, tool parameter descriptions and agent
+  and member descriptions (assembled text in the request / `agent.description`).
+  The MCP **server** row is not sectioned: its text is the server's
+  configuration, nothing reads it per request, so a section switch there
+  would do nothing. Keep-alive prompts and the per-model compaction
+  instructions (C1) stay whole in 1.2.0: they are model-record fields, not
+  item rows, and sectioning them needs a second assembly and write path,
+  which B7 forbids; they move to the next release with the model rows'
+  item conversion. The agent-wide `compaction:instructions` control takes
+  sections where it is still listed.
 
 ## Design notes per area
 

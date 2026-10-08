@@ -1146,11 +1146,12 @@ export const WarmingSetInput = Schema.Struct({
 }).annotate({ identifier: "Plus.WarmingSetInput" })
 
 // Compact before cold, per chat: on compacts an idle chat right before its
-// cache goes cold. Off in every new chat.
+// cache goes cold. "default" removes the chat's override, so the model's
+// effective `compactWarm` decides.
 export interface WarmingCompactInput extends Schema.Schema.Type<typeof WarmingCompactInput> {}
 export const WarmingCompactInput = Schema.Struct({
   sessionID: Schema.String,
-  on: Schema.Boolean,
+  on: Schema.Union([Schema.Boolean, Schema.Literal("default")]),
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
@@ -1187,8 +1188,12 @@ export const ChecksInvalid = Schema.Struct({ reason: Schema.String }).annotate({
 export const WarmingStatus = Schema.Struct({
   sessionID: Schema.String,
   chat: Schema.Literals(["on", "off", "default"]),
-  /** Compact before cold is on for this chat; absent from an older server. */
+  /** The effective compact before cold for this chat; absent from an older server. */
   compact: Schema.optionalKey(Schema.Boolean),
+  /** The effective value's source: the chat's own switch, or its model. */
+  compactSource: Schema.optionalKey(Schema.Literals(["chat", "model"])),
+  /** The models cold arming would compact with first, when it applies. */
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
   /** When it compacts this chat, while a compaction is scheduled. */
   compactAt: Schema.optionalKey(Schema.Number),
   /** Latest compaction completed after the last real request; absent otherwise. */
@@ -1249,6 +1254,28 @@ export const MonitorQueryInput = Schema.Struct({
   /** A second window read with the same scope and filters, for side-by-side comparison. */
   compare: Schema.optionalKey(MonitorWindow),
 }).annotate({ identifier: "Plus.MonitorQueryInput" })
+
+export interface MonitorStepInput extends Schema.Schema.Type<typeof MonitorStepInput> {}
+export const MonitorStepInput = Schema.Struct({
+  sessionID: Schema.String,
+}).annotate({ identifier: "Plus.MonitorStepInput" })
+
+export type MonitorStepResult = Schema.Schema.Type<typeof MonitorStepResult>
+export const MonitorStepResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    stepID: Schema.String,
+    requestID: Schema.String,
+    miss: Schema.Boolean,
+    notReused: Schema.Number,
+    cause: Schema.optionalKey(Schema.String),
+    causeText: Schema.String,
+    changedPart: Schema.optionalKey(Schema.String),
+  }),
+]).annotate({ identifier: "Plus.MonitorStepResult" })
 
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
@@ -1350,9 +1377,11 @@ export const MonitorRequest = Schema.Struct({
       "prefix-changed",
       "cache-expired",
       "account-changed",
+      "account-changed-compacted-first",
       "unknown",
     ]),
   ),
+  causeText: Schema.optionalKey(Schema.String),
   confidence: Schema.optionalKey(Schema.Literals(["certain", "likely", "unknown"])),
   evidence: Schema.optionalKey(Schema.String),
   expected: Schema.optionalKey(Schema.Number),
@@ -2027,6 +2056,8 @@ const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
+const PortableMonitorStepInput = Schema.toStandardSchemaV1(MonitorStepInput.annotate({ identifier: "Plus.MonitorStepInput" }))
+const PortableMonitorStepResult = Schema.toStandardSchemaV1(MonitorStepResult.annotate({ identifier: "Plus.MonitorStepResult" }))
 const PortableMonitorReport = Schema.toStandardSchemaV1(MonitorReport.annotate({ identifier: "Plus.MonitorReport" }))
 const PortableMonitorMarkInput = Schema.toStandardSchemaV1(MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }))
 const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
@@ -2430,6 +2461,11 @@ export const Definition = Rpc.define({
     "monitor.query": {
       input: PortableMonitorQueryInput,
       output: PortableMonitorReport,
+      errors: {},
+    },
+    "monitor.step": {
+      input: PortableMonitorStepInput,
+      output: PortableMonitorStepResult,
       errors: {},
     },
     "monitor.mark": {

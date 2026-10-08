@@ -10,6 +10,7 @@ import { createModelPick } from "./model-pick.js"
 import { createMonitor } from "./monitor/index.js"
 import { openProjectChecks } from "./project-checks.js"
 import { createChatRefresh } from "./refresh.js"
+import { createMissToast } from "./miss-toast.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -25,6 +26,7 @@ export default Plugin.define({
     const modelPick = createModelPick(context)
     const monitor = createMonitor(context)
     const refresh = createChatRefresh(context)
+    const missToast = createMissToast(context)
     const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
@@ -80,6 +82,14 @@ export default Plugin.define({
               run: () => void openProjectChecks(context),
             },
             {
+              id: "plus.miss-notices.toggle",
+              title: `Cache-miss notices: turn ${missToast.enabled() ? "off" : "on"}`,
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "miss-notices" },
+              run: () => void missToast.toggle(),
+            },
+            {
               id: "plus.warming.toggle",
               title: "Cache warming on/off for this chat",
               group: "OpenCodePlus",
@@ -96,6 +106,14 @@ export default Plugin.define({
               bind: "<leader>j",
               slash: { name: "compact-warm" },
               run: () => warming.toggleCompact(),
+            },
+            {
+              id: "plus.compact.follow",
+              title: "Compact before cold: follow the model settings",
+              description: "Drop this chat's on/off override; its model's Compact before cold setting decides again",
+              group: "OpenCodePlus",
+              palette: true,
+              run: () => warming.followCompact(),
             },
             {
               id: "plus.warming.follow",
@@ -152,6 +170,7 @@ export default Plugin.define({
       monitor.dispose()
       agents.dispose()
       activeTeam.dispose()
+      missToast.dispose()
       snapshots.dispose()
     }
   },

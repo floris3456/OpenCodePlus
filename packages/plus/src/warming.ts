@@ -23,13 +23,16 @@ import {
 //
 // and remembers each chat's window so the TUI can count down to its end.
 //
-// Compact before cold is a second per-chat switch, off in every new chat: an
-// idle chat compacts right before its prompt cache goes cold, so the summary
-// request still reads a warm cache and the next message starts from the small
-// compacted context. The cache stays warm until the warming window ends (its
-// last keep-alive was at most one interval earlier, and the interval is kept
-// under the provider's cache lifetime); without warming, one interval after
-// the last request.
+// Compact before cold is a second per-chat switch: an idle chat compacts right
+// before its prompt cache goes cold, so the summary request still reads a warm
+// cache and the next message starts from the small compacted context. The
+// cache stays warm until the warming window ends (its last keep-alive was at
+// most one interval earlier, and the interval is kept under the provider's
+// cache lifetime); without warming, one interval after the last request.
+//
+// The switch has three states: the chat's own on/off override, or "default"
+// (no entry) which follows the model's effective `compactWarm`. Existing
+// `compact.json` arrays (entries meant on) still read as on.
 
 /** Core's defaults (core/src/config/warming.ts), used when the host configuration leaves warming off. */
 export const WARMING_DEFAULTS: SessionWarmingSettings = {
@@ -40,6 +43,27 @@ export const WARMING_DEFAULTS: SessionWarmingSettings = {
 
 export type ChatSwitch = "on" | "off"
 export type WarmingSource = "chat" | "model" | "config"
+
+/** Where a chat's effective compact-before-cold came from: its own switch, or its model. */
+export type CompactSource = "chat" | "model"
+
+/**
+ * The chat's model-level compact settings, resolved for its agent and model
+ * (C1's `compactWarm`, `coldCompact` and cold list). The store falls back to
+ * this whenever the chat has no override; `coldModels` is what C3a's cold
+ * arming would compact with when it applies.
+ */
+export interface ChatCompactionDefaults {
+  /** The model's effective "Compact before cold". */
+  readonly compactWarm: boolean
+  /** Where that value came from; "built-in" when no model row sets it. */
+  readonly compactWarmFrom: "model" | "built-in"
+  /** The models cold arming would try, when cold compact is on and the list is not empty. */
+  readonly coldModels: readonly string[]
+}
+
+/** The chat's model-level compact defaults, read live (model settings can change between calls). */
+export type CompactDefaultsReader = (sessionID: string) => Promise<ChatCompactionDefaults | undefined>
 
 /** A Plus layer that decided some field: the agent's row, or the Defaults › Models rows. */
 export interface WarmingRows {
@@ -117,8 +141,12 @@ export interface WarmingWindow {
 export interface WarmingStatus {
   readonly sessionID: string
   readonly chat: ChatSwitch | "default"
-  /** Compact before cold is on for this chat. */
+  /** Compact before cold is on for this chat (the effective value). */
   readonly compact: boolean
+  /** Where the effective value came from: the chat's own switch, or its model. Absent for the built-in default. */
+  readonly compactSource?: CompactSource
+  /** The models cold arming would compact with first, when it applies. */
+  readonly coldModels?: readonly string[]
   /** When it compacts this chat, while a compaction is scheduled. */
   readonly compactAt?: number
   /** Latest compaction completed after the last real request; absent otherwise. */
@@ -160,8 +188,11 @@ export interface WarmingStore {
   decide(event: SessionWarming, rows: WarmingRows, compact?: Compact): Promise<boolean>
   status(sessionID: string, now?: number): Promise<WarmingStatus>
   setChat(sessionID: string, chat: ChatSwitch | "default"): Promise<WarmingStatus>
-  /** Switch compact before cold for one chat. */
-  setCompact(sessionID: string, on: boolean): Promise<WarmingStatus>
+  /**
+   * Set the chat's compact before cold switch: "on"/"off" is an override,
+   * "default" removes it (the model's `compactWarm` decides again).
+   */
+  setCompact(sessionID: string, chat: ChatSwitch | "default"): Promise<WarmingStatus>
   /** Whether the chat runs now: a running chat is using its cache and never compacts from here. */
   running(sessionID: string, running: boolean): void
   /**
@@ -178,6 +209,8 @@ export interface WarmingStore {
   invalidateCompaction(sessionID: string, completedAt?: number): void
   /** Configure the durable compaction history reader. */
   setCompactionReader(reader: CompactionReader): void
+  /** Configure the reader of each chat's model-level compact defaults. */
+  setCompactDefaultsReader(reader: CompactDefaultsReader): void
   /** Stop every scheduled compaction (tests, shutdown). */
   dispose(): void
 }
@@ -193,6 +226,7 @@ export interface WarmingStoreOptions {
   readonly setTimer?: (run: () => void, ms: number) => unknown
   readonly clearTimer?: (timer: unknown) => void
   readonly compactionHistory?: CompactionReader
+  readonly compactDefaults?: CompactDefaultsReader
   readonly activeSessions?: ActiveReader
 }
 
@@ -228,6 +262,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   const setTimer = options.setTimer ?? ((run: () => void, ms: number) => setTimeout(run, ms).unref())
   const clearTimer = options.clearTimer ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   let compactionReader: CompactionReader | undefined = options.compactionHistory
+  let compactDefaults: CompactDefaultsReader | undefined = options.compactDefaults
   let activeReader: ActiveReader | undefined = options.activeSessions
   const compactionCache = new Map<string, Promise<CompactionRecord | undefined>>()
   const lastReal = new Map<string, number>()
@@ -238,7 +273,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   // cache goes cold, the scheduled compactions, how to compact each chat, and
   // the chats running now.
   const compactFile = path.join(path.dirname(file), "compact.json")
-  const compactChats = { loaded: undefined as Promise<Set<string>> | undefined }
+  const compactChats = { loaded: undefined as Promise<Map<string, ChatSwitch>> | undefined }
   const coldAt = new Map<string, number>()
   const scheduled = new Map<string, Scheduled>()
   const compactors = new Map<string, Compact>()
@@ -323,13 +358,32 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   const loadCompact = () => {
     compactChats.loaded ??= fs
       .readFile(compactFile, "utf8")
-      .then((text) => {
+      .then((text): Map<string, ChatSwitch> => {
         const parsed: unknown = JSON.parse(text)
-        if (!Array.isArray(parsed)) return new Set<string>()
-        return new Set(parsed.filter((entry): entry is string => typeof entry === "string"))
+        // Backward compatible: the old file was an array of chats it was on
+        // for. The new file is a map, an explicit "off" stored for a chat.
+        if (Array.isArray(parsed))
+          return new Map(parsed.filter((entry): entry is string => typeof entry === "string").map((id) => [id, "on"]))
+        if (typeof parsed !== "object" || parsed === null) return new Map<string, ChatSwitch>()
+        return new Map(
+          Object.entries(parsed).filter((entry): entry is [string, ChatSwitch] => entry[1] === "on" || entry[1] === "off"),
+        )
       })
-      .catch(() => new Set<string>())
+      .catch(() => new Map<string, ChatSwitch>())
     return compactChats.loaded
+  }
+  // The chat's model-level defaults, read live; a failure leaves the built-in default.
+  const compactDefaultsOf = async (sessionID: string): Promise<ChatCompactionDefaults | undefined> => {
+    const reader = compactDefaults
+    if (reader === undefined) return undefined
+    return reader(sessionID).catch(() => undefined)
+  }
+  // Compact before cold for this chat: an explicit chat entry wins, else the
+  // model's effective `compactWarm`, else off.
+  const effectiveCompact = async (sessionID: string): Promise<boolean> => {
+    const override = (await loadCompact()).get(sessionID)
+    if (override !== undefined) return override === "on"
+    return (await compactDefaultsOf(sessionID))?.compactWarm === true
   }
   const write = async (target: string, value: unknown) => {
     await fs.mkdir(path.dirname(target), { recursive: true })
@@ -358,25 +412,31 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     if (scheduled.get(sessionID)?.at !== at) return
     scheduled.delete(sessionID)
     const compact = compactors.get(sessionID)
-    if (compact === undefined || busy.has(sessionID) || !(await loadCompact()).has(sessionID)) return
+    if (compact === undefined || busy.has(sessionID) || !(await effectiveCompact(sessionID))) return
     coldAt.delete(sessionID)
     await compact(sessionID).catch(() => {})
   }
   const statusOf = async (
     sessionID: string,
     chat: ChatSwitch | undefined,
-    compact: boolean,
     now: number,
   ): Promise<WarmingStatus> => {
     const compacted = await isCompacted(sessionID)
     const entry = tracked.get(sessionID)
     const window = entry?.window
     const active = !compacted && window !== undefined && now < window.expires && chat !== "off"
+    const override = (await loadCompact()).get(sessionID)
+    const defaults = override === undefined ? await compactDefaultsOf(sessionID) : undefined
+    const compact = override !== undefined ? override === "on" : defaults?.compactWarm === true
+    const compactSource: CompactSource | undefined =
+      override !== undefined ? "chat" : defaults?.compactWarmFrom === "model" ? "model" : undefined
     const compactAt = compact && !compacted ? scheduled.get(sessionID)?.at : undefined
     return {
       sessionID,
       chat: chat ?? "default",
       compact,
+      ...(compactSource === undefined ? {} : { compactSource }),
+      ...(defaults !== undefined && defaults.coldModels.length > 0 ? { coldModels: [...defaults.coldModels] } : {}),
       ...(compactAt === undefined ? {} : { compactAt }),
       ...(compacted ? { compacted: true } : {}),
       active,
@@ -452,7 +512,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         unschedule(event.sessionID)
       } else {
         coldAt.set(event.sessionID, window?.expires ?? (activity ? event.now + coldInterval(decided, rows) : event.now))
-        if ((await loadCompact()).has(event.sessionID)) schedule(event.sessionID, event.now)
+        if (await effectiveCompact(event.sessionID)) schedule(event.sessionID, event.now)
         else unschedule(event.sessionID)
       }
 
@@ -465,7 +525,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       )
     },
     async status(sessionID, at = now()) {
-      return statusOf(sessionID, (await load()).get(sessionID), (await loadCompact()).has(sessionID), at)
+      return statusOf(sessionID, (await load()).get(sessionID), at)
     },
     async setChat(sessionID, chat) {
       const map = await load()
@@ -476,18 +536,20 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       // Off shows as inactive at once; core stops before its next warming
       // request, where the hook sees the switch. Switched back on before that,
       // the same window simply continues.
-      return statusOf(sessionID, map.get(sessionID), (await loadCompact()).has(sessionID), now())
+      return statusOf(sessionID, map.get(sessionID), now())
     },
-    async setCompact(sessionID, on) {
-      const set = await loadCompact()
-      set.delete(sessionID)
-      if (on) set.add(sessionID)
-      for (const key of [...set].slice(0, Math.max(0, set.size - MAX_CHATS))) set.delete(key)
-      await write(compactFile, [...set])
+    async setCompact(sessionID, chat) {
+      const map = await loadCompact()
+      map.delete(sessionID)
+      if (chat !== "default") map.set(sessionID, chat)
+      for (const key of [...map.keys()].slice(0, Math.max(0, map.size - MAX_CHATS))) map.delete(key)
+      await write(compactFile, Object.fromEntries(map))
+      // "default" with the model on still compacts; "off" (or a model set off)
+      // drops the timer. A cache already cold schedules nothing either way.
       const compacted = await isCompacted(sessionID)
-      if (on && !compacted) schedule(sessionID, now())
+      if (!compacted && (await effectiveCompact(sessionID))) schedule(sessionID, now())
       else unschedule(sessionID)
-      return statusOf(sessionID, (await load()).get(sessionID), on, now())
+      return statusOf(sessionID, (await load()).get(sessionID), now())
     },
     running(sessionID, running) {
       if (running) busy.add(sessionID)
@@ -506,7 +568,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         tracked.set(chat, { ...entry, window: { ...window, expires } })
         if (coldAt.has(chat)) {
           coldAt.set(chat, expires)
-          if ((await loadCompact()).has(chat)) schedule(chat, now())
+          if (await effectiveCompact(chat)) schedule(chat, now())
           else unschedule(chat)
         }
         changed.push(chat)
@@ -533,6 +595,9 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     setCompactionReader(reader) {
       compactionReader = reader
       compactionCache.clear()
+    },
+    setCompactDefaultsReader(reader) {
+      compactDefaults = reader
     },
     dispose() {
       for (const sessionID of [...scheduled.keys()]) unschedule(sessionID)

@@ -194,7 +194,7 @@ export class QuotaController {
         redirect: "error",
       })
       .catch(unanswered)
-    if (response.status === 401 && route.stored.generation === 0) {
+    if (response.status === 401) {
       const health = await this.io
         .fetch(route.endpoint, { signal: AbortSignal.timeout(5000), redirect: "error" })
         .catch(unanswered)
@@ -207,11 +207,17 @@ export class QuotaController {
       )(data)
       if (!health.ok) throw new Error("Quota plugin is unavailable")
       route.mode = status.mode
+      // A bridge that answers its health probe but not the authenticated events endpoint has no
+      // binding for this chat: it forgot the enrollment (a CPA restart), at any generation, not just
+      // when none was stored. Reset to a fresh enrollment; the capability stays (notice ids are
+      // idempotent), so the next model request carries generation 0 and CPA enrolls it as a new chat.
+      route.stored = { ...route.stored, generation: 0, cursor: 0 }
       // The bridge is reachable again: an earlier transient failure must not keep
       // an unenrolled chat paused (it never reaches the snapshot path below).
       this.recover(route)
       // Enrollment happens on a model request, which polls again from response().
       route.unenrolledUntil = this.io.now() + UNENROLLED_BACKOFF
+      await this.save(route)
       return
     }
     if (!response.ok) throw new Error(`Quota coordination unavailable (${response.status}); generation is paused`)

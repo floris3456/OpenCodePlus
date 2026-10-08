@@ -19,6 +19,7 @@ import { setModelWarmingRow } from "../src/instructions/ops.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
 import {
   activeSessionsOf,
+  compactDefaultsOf,
   createState,
   warmingRowsOf,
   decideWarmingFor,
@@ -27,7 +28,7 @@ import {
   type PlusState,
 } from "../src/index.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
-import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS, warmingStore, type WarmingRows } from "../src/warming.js"
+import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS, warmingStore, type ChatCompactionDefaults, type WarmingRows } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
 import { Effect, Stream } from "effect"
 import { context } from "./harness.js"
@@ -690,7 +691,7 @@ test("compact before cold is off in a new chat and, switched on, compacts an idl
   expect(clock.pending()).toEqual([])
   expect(await store.status("ses_warm")).toMatchObject({ compact: false, active: true })
   // On: the compaction waits for the end of the warming window (30m after the reply).
-  expect(await store.setCompact("ses_warm", true)).toMatchObject({ compact: true, compactAt: 1_000_000 + 30 * MINUTE })
+  expect(await store.setCompact("ses_warm", "on")).toMatchObject({ compact: true, compactAt: 1_000_000 + 30 * MINUTE })
   // A later reply moves it, leaving one scheduled compaction.
   clock.now = 1_000_000 + 5 * MINUTE
   expect(await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)).toBe(true)
@@ -711,7 +712,7 @@ test("compact before cold is off in a new chat and, switched on, compacts an idl
   expect((await store.status("ses_warm", clock.now + MINUTE)).expires).toBeUndefined()
   // The next real request schedules again; the switch survives a restart and
   // another chat stays off.
-  expect(JSON.parse(await fs.readFile(path.join(path.dirname(file), "compact.json"), "utf8"))).toEqual(["ses_warm"])
+  expect(JSON.parse(await fs.readFile(path.join(path.dirname(file), "compact.json"), "utf8"))).toEqual({ ses_warm: "on" })
   const restarted = createWarmingStore(file, clock.options)
   await restarted.decide(event({ since: clock.now, now: clock.now }), {}, compact)
   expect((await restarted.status("ses_warm")).compactAt).toBe(clock.now + 30 * MINUTE)
@@ -727,7 +728,7 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   const compact = async (sessionID: string) => {
     compacted.push(sessionID)
   }
-  await store.setCompact("ses_warm", true)
+  await store.setCompact("ses_warm", "on")
   // Warming off for the chat: the cache goes cold one interval after the reply.
   await store.setChat("ses_warm", "off")
   const off = event({})
@@ -746,18 +747,18 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   expect(manual.settings).toBeUndefined()
   expect(clock.pending()).toEqual([])
   // Switching on after the window ended leaves the cold cache alone.
-  await store.setCompact("ses_warm", false)
+  await store.setCompact("ses_warm", "off")
   await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)
   clock.now += 31 * MINUTE
-  await store.setCompact("ses_warm", true)
+  await store.setCompact("ses_warm", "on")
   expect(clock.pending()).toEqual([])
   // Switched off, a scheduled compaction is dropped.
   await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)
   expect(clock.pending()).toHaveLength(1)
-  expect((await store.setCompact("ses_warm", false)).compact).toBe(false)
+  expect((await store.setCompact("ses_warm", "off")).compact).toBe(false)
   expect(clock.pending()).toEqual([])
   // A refused compaction does not schedule and the next compaction request still opens no window.
-  await store.setCompact("ses_warm", true)
+  await store.setCompact("ses_warm", "on")
   await store.decide(event({ since: clock.now, now: clock.now }), {}, async () => {
     throw new Error("refused")
   })
@@ -766,6 +767,119 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   await store.decide(later, {}, compact)
   expect(later.settings).toBeUndefined()
   store.dispose()
+})
+
+// Compact before cold now follows the model's effective `compactWarm` unless
+// the chat has its own on/off override (plus-1.2.0 B34 C3b).
+const compactDefaults = (overrides: Partial<ChatCompactionDefaults> = {}): ChatCompactionDefaults => ({
+  compactWarm: false,
+  compactWarmFrom: "built-in",
+  coldModels: [],
+  ...overrides,
+})
+
+test("compact before cold follows the model default when the chat has no override", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), { ...clock.options, compactDefaults: async () => compactDefaults({ compactWarm: true, compactWarmFrom: "model" }) })
+  const compacted: string[] = []
+  const compact = async (sessionID: string) => {
+    compacted.push(sessionID)
+  }
+  // No chat entry: the model's on schedules the compaction at the window's end.
+  await store.decide(event({}), {}, compact)
+  expect(clock.pending()).toEqual([1_000_000 + 30 * MINUTE])
+  expect(await store.status("ses_warm")).toMatchObject({ compact: true, compactSource: "model" })
+  await clock.fire()
+  expect(compacted).toEqual(["ses_warm"])
+
+  // A chat off overrides the model on: no compaction, and the source is the chat.
+  clock.now = 1_000_000 + 40 * MINUTE
+  expect(await store.setCompact("ses_warm", "off")).toMatchObject({ compact: false, compactSource: "chat" })
+  await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)
+  expect(clock.pending()).toEqual([])
+
+  // Back to default: the model on decides again, and the source is the model.
+  expect(await store.setCompact("ses_warm", "default")).toMatchObject({ compact: true, compactSource: "model" })
+  expect(clock.pending()).toEqual([clock.now + 30 * MINUTE])
+  store.dispose()
+})
+
+test("a chat on override turns compaction on where the model leaves it off", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), { ...clock.options, compactDefaults: async () => compactDefaults() })
+  // The model's built-in default is off: no timer, no source.
+  await store.decide(event({}), {}, async () => {})
+  expect(clock.pending()).toEqual([])
+  expect(await store.status("ses_warm")).toMatchObject({ compact: false })
+  expect((await store.status("ses_warm")).compactSource).toBeUndefined()
+
+  // The chat's own on schedules it, and its source is the chat.
+  expect(await store.setCompact("ses_warm", "on")).toMatchObject({ compact: true, compactSource: "chat" })
+  expect(clock.pending()).toEqual([1_000_000 + 30 * MINUTE])
+  store.dispose()
+})
+
+test("legacy compact.json array entries read as on, and the new file stores off explicitly", async () => {
+  const file = await tempFile()
+  const compactPath = path.join(path.dirname(file), "compact.json")
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  // The old format: an array of chats compact before cold was on for.
+  await fs.writeFile(compactPath, JSON.stringify(["ses_legacy", "ses_other"]) + "\n")
+  const store = createWarmingStore(file, { compactDefaults: async () => compactDefaults() })
+  expect(await store.status("ses_legacy")).toMatchObject({ compact: true, compactSource: "chat" })
+  expect(await store.status("ses_other")).toMatchObject({ compact: true, compactSource: "chat" })
+
+  // Flipping from effective on writes "off" explicitly; the file is a map.
+  expect(await store.setCompact("ses_legacy", "off")).toMatchObject({ compact: false })
+  // Resetting writes nothing: the entry disappears.
+  expect(await store.setCompact("ses_other", "default")).toMatchObject({ compact: false })
+  expect(JSON.parse(await fs.readFile(compactPath, "utf8"))).toEqual({ ses_legacy: "off" })
+
+  // A restarted store reads the map back.
+  const restarted = createWarmingStore(file, { compactDefaults: async () => compactDefaults() })
+  expect(await restarted.status("ses_legacy")).toMatchObject({ compact: false, compactSource: "chat" })
+  expect(await restarted.status("ses_other")).toMatchObject({ compact: false })
+  store.dispose()
+  restarted.dispose()
+})
+
+test("warming.status reports the cold-arming models only when cold compact is on with a list", async () => {
+  const store = createWarmingStore(await tempFile(), {
+    compactDefaults: async () => compactDefaults({ compactWarm: true, compactWarmFrom: "model", coldModels: ["a/b", "c/d#x"] }),
+  })
+  await store.decide(event({}), {}, async () => {})
+  expect(await store.status("ses_warm", 1_000_000)).toMatchObject({ compact: true, coldModels: ["a/b", "c/d#x"] })
+  store.dispose()
+
+  // A model that leaves cold compact off has no arming models to name.
+  const off = createWarmingStore(await tempFile(), { compactDefaults: async () => compactDefaults({ compactWarm: true, compactWarmFrom: "model" }) })
+  await off.decide(event({}), {}, async () => {})
+  expect((await off.status("ses_warm", 1_000_000)).coldModels).toBeUndefined()
+  off.dispose()
+
+  // Cold arming is the model's cold-compact setting, independent of the switch.
+  const armed = createWarmingStore(await tempFile(), {
+    compactDefaults: async () => compactDefaults({ compactWarm: false, coldModels: ["a/b", "c/d"] }),
+  })
+  await armed.decide(event({}), {}, async () => {})
+  expect(await armed.status("ses_warm", 1_000_000)).toMatchObject({ compact: false, coldModels: ["a/b", "c/d"] })
+  armed.dispose()
+})
+
+test("compactDefaultsOf resolves the model row's compactWarm and cold list for the chat's agent and model", () => {
+  const state = {
+    cachedAgents: [{ id: "alpha", scope: "project" as const }],
+    cachedModels: [record({ agent: "alpha", compactWarm: "on", coldCompact: "on", coldModels: ["a/b", "c/d#x"] })],
+    cachedModelSettings: [],
+    cachedScopes: scopes,
+  }
+  const model = { providerID: "anthropic", id: "claude" }
+  expect(compactDefaultsOf(state, "alpha", model)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: ["a/b", "c/d#x"] })
+  // Cold compact off: the list is not what arming would use, so it is empty.
+  const off = { ...state, cachedModels: [record({ agent: "alpha", compactWarm: "on", coldCompact: "off", coldModels: ["a/b"] })] }
+  expect(compactDefaultsOf(off, "alpha", model)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: [] })
+  // Nothing set: the built-in default, off, with no source.
+  expect(compactDefaultsOf({ ...state, cachedModels: [] }, "alpha", model)).toEqual({ compactWarm: false, compactWarmFrom: "built-in", coldModels: [] })
 })
 
 test("warming recognises every compaction: external compaction, restart, primary activity restores window, and guard lets first Enter send", async () => {

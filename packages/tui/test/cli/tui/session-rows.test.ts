@@ -5,10 +5,12 @@ import { createStore } from "solid-js/store"
 import {
   cacheReuseDrop,
   messageBoundaryIDs,
+  promptPendingSwitches,
   reduceSessionRows,
   sessionRowID,
   turnDuration,
   turnTokensPerSecond,
+  type PendingSwitch,
 } from "../../../src/routes/session/rows"
 
 test("measures turn duration from the user prompt across assistant steps", () => {
@@ -591,6 +593,197 @@ test("renders synthetic messages with descriptions", () => {
 function partChild(messageID: string, partID: string) {
   return { type: "entry" as const, entry: { type: "part" as const, ref: { messageID, partID } }, size: 1 as const }
 }
+
+const agentSwitch = (messageID: string, agent: string, previous?: string): PendingSwitch => ({
+  messageID,
+  switch: { type: "agent-switched", agent, previous },
+})
+
+const modelSwitch = (
+  messageID: string,
+  model: { id: string; providerID: string; variant?: string },
+  previous?: { id: string; providerID: string; variant?: string },
+): PendingSwitch => ({ messageID, switch: { type: "model-switched", model, previous } })
+
+test("draws a pending prompt's agent and model switches right before it", () => {
+  const messages: SessionMessageInfo[] = [
+    { type: "user", id: "old-input", text: "Old question", time: { created: 0 } },
+    {
+      ...assistant("old-step", [{ type: "text", text: "Old answer" }]),
+      agent: "build",
+      model: { id: "gemini", providerID: "anthropic" },
+    },
+    { type: "user", id: "pending", text: "New question", time: { created: 10 } },
+  ]
+
+  expect(
+    reduceSessionRows(messages, new Set(["pending"]), false, "medium", [
+      agentSwitch("pending", "plan", "build"),
+      modelSwitch("pending", { id: "luna", providerID: "openai" }, { id: "gemini", providerID: "anthropic" }),
+    ]),
+  ).toEqual([
+    { type: "message", messageID: "old-input" },
+    { type: "part", ref: { messageID: "old-step", partID: "text:0" } },
+    {
+      type: "switch-pending",
+      message: {
+        id: "pending-switch:pending:agent-switched",
+        time: { created: 10 },
+        type: "agent-switched",
+        agent: "plan",
+        previous: "build",
+      },
+    },
+    {
+      type: "switch-pending",
+      message: {
+        id: "pending-switch:pending:model-switched",
+        time: { created: 10 },
+        type: "model-switched",
+        model: { id: "luna", providerID: "openai" },
+        previous: { id: "gemini", providerID: "anthropic" },
+      },
+    },
+    { type: "message", messageID: "pending" },
+  ])
+})
+
+test("the durable switch messages replace the pending ones without duplicates", () => {
+  const durable: SessionMessageInfo[] = [
+    { type: "agent-switched", id: "msg_agent", agent: "plan", previous: "build", time: { created: 11 } },
+    {
+      type: "model-switched",
+      id: "msg_model",
+      model: { id: "luna", providerID: "openai" },
+      previous: { id: "gemini", providerID: "anthropic" },
+      time: { created: 12 },
+    },
+  ]
+  const pending: SessionMessageInfo[] = [
+    { type: "user", id: "old-input", text: "Old question", time: { created: 0 } },
+    {
+      ...assistant("old-step", [{ type: "text", text: "Old answer" }]),
+      agent: "build",
+      model: { id: "gemini", providerID: "anthropic" },
+    },
+    { type: "user", id: "pending", text: "New question", time: { created: 13 } },
+  ]
+  const switches = [
+    agentSwitch("pending", "plan", "build"),
+    modelSwitch("pending", { id: "luna", providerID: "openai" }, { id: "gemini", providerID: "anthropic" }),
+  ]
+
+  expect(reduceSessionRows([...pending, ...durable], new Set(["pending"]), false, "medium", switches)).toEqual([
+    { type: "message", messageID: "old-input" },
+    { type: "part", ref: { messageID: "old-step", partID: "text:0" } },
+    { type: "message", messageID: "msg_agent" },
+    { type: "message", messageID: "msg_model" },
+    { type: "message", messageID: "pending" },
+  ])
+})
+
+test("adds no switch rows when the pending prompt keeps the chat's agent and model", () => {
+  const messages: SessionMessageInfo[] = [
+    { type: "user", id: "old-input", text: "Old question", time: { created: 0 } },
+    {
+      ...assistant("old-step", [{ type: "text", text: "Old answer" }]),
+      agent: "build",
+      model: { id: "gemini", providerID: "anthropic" },
+    },
+    { type: "user", id: "pending", text: "New question", time: { created: 10 } },
+  ]
+
+  expect(reduceSessionRows(messages, new Set(["pending"]), false, "medium", [])).toEqual([
+    { type: "message", messageID: "old-input" },
+    { type: "part", ref: { messageID: "old-step", partID: "text:0" } },
+    { type: "message", messageID: "pending" },
+  ])
+})
+
+test("keeps queued pending prompts unchanged", () => {
+  const messages: SessionMessageInfo[] = [
+    { type: "user", id: "queued", text: "Queued question", time: { created: 0 } },
+    { type: "user", id: "pending", text: "New question", time: { created: 10 } },
+  ]
+  const switches = [agentSwitch("queued", "plan", "build"), agentSwitch("pending", "plan", "build")]
+
+  // The caller filters queued rows out of `messages`; a descriptor for one is not rendered.
+  expect(
+    reduceSessionRows(
+      messages.filter((message) => message.id !== "queued"),
+      new Set(["queued", "pending"]),
+      false,
+      "medium",
+      switches,
+    ),
+  ).toEqual([
+    {
+      type: "switch-pending",
+      message: {
+        id: "pending-switch:pending:agent-switched",
+        time: { created: 10 },
+        type: "agent-switched",
+        agent: "plan",
+        previous: "build",
+      },
+    },
+    { type: "message", messageID: "pending" },
+  ])
+})
+
+test("derives optimistic agent and model switches only for steered prompts that differ", () => {
+  const agent = "plan"
+  const model = { providerID: "openai", modelID: "luna" }
+  const previousModel = { providerID: "anthropic", id: "gemini" }
+
+  expect(
+    promptPendingSwitches({
+      pending: [
+        { id: "steer", type: "user", delivery: "steer" },
+        { id: "queued", type: "user", delivery: "queue" },
+      ],
+      previousAgent: "build",
+      previousModel,
+      agent,
+      model,
+    }),
+  ).toEqual([
+    { messageID: "steer", switch: { type: "agent-switched", agent: "plan", previous: "build" } },
+    {
+      messageID: "steer",
+      switch: {
+        type: "model-switched",
+        model: { providerID: "openai", id: "luna" },
+        previous: previousModel,
+      },
+    },
+  ])
+})
+
+test("derives no optimistic switch when the prompt keeps the chat's agent and model", () => {
+  expect(
+    promptPendingSwitches({
+      pending: [{ id: "steer", type: "user", delivery: "steer" }],
+      previousAgent: "plan",
+      previousModel: { providerID: "openai", id: "luna" },
+      agent: "plan",
+      model: { providerID: "openai", modelID: "luna" },
+    }),
+  ).toEqual([])
+})
+
+test("derives an agent switch alone when only the agent changes", () => {
+  const previousModel = { providerID: "openai", id: "luna" }
+  expect(
+    promptPendingSwitches({
+      pending: [{ id: "steer", type: "user", delivery: "steer" }],
+      previousAgent: "build",
+      previousModel,
+      agent: "plan",
+      model: { providerID: "openai", modelID: "luna" },
+    }),
+  ).toEqual([{ messageID: "steer", switch: { type: "agent-switched", agent: "plan", previous: "build" } }])
+})
 
 test("renders a footer for a pre-output retry assistant after replay", () => {
   const message = assistant("assistant-retry", [])
