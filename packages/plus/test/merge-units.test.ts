@@ -118,3 +118,11 @@ test("two edits in one paragraph by each side no longer conflict", () => {
   expect(changes(entries).map((entry) => entry.kind)).toEqual(["yours", "upstream"])
   expect(renderMerge(entries, defaultInclude(entries))).toBe("First sentence MINE. Second sentence UPSTREAM.\n")
 })
+
+test("both sides included on a final unit without a newline keeps upstream on its own line", () => {
+  const entries = mergeUnits("One.\nTwo.", "One.\nTwo mine.", "One.\nTwo up.")
+  const both = entries.find((entry) => entry.type === "change" && entry.kind === "both")
+  if (both?.type !== "change" || both.upstreamId === undefined) throw new Error("expected a both entry")
+  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("One.\nTwo mine.\nTwo up.")
+  expect(renderMerge(entries, new Set([both.id]))).toBe("One.\nTwo mine.")
+})

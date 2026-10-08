@@ -155,6 +155,8 @@ export function renderMerge(entries: readonly MergeEntry[], include: ReadonlySet
       const yoursOn = include.has(entry.id)
       const upstreamOn = entry.upstreamId !== undefined && include.has(entry.upstreamId)
       if (yoursOn) out.push(...entry.yours)
+      // Yours is the last unit of its text when it lacks a final newline: keep upstream on its own line.
+      if (yoursOn && upstreamOn && !endsLine(entry.yours)) out.push("\n")
       if (upstreamOn) out.push(...entry.upstream)
       if (!yoursOn && !upstreamOn) out.push(...entry.base)
       continue
@@ -166,6 +168,11 @@ export function renderMerge(entries: readonly MergeEntry[], include: ReadonlySet
 
 function entryYours(entry: MergeChange): readonly string[] {
   return entry.kind === "upstream" ? entry.upstream : entry.yours
+}
+
+function endsLine(units: readonly string[]): boolean {
+  const last = units[units.length - 1]
+  return last === undefined || last === "" || last.endsWith("\n")
 }
 
 function joinLines(lines: readonly string[], start: number, end: number, trailing: boolean): string {
