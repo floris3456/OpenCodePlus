@@ -460,6 +460,25 @@ Added 2026-10-08 evening (build seat, continuing the run)
   continue uncompacted). A failed compaction records the model that tried
   it (`model` on the failed message, as on the completed one): the
   summarizing model for a summary, the chat's model for native.
+- **B31. I1 split in two, and how `a` writes (B6 made exact).** I1a: `a`
+  on a section and nesting; I1b: sections on every text kind (B7). `a` on a
+  section of a **heading-derived** item writes a heading one level deeper
+  (`#` × (section depth + 1), at least `##`) with the new text at the end of
+  the hovered section's span (after its last descendant). The write is an
+  edit of the **last leaf section inside that span** (the hovered section
+  itself when it has no children), at the level being edited, so no parent
+  or whole-item customization is created that would shadow its children
+  (finding 12d). `a` on a heading-derived item row appends a heading at the
+  item's top heading depth at the end of the text, the same way. The item
+  stays heading-derived; the new section appears as a child row at once.
+  For a **manual** split (and `block`/`whole` items, which become manual as
+  today), boundaries gain an optional `depth` (absent = 0; old stores read
+  unchanged); `a` on a manual section inserts the text at the end of its
+  span and adds a boundary with depth + 1, shifting later boundaries. Section
+  rows get `add: "section"`, so `route.tsx` never falls back to the tab's
+  category from a section. The tools API: `split({ id: <section id>, add })`
+  adds a child of that section, `split({ id: <item id>, add })` a top-level
+  one (today's call, now heading-preserving).
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
