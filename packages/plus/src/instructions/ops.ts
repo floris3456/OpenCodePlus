@@ -56,6 +56,7 @@ import {
   scopedTo,
   setModelSettings,
   setModelWarming,
+  shadowOf,
   tombstoneModelRecord,
   upstreamForEdit,
 } from "./model.js"
@@ -83,7 +84,7 @@ import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { derive, manual, slice, wrappingSection, type Boundary } from "./sections.js"
+import { derive, headingSpan, manual, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
 
 export interface OpSuccess {
@@ -92,6 +93,8 @@ export interface OpSuccess {
   readonly models?: readonly ModelRecord[]
   readonly status: string
   readonly retryHint: string
+  /** Set when the write is saved but the assembled text does not send it (B25): names the row that replaces it. */
+  readonly notice?: string
 }
 
 export interface OpFailure {
@@ -909,20 +912,81 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
   const next = merge(chain.customizations, chain.address, { text }, chain.upstream, memo.ctx.scopes, chain.splits)
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
   const created = next.find((record) => sameAddress(record, chain.address))
-  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
-    return {
-      records: chain.customizations,
-      splits: chain.splits,
-      status: `Saved "${node.label}"`,
-      retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
-    }
+  const unchanged = existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created)
+  const records = unchanged ? chain.customizations : withoutInnerChildren(memo, chain, next, text)
+  const notice = hiddenNotice(memo, chain, records)
   return {
-    records: next,
+    records,
     splits: chain.splits,
-    status: `Saved "${node.label}"`,
+    status: notice ?? `Saved "${node.label}"`,
     retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
+    ...(notice === undefined ? {} : { notice }),
   }
 }
+
+// A parent section's text now holds the child sections inside its span: the
+// child texts saved at this same level are dropped, so the parent's edit is
+// not undone by an older child record (B39 rule 4). Children saved at a more
+// specific level stay.
+function withoutInnerChildren(
+  memo: Memo,
+  chain: { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] },
+  records: CustomizationRecord[],
+  text: string,
+): CustomizationRecord[] {
+  const sectionId = chain.address.section
+  if (sectionId === null) return records
+  const itemText = resolve({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: memo.ctx.scopes,
+    address: { ...chain.address, section: null },
+  }).text
+  const depth = resolveSplit({
+    text: itemText,
+    title: chain.upstream.title,
+    splits: chain.splits,
+    scopes: memo.ctx.scopes,
+    address: chain.address,
+  }).sections.find((section) => section.id === sectionId)?.depth ?? 0
+  return headingSpan(text, depth).inner.reduce((out, child) => {
+    const address: Address = { ...chain.address, section: `${sectionId}/${child.rel}` }
+    const stored = out.some((record) => record.text !== undefined && sameAddress(record, address))
+    return stored ? merge(out, address, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits) : out
+  }, records)
+}
+
+// B25: a section write that the assembled text does not send says so, naming
+// the row that replaces it. A shared (Defaults) write is checked for every
+// agent the item applies to, since it reaches each of them. Read from the same
+// resolution the assembly uses.
+function hiddenNotice(
+  memo: Memo,
+  chain: { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] },
+  records: readonly CustomizationRecord[],
+): string | undefined {
+  const sectionId = chain.address.section
+  if (sectionId === null) return undefined
+  // An agent sees its own text from Project down, so a Defaults or Global write
+  // is checked there: a Project copy hides it even though the write's own chain
+  // does not include Project.
+  const viewers: Address[] =
+    chain.address.agent === null
+      ? memo.ctx.agents.filter((agent) => applies(chain.upstream, agent.id)).map((agent) => ({ ...chain.address, level: "project", agent: agent.id }))
+      : [{ ...chain.address, level: "project" }]
+  return viewers.flatMap((address): string[] => {
+    const shadow = shadowOf({ upstream: chain.upstream, records, splits: chain.splits, scopes: memo.ctx.scopes, address }, sectionId)
+    const node = shadow === undefined ? undefined : resolutionChain(address, memo.ctx.scopes)[shadow.rank]
+    if (shadow === undefined || node === undefined) return []
+    const owner = node.team !== undefined && node.agent !== null ? `${node.team.team}/:${node.agent}` : (node.agent ?? (node.catalogue === "teams" ? "/teams" : ""))
+    const label = shadow.by === null ? chain.upstream.title : shadow.name
+    const row = shadow.by === null ? `item:${node.level}:${owner}:${chain.address.item}` : `section:${node.level}:${owner}:${chain.address.item}:${shadow.by}`
+    return [`Saved, but "${label}" (${row}) at ${levelNames[node.level]} replaces this text; edit or reset that row for this change to take effect.`]
+  })[0]
+}
+
+const levelNames: Record<Level, string> = { project: "Project", global: "Global", defaults: "Defaults", preset: "Preset" }
 
 export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpResult {
   const found = findNode(input, rowId, sharedMemo)
