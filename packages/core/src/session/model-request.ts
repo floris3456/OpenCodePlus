@@ -316,12 +316,12 @@ export const layer = Layer.effect(
       const given = new Map(
         tools.definitions.map((t) => [{ description: t.description, input: { ...t.inputSchema } }, t] as const),
       )
-      // Hooks see the default output limit and may change or remove it. Titles and generate keep the provider default,
-      // because their reasoning is hard to budget.
       // Snapshot the pre-hook messages first: hooks mutate the draft's
       // messages array in place, so anything not identical to these after the
       // hook is hook-produced and needs validating at the boundary.
       const untouched = new Set<unknown>(input.messages)
+      // Hooks see the default output limit and may change or remove it. Titles and generate keep the provider default,
+      // because their reasoning is hard to budget.
       const shaped = yield* shape(
         {
           sessionID: session.id,
