@@ -85,8 +85,6 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
   if (effective.instructions.from !== "built-in" && effective.instructions.value !== undefined)
     event.system = effective.instructions.value
   const coldModels = effective.coldModels.value
-  // The cold-cache list is the one core cannot see; only a Plus level (a list
-  // longer than the built-in empty one) makes it usable.
   if (event.metadata?.["quota.switch"] === true) {
     if (coldModels.length > 0) armModels(event, coldModels)
     return
