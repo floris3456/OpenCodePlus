@@ -708,6 +708,20 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   is id. Type defaults to `either`; `enabled:false` masks the pair/type at this
   level, including upstream links. Types and ownership follow B9–B12. Both ends
   must be in the same owner/level view; invalid links refuse without writing.
+- S4 can start as S4a for already-landed compaction/merge documentation and the
+  measured rollback warning; S4b finalizes move/link/CLI teaching and help after
+  integration. S4a does not edit S2a's tool registration or S1b's TUI help.
+- Rollback probe (`run/evidence/plus-1.2.0/rollback-store/REPORT.md`): 1.1.18
+  ignores folder/order records and new per-model compaction fields. On the
+  tested already-migrated fixture, read/no-op save preserved bytes, and a real
+  global write erased those global fields/records. A project-only write left
+  the global file unchanged; this does not prove new project fields survive.
+  The updater's database backup does not include Instructions JSONL. Before
+  rollback, retain private copies of global and project Instructions stores;
+  never automatically restore old files over newer work. Rowlink downgrade
+  compatibility remains to be measured after S2a. This is not a general claim
+  that opening every newer store on 1.1.18 is harmless: another migration may
+  itself trigger a write.
 
 ## Design notes per area
 
