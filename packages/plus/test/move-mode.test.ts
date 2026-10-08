@@ -4,9 +4,9 @@
 import { expect, test } from "bun:test"
 import { folderRef, groupScope, type FolderRecord, type OrderRecord } from "../src/instructions/folders.js"
 import type { AgentSource, Item } from "../src/instructions/model.js"
-import { fingerprint } from "../src/instructions/model.js"
+import { fingerprint, resolve } from "../src/instructions/model.js"
 import { planGroupMove } from "../src/instructions/ops.js"
-import { expandedTree, type MemoInput, type TreeNode } from "../src/instructions/tree.js"
+import { expandedTree, type MemoInput, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
 import { advanceMove, startMove, type MoveState } from "../src/tui/instructions/move.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -53,8 +53,8 @@ function order(scope: string, orderItems: readonly string[]): OrderRecord {
   return { type: "order", level: "global", scope, items: orderItems, updated: UPDATED }
 }
 
-function memoOf(folders: readonly FolderRecord[], orders: readonly OrderRecord[] = []): MemoInput {
-  return { items: items(), records: [], agents: agents(), folders, orders }
+function memoOf(folders: readonly FolderRecord[], orders: readonly OrderRecord[] = [], teams: readonly TeamInput[] = []): MemoInput {
+  return { items: items(), records: [], agents: agents(), folders, orders, teams }
 }
 
 const noLayout = { folders: [] as FolderRecord[], orders: [] as OrderRecord[] }
@@ -188,6 +188,28 @@ test("sidebar owner lists reorder through a group order and cannot enter folders
   expect("refusal" in into && into.refusal).toContain("folder")
 })
 
+test("a team's member list reorders through a group order", () => {
+  const teams: TeamInput[] = [{ level: "project", team: "crew", enabled: true, agents: ["alpha", "beta"] }]
+  const input = memoOf([], [], teams)
+  const teamId = "team:project:crew"
+  const memberIds = childrenOf(expandedTree(input), teamId)
+    .filter((node) => node.id !== `${teamId}:special`)
+    .map((node) => node.id)
+  expect(memberIds).toEqual(["team:project:crew:alpha", "team:project:crew:beta"])
+  const start = started(input, memberIds[1]!)
+  const up = moved(input, start, "up")
+  expect(up.layout.orders.find((record) => record.scope === groupScope(teamId))?.items).toEqual([
+    memberIds[1]!,
+    memberIds[0]!,
+  ])
+  const preview = expandedTree({ ...input, orders: up.layout.orders })
+  expect(
+    childrenOf(preview, teamId)
+      .filter((node) => node.id !== `${teamId}:special`)
+      .map((node) => node.id),
+  ).toEqual([memberIds[1]!, memberIds[0]!])
+})
+
 test("planGroupMove reorders before and after a sibling without touching folders", () => {
   const input = memoOf([])
   const change = planGroupMove(input, noLayout, row("tool:reader"), { before: row("tool:bash") }, UPDATED)
@@ -197,4 +219,20 @@ test("planGroupMove reorders before and after a sibling without touching folders
     "tool:bash",
   ])
   expect(change.layout.folders).toEqual([])
+})
+
+test("a display-only reorder leaves the row's prompt identity and text untouched", () => {
+  // An order record is screen state only (decision 6): the moved row keeps its
+  // address (which names its prompt text in the assembler) and re-resolves the
+  // same text, so no reorder can leak into the model.
+  const input = memoOf([])
+  const before = nodeNamed(expandedTree(input), row("tool:reader"))
+  const state = moved(input, started(input, row("tool:reader")), "up")
+  const after = nodeNamed(expandedTree({ ...input, orders: state.layout.orders }), row("tool:reader"))
+  expect(after.address).toEqual(before.address)
+  const scopes = { global: new Set<string>(), defaults: new Set<string>() }
+  const upstream = input.items!.find((item) => item.id === "tool:reader")!
+  expect(resolve({ upstream, records: [], splits: [], scopes, address: after.address! }).assembled).toBe(
+    resolve({ upstream, records: [], splits: [], scopes, address: before.address! }).assembled,
+  )
 })

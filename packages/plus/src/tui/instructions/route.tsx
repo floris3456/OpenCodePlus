@@ -1624,7 +1624,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: () => void dialogs.relink(current()) }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },
         ...(moveCandidate(node)
-          ? [{ bind: "m", title: state.move() === undefined ? "Move" : "Drop (enter)", group: "Instructions", run: startMove }]
+          ? [{ bind: "m", title: "Move", group: "Instructions", run: startMove }]
           : []),
         {
           bind: "shift+r",

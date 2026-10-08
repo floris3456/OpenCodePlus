@@ -1781,11 +1781,15 @@ function lazyTeam(ctx: BuildContext, memo: Memo, level: Level, team: TeamInput):
   // entries whose team pattern is exactly its name.
   const entries = level === "defaults" ? membersOfPattern(ctx, team.team).filter((member) => !team.agents.includes(member)) : []
   const kids = (): readonly Lazy[] =>
-    cachedKids(memo, `team:${level}:${team.team}`, () => [
-      ...team.agents.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3)),
-      ...entries.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3, true)),
-      lazyTeamSpecial(ctx, memo, level, team),
-    ])
+    arrangeList(
+      memo,
+      `team:${level}:${team.team}`,
+      cachedKids(memo, `team:${level}:${team.team}`, () => [
+        ...team.agents.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3)),
+        ...entries.map((member) => lazyTeamMember(ctx, memo, level, team, member, 3, true)),
+        lazyTeamSpecial(ctx, memo, level, team),
+      ]),
+    )
   const owner = level === "defaults" ? undefined : ownerOf(ctx, { level, agent: null, team: { level, team: team.team } })
   return {
     id: `team:${level}:${team.team}`,

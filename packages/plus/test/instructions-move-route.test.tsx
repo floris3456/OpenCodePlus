@@ -3,6 +3,7 @@
 // and Esc restores. Ordinary model/tool rows, folders and sidebar owners move;
 // cold-cache try order keeps its own mode.
 import { afterEach, expect, test } from "bun:test"
+import { fingerprint } from "../src/instructions/model.js"
 import { createSnapshot, renderInstructionsRoute, type TestFixture } from "./tui.js"
 import { category, dispatch, footer, gotoLevel, levelOf, moveTo, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
 
@@ -58,7 +59,7 @@ async function openModels(fixture: TestFixture): Promise<void> {
 }
 
 const MODELS = [
-  { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "openai", modelID: "gpt-4o", active: true, updated: UPDATED },
+  { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "openai", modelID: "gpt-4o", active: true as const, updated: UPDATED },
   { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "anthropic", modelID: "claude-sonnet", updated: UPDATED },
 ]
 
@@ -179,6 +180,57 @@ test("an arrow that cannot apply says why and writes nothing", async () => {
     await fixture.waitForFrame((frame) => frame.includes("not inside a folder"))
     expect(fixture.fake.layoutWrites.length).toBe(0)
     dispatch(fixture, "escape")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+const build = { id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }
+
+function tool(id: string, title: string, text: string) {
+  return { id, kind: "tool" as const, group: "native" as const, title, text, enabled: true, fingerprint: fingerprint(text) }
+}
+
+// A tool row's display order is durable: after Enter writes the order, the
+// reloaded snapshot (which carries it) shows the same order with no further
+// write. The row stays selected across the reload.
+test("an ordinary tool reorder survives a snapshot reload with no second write", async () => {
+  const order = {
+    type: "order" as const,
+    level: "global" as const,
+    scope: "group:group:defaults:build:tools:native",
+    items: ["tool:read", "tool:bash"],
+    updated: UPDATED,
+  }
+  const items = [tool("tool:bash", "bash", "run\n"), tool("tool:read", "read", "read\n")]
+  const base = createSnapshot({ agents: [build], items })
+  const reloaded = createSnapshot({ agents: [build], items, orders: [order] })
+  const fixture = await renderInstructionsRoute({ snapshots: [base, reloaded], width: 130, height: 45 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await goto(fixture, "agent:defaults:build", "build")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
+    await category(fixture, "Tools")
+    await fixture.waitForFrame((frame) => frame.includes("bash") && frame.includes("read"))
+    expect(lineOf(fixture.captureCharFrame(), "bash")).toBeLessThan(lineOf(fixture.captureCharFrame(), "read"))
+    await moveTo(fixture, "read")
+    dispatch(fixture, "m")
+    await fixture.waitForFrame((frame) => footer(frame).includes("drop"))
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => lineOf(frame, "read") < lineOf(frame, "bash"))
+    expect(fixture.fake.layoutWrites.length).toBe(0)
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.layoutWrites.length === 1)
+    expect(fixture.fake.layoutWrites[0]?.orders.find((record) => record.scope === "group:group:defaults:build:tools:native")?.items).toEqual([
+      "tool:read",
+      "tool:bash",
+    ])
+    // The reloaded snapshot carries the order; the moved row stays selected.
+    await fixture.waitForFrame(
+      (frame) => !footer(frame).includes("drop") && lineOf(frame, "read") < lineOf(frame, "bash") && selectedRow(frame).includes("read"),
+    )
+    expect(fixture.fake.layoutWrites.length).toBe(1)
   } finally {
     fixture.destroy()
   }
