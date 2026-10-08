@@ -254,7 +254,7 @@ const ResetInput = Schema.Struct({
 const SplitInput = Schema.Struct({
   id: Schema.String,
   boundaries: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, start: Schema.Number })),
+    Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, start: Schema.Number, depth: Schema.optionalKey(Schema.Number) })),
   ),
   add: Schema.optionalKey(Schema.Struct({ name: Schema.String, text: Schema.String })),
 })

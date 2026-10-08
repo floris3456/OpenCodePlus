@@ -129,6 +129,7 @@ const BoundarySchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   start: Schema.Number,
+  depth: Schema.optional(Schema.Number),
 })
 
 const V2Customization = Schema.Struct({
@@ -1308,7 +1309,12 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.team === undefined ? {} : { team: record.team }),
       ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       item: record.item,
-      boundaries: record.boundaries.map((boundary) => ({ id: boundary.id, name: boundary.name, start: boundary.start })),
+      boundaries: record.boundaries.map((boundary) => ({
+        id: boundary.id,
+        name: boundary.name,
+        start: boundary.start,
+        ...(boundary.depth !== undefined ? { depth: boundary.depth } : {}),
+      })),
       updated: record.updated,
     }
   return {

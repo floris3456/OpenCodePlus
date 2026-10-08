@@ -1,4 +1,4 @@
-import { catalogueOf, resolve, resolveEnabled, resolveSplit } from "./model.js"
+import { catalogueOf, resolve, resolveEnabled, resolveSplit, scopedTo } from "./model.js"
 import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
 import type {
@@ -282,12 +282,16 @@ export function splitOf(memo: Memo, level: Level, owner: string | null, item: It
   const cached = memo.split.get(key)
   if (cached !== undefined) return cached
   const whole = wholeOf(memo, level, owner, item, catalogue, team)
+  const addr = addressOf(level, owner, item.id, null, catalogue, team)
+  const hasManual = memo.ctx.splits.some((s) => s.item === item.id && scopedTo(s, addr))
+  const hasSectionOverrides = memo.ctx.customizations.some((c) => c.item === item.id && c.section !== null && c.text !== undefined && scopedTo(c, addr))
+  const text = !hasManual && hasSectionOverrides ? (whole.fullText ?? whole.assembled ?? whole.text) : whole.text
   const split = resolveSplit({
-    text: whole.text,
+    text,
     title: item.title,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,
-    address: addressOf(level, owner, item.id, null, catalogue, team),
+    address: addr,
   })
   memo.split.set(key, split)
   return split

@@ -149,6 +149,7 @@ export const Boundary = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   start: Schema.Number,
+  depth: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.Boundary" })
 
 export type RecordState = typeof RecordState.Type

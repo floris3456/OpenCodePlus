@@ -778,6 +778,7 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
   expect(sections.map((node) => node.depth)).toEqual([6, 6])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
+  expect(sections.every((node) => node.add === "section")).toBe(true)
 })
 
 test("a lone top-level heading is not an extra level: children render directly and its body is Introduction", () => {

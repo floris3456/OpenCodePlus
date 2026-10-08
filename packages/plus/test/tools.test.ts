@@ -352,6 +352,49 @@ test("split and add section match ops and persist boundaries and section records
   expect(addedSplit.boundaries.some((boundary) => boundary.id === sectionRecord.section)).toBe(true)
 })
 
+test("split with add on section adds child; on item adds top-level", async () => {
+  const { api, tools } = await freshFixture()
+  const snapshot = await snapshotOf(api)
+  const memo = memoFromSnapshot(snapshot)
+  const nodes = expandedTree(memo)
+
+  // Find a heading-derived item or section row (e.g. system:tools-and-rules or similar, or any splittable item)
+  const itemNode = nodes.find((n) => n.kind === "item" && n.address?.item === "system:tools-and-rules")
+  if (itemNode === undefined) throw new Error("missing system:tools-and-rules row")
+
+  // Find a section of this item
+  const sectionNode = nodes.find((n) => n.kind === "section" && n.address?.item === "system:tools-and-rules")
+  if (sectionNode === undefined) throw new Error("missing section under system:tools-and-rules")
+
+  // 1. split({ id: sectionNode.id, add }) on a section adds a child of that section
+  const childResult = (await runOk(need(tools, "instructions_split"), {
+    id: sectionNode.id,
+    add: { name: "ChildSection", text: "Child content." },
+  })) as { status: string }
+  expect(childResult.status).toContain("Added \"ChildSection\"")
+
+  const afterChild = await snapshotOf(api)
+  const afterChildMemo = memoFromSnapshot(afterChild)
+  const childRow = expandedTree(afterChildMemo).find((n) => n.label === "ChildSection")
+  expect(childRow).toBeDefined()
+  expect(childRow?.kind).toBe("section")
+  expect(childRow?.depth).toBeGreaterThan(sectionNode.depth)
+
+  // 2. split({ id: itemNode.id, add }) on an item adds top-level
+  const topResult = (await runOk(need(tools, "instructions_split"), {
+    id: itemNode.id,
+    add: { name: "TopSection", text: "Top content." },
+  })) as { status: string }
+  expect(topResult.status).toContain("Added \"TopSection\"")
+
+  const afterTop = await snapshotOf(api)
+  const afterTopMemo = memoFromSnapshot(afterTop)
+  const topRow = expandedTree(afterTopMemo).find((n) => n.label === "TopSection")
+  expect(topRow).toBeDefined()
+  expect(topRow?.kind).toBe("section")
+})
+
+
 test("keep/take/edit resolve match ops and persist the resulting records", async () => {
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
