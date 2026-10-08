@@ -708,6 +708,53 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   is id. Type defaults to `either`; `enabled:false` masks the pair/type at this
   level, including upstream links. Types and ownership follow B9–B12. Both ends
   must be in the same owner/level view; invalid links refuse without writing.
+- S4 can start as S4a for already-landed compaction/merge documentation and the
+  measured rollback warning; S4b finalizes move/link/CLI teaching and help after
+  integration. S4a does not edit S2a's tool registration or S1b's TUI help.
+- Rollback probe (`run/evidence/plus-1.2.0/rollback-store/REPORT.md`): 1.1.18
+  ignores folder/order records and new per-model compaction fields. On the
+  tested already-migrated fixture, read/no-op save preserved bytes, and a real
+  global write erased those global fields/records. A project-only write left
+  the global file unchanged; this does not prove new project fields survive.
+  The updater's database backup does not include Instructions JSONL. Before
+  rollback, retain private copies of global and project Instructions stores;
+  never automatically restore old files over newer work. Rowlink downgrade
+  compatibility remains to be measured after S2a. This is not a general claim
+  that opening every newer store on 1.1.18 is harmless: another migration may
+  itself trigger a write.
+- S4a review found an unfinished WP-E tool path. Confirmed through production
+  `modelFieldEdit` and `setModelFieldRow`: setting `compactWarm`,
+  `compactionStrategy`, `compactionModel` or `compactionInstructions` on an
+  agent model field row writes the keep-alive `prompt` instead. The new fields
+  also are missing from tools `SetInput`; field-specific reset needs checking.
+  Evidence: `run/evidence/plus-1.2.0/model-tool-fields/checks/before.txt`.
+  Finish this as a focused model-tool-fields package before final S4b teaching
+  and CLI parity. Regression tests must traverse real tool schema/dispatch,
+  preserve unrelated warming prompt/model identity/active state and verify
+  invalid values/protected-owner refusal leave durable records unchanged.
+- Worker routing is blocked again: Lithos Flash returned out-of-credit,
+  CLIProxyAPI Flash-low rejected the required thinking-history payload, and
+  direct OpenCode Go Flash-low returned usage-limit-exceeded. Do not retry
+  these failing routes or choose an unapproved expensive model. Interrupted
+  S1b/S2a/L1 changes are checkpointed, not reviewed/qualified or integrated.
+  S4a's first docs commit is retained pending small wording corrections;
+  remaining live acceptance and section-move decision are still open.
+- **Routing correction after the owner's clarification:** the requested exact
+  `deepseek-flash` alias is `cliproxyapi/opencode-go/deepseek-flash`, not the
+  Flash-cheap or direct-provider routes tried above. A fresh subagent completed
+  two sequential tool calls and returned their observed results on that exact
+  alias (session `ses_ee2549391ffeC5a70LjIpHCnRb`, release SHA `efb440601c`).
+  The prior `reasoning_content` error is a thinking-history request-format
+  failure, not a quota or model-availability verdict. Resume workers on the
+  exact alias. Its catalogue exposes no variants: do not append a guessed
+  variant or claim an independently verified low-effort setting. The owner's
+  preference remains minimal reasoning. Preserve existing checkpoint commits.
+- Parallel ownership for the remaining WP-E fix: model-tool-fields owns only
+  `ops.ts` model field/edit/reset helpers and `tools.ts` model set/reset/schema
+  fields. S2a owns rowlinks, requires, toggles and link tool registration; S1b
+  owns movement/layout. The compaction tool fix must verify comma-list text
+  parsing through the actual Defaults field-row tool dispatch too, not just
+  through `compactionFieldsOf` directly.
 
 ## Design notes per area
 
