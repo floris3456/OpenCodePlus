@@ -127,11 +127,15 @@ export const resolveTui = Effect.fn("cli.service-handover.resolve-tui")(function
   notice(
     active === 0
       ? `Replaced the service ${running} with ${OPENCODE_VERSION} (no chats were running).`
-      : `Replaced the service ${running} with ${OPENCODE_VERSION} (${describeChats(active)} pause and resume after the restart).`,
+      : `Replaced the service ${running} with ${OPENCODE_VERSION} (${describeResumption(active)}).`,
   )
   return endpoint
 })
 
 function describeChats(active: number) {
   return active === 1 ? "1 chat" : `${active} chats`
+}
+
+function describeResumption(active: number) {
+  return active === 1 ? "1 chat pauses and resumes after the restart" : `${active} chats pause and resume after the restart`
 }
