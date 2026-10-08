@@ -431,11 +431,35 @@ Added 2026-10-08 evening (build seat, continuing the run)
   13,872 steps, step start to request sent): p50 6 ms, p99 68 ms. The 21
   cases above 10 s are all CPA quota-retry waits (about 362 s each) before
   the one recorded attempt, not preparation. 120 s is over 1,000× p99 and
-  still ends a silent hang. The bound covers request preparation only
-  (`SessionPrompt.prepare` and the plugin hooks it runs), never provider
-  retries or the stream. The step fails with an error naming the stage, and
-  the hook and its plugin when a hook was running; the chat takes the next
-  message.
+  still ends a silent hang. The bound covers request preparation only, never
+  provider retries, the summary request or the stream. The step fails with an
+  error naming the stage, and the hook and its plugin when a hook was
+  running; the chat takes the next message.
+  Amended after X2's first commit (`f9d3fcc0a4`), which bounded only the
+  request's content hooks: finding 13's step "never started", so the hang
+  can sit anywhere between the end of the tool call and the step start.
+  Each preparation stage of a step is bounded on its own at 120 s: loading
+  the context (`context.select`/`load`, the `session.catalog` hook), the
+  compaction decision (`compaction.decide` only, never the summary it
+  arms), and the request's content hooks (`session.context`,
+  `model.request`). Prompt admission (`SessionPrompt.prepare`, the
+  `session.prompt` hook) is not a step: a hang there leaves the prompt
+  unadmitted, not a chat "working" for hours, so it is out of X2.
+- **B30. WP-B (C2) details, `compaction.decide` overrides.** As
+  `plus-1.1.18.md` §2 and §7, made exact: `strategy` replaces the agent's
+  compaction strategy for this compaction (a portable decision with
+  `remote`, from either side, is still refused); `system` replaces the
+  agent's compaction system text (on the chat's own model it travels in the
+  final user message, B28); `compactionFallbacks`, when present, is the whole
+  fallback list and replaces `compactionFallback`, which otherwise means a
+  list of one; each model that fails is recorded as its own failed
+  compaction (auto) before the next is tried, as the single fallback is
+  today. `optional: true`, when every model failed, returns `skipped` for an
+  `auto` trigger, so the step runs uncompacted; `manual` and `overflow`
+  ignore it (a manual compaction reports its failure; an overflow cannot
+  continue uncompacted). A failed compaction records the model that tried
+  it (`model` on the failed message, as on the completed one): the
+  summarizing model for a summary, the chat's model for native.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
