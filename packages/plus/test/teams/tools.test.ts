@@ -85,6 +85,7 @@ interface TestToolHarness {
 function testToolContext(options: {
   directory?: string
   session?: unknown
+  permission?: Context["permission"]
 } = {}): TestToolHarness {
   const base = toolHarness()
   const beforeHooks: Array<(event: ToolHooks["execute.before"]) => Effect.Effect<void>> = []
@@ -149,6 +150,7 @@ function testToolContext(options: {
     event,
     ...(location ? { location } : {}),
     ...(options.session ? { session: options.session as Context["session"] } : {}),
+    ...(options.permission ? { permission: options.permission } : {}),
   })
 
   return { ctx, tools: base.tools, emit, triggerHook }
@@ -1235,6 +1237,133 @@ test("a human rejection without feedback writes exactly one asked:deny line and 
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true })
     }
+  })
+})
+
+test("a permission ask from a delegated run is rejected at once; a main run's or an unknown session's ask is left alone", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    await saveRun(root, makeRun("w-ask-reply000001", "implementer", "ses_ask_w"))
+    await saveRun(root, { ...makeRun("main-ask-reply0001", "planner", "ses_ask_main"), kind: "main" })
+    const replies: Array<{ requestID: string; decision: string; message?: string }> = []
+    const permission = {
+      reply: (input: { requestID: string; decision: string; message?: string }) => Effect.sync(() => void replies.push(input)),
+    } as unknown as Context["permission"]
+    const tc = testToolContext({ permission })
+    await registerTeamTools(tc.ctx, createTeamApi(tc.ctx, teamState()), shippedTable)
+    // The listener subscribes when registration forks it; events published before that are lost.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const ask = (sessionID: string, id: string) =>
+      tc.emit({
+        type: Permission.Event.Asked.type,
+        data: { id, sessionID, action: "external_directory", resources: ["/home/x/elsewhere/*"] },
+      })
+    ask("ses_ask_w", "per_ask_w_1")
+    ask("ses_ask_main", "per_ask_main_1")
+    ask("ses_ask_none", "per_ask_none_1")
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(replies.map((reply) => [reply.requestID, reply.decision])).toEqual([["per_ask_w_1", "reject"]])
+    expect(replies[0]?.message).toContain("nobody answers asks in a delegated run")
+  })
+})
+
+test("a delegated run's ask that the teams layer rejects is audited once as asked:deny", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-w-reject-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# delegated reject\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const head = await git(repoDir, ["rev-parse", "HEAD"])
+
+      const sessionID = "ses_w_reject_001"
+      await saveRun(root, { ...makeRun("w-reject00000001", "orchestrator", sessionID), directory: repoDir, base: head, head })
+
+      const session = {
+        create: () => Effect.succeed({ id: Session.ID.make("ses_w_reject_child") }),
+        prompt: () => Effect.succeed(undefined as never),
+        switchModel: () => Effect.succeed(undefined as never),
+        wait: () => Effect.succeed(undefined),
+      } as unknown as Context["session"]
+      // The reply goes to the same permission service that asked, so the core
+      // rejection and its Replied event are the real ones.
+      const { service: permService } = makeTestPermissionService(
+        [{ action: "team.delegate", resource: "*", effect: "ask", message: "Plan execution needs human approval" }],
+        (event) => tc.emit(event),
+      )
+      const tc = testToolContext({
+        directory: repoDir,
+        session,
+        // The plugin's reply names the decision; the host hands core its reply.
+        permission: {
+          reply: (input: { requestID: Permission.ReplyInput["requestID"]; decision: Permission.ReplyInput["reply"]; message?: string }) =>
+            permService.reply({ requestID: input.requestID, reply: input.decision, message: input.message }),
+        } as unknown as Context["permission"],
+      })
+      await registerTeamTools(tc.ctx, createTeamApi(tc.ctx, teamState()), shippedTable)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      const callCtx: Tool.Context = {
+        sessionID: Session.ID.make(sessionID),
+        agent: Agent.ID.make("orchestrator"),
+        messageID: SessionMessage.ID.make("msg_w_reject"),
+        id: Tool.CallID.make("call_w_reject"),
+        progress: () => Effect.void,
+      }
+      const input = Schema.decodeUnknownSync(Brief)({
+        requestID: "r-w-reject-01",
+        role: "orchestrator",
+        reason: "3 independent packages, each needs its own workers",
+        objective: "Delegate from a run nobody watches.",
+        deliverable: { kind: "commit" as const },
+        scope: { paths: ["packages/plus/src/*"] },
+        checks: [{ id: "c4", argv: ["bun", "test", "test/d.test.ts"] }],
+      })
+      const exit = await Effect.runPromise(
+        Effect.exit(executeGated(need(tc.tools, "team_delegate"), input, callCtx, permService, tc.triggerHook)),
+      )
+      expect(exit._tag).toBe("Failure")
+
+      const calls = await settledToolCalls(root, (line) => line.tool === "team_delegate")
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.outcome).toBe("asked:deny")
+      expect(calls[0]?.run).toBe("w-reject00000001")
+      const v = await verify(root)
+      expect(v.ok).toBe(true)
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
+test("a refused call of another tool is audited inside a delegated run, and not in a chat", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    await saveRun(root, makeRun("w-refused0000001", "implementer", "ses_refused_w"))
+    const tc = testToolContext()
+    await registerTeamTools(tc.ctx, createTeamApi(tc.ctx, teamState()), shippedTable)
+    const refusedRead = (sessionID: string) =>
+      tc.triggerHook("execute.after", {
+        tool: "read",
+        sessionID: Session.ID.make(sessionID),
+        agent: Agent.ID.make("orchestrator"),
+        messageID: SessionMessage.ID.make("msg_refused"),
+        id: Tool.CallID.make("call_refused"),
+        input: {},
+        status: "error",
+        error: new Tool.Error({
+          message: "Permission denied: external_directory for /home/x/elsewhere/* needs an answer, and nobody answers asks in a delegated run.",
+        }),
+      })
+    await Effect.runPromise(refusedRead("ses_refused_w"))
+    await Effect.runPromise(refusedRead("ses_chat_refused"))
+    const refused = (await auditLines(root)).filter((line) => line.kind === "tool.call")
+    expect(refused).toHaveLength(1)
+    expect(refused[0]?.tool).toBe("read")
+    expect(refused[0]?.run).toBe("w-refused0000001")
+    expect(refused[0]?.outcome).toBe("denied")
+    expect(refused[0]?.code).toBe("E_PERMISSION")
   })
 })
 

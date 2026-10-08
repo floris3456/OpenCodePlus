@@ -281,6 +281,44 @@ test("a delegated run, which nobody watches, is refused instead of asked", async
   expect(refusal(result.exit)).toContain("nobody watches a delegated run")
 })
 
+// An evaluation core left at "ask", as the hook receives it: the resources
+// and any message core set, with no approval of Plus's behind it.
+async function judged(recorded: Recorded, action: string, effect: string, message?: string) {
+  const hook = recorded.evaluate
+  if (hook === undefined) throw new Error("permission evaluate not installed")
+  const event = { sessionID: "ses_hooks", agent: "build", action, resources: ["/home/x/elsewhere/*"], effect, message }
+  await Effect.runPromise(hook(event))
+  return event
+}
+
+test("a delegated run's open ask is refused, whatever the action, and the refusal names what it asked for", async () => {
+  const { recorded } = await installed(tableFor([], {}), enforcementState(), true)
+  const outside = await judged(recorded, "external_directory", "ask")
+  expect(outside.effect).toBe("deny")
+  expect(outside.message).toContain("external_directory")
+  expect(outside.message).toContain("/home/x/elsewhere/*")
+  expect(outside.message).toContain("delegated run")
+  const shell = await judged(recorded, "shell", "ask")
+  expect(shell.effect).toBe("deny")
+  expect(shell.message).toContain("shell")
+  expect(shell.message).toContain("delegated run")
+})
+
+test("a delegated run keeps an allow, and a deny keeps its own effect and message", async () => {
+  const { recorded } = await installed(tableFor([], {}), enforcementState(), true)
+  expect((await judged(recorded, "external_directory", "allow")).effect).toBe("allow")
+  const denied = await judged(recorded, "external_directory", "deny", "Outside the worktree")
+  expect(denied.effect).toBe("deny")
+  expect(denied.message).toBe("Outside the worktree")
+})
+
+test("a session that is not a delegated run keeps an open ask as an ask", async () => {
+  const { recorded } = await installed(tableFor([], {}), enforcementState(), false)
+  const asked = await judged(recorded, "external_directory", "ask")
+  expect(asked.effect).toBe("ask")
+  expect(asked.message).toBeUndefined()
+})
+
 test("overlapping shell calls of one command all get the union of what any of them strips", () => {
   const state = enforcementState()
   const now = Date.now()

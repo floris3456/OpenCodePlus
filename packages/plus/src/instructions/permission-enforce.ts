@@ -20,6 +20,7 @@
 //
 // Team rows are read by the team tools themselves through the same table.
 import type { Context } from "@opencode/plugin/effect/plugin"
+import type { PermissionEvaluation } from "@opencode/plugin/effect/permission"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { SessionContext } from "@opencode/plugin/effect/session"
 import { Permission } from "@opencode/schema/permission"
@@ -1154,7 +1155,7 @@ export async function installEnforcement(
         waiting.ambiguous = shared
         const raisedKey = `${key}\u0000${event.action}`
         state.raised.set(raisedKey, [...(state.raised.get(raisedKey) ?? []), waiting])
-      }),
+      }).pipe(Effect.andThen(refuseUnattended(event, deps.headless))),
     ),
   )
   const shell = await hook(() =>
@@ -1170,6 +1171,25 @@ export async function installEnforcement(
   )
   const replies = await listen(ctx, state)
   return [before, after, evaluate, shell, replies].filter((registration): registration is Registration => registration !== undefined)
+}
+
+// A delegated run has nobody to answer an ask, so an ask still open after the
+// other checks is refused, whatever the action. Headless reads the run's files,
+// so it is consulted only for an ask.
+function refuseUnattended(event: PermissionEvaluation, headless: (sessionID: string) => Promise<boolean>): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (event.effect !== "ask") return
+    const delegated = yield* Effect.promise(() => headless(String(event.sessionID)).catch(() => false))
+    if (!delegated) return
+    event.effect = "deny"
+    event.message = unattendedMessage(event.action, event.resources)
+  })
+}
+
+// Shared by the evaluate hook and the teams layer's safety net, so a refused
+// ask reads the same whichever layer catches it.
+export function unattendedMessage(action: string, resources: ReadonlyArray<string>): string {
+  return `Permission denied: ${action} for ${resources.join(", ")} needs an answer, and nobody answers asks in a delegated run. Stay inside your worktree, or report what you need in your finish needs.`
 }
 
 // A Code Mode run past its "Tool calls per run" cap refuses every further
