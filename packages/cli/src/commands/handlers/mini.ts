@@ -2,6 +2,8 @@ import { Context, Effect, FileSystem, Option } from "effect"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { ServerConnection } from "../../services/server-connection"
+import { ServiceHandover } from "../../services/service-handover"
+import { askHandover } from "../../services/service-handover-ask"
 import { Config } from "../../config"
 import { resolve } from "@opencode/tui/config"
 import { Global } from "@opencode/util/global"
@@ -14,8 +16,14 @@ export default Runtime.handler(Commands.commands.mini, (input) =>
     const server = yield* ServerConnection.resolve({
       server: serverURL,
       standalone: input.standalone,
-      mismatch: "replace",
-    })
+      mismatch: "handover",
+      ask: askHandover,
+    }).pipe(
+      Effect.catchIf(
+        (error) => error instanceof ServiceHandover.HandoverQuit,
+        () => Effect.sync(() => process.exit(0)),
+      ),
+    )
     const config = yield* Config.Service
     const global = yield* Global.Service
     const resolved = resolve(yield* config.get(), { terminalSuspend: process.platform !== "win32" })

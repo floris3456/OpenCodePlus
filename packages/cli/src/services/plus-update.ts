@@ -19,6 +19,7 @@ export * as PlusUpdate from "./plus-update"
 
 import { Service, ServiceRefusalError, type Info } from "@opencode/client/effect/service"
 import { Global } from "@opencode/util/global"
+import { ServiceHandover } from "./service-handover"
 import { PlusVersion } from "@opencode/util/plus-version"
 import { AppProcess } from "@opencode/util/process"
 import { ReleaseManifest, type ReleaseTarget } from "@opencode/schema/release"
@@ -73,12 +74,6 @@ const decodeCache = Schema.decodeUnknownOption(
       version: Schema.NullOr(Schema.String),
     }),
   ),
-)
-const decodeActive = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ data: Schema.Record(Schema.String, Schema.Unknown) })),
-)
-const decodeHealth = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ version: Schema.String, pid: Schema.Number })),
 )
 const decodeRegistration = Schema.decodeUnknownOption(Schema.fromJsonString(Service.Info))
 
@@ -298,7 +293,7 @@ export const make = Effect.gen(function* () {
 
     yield* waitIdle(incumbent, progress)
     progress("Stopping the background service…")
-    yield* Service.stop({ file: options.file, pty: "handoff" })
+    yield* ServiceHandover.stopForReplacement(options.file)
     if (alive(incumbent.pid))
       return yield* Effect.fail(new UpdateError(`The background service (pid ${incumbent.pid}) did not stop; nothing was changed`))
 
@@ -320,7 +315,7 @@ export const make = Effect.gen(function* () {
       yield* start(version)
     })
     const back = Effect.gen(function* () {
-      yield* Service.stop({ file: options.file, pty: "handoff" }).pipe(Effect.ignore)
+      yield* ServiceHandover.stopForReplacement(options.file).pipe(Effect.ignore)
       yield* restoreDatabase(backup)
       yield* pointTo(install, previous)
       yield* start(previous)
@@ -428,23 +423,11 @@ export const make = Effect.gen(function* () {
     return Option.isSome(text) ? Option.getOrUndefined(decodeRegistration(text.value)) : undefined
   })
 
-  const call = (info: Info, route: string) =>
-    Effect.tryPromise({
-      try: () =>
-        fetch(new URL(route, info.url), {
-          headers: info.password === undefined ? undefined : { authorization: `Basic ${btoa(`opencode:${info.password}`)}` },
-          signal: AbortSignal.timeout(10_000),
-        }).then(async (response) => ({ status: response.status, text: await response.text() })),
-      catch: (cause) => new UpdateError(`The background service did not answer ${route}`, { cause }),
-    })
-
   const waitIdle = Effect.fnUntraced(function* (incumbent: Info, progress: Progress) {
     while (true) {
-      const answer = yield* call(incumbent, "/api/session/active")
-      const active = answer.status === 200 ? decodeActive(answer.text) : Option.none()
-      if (Option.isNone(active))
-        return yield* Effect.fail(new UpdateError("Could not read which chats are running; nothing was changed"))
-      const running = Object.keys(active.value.data).length
+      const running = yield* ServiceHandover.activeCount(ServiceHandover.endpointFor(incumbent)).pipe(
+        Effect.mapError(() => new UpdateError("Could not read which chats are running; nothing was changed")),
+      )
       if (running === 0) return
       progress(`Waiting for ${running} running chat${running === 1 ? "" : "s"} to finish…`)
       yield* Effect.sleep("2 seconds")
@@ -482,11 +465,17 @@ export const make = Effect.gen(function* () {
     )
     const info = yield* registration(file)
     if (!info) return yield* Effect.fail(new UpdateError(`${describe(version)} did not register a background service`))
-    const answer = yield* call(info, "/api/info")
-    const health = answer.status === 200 ? Option.getOrUndefined(decodeHealth(answer.text)) : undefined
-    if (health?.version !== version || health.pid !== info.pid || !alive(info.pid))
+    const health = yield* ServiceHandover.serverInfo(ServiceHandover.endpointFor(info)).pipe(Effect.option)
+    if (
+      Option.isNone(health) ||
+      health.value.version !== version ||
+      health.value.pid !== info.pid ||
+      !alive(info.pid)
+    )
       return yield* Effect.fail(
-        new UpdateError(`the background service answers as ${health?.version ?? "nothing"}, not ${version}`),
+        new UpdateError(
+          `the background service answers as ${Option.isSome(health) ? health.value.version : "nothing"}, not ${version}`,
+        ),
       )
   })
 
