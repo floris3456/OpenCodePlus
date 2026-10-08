@@ -63,6 +63,7 @@ import {
   isRebuildMoment,
   sessionPins,
   type PlanSet,
+  type SessionPin,
   type SessionPinManager,
 } from "./cache-safe.js"
 
@@ -716,7 +717,7 @@ export async function runRegistration<Editor>(
   )
 }
 
-async function runHook<Name extends "context" | "catalog">(
+async function runHook<Name extends "context" | "catalog" | "compaction">(
   hook: (name: Name, callback: (input: SessionHooks[Name]) => Effect.Effect<void>) => Effect.Effect<Registration, never, Scope.Scope>,
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
@@ -1575,6 +1576,7 @@ export async function installSessionPlans(
 
           if (pin === undefined) {
             pin = pinManager.pinSession(sessionID, event.model, activePlanSet)
+            recordPinModel(pin, event.model)
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
             applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
@@ -1590,6 +1592,7 @@ export async function installSessionPlans(
           const rebuild = yield* Effect.promise(() => isRebuildMoment(pin!, event, Date.now()))
           if (rebuild) {
             pin = pinManager.repinSession(sessionID, event.model, activePlanSet)
+            recordPinModel(pin, event.model)
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
             applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
@@ -1606,27 +1609,23 @@ export async function installSessionPlans(
           // copying it into this request's messages would deliver it twice.
           yield* Effect.promise(() => checkAndEmitChangeNote(ctx, pin!, activePlanSet, agent, sessionID))
 
-          const pinnedSystem0 = pin.pinnedSystem0.get(agent)
-          if (pinnedSystem0 !== undefined) {
-            if (event.system[0] !== undefined) {
-              event.system[0] = { ...event.system[0], text: pinnedSystem0 }
-            } else {
-              event.system.push({ type: "text", text: pinnedSystem0 })
-            }
-          } else {
-            applyBasePlan(event, pin.planSet.base, classifier, pin.planSet.customByAgent)
-            pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
-          }
-
-          applyToolPlan(event, pin.planSet.native.filter((plan) => plan.agent === agent))
-          applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent))
-          applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
-          if (pin.planSet.needsNarrowing) narrowTools(event, pin.planSet.permissions)
+          yield* applyPinnedPlans(ctx, event, pin!, classifier)
           pin.lastRequestAt = Date.now()
-          if (pin.planSet.needsNarrowing) yield* describeChecks(ctx, event)
         })
       })
       installed.push(registration)
+
+      if (state !== undefined) {
+        const compactionRegistration = await runHook(ctx.session.hook, "compaction", (event) => {
+          const sessionID = String(event.sessionID)
+          const pinManager = state?.sessionPins ?? sessionPins
+          const pin = pinManager.getPin(sessionID)
+          if (pin === undefined) return Effect.void
+          if (!sameModel(event.model, pin.model)) return Effect.void
+          return applyPinnedPlans(ctx, event, pin, classifier)
+        })
+        installed.push(compactionRegistration)
+      }
     }
     if (!contextHook && plans.needsNarrowing) {
       const narrowing = await hook(() =>
@@ -1636,6 +1635,15 @@ export async function installSessionPlans(
         }),
       )
       if (narrowing !== undefined) installed.push(narrowing)
+      if (state !== undefined) {
+        const narrowingCompaction = await hook(() =>
+          ctx.session.hook("compaction", (event) => {
+            narrowTools(event, permissions)
+            return describeChecks(ctx, event)
+          }),
+        )
+        if (narrowingCompaction !== undefined) installed.push(narrowingCompaction)
+      }
     }
     if (plans.catalogPlans.length > 0 || needsScrub) {
       const catalogRegistration = await runHook(ctx.session.hook, "catalog", (event) => {
@@ -1660,6 +1668,64 @@ export async function installSessionPlans(
     await disposeRegistrations(installed)
     throw error
   }
+}
+
+function sameModel(
+  a: { readonly providerID: unknown; readonly id: unknown; readonly variant?: unknown },
+  b: { readonly providerID: unknown; readonly id: unknown; readonly variant?: unknown },
+): boolean {
+  if (String(a.providerID) !== String(b.providerID)) return false
+  if (String(a.id) !== String(b.id)) return false
+  const aVariant = a.variant === undefined ? undefined : String(a.variant)
+  const bVariant = b.variant === undefined ? undefined : String(b.variant)
+  return aVariant === bVariant
+}
+
+function recordPinModel(
+  pin: SessionPin,
+  model: { readonly providerID: unknown; readonly id: unknown; readonly variant?: unknown },
+): void {
+  const target = pin.model as { providerID: string; id: string; variant?: string }
+  if (model.variant !== undefined) {
+    target.variant = String(model.variant)
+    return
+  }
+  delete target.variant
+}
+
+function applyPinnedSystem0(
+  event: SessionContext,
+  pin: SessionPin,
+  classifier: RequestClassifier,
+  agent: string,
+): void {
+  const pinnedSystem0 = pin.pinnedSystem0.get(agent)
+  if (pinnedSystem0 !== undefined) {
+    if (event.system[0] !== undefined) {
+      event.system[0] = { ...event.system[0], text: pinnedSystem0 }
+      return
+    }
+    event.system.push({ type: "text", text: pinnedSystem0 })
+    return
+  }
+  applyBasePlan(event, pin.planSet.base, classifier, pin.planSet.customByAgent)
+  pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
+}
+
+function applyPinnedPlans(
+  ctx: Context,
+  event: SessionContext,
+  pin: SessionPin,
+  classifier: RequestClassifier,
+): Effect.Effect<void> {
+  const agent = String(event.agent)
+  applyPinnedSystem0(event, pin, classifier, agent)
+  applyToolPlan(event, pin.planSet.native.filter((plan) => plan.agent === agent))
+  applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent))
+  applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
+  if (pin.planSet.needsNarrowing) narrowTools(event, pin.planSet.permissions)
+  if (pin.planSet.needsNarrowing) return describeChecks(ctx, event)
+  return Effect.void
 }
 
 async function applySession(

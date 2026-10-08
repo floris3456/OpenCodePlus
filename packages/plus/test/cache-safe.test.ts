@@ -18,7 +18,7 @@ function sessionEvent(
   agentID: string,
   tools: SessionHooks["context"]["tools"],
   system: SessionHooks["context"]["system"],
-  model = { providerID: "anthropic", id: "claude-3-5-sonnet" },
+  model: { providerID: string; id: string; variant?: string } = { providerID: "anthropic", id: "claude-3-5-sonnet" },
 ): SessionHooks["context"] {
   return {
     sessionID: Session.ID.make(sessionID),
@@ -26,6 +26,7 @@ function sessionEvent(
     model: Model.Ref.make({
       providerID: Provider.ID.make(model.providerID),
       id: Model.ID.make(model.id),
+      ...(model.variant ? { variant: Model.VariantID.make(model.variant) } : {}),
     }),
     system,
     messages: [],
@@ -48,6 +49,7 @@ type SessionRead = (sessionID: string) => Effect.Effect<{ readonly agent?: strin
 
 function createHarness(read: SessionRead = () => Effect.die("unused session.get")) {
   const contextCallbacks: Array<(event: SessionHooks["context"]) => Effect.Effect<void>> = []
+  const compactionCallbacks: Array<(event: SessionHooks["compaction"]) => Effect.Effect<void>> = []
   const synthetics: Array<{ sessionID: Session.ID; text: string; delivery?: string; resume?: boolean }> = []
 
   const ctx: Context = context({
@@ -55,6 +57,7 @@ function createHarness(read: SessionRead = () => Effect.die("unused session.get"
       hook: (name, callback) =>
         Effect.sync(() => {
           if (name === "context") contextCallbacks.push(callback as never)
+          if (name === "compaction") compactionCallbacks.push(callback as never)
           return { dispose: Effect.void }
         }),
       get: (input) => read(String(input.sessionID)) as never,
@@ -79,7 +82,7 @@ function createHarness(read: SessionRead = () => Effect.die("unused session.get"
     },
   })
 
-  return { ctx, contextCallbacks, synthetics }
+  return { ctx, contextCallbacks, compactionCallbacks, synthetics }
 }
 
 test("unchanged chat fingerprints identical over several turns", async () => {
@@ -745,4 +748,80 @@ test("a role gained alongside another change announces that change but not the r
   expect(synthetics).toHaveLength(1)
   expect(synthetics[0]?.text).toContain("reader")
   expect(synthetics[0]?.text).not.toContain("Be nice")
+})
+
+test("compaction hook shapes request from pin for same model and leaves others unchanged", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, compactionCallbacks, synthetics } = createHarness()
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  const input1 = alphaPlan("You are helpful.\n\n## Rules\nBe nice.")
+  await applyPublishParts(ctx, state, input1)
+  const contextHook = contextCallbacks.at(-1)!
+
+  // 1. Session pinned by one context-hook request
+  const turn1 = sessionEvent(
+    "ses_compact_cache",
+    "alpha",
+    { reader: { description: "read files", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful.\n\n## Rules\nBe nice." }],
+  )
+  await Effect.runPromise(contextHook(turn1))
+
+  const pin = sessionPins.getPin("ses_compact_cache")
+  expect(pin).toBeDefined()
+  const lastRequestAtBefore = pin!.lastRequestAt
+  const lastNoteHashBefore = pin!.lastNoteHash
+
+  // 2. Plan change (a role edit) that the next step would hold back as a note
+  const input2 = alphaPlan("You are helpful.\n\n## Rules\nSpeak like a pirate.")
+  await applyPublishParts(ctx, state, input2)
+  const compactionHook = compactionCallbacks.at(-1)!
+  expect(compactionHook).toBeDefined()
+
+  // 3. Compaction-hook event with the same model whose system[0] is the agent's current raw system text and whose tools are the raw tools
+  const compactionSameModel = sessionEvent(
+    "ses_compact_cache",
+    "alpha",
+    { reader: { description: "read files", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful.\n\n## Rules\nSpeak like a pirate." }],
+  )
+  await Effect.runPromise(compactionHook(compactionSameModel))
+
+  // After the hook, its system parts and tool descriptions equal those of the step request the context hook produced
+  // (pinned text, not the changed text)
+  expect(compactionSameModel.system).toEqual(turn1.system)
+  expect(compactionSameModel.tools).toEqual(turn1.tools)
+  // No synthetic was admitted
+  expect(synthetics).toHaveLength(0)
+  // Pin's lastRequestAt and lastNoteHash are unchanged
+  expect(pin!.lastRequestAt).toBe(lastRequestAtBefore)
+  expect(pin!.lastNoteHash).toBe(lastNoteHashBefore)
+
+  // 4. Another model on the compaction event: the event is left exactly as given
+  const otherModelTools = { reader: { description: "read files", input: { type: "object" as const } } }
+  const otherModelSystem = [{ type: "text" as const, text: "You are helpful.\n\n## Rules\nSpeak like a pirate." }]
+  const compactionOtherModel = sessionEvent(
+    "ses_compact_cache",
+    "alpha",
+    { ...otherModelTools },
+    [...otherModelSystem],
+    { providerID: "openai", id: "gpt-4o" },
+  )
+  await Effect.runPromise(compactionHook(compactionOtherModel))
+  expect(compactionOtherModel.system).toEqual(otherModelSystem)
+  expect(compactionOtherModel.tools).toEqual(otherModelTools)
+
+  // 5. No pin for the session: the event is left exactly as given
+  const noPinTools = { reader: { description: "read files", input: { type: "object" as const } } }
+  const noPinSystem = [{ type: "text" as const, text: "Raw system text" }]
+  const compactionNoPin = sessionEvent(
+    "ses_no_pin",
+    "alpha",
+    { ...noPinTools },
+    [...noPinSystem],
+  )
+  await Effect.runPromise(compactionHook(compactionNoPin))
+  expect(compactionNoPin.system).toEqual(noPinSystem)
+  expect(compactionNoPin.tools).toEqual(noPinTools)
 })
