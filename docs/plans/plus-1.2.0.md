@@ -1,9 +1,12 @@
 # plus-1.2.0: Instructions folders, move, links and merge; chat model isolation; service handover; the 1.1.19 plan
 
-Status: **planned (2026-10-08).** Requests, findings and the user's decisions
-first; then the build seat's decisions (B1…), the design per area, the lanes
-and work packages with file ownership and order, checks, acceptance and the
-release.
+Status: **in progress (amended 2026-10-08 afternoon).** Requests, findings and
+the user's decisions first; then the build seat's decisions (B1…), the design
+per area, the lanes and work packages with file ownership and order, checks,
+acceptance and the release. The amendment adds findings 11–14 (from the night
+run and the 12:28 worker crash), decisions B21–B25, lanes `delegated-asks`,
+`change-notes`, `prepare-hang` and `team-context`, package I3 and acceptance
+13–16.
 
 Base: `610ae2976e` (= tag `v2.0.18-plus-1.1.18`). Release line `plus-1.2.0`
 (`worktrees/plus-1.2.0/opencode`, receives merges only). This plan is on
@@ -123,6 +126,59 @@ Evidence and full traces: `run/evidence/plus-1.2.0/analysis/findings.md`
   Fix it properly: Plus pushes a real text part, and core checks hook-returned
   messages against the message schema at the hook boundary, so a plugin
   cannot crash the runner. Add a regression test for each.
+  **Done (N1, merged).**
+
+Added 2026-10-08 afternoon, after the night run:
+
+- **(11) Delegated runs hang on a permission ask.** A delegated run that
+  touches a path outside its worktree (a dev home under `run/plus-dev`,
+  another worktree) gets an external_directory ask that nobody answers,
+  although Plus's "Outside this checkout (external_directory)" row is meant to
+  refuse it; the run waits for ever. Each of the four night orchestrators lost
+  20–30 minutes this way, and the H2 reproduction (T154) never ran. The first
+  fix attempt (T151) crashed on finding 10 at its second step; the cause is
+  still unknown. It blocks every live test a worker runs in a dev home.
+- **(12) Change notes: four defects behind finding 10.** Traced on the
+  installed 1.1.18 (built from `610ae29`; log
+  `~/.local/share/opencodeplus/log/opencode.log`). Finding 10's crash happened
+  four times: 2026-10-07 23:45 (a build-seat step), 23:56 and 23:57 (cache
+  warming pings of two other sessions; warming runs the same hook), and
+  2026-10-08 12:28:07.720Z (a Haiku-Worker's second step, 2 s after its first
+  finished). The retry succeeded because the note is marked sent before it is
+  returned, and the synthetic path had already delivered it. N1 fixed the
+  crash: the push is now a text part, and core decodes every hook message,
+  normalizing string content. Still open, in `plus/src/instructions/cache-safe.ts`
+  and `apply.ts`:
+  - (a) **Notes about other agents.** `handlePromptBoundary` loops over every
+    agent in `currentPlanSet.roles` and emits a note for each one, so a chat
+    receives other agents' role changes. The Haiku-Worker got the build seat's
+    role ("# Delegating … # Build seat", message seq 33) and began its next
+    reasoning with "I notice the role text has shifted"; the same day a
+    Simple-Build chat got Simple-Orchestrator's Ownership and Agent Routing.
+  - (b) **A spurious role note at the start.** `computeChangeNote` reports
+    "Role text replaces the earlier text" whenever the pinned role was empty
+    and the current one is not. The worker's note (seq 32, "# Team member …
+    # Implementer") came with no Instructions edit between 12:14:26 and the
+    crash: its role was most likely missing when the pin was taken at its
+    first request, and filled in 2 s later.
+  - (c) **Each note is delivered twice.** `checkAndEmitChangeNote` admits it
+    as a synthetic steer message, and `apply.ts` (the per-request hook) also
+    pushes it into the current request.
+  - (d) **Shadowed edits are silent.** A `set` on a subsection that a
+    whole-section customization shadows (Simple-Build › `build-seat`, from
+    2026-10-07) saves, but never reaches the assembled prompt, and the result
+    does not say so.
+- **(13) A step can hang before it starts.** 2026-10-08 02:50:03: the build
+  seat's chat (`ses_ee7753a4dffeqLkq8g52fTNTXr`) finished a tool call; its
+  next step never started and never failed, and the chat showed "working" for
+  hours. The hang is in request preparation (`core/src/session/prompt.ts`
+  `SessionPrompt.prepare`, plugin hooks included). The exact line is
+  unproven, and the process is gone (evidence: the workspace's
+  `run/plus/data/opencodeplus/log/opencode.log`).
+- **(14) A child's context size is invisible.** The team token budget
+  (`plus/src/teams/schema.ts`) leaves out cache reads, so `team_status` shows
+  no context size. Night orchestrators grew to 230–270k unnoticed, and core
+  compacts only near the model's limit.
 
 ## Decisions (user, 2026-10-08)
 
@@ -302,6 +358,30 @@ Runtime
   wiring line in `index.ts`. Every other hot file has one owner at a time
   (below). Reason: a file lock on `index.ts` would serialize the release.
 
+Added 2026-10-08 afternoon (findings 11–14)
+
+- **B21. A change note is about the chat's own agent, and arrives once.**
+  The prompt boundary checks only the agent running in the session. An empty
+  pinned role (taken before roles were filled in) is re-pinned silently, not
+  announced. The synthetic steer message is the one delivery: it is durable,
+  in history and cache-stable. The push in `apply.ts` goes. Reason: every
+  note the model sees should be a real change to its own prompt.
+- **B22. A delegated run never waits on a permission ask.** On top of the
+  cause fix for finding 11, the teams layer refuses any ask in a delegated
+  run at once and audits it. Reason: nobody is there to answer, and a wait
+  costs the whole run.
+- **B23. Request preparation has a bound.** Past it, the step fails with an
+  error naming the stage or hook, instead of hanging. Choose the bound from
+  measured preparation times, with a wide margin. Reason: a silent hang is
+  worse than a failed step, which the user or parent can resend.
+- **B24. The parent hears about a child's context.** One message when a
+  child's context passes 100k tokens, like the budget notices, and
+  `team_status` shows each child's context size. No forced compaction:
+  compacting mid-task loses the details the worker is using.
+- **B25. A shadowed `set` says so.** A write to a section that a
+  customization of its parent hides returns a notice naming that row, in the
+  tool, the TUI and the CLI alike.
+
 ## Design notes per area
 
 - **`a` on a section** (finding 2): section rows get their own add action
@@ -331,22 +411,30 @@ Purpose branches `plus-1.2.0_<lane>` cut from `plus-1.2.0`; each lane merges
 
 | Lane (branch) | Who | Packages, in order | Starts |
 | --- | --- | --- | --- |
-| `note-crash` | Flash-C-Worker | N1 finding 10, both sides, tests | now |
-| `gpt-cache` | Orchestrator → Heavy-Worker | G1 investigate, G2 fix, G3 before/after; then WP-G (miss toast) and WP-F (Monitor deltas) | now |
-| `compaction` | Orchestrator | C1 = WP-C data (store fields, validation, resolution in `model-settings.ts`); C2 = WP-B (core); C3 = WP-C runtime (decide hook, cold detection and arming, per-chat compact switch, CPA notice, `compaction.cold` RPC, `/compact-cold`, team followup default) | now |
-| `instructions` | Orchestrator | I0 `pickModelRow` → Project; I1 sections (`a`, nesting, every text kind); I2 = WP-D model rows, dropdowns, Compaction tab removed, Defaults › Models cache and memo (after C1) | now |
+| `note-crash` | Flash-C-Worker | N1 finding 10, both sides, tests. **Done, merged.** | now |
+| `gpt-cache` | Orchestrator → Heavy-Worker | G1 investigate, G2 fix, G3 before/after; then WP-G (miss toast) and WP-F (Monitor deltas). The night's G1 reading was never written down: redo it, and write findings to `run/evidence/plus-1.2.0/gpt-cache/` as you go. | now |
+| `compaction` | Orchestrator | C1 = WP-C data (store fields, validation, resolution in `model-settings.ts`); C2 = WP-B (core); C3 = WP-C runtime (decide hook, cold detection and arming, per-chat compact switch, CPA notice, `compaction.cold` RPC, `/compact-cold`, team followup default). C1 is committed, not landed: `0c2c35f586` on `team/Simple-Orchestrator/t1450368-20261008-0204`; review it against C1. | now |
+| `instructions` | Orchestrator | I0 `pickModelRow` → Project; I1 sections (`a`, nesting, every text kind); I2 = WP-D model rows, dropdowns, Compaction tab removed, Defaults › Models cache and memo (after C1); I3 = B25 shadowed `set` notice (finding 12d) | now |
 | `structure` | Orchestrator | S1 folders and move; S2 links; S3 merge UI; S4 = WP-E docs, ids, teaching, skill, help for everything new | after `instructions` lands |
-| `merge-engine` | Flash-C-Worker | M1 sentence merge in `diff-lines.ts` (structured result, B13), tests | when a slot frees |
-| `chat-models` | Orchestrator | H1 T4 and per-chat model memory; H2 twitch; H3 compaction line names its model | now |
-| `service` | Flash-C-Worker | V1 replace if idle, else ask (B17), tests | when a slot frees |
-| `cli` | Orchestrator or worker | L1 `instructions.tool` RPC and `opencodeplus instructions …` (B18) | after S2 lands (link, move exist) |
+| `merge-engine` | Flash-C-Worker | M1 sentence merge in `diff-lines.ts` (structured result, B13), tests. **Done, merged** (`a9fab156a9`). | when a slot frees |
+| `chat-models` | Orchestrator | H1 T4 and per-chat model memory; H2 twitch; H3 compaction line names its model. H1 and H3 are committed, not landed: 4 commits on `team/Simple-Orchestrator/t147b4d7-20261008-0204` (`f8e30b1c84`, `a11c3c7c41`, `34084e6b17`, `cbf848c8bc`). H2 needs a dev home: after `delegated-asks`. | now |
+| `service` | Flash-C-Worker | V1 replace if idle, else ask (B17), tests. **Done, merged.** | when a slot frees |
+| `cli` | Orchestrator or worker | L1 `instructions.tool` RPC and `opencodeplus instructions …` (B18). Part 1 is committed on `plus-1.2.0_cli` (`30288da1f6`, `b83095bae3`). Open points: map entries in `cli/src/plus.ts`; the RpcHandlers wiring at `plus/src/index.ts:3266`; argv interception before dispatch, because Effect CLI rejects unknown flags and intercepts `--help`. | after S2 lands (link, move exist) |
+| `delegated-asks` | Flash-C-Worker, Haiku-Worker | X1 = finding 11: the cause with a failing test, the fix, the B22 safety net, tests | now, first |
+| `change-notes` | Flash-C-Worker, Haiku-Worker | X4 = finding 12 a–c, B21, a regression test for each | now |
+| `prepare-hang` | Orchestrator → Heavy-Worker | X2 = finding 13: reproduce in a dev home, the B23 bound, tests | now |
+| `team-context` | Flash-C-Worker, Haiku-Worker | X3 = finding 14, B24, tests | after `delegated-asks` lands |
 
 ### Hot-file owners (one at a time)
 
 | File (`packages/…`) | Owner, in order |
 | --- | --- |
 | `plus/src/instructions/tree.ts`, `tui/instructions/route.tsx`, `dialogs.tsx`, `state.ts`, `help.tsx`, `workspace.ts` | instructions → structure |
-| `plus/src/instructions/ops.ts`, `model.ts`, `sections.ts`, `requires.ts`, `categories.ts`, `apply.ts`, `cache-safe.ts`, `tools.ts`, `teaching.ts` | instructions → structure (apply.ts: note-crash first, one hunk; gpt-cache only by arrangement with the build seat) |
+| `plus/src/instructions/ops.ts`, `model.ts`, `sections.ts`, `requires.ts`, `categories.ts`, `tools.ts`, `teaching.ts` | instructions → structure |
+| `plus/src/instructions/apply.ts`, `cache-safe.ts` | change-notes → instructions → structure (gpt-cache only by arrangement with the build seat) |
+| `core/src/permission.ts`, `core/src/permission/*`, `core/src/file-access.ts`, `core/src/plugin/agent.ts`, `plus/src/instructions/permission-enforce.ts`, `permission-catalog.ts` | delegated-asks |
+| `plus/src/teams/*` | delegated-asks → team-context |
+| `core/src/session/prompt.ts` | prepare-hang (plugin hook types by arrangement with compaction) |
 | `plus/src/instructions/store.ts`, `model-settings.ts` | compaction (C1) → instructions → structure |
 | `plus/src/instructions/diff-lines.ts` | merge-engine → structure |
 | `plus/src/tui/instructions/diff-pane.tsx` | structure |
@@ -401,6 +489,19 @@ at the end; fix and retest only what fails. Evidence:
 11. **CLI:** `opencodeplus instructions list/show/set/link/move` against the
     dev service, matching the tool's results and log.
 12. **1.1.19 items:** acceptance 2–8 and 10 of `plus-1.1.18.md`.
+13. **Delegated asks:** a worker in a dev-home test touches a path outside its
+    worktree; it is refused at once (audited) and the run goes on.
+14. **Change notes:**
+    - an edit to agent A's row while a chat of agent B runs sends B no note;
+    - an edit to B's row gives B exactly one note, seen once, and its next
+      step runs;
+    - a fresh worker gets no role note at its second step;
+    - a `set` on a shadowed section names the shadowing row.
+15. **Preparation bound:** a test hook that never returns fails the step
+    within the bound, with an error that names it; the chat takes the next
+    message.
+16. **Child context:** a child passing 100k context sends its parent one
+    message; `team_status` shows each child's context size.
 
 ## Release
 

@@ -214,6 +214,142 @@ test("execution.interrupted settles the attempt interrupted and the run idle", a
   })
 })
 
+function interruptedEvent(sessionID: string, reason: string) {
+  return { type: SessionEvent.Execution.Interrupted.type, data: { sessionID, reason } }
+}
+
+function heldRun(id: string, sessionID: string, overrides: Partial<RunRecord> = {}): RunRecord {
+  const now = new Date().toISOString()
+  return baseRun({
+    id,
+    state: "idle",
+    attempts: [{ n: 1, state: "interrupted", startedAt: now, trigger: "delegate", endedAt: now }],
+    sessionID,
+    held: { at: now, reason: "inactivity" },
+    ...overrides,
+  })
+}
+
+// Seen live 2026-10-08: a build seat's turn hung without any session activity.
+// Every hour the host stopped it for inactivity, and the next team news
+// prompted it straight back into the same hang, all night.
+test("an inactivity stop holds the run: its queued news is kept, not prompted", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = workingChild("w-9999999999999991", null, "ses_held_001")
+    await saveRun(root, run)
+    await put(root, run.id, { kind: "followup", from: "main-0123456789abcdef", text: "Queued while it hung." })
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, interruptedEvent("ses_held_001", "inactivity"))
+    const moved = await loadRun(root, run.id)
+    expect(moved?.state).toBe("idle")
+    expect(moved?.attempts[0]?.state).toBe("interrupted")
+    expect(moved?.held?.reason).toBe("inactivity")
+    expect(sessions.prompted).toHaveLength(0)
+    expect(await peek(root, run.id)).toHaveLength(1)
+  })
+})
+
+test("a person's stop does not hold the run: its queued news is delivered as before", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = workingChild("w-9999999999999992", null, "ses_held_002")
+    await saveRun(root, run)
+    await put(root, run.id, { kind: "followup", from: "main-0123456789abcdef", text: "Delivered after a stop." })
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, interruptedEvent("ses_held_002", "user"))
+    const moved = await loadRun(root, run.id)
+    expect(moved?.held).toBeUndefined()
+    expect(sessions.prompted.map((prompt) => prompt.text)).toEqual(["Delivered after a stop."])
+  })
+})
+
+test("news from a held run's child waits in its inbox instead of prompting it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = heldRun("main-9999999999999993", "ses_held_003", { role: "Simple-Build", kind: "main", children: ["w-9999999999999994"] })
+    const child = workingChild("w-9999999999999994", parent.id, "ses_held_004")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_held_004"))
+    expect(sessions.prompted).toHaveLength(0)
+    expect((await peek(root, parent.id)).map((item) => item.kind)).toEqual(["child.settled"])
+    const kept = await loadRun(root, parent.id)
+    expect(kept?.state).toBe("idle")
+    expect(kept?.held?.reason).toBe("inactivity")
+  })
+})
+
+test("the parent of a child stopped for inactivity hears why and how to resume it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-9999999999999995",
+      role: "Simple-Build",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "prompt" }],
+      sessionID: "ses_held_005",
+      children: ["w-9999999999999996"],
+    })
+    const child = workingChild("w-9999999999999996", parent.id, "ses_held_006")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await onSessionEvent(context({ session: recordSession().domain }), root, interruptedEvent("ses_held_006", "inactivity"))
+    const text = (await peek(root, parent.id))[0]?.text ?? ""
+    expect(text).toContain("attempt 1 interrupted")
+    expect(text).toContain("No session activity for an hour")
+    expect(text).toContain("nothing resumes it on its own")
+    expect(text).toContain("next: read team_status and team_diff for it, then team_followup to resume it or team_stop.")
+  })
+})
+
+test("a person's prompt releases a held run; its kept news follows when that turn ends", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const run = heldRun("main-9999999999999997", "ses_held_007", { role: "Simple-Build", kind: "main" })
+    await saveRun(root, run)
+    await put(root, run.id, { kind: "child.settled", from: "w-9999999999999998", text: "[team] w-9999999999999998 settled." })
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, startedEvent("ses_held_007"))
+    const resumed = await loadRun(root, run.id)
+    expect(resumed?.state).toBe("working")
+    expect(resumed?.held).toBeUndefined()
+    expect(sessions.prompted).toHaveLength(0)
+    await onSessionEvent(ctx, root, succeededEvent("ses_held_007"))
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.text).toContain("w-9999999999999998 settled.")
+    expect(await peek(root, run.id)).toEqual([])
+  })
+})
+
+test("team_followup releases a held child and prompts it", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const parent = baseRun({
+      id: "main-999999999999999a",
+      role: "Simple-Build",
+      kind: "main",
+      state: "working",
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "prompt" }],
+      sessionID: "ses_held_009",
+      children: ["w-999999999999999b"],
+    })
+    const child = heldRun("w-999999999999999b", "ses_held_010", { parent: parent.id })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const api = createTeamApi(context({ session: sessions.domain }), teamState())
+    const result = await api.followup(
+      { run: child.id, requestID: "held-resume-1", prompt: "Resume: that ask was refused; use your worktree." },
+      callerFor(parent),
+    )
+    expect(result.ok).toBe(true)
+    expect(sessions.prompted.map((prompt) => prompt.sessionID)).toEqual(["ses_held_010"])
+    const resumed = await loadRun(root, child.id)
+    expect(resumed?.state).toBe("working")
+    expect(resumed?.held).toBeUndefined()
+  })
+})
+
 test("an attempt whose report is already written is left to finish", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const child = workingChild("w-eeeeeeeeeeeeeeee", null, "ses_child_005")
