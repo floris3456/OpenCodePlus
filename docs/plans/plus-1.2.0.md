@@ -739,6 +739,22 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   S1b/S2a/L1 changes are checkpointed, not reviewed/qualified or integrated.
   S4a's first docs commit is retained pending small wording corrections;
   remaining live acceptance and section-move decision are still open.
+- **Routing correction after the owner's clarification:** the requested exact
+  `deepseek-flash` alias is `cliproxyapi/opencode-go/deepseek-flash`, not the
+  Flash-cheap or direct-provider routes tried above. A fresh subagent completed
+  two sequential tool calls and returned their observed results on that exact
+  alias (session `ses_ee2549391ffeC5a70LjIpHCnRb`, release SHA `efb440601c`).
+  The prior `reasoning_content` error is a thinking-history request-format
+  failure, not a quota or model-availability verdict. Resume workers on the
+  exact alias. Its catalogue exposes no variants: do not append a guessed
+  variant or claim an independently verified low-effort setting. The owner's
+  preference remains minimal reasoning. Preserve existing checkpoint commits.
+- Parallel ownership for the remaining WP-E fix: model-tool-fields owns only
+  `ops.ts` model field/edit/reset helpers and `tools.ts` model set/reset/schema
+  fields. S2a owns rowlinks, requires, toggles and link tool registration; S1b
+  owns movement/layout. The compaction tool fix must verify comma-list text
+  parsing through the actual Defaults field-row tool dispatch too, not just
+  through `compactionFieldsOf` directly.
 
 ## Design notes per area
 
