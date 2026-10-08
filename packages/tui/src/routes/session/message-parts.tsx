@@ -166,6 +166,21 @@ function ReasoningHeader(props: {
   )
 }
 
+// A reply can stream in a list marker before its text ("41. …\n4", then "42. ").
+// The bare "4" renders as its own line for one frame and vanishes when the rest
+// arrives, jolting the transcript. While streaming, hold back a trailing line
+// that is only a marker in progress; the completed message always keeps its
+// full text.
+export function holdBackPartialListMarker(text: string) {
+  const match = /(?:^|\n)([ \t]*(?:\d+[.)]?|[-*+])[ \t]*)$/.exec(text)
+  if (!match) return text
+  return text.slice(0, text.length - match[1].length)
+}
+
+export function streamedText(text: string, streaming: boolean) {
+  return streaming ? holdBackPartialListMarker(text) : text
+}
+
 export function TextPart(props: {
   last: boolean
   part: SessionMessageAssistantText
@@ -175,15 +190,17 @@ export function TextPart(props: {
   const theme = useTheme()
   const { currentSyntax: syntax } = useThemes()
   const plugins = usePlugin()
+  const streaming = () => props.message.time.completed === undefined
+  const content = () => streamedText(props.part.text.trim(), streaming())
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={content()}>
       <box paddingLeft={3} flexShrink={0}>
         {/* Configure custom nodes before parsing; apply content before streaming so completion keeps the final tokens. */}
         <markdown
           syntaxStyle={syntax()}
           renderNode={plugins.markdown()}
-          content={props.part.text.trim()}
-          streaming={props.message.time.completed === undefined}
+          content={content()}
+          streaming={streaming()}
           internalBlockMode="top-level"
           tableOptions={{ style: "grid", cellPaddingX: 1 }}
           conceal={ctx.markdownMode() === "rendered"}
