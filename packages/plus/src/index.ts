@@ -176,7 +176,8 @@ export interface PlusState {
   /**
    * The provider catalogue (models, variants, host warming) cached from the
    * first read. Navigation, snapshots and pickers reuse it instead of calling
-   * `ctx.model.list()` each time; a host config/agent/skill refresh clears it.
+   * `ctx.model.list()` each time; a host config/agent/skill refresh clears it,
+   * as does a model.updated event, and the catalogue expires after five minutes.
    */
   hostModels?: readonly HostModel[]
   /**
@@ -185,6 +186,8 @@ export interface PlusState {
    * per-request classifier read it instead of listing the catalogue again.
    */
   hostCatalog?: readonly Model.Info[]
+  /** When `hostCatalog` was read; past HOST_CATALOG_TTL_MS the next read lists again. */
+  hostCatalogAt?: number
   /**
    * The in-flight `model.pick` save in this Plus instance, if any.
    * `applySessionModel` awaits it before comparing, so a session created right
@@ -5090,7 +5093,7 @@ async function hostModelsFor(ctx: Context, state: PlusState): Promise<readonly H
 // classification, discovery, validation and the per-request classifier all
 // share one read instead of each listing the catalogue.
 async function hostCatalogFor(ctx: Context, state: PlusState): Promise<readonly Model.Info[]> {
-  if (state.hostCatalog === undefined) {
+  if (state.hostCatalog === undefined || state.hostCatalogAt === undefined || Date.now() - state.hostCatalogAt >= HOST_CATALOG_TTL_MS) {
     const listed = await Effect.runPromise(
       ctx.model.list().pipe(
         Effect.catchCause(() =>
@@ -5099,10 +5102,16 @@ async function hostCatalogFor(ctx: Context, state: PlusState): Promise<readonly 
       ),
     )
     state.hostCatalog = listed.data
+    state.hostCatalogAt = Date.now()
     state.hostModels = hostModelsFrom(listed.data)
   }
   return state.hostCatalog
 }
+
+// Provider catalogues move without a host event Plus watches (models.dev
+// refreshes, provider syncs). model.updated drops the cache at once; this bound
+// covers the rest.
+const HOST_CATALOG_TTL_MS = 5 * 60 * 1000
 
 export const discoverCounter = { count: 0 }
 export function resetDiscoverCounter(): void {
@@ -6319,7 +6328,8 @@ async function runBuiltinRegistration(
 // The canonical event names, not string guesses: agent and skill reloads
 // publish their Updated events, and config reloads publish Updated whenever
 // the merged config changes. Tool and MCP-config drift arrives through the
-// same config reloads, so these three cover every host change we snapshot.
+// same config reloads, so these cover every host change we snapshot. model.updated
+// is the provider catalogue moving (CPA's sync, the models.dev refresh).
 // Our own apply calls reload(), which republishes agent.updated, but the
 // fingerprint above is unchanged then, so the refresh is a no-op instead of
 // a loop.
@@ -6327,6 +6337,7 @@ const RefreshEvents: Set<string> = new Set([
   Agent.Event.Updated.type,
   Skill.Event.Updated.type,
   Config.Event.Updated.type,
+  Model.Event.Updated.type,
 ])
 
 const SessionModelEvents: Set<string> = new Set(["session.created", "session.agent.selected"])
@@ -6338,6 +6349,12 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
     Stream.filter((event) => RefreshEvents.has(event.type)),
     Stream.runForEach((event) => {
       state.pendingHostChange = true
+      // A provider catalogue moved. Drop it now, not on the refresh below: an
+      // idle folder defers that refresh to its next use.
+      if (event.type === Model.Event.Updated.type) {
+        state.hostCatalog = undefined
+        state.hostModels = undefined
+      }
       // Each Instructions write lands in the global config directory every
       // folder's Config watches, so every folder's skill and agent registries
       // reload and announce it. An idle folder applies that on its next use

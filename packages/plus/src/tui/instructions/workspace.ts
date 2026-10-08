@@ -380,11 +380,13 @@ export interface ToolCount {
  * owner's Tools group and count the tool rows under it. The caller caches the
  * result per snapshot, so no level-wide sweep runs after a load.
  *
- * `ownerKey` is the sidebar key: an owner row id, or `<catalogue group>#every`
- * for Defaults' shared inventories.
+ * `ownerKey` is the sidebar key: an owner row id, or `<catalogue group>#<suffix>`
+ * (`#every`, `#models`) for Defaults' shared inventories. A key with a suffix
+ * the row ids do not carry must still resolve by its group id: a miss here walks
+ * the whole skeleton on every render (the Defaults › Models open took over a second).
  */
 export function toolCountOf(memo: Memo, ownerKey: string, codemode: (item: string) => boolean): ToolCount | undefined {
-  const owner = findLazy(memo, ownerKey.endsWith("#every") ? ownerKey.slice(0, -"#every".length) : ownerKey)
+  const owner = findLazy(memo, ownerKey.replace(/#.*$/, ""))
   const group = owner?.children().find((child) => child.kind === "group" && child.id.endsWith(":tools"))
   if (group === undefined) return undefined
   const rows = toolRows(group)
