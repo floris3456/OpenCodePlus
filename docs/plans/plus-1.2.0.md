@@ -652,6 +652,25 @@ Added 2026-10-08 evening (build seat, continuing the run)
   has each `build-seat` heading once and carries the 12:37 Agent Routing
   text; on the old code the same copy loses it (1.1.18) or duplicates it
   (I1a).
+- **B40. The structure lane in six parts** (all edit the instructions hot
+  files; workers are Haiku now, so each part is one bounded change).
+  S1a folders and order as data: `folder` and `order` records replacing
+  `category` with a load migration (B1, B2, B4), the tree listing folders
+  inside their tab, ops and a `tools.instructions.move` for rows, folders and
+  sections (B3: a section move rewrites the item's text at the edited
+  level). S3 the merge screen and API on M1's `merge-units.ts` (B13, B14):
+  it runs beside S1a because it edits `diff-pane.tsx`, `src/tools.ts`'s
+  `resolve` and the merge write, not the tree. S1b the TUI move mode (B8),
+  sidebar reorder (B5), the category tabs gone, after S1a. S2a links as data:
+  `rowlink` records with the `requires` migration (B4, B9–B11), write-time
+  switches, gates and marker stripping for every text kind (B12), and
+  `tools.instructions.link`, after S1a. S2b the TUI `L` (decision 11), after
+  S2a and S1b. S4 (WP-E docs, ids, teaching, the `instructions-tools` skill,
+  help) last, beside L1 (the CLI, after S2a: it calls `move` and `link`).
+  I2c runs beside S1a and S3 once I2b and I3 land: it edits only
+  `index.ts`'s catalogue functions and `tree.ts`'s Defaults › Models region
+  (`lazyModelsSection`), S1a only the category/folder region of `tree.ts`,
+  so `tree.ts` is shared by region for that window as `index.ts` is (B20).
 
 ## Design notes per area
 
