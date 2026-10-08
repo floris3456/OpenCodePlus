@@ -556,6 +556,32 @@ Added 2026-10-08 evening (build seat, continuing the run)
   reports are identical before and after migration, the copy's
   `request_fingerprint` pages drop by over 90%, and single-row reads return
   the same lists.
+- **B36. H2 (the twitch), from the live reproduction**
+  (`run/evidence/plus-1.2.0/chat-twitch/H2-report.md`, frame captures at
+  ~400 frames a second). With H1 in, a model pick or agent switch on an idle
+  chat changes only the prompt line. Three causes remain, fixed in two parts.
+  H2a: (1) the "reload": whenever the chat is mounted again (back from
+  Instructions, another chat, a dialog route), every completed assistant text
+  is blank for a frame or more, because `@opentui/core` 0.5.10
+  `MarkdownRenderable.createInitialStyledText` builds the immediate styled
+  text only while `streaming` is on, so completed blocks are created with
+  `drawUnstyledText: false` and wait for the asynchronous Tree-sitter
+  highlight (unchanged in 0.5.17). Fix in the existing
+  `patches/@opentui%2Fcore@0.5.10.patch`: build it whatever the streaming
+  state (the streaming path already draws every block this way), so text is
+  drawn at once and the highlight restyles it in place. Proof: a completed
+  markdown's first rendered frame contains its text. (2) While a reply
+  streams, a trailing line that is only a list marker in progress (digits
+  with an optional `.` or `)`, or a lone `-`, `*`, `+`) is held back from the
+  content until the line grows or the reply completes, so `4` of `42.` never
+  renders as a line and then vanishes (TUI `TextPart`). H2b: (3) the first
+  prompt after an agent or model change jumps the transcript three times in
+  ~64 ms: the sent message, then the "Switched agent"/"Switched model" rows
+  inserted above it, then the instructions-updated row, as separate sync
+  events. The pending prompt carries its agent and model; when they differ
+  from the chat's last ones, the TUI draws the switch rows with the pending
+  message in the same frame, and the durable rows take their place without a
+  height change. The instructions-updated row cannot be predicted and stays.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
