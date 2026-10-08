@@ -85,9 +85,9 @@ export type MergeEntry = UnchangedUnit | MergeChange
  * entries so the order is explicit.
  */
 export function mergeUnits(base: string, yours: string, upstream: string): MergeEntry[] {
-  const baseUnits = segmentUnits(base)
-  const ours = regionsOf(baseUnits, segmentUnits(yours)).map((region) => ({ ...region, side: "mine" as const }))
-  const theirs = regionsOf(baseUnits, segmentUnits(upstream)).map((region) => ({ ...region, side: "upstream" as const }))
+  const baseUnits = segmentUnits(withoutFinalNewline(base))
+  const ours = regionsOf(baseUnits, segmentUnits(withoutFinalNewline(yours))).map((region) => ({ ...region, side: "mine" as const }))
+  const theirs = regionsOf(baseUnits, segmentUnits(withoutFinalNewline(upstream))).map((region) => ({ ...region, side: "upstream" as const }))
   const all = [...ours, ...theirs].sort((left, right) => left.start - right.start || left.end - right.end)
   const entries: MergeEntry[] = []
   let cursor = 0
@@ -128,6 +128,15 @@ export function mergeUnits(base: string, yours: string, upstream: string): Merge
   }
   for (const unit of baseUnits.slice(cursor)) entries.push({ type: "unchanged", text: unit })
   return entries
+}
+
+/**
+ * The final newline is not part of a text's content (B41): stored texts lose
+ * it while the live upstream keeps it, so the merge compares and renders
+ * without it, and a merge equal to upstream is a take whichever way it ends.
+ */
+export function withoutFinalNewline(text: string): string {
+  return text.replace(/\n+$/, "")
 }
 
 /** Default inclusion: every change entry's `id`; a "both" upstream side stays off. */

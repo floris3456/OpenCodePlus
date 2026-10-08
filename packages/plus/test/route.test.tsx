@@ -1334,7 +1334,7 @@ test("t on a both-changed paragraph saves yours and clears the review only after
     expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({
       type: "customization",
       item: "mcp:sample",
-      text: "one\ntwo\nthree\nfour\ncustom tail\n",
+      text: "one\ntwo\nthree\nfour\ncustom tail",
       basedOn: fingerprint("one\ntwo upstream\nthree\nfour\n"),
       basedOnText: "one\ntwo upstream\nthree\nfour\n",
       acknowledged: fingerprint("one\ntwo upstream\nthree\nfour\n"),

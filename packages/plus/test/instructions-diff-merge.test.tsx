@@ -72,11 +72,11 @@ async function waitFor(condition: () => boolean): Promise<void> {
 // (both, the same).
 const sides = {
   original: "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven.\n",
-  mine: "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same.\n",
-  upstream: "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.\n",
+  mine: "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same.",
+  upstream: "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.",
 }
 // Defaults: yours and upstream-only units in; the both unit takes yours.
-const defaultMerged = "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same.\n"
+const defaultMerged = "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
 
 function paneFor(threeWay: typeof sides, saved: { resolution: string; edited?: string }[]) {
   return (context: Plugin.Context) => (
@@ -126,7 +126,7 @@ test("Take result rows show the defaults; Space on the upstream row of a both un
     await waitFor(() => saved.length === 1)
     expect(saved[0]).toEqual({
       resolution: "merge",
-      edited: "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nEpsilon upstream.\nZeta six.\nEta same.\n",
+      edited: "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nEpsilon upstream.\nZeta six.\nEta same.",
     })
   } finally {
     fixture.destroy()
@@ -185,14 +185,14 @@ test("e opens the editor on the rendered text the include set makes", async () =
     expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     expect(fixture.renderer.currentFocusedEditor?.plainText).toBe(
-      "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon five.\nZeta six.\nEta same.\n",
+      "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon five.\nZeta six.\nEta same.",
     )
     expect(saved).toEqual([])
     expect(send(fixture, "ctrl+s")).toBe(true)
     await waitFor(() => saved.length === 1)
     expect(saved[0]).toEqual({
       resolution: "edit",
-      edited: "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon five.\nZeta six.\nEta same.\n",
+      edited: "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon five.\nZeta six.\nEta same.",
     })
   } finally {
     fixture.destroy()

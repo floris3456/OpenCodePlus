@@ -4,7 +4,7 @@ import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
-import { defaultInclude, mergeUnits, renderMerge, type MergeEntry } from "./instructions/merge-units.js"
+import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
 import {
   activateModelRow,
   addSection,
@@ -1698,7 +1698,8 @@ function mergeOp(memo: MemoInput, treeMemo: Memo, node: TreeNode, input: { id: s
     return { refusal: `"${node.label}" has no merge unit "${unknown}": valid units are ${valid.join(", ") || "none"}` }
   const include = input.include === undefined ? defaultInclude(proposal.entries) : new Set(input.include)
   const text = renderMerge(proposal.entries, include)
-  if (text === proposal.three.upstream) return resolveReview(memo, input.id, "take", undefined, undefined, treeMemo)
+  if (withoutFinalNewline(text) === withoutFinalNewline(proposal.three.upstream))
+    return resolveReview(memo, input.id, "take", undefined, undefined, treeMemo)
   return resolveReview(memo, input.id, "merge", text, undefined, treeMemo)
 }
 

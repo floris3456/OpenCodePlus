@@ -136,7 +136,7 @@ test("diff pane resolution callbacks fire for keep and a clean take result", asy
     <DiffPane
       context={context}
       title="Demo item"
-      threeWay={{ original: "One.\nTwo.\n", mine: "One mine.\nTwo.\n", upstream: "One.\nTwo upstream.\n" }}
+      threeWay={{ original: "One.\nTwo.\n", mine: "One mine.\nTwo.\n", upstream: "One.\nTwo upstream." }}
       active={() => true}
       onResolve={async (resolution, edited) => {
         seen.push({ resolution, edited })
@@ -151,7 +151,7 @@ test("diff pane resolution callbacks fire for keep and a clean take result", asy
     // Yours and upstream changed different sentences: t saves the merge of both.
     expect(seen).toEqual([
       { resolution: "keep", edited: undefined },
-      { resolution: "merge", edited: "One mine.\nTwo upstream.\n" },
+      { resolution: "merge", edited: "One mine.\nTwo upstream." },
     ])
   } finally {
     fixture.destroy()
@@ -164,7 +164,7 @@ test("diff pane edit starts from the upstream change merged onto yours and saves
     <DiffPane
       context={context}
       title="Demo item"
-      threeWay={{ original: "Alpha one.\nBeta two.\n", mine: "Alpha one.\nBETA mine.\n", upstream: "ALPHA upstream.\nBeta two.\n" }}
+      threeWay={{ original: "Alpha one.\nBeta two.\n", mine: "Alpha one.\nBETA mine.", upstream: "ALPHA upstream.\nBeta two.\n" }}
       active={() => true}
       onResolve={async (resolution, edited) => {
         saved.push({ resolution, edited })
@@ -176,10 +176,10 @@ test("diff pane edit starts from the upstream change merged onto yours and saves
     expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
-    expect(editor?.plainText).toBe("ALPHA upstream.\nBETA mine.\n")
+    expect(editor?.plainText).toBe("ALPHA upstream.\nBETA mine.")
     expect(send(fixture, "ctrl+s")).toBe(true)
     await waitFor(() => saved.length === 1)
-    expect(saved[0]).toEqual({ resolution: "edit", edited: "ALPHA upstream.\nBETA mine.\n" })
+    expect(saved[0]).toEqual({ resolution: "edit", edited: "ALPHA upstream.\nBETA mine." })
   } finally {
     fixture.destroy()
   }

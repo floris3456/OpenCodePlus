@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js"
 import { unifiedDiff } from "../../instructions/diff-lines.js"
-import { defaultInclude, mergeUnits, renderMerge, type MergeEntry } from "../../instructions/merge-units.js"
+import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "../../instructions/merge-units.js"
 import type { Resolution, ThreeWay } from "../../instructions/model.js"
 import { KeyHints } from "./row.js"
 
@@ -125,7 +125,7 @@ export function DiffPane(props: DiffPaneProps) {
   // (follow upstream); any other render is saved as the merged text.
   function saveMerge() {
     const text = rendered()
-    if (text === props.threeWay.upstream) {
+    if (withoutFinalNewline(text) === withoutFinalNewline(props.threeWay.upstream)) {
       void props.onResolve("take")
       return
     }

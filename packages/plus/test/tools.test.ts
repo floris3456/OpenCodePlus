@@ -1106,10 +1106,10 @@ test("show with each view returns the right shape, diff returns two diffs plus s
 // against an earlier description. Changes alternate with unchanged sentences
 // on each side, so each is its own merge unit: yours-only (Alpha), upstream-only
 // (Gamma), both changed differently (Epsilon), both changed the same (Eta).
-// Stored texts have no trailing newline.
+// Stored original and yours have no final newline; the live upstream keeps one (B41).
 const mergeOriginal = "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven."
 const mergeMine = "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
-const mergeUpstream = "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same."
+const mergeUpstream = "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.\n"
 const mergeDefault = "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
 
 async function readerAt(project: string, description: string) {
