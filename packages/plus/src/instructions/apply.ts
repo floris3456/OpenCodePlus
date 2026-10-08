@@ -1602,23 +1602,9 @@ export async function installSessionPlans(
             return
           }
 
-          const noteText = yield* Effect.promise(() =>
-            checkAndEmitChangeNote(ctx, pin!, activePlanSet, agent, sessionID),
-          )
-          if (noteText !== undefined) {
-            const hasNote = event.messages.some(
-              (m) =>
-                (typeof m.content === "string" && m.content === noteText) ||
-                (Array.isArray(m.content) &&
-                  m.content.some((c) => typeof (c as { text?: unknown }).text === "string" && (c as { text: string }).text === noteText)),
-            )
-            if (!hasNote) {
-              event.messages.push({
-                role: "user",
-                content: [{ type: "text", text: noteText }],
-              } as SessionContext["messages"][number])
-            }
-          }
+          // The note is delivered only as the steered synthetic admitted here;
+          // copying it into this request's messages would deliver it twice.
+          yield* Effect.promise(() => checkAndEmitChangeNote(ctx, pin!, activePlanSet, agent, sessionID))
 
           const pinnedSystem0 = pin.pinnedSystem0.get(agent)
           if (pinnedSystem0 !== undefined) {

@@ -159,34 +159,31 @@ export function computeChangeNote(
 ): { noteText: string; hash: string } | undefined {
   const items: string[] = []
 
-  // 1. Role text / sections
+  // 1. Role text / sections. An empty pinned role is never a change here:
+  // checkAndEmitChangeNote adopts a role the pin lacked before diffing.
   const pinnedRole = pin.planSet.roles.get(agent) ?? ""
   const currentRole = current.roles.get(agent) ?? ""
-  if (currentRole !== pinnedRole) {
-    if (pinnedRole.length === 0 && currentRole.length > 0) {
-      items.push(`Role text replaces the earlier text:\n${currentRole.trim()}`)
-    } else if (currentRole.length === 0 && pinnedRole.length > 0) {
-      items.push("Role text is removed.")
-    } else {
-      const pinSplit = derive(pinnedRole, "Role")
-      const curSplit = derive(currentRole, "Role")
-      if (curSplit.kind !== "whole" && curSplit.sections.length > 0) {
-        for (const sec of curSplit.sections) {
-          const curText = slice(currentRole, sec).trim()
-          const pinSec = pinSplit.sections.find((s) => s.name === sec.name || s.id === sec.id)
-          const pinText = pinSec !== undefined ? slice(pinnedRole, pinSec).trim() : undefined
-          if (pinText === undefined || curText !== pinText) {
-            items.push(`Section "${sec.name}" replaces the earlier text:\n${curText}`)
-          }
+  if (pinnedRole.length > 0 && currentRole.length === 0) {
+    items.push("Role text is removed.")
+  } else if (pinnedRole.length > 0 && currentRole !== pinnedRole) {
+    const pinSplit = derive(pinnedRole, "Role")
+    const curSplit = derive(currentRole, "Role")
+    if (curSplit.kind !== "whole" && curSplit.sections.length > 0) {
+      for (const sec of curSplit.sections) {
+        const curText = slice(currentRole, sec).trim()
+        const pinSec = pinSplit.sections.find((s) => s.name === sec.name || s.id === sec.id)
+        const pinText = pinSec !== undefined ? slice(pinnedRole, pinSec).trim() : undefined
+        if (pinText === undefined || curText !== pinText) {
+          items.push(`Section "${sec.name}" replaces the earlier text:\n${curText}`)
         }
-        for (const pinSec of pinSplit.sections) {
-          if (!curSplit.sections.some((s) => s.name === pinSec.name || s.id === pinSec.id)) {
-            items.push(`Section "${pinSec.name}" is removed.`)
-          }
-        }
-      } else {
-        items.push(`Role text replaces the earlier text:\n${currentRole.trim()}`)
       }
+      for (const pinSec of pinSplit.sections) {
+        if (!curSplit.sections.some((s) => s.name === pinSec.name || s.id === pinSec.id)) {
+          items.push(`Section "${pinSec.name}" is removed.`)
+        }
+      }
+    } else {
+      items.push(`Role text replaces the earlier text:\n${currentRole.trim()}`)
     }
   }
 
@@ -284,6 +281,7 @@ export async function checkAndEmitChangeNote(
   agent: string,
   sessionID: string,
 ): Promise<string | undefined> {
+  adoptEmptyPinnedRole(pin, current, agent)
   const diff = computeChangeNote(pin, current, agent)
   if (diff === undefined) return undefined
   if (pin.lastNoteHash === diff.hash) return undefined
@@ -306,6 +304,18 @@ export async function checkAndEmitChangeNote(
   return diff.noteText
 }
 
+// A role the pin never had (the agent had none at the first request) is taken
+// into the pin without a note: the model never saw it, and later edits must
+// diff against it. The PlanSet is shared by every session pinned at its
+// version, so the roles map is copied instead of edited in place.
+function adoptEmptyPinnedRole(pin: SessionPin, current: PlanSet, agent: string): void {
+  const pinnedRole = pin.planSet.roles.get(agent) ?? ""
+  const currentRole = current.roles.get(agent) ?? ""
+  if (pinnedRole.length > 0 || currentRole.length === 0) return
+  pin.planSet = { ...pin.planSet, roles: new Map(pin.planSet.roles).set(agent, currentRole) }
+  pin.pinnedRoles.set(agent, currentRole)
+}
+
 export const handlePromptBoundary = Effect.fnUntraced(function* (
   ctx: Context,
   state: {
@@ -316,21 +326,25 @@ export const handlePromptBoundary = Effect.fnUntraced(function* (
 ) {
   const pinManager = state.sessionPins ?? sessionPins
   const pin = pinManager.getPin(sessionID)
-  if (pin === undefined || state.currentPlanSet === undefined) return
+  const current = state.currentPlanSet
+  if (pin === undefined || current === undefined) return
 
   const now = Date.now()
   const lifetime = cacheLifetime({ provider: pin.model.providerID, model: pin.model.id } as unknown as RequestRow)
   if (lifetime !== undefined && now - pin.lastRequestAt > lifetime) {
     const warm = yield* Effect.promise(() => isSessionWarm(sessionID, now).catch(() => false))
     if (!warm) {
-      pinManager.repinSession(sessionID, pin.model, state.currentPlanSet)
+      pinManager.repinSession(sessionID, pin.model, current)
       return
     }
   }
 
-  for (const agent of state.currentPlanSet.roles.keys()) {
-    yield* Effect.promise(() =>
-      checkAndEmitChangeNote(ctx, pin, state.currentPlanSet!, agent, sessionID),
-    )
-  }
+  // Only this session's own agent can change what its model sees. An
+  // unreadable session has no agent to check, so it yields no note.
+  const session = yield* ctx.session.get({ sessionID: Session.ID.make(sessionID) }).pipe(
+    Effect.catchCause(() => Effect.succeed(undefined)),
+  )
+  const agent = session?.agent
+  if (agent === undefined) return
+  yield* Effect.promise(() => checkAndEmitChangeNote(ctx, pin, current, agent, sessionID))
 })

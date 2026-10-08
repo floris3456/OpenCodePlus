@@ -7,7 +7,7 @@ import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect } from "effect"
 import { applyPublishParts } from "../src/instructions/apply.js"
 import type { PublishPartsInput } from "../src/instructions/apply.js"
-import { sessionPins } from "../src/instructions/cache-safe.js"
+import { checkAndEmitChangeNote, handlePromptBoundary, sessionPins, type PlanSet } from "../src/instructions/cache-safe.js"
 import { fingerprint, type Item } from "../src/instructions/model.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { context, modelInfo } from "./harness.js"
@@ -44,7 +44,9 @@ function makeItem(item: Partial<Item> & { id: string; kind: Item["kind"]; text: 
   }
 }
 
-function createHarness() {
+type SessionRead = (sessionID: string) => Effect.Effect<{ readonly agent?: string }, unknown>
+
+function createHarness(read: SessionRead = () => Effect.die("unused session.get")) {
   const contextCallbacks: Array<(event: SessionHooks["context"]) => Effect.Effect<void>> = []
   const synthetics: Array<{ sessionID: Session.ID; text: string; delivery?: string; resume?: boolean }> = []
 
@@ -55,6 +57,7 @@ function createHarness() {
           if (name === "context") contextCallbacks.push(callback as never)
           return { dispose: Effect.void }
         }),
+      get: (input) => read(String(input.sessionID)) as never,
       synthetic: (input) =>
         Effect.sync(() => {
           synthetics.push(input as never)
@@ -130,7 +133,7 @@ test("unchanged chat fingerprints identical over several turns", async () => {
   expect(synthetics).toHaveLength(0)
 })
 
-test("a system-row or role change keeps prefix fingerprints, adds exactly one System note, and the next request contains it", async () => {
+test("a system-row or role change keeps prefix fingerprints and admits exactly one steered note", async () => {
   sessionPins.clear()
   const { ctx, contextCallbacks, synthetics } = createHarness()
 
@@ -202,15 +205,12 @@ test("a system-row or role change keeps prefix fingerprints, adds exactly one Sy
   expect(synthetics[0].text).toContain("replaces the earlier text")
   expect(synthetics[0].text).toContain("Speak like a pirate")
 
-  // The request messages contain the note as one text part
-  const texts = turn2.messages
-    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-    .map((c) => ((c as { text?: unknown }).text as string | undefined) ?? "")
-  expect(texts.some((t) => t.includes("Speak like a pirate"))).toBe(true)
-  expect(turn2.messages.every((m) => Array.isArray(m.content))).toBe(true)
+  // The steered synthetic is the only delivery: no copy in the request messages
+  expect(synthetics[0]?.delivery).toBe("steer")
+  expect(turn2.messages).toHaveLength(0)
 })
 
-test("a mid-chat plan change pushes a note shaped as one text part and never twice", async () => {
+test("a mid-chat plan change is admitted once as a steered synthetic and never copied into messages", async () => {
   sessionPins.clear()
   const { ctx, contextCallbacks, synthetics } = createHarness()
 
@@ -264,23 +264,21 @@ test("a mid-chat plan change pushes a note shaped as one text part and never twi
   )
   await Effect.runPromise(hook(turn2))
 
-  // The pushed note is a user message whose content is one text part — never
-  // a bare string, which crashes the model request downstream.
+  // The note is admitted once, as a steered synthetic, and is not copied into
+  // the request messages: the host delivers it at the next step boundary.
   expect(synthetics).toHaveLength(1)
-  expect(turn2.messages).toHaveLength(1)
-  expect(turn2.messages[0]?.role).toBe("user")
-  expect(turn2.messages[0]?.content).toEqual([{ type: "text", text: synthetics[0]?.text }])
+  expect(synthetics[0]?.delivery).toBe("steer")
+  expect(turn2.messages).toHaveLength(0)
 
-  // Re-sending the prompt does not push the note twice
+  // The next request with the same plan carries no copy and admits nothing more
   const turn3 = sessionEvent(
     "ses_note_shape",
     "alpha",
     { reader: { description: "read files", input: { type: "object" } } },
     [{ type: "text", text: "You are helpful." }],
   )
-  turn3.messages.push(...turn2.messages)
   await Effect.runPromise(hook(turn3))
-  expect(turn3.messages).toHaveLength(1)
+  expect(turn3.messages).toHaveLength(0)
   expect(synthetics).toHaveLength(1)
 })
 
@@ -622,4 +620,118 @@ test("several page edits produce one update message when the page closes", async
   expect(synthetics[0].text).toContain("refused from now on")
   expect(synthetics[0].text).toContain("Personality")
   expect(synthetics[0].text).toContain("Casual")
+})
+
+const READER = { reader: { description: "read files", input: { type: "object" } } } as const
+
+function alphaPlan(role: string | undefined, readerEnabled = true): PublishPartsInput {
+  const roleItems =
+    role === undefined ? [] : [makeItem({ id: "system:role", kind: "system", text: role, enabled: true, agents: ["alpha"] })]
+  return {
+    applyInput: {
+      agents: [{ id: "alpha", level: "project" }],
+      items: [
+        makeItem({ id: "tool:reader", kind: "tool", text: "read files", enabled: readerEnabled, agents: ["alpha"] }),
+        ...roleItems,
+      ],
+      records: [],
+      splits: [],
+      scopes: { global: new Set(), defaults: new Set() },
+    },
+  }
+}
+
+function twoAgentPlan(roleA: string, roleB: string): PublishPartsInput {
+  return {
+    applyInput: {
+      agents: [
+        { id: "A", level: "project" },
+        { id: "B", level: "project" },
+      ],
+      items: [
+        makeItem({ id: "system:role", kind: "system", text: roleA, enabled: true, agents: ["A"] }),
+        makeItem({ id: "system:role", kind: "system", text: roleB, enabled: true, agents: ["B"] }),
+      ],
+      records: [],
+      splits: [],
+      scopes: { global: new Set(), defaults: new Set() },
+    },
+  }
+}
+
+test("a prompt boundary announces only the session's own agent", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, synthetics } = createHarness(() => Effect.succeed({ agent: "B" }))
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v1.", "Role B v1."))
+  const hook = contextCallbacks.at(-1)!
+  await Effect.runPromise(hook(sessionEvent("ses_boundary", "B", {}, [{ type: "text", text: "Role B v1." }])))
+
+  // Agent A's role changes, but this session belongs to B
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v2.", "Role B v1."))
+  await Effect.runPromise(handlePromptBoundary(ctx, state, "ses_boundary"))
+  expect(synthetics).toHaveLength(0)
+
+  // Agent B's role changes: one note, about B only
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v2.", "Role B v2."))
+  await Effect.runPromise(handlePromptBoundary(ctx, state, "ses_boundary"))
+  expect(synthetics).toHaveLength(1)
+  expect(synthetics[0]?.text).toContain("Role B v2.")
+  expect(synthetics[0]?.text).not.toContain("Role A")
+})
+
+test("a prompt boundary whose session read fails announces nothing and does not throw", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, synthetics } = createHarness(() => Effect.fail("session unavailable"))
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v1.", "Role B v1."))
+  const hook = contextCallbacks.at(-1)!
+  await Effect.runPromise(hook(sessionEvent("ses_unread", "B", {}, [{ type: "text", text: "Role B v1." }])))
+
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v1.", "Role B v2."))
+  await Effect.runPromise(handlePromptBoundary(ctx, state, "ses_unread"))
+  expect(synthetics).toHaveLength(0)
+})
+
+test("a role gained after the pin is adopted silently, and its later change is announced", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, synthetics } = createHarness()
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  await applyPublishParts(ctx, state, alphaPlan(undefined))
+  let hook = contextCallbacks.at(-1)!
+  await Effect.runPromise(hook(sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
+
+  // The role appears: adopted into the pin, so no note is returned or admitted
+  await applyPublishParts(ctx, state, alphaPlan("You are helpful.\n\n## Rules\nBe nice."))
+  const note = await checkAndEmitChangeNote(ctx, sessionPins.getPin("ses_gained")!, state.currentPlanSet!, "alpha", "ses_gained")
+  expect(note).toBeUndefined()
+  hook = contextCallbacks.at(-1)!
+  await Effect.runPromise(hook(sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
+  expect(synthetics).toHaveLength(0)
+
+  // The role changes again: announced once, against the adopted text
+  await applyPublishParts(ctx, state, alphaPlan("You are helpful.\n\n## Rules\nSpeak like a pirate."))
+  hook = contextCallbacks.at(-1)!
+  await Effect.runPromise(hook(sessionEvent("ses_gained", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
+  expect(synthetics).toHaveLength(1)
+  expect(synthetics[0]?.text).toContain("Speak like a pirate")
+})
+
+test("a role gained alongside another change announces that change but not the role", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, synthetics } = createHarness()
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  await applyPublishParts(ctx, state, alphaPlan(undefined, true))
+  const hook = contextCallbacks.at(-1)!
+  await Effect.runPromise(hook(sessionEvent("ses_gained_tool", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
+
+  await applyPublishParts(ctx, state, alphaPlan("You are helpful.\n\n## Rules\nBe nice.", false))
+  await Effect.runPromise(contextCallbacks.at(-1)!(sessionEvent("ses_gained_tool", "alpha", READER, [{ type: "text", text: "You are helpful." }])))
+  expect(synthetics).toHaveLength(1)
+  expect(synthetics[0]?.text).toContain("reader")
+  expect(synthetics[0]?.text).not.toContain("Be nice")
 })
