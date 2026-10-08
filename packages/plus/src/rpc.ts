@@ -1127,11 +1127,12 @@ export const WarmingSetInput = Schema.Struct({
 }).annotate({ identifier: "Plus.WarmingSetInput" })
 
 // Compact before cold, per chat: on compacts an idle chat right before its
-// cache goes cold. Off in every new chat.
+// cache goes cold. "default" removes the chat's override, so the model's
+// effective `compactWarm` decides.
 export interface WarmingCompactInput extends Schema.Schema.Type<typeof WarmingCompactInput> {}
 export const WarmingCompactInput = Schema.Struct({
   sessionID: Schema.String,
-  on: Schema.Boolean,
+  on: Schema.Union([Schema.Boolean, Schema.Literal("default")]),
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
@@ -1168,8 +1169,12 @@ export const ChecksInvalid = Schema.Struct({ reason: Schema.String }).annotate({
 export const WarmingStatus = Schema.Struct({
   sessionID: Schema.String,
   chat: Schema.Literals(["on", "off", "default"]),
-  /** Compact before cold is on for this chat; absent from an older server. */
+  /** The effective compact before cold for this chat; absent from an older server. */
   compact: Schema.optionalKey(Schema.Boolean),
+  /** The effective value's source: the chat's own switch, or its model. */
+  compactSource: Schema.optionalKey(Schema.Literals(["chat", "model"])),
+  /** The models cold arming would compact with first, when it applies. */
+  coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
   /** When it compacts this chat, while a compaction is scheduled. */
   compactAt: Schema.optionalKey(Schema.Number),
   /** Latest compaction completed after the last real request; absent otherwise. */
