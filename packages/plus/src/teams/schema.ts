@@ -648,6 +648,13 @@ export const BudgetOverBy = Schema.Struct({
 })
 export type BudgetOverBy = typeof BudgetOverBy.Type
 
+// A child session's context size in the status output is the prompt size of
+// its latest completed step (input + cache read + cache write), or null when
+// it has no completed step. The parent is told once when it first passes
+// CONTEXT_NOTICE_TOKENS. A child near this size is at risk of losing details
+// if compacted mid-task, so it is reported rather than compacted.
+export const CONTEXT_NOTICE_TOKENS = 100_000
+
 export interface BudgetDimension {
   name: "turns" | "tokens" | "wall"
   used: number

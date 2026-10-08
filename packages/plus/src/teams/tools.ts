@@ -49,7 +49,7 @@ const CheckpointDescription = "Commit chosen files in your own worktree."
 const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
 const StopDescription =
   "Stop a child run you no longer need: now, or after its turn while it works (force ends it now). A followup after a stop needs compactWith once the child is cold."
-const StatusDescription = "State, latest report, checks and HEAD of your run and your children."
+const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
 const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again.\n" + toolGuidance
