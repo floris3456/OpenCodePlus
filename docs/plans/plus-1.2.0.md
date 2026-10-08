@@ -493,6 +493,25 @@ Added 2026-10-08 evening (build seat, continuing the run)
   `RefreshEvents`), model rows memoized per (catalogue revision, store
   revision). The footer text and `/compact-cold` belong to C3, which owns
   cold detection.
+- **B33. WP-G (G4, the cache-miss toast), where it lives.** As
+  `plus-1.1.18.md` §9. The TUI asks, the server answers: when a step of the
+  chat on screen ends (an assistant message with usage, from the client's
+  sync data), the Plus TUI calls a new RPC `monitor.step({ sessionID })`,
+  which folds only that session's new rows incrementally (WP-A's cached
+  fold) and returns the latest step's verdict, tokens not reused and cause.
+  No timer, no polling while idle; if the step's row is not recorded yet the
+  RPC says `pending` and the TUI asks once more on the next session event.
+  The toast (warning variant): "Cache miss · N tokens not reused · <cause> ·
+  type /monitor for details", once per step, only when `isMiss` holds (a
+  drop under 1,024 tokens is rounding). Cause words map the Monitor's cause
+  chain (after compaction (expected), model switched, agent switched, prompt
+  changed · <first changed part>, cache expired, account changed, unknown);
+  a compaction armed by a CPA account switch (`quota.switch` metadata) makes
+  the cause "account changed · compacted first", in the toast and in
+  `/monitor` alike. Off switch: a TUI preference (default on), toggled from
+  the command palette ("Cache-miss notices: turn off/on") and the slash
+  command `/miss-notices`; it hides the toast only, the Monitor is
+  unchanged.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
