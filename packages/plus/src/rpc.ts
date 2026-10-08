@@ -487,6 +487,30 @@ export const LogOutput = Schema.Struct({
   total: Schema.Number,
 }).annotate({ identifier: "Plus.LogOutput" })
 
+// The `opencodeplus instructions …` lane (bash mirror of
+// tools.instructions.*). `instructions.ops` lists the op registry with each
+// op's input as a JSON Schema object, so the CLI maps flags without code
+// changes when ops are added; `instructions.run` executes one op with the
+// actor recorded as `{ type: "cli" }`. Refusals (including an unknown op)
+// come back by value as `{ error: { message } }`, never as RPC errors.
+export interface InstructionsOpDescriptor extends Schema.Schema.Type<typeof InstructionsOpDescriptor> {}
+export const InstructionsOpDescriptor = Schema.Struct({
+  op: Schema.String,
+  description: Schema.String,
+  input: Schema.Record(Schema.String, Schema.Unknown),
+}).annotate({ identifier: "Plus.InstructionsOpDescriptor" })
+
+export interface InstructionsOpsOutput extends Schema.Schema.Type<typeof InstructionsOpsOutput> {}
+export const InstructionsOpsOutput = Schema.Struct({
+  ops: Schema.Array(InstructionsOpDescriptor),
+}).annotate({ identifier: "Plus.InstructionsOpsOutput" })
+
+export interface InstructionsRunInput extends Schema.Schema.Type<typeof InstructionsRunInput> {}
+export const InstructionsRunInput = Schema.Struct({
+  op: Schema.String,
+  input: Schema.Record(Schema.String, Schema.Unknown),
+}).annotate({ identifier: "Plus.InstructionsRunInput" })
+
 // One stored row addressed by identity for the delta form's `remove`: the
 // record type plus the fields that make up its target id (recordIdentity in
 // instructions/delta.ts) and its catalogue. Only the mutable snapshot record
@@ -2013,6 +2037,17 @@ const PortableMonitorMarkInput = Schema.toStandardSchemaV1(MonitorMarkInput.anno
 const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
+const PortableInstructionsOpsOutput = Schema.toStandardSchemaV1(
+  InstructionsOpsOutput.annotate({ identifier: "Plus.InstructionsOpsOutput" }),
+)
+const PortableInstructionsRunInput = Schema.toStandardSchemaV1(
+  InstructionsRunInput.annotate({ identifier: "Plus.InstructionsRunInput" }),
+)
+// An op's JSON result: arbitrary JSON, so Unknown. Refusals come back by
+// value as `{ error: { message } }` and validate the same way.
+const PortableInstructionsRunOutput = Schema.toStandardSchemaV1(
+  Schema.Unknown.annotate({ identifier: "Plus.InstructionsRunOutput" }),
+)
 
 const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ identifier: "Plus.AgentExists" }))
 const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
@@ -2146,6 +2181,16 @@ export const Definition = Rpc.define({
     "instructions.log": {
       input: PortableLogInput,
       output: PortableLogOutput,
+      errors: {},
+    },
+    "instructions.ops": {
+      input: Empty,
+      output: PortableInstructionsOpsOutput,
+      errors: {},
+    },
+    "instructions.run": {
+      input: PortableInstructionsRunInput,
+      output: PortableInstructionsRunOutput,
       errors: {},
     },
     "instructions.assembled": {
