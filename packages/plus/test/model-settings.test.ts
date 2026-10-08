@@ -393,6 +393,46 @@ test("a mutate carries the Defaults › Models rows over and cannot drop them", 
   ).toEqual(["*/*", "anthropic/claude"])
 })
 
+// The delta path a TUI model-row write takes: the upsert's compaction fields
+// survive the server's toRecord and the snapshot round trip.
+test("a model mutate delta keeps the per-model compaction fields", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  const before = await load(project)
+  const after = await api.mutate({
+    expectedRevision: before.projectRevision,
+    expectedGlobalRevision: before.globalRevision,
+    changes: {
+      upsert: [{
+        type: "model",
+        level: "project",
+        agent: "build",
+        providerID: "anthropic",
+        modelID: "claude",
+        coldCompact: "on",
+        coldModels: ["cheap/one", "cheap/two"],
+        compactionStrategy: "local",
+        updated: UPDATED,
+      }],
+      remove: [],
+    },
+  })
+  if (!after.ok) throw new Error(`mutate refused: ${after.error.message}`)
+  const stored = (await load(project)).records.find((entry): entry is ModelRecord => entry.type === "model")
+  expect(stored).toMatchObject({ coldCompact: "on", coldModels: ["cheap/one", "cheap/two"], compactionStrategy: "local" })
+  const snapshot = (await api.snapshot()).value
+  expect(snapshot.records.find((entry) => entry.type === "model")).toMatchObject({
+    coldCompact: "on",
+    coldModels: ["cheap/one", "cheap/two"],
+    compactionStrategy: "local",
+  })
+})
+
 test("Defaults › Models rows render Every model first with per-model rows and their values", async () => {
   const project = await tempProject()
   const ctx = fullContext({
