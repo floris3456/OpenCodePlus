@@ -2,17 +2,22 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
 import {
+  cacheLifetimeOf,
   COMPACTION_STRATEGIES,
+  CUSTOM_CHOICE,
   fromWords,
   isDefaultSwitchField,
   isEvery,
   isModelSettingRowId,
+  modelFieldChoices,
   modelSettingEffective,
   MODEL_FIELD_LABELS,
   MODEL_SETTING_LABELS,
   parseModelFieldItemId,
   parseModelSettingItemId,
+  sourceWord,
   type ModelDefaultField,
+  type ModelFieldChoice,
   type ModelSettingsField,
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
@@ -163,31 +168,65 @@ export function createInstructionsDialogs(
     const effective = state.modelDefaultsView(node)
     if (effective === undefined) return
     const label = isEvery(parsed.key) ? "Every model" : `${parsed.key.providerID}/${parsed.key.modelID}`
+    const title = `${MODEL_SETTING_LABELS[field]} · ${label}`
     const now = modelSettingEffective(effective, field as ModelSettingsField)
     const variants = isEvery(parsed.key)
       ? []
       : ((current.hostModels ?? []).find((entry) => entry.providerID === parsed.key.providerID && entry.modelID === parsed.key.modelID)?.variants ?? [])
     const own = effective.record?.[field]
+    if (field === "compactionModel") {
+      const model = await pickCompactionModel(current)
+      if (disposed || model === undefined) return
+      await state.editModelSettings(node, { compactionModel: model })
+      return
+    }
+    if (field === "warming" || field === "interval" || field === "effort") {
+      const nowText = now === undefined ? "" : `${now.text} · ${sourceWord(now.from)}`
+      const picked = await pickModelField(
+        title,
+        nowText === "" ? "" : `Now: ${nowText}`,
+        modelFieldChoices(field, { now: nowText, lifetime: cacheLifetimeOf(parsed.key), variants, everyModel: isEvery(parsed.key) }),
+        () =>
+          context.ui.dialog.prompt({
+            title,
+            description: `${fieldHelp(field, variants)} Empty inherits.${now === undefined ? "" : ` Now: ${now.text} (${fromWords(now.from)}).`}`,
+            value: typeof own === "string" ? own : "",
+            placeholder: now?.text ?? "",
+          }),
+      )
+      if (disposed || picked === undefined) return
+      await state.editModelSettings(node, { [field]: picked.length === 0 ? null : picked } as never)
+      return
+    }
     const raw = await context.ui.dialog.prompt({
-      title: `${MODEL_SETTING_LABELS[field]} · ${label}`,
+      title,
       description: `${fieldHelp(field, variants)} Empty inherits.${now === undefined ? "" : ` Now: ${now.text} (${fromWords(now.from)}).`}`,
       value: typeof own === "string" ? own : "",
       placeholder: now?.text ?? "",
     })
     if (disposed || raw === undefined) return
     const text = raw.trim()
-    if (isCompactionText(field)) {
-      await state.editModelSettings(node, { [field]: text.length === 0 ? (field === "compactionInstructions" ? "" : null) : text } as never)
+    if (field === "compactionInstructions") {
+      await state.editModelSettings(node, { compactionInstructions: text })
       return
     }
     await state.editModelSettings(node, { [field]: text.length === 0 ? null : text } as never)
   }
 
-  // The compaction model and instructions keep a typed value for now (I2b
-  // makes Model a picker); "" clears the model and is an empty prompt for the
-  // instructions.
-  function isCompactionText(field: string): boolean {
-    return field === "compactionModel" || field === "compactionInstructions"
+  // Warming, Ping every and Effort open one dropdown on every model row. Inherit
+  // (an empty value) clears the field; Custom… asks for the text, as the field
+  // always did. Resolves to the text to store ("" clears), or undefined on cancel.
+  async function pickModelField(
+    title: string,
+    placeholder: string,
+    options: readonly ModelFieldChoice[],
+    ask: () => Promise<string | undefined>,
+  ): Promise<string | undefined> {
+    const picked = await context.ui.dialog.select<string>({ title, placeholder, options: [...options] })
+    if (disposed || picked === undefined) return undefined
+    const text = picked === CUSTOM_CHOICE ? await ask() : picked
+    if (disposed || text === undefined) return undefined
+    return text.trim()
   }
 
   // Enter on one field row under an agent/member/preset model row: edit that
@@ -215,17 +254,22 @@ export function createInstructionsDialogs(
       await state.setModelCompaction(node, { compactionStrategy: next })
       return
     }
-    if (field === "compactionModel" || field === "compactionInstructions") {
+    if (field === "compactionModel") {
+      const model = await pickCompactionModel(current)
+      if (disposed || model === undefined) return
+      await state.setModelCompaction(node, { compactionModel: model })
+      return
+    }
+    if (field === "compactionInstructions") {
       const target = `${parsed.target.providerID}/${parsed.target.modelID}`
       const raw = await context.ui.dialog.prompt({
         title: `${MODEL_FIELD_LABELS[field]} · ${target}`,
-        description: `${fieldHelp(field, [])} Empty ${field === "compactionInstructions" ? "is an empty prompt" : "inherits"}.`,
+        description: `${fieldHelp(field, [])} Empty is an empty prompt.`,
         value: "",
         placeholder: node.badges.value ?? "",
       })
       if (disposed || raw === undefined) return
-      const text = raw.trim()
-      await state.setModelCompaction(node, { [field]: text.length === 0 ? (field === "compactionInstructions" ? "" : null) : text } as never)
+      await state.setModelCompaction(node, { compactionInstructions: raw.trim() })
       return
     }
     if (field === "model") {
@@ -236,21 +280,25 @@ export function createInstructionsDialogs(
     }
     const variants =
       (current.hostModels ?? []).find((entry) => entry.providerID === parsed.target.providerID && entry.modelID === parsed.target.modelID)?.variants ?? []
-    if (field === "effort") {
-      const picked = await context.ui.dialog.select<string>({
-        title: `Effort · ${parsed.target.providerID}/${parsed.target.modelID}`,
-        placeholder: "The variant this row runs with",
-        options: [
-          { title: "(inherit / none)", value: "", description: "No variant of its own" },
-          ...variants.toSorted().map((variant) => ({ title: variant, value: variant })),
-        ],
-      })
+    const now = node.badges.value ?? ""
+    const target = `${parsed.target.providerID}/${parsed.target.modelID}`
+    if (field === "warming" || field === "interval" || field === "effort") {
+      const picked = await pickModelField(
+        `${MODEL_FIELD_LABELS[field]} · ${target}`,
+        now === "" ? "" : `Now: ${now}`,
+        modelFieldChoices(field, { now, lifetime: cacheLifetimeOf(parsed.target), variants, everyModel: false }),
+        () =>
+          context.ui.dialog.prompt({
+            title: `${MODEL_FIELD_LABELS[field]} · ${target}`,
+            description: `${fieldHelp(field, variants)} Empty inherits.${now === "" ? "" : ` Now: ${now}.`}`,
+            value: "",
+            placeholder: now,
+          }),
+      )
       if (disposed || picked === undefined) return
       await state.editModelField(node, picked)
       return
     }
-    const now = node.badges.value ?? ""
-    const target = `${parsed.target.providerID}/${parsed.target.modelID}`
     const raw = await context.ui.dialog.prompt({
       title: `${MODEL_FIELD_LABELS[field]} · ${target}`,
       description: `${fieldHelp(field, variants)} Empty inherits.${now === "" ? "" : ` Now: ${now}.`}`,
@@ -261,8 +309,39 @@ export function createInstructionsDialogs(
     await state.editModelField(node, raw.trim())
   }
 
-  // The catalogue picker for a field row's Model field: provider, then model.
-  async function pickCatalogModel(): Promise<string | undefined> {
+  // The compaction model: the catalogue picker with Inherit first (null clears
+  // the field), then the model's variant when the catalogue lists any.
+  async function pickCompactionModel(current: Plus.Snapshot): Promise<string | null | undefined> {
+    const picked = await pickCatalogModel({ inherit: true })
+    if (disposed || picked === undefined) return undefined
+    if (picked.length === 0) return null
+    return pickVariant(picked, current, "The variant the summary runs with")
+  }
+
+  // A picked model with the variants its catalogue entry lists: "(none)" keeps
+  // the bare model. Without variants the model is returned as picked.
+  async function pickVariant(picked: string, current: Plus.Snapshot, placeholder: string): Promise<string | undefined> {
+    const target = parseModelText(picked)
+    const variants =
+      target === undefined
+        ? []
+        : ((current.hostModels ?? []).find((entry) => entry.providerID === target.providerID && entry.modelID === target.modelID)?.variants ?? [])
+    if (variants.length === 0) return picked
+    const variant = await context.ui.dialog.select<string>({
+      title: "Variant",
+      placeholder,
+      options: [
+        { title: "(none)", value: "", description: "The model without a variant" },
+        ...variants.toSorted().map((entry) => ({ title: entry, value: entry })),
+      ],
+    })
+    if (disposed || variant === undefined) return undefined
+    return variant.length === 0 ? picked : `${picked}#${variant}`
+  }
+
+  // The catalogue picker for a model field: provider, then model. With
+  // `inherit`, the provider list leads with Inherit, which resolves to "".
+  async function pickCatalogModel(options: { readonly inherit?: boolean } = {}): Promise<string | undefined> {
     let catalog: { providerID: string; modelID: string; name: string }[]
     try {
       const output = await plus["catalog.models"](undefined, { location: context.location })
@@ -281,9 +360,13 @@ export function createInstructionsDialogs(
     const provider = await context.ui.dialog.select<string>({
       title: "Model provider",
       placeholder: "Select a provider",
-      options: providers.map((entry) => ({ title: entry, value: entry })),
+      options: [
+        ...(options.inherit === true ? [{ title: "Inherit", value: "", description: "Use the model this level inherits" }] : []),
+        ...providers.map((entry) => ({ title: entry, value: entry })),
+      ],
     })
     if (disposed || provider === undefined) return undefined
+    if (provider.length === 0) return ""
     const forProvider = catalog.filter((entry) => entry.providerID === provider)
     const modelIds = [...new Set(forProvider.map((entry) => entry.modelID))].toSorted()
     const modelID = await context.ui.dialog.select<string>({
@@ -306,27 +389,13 @@ export function createInstructionsDialogs(
     if (disposed || current === undefined) return
     const picked = await pickCatalogModel()
     if (disposed || picked === undefined) return
-    const target = parseModelText(picked)
-    if (target === undefined) {
+    if (parseModelText(picked) === undefined) {
       context.ui.toast.show({ variant: "error", message: `"${picked}" is not a model` })
       return
     }
-    const variants =
-      (current.hostModels ?? []).find((entry) => entry.providerID === target.providerID && entry.modelID === target.modelID)?.variants ?? []
-    if (variants.length === 0) {
-      await state.addColdModel(node, picked)
-      return
-    }
-    const variant = await context.ui.dialog.select<string>({
-      title: "Variant",
-      placeholder: "The variant this model compacts with",
-      options: [
-        { title: "(none)", value: "", description: "The model without a variant" },
-        ...variants.toSorted().map((entry) => ({ title: entry, value: entry })),
-      ],
-    })
-    if (disposed || variant === undefined) return
-    await state.addColdModel(node, variant.length === 0 ? picked : `${picked}#${variant}`)
+    const model = await pickVariant(picked, current, "The variant this model compacts with")
+    if (disposed || model === undefined) return
+    await state.addColdModel(node, model)
   }
 
   // a on an item row appends a section to that item: prompt for the name and
@@ -1422,7 +1491,6 @@ function fieldHelp(field: ModelDefaultField, variants: readonly string[]): strin
   if (field === "interval")
     return "Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT."
   if (field === "prompt") return "The text of the keep-alive request."
-  if (field === "compactionModel") return "provider/model with an optional #variant; empty inherits the maintenance compaction model, otherwise the chat's model."
   if (field === "compactionInstructions") return "The summary request's instructions; an empty prompt is a value of its own."
   if (field === "compactionStrategy") return "auto follows the model's policy; local writes a text summary; remote uses the provider."
   return `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}.`

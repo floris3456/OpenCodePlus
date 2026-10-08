@@ -1,5 +1,6 @@
 import { ConfigWarming } from "@opencode/schema/config/warming"
 import { Duration, Option, Schema } from "effect"
+import { cacheLifetime } from "../monitor/cache.js"
 import {
   formatDuration,
   formatWarming,
@@ -673,7 +674,7 @@ function sameFieldValue(left: string | readonly string[] | undefined, right: str
 }
 
 /** Where one layer's value shows in a compact row summary. */
-function sourceWord(from: SettingFrom): string {
+export function sourceWord(from: SettingFrom): string {
   if (from === "config") return "opencode.json"
   if (from === "every") return "every model"
   if (from === "model") return "this row"
@@ -1058,4 +1059,60 @@ export function coldCompactSummary(on: boolean, models: readonly string[]): stri
   if (!on) return "off"
   if (models.length === 0) return "on · no models · a adds one"
   return `on · ${models.join(" → ")}`
+}
+
+/** The cache lifetime the monitor assumes for a model row's provider and model; undefined for Every model or when unknown. */
+export function cacheLifetimeOf(key: ModelSettingsKey): number | undefined {
+  if (key.providerID === undefined || key.modelID === undefined) return undefined
+  return cacheLifetime({ provider: key.providerID, model: key.modelID })
+}
+
+/** Ping every's dropdown values: the times below the cache lifetime. An unknown lifetime gets the 5m list. */
+export function pingChoices(lifetime: number | undefined): readonly string[] {
+  if (lifetime !== undefined && lifetime >= 3_600_000) return ["10m", "20m", "30m", "45m", "55m"]
+  if (lifetime !== undefined && lifetime >= 1_800_000) return ["5m", "10m", "15m", "20m", "25m"]
+  return ["1m", "2m", "3m", "4m", "4m30s"]
+}
+
+/** Warming's fixed totals; Custom… types any other time from 1m to 24h. */
+export const WARMING_TIMES: readonly string[] = ["15m", "30m", "45m", "1h", "1h30m", "2h", "4h", "8h"]
+
+/** The dropdown value that opens the one-line prompt; no time or variant is spelled this way. */
+export const CUSTOM_CHOICE = "custom…"
+
+export interface ModelFieldChoice {
+  readonly title: string
+  /** "" inherits (clears the field); CUSTOM_CHOICE asks for text. */
+  readonly value: string
+  readonly description?: string
+}
+
+/**
+ * The dropdown for a Warming, Ping every or Effort field on any model row:
+ * Inherit (clears), the fixed values, and Custom… for the prompt. `now` is
+ * the value Inherit falls back to; `variants` are the model's own variants.
+ */
+export function modelFieldChoices(
+  field: "warming" | "interval" | "effort",
+  input: { readonly now: string; readonly lifetime?: number; readonly variants?: readonly string[]; readonly everyModel: boolean },
+): ModelFieldChoice[] {
+  if (field === "warming")
+    return [
+      { title: "Inherit", value: "" },
+      { title: "Off", value: "off" },
+      { title: "On", value: "on", description: "keeps the time below" },
+      ...WARMING_TIMES.map((time) => ({ title: time, value: time })),
+      { title: "Custom…", value: CUSTOM_CHOICE },
+    ]
+  if (field === "interval")
+    return [
+      { title: `Inherit (now ${input.now})`, value: "" },
+      ...pingChoices(input.lifetime).map((time) => ({ title: time, value: time })),
+      { title: "Custom…", value: CUSTOM_CHOICE },
+    ]
+  return [
+    { title: "(inherit / none)", value: "", description: "No variant of its own" },
+    ...(input.variants ?? []).toSorted().map((variant) => ({ title: variant, value: variant })),
+    ...(input.everyModel ? [{ title: "Custom…", value: CUSTOM_CHOICE }] : []),
+  ]
 }

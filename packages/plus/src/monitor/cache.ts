@@ -410,7 +410,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
 }
 
 /** Conservative idle lifetime, per README; unknown/disk-cache TTL stays unknown. */
-export function cacheLifetime(r: RequestRow, fp?: RequestFingerprintData): number | undefined {
+export function cacheLifetime(r: Pick<RequestRow, "provider" | "model">, fp?: RequestFingerprintData): number | undefined {
   const ttl = fp?.optionsKeys["prompt_cache_options.ttl"]
   if (ttl === sha256(canonicalJson("24h"))) return 86_400_000
   if (ttl === sha256(canonicalJson("1h"))) return 3_600_000

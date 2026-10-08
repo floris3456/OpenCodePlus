@@ -1184,7 +1184,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return false
     }
     const item = node.address?.item
-    const key = item === undefined ? undefined : (parseModelDefaultItemId(item) ?? parseModelSettingItemId(item)?.key)
+    const key = item === undefined ? undefined : (parseModelDefaultItemId(item) ?? parseModelSettingItemId(item)?.key ?? parseColdDefaultItemId(item)?.key)
     if (key === undefined) {
       setStatus(`"${node.label}" is not a Defaults › Models row`)
       return false
