@@ -135,11 +135,16 @@ test("each tool row lists its parameters; an optional one switches off, a requir
   expect(rowOf(input, "param:reader:offset").label).toBe("offset: number")
   // A parameter row only ever shows inside its tool's Parameters group, at every level.
   const parents = nodes.flatMap((node, index) => {
-    if (!node.id.includes(":param:")) return []
+    if (node.kind !== "item" || !node.id.includes(":param:")) return []
     return [nodes.slice(0, index).findLast((above) => above.depth === node.depth - 1)?.label]
   })
   expect(parents.length).toBeGreaterThan(2)
   expect(new Set(parents)).toEqual(new Set(["Parameters"]))
+
+  // B7: a parameter's description is a text row, so it now exposes sections
+  // and is expandable (line 150's "leaf" assertion moved to the Description).
+  expect(rowOf(input, "param:reader:offset").add).toBe("section")
+  expect(nodes.some((node) => node.id === "section:project:alpha:param:reader:offset:whole")).toBe(true)
 
   const refused = toggle(input, rowOf(input, "param:reader:path").id)
   if (!("refusal" in refused)) throw new Error("expected a refusal")
@@ -147,8 +152,6 @@ test("each tool row lists its parameters; an optional one switches off, a requir
   const refusedSet = setEnabled(input, rowOf(input, "param:reader:path").id, false)
   expect("refusal" in refusedSet).toBe(true)
 
-  // A parameter row is a leaf in the list: no ▸ to open.
-  expect(canExpand(rowOf(input, "param:reader:offset"))).toBe(false)
   expect(canExpand(rowOf(input, "tool:reader"))).toBe(true)
 
   const off = toggle(input, rowOf(input, "param:reader:offset").id)

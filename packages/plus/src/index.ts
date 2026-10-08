@@ -777,7 +777,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
   }
   const invalidOf = (rows: readonly StoredRecord[]) =>
     rows.flatMap((record) => {
-      if (record.type === "split" && (record.item.startsWith("setting:") || record.item.startsWith("compaction:")))
+      if (
+        record.type === "split" &&
+        (record.item.startsWith("setting:") || record.item.startsWith("compaction:")) &&
+        record.item !== "setting:description" &&
+        record.item !== "compaction:instructions"
+      )
         return [{ id: record.item, reason: "Agent controls do not support sections" }]
       if (record.type !== "customization") return []
       const reason = controlRecordError(record)

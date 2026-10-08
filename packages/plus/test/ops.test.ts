@@ -241,6 +241,9 @@ test("saveSplit success and refusal on an unsplittable row", () => {
   const bad = saveSplit(input, findId(input, "mcp:sample"), [{ id: "a", name: "A", start: 0 }])
   if (!("refusal" in bad)) throw new Error("expected refusal")
   expect(bad.refusal).toBe(`"sample" cannot be split`)
+  const enabled = saveSplit(input, findId(input, "setting:enabled"), [{ id: "a", name: "A", start: 0 }])
+  if (!("refusal" in enabled)) throw new Error("expected refusal")
+  expect(enabled.refusal).toBe(`"Enabled" cannot be split`)
 })
 
 test("addSection appends the boundary and customization pair", () => {
@@ -261,6 +264,9 @@ test("addSection appends the boundary and customization pair", () => {
   const bad = addSection(input, findId(input, "mcp:sample"), "Flags", "x")
   if (!("refusal" in bad)) throw new Error("expected refusal")
   expect(bad.refusal).toBe(`"sample" does not support sections`)
+  const enabled = addSection(input, findId(input, "setting:enabled"), "Flags", "x")
+  if (!("refusal" in enabled)) throw new Error("expected refusal")
+  expect(enabled.refusal).toBe(`"Enabled" does not support sections`)
 })
 
 test("resolveReview keep/take/edit match resolveResolution", () => {
