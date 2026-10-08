@@ -620,6 +620,38 @@ Added 2026-10-08 evening (build seat, continuing the run)
   which B7 forbids; they move to the next release with the model rows'
   item conversion. The agent-wide `compaction:instructions` control takes
   sections where it is still listed.
+- **B39. What a parent section's customization means (finding 12d made
+  exact; replaces B25's premise).** Measured on the user's store
+  (`run/evidence/plus-1.2.0/i3/12d-real.md`): Simple-Build › `build-seat`
+  has a Global customization (13:20) whose text is the section's **full
+  span**, child headings included (its `basedOnText` is the full span: the
+  editor writes it), and Global customizations of its children, e.g.
+  `build-seat/agent-routing` (12:37). On 1.1.18 the parent's text replaces
+  the span, so the child edit never reaches the model (the reported bug).
+  On plus-1.2.0 since I1a (`7c73fda978`) a parent's text is taken as its
+  own body and the children are appended, so the same store would send
+  Agent Routing, Merges, Worktrees … twice. The rule for 1.2.0:
+  1. A customization of a heading-derived section (or of a whole
+     heading-derived item) is its full span. Assembly derives that text's
+     headings again (the same `derive`, at the section's depth) and takes
+     its own body and children from it: no duplicates.
+  2. A child customization at the same level as the parent's, or at a more
+     specific one (Project over Global over Defaults), replaces that child
+     inside the parent's text. A child at a less specific level loses to
+     the parent's copy.
+  3. A child whose heading the parent's text no longer has is not sent.
+  4. The editor of a parent shows the effective span (rule 2 applied), and
+     saving a parent at a level drops that level's customizations of the
+     children inside it (their text is in the parent now), so a parent
+     edit is never undone by an older child record. Children at more
+     specific levels stay.
+  5. Manual splits keep 1.1.18's rule: a parent's text replaces the span.
+  6. B25's notice remains for the writes that rules 2, 3 and 5 still hide:
+     saved, plus the shadowing row's id, label and level.
+  Proof: over a copy of the user's records, Simple-Build's assembled prompt
+  has each `build-seat` heading once and carries the 12:37 Agent Routing
+  text; on the old code the same copy loses it (1.1.18) or duplicates it
+  (I1a).
 
 ## Design notes per area
 
