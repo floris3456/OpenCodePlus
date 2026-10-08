@@ -4,6 +4,7 @@ import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
+import { defaultInclude, mergeUnits, renderMerge, type MergeEntry } from "./instructions/merge-units.js"
 import {
   activateModelRow,
   addSection,
@@ -64,7 +65,7 @@ import {
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
-import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord } from "./instructions/model.js"
+import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
 import { buildTreeMemo } from "./instructions/tree.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
@@ -111,14 +112,14 @@ const ShowDescription =
   "Resolved rows expose stateFrom and textFrom owner identities separately; from remains the state-source label.\n" +
   "Views: resolved (default), upstream, mine, diff, record, sections, assembled (agent rows only).\n" +
   "Team and member rows carry no text: resolved returns the entity (level, team, enabled/members, or member registered), record nests it under record.\n" +
-  "Diff returns two unified diffs (original→mine, original→upstream) plus a one-line summary.\n" +
+  "Diff returns two unified diffs (original→mine, original→upstream), a one-line summary, and merge: the merge units (id, kind, yours, upstream, base, included) with the default merged text.\n" +
   "A Defaults › Models row resolves to a summary with each effective keep-alive value and the layer it came from."
 
 const SetDescription =
   "Save an override, toggle, pin, set when shown, activate a model, resolve review or relink (TUI Enter/Space/p/w/k/t/e/l).\n" +
   "On a group row id, state on|off turns every row under it on or off in one write (a bare id toggles the group: all on means all off, otherwise all on); protected rows are skipped and named, team groups refuse.\n" +
   "Enabling a team is exclusive across loaded project/global/defaults records; disabledTeams reports the other teams disabled by this save.\n" +
-  "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review.\n" +
+  "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review, with resolve merge and include:[unit ids from show's merge.units] save that merge (no include = the defaults; a merge equal to upstream is a take).\n" +
   "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
@@ -227,7 +228,12 @@ const SetInput = Schema.Struct({
       "condition (the level above, or the section's own <!-- requires --> line, decides). Shown as \"shown when\".",
   }),
   active: Schema.optionalKey(Schema.Boolean),
-  resolve: Schema.optionalKey(Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit")])),
+  resolve: Schema.optionalKey(
+    Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit"), Schema.Literal("merge")]),
+  ),
+  include: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+    description: "With resolve merge: the unit ids (show's merge.units) to include; omitted = the defaults.",
+  }),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -414,7 +420,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
-          const op = computeSet(memo, input, treeMemo)
+          if (input.include !== undefined && input.resolve !== "merge")
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
+          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo)
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -790,7 +798,7 @@ function computeSet(
     state?: "on" | "off"
     pin?: boolean
     requires?: readonly string[] | null
-    resolve?: "keep" | "take" | "edit"
+    resolve?: "keep" | "take" | "edit" | "merge"
   },
   // The resolution memo built once for this tool call. Only the first op reads
   // it: a follow-up op runs against the interim records the first produced, so
@@ -944,7 +952,7 @@ function setModel(
     state?: "on" | "off"
     pin?: boolean
     active?: boolean
-    resolve?: "keep" | "take" | "edit"
+    resolve?: "keep" | "take" | "edit" | "merge"
     warming?: string
     interval?: string
     prompt?: string
@@ -1080,7 +1088,7 @@ function setModelDefaults(
     text?: string
     pin?: boolean
     active?: boolean
-    resolve?: "keep" | "take" | "edit"
+    resolve?: "keep" | "take" | "edit" | "merge"
     mode?: "primary" | "subagent" | "all"
   },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
@@ -1181,7 +1189,7 @@ function setPerm(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit"; label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
+  input: { text?: string; state?: "on" | "off"; pin?: boolean; active?: boolean; resolve?: "keep" | "take" | "edit" | "merge"; label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
   treeMemo?: Memo,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
@@ -1346,7 +1354,7 @@ function setTeam(
   memo: MemoInput,
   id: string,
   actor: Plus.Actor,
-  input: { state?: "on" | "off"; text?: string; pin?: boolean; resolve?: "keep" | "take" | "edit" },
+  input: { state?: "on" | "off"; text?: string; pin?: boolean; resolve?: "keep" | "take" | "edit" | "merge" },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
@@ -1628,13 +1636,70 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const split = resolveSplit({ text: resolved.text, title: upstream.title, splits, scopes, address })
       return { output: { id, view, sections: split.sections.map((section) => section.id) } }
     }
-    const three = threeWay(chain)
-    if (three === undefined) return { output: { id, view: "diff", mineDiff: "", upstreamDiff: "", summary: "no changes" } }
+    const proposal = mergeProposal(memo, buildTreeMemo(memo), node)
+    if (proposal === undefined) return { output: { id, view: "diff", mineDiff: "", upstreamDiff: "", summary: "no changes" } }
+    const { three, entries } = proposal
     const mineDiff = unifiedDiff(three.original, three.mine, { from: "original", to: "mine" })
     const upstreamDiff = unifiedDiff(three.original, three.upstream, { from: "original", to: "upstream" })
     const summary = `mine differs by ${changedLines(three.original, three.mine)} lines, upstream by ${changedLines(three.original, three.upstream)} lines`
-    return { output: { id, view: "diff", mineDiff, upstreamDiff, summary } }
+    return { output: { id, view: "diff", mineDiff, upstreamDiff, summary, merge: mergeOutput(entries) } }
   })
+}
+
+// The merge proposal of one row, built from the same context `set` resolves
+// against, so the unit ids `show` returns are the ids `set` accepts.
+function mergeProposal(memo: MemoInput, treeMemo: Memo, node: TreeNode): { three: ThreeWay; entries: MergeEntry[] } | undefined {
+  const address = node.address
+  if (address === undefined) return undefined
+  const upstream = upstreamOf({ ...memo, items: treeMemo.ctx.items }, address)
+  if (upstream === undefined) return undefined
+  const three = threeWay({
+    upstream,
+    records: treeMemo.ctx.customizations,
+    splits: treeMemo.ctx.splits,
+    scopes: treeMemo.ctx.scopes,
+    address,
+  })
+  if (three === undefined) return undefined
+  return { three, entries: mergeUnits(three.original, three.mine, three.upstream) }
+}
+
+function mergeIds(entries: readonly MergeEntry[]): string[] {
+  return entries.flatMap((entry) => (entry.type === "unchanged" ? [] : entry.upstreamId === undefined ? [entry.id] : [entry.id, entry.upstreamId]))
+}
+
+function mergeOutput(entries: readonly MergeEntry[]) {
+  const defaults = defaultInclude(entries)
+  const units = entries.flatMap((entry) =>
+    entry.type === "unchanged"
+      ? []
+      : mergeIds([entry]).map((id) => ({
+          id,
+          kind: entry.kind,
+          yours: entry.yours.join(""),
+          upstream: entry.upstream.join(""),
+          base: entry.base.join(""),
+          included: defaults.has(id),
+        })),
+  )
+  return { units, text: renderMerge(entries, defaults) }
+}
+
+// `set` with resolve merge: the include set (default: the defaults) renders the
+// merged text; a render equal to upstream is a take, as the screen's t saves it.
+function mergeOp(memo: MemoInput, treeMemo: Memo, node: TreeNode, input: { id: string; text?: string; include?: readonly string[] }) {
+  if (input.text !== undefined)
+    return { refusal: `"${node.label}" merges by include, not text: resolve merge takes include; edit takes text` }
+  const proposal = mergeProposal(memo, treeMemo, node)
+  if (proposal === undefined) return { refusal: resolveRefusalForLabel(node.label) }
+  const valid = mergeIds(proposal.entries)
+  const unknown = (input.include ?? []).find((id) => !valid.includes(id))
+  if (unknown !== undefined)
+    return { refusal: `"${node.label}" has no merge unit "${unknown}": valid units are ${valid.join(", ") || "none"}` }
+  const include = input.include === undefined ? defaultInclude(proposal.entries) : new Set(input.include)
+  const text = renderMerge(proposal.entries, include)
+  if (text === proposal.three.upstream) return resolveReview(memo, input.id, "take", undefined, undefined, treeMemo)
+  return resolveReview(memo, input.id, "merge", text, undefined, treeMemo)
 }
 
 function upstreamOf(memo: MemoInput, address: Pick<Address, "item" | "agent" | "team" | "memberOf">) {
