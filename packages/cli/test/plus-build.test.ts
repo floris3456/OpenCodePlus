@@ -9,7 +9,7 @@ import { Commands } from "../src/commands/commands"
 import { Runtime } from "../src/framework/runtime"
 import { type Spec } from "../src/framework/spec"
 import { upstreamHandlers } from "../src/index"
-import { plusHandlers } from "../src/plus"
+import { plusCommands, plusHandlers } from "../src/plus"
 import { OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../src/version"
 
 describe("plus build configuration", () => {
@@ -196,6 +196,13 @@ describe("plus build configuration", () => {
     expect(typeof plusHandlers.$).toBe("function")
     expect(findMissingHandlers(Commands, plusHandlers)).toEqual([])
     expect(() => Runtime.handlers(Commands, plusHandlers)).not.toThrow()
+  })
+
+  test("plus.ts derives a commands spec with the Plus-only instructions command", () => {
+    expect("instructions" in plusCommands.commands).toBe(true)
+    expect(typeof plusHandlers.instructions).toBe("function")
+    expect(findMissingHandlers(plusCommands, plusHandlers)).toEqual([])
+    expect(() => Runtime.handlers(plusCommands, plusHandlers)).not.toThrow()
   })
 
   test("package.json dependency keys follow bun canonical order", async () => {

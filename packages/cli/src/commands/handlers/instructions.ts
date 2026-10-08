@@ -6,17 +6,18 @@
 // (see parseInstructionsArgs): the static Spec (InstructionsCommand in
 // ../commands) only declares the stable surface (`--json`, `--text`,
 // `--text-file`) plus a variadic tail, and the handler re-parses
-// `process.argv`. Bare dynamic flags therefore need pre-dispatch interception
-// to work end to end (reported as a wiring need); through Effect dispatch they
-// arrive after `--`, which Effect strips into the tail. Exit 1 on a refusal
-// (message on stderr), 2 on a usage error.
+// `process.argv`. Bare dynamic flags are dispatched before Effect CLI
+// (instructionsInvocation + runInstructionsCli, called from plus.ts), because
+// Effect rejects unknown flags and intercepts `--help`. Exit 1 on a refusal
+// (message on stderr), 2 on a usage error (including a schema-invalid input
+// the service reports as a usage refusal).
 
 import { EOL } from "node:os"
 import { OpenCode } from "@opencode/client"
 import { Service } from "@opencode/client/effect/service"
 import { Product } from "@opencode/util/product"
 import { Effect, Option } from "effect"
-import { isRefusal } from "../../../../plus/src/instructions-cli.js"
+import { isRefusal, isUsageRefusal } from "../../../../plus/src/instructions-cli.js"
 import { Definition } from "../../../../plus/src/rpc.js"
 import { InstructionsCommand } from "../commands"
 import { Runtime } from "../../framework/runtime"
@@ -224,35 +225,111 @@ export async function runInstructionsCommand(argv: readonly string[], deps: Inst
   } catch (error) {
     return { exitCode: 1, stdout: "", stderr: `${errorMessage(error)}${EOL}` }
   }
+  if (isUsageRefusal(result)) return { exitCode: 2, stdout: "", stderr: `${result.error.message}${EOL}` }
   if (isRefusal(result)) return { exitCode: 1, stdout: "", stderr: `${result.error.message}${EOL}` }
   return { exitCode: 0, stdout: `${JSON.stringify(result, null, 2)}${EOL}`, stderr: "" }
+}
+
+// Pre-Effect argv dispatch (plus.ts): Effect CLI rejects the dynamic
+// `--<param>` flags and intercepts `--help` before a handler runs, so a real
+// `instructions` invocation is recognized from the raw argv and run directly.
+export interface InstructionsInvocation {
+  readonly server?: string
+  readonly standalone: boolean
+  readonly args: readonly string[]
+}
+
+export function instructionsInvocation(argv: readonly string[]): InstructionsInvocation | undefined {
+  const rest = argv.slice(2)
+  let index = 0
+  // The only Effect global flag; it may precede the command.
+  while (rest[index] === "--print-logs") {
+    process.env.OPENCODE_PRINT_LOGS = "1"
+    index++
+  }
+  if (rest[index] !== "instructions") return undefined
+  return splitServerFlags(rest.slice(index + 1))
+}
+
+export const runInstructionsCli = Effect.fn("cli.instructions.cli")(function* (invocation: InstructionsInvocation) {
+  const server = yield* ServerConnection.resolve({
+    server: invocation.server,
+    standalone: invocation.standalone,
+    mismatch: "ignore",
+  })
+  const client = OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) })
+  const plus = client.rpc(Definition)
+  const deps: InstructionDeps = {
+    productNamespace: Product.namespace,
+    binaryName: Product.binaryName,
+    readFile: (path) => Bun.file(path).text(),
+    readStdin: () => readAllStdin(),
+    ops: () => plus["instructions.ops"](undefined).then((output) => output.ops),
+    run: (op, input) => plus["instructions.run"]({ op, input }) as Promise<unknown>,
+    serverVersion: () =>
+      Effect.runPromise(ServiceHandover.serverVersion(server.endpoint)).catch(() => "unknown"),
+  }
+  const result = yield* Effect.promise(() => runInstructionsCommand(invocation.args, deps))
+  if (result.stdout) process.stdout.write(result.stdout)
+  if (result.stderr) process.stderr.write(result.stderr)
+  process.exitCode = result.exitCode
+})
+
+// Split the subcommand's own `--server`/`--standalone` (ServerParams) from the
+// op argv, so neither is mistaken for an op parameter.
+function splitServerFlags(args: readonly string[]): InstructionsInvocation {
+  const rest: string[] = []
+  let server: string | undefined
+  let standalone = false
+  let endOfOptions = false
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (endOfOptions) {
+      rest.push(arg)
+      continue
+    }
+    if (arg === "--") {
+      endOfOptions = true
+      rest.push(arg)
+      continue
+    }
+    if (arg === "--standalone") {
+      standalone = true
+      continue
+    }
+    // Global flags Effect CLI would normally consume, so they never reach the
+    // op grammar as unknown parameters.
+    if (arg === "--print-logs") {
+      process.env.OPENCODE_PRINT_LOGS = "1"
+      continue
+    }
+    if (arg === "--no-print-logs") continue
+    if (arg === "--server") {
+      const value = args[i + 1]
+      if (value !== undefined) {
+        server = value
+        i++
+      }
+      continue
+    }
+    if (arg.startsWith("--server=")) {
+      server = arg.slice("--server=".length)
+      continue
+    }
+    rest.push(arg)
+  }
+  return { ...(server === undefined ? {} : { server }), standalone, args: rest }
 }
 
 export default Runtime.handler(
   InstructionsCommand,
   Effect.fn("cli.instructions")(function* (input) {
-    const raw = tailAfterInstructions(process.argv)
-    const server = yield* ServerConnection.resolve({
+    const tail = splitServerFlags(tailAfterInstructions(process.argv))
+    yield* runInstructionsCli({
       server: Option.getOrUndefined(input.server),
       standalone: input.standalone,
-      mismatch: "ignore",
+      args: tail.args,
     })
-    const client = OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) })
-    const plus = client.rpc(Definition)
-    const deps: InstructionDeps = {
-      productNamespace: Product.namespace,
-      binaryName: Product.binaryName,
-      readFile: (path) => Bun.file(path).text(),
-      readStdin: () => readAllStdin(),
-      ops: () => plus["instructions.ops"](undefined).then((output) => output.ops),
-      run: (op, input) => plus["instructions.run"]({ op, input }) as Promise<unknown>,
-      serverVersion: () =>
-        Effect.runPromise(ServiceHandover.serverVersion(server.endpoint)).catch(() => "unknown"),
-    }
-    const result = yield* Effect.promise(() => runInstructionsCommand(raw, deps))
-    if (result.stdout) process.stdout.write(result.stdout)
-    if (result.stderr) process.stderr.write(result.stderr)
-    process.exitCode = result.exitCode
   }),
 )
 

@@ -4,6 +4,7 @@ import { Definition } from "../../plus/src/rpc.js"
 import {
   formatOpHelp,
   formatOpsHelp,
+  instructionsInvocation,
   parseInstructionsArgs,
   runInstructionsCommand,
   type InstructionDeps,
@@ -211,6 +212,19 @@ describe("instructions help and exit codes", () => {
     }
   })
 
+  test("exit 2 on a usage refusal from the service", async () => {
+    const seen: StubSeen = { runs: [] }
+    const server = opsStub(seen, () => ({ error: { message: "Invalid arguments for show", usage: true } }))
+    try {
+      const result = await runInstructionsCommand(["show", "abc"], depsFor(server.url.toString()))
+      expect(result.exitCode).toBe(2)
+      expect(result.stdout).toBe("")
+      expect(result.stderr).toBe("Invalid arguments for show\n")
+    } finally {
+      server.stop(true)
+    }
+  })
+
   test("exit 2 on usage errors", async () => {
     const parsed = await parseInstructionsArgs(["show"], ops, io)
     expect(parsed.kind).toBe("usage-error")
@@ -288,5 +302,39 @@ describe("instructions help and exit codes", () => {
     expect(helped).toContain("--levels integer[]")
     expect(helped).toContain("--active boolean")
     expect(helped).toContain("A positional id fills --id.")
+  })
+})
+
+describe("pre-Effect argv dispatch", () => {
+  test("recognises an instructions invocation and keeps its op argv", () => {
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "list", "--where", "agent:alpha"])).toEqual({
+      standalone: false,
+      args: ["list", "--where", "agent:alpha"],
+    })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "show", "abc", "--view", "resolved"])).toEqual({
+      standalone: false,
+      args: ["show", "abc", "--view", "resolved"],
+    })
+  })
+
+  test("extracts the subcommand's --server/--standalone and skips --print-logs", () => {
+    expect(
+      instructionsInvocation(["bun", "plus.ts", "--print-logs", "instructions", "show", "abc", "--server", "http://x"]),
+    ).toEqual({ server: "http://x", standalone: false, args: ["show", "abc"] })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--standalone", "list"])).toEqual({
+      standalone: true,
+      args: ["list"],
+    })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--server=http://y", "list"])).toEqual({
+      server: "http://y",
+      standalone: false,
+      args: ["list"],
+    })
+  })
+
+  test("leaves other commands and global help to Effect", () => {
+    expect(instructionsInvocation(["bun", "plus.ts", "run", "instructions"])).toBeUndefined()
+    expect(instructionsInvocation(["bun", "plus.ts", "--help"])).toBeUndefined()
+    expect(instructionsInvocation(["bun", "plus.ts"])).toBeUndefined()
   })
 })

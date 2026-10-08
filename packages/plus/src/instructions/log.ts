@@ -74,7 +74,7 @@ export async function readBoth(projectDir: string, options?: { readonly where?: 
 
 // `where` grammar: space-separated tokens, ANDed together, `!` negates one
 // token. A bare word is a case-insensitive substring over op, target, summary
-// and actor.agent. Keyed tokens: actor:tui|tool (exact actor type),
+// and actor.agent. Keyed tokens: actor:tui|tool|cli (exact actor type),
 // agent:<text> (substring over actor.agent), op:<text> (substring over op),
 // target:<prefix> (prefix over target), session:<text> (substring over
 // actor.sessionID), since:<instant> / before:<instant> over the entry ts,

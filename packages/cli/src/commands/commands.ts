@@ -551,12 +551,12 @@ type RelaxedCommands = Omit<BaseCommands, "commands"> & {
 export const Commands: RelaxedCommands = Root
 
 // `opencodeplus instructions <op> [<id>] [--<param> value …] [--json '<obj>']`
-// (Plus product only). Deliberately NOT attached to Root yet: attaching it
-// without the `instructions` entries in the plus.ts/index.ts handlers maps
-// crashes CLI startup (`Runtime.handlers` throws on a command without a
-// handler), and those maps live outside this lane's scope. Part 2 attaches
-// this node to Root.commands together with the map entries (plus.ts only, so
-// the command stays Plus-only; plus-build.test.ts's handler literals follow).
+// (Plus product only). Deliberately not attached to the shared `Commands`: the
+// Plus entrypoint derives `plusCommands` in `packages/cli/src/plus.ts` and adds
+// this node with the `instructions` handler, so the upstream CLI and its
+// handler map stay without it. The handler is reached through `plus.ts`'s
+// pre-Effect argv dispatch (dynamic --<param> flags and `--help` would
+// otherwise be rejected or intercepted by Effect CLI).
 export const InstructionsCommand = Spec.make("instructions", {
   description: "Run an instructions op from the service (OpenCodePlus only; bare run lists ops)",
   params: {

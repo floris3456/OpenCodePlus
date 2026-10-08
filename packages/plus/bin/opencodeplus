@@ -92,7 +92,9 @@ unset OPENCODE_CONFIG_PROJECT_DISABLE
 # to the CLI untouched. This skips both the refusal scan below (an op id or
 # value may name a refused subcommand, e.g. `instructions show run`) and
 # directory detection (no caller directory is appended: it would land in the
-# op's positional id).
+# op's positional id). The Plus entrypoint (`src/plus.ts`) is the one that
+# registers the command and dispatches the dynamic op flags before Effect CLI;
+# the upstream `src/index.ts` used for the TUI has neither.
 first_nonflag=""
 for arg in "$@"; do
   case "$arg" in
@@ -106,7 +108,7 @@ done
 
 if [ "$first_nonflag" = "instructions" ]; then
   export OPENCODEPLUS_CALLER_CWD="$CALLER_DIR"
-  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/index.ts" "$@"
+  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/plus.ts" "$@"
 fi
 
 # Pinned CLI subcommands from 'opencode --help'. Subcommands must be run from

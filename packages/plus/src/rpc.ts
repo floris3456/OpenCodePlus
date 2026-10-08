@@ -483,7 +483,9 @@ export const Snapshot = Schema.Struct({
 
 export interface Actor extends Schema.Schema.Type<typeof Actor> {}
 export const Actor = Schema.Struct({
-  type: Schema.Union([Schema.Literal("tui"), Schema.Literal("tool")]),
+  // `cli` is the `opencodeplus instructions …` mirror of a tool call: the same
+  // implementation with the actor recorded as the command line (B18).
+  type: Schema.Union([Schema.Literal("tui"), Schema.Literal("tool"), Schema.Literal("cli")]),
   agent: Schema.optionalKey(Schema.String),
   sessionID: Schema.optionalKey(Schema.String),
   messageID: Schema.optionalKey(Schema.String),
