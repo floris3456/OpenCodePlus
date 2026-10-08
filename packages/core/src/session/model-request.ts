@@ -24,7 +24,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import type { Content } from "@opencode/schema/tool"
-import { Cause, Context, type Duration, Effect, Layer, Result, Stream } from "effect"
+import { Cause, Context, type Duration, Effect, Layer, Option, Result, Schema, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { App } from "../app.js"
@@ -234,8 +234,34 @@ export const boundImages = (messages: LLMRequest["messages"]) => {
   )
 }
 
-/** Placeholder shell and read definitions a Zen free-tier request lacks; none for any other model. */
-const freeTierPlaceholders = (model: SessionRunnerModel.Resolved, declared: ReadonlyMap<string, unknown>) => {
+const decodeHookMessage = Schema.decodeUnknownOption(Message)
+
+function normalizeStringContent(candidate: unknown): unknown {
+  if (typeof candidate !== "object" || candidate === null) return candidate
+  const content = (candidate as { content?: unknown }).content
+  if (typeof content !== "string") return candidate
+  return { ...candidate, content: [Message.text(content)] }
+}
+
+// Validates plugin-hook-returned messages at the hook boundary. Plain-string
+// content is normalized to one text part; any other message that does not
+// decode against the core message schema is dropped (its index is reported)
+// so a plugin's malformed message never fails the step.
+function sanitizeHookMessages(candidates: ReadonlyArray<unknown>): {
+  readonly messages: Array<Message>
+  readonly dropped: Array<number>
+} {
+  const messages: Array<Message> = []
+  const dropped: Array<number> = []
+  for (const [index, candidate] of candidates.entries()) {
+    const decoded = decodeHookMessage(normalizeStringContent(candidate))
+    if (Option.isSome(decoded)) messages.push(decoded.value)
+    else dropped.push(index)
+  }
+  return { messages, dropped }
+}
+
+/** Placeholder shell and read definitions a Zen free-tier request lacks; none for any other model. */const freeTierPlaceholders = (model: SessionRunnerModel.Resolved, declared: ReadonlyMap<string, unknown>) => {
   if (model.ref.providerID !== Provider.ID.opencode) return []
   if (model.cost.some((cost) => cost.input > 0 || cost.output > 0)) return []
   return FREE_TIER_TOOLS.filter((name) => !declared.has(name)).map((name) => ({
@@ -296,6 +322,17 @@ export const layer = Layer.effect(
         },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )
+      // A plugin hook may return messages outside the core message shape
+      // (for example plain-string content). Normalize those at the hook
+      // boundary so a plugin can never crash the runner downstream: string
+      // content becomes one text part, anything else that does not decode is
+      // dropped with a warning.
+      const checked = sanitizeHookMessages(shaped.messages as ReadonlyArray<unknown>)
+      if (checked.dropped.length > 0)
+        yield* Effect.logWarning("Dropping malformed messages from session hook", {
+          kind,
+          index: checked.dropped,
+        })
       // Match by identity first, then by key. Entries matching neither were invented by a
       // hook and are dropped. `t.name` stays the real name so execution can map renames back.
       const byName = new Map(tools.definitions.map((t) => [t.name, t]))
@@ -326,7 +363,7 @@ export const layer = Layer.effect(
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         system: shaped.system,
-        messages: boundImages(unsupportedParts(shaped.messages, model.capabilities)),
+        messages: boundImages(unsupportedParts(checked.messages, model.capabilities)),
         tools: [...Array.from(hooked, ([name, t]) => ({ ...t, name })), ...placeholders],
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,
@@ -431,7 +468,7 @@ export const layer = Layer.effect(
           : undefined
 
       return {
-        event: shaped,
+        event: { ...shaped, messages: checked.messages },
         request,
         options: {
           ...(http ? { http } : {}),

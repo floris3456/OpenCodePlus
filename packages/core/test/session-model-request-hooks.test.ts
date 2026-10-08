@@ -1,4 +1,5 @@
 import { describe, expect } from "bun:test"
+import { Message } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Agent } from "@opencode/schema/agent"
 import { Money } from "@opencode/schema/money"
@@ -152,5 +153,52 @@ describe("SessionModelRequest HTTP hooks", () => {
         "receive:primary:created",
       ])
     }),
+  )
+})
+
+describe("SessionModelRequest hook message boundary", () => {
+  it.effect("normalizes string content and drops undecodable hook messages", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "context", (event) =>
+        Effect.sync(() => {
+          event.messages.push({ role: "user", content: "plain string" } as never)
+          event.messages.push({ role: "user", content: 42 } as never)
+        }),
+      )
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+
+      const prepared = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: [],
+      })
+
+      expect(prepared.event.messages.map((message) => message.content)).toEqual([
+        [{ type: "text", text: "plain string" }],
+      ])
+      expect(prepared.request.messages.map((message) => message.content)).toEqual([
+        [{ type: "text", text: "plain string" }],
+      ])
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+
+  it.effect("passes valid hook output through unchanged", () =>
+    Effect.gen(function* () {
+      const input = [Message.user("hello")]
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+
+      const prepared = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: input,
+      })
+
+      expect(prepared.request.messages).toEqual(input)
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
   )
 })
