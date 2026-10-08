@@ -92,13 +92,14 @@ test("diff pane renders each comparison as a real diff", async () => {
     expect(send(fixture, "2")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("my customized text"))
     expect(fixture.captureCharFrame()).toContain("original upstream → yours")
-    // 3: yours → merged result, the three-way merge take would accept. Both
-    // sides changed the same line, so the proposal carries conflict markers.
+    // 3: yours → merged result as rows. Both sides changed the one unit, so
+    // yours is included and the upstream row is shown, excluded, with no markers.
     expect(send(fixture, "3")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("yours → merged result"))
     expect(fixture.captureCharFrame()).toContain("my customized text")
     expect(fixture.captureCharFrame()).toContain("new upstream text")
-    expect(fixture.captureCharFrame()).toContain("<<<<<<< yours")
+    expect(fixture.captureCharFrame()).toContain("[ ] upstream (conflicts with yours)")
+    expect(fixture.captureCharFrame()).not.toContain("<<<<<<< yours")
     expect(fixture.captureCharFrame()).toContain("needs review")
   } finally {
     fixture.destroy()
@@ -135,7 +136,7 @@ test("diff pane resolution callbacks fire for keep and a clean take result", asy
     <DiffPane
       context={context}
       title="Demo item"
-      threeWay={{ original: "one\ntwo\n", mine: "one\ntwo mine\n", upstream: "one upstream\ntwo\n" }}
+      threeWay={{ original: "One.\nTwo.\n", mine: "One mine.\nTwo.\n", upstream: "One.\nTwo upstream." }}
       active={() => true}
       onResolve={async (resolution, edited) => {
         seen.push({ resolution, edited })
@@ -147,10 +148,10 @@ test("diff pane resolution callbacks fire for keep and a clean take result", asy
     expect(send(fixture, "k")).toBe(true)
     expect(send(fixture, "t")).toBe(true)
     await waitFor(() => seen.length === 2)
-    // A clean merge persists the merged text, not raw upstream.
+    // Yours and upstream changed different sentences: t saves the merge of both.
     expect(seen).toEqual([
       { resolution: "keep", edited: undefined },
-      { resolution: "merge", edited: "one upstream\ntwo mine\n" },
+      { resolution: "merge", edited: "One mine.\nTwo upstream." },
     ])
   } finally {
     fixture.destroy()
@@ -163,7 +164,7 @@ test("diff pane edit starts from the upstream change merged onto yours and saves
     <DiffPane
       context={context}
       title="Demo item"
-      threeWay={{ original: "alpha\nbeta\n", mine: "alpha\nBETA mine\n", upstream: "ALPHA upstream\nbeta\n" }}
+      threeWay={{ original: "Alpha one.\nBeta two.\n", mine: "Alpha one.\nBETA mine.", upstream: "ALPHA upstream.\nBeta two.\n" }}
       active={() => true}
       onResolve={async (resolution, edited) => {
         saved.push({ resolution, edited })
@@ -175,16 +176,16 @@ test("diff pane edit starts from the upstream change merged onto yours and saves
     expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
-    expect(editor?.plainText).toBe("ALPHA upstream\nBETA mine\n")
+    expect(editor?.plainText).toBe("ALPHA upstream.\nBETA mine.")
     expect(send(fixture, "ctrl+s")).toBe(true)
     await waitFor(() => saved.length === 1)
-    expect(saved[0]).toEqual({ resolution: "edit", edited: "ALPHA upstream\nBETA mine\n" })
+    expect(saved[0]).toEqual({ resolution: "edit", edited: "ALPHA upstream.\nBETA mine." })
   } finally {
     fixture.destroy()
   }
 })
 
-test("diff pane marks conflicting changes and refuses to save while markers remain", async () => {
+test("diff pane edits a conflicting proposal from yours with no markers to refuse", async () => {
   const saved: { resolution: string; edited?: string }[] = []
   const fixture = await mount((context) => (
     <DiffPane
@@ -202,15 +203,10 @@ test("diff pane marks conflicting changes and refuses to save while markers rema
     expect(send(fixture, "e")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
-    expect(editor?.plainText).toBe("<<<<<<< yours\nmy customized text\n=======\nnew upstream text\n>>>>>>> upstream")
-    expect(fixture.captureCharFrame()).toContain("1 conflicting region")
-    expect(send(fixture, "ctrl+s")).toBe(true)
-    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
-    expect(saved).toEqual([])
-    editor?.setText("merged resolution text")
+    expect(editor?.plainText).toBe("my customized text")
     expect(send(fixture, "ctrl+s")).toBe(true)
     await waitFor(() => saved.length === 1)
-    expect(saved[0]).toEqual({ resolution: "edit", edited: "merged resolution text" })
+    expect(saved[0]).toEqual({ resolution: "edit", edited: "my customized text" })
   } finally {
     fixture.destroy()
   }
@@ -319,7 +315,8 @@ test("diff pane shows visible keep take edit labels", async () => {
     await fixture.waitForFrame((frame) => frame.includes("keep mine"))
     const frame = fixture.captureCharFrame()
     expect(frame).toContain("k keep mine")
-    expect(frame).toContain("t take merged")
+    expect(frame).toContain("u take upstream")
+    expect(frame).toContain("t save merged")
     expect(frame).toContain("e edit merged")
   } finally {
     fixture.destroy()

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { defaultInclude, mergeUnits, renderMerge, segmentUnits, type MergeEntry } from "../src/instructions/merge-units.js"
+import { defaultInclude, mergeUnits, renderMerge, segmentUnits, withoutFinalNewline, type MergeEntry } from "../src/instructions/merge-units.js"
 
 function changes(entries: readonly MergeEntry[]): Extract<MergeEntry, { type: "change" }>[] {
   return entries.filter((entry) => entry.type === "change")
@@ -43,27 +43,27 @@ test("round trip holds: units joined equal the input", () => {
 })
 
 test("one-sided changes get yours and upstream kinds", () => {
-  const entries = mergeUnits("a\nb\nc\n", "a\nB mine\nc\n", "a\nb\nc\n")
+  const entries = mergeUnits("a\nb\nc\n", "a\nB mine\nc\n", "a\nb\nc")
   expect(changes(entries).map((entry) => entry.kind)).toEqual(["yours"])
-  const upstreamOnly = mergeUnits("a\nb\nc\n", "a\nb\nc\n", "a\nb\nC upstream\n")
+  const upstreamOnly = mergeUnits("a\nb\nc\n", "a\nb\nc\n", "a\nb\nC upstream")
   expect(changes(upstreamOnly).map((entry) => entry.kind)).toEqual(["upstream"])
 })
 
 test("identical changes from both sides collapse into one same entry", () => {
-  const entries = mergeUnits("a\nb\nc\n", "a\nB\nc\n", "a\nB\nc\n")
+  const entries = mergeUnits("a\nb\nc\n", "a\nB\nc\n", "a\nB\nc")
   const found = changes(entries)
   expect(found).toHaveLength(1)
   expect(found[0]?.kind).toBe("same")
   expect(found[0]?.included).toBe(true)
-  expect(renderMerge(entries, defaultInclude(entries))).toBe("a\nB\nc\n")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("a\nB\nc")
 })
 
 test("different changes to the same span give a both entry defaulting to yours", () => {
-  const entries = mergeUnits("a\nb\nc\n", "a\nmine\nc\n", "a\ntheirs\nc\n")
+  const entries = mergeUnits("a\nb\nc\n", "a\nmine\nc\n", "a\ntheirs\nc")
   const found = changes(entries)
   expect(found).toHaveLength(1)
   expect(found[0]?.kind).toBe("both")
-  expect(renderMerge(entries, defaultInclude(entries))).toBe("a\nmine\nc\n")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("a\nmine\nc")
 })
 
 test("defaults include yours, upstream and same changes", () => {
@@ -72,27 +72,27 @@ test("defaults include yours, upstream and same changes", () => {
   const upstream = "One here. Two here. Three here. FOUR upstream.\n"
   const entries = mergeUnits(base, yours, upstream)
   expect(changes(entries).map((entry) => entry.kind)).toEqual(["yours", "upstream"])
-  expect(renderMerge(entries, defaultInclude(entries))).toBe("One here. TWO mine. Three here. FOUR upstream.\n")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("One here. TWO mine. Three here. FOUR upstream.")
 })
 
 test("excluding a yours change restores the base text", () => {
-  const entries = mergeUnits("a\nb\nc\n", "a\nB mine\nc\n", "a\nb\nc\n")
-  expect(renderMerge(entries, new Set())).toBe("a\nb\nc\n")
+  const entries = mergeUnits("a\nb\nc\n", "a\nB mine\nc\n", "a\nb\nc")
+  expect(renderMerge(entries, new Set())).toBe("a\nb\nc")
 })
 
 test("excluding an upstream change keeps the base text", () => {
-  const entries = mergeUnits("a\nb\nc\n", "a\nb\nc\n", "a\nb\nC upstream\n")
-  expect(renderMerge(entries, new Set())).toBe("a\nb\nc\n")
-  expect(renderMerge(entries, defaultInclude(entries))).toBe("a\nb\nC upstream\n")
+  const entries = mergeUnits("a\nb\nc\n", "a\nb\nc\n", "a\nb\nC upstream")
+  expect(renderMerge(entries, new Set())).toBe("a\nb\nc")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("a\nb\nC upstream")
 })
 
 test("a both entry with both sides included renders yours then upstream", () => {
-  const entries = mergeUnits("# T\nb\n# U\n", "# T\nmine\n# U\n", "# T\ntheirs\n# U\n")
+  const entries = mergeUnits("# T\nb\n# U\n", "# T\nmine\n# U\n", "# T\ntheirs\n# U")
   const both = changes(entries)[0]
   if (both === undefined || both.upstreamId === undefined) throw new Error("missing both entry")
-  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("# T\nmine\ntheirs\n# U\n")
-  expect(renderMerge(entries, new Set([both.upstreamId]))).toBe("# T\ntheirs\n# U\n")
-  expect(renderMerge(entries, new Set())).toBe("# T\nb\n# U\n")
+  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("# T\nmine\ntheirs\n# U")
+  expect(renderMerge(entries, new Set([both.upstreamId]))).toBe("# T\ntheirs\n# U")
+  expect(renderMerge(entries, new Set())).toBe("# T\nb\n# U")
 })
 
 test("default renders never contain conflict markers", () => {
@@ -116,5 +116,48 @@ test("two edits in one paragraph by each side no longer conflict", () => {
   const upstream = "First sentence here. Second sentence UPSTREAM.\n"
   const entries = mergeUnits(base, yours, upstream)
   expect(changes(entries).map((entry) => entry.kind)).toEqual(["yours", "upstream"])
-  expect(renderMerge(entries, defaultInclude(entries))).toBe("First sentence MINE. Second sentence UPSTREAM.\n")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("First sentence MINE. Second sentence UPSTREAM.")
+})
+
+test("both sides included on a final unit without a newline keeps upstream on its own line", () => {
+  const entries = mergeUnits("One.\nTwo.", "One.\nTwo mine.", "One.\nTwo up.")
+  const both = entries.find((entry) => entry.type === "change" && entry.kind === "both")
+  if (both?.type !== "change" || both.upstreamId === undefined) throw new Error("expected a both entry")
+  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("One.\nTwo mine. Two up.")
+  expect(renderMerge(entries, new Set([both.id]))).toBe("One.\nTwo mine.")
+})
+
+test("both sides included after a line break in a block keeps upstream on its own line", () => {
+  const entries = mergeUnits("# T\nb", "# T\nmine", "# T\n- theirs")
+  const both = entries.find((entry) => entry.type === "change" && entry.kind === "both")
+  if (both?.type !== "change" || both.upstreamId === undefined) throw new Error("expected a both entry")
+  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("# T\nmine\n- theirs")
+})
+
+test("appending a sentence after a changed last sentence: two entries, one separator in every combination", () => {
+  const entries = mergeUnits("A. B.", "A. B. C.", "A. B2.")
+  const [upstream, yours] = changes(entries)
+  if (upstream === undefined || yours === undefined) throw new Error("expected two change entries")
+  expect(changes(entries).map((entry) => entry.kind)).toEqual(["upstream", "yours"])
+  expect(renderMerge(entries, new Set([upstream.id, yours.id]))).toBe("A. B2. C.")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("A. B2. C.")
+  expect(renderMerge(entries, new Set([yours.id]))).toBe("A. B. C.")
+  expect(renderMerge(entries, new Set([upstream.id]))).toBe("A. B2.")
+  expect(renderMerge(entries, new Set())).toBe("A. B.")
+})
+
+test("the final newline is no change: a middle-sentence edit is one yours entry and the last unit is unchanged", () => {
+  // Stored yours and base end without a newline; the live upstream keeps one (B41).
+  const entries = mergeUnits("One.\nTwo.\nThree.", "One.\nTWO mine.\nThree.", "One.\nTwo.\nThree.\n")
+  const changes = entries.flatMap((entry) => (entry.type === "change" ? [entry] : []))
+  expect(changes.map((entry) => entry.kind)).toEqual(["yours"])
+  expect(entries[entries.length - 1]).toEqual({ type: "unchanged", text: "Three." })
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("One.\nTWO mine.\nThree.")
+})
+
+test("a merge equal to upstream once the final newline is removed renders as that text", () => {
+  const upstream = "One.\nTWO.\n"
+  const entries = mergeUnits("One.\nTwo.", "One.\nTwo.", upstream)
+  expect(renderMerge(entries, defaultInclude(entries))).toBe(withoutFinalNewline(upstream))
+  expect(withoutFinalNewline("A\n\n")).toBe("A")
 })

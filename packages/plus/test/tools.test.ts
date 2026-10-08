@@ -1102,6 +1102,121 @@ test("show with each view returns the right shape, diff returns two diffs plus s
   expect(unknown.message).toContain(unknownRowRefusal("item:project:alpha:does:not:exist"))
 })
 
+// A reader whose upstream description changes under a customization made
+// against an earlier description. Changes alternate with unchanged sentences
+// on each side, so each is its own merge unit: yours-only (Alpha), upstream-only
+// (Gamma), both changed differently (Epsilon), both changed the same (Eta).
+// Stored original and yours have no final newline; the live upstream keeps one (B41).
+const mergeOriginal = "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven."
+const mergeMine = "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
+const mergeUpstream = "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.\n"
+const mergeDefault = "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
+
+async function readerAt(project: string, description: string) {
+  const ctx = fixtureContext(project, {
+    tools: [
+      { id: "reader", description, options: { codemode: false } },
+      { id: "skill", description: "Load a skill", options: { codemode: false } },
+    ],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  return { api, tools: await readTools(ctx) }
+}
+
+async function mergeFixture(): Promise<{ api: PlusApi; tools: Map<string, Tool.Info & { readonly id: string }>; id: string }> {
+  const { project } = await tempProject()
+  const writer = await readerAt(project, mergeOriginal)
+  await runOk(need(writer.tools, "instructions_set"), { id: await readerRowId(writer.api), text: mergeMine })
+  const reader = await readerAt(project, mergeUpstream)
+  return { api: reader.api, tools: reader.tools, id: await readerRowId(reader.api) }
+}
+
+// A heading-derived item: its customization is stored at the section level.
+const headingOriginal = "# Reader\nAlpha one.\nBeta two.\n"
+const headingMine = "# Reader\nAlpha mine.\nBeta two.\n"
+const headingUpstream = "# Reader\nAlpha one.\nBeta upstream.\n"
+
+test("take on a heading-derived item follows upstream for the whole row", async () => {
+  const { project } = await tempProject()
+  const writer = await readerAt(project, headingOriginal)
+  const writerId = await readerRowId(writer.api)
+  await runOk(need(writer.tools, "instructions_set"), { id: writerId, text: headingMine })
+  const reader = await readerAt(project, headingUpstream)
+  const id = await readerRowId(reader.api)
+  const before = await snapshotOf(reader.api)
+  const customBefore = before.records.filter((record) => record.type === "customization" && record.item === "tool:reader")
+  const taken = (await runOk(need(reader.tools, "instructions_set"), { id, resolve: "take" })) as { status: string }
+  expect(taken.status).toBe(`Took upstream for "reader"`)
+  const after = await snapshotOf(reader.api)
+  const customAfter = after.records.filter(
+    (record): record is Plus.SnapshotCustomizationRecord => record.type === "customization" && record.item === "tool:reader",
+  )
+  const upstream = (await runOk(need(reader.tools, "instructions_show"), { id, view: "upstream" })) as { text: string }
+  const shown = (await runOk(need(reader.tools, "instructions_show"), { id })) as { text: string }
+  expect({ before: customBefore.length, textAfter: customAfter.filter((record) => record.text !== undefined).length }).toEqual({
+    before: 1,
+    textAfter: 0,
+  })
+  // The resolved view carries no final newline; the upstream text has one.
+  expect(shown.text).toBe(upstream.text.replace(/\n+$/, ""))
+})
+
+test("show diff proposes merge units with their kinds and defaults", async () => {
+  const { tools, id } = await mergeFixture()
+  const diff = (await runOk(need(tools, "instructions_show"), { id, view: "diff" })) as {
+    merge: { units: { id: string; kind: string; included: boolean; yours: string; upstream: string; base: string }[]; text: string }
+  }
+  expect(diff.merge.units.map((unit) => [unit.id, unit.kind, unit.included])).toEqual([
+    ["m0", "yours", true],
+    ["m1", "upstream", true],
+    ["m2", "both", true],
+    ["m2:upstream", "both", false],
+    ["m3", "same", true],
+  ])
+  expect(diff.merge.units[3]).toMatchObject({ yours: "Epsilon yours.\n", upstream: "Epsilon upstream.\n", base: "Epsilon five.\n" })
+  expect(diff.merge.text).toBe(mergeDefault)
+})
+
+test("set resolve merge with the defaults saves the default render", async () => {
+  const { api, tools, id } = await mergeFixture()
+  const saved = (await runOk(need(tools, "instructions_set"), { id, resolve: "merge" })) as { status: string }
+  expect(saved.status).toBe(`Merged "reader"`)
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.text === mergeDefault)).toBe(true)
+})
+
+test("set resolve merge with the upstream side of a both unit saves that side", async () => {
+  const { api, tools, id } = await mergeFixture()
+  const saved = (await runOk(need(tools, "instructions_set"), { id, resolve: "merge", include: ["m0", "m1", "m2:upstream", "m3"] })) as {
+    status: string
+  }
+  expect(saved.status).toBe(`Merged "reader"`)
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.text === "Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.")).toBe(true)
+})
+
+test("set resolve merge whose include equals upstream records a take", async () => {
+  const { api, tools, id } = await mergeFixture()
+  const taken = (await runOk(need(tools, "instructions_set"), { id, resolve: "merge", include: ["m1", "m2:upstream", "m3"] })) as {
+    status: string
+  }
+  expect(taken.status).toBe(`Took upstream for "reader"`)
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.item === "tool:reader" && record.text !== undefined)).toBe(false)
+})
+
+test("set resolve merge refuses an unknown unit id and names the valid ids", async () => {
+  const { api, tools, id } = await mergeFixture()
+  const refused = await runFail(need(tools, "instructions_set"), { id, resolve: "merge", include: ["m0", "m9"] })
+  expect(refused.message).toContain(`"m9"`)
+  expect(refused.message).toContain("m0, m1, m2, m2:upstream, m3")
+  const notMerge = await runFail(need(tools, "instructions_set"), { id, resolve: "keep", include: ["m0"] })
+  expect(notMerge.message).toContain("include applies only with resolve merge")
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.text === mergeMine)).toBe(true)
+})
+
 test("registered list and log tools return persisted rows and history", async () => {
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
