@@ -95,6 +95,7 @@ import {
   createSessionRows,
   legacyTurns,
   messageBoundaryIDs,
+  promptPendingSwitches,
   resolvePart,
   sessionRowID,
   turnDuration,
@@ -281,6 +282,14 @@ export function Session(props: {
     (id) => {
       if (id === sessionID) setRowsSynced(true)
     },
+    () =>
+      promptPendingSwitches({
+        pending: data.session.pending.list(route.sessionID),
+        previousAgent: session()?.agent,
+        previousModel: session()?.model,
+        agent: local.agent.current()?.id,
+        model: local.model.selection(),
+      }),
   )
   const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
   const anchors = createTimelineAnchors()
@@ -1576,6 +1585,9 @@ function SessionEntryView(props: { row: SessionEntry; message: SessionRowViewPro
       </Match>
       <Match when={props.row.type === "compaction-queued"}>
         <CompactionQueued />
+      </Match>
+      <Match when={props.row.type === "switch-pending" ? props.row : undefined}>
+        {(row) => <SessionSwitchMessageV2 message={row().message} />}
       </Match>
       <Match when={props.row.type === "part" ? props.row : undefined}>
         {(row) => <SessionPartView partRef={row().ref} message={props.message} images={props.images} />}
