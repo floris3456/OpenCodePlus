@@ -92,9 +92,8 @@ import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
-import { ledgerAt, type RequestRow } from "./monitor/ledger.js"
-import { cacheLifetime } from "./monitor/cache.js"
-import { decideCompaction, type ColdCompactionState } from "./compaction/decide.js"
+import { ledgerAt, type Ledger } from "./monitor/ledger.js"
+import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
@@ -301,6 +300,8 @@ export default Plugin.define({
           yield* useLocation(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
+            // A new prompt is the only place cold compaction may arm.
+            markPromptAdmitted(String(event.sessionID))
           }
         }),
       )
@@ -3881,6 +3882,7 @@ export function decideCompactionFor(
   ctx: Context,
   state: PlusState,
   event: SessionCompactionDecision,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
 ): Effect.Effect<void> {
   return Effect.promise(async () => {
     // A team compactWith arming is the user's explicit instruction: it wins,
@@ -3890,8 +3892,12 @@ export function decideCompactionFor(
       decideCompaction(event, { teamModel })
       return
     }
+    // Cold is consulted only at the first auto decision after a prompt: the
+    // mark is consumed whatever the outcome, so later steps of the same turn
+    // never consult it. A manual or overflow decision leaves it for the next
+    // auto step.
+    const cold = event.reason === "auto" && consumePromptAdmitted(event.sessionID) ? await coldFor(ctx, event, ledger) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
-    const cold = await coldStateOf(ctx, event)
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)
     decideCompaction(event, {
@@ -3917,26 +3923,24 @@ async function compactionDefaultsOf(ctx: Context, agentID: Agent.ID): Promise<Co
   }
 }
 
-// Cold is consulted only at the first step of a new prompt (reason "auto",
-// fresh boundary): a reading per later step is wasted. A missing reading means
-// warm: never arm on an unknown state.
-async function coldStateOf(ctx: Context, event: SessionCompactionDecision): Promise<ColdCompactionState | undefined> {
-  if (event.reason !== "auto" || event.boundary.fresh !== true) return undefined
+// The chat's window and its last request with that request's fingerprint; the
+// decision module owns the cold test itself.
+async function coldFor(
+  ctx: Context,
+  event: SessionCompactionDecision,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
+): Promise<ColdCompactionState> {
   const now = Date.now()
   const status = await warmingStore.status(event.sessionID, now)
-  const rows = ledgerAt().getRequests(event.sessionID)
+  const rows = ledger.getRequests(event.sessionID)
   const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
-  const lifetime = cacheLifetime({ provider: event.model.providerID, model: event.model.id } as unknown as RequestRow)
-  return {
-    // This fresh step's own execution is what runs the decision, so "running"
-    // is always false here; the fresh gate is what keeps mid-turn steps out.
-    running: false,
-    ready: status.source !== undefined || status.expires !== undefined,
-    active: status.active,
-    compacted: status.compacted === true,
-    ...(last === undefined ? {} : { idleMs: now - last.started }),
-    ...(lifetime === undefined ? {} : { lifetime }),
-  }
+  const fingerprint = last === undefined ? undefined : ledger.getFingerprint(last.id)
+  return coldStateOf({
+    status,
+    now,
+    ...(last === undefined ? {} : { last }),
+    ...(fingerprint === undefined ? {} : { fingerprint }),
+  })
 }
 
 interface LoadedStores {
