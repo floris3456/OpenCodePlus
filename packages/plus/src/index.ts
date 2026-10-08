@@ -40,10 +40,12 @@ import { pickModelRow, type ModelPick } from "./instructions/ops.js"
 import {
   everySettings,
   MODEL_SETTINGS_FIELDS,
+  resolveModelCompactionFields,
   roundedWarmingFor,
   setModelSettingsRecord,
   settingsFor,
   warmingFieldsOf,
+  type CompactionDefaults,
   type HostModel,
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
@@ -90,10 +92,13 @@ import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type WarmingRows } from "./warming.js"
 import { monitorFact, monitorMark, monitorQuery, watchMonitor } from "./monitor/plugin.js"
-import { ledgerAt } from "./monitor/ledger.js"
+import { ledgerAt, type RequestRow } from "./monitor/ledger.js"
+import { cacheLifetime } from "./monitor/cache.js"
+import { decideCompaction, type ColdCompactionState } from "./compaction/decide.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
+import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
 import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 import { chatModelForAgent, currentSessionAgent, currentSessionModel, toHostModelRef } from "./session-model.js"
 
@@ -303,15 +308,7 @@ export default Plugin.define({
         state.sessionPins.markRebuild(String(event.sessionID))
         return Effect.void
       })
-      yield* ctx.session.hook("compaction.decide", (event) => {
-        const model = consumeColdCompaction(event.sessionID)
-        if (model !== undefined) {
-          event.compact = true
-          event.portable = true
-          event.compactionModel = Model.Ref.parse(model)
-        }
-        return Effect.void
-      })
+      yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -3827,11 +3824,13 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
   )
 }
 
-export function warmingRowsOf(
+// The (agent, model) resolution inputs a warming or compaction decision walks:
+// the agent's model rows down its runtime chain plus the Defaults › Models rows.
+export function modelRowContextOf(
   state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
   agentID: string,
   model: { readonly providerID: string; readonly id: string; readonly variant?: string },
-): WarmingRows {
+) {
   const agent = dedupeAgents([
     ...state.cachedAgents.filter((entry) => entry.team !== undefined),
     ...state.cachedAgents.filter((entry) => entry.team === undefined),
@@ -3842,17 +3841,101 @@ export function warmingRowsOf(
       ? { level: "project" as const, scopes: state.cachedScopes }
       : runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, state.cachedScopes)
   const target = { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) }
-  const row = resolveModelFields(
-    { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
+  return {
+    input: { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
     target,
-  )
-  const key = { providerID: model.providerID, modelID: model.id }
-  const modelRow = settingsFor(state.cachedModelSettings, key)
+    key: { providerID: model.providerID, modelID: model.id },
+  }
+}
+
+export function warmingRowsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+): WarmingRows {
+  const context = modelRowContextOf(state, agentID, model)
+  const row = resolveModelFields(context.input, context.target)
+  const modelRow = settingsFor(state.cachedModelSettings, context.key)
   const everyRow = everySettings(state.cachedModelSettings)
   return {
     ...(Object.keys(row).length === 0 ? {} : { row }),
     ...(modelRow === undefined ? {} : { model: modelRow }),
     ...(everyRow === undefined ? {} : { every: everyRow }),
+  }
+}
+
+/** The compaction fields the agent's model rows set for this chat's model. */
+export function compactionRowsOf(
+  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+) {
+  const context = modelRowContextOf(state, agentID, model)
+  return resolveModelCompactionFields(context.input, context.target)
+}
+
+// Plus's `compaction.decide`: the per-model settings for (agent, chat model),
+// cold-cache arming at the first step of a new prompt, the CPA account-switch
+// replacement, and the team `compactWith` arming that wins over all of them.
+export function decideCompactionFor(
+  ctx: Context,
+  state: PlusState,
+  event: SessionCompactionDecision,
+): Effect.Effect<void> {
+  return Effect.promise(async () => {
+    // A team compactWith arming is the user's explicit instruction: it wins,
+    // and nothing below needs reading.
+    const teamModel = consumeColdCompaction(event.sessionID)
+    if (teamModel !== undefined) {
+      decideCompaction(event, { teamModel })
+      return
+    }
+    const agentWide = await compactionDefaultsOf(ctx, event.agent)
+    const cold = await coldStateOf(ctx, event)
+    const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
+    const everyRow = everySettings(state.cachedModelSettings)
+    decideCompaction(event, {
+      rows: compactionRowsOf(state, event.agent, event.model),
+      ...(modelRow === undefined ? {} : { model: modelRow }),
+      ...(everyRow === undefined ? {} : { every: everyRow }),
+      ...(agentWide === undefined ? {} : { agent: agentWide }),
+      ...(cold === undefined ? {} : { cold }),
+    })
+  })
+}
+
+// The agent's old agent-wide compaction policy, as core has it applied.
+async function compactionDefaultsOf(ctx: Context, agentID: Agent.ID): Promise<CompactionDefaults | undefined> {
+  const agent = await Effect.runPromise(ctx.agent.get({ agentID }).pipe(Effect.catchCause(() => Effect.succeed(undefined))))
+  const compaction = agent?.data.compaction
+  if (compaction === undefined) return undefined
+  const model = compaction.model
+  return {
+    ...(compaction.strategy === undefined ? {} : { strategy: compaction.strategy }),
+    ...(model === undefined ? {} : { model: `${model.providerID}/${model.id}${model.variant === undefined ? "" : `#${model.variant}`}` }),
+    ...(compaction.system === undefined ? {} : { instructions: compaction.system }),
+  }
+}
+
+// Cold is consulted only at the first step of a new prompt (reason "auto",
+// fresh boundary): a reading per later step is wasted. A missing reading means
+// warm: never arm on an unknown state.
+async function coldStateOf(ctx: Context, event: SessionCompactionDecision): Promise<ColdCompactionState | undefined> {
+  if (event.reason !== "auto" || event.boundary.fresh !== true) return undefined
+  const now = Date.now()
+  const status = await warmingStore.status(event.sessionID, now)
+  const rows = ledgerAt().getRequests(event.sessionID)
+  const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
+  const lifetime = cacheLifetime({ provider: event.model.providerID, model: event.model.id } as unknown as RequestRow)
+  return {
+    // This fresh step's own execution is what runs the decision, so "running"
+    // is always false here; the fresh gate is what keeps mid-turn steps out.
+    running: false,
+    ready: status.source !== undefined || status.expires !== undefined,
+    active: status.active,
+    compacted: status.compacted === true,
+    ...(last === undefined ? {} : { idleMs: now - last.started }),
+    ...(lifetime === undefined ? {} : { lifetime }),
   }
 }
 
