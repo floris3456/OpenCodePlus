@@ -6778,4 +6778,122 @@ describe("SessionRunnerLLM", () => {
       Expected.assistant({ finish: "stop" }, [Expected.text("Bounded but done")]),
     ])
   })
+
+  scenario("fails a step when the compaction decision hook hangs and accepts the next prompt", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const hanging = yield* Ref.make(true)
+    const entered = yield* Deferred.make<void>()
+    yield* hooks.register("session", "compaction.decide", () =>
+      Effect.flatMap(Ref.get(hanging), (hold) =>
+        hold ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)) : Effect.void,
+      ),
+    )
+
+    yield* s.admit("Hang the compaction decision")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust(SessionRequestPrepare.TIMEOUT)
+    const exit = yield* Fiber.await(running)
+
+    expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+      error: {
+        type: "session.step.prepare-timeout",
+        message: "Request preparation did not finish within 120s (stuck in the session.compaction.decide hook)",
+      },
+    })
+    expect(s.requests).toHaveLength(0)
+    const execution = yield* SessionExecution.Service
+    expect(yield* execution.isActive(sessionID)).toBeFalse()
+    yield* Ref.set(hanging, false)
+    yield* s.llm.push(TestLLM.text("Recovered decision", "after-decide-timeout"))
+    yield* s.runPrompt("Run after the decide timeout")
+
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Hang the compaction decision"),
+      Expected.user("Run after the decide timeout"),
+      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered decision")]),
+    ])
+  })
+
+  scenario("names the registering plugin when the compaction decision hook hangs", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const entered = yield* Deferred.make<void>()
+    yield* hooks
+      .register("session", "compaction.decide", () =>
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      )
+      .pipe(Effect.provideService(PluginHooks.CurrentPlugin, "@opencode/plus"))
+
+    yield* s.admit("Hang the decision under a named plugin")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust(SessionRequestPrepare.TIMEOUT)
+    const exit = yield* Fiber.await(running)
+
+    expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+      error: {
+        message:
+          "Request preparation did not finish within 120s (stuck in the session.compaction.decide hook of @opencode/plus)",
+      },
+    })
+  })
+
+  scenario("keeps a step whose compaction decision completes under the bound", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const entered = yield* Deferred.make<void>()
+    yield* hooks.register("session", "compaction.decide", () =>
+      Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.sleep("5 seconds"))),
+    )
+    yield* s.llm.push(TestLLM.text("Decided in time", "decide-under-bound"))
+
+    yield* s.admit("Decide under the bound")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust("5 seconds")
+    yield* Fiber.join(running)
+
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Decide under the bound"),
+      Expected.assistant({ finish: "stop" }, [Expected.text("Decided in time")]),
+    ])
+  })
+
+  scenario("fails a step when the catalog hook hangs and accepts the next prompt", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const hanging = yield* Ref.make(true)
+    const entered = yield* Deferred.make<void>()
+    yield* hooks.register("session", "catalog", () =>
+      Effect.flatMap(Ref.get(hanging), (hold) =>
+        hold ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)) : Effect.void,
+      ),
+    )
+
+    yield* s.admit("Hang the catalog hook")
+    const running = yield* s.resume.pipe(Effect.forkScoped)
+    yield* Deferred.await(entered)
+    yield* TestClock.adjust(SessionRequestPrepare.TIMEOUT)
+    const exit = yield* Fiber.await(running)
+
+    expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+      error: {
+        type: "session.step.prepare-timeout",
+        message: "Request preparation did not finish within 120s (stuck in the session.catalog hook)",
+      },
+    })
+    expect(s.requests).toHaveLength(0)
+    const execution = yield* SessionExecution.Service
+    expect(yield* execution.isActive(sessionID)).toBeFalse()
+    yield* Ref.set(hanging, false)
+    yield* s.llm.push(TestLLM.text("Recovered catalog", "after-catalog-timeout"))
+    yield* s.runPrompt("Run after the catalog timeout")
+
+    expect(s.requests).toHaveLength(1)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Hang the catalog hook"),
+      Expected.user("Run after the catalog timeout"),
+      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered catalog")]),
+    ])
+  })
 })

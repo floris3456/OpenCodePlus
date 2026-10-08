@@ -1,15 +1,15 @@
 export * as SessionRequestPrepare from "./request-prepare.js"
 
-import { Context, Duration, Layer } from "effect"
+import { Context, Duration, Effect, Layer } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import type { PluginHooks } from "../plugin/hooks.js"
 
 /**
  * Request preparation measured p50 6 ms and p99 68 ms over 13,872 recorded steps, so 120 s is a
- * hang detector, not a performance budget. It bounds only preparing a step's request (the
- * model-request hooks: session.context, session.model.request) up to the point the request is
- * handed to the model stream; provider retries, rate-limit waits and the stream itself are never
- * covered.
+ * hang detector, not a performance budget. It bounds each preparation stage of a step on its own
+ * (loading the session context, the compaction decision, the model-request hooks) up to the point
+ * the request is handed to the model stream; provider retries, rate-limit waits and the stream
+ * itself are never covered.
  */
 export const TIMEOUT: Duration.Duration = Duration.seconds(120)
 
@@ -28,8 +28,36 @@ export function message(timeout: Duration.Duration, stage: PluginHooks.Stage | u
   const where =
     stage === undefined
       ? "while preparing the request"
-      : `stuck in the ${stage.domain}.${stage.name} hook${stage.plugin === undefined ? "" : ` of ${stage.plugin}`}`
+      : stage.kind === "stage"
+        ? `while ${stage.label}`
+        : `stuck in the ${stage.domain}.${stage.name} hook${stage.plugin === undefined ? "" : ` of ${stage.plugin}`}`
   return `Request preparation did not finish within ${bound} (${where})`
+}
+
+/**
+ * Runs one preparation stage under the bound. A named `stage` is installed for the duration so a
+ * timeout inside non-hook work names it; a hung hook overrides it and is not restored. `onTimeout`
+ * builds the failure after the timeout fires, when the stage slot holds the hung hook or stage.
+ */
+export function bound<A, E, R, E2, R2>(
+  hooks: PluginHooks.Interface,
+  effect: Effect.Effect<A, E, R>,
+  stage: PluginHooks.Stage | undefined,
+  onTimeout: (stage: PluginHooks.Stage | undefined, timeout: Duration.Duration) => Effect.Effect<never, E2, R2>,
+): Effect.Effect<A, E | E2, R | R2> {
+  return Effect.gen(function* () {
+    const timeout = yield* Timeout
+    const previous = yield* hooks.stage
+    if (stage !== undefined) yield* hooks.setStage(stage)
+    const result = yield* effect.pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () => hooks.stage.pipe(Effect.flatMap((current) => onTimeout(current, timeout))),
+      }),
+    )
+    if (stage !== undefined) yield* hooks.setStage(previous)
+    return result
+  })
 }
 
 export const node = makeGlobalNode({ service: Timeout, layer: Layer.succeed(Timeout, TIMEOUT), deps: [] })

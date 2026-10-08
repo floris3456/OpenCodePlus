@@ -40,12 +40,14 @@ interface Failures extends Record<keyof Domains, unknown> {
 type Callback<Event, Error> = (event: Event) => Effect.Effect<void, Error>
 type Entry = { readonly callback: Function; readonly options?: ModelHookOptions; readonly plugin?: string }
 
-/** The hook a preparation is currently inside, read only when a preparation bound fires. */
-export interface Stage {
-  readonly domain: keyof Domains
-  readonly name: string
-  readonly plugin?: string
-}
+/**
+ * Where a request preparation currently is, read only when a preparation bound fires. A hook stage
+ * is set by `trigger`; a named stage is set by the caller around work that is not a plugin hook
+ * (for example loading the session context).
+ */
+export type Stage =
+  | { readonly kind: "hook"; readonly domain: keyof Domains; readonly name: string; readonly plugin?: string }
+  | { readonly kind: "stage"; readonly label: string }
 
 const eventProviderID = (event: unknown) => {
   if (typeof event !== "object" || event === null || !("model" in event)) return undefined
@@ -72,10 +74,13 @@ export interface Interface {
     event: Domains[Domain][Name],
   ) => Effect.Effect<Domains[Domain][Name], Failures[Domain][Name]>
   /**
-   * The hook currently running, or undefined outside a hook. A request-preparation bound reads it
-   * when the timeout fires to name what hung; it is not a stable identity under concurrency.
+   * The hook or named stage currently running, or undefined outside one. A request-preparation
+   * bound reads it when the timeout fires to name what hung; it is not a stable identity under
+   * concurrency.
    */
   readonly stage: Effect.Effect<Stage | undefined>
+  /** Installs a diagnostic stage for a preparation bound; callers restore the previous value after. */
+  readonly setStage: (stage: Stage | undefined) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/PluginHooks") {}
@@ -110,15 +115,19 @@ const layer = Layer.effect(
     const trigger: Interface["trigger"] = Effect.fnUntraced(function* (domain, name, event) {
       for (const entry of callbacks.get(key(domain, name)) ?? []) {
         if (entry.options?.providerID !== undefined && entry.options.providerID !== eventProviderID(event)) continue
+        // Save and restore so a surrounding named stage survives a completed hook. A hung hook never
+        // reaches the restore, so the preparation bound still names it.
+        const previous = yield* Ref.get(stage)
         yield* Ref.set(
           stage,
-          entry.plugin === undefined ? { domain, name: String(name) } : { domain, name: String(name), plugin: entry.plugin },
+          entry.plugin === undefined
+            ? { kind: "hook", domain, name: String(name) }
+            : { kind: "hook", domain, name: String(name), plugin: entry.plugin },
         )
         const result: Effect.Effect<void, Failures[typeof domain][typeof name]> = entry.callback(event)
         yield* result
+        yield* Ref.set(stage, previous)
       }
-      // A hung hook never clears the slot, so the preparation bound can still name it.
-      yield* Ref.set(stage, undefined)
       return event
     })
 
@@ -129,7 +138,7 @@ const layer = Layer.effect(
         ),
       )
 
-    return Service.of({ has, register, trigger, stage: Ref.get(stage) })
+    return Service.of({ has, register, trigger, stage: Ref.get(stage), setStage: (value) => Ref.set(stage, value) })
   }),
 )
 
