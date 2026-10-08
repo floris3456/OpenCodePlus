@@ -11,6 +11,7 @@ import path from "node:path"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { load, save, type StoredRecord } from "../src/instructions/store.js"
 import type { Model } from "@opencode/schema/model"
+import { resolveActiveModel, scopesOf } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { agentInfo, fullContext, modelInfo } from "./harness.js"
@@ -72,46 +73,98 @@ function pick(
   return Effect.runPromise(handlers["model.pick"](input, throwingContext()))
 }
 
-test("(2) a fresh store pick creates one Global row, active, with no per-row warming/interval/prompt", async () => {
+test("(2) a fresh store pick creates one Project row, active, with no per-row warming/interval/prompt", async () => {
   const { project, ctx } = await fixture([modelWith("acme", "nova-2", ["low", "high"])])
   const state = createState()
   const handlers = createHandlers(ctx, state)
   const result = await pick(handlers, { agent: "build", providerID: "acme", modelID: "nova-2", variant: "high" })
-  expect(result).toMatchObject({ level: "global", changed: true })
+  expect(result).toMatchObject({ level: "project", changed: true })
   const models = modelRecords((await load(project)).records)
   expect(models).toHaveLength(1)
-  expect(models[0]).toMatchObject({ type: "model", level: "global", agent: "build", providerID: "acme", modelID: "nova-2", variant: "high", active: true })
+  expect(models[0]).toMatchObject({ type: "model", level: "project", agent: "build", providerID: "acme", modelID: "nova-2", variant: "high", active: true })
   // No per-row warming/interval/prompt: they resolve from Defaults › Models.
   expect(models[0]).not.toHaveProperty("warming")
   expect(models[0]).not.toHaveProperty("interval")
   expect(models[0]).not.toHaveProperty("prompt")
+  // Global holds no model row for the agent.
+  expect(models.filter((record) => record.level === "global")).toHaveLength(0)
   // The pick is now the agent's active model for a later session.
   expect(state.activeModels.get("build")).toMatchObject({ providerID: "acme", modelID: "nova-2", variant: "high" })
 })
 
-test("(3) a Global opus@high pick to @xhigh changes that one row and keeps it active", async () => {
-  const { project, ctx } = await fixture([modelWith("cliproxyapi", "claude-opus-5-5", ["high", "xhigh"])])
-  const handlers = createHandlers(ctx, createState())
-  await pick(handlers, { agent: "build", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high" })
-  await pick(handlers, { agent: "build", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" })
-  const opus = modelRecords((await load(project)).records).filter(
-    (record) => record.modelID === "claude-opus-5-5" && record.removed !== true,
+test("(3) with a Global opus@high row active, a pick of @xhigh creates/activates a Project row; the Global row is byte-for-byte unchanged; the effective model in that project is @xhigh", async () => {
+  const { project, ctx, api } = await fixture([modelWith("cliproxyapi", "claude-opus-5-5", ["high", "xhigh"])])
+  await api.addModel({ level: "global", agent: "build", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high" })
+  const beforeGlobal = modelRecords((await load(project)).records).find(
+    (record) => record.level === "global" && record.modelID === "claude-opus-5-5",
   )
-  expect(opus).toHaveLength(1)
-  expect(opus[0]).toMatchObject({ level: "global", variant: "xhigh", active: true })
+  expect(beforeGlobal).toBeDefined()
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  const result = await pick(handlers, { agent: "build", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" })
+  expect(result.level).toBe("project")
+  const allRecords = modelRecords((await load(project)).records)
+  const afterGlobal = allRecords.find((record) => record.level === "global" && record.modelID === "claude-opus-5-5")
+  expect(afterGlobal).toEqual(beforeGlobal)
+  const projectActive = allRecords.find((record) => record.level === "project" && record.active === true)
+  expect(projectActive).toMatchObject({
+    type: "model",
+    level: "project",
+    agent: "build",
+    providerID: "cliproxyapi",
+    modelID: "claude-opus-5-5",
+    variant: "xhigh",
+    active: true,
+  })
+  expect(state.activeModels.get("build")).toMatchObject({ providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" })
+  const scopes = scopesOf([{ id: "build", scope: "defaults", origin: "native" }])
+  const effective = resolveActiveModel({
+    models: allRecords,
+    scopes,
+    level: "project",
+    agent: "build",
+  })
+  expect(effective).toMatchObject({ providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" })
+})
+
+test("the same store read for another project directory still resolves the Global model", async () => {
+  const { project, ctx, api } = await fixture([modelWith("cliproxyapi", "claude-opus-5-5", ["high", "xhigh"])])
+  await api.addModel({ level: "global", agent: "build", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high" })
+  const state = createState()
+  const handlers = createHandlers(ctx, state)
+  await pick(handlers, { agent: "build", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" })
+
+  const otherDir = path.join(path.dirname(project), "other-project")
+  const otherStore = await load(otherDir)
+  const otherProjectRows = otherStore.records.filter((record) => record.level === "project")
+  expect(otherProjectRows).toHaveLength(0)
+
+  const scopes = scopesOf([{ id: "build", scope: "defaults", origin: "native" }])
+  const otherEffective = resolveActiveModel({
+    models: modelRecords(otherStore.records),
+    scopes,
+    level: "project",
+    agent: "build",
+  })
+  expect(otherEffective).toMatchObject({
+    providerID: "cliproxyapi",
+    modelID: "claude-opus-5-5",
+    variant: "high",
+    source: "global",
+  })
 })
 
 test("(4) an exact inactive candidate is activated, nothing added", async () => {
   const { project, ctx } = await fixture([modelWith("acme", "nova-2"), modelWith("acme", "nova-3")])
   const handlers = createHandlers(ctx, createState())
   const api = createPlusApi(ctx, createState())
-  await api.addModel({ level: "global", agent: "build", providerID: "acme", modelID: "nova-2" })
-  await api.addModel({ level: "global", agent: "build", providerID: "acme", modelID: "nova-3" })
+  await api.addModel({ level: "project", agent: "build", providerID: "acme", modelID: "nova-2" })
+  await api.addModel({ level: "project", agent: "build", providerID: "acme", modelID: "nova-3" })
   expect(modelRecords((await load(project)).records)).toHaveLength(2)
   await pick(handlers, { agent: "build", providerID: "acme", modelID: "nova-2" })
   const after = modelRecords((await load(project)).records)
   expect(after).toHaveLength(2)
-  expect(after.find((record) => record.modelID === "nova-2")).toMatchObject({ active: true })
+  expect(after.find((record) => record.modelID === "nova-2")).toMatchObject({ level: "project", active: true })
   expect(after.find((record) => record.modelID === "nova-3")?.active).toBeUndefined()
 })
 
@@ -244,11 +297,11 @@ test("(11) a member of a disabled team resolves as the standalone agent", async 
   await Effect.runPromise(handlers["team.addAgent"]({ level: "global", team: "Basic", id: "Planner" }, throwing))
   // The team stays disabled.
   const result = await pick(handlers, { agent: "Planner", providerID: "acme", modelID: "nova-2" })
-  expect(result.level).toBe("defaults")
-  expect(result.rowId).toBe("item:defaults:Planner:model:acme/nova-2")
+  expect(result.level).toBe("project")
+  expect(result.rowId).toBe("item:project:Planner:model:acme/nova-2")
   const planner = modelRecords((await load(project)).records).filter((record) => record.agent === "Planner")
   expect(planner).toHaveLength(1)
-  expect(planner[0]).toMatchObject({ level: "defaults", agent: "Planner", active: true })
+  expect(planner[0]).toMatchObject({ level: "project", agent: "Planner", active: true })
   expect(planner[0]).not.toHaveProperty("team")
 })
 
