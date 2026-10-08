@@ -722,6 +722,23 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   compatibility remains to be measured after S2a. This is not a general claim
   that opening every newer store on 1.1.18 is harmless: another migration may
   itself trigger a write.
+- S4a review found an unfinished WP-E tool path. Confirmed through production
+  `modelFieldEdit` and `setModelFieldRow`: setting `compactWarm`,
+  `compactionStrategy`, `compactionModel` or `compactionInstructions` on an
+  agent model field row writes the keep-alive `prompt` instead. The new fields
+  also are missing from tools `SetInput`; field-specific reset needs checking.
+  Evidence: `run/evidence/plus-1.2.0/model-tool-fields/checks/before.txt`.
+  Finish this as a focused model-tool-fields package before final S4b teaching
+  and CLI parity. Regression tests must traverse real tool schema/dispatch,
+  preserve unrelated warming prompt/model identity/active state and verify
+  invalid values/protected-owner refusal leave durable records unchanged.
+- Worker routing is blocked again: Lithos Flash returned out-of-credit,
+  CLIProxyAPI Flash-low rejected the required thinking-history payload, and
+  direct OpenCode Go Flash-low returned usage-limit-exceeded. Do not retry
+  these failing routes or choose an unapproved expensive model. Interrupted
+  S1b/S2a/L1 changes are checkpointed, not reviewed/qualified or integrated.
+  S4a's first docs commit is retained pending small wording corrections;
+  remaining live acceptance and section-move decision are still open.
 
 ## Design notes per area
 
