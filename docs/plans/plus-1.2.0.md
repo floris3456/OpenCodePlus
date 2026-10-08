@@ -445,6 +445,21 @@ Added 2026-10-08 evening (build seat, continuing the run)
   `model.request`). Prompt admission (`SessionPrompt.prepare`, the
   `session.prompt` hook) is not a step: a hang there leaves the prompt
   unadmitted, not a chat "working" for hours, so it is out of X2.
+- **B30. WP-B (C2) details, `compaction.decide` overrides.** As
+  `plus-1.1.18.md` §2 and §7, made exact: `strategy` replaces the agent's
+  compaction strategy for this compaction (a portable decision with
+  `remote`, from either side, is still refused); `system` replaces the
+  agent's compaction system text (on the chat's own model it travels in the
+  final user message, B28); `compactionFallbacks`, when present, is the whole
+  fallback list and replaces `compactionFallback`, which otherwise means a
+  list of one; each model that fails is recorded as its own failed
+  compaction (auto) before the next is tried, as the single fallback is
+  today. `optional: true`, when every model failed, returns `skipped` for an
+  `auto` trigger, so the step runs uncompacted; `manual` and `overflow`
+  ignore it (a manual compaction reports its failure; an overflow cannot
+  continue uncompacted). A failed compaction records the model that tried
+  it (`model` on the failed message, as on the completed one): the
+  summarizing model for a summary, the chat's model for native.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
