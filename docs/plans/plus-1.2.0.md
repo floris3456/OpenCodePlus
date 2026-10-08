@@ -671,6 +671,15 @@ Added 2026-10-08 evening (build seat, continuing the run)
   `index.ts`'s catalogue functions and `tree.ts`'s Defaults › Models region
   (`lazyModelsSection`), S1a only the category/folder region of `tree.ts`,
   so `tree.ts` is shared by region for that window as `index.ts` is (B20).
+- **B41. The merge ignores the text's final newline** (S3's live check:
+  stored `text` and `basedOnText` lose it, the live upstream keeps it, so the
+  last unit of every real row looked changed on both sides). `mergeUnits`
+  compares and renders the three texts with trailing newlines removed; a
+  saved merge has none (as stored texts), and a merge equal to upstream
+  without it is a take. `take` on an item follows upstream for the whole
+  row: its section customizations at that level go in the same write.
+  Sentence units stay as B13 has them (a paragraph without sentence
+  punctuation is one unit).
 
 ## Design notes per area
 
