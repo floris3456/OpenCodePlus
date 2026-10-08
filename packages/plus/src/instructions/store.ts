@@ -18,7 +18,7 @@ import type {
   SplitRecord,
 } from "./model.js"
 import { catalogueMatches, fingerprint, sameTeam } from "./model.js"
-import type { ModelSettingsRecord } from "./model-settings.js"
+import type { ModelCompactionFields, ModelSettingsRecord } from "./model-settings.js"
 import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
 import { basicMemberForRetiredAgent, basicTeamId, retiredMemberPresets } from "./presets.js"
@@ -182,6 +182,18 @@ const V2OriginalCandidate = Schema.Struct({
   editedFields: Schema.optional(Schema.Array(Schema.Union([Schema.Literal("model"), Schema.Literal("effort")]))),
 })
 
+// Compaction per model, on agent model rows and Defaults › Models rows alike
+// (model-settings.ts). Stored loosely like the warming fields: a value that no
+// longer parses sets nothing at resolution instead of dropping the record.
+const CompactionFields = {
+  compactWarm: Schema.optional(Schema.String),
+  coldCompact: Schema.optional(Schema.String),
+  coldModels: Schema.optional(Schema.Array(Schema.String)),
+  compactionStrategy: Schema.optional(Schema.String),
+  compactionModel: Schema.optional(Schema.String),
+  compactionInstructions: Schema.optional(Schema.String),
+}
+
 // Per-agent model selection. `active` is `true` or omitted, never `false`:
 // records cross the RPC boundary as JSON, where a present-but-undefined key
 // fails validation. `removed: true` is a tombstone hiding an inherited or
@@ -200,6 +212,7 @@ const V2Model = Schema.Struct({
   warming: Schema.optional(Schema.String),
   interval: Schema.optional(Schema.String),
   prompt: Schema.optional(Schema.String),
+  ...CompactionFields,
   removed: Schema.optional(Schema.Literal(true)),
   originalCandidate: Schema.optional(V2OriginalCandidate),
   updated: Schema.String,
@@ -216,6 +229,7 @@ const V2ModelSettings = Schema.Struct({
   interval: Schema.optional(Schema.String),
   prompt: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
+  ...CompactionFields,
   updated: Schema.String,
 })
 
@@ -984,6 +998,7 @@ function parseV2(lines: string[]): StoredRecord[] {
           ...(record.warming === undefined ? {} : { warming: record.warming }),
           ...(record.interval === undefined ? {} : { interval: record.interval }),
           ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+          ...storedCompaction(record),
           ...(record.removed === undefined ? {} : { removed: record.removed }),
           ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
           updated: record.updated,
@@ -1160,6 +1175,19 @@ function sortKey(record: StoredRecord): string[] {
   ]
 }
 
+// A model row's or Defaults › Models row's compaction fields in a fixed key
+// order, absent keys absent, so a store without them stays byte-identical.
+function storedCompaction(record: ModelCompactionFields): ModelCompactionFields {
+  return {
+    ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+    ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+    ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+    ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+    ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+    ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+  }
+}
+
 export function stable(record: StoredRecord): StoredRecord {
   if (record.type === "link")
     return {
@@ -1224,6 +1252,7 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.effort === undefined ? {} : { effort: record.effort }),
+      ...storedCompaction(record),
       updated: record.updated,
     }
   if (record.type === "model")
@@ -1241,6 +1270,7 @@ export function stable(record: StoredRecord): StoredRecord {
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+      ...storedCompaction(record),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}
