@@ -189,6 +189,50 @@ export function gateTargetsOf(
     .map((link) => ({ endpoint: { item: link.target, section: link.targetSection }, link }))
 }
 
+/**
+ * The links in effect for `address`: for each endpoint pair, the nearest chain
+ * node that says anything about it wins entirely (a live link, or a tombstone
+ * that masks it). Used by the link tool's view and by the switch writer so one
+ * answer decides what this level inherits.
+ */
+export function effectiveRowlinks(
+  links: readonly RowlinkRecord[],
+  scopes: Scopes,
+  address: Address,
+): { readonly live: RowlinkRecord[]; readonly masked: RowlinkRecord[] } {
+  const chain = resolutionChain(address, scopes)
+  const byPair = new Map<string, { link: RowlinkRecord; depth: number }>()
+  for (const link of links) {
+    const depth = chain.findIndex((node) => scopedTo(link, node))
+    if (depth === -1) continue
+    const key = rowlinkKey(link)
+    const seen = byPair.get(key)
+    if (seen === undefined || depth < seen.depth) byPair.set(key, { link, depth })
+  }
+  const live: RowlinkRecord[] = []
+  const masked: RowlinkRecord[] = []
+  for (const { link } of byPair.values()) {
+    if (link.enabled === false) masked.push(link)
+    else live.push(link)
+  }
+  return { live, masked }
+}
+
+/** Every effective link with `endpoint` as its primary (outgoing) or connected end (incoming). */
+export function linksTouching(
+  links: readonly RowlinkRecord[],
+  scopes: Scopes,
+  address: Address,
+  endpoint: RowlinkEndpoint,
+): { readonly direction: "outgoing" | "incoming"; readonly link: RowlinkRecord }[] {
+  return effectiveRowlinks(links, scopes, address).live.flatMap((link) => {
+    if (sameEndpoint(endpoint, link.item, link.section)) return [{ direction: "outgoing" as const, link }]
+    if (sameEndpoint(endpoint, link.target, link.targetSection)) return [{ direction: "incoming" as const, link }]
+    return []
+  })
+}
+
+
 // ── the `requires` migration (B4) ─────────────────────────────────────────
 //
 // A customization's stored `requires` list was the pre-1.2.0 gate. Each entry
