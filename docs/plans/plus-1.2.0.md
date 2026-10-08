@@ -460,6 +460,58 @@ Added 2026-10-08 evening (build seat, continuing the run)
   continue uncompacted). A failed compaction records the model that tried
   it (`model` on the failed message, as on the completed one): the
   summarizing model for a summary, the chat's model for native.
+- **B31. I1 split in two, and how `a` writes (B6 made exact).** I1a: `a`
+  on a section and nesting; I1b: sections on every text kind (B7). `a` on a
+  section of a **heading-derived** item writes a heading one level deeper
+  (`#` × (section depth + 1), at least `##`) with the new text at the end of
+  the hovered section's span (after its last descendant). The write is an
+  edit of the **last leaf section inside that span** (the hovered section
+  itself when it has no children), at the level being edited, so no parent
+  or whole-item customization is created that would shadow its children
+  (finding 12d). `a` on a heading-derived item row appends a heading at the
+  item's top heading depth at the end of the text, the same way. The item
+  stays heading-derived; the new section appears as a child row at once.
+  For a **manual** split (and `block`/`whole` items, which become manual as
+  today), boundaries gain an optional `depth` (absent = 0; old stores read
+  unchanged); `a` on a manual section inserts the text at the end of its
+  span and adds a boundary with depth + 1, shifting later boundaries. Section
+  rows get `add: "section"`, so `route.tsx` never falls back to the tab's
+  category from a section. The tools API: `split({ id: <section id>, add })`
+  adds a child of that section, `split({ id: <item id>, add })` a top-level
+  one (today's call, now heading-preserving).
+- **B32. I2 (WP-D) in three parts, one after another in the instructions
+  lane** (all edit `tree.ts`): I2a the model row layout of `plus-1.1.18.md`
+  §2 (Model, Effort, Warming ▸ with Compact before cold and the cold-model
+  list, Compaction ▸ Strategy/Model/Instructions) for agent, member, preset
+  and Defaults › Models rows, writing C1's fields; the Compaction tab goes
+  and the agent tabs renumber; the list takes `a` (catalogue picker), `d`,
+  and `m` with B8's keys (↑/↓, Enter drops, Esc restores), which S1 later
+  generalizes to every row. I2b the dropdowns of §6 (Ping every, Warming,
+  Defaults › Models Effort, Compaction › Model with Inherit; Custom… keeps
+  today's prompt). I2c Defaults › Models speed (decision 15): `hostCatalog`
+  expires after 5 min and drops on the model-updated event (added to
+  `RefreshEvents`), model rows memoized per (catalogue revision, store
+  revision). The footer text and `/compact-cold` belong to C3, which owns
+  cold detection.
+- **B33. WP-G (G4, the cache-miss toast), where it lives.** As
+  `plus-1.1.18.md` §9. The TUI asks, the server answers: when a step of the
+  chat on screen ends (an assistant message with usage, from the client's
+  sync data), the Plus TUI calls a new RPC `monitor.step({ sessionID })`,
+  which folds only that session's new rows incrementally (WP-A's cached
+  fold) and returns the latest step's verdict, tokens not reused and cause.
+  No timer, no polling while idle; if the step's row is not recorded yet the
+  RPC says `pending` and the TUI asks once more on the next session event.
+  The toast (warning variant): "Cache miss · N tokens not reused · <cause> ·
+  type /monitor for details", once per step, only when `isMiss` holds (a
+  drop under 1,024 tokens is rounding). Cause words map the Monitor's cause
+  chain (after compaction (expected), model switched, agent switched, prompt
+  changed · <first changed part>, cache expired, account changed, unknown);
+  a compaction armed by a CPA account switch (`quota.switch` metadata) makes
+  the cause "account changed · compacted first", in the toast and in
+  `/monitor` alike. Off switch: a TUI preference (default on), toggled from
+  the command palette ("Cache-miss notices: turn off/on") and the slash
+  command `/miss-notices`; it hides the toast only, the Monitor is
+  unchanged.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.

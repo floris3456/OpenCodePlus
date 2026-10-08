@@ -53,7 +53,7 @@ export function createPlanSet(options: {
 
 export interface SessionPin {
   readonly sessionID: string
-  model: { providerID: string; id: string }
+  model: { providerID: string; id: string; variant?: string }
   planSet: PlanSet
   pinnedSystem0: Map<string, string>
   pinnedRoles: Map<string, string>
@@ -71,12 +71,16 @@ export class SessionPinManager {
 
   pinSession(
     sessionID: string,
-    model: { providerID: unknown; id: unknown },
+    model: { providerID: unknown; id: unknown; variant?: unknown },
     planSet: PlanSet,
   ): SessionPin {
     const pin: SessionPin = {
       sessionID,
-      model: { providerID: String(model.providerID), id: String(model.id) },
+      model: {
+        providerID: String(model.providerID),
+        id: String(model.id),
+        ...(model.variant !== undefined ? { variant: String(model.variant) } : {}),
+      },
       planSet,
       pinnedSystem0: new Map(),
       pinnedRoles: new Map(),
@@ -88,14 +92,18 @@ export class SessionPinManager {
 
   repinSession(
     sessionID: string,
-    model: { providerID: unknown; id: unknown },
+    model: { providerID: unknown; id: unknown; variant?: unknown },
     planSet: PlanSet,
   ): SessionPin {
     const existing = this.pins.get(sessionID)
     if (existing === undefined) {
       return this.pinSession(sessionID, model, planSet)
     }
-    existing.model = { providerID: String(model.providerID), id: String(model.id) }
+    existing.model = {
+      providerID: String(model.providerID),
+      id: String(model.id),
+      ...(model.variant !== undefined ? { variant: String(model.variant) } : {}),
+    }
     existing.planSet = planSet
     existing.pinnedSystem0.clear()
     existing.pinnedRoles.clear()

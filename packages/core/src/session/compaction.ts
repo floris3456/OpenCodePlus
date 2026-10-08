@@ -19,8 +19,9 @@ import { AnthropicMessages } from "@opencode/ai/protocols/anthropic-messages"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { Context, Effect, Layer, Result, Stream } from "effect"
+import { Context, Effect, Layer, Option, Result, Stream } from "effect"
 import { PluginHooks } from "../plugin/hooks.js"
+import { SessionRequestPrepare } from "./request-prepare.js"
 import { compactionBoundary } from "./compaction-boundary.js"
 import { Bus } from "../bus.js"
 import { Agent } from "../agent.js"
@@ -222,15 +223,30 @@ export const layer = Layer.effect(
       const context = trigger.context
 
       const ceiling = calculateCeiling(context.model.limit, settings.buffer)
-      const decision = yield* hooks.trigger("session", "compaction.decide", {
-        sessionID: context.session.id,
-        agent: context.agent.id,
-        model: context.model.ref,
-        reason: trigger.reason,
-        auto: settings.auto,
-        due: due(context, ceiling),
-        boundary: compactionBoundary(context.messages),
-      })
+      // Bound only the decide hook, never the summary request or native compaction it may lead to.
+      // A decide timeout fails the Step with the request-preparation error; a manual /compact still
+      // records a failed compaction so its inbox item settles, while an auto/overflow Step does not.
+      const decideTimeout = yield* SessionRequestPrepare.Timeout
+      const decided = yield* hooks
+        .trigger("session", "compaction.decide", {
+          sessionID: context.session.id,
+          agent: context.agent.id,
+          model: context.model.ref,
+          reason: trigger.reason,
+          auto: settings.auto,
+          due: due(context, ceiling),
+          boundary: compactionBoundary(context.messages),
+        })
+        .pipe(Effect.timeoutOption(decideTimeout))
+      if (Option.isNone(decided)) {
+        const error = {
+          type: "session.step.prepare-timeout",
+          message: SessionRequestPrepare.message(decideTimeout, yield* hooks.stage),
+        }
+        if (trigger.reason === "manual") return yield* publish(trigger, { error })
+        return { status: "failed", error }
+      }
+      const decision = decided.value
       if (decision.refusal) return { status: "failed", error: decision.refusal }
       // Plugins may request earlier compaction, but cannot override this preference.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
@@ -904,6 +920,7 @@ export const node = makeLocationNode({
     llmClient,
     Agent.node,
     Model.node,
+    SessionRequestPrepare.node,
     SessionRunnerModel.node,
     SessionModelRequest.node,
   ],

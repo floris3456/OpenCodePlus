@@ -15,6 +15,7 @@ import { SessionHistory } from "../history.js"
 import { SessionProviderContext } from "../provider-context.js"
 import { SessionModelRequest } from "../model-request.js"
 import { SessionModelTransport } from "../model-transport.js"
+import { SessionRequestPrepare } from "../request-prepare.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
@@ -30,6 +31,7 @@ import { SessionRunnerRetry } from "./retry.js"
 import { SessionStep } from "./step.js"
 import { ToolOutput } from "../../tool-output.js"
 import { Plugin } from "../../plugin.js"
+import { PluginHooks } from "../../plugin/hooks.js"
 import { MAX_STEPS_PROMPT } from "./max-steps.js"
 
 const CONTINUE_AFTER_INCOMPLETE_STREAM =
@@ -50,6 +52,22 @@ const layer = Layer.effect(
     const steps = yield* SessionStep.make
     // Title generation starts once input is visible and must not delay model execution.
     const titles = yield* FiberMap.make<SessionSchema.ID, void, never>()
+
+    // Bounds one request-preparation stage of a Step. A stage that hangs fails the Step like any
+    // other step error, so the execution claim is released and the next prompt runs.
+    const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>, stage: PluginHooks.Stage | undefined) =>
+      SessionRequestPrepare.bound(context.hooks, effect, stage, (current, timeout) =>
+        Effect.fail(
+          new StepFailedError({
+            error: { type: "session.step.prepare-timeout", message: SessionRequestPrepare.message(timeout, current) },
+          }),
+        ),
+      )
+
+    const prepareContextBounded = (sessionID: SessionSchema.ID) =>
+      bounded(prepareContext(sessionID), { kind: "stage", label: "loading the session context" })
+    const loadContextBounded = (selected: SessionContext.Selection) =>
+      bounded(context.load(selected), { kind: "stage", label: "loading the session context" })
 
     const drain = Effect.fn("SessionRunner.drain")(function* (input: Parameters<Interface["drain"]>[0]) {
       const sessionID = input.sessionID
@@ -162,7 +180,7 @@ const layer = Layer.effect(
                 return DrainResult.Complete()
               const ready = yield* restore(
                 Effect.gen(function* () {
-                  const selected = yield* prepareContext(sessionID)
+                  const selected = yield* prepareContextBounded(sessionID)
                   const promoted = yield* SessionInbox.promote(
                     db,
                     bus,
@@ -176,7 +194,7 @@ const layer = Layer.effect(
                       onlyIfMissing: true,
                     })
                   if (promoted > 0) step = 1
-                  return { _tag: "Ready" as const, context: yield* context.load(selected) }
+                  return { _tag: "Ready" as const, context: yield* loadContextBounded(selected) }
                 }),
               )
               if (ready) return ready
@@ -212,7 +230,9 @@ const layer = Layer.effect(
       let recoverContinuation = true
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
+        const loaded =
+          initial ??
+          (yield* prepareContextBounded(sessionID).pipe(Effect.flatMap((selected) => loadContextBounded(selected))))
         initial = undefined
         const compacted = yield* compaction.compact({ reason: "auto", context: loaded })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
@@ -228,20 +248,27 @@ const layer = Layer.effect(
           initial: loaded.initial,
           messages: loaded.messages,
         })
-        const prepared = yield* context.request.primary({
-          session: loaded.session,
-          agent: loaded.agent.id,
-          model: loaded.model,
-          tools: loaded.tools,
-          system: transcript.system,
-          messages: stepLimitReached
-            ? [...transcript.messages, Message.assistant(MAX_STEPS_PROMPT)]
-            : transcript.messages,
-          // Keep tool definitions on the final Step to preserve the provider's cached prefix.
-          toolChoice: stepLimitReached ? "none" : undefined,
-          webSocket: "session",
-          inputTokens: SessionCompaction.estimatePrompt(loaded),
-        })
+        // Bound the step's request preparation, which runs the model-request content hooks
+        // (session.context, session.model.request), so a stuck hook fails the Step instead of
+        // leaving the Session "working" forever. The stream itself and provider retries start
+        // after this point and are never bounded here.
+        const prepared = yield* bounded(
+          context.request.primary({
+            session: loaded.session,
+            agent: loaded.agent.id,
+            model: loaded.model,
+            tools: loaded.tools,
+            system: transcript.system,
+            messages: stepLimitReached
+              ? [...transcript.messages, Message.assistant(MAX_STEPS_PROMPT)]
+              : transcript.messages,
+            // Keep tool definitions on the final Step to preserve the provider's cached prefix.
+            toolChoice: stepLimitReached ? "none" : undefined,
+            webSocket: "session",
+            inputTokens: SessionCompaction.estimatePrompt(loaded),
+          }),
+          undefined,
+        )
         const outcome = yield* steps.attempt({
           isLocationClosed: lifecycle.isClosed,
           sessionID,
@@ -364,6 +391,7 @@ export const node = makeLocationNode({
     llmClient,
     SessionContext.node,
     SessionModelTransport.node,
+    SessionRequestPrepare.node,
     SessionStore.node,
     SessionCompaction.node,
     Plugin.node,
