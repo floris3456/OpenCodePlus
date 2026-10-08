@@ -3200,12 +3200,8 @@ function lazyItem(
   const codemode = item.kind === "tool" && item.codemode === true
   const executable = item.execute === true
   const wholeNoToggle = item.id === "system:role" || item.kind === "base"
-  // B7: every text row takes sections, MCP server rows (kind "mcp") included.
-  // A server row's text is its configuration; it has no per-request consumer,
-  // so its sections are the assembled readback and its own display.
   const splittable =
-    !executable &&
-    (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base" || item.kind === "mcp")
+    !executable && (item.kind === "tool" || item.kind === "system" || item.kind === "skill" || item.kind === "base")
   const perm = item.kind === "perm"
   const hostRules = canHostPermRules(item)
   const rowId = rowIdOf("item", level, owner, item.id, catalogue, ownerPath)

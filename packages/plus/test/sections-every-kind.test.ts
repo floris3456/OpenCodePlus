@@ -1,7 +1,8 @@
 // B7 (I1b): every text row takes sections through the same section path as
 // tools and system rows. This file covers the item-row kinds that are now
-// sectioned: MCP server rows, MCP tool descriptions (group "mcp"), tool
-// parameter descriptions and the agent/member description control.
+// sectioned: MCP tool descriptions (group "mcp"), tool parameter descriptions
+// and the agent/member description control. The MCP server row is not
+// sectioned (B38): its text is configuration with no per-request consumer.
 //
 // The keep-alive prompt and the C1 per-model compaction instructions are
 // values on model records, not item rows, and the tree resolves them without
@@ -70,15 +71,15 @@ function wholeText(source: MemoInput, id: string): string {
 // Tree: section rows under every new kind, with add: "section".
 // ---------------------------------------------------------------------------
 
-test("MCP server row takes sections: derived children exist and the row offers add", () => {
-  const nodes = expandedTree(input())
+test("MCP server row takes no sections: no add offer and split is refused", () => {
+  const source = input()
+  const nodes = expandedTree(source)
   const row = nodeById(nodes, "item:defaults::mcp:docs")
-  expect(row.kind).toBe("item")
-  expect(row.add).toBe("section")
-  expect(row.actions?.split).toBe(true)
-  const sections = nodes.filter((node) => node.id.startsWith(row.id.replace(/^item:/, "section:") + ":"))
-  expect(sections.map((section) => section.label)).toEqual(["Purpose", "Usage"])
-  expect(sections.every((section) => section.add === "section")).toBe(true)
+  expect(row.add).toBeUndefined()
+  expect(row.actions?.split).toBe(false)
+  const split = saveSplit(source, row.id, [{ id: "a", name: "A", start: 0 }])
+  if (!("refusal" in split)) throw new Error("expected refusal")
+  expect(split.refusal).toBe(`"docs" cannot be split`)
 })
 
 test("MCP tool description takes sections through the tool path", () => {
@@ -140,33 +141,12 @@ test("split then add on a parameter item writes a manual split and a section rec
   expect(record.text).toBe("Pass --verbose.")
 })
 
-test("add on a heading-derived MCP server item appends a heading section without an item-level record", () => {
+test("add on an MCP server row is refused and writes no section record", () => {
   const source = input()
   const row = nodeById(expandedTree(source), "item:defaults::mcp:docs")
   const added = addSection(source, row.id, "Endpoints", "List endpoints.")
-  if ("refusal" in added) throw new Error(`expected add success ${added.refusal}`)
-  // B31: the item stays heading-derived; no split record and no whole-item
-  // customization is written (finding 12d). The new section lives in the last
-  // leaf's record and appears as a child row at once.
-  expect(added.splits.some((entry) => entry.item === MCP_SERVER.id)).toBe(false)
-  expect(added.records.some((entry) => entry.item === MCP_SERVER.id && entry.section === null)).toBe(false)
-  const leaf = added.records.find((entry) => entry.item === MCP_SERVER.id && entry.section !== null)
-  if (!leaf) throw new Error("expected a leaf section record")
-  expect(leaf.text).toContain("# Usage")
-  expect(leaf.text).toContain("# Endpoints")
-  const text = wholeText({ ...source, records: added.records }, MCP_SERVER.id)
-  expect(text).toContain("List endpoints.")
-  const split = resolveSplit({
-    text,
-    title: "docs",
-    splits: [],
-    scopes: { global: new Set(["alpha"]), defaults: new Set(), native: new Set(["alpha"]) },
-    address: { level: "project", agent: "alpha", item: MCP_SERVER.id, section: null },
-  })
-  expect(split.kind).toBe("heading")
-  // I1a/B31: the item row appends one level deeper than the item's top heading,
-  // at the end of the text, so the new section nests under the last top section.
-  expect(split.sections.map((section) => section.id)).toContain("usage/endpoints")
+  if (!("refusal" in added)) throw new Error("expected refusal")
+  expect(added.refusal).toBe(`"docs" does not support sections`)
 })
 
 test("add on the heading-derived agent description appends a section without an item-level record", () => {
@@ -192,17 +172,6 @@ test("a section switched off is absent from the assembled parameter text", () =>
   const text = wholeText({ ...source, records }, PARAM.id)
   expect(text).toContain("Run the thing.")
   expect(text).not.toContain("Pass a flag.")
-})
-
-test("an edited section's text is present in the assembled MCP server text", () => {
-  const source = input()
-  const records: CustomizationRecord[] = [
-    { type: "customization", level: "project", agent: "alpha", item: MCP_SERVER.id, section: "purpose", text: "# Purpose\n\nEdited body.", basedOn: fingerprint("x"), updated: UPDATED },
-  ]
-  const text = wholeText({ ...source, records }, MCP_SERVER.id)
-  expect(text).toContain("Edited body.")
-  expect(text).not.toContain("Run the thing.")
-  expect(text).toContain("Pass a flag.")
 })
 
 test("an edited description section reaches the assembled description the model reads", () => {
