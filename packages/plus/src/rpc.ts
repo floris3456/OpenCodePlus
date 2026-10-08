@@ -293,9 +293,36 @@ export const SnapshotRecord = Schema.Union([
   SnapshotSplitRecord,
   SnapshotModelRecord,
   SnapshotRuleRecord,
+  SnapshotRowlinkRecord,
 ]).annotate({
   identifier: "Plus.SnapshotRecord",
 })
+
+// A row link (rowlinks.ts): a switch or gate between two rows of one owner and
+// level. It crosses as an inventory record so the link tool's delta write can
+// upsert it; instructions.mutate carries stored rowlinks over from a full
+// snapshot mutate, so a client that only resubmits rows cannot drop them.
+export interface SnapshotRowlinkRecord extends Schema.Schema.Type<typeof SnapshotRowlinkRecord> {}
+export const SnapshotRowlinkRecord = Schema.Struct({
+  type: Schema.Literal("rowlink"),
+  level: Level,
+  agent: Schema.NullOr(Schema.String),
+  team: Schema.optionalKey(TeamOwner),
+  catalogue: Schema.optionalKey(Catalogue),
+  item: Schema.String,
+  section: Schema.NullOr(Schema.String),
+  target: Schema.String,
+  targetSection: Schema.NullOr(Schema.String),
+  link: Schema.Union([
+    Schema.Literal("either"),
+    Schema.Literal("oneway"),
+    Schema.Literal("shownWhenOn"),
+    Schema.Literal("shownWhenOff"),
+    Schema.Literal("shownAlways"),
+  ]),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  updated: Schema.String,
+}).annotate({ identifier: "Plus.SnapshotRowlinkRecord" })
 
 // What a link points at (DESIGN §7): an agent preset, one member of a team
 // preset, or a whole team preset.

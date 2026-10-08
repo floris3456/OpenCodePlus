@@ -808,7 +808,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           record.type === "preset" ||
           record.type === "modelSettings" ||
           record.type === "folder" ||
-          record.type === "order",
+          record.type === "order" ||
+          record.type === "rowlink",
       ),
     ]
     const refusal = protectedRefusal(input.actor, deltaRows(loaded.records, records), config)
@@ -4899,6 +4900,21 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.message === undefined ? {} : { message: record.message }),
       updated: record.updated,
     }
+  if (record.type === "rowlink")
+    return {
+      type: "rowlink",
+      level: record.level,
+      agent: record.agent,
+      ...(record.team !== undefined ? { team: record.team } : {}),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      item: record.item,
+      section: record.section,
+      target: record.target,
+      targetSection: record.targetSection,
+      link: record.link,
+      ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
+      updated: record.updated,
+    }
   return {
     type: "customization",
     level: record.level,
@@ -6880,6 +6896,23 @@ function toSnapshot(
         record.type === "order"
       )
         return []
+      if (record.type === "rowlink")
+        return [
+          {
+            type: "rowlink" as const,
+            level: record.level,
+            agent: record.agent,
+            ...(record.team !== undefined ? { team: record.team } : {}),
+            ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+            item: record.item,
+            section: record.section,
+            target: record.target,
+            targetSection: record.targetSection,
+            link: record.link,
+            ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
+            updated: record.updated,
+          },
+        ]
       return [
         {
           type: "customization" as const,

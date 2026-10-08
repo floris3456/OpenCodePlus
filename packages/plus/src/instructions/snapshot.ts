@@ -310,6 +310,9 @@ function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
 export function presetStateOfSnapshot(snapshot: Plus.Snapshot): Required<PresetState> {
   return {
     links: (snapshot.links ?? []).map(linkOf),
+    // Rowlinks do not cross the snapshot yet (S2b/TUI wiring): the server-side
+    // assembly reads the stored records, the TUI's local resolve carries none.
+    rowlinks: [],
     entries: (snapshot.entries ?? []).map(entryOf),
     presets: (snapshot.presets ?? []).map(presetOf),
   }

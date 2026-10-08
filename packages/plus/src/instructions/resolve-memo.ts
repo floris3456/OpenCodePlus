@@ -1,6 +1,7 @@
 import { catalogueOf, resolve, resolveEnabled, resolveSplit, scopedTo } from "./model.js"
 import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
+import type { RowlinkRecord } from "./rowlinks.js"
 import type {
   Address,
   AgentSource,
@@ -31,7 +32,7 @@ export interface TeamInput {
 /** Links, Defaults entries and user presets ride next to the inventory records: the chain reads them, no row edits them yet. */
 export interface MemoInput extends PresetState {
   readonly items: readonly Item[]
-  readonly records: readonly (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]
+  readonly records: readonly (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord)[]
   readonly agents: readonly AgentSource[]
   readonly teams?: readonly TeamInput[]
   /** Defaults › Models rows (their own surface, edited through modelSettings.set). */
@@ -83,6 +84,7 @@ export function contextOf(input: MemoInput): BuildContext {
       agents: input.agents,
       items: input.items,
       ...(input.links === undefined ? {} : { links: input.links }),
+      ...(rowlinksOf(input).length === 0 ? {} : { rowlinks: rowlinksOf(input) }),
       ...(input.entries === undefined ? {} : { entries: input.entries }),
       ...(input.presets === undefined ? {} : { presets: input.presets }),
       teams: input.teams ?? [],
@@ -94,6 +96,10 @@ export function contextOf(input: MemoInput): BuildContext {
     folders: input.folders ?? [],
     orders: input.orders ?? [],
   }
+}
+
+export function rowlinksOf(input: MemoInput): readonly RowlinkRecord[] {
+  return input.rowlinks ?? input.records.filter((record): record is RowlinkRecord => record.type === "rowlink")
 }
 
 export interface Memo {

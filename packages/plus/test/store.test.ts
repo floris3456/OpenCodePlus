@@ -58,6 +58,7 @@ test("load returns empty when both stores are absent", async () => {
     skillsMigrated: false,
     splitsMigrated: false,
     wholeRowsMigrated: false,
+    rowlinksMigrated: false,
   })
 })
 
@@ -71,7 +72,9 @@ test("save then load round-trips project and global records", async () => {
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
     customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
-    // "Shown when" is stored on its own field and survives the round trip.
+    // "Shown when" used to be stored on the customization's own field; the
+    // load migrates it into rowlink records (rowlinks.ts), so the round trip
+    // reads the migrated shape and no `requires` field survives.
     customization({ agent: "alpha", item: "system:tools-and-rules", section: "tools-and-rules/questions", requires: ["tool:question", "!perm:shell:git-push"] }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
@@ -82,7 +85,37 @@ test("save then load round-trips project and global records", async () => {
   expect(loaded.migrated).toBe(false)
   expect(loaded.cataloguesMigrated).toBe(false)
   expect(loaded.presetsMigrated).toBe(false)
-  expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
+  expect(loaded.rowlinksMigrated).toBe(true)
+  const expected: StoredRecord[] = [
+    customization({ agent: "alpha", text: "custom" }),
+    customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
+    customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
+    customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
+    customization({ agent: "alpha", item: "system:tools-and-rules", section: "tools-and-rules/questions" }),
+    {
+      type: "rowlink",
+      level: "project",
+      agent: "alpha",
+      item: "tool:question",
+      section: null,
+      target: "system:tools-and-rules",
+      targetSection: "tools-and-rules/questions",
+      link: "shownWhenOn",
+      updated: UPDATED,
+    },
+    {
+      type: "rowlink",
+      level: "project",
+      agent: "alpha",
+      item: "perm:shell:git-push",
+      section: null,
+      target: "system:tools-and-rules",
+      targetSection: "tools-and-rules/questions",
+      link: "shownWhenOff",
+      updated: UPDATED,
+    },
+  ]
+  expect([...loaded.records].sort(compareForTest)).toEqual([...expected].sort(compareForTest))
 })
 
 test("records route into project vs global files", async () => {

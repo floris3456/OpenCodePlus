@@ -179,7 +179,20 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
                 keywords: [...record.keywords],
                 updated: record.updated,
               }
-            : {
+            : record.type === "rowlink"
+              ? {
+                  type: "rowlink" as const,
+                  level: record.level,
+                  agent: record.agent,
+                  item: record.item,
+                  section: record.section,
+                  target: record.target,
+                  targetSection: record.targetSection,
+                  link: record.link,
+                  ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
+                  updated: record.updated,
+                }
+              : {
                 type: "customization" as const,
                 level: record.level,
                 agent: record.agent,
