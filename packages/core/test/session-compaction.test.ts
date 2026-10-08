@@ -743,3 +743,128 @@ it.effect("same-model summary without compaction system text sends the summary p
     expect(lastUserText(request)).toBe(SessionCompaction.buildPrompt(false))
   }),
 )
+
+it.effect("a decision system replaces the agent's compaction system text", () =>
+  Effect.gen(function* () {
+    const chatSystem = "You are the chat agent."
+    const agentSystem = "You write conversation checkpoints."
+    const decisionSystem = "You write short checkpoints."
+    const request = yield* summarizeWith(Session.ID.make("ses_compaction_decision_system_same"), {
+      system: chatSystem,
+      compaction: { strategy: "local", system: agentSystem },
+    })
+    // The agent's compaction system is genuinely in play for this shape.
+    expect(lastUserText(request)).toBe(`${agentSystem}\n\n${SessionCompaction.buildPrompt(false)}`)
+
+    const decided = yield* summarizeManualWithDecision(
+      Session.ID.make("ses_compaction_decision_system_same_decision"),
+      { system: chatSystem, compaction: { strategy: "local", system: agentSystem } },
+      (event) => {
+        event.system = decisionSystem
+      },
+    )
+    expect(decided.request.system.map((part) => part.text)[0]).toBe(chatSystem)
+    expect(decided.request.system.some((part) => part.text.includes(agentSystem))).toBe(false)
+    expect(lastUserText(decided.request)).toBe(`${decisionSystem}\n\n${SessionCompaction.buildPrompt(false)}`)
+  }),
+)
+
+it.effect("a decision system is the request system on another compaction model", () =>
+  Effect.gen(function* () {
+    const decisionSystem = "You write short checkpoints."
+    const decided = yield* summarizeManualWithDecision(
+      Session.ID.make("ses_compaction_decision_system_other"),
+      {
+        system: "You are the chat agent.",
+        compaction: {
+          strategy: "local",
+          model: Model.Ref.parse("other/other-model"),
+          system: "You write conversation checkpoints.",
+        },
+      },
+      (event) => {
+        event.system = decisionSystem
+      },
+    )
+    expect(decided.request.system.map((part) => part.text)[0]).toBe(decisionSystem)
+    expect(lastUserText(decided.request)).toBe(SessionCompaction.buildPrompt(false))
+  }),
+)
+
+it.effect("a failed manual compaction records the model that tried it", () =>
+  Effect.gen(function* () {
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_compaction_failed_model"))
+    const messages = [
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Summarize this conversation.",
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+    ]
+    const context = loaded(session, messages)
+    const outcome = yield* compaction.compact({
+      reason: "manual",
+      context: {
+        ...context,
+        agent: {
+          ...context.agent,
+          info: {
+            ...Agent.Info.default(Agent.defaultID),
+            compaction: { strategy: "local", model: Model.Ref.parse("missing/summary") },
+          },
+        },
+      },
+      inputID: SessionMessage.ID.create(),
+    })
+    expect(outcome.status).toBe("failed")
+    const records = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+    expect(records[0]).toMatchObject({
+      type: "compaction",
+      status: "failed",
+      model: { providerID: "missing", id: "summary" },
+    })
+  }),
+)
+
+/** A manual summary compaction whose decision hook can override the decision fields. */
+const summarizeManualWithDecision = (
+  id: Session.ID,
+  options: { readonly system: string; readonly compaction?: Agent.Compaction },
+  decide: (event: PluginHooks.Domains["session"]["compaction.decide"]) => void,
+) =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    requests = []
+    const session = yield* insertSession(id)
+    const messages = [
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Summarize this conversation.",
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+    ]
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        decide(event)
+      }),
+    )
+    const context = loaded(session, messages)
+    const result = yield* compactContext({
+      ...context,
+      agent: {
+        ...context.agent,
+        info: {
+          ...context.agent.info,
+          system: options.system,
+          ...(options.compaction === undefined ? {} : { compaction: options.compaction }),
+        },
+      },
+    })
+    expect(result).toEqual({ status: "completed" })
+    expect(requests).toHaveLength(1)
+    return { request: requests[0]! }
+  })

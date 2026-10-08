@@ -270,6 +270,8 @@ export const CompactionFailed = Schema.Struct({
   ...CompactionBase,
   status: Schema.tag("failed"),
   reason: Schema.Literals(["auto", "manual"]),
+  /** The model that tried this compaction: the summarizing model for a summary, the chat's for native. */
+  model: Model.Ref.pipe(optional),
   error: SessionError.Error,
   ...CompactionUsage,
 }).annotate({ identifier: "Session.Message.Compaction.Failed" })

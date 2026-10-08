@@ -368,6 +368,232 @@ it.effect("the fallback stays unused when the compaction model works or there is
     expect(requests).toEqual([])
   }),
 )
+
+it.effect("compactionFallbacks are tried in order and each failure records its model", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_quota_fallback_order"))
+    yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.compactionModel = broken.ref
+        event.compactionFallbacks = [missingModel, cheap.ref]
+      }),
+    )
+    requests = []
+    const messages: SessionMessage.Info[] = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this task",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    const outcome = yield* compaction.compact({ reason: "auto", context: loaded(session, messages) })
+    expect(outcome.status).toBe("completed")
+    // A refused model is asked once; a model that does not resolve is skipped; the third writes the summary.
+    expect(requests.map((request) => String(request.model.id))).toEqual(["broken-summary", "cheap-summary"])
+    const records = (yield* store.messages({ sessionID: session.id, order: "asc" })).filter(
+      (record) => record.type === "compaction",
+    )
+    expect(
+      records.map((record) => [
+        record.status,
+        "model" in record ? `${record.model?.providerID}/${record.model?.id}` : undefined,
+      ]),
+    ).toEqual([
+      ["failed", "broken/broken-summary"],
+      ["failed", "missing/summary"],
+      ["completed", "cheap/cheap-summary"],
+    ])
+  }),
+)
+
+it.effect("compactionFallbacks replaces compactionFallback when both are set", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_quota_fallbacks_replace"))
+    yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.compactionModel = missingModel
+        // The single fallback would fail; the list must win and complete the compaction.
+        event.compactionFallback = broken.ref
+        event.compactionFallbacks = [cheap.ref]
+      }),
+    )
+    requests = []
+    const messages: SessionMessage.Info[] = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this task",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    expect((yield* compaction.compact({ reason: "auto", context: loaded(session, messages) })).status).toBe("completed")
+    expect(requests.map((request) => String(request.model.id))).toEqual(["cheap-summary"])
+  }),
+)
+
+for (const [trigger, optional] of [
+    ["overflow", true],
+    ["manual", true],
+    ["auto", false],
+  ] as const)
+    it.effect(`optional:${optional} on a ${trigger} compaction does not skip`, () =>
+      Effect.gen(function* () {
+        const hooks = yield* PluginHooks.Service
+        const compaction = yield* SessionCompaction.Service
+        const store = yield* SessionStore.Service
+        const session = yield* insertSession(Session.ID.make(`ses_quota_optional_${trigger}_${optional}`))
+        yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+        yield* hooks.register("session", "compaction.decide", (event) =>
+          Effect.sync(() => {
+            event.compact = true
+            event.portable = true
+            event.compactionModel = broken.ref
+            event.optional = optional
+          }),
+        )
+        requests = []
+        const messages: SessionMessage.Info[] = [
+          {
+            id: SessionMessage.ID.create(),
+            type: "user",
+            text: "Keep this task",
+            time: { created: DateTime.makeUnsafe(0) },
+          },
+        ]
+        const context = loaded(session, messages)
+        const outcome = yield* compaction.compact(
+          trigger === "manual"
+            ? { reason: "manual", context, inputID: SessionMessage.ID.create() }
+            : { reason: trigger, context },
+        )
+        expect(outcome.status).toBe("failed")
+        // The failed model is still recorded even though the step may continue.
+        const records = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+        expect(records.map((record) => record.type === "compaction" && record.status)).toEqual(["failed"])
+      }),
+    )
+
+it.effect("optional skips an auto compaction whose every model failed, recording the failures", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_quota_optional_skip"))
+    yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.compactionModel = broken.ref
+        event.compactionFallbacks = [missingModel]
+        event.optional = true
+      }),
+    )
+    requests = []
+    const messages: SessionMessage.Info[] = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this task",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    const outcome = yield* compaction.compact({ reason: "auto", context: loaded(session, messages) })
+    expect(outcome).toEqual({ status: "skipped" })
+    const records = (yield* store.messages({ sessionID: session.id, order: "asc" })).filter(
+      (record) => record.type === "compaction",
+    )
+    expect(
+      records.map((record) => [
+        record.status,
+        "model" in record ? `${record.model?.providerID}/${record.model?.id}` : undefined,
+      ]),
+    ).toEqual([
+      ["failed", "broken/broken-summary"],
+      ["failed", "missing/summary"],
+    ])
+  }),
+)
+
+it.effect("a decision strategy overrides the agent's, locally and remotely", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const native = { ...resolved, compaction: { type: "native" as const } }
+    const agent = {
+      id: Agent.defaultID,
+      info: {
+        ...Agent.Info.default(Agent.defaultID),
+        compaction: { strategy: "auto" as const },
+      },
+    }
+    const messages: SessionMessage.Info[] = [
+      {
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "Keep this task",
+        time: { created: DateTime.makeUnsafe(0) },
+      },
+    ]
+    yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
+
+    // The agent's auto strategy would take the native path and fail on this route.
+    const local = yield* insertSession(Session.ID.make("ses_quota_strategy_local"))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.strategy = "local"
+      }),
+    )
+    requests = []
+    expect(
+      (yield* compaction.compact({ reason: "auto", context: { ...loaded(local, messages), model: native, agent } }))
+        .status,
+    ).toBe("completed")
+    expect(requests.map((request) => String(request.model.id))).toEqual(["summary-model"])
+    expect((yield* store.messages({ sessionID: local.id, order: "asc", type: "compaction" }))[0]).toMatchObject({
+      status: "completed",
+    })
+
+    // A portable decision that keeps the agent's remote strategy is refused as before.
+    const remote = yield* insertSession(Session.ID.make("ses_quota_strategy_remote"))
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.strategy = "remote"
+      }),
+    )
+    requests = []
+    const refused = yield* compaction.compact({
+      reason: "auto",
+      context: { ...loaded(remote, messages), model: native, agent },
+    })
+    expect(refused).toEqual({
+      status: "failed",
+      error: {
+        type: "compaction.unavailable",
+        message: "Credential handoff requires a local portable summary; this agent requires remote compaction",
+      },
+    })
+    expect(requests).toEqual([])
+  }),
+)
+
 it.effect("typed refusal and failed compaction cannot fabricate a checkpoint", () =>
   Effect.gen(function* () {
     const hooks = yield* PluginHooks.Service

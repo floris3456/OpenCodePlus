@@ -543,6 +543,7 @@ export type SessionMessageCompactionFailed = {
   time: { created: number }
   status: "failed"
   reason: "auto" | "manual"
+  model?: ModelRef
   error: SessionStructuredError
   cost?: MoneyUSD
   tokens?: TokenUsageInfo
@@ -809,6 +810,7 @@ export type SessionCompactionFailed = {
   data: {
     sessionID: string
     reason: "auto" | "manual"
+    model?: ModelRef
     error: SessionStructuredError
     inputID?: string
     cost?: MoneyUSD
@@ -3303,6 +3305,7 @@ export type SessionImportInput = {
               readonly time: { readonly created: number }
               readonly status: "failed"
               readonly reason: "auto" | "manual"
+              readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
               readonly error: { readonly type: string; readonly message: string; readonly status?: number }
               readonly cost?: number
               readonly tokens?: {
@@ -3621,6 +3624,7 @@ export type SessionImportInput = {
               readonly time: { readonly created: number }
               readonly status: "failed"
               readonly reason: "auto" | "manual"
+              readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
               readonly error: { readonly type: string; readonly message: string; readonly status?: number }
               readonly cost?: number
               readonly tokens?: {
@@ -3939,6 +3943,7 @@ export type SessionImportInput = {
               readonly time: { readonly created: number }
               readonly status: "failed"
               readonly reason: "auto" | "manual"
+              readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
               readonly error: { readonly type: string; readonly message: string; readonly status?: number }
               readonly cost?: number
               readonly tokens?: {

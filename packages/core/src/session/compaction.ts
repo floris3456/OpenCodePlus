@@ -86,6 +86,8 @@ type Result = {
 
 type Failure = {
   readonly error: SessionError.Error
+  /** The model that tried this compaction, when one was selected. */
+  readonly model?: Model.Ref
 }
 
 type Prepared = Effect.Success<ReturnType<SessionModelRequest.Interface["compaction"]>>
@@ -258,8 +260,9 @@ export const layer = Layer.effect(
         trigger.reason === "overflow" ? Math.min(cap, Math.floor(estimateContext(context) * SHRINK_STEPS[0])) : cap
 
       // An explicit remote strategy demands provider compaction even when the active model would choose a
-      // summary, and an explicit local strategy demands a summary even when the model supports native.
-      const configuredStrategy = context.agent.info.compaction?.strategy ?? "auto"
+      // summary, and an explicit local strategy demands a summary even when the model supports native. The
+      // decision may override the agent's strategy for this compaction.
+      const configuredStrategy = decision.strategy ?? context.agent.info.compaction?.strategy ?? "auto"
       if (decision.portable && configuredStrategy === "remote")
         return {
           status: "failed",
@@ -298,15 +301,21 @@ export const layer = Layer.effect(
           ...(decision.portable ? { providerState: undefined } : {}),
           metadata: { ...result.metadata, ...decision.metadata },
         })
+      // A failed compaction is recorded; an optional auto compaction then reports skipped so the runner
+      // sends its step uncompacted. Manual and overflow ignore `optional`.
+      const settle = (failure: Failure): Effect.Effect<Outcome> =>
+        publish(trigger, failure).pipe(
+          Effect.map((outcome) => (decision.optional && trigger.reason === "auto" ? { status: "skipped" } : outcome)),
+        )
       if (native) {
-        const attempt = yield* Effect.result(compactNatively(trigger, budget, settings.keep))
+        const attempt = yield* Effect.result(compactNatively(trigger, budget, settings.keep, strategy))
         if (Result.isSuccess(attempt)) return yield* completed(trigger, attempt.success)
         const failure = attempt.failure
-        if (failure.error.type !== NATIVE_NOT_TRIGGERED) return yield* publish(trigger, failure)
+        if (failure.error.type !== NATIVE_NOT_TRIGGERED) return yield* settle(failure)
         // Anthropic answered normally because the request sat below its compaction trigger. An explicit
         // remote strategy fails honestly; Auto falls through to the local summary below.
         if (strategy === "remote")
-          return yield* publish(trigger, {
+          return yield* settle({
             error: {
               type: "compaction.unavailable",
               message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
@@ -319,30 +328,45 @@ export const layer = Layer.effect(
 
       // A local summary resolves the compaction agent's overrides first, and the checkpoint belongs to the
       // context those overrides produce — its model and instructions, not the trigger's.
+      const fallbackAgent = yield* agents.get(Agent.ID.make("compaction"))
       const local = (chosen: Agent.Compaction["model"]) =>
-        localize(trigger, chosen).pipe(
-          Effect.catch((cause) => Effect.fail<Failure>({ error: toSessionError(cause) })),
+        localize(trigger, chosen, fallbackAgent, decision.system).pipe(
+          // A model that cannot resolve records the ref it requested as the one that tried.
+          Effect.catch((cause) =>
+            Effect.fail<Failure>({
+              error: toSessionError(cause),
+              model: chosen ?? context.agent.info.compaction?.model ?? fallbackAgent?.model,
+            }),
+          ),
           Effect.flatMap(({ owner, instruction }) =>
-            summarize(owner, budget, settings.keep, instruction).pipe(Effect.map((result) => ({ owner, result }))),
+            summarize(owner, budget, settings.keep, instruction).pipe(
+              Effect.map((result) => ({ owner, result })),
+              Effect.mapError((failure) => ({ ...failure, model: owner.context.model.ref })),
+            ),
           ),
         )
-      const fallback = decision.compactionFallback
-      return yield* local(decision.compactionModel).pipe(
-        // A summary the chosen model could not write is recorded as a failed compaction, then written by the
-        // fallback model. Nothing to compact is not a model problem, so it does not fall back.
-        Effect.catch((failure) =>
-          fallback === undefined || failure.error.type === "compaction.unavailable"
-            ? Effect.fail(failure)
-            : Effect.gen(function* () {
-                // A manual compaction owns one record (its /compact item); the fallback completes that record.
-                if (trigger.reason !== "manual") yield* publish(trigger, failure)
-                spent.delete(context.session.id)
-                return yield* local(fallback)
-              }),
-        ),
+      // `compactionFallbacks`, when present, is the whole list and replaces `compactionFallback`.
+      const fallbacks = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
+      const choices: (Agent.Compaction["model"] | undefined)[] = [decision.compactionModel, ...fallbacks]
+      const attempt = (index: number): Effect.Effect<{ owner: Trigger; result: Result }, Failure> =>
+        local(choices[index]).pipe(
+          // A summary the chosen model could not write is recorded as a failed compaction, then written by
+          // the next model. Nothing to compact is not a model problem, so it does not fall back.
+          Effect.catch((failure) =>
+            failure.error.type === "compaction.unavailable" || index >= choices.length - 1
+              ? Effect.fail(failure)
+              : Effect.gen(function* () {
+                  // A manual compaction owns one record (its /compact item); the last model completes it.
+                  if (trigger.reason !== "manual") yield* publish(trigger, failure)
+                  spent.delete(context.session.id)
+                  return yield* attempt(index + 1)
+                }),
+          ),
+        )
+      return yield* attempt(0).pipe(
         Effect.matchEffect({
           onSuccess: ({ owner, result }) => completed(owner, result),
-          onFailure: (failure) => publish(trigger, failure),
+          onFailure: (failure) => settle(failure),
         }),
       )
     })
@@ -360,9 +384,9 @@ export const layer = Layer.effect(
 
     /**
      * The local summary path resolves the compaction agent's model and system overrides. The maintenance
-     * `compaction` agent supplies defaults the active agent may partially override. A model chosen by the
-     * compaction decision outranks both. A provider checkpoint hides the durable transcript it replaced, so
-     * local summaries always read it back from history.
+     * `compaction` agent supplies defaults the active agent may partially override. A model or system chosen
+     * by the compaction decision outranks both. A provider checkpoint hides the durable transcript it
+     * replaced, so local summaries always read it back from history.
      *
      * A summary written by the chat's own model keeps the chat agent's system prompt so the request shares the
      * chat's cached prefix; the compaction system text then moves into the final user message (see `summarize`).
@@ -370,10 +394,11 @@ export const layer = Layer.effect(
      */
     const localize = Effect.fn("SessionCompaction.localize")(function* (
       trigger: Trigger,
-      chosen?: Agent.Compaction["model"],
+      chosen: Agent.Compaction["model"],
+      fallback: Agent.Info | undefined,
+      system: string | undefined,
     ) {
       const context = trigger.context
-      const fallback = yield* agents.get(Agent.ID.make("compaction"))
       const config = context.agent.info.compaction
       const ref = chosen ?? config?.model ?? fallback?.model
       const model = ref
@@ -383,7 +408,8 @@ export const layer = Layer.effect(
         trigger.reason === "overflow" || context.messages.some(SessionProviderContext.isCheckpoint)
           ? yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
           : context.messages
-      const compactionSystem = config?.system ?? fallback?.system
+      // The decision may replace the agent's compaction system text for this compaction.
+      const compactionSystem = system ?? config?.system ?? fallback?.system
       const sameModel =
         model.ref.providerID === context.model.ref.providerID &&
         model.ref.id === context.model.ref.id &&
@@ -492,6 +518,7 @@ export const layer = Layer.effect(
       trigger: Trigger,
       budget: number,
       keep: number,
+      strategy: "auto" | "local" | "remote",
     ): Effect.fn.Return<Result, Failure> {
       const context = trigger.context
       if (!context.messages.some(messageToText)) return yield* Effect.fail(NOTHING_TO_COMPACT)
@@ -503,7 +530,7 @@ export const layer = Layer.effect(
       // silently fall back to a local summary the caller did not ask for.
       const request = prepared.request
       if (
-        context.agent.info.compaction?.strategy === "remote" &&
+        strategy === "remote" &&
         !LLMClient.canCompact(request, { mechanism: "trigger" }) &&
         !LLMClient.canCompact(request)
       )
@@ -518,7 +545,7 @@ export const layer = Layer.effect(
         })
       // Remote compaction owns the replacement window. A hook-supplied local summary cannot honor that
       // contract, so it is refused rather than silently installed as local state.
-      if (prepared.event.result && context.agent.info.compaction?.strategy === "remote")
+      if (prepared.event.result && strategy === "remote")
         return yield* unsupported("Remote compaction requires a provider checkpoint, not a hook-supplied local summary")
 
       // History is selected before request hooks, so a hook that reroutes the request cannot be honored here.
@@ -841,6 +868,7 @@ export const layer = Layer.effect(
         yield* bus.publish(SessionEvent.Compaction.Failed, {
           sessionID,
           reason,
+          model: outcome.model ?? context.model.ref,
           inputID: trigger.reason === "manual" ? trigger.inputID : undefined,
           error: outcome.error,
           ...usage,
