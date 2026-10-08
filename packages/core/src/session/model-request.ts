@@ -243,17 +243,26 @@ function normalizeStringContent(candidate: unknown): unknown {
   return { ...candidate, content: [Message.text(content)] }
 }
 
-// Validates plugin-hook-returned messages at the hook boundary. Plain-string
-// content is normalized to one text part; any other message that does not
-// decode against the core message schema is dropped (its index is reported)
-// so a plugin's malformed message never fails the step.
-function sanitizeHookMessages(candidates: ReadonlyArray<unknown>): {
+// Validates only what the hook produced at the hook boundary. Messages the
+// hook left untouched (identical to a pre-hook input message) pass through
+// as-is, so history is never re-decoded; added or replaced messages with
+// plain-string content are normalized to one text part, and anything else
+// that does not decode against the core message schema is dropped (its index
+// is reported) so a plugin's malformed message never fails the step.
+function sanitizeHookMessages(
+  candidates: ReadonlyArray<unknown>,
+  untouched: ReadonlySet<unknown>,
+): {
   readonly messages: Array<Message>
   readonly dropped: Array<number>
 } {
   const messages: Array<Message> = []
   const dropped: Array<number> = []
   for (const [index, candidate] of candidates.entries()) {
+    if (untouched.has(candidate)) {
+      messages.push(candidate as Message)
+      continue
+    }
     const decoded = decodeHookMessage(normalizeStringContent(candidate))
     if (Option.isSome(decoded)) messages.push(decoded.value)
     else dropped.push(index)
@@ -261,7 +270,8 @@ function sanitizeHookMessages(candidates: ReadonlyArray<unknown>): {
   return { messages, dropped }
 }
 
-/** Placeholder shell and read definitions a Zen free-tier request lacks; none for any other model. */const freeTierPlaceholders = (model: SessionRunnerModel.Resolved, declared: ReadonlyMap<string, unknown>) => {
+/** Placeholder shell and read definitions a Zen free-tier request lacks; none for any other model. */
+const freeTierPlaceholders = (model: SessionRunnerModel.Resolved, declared: ReadonlyMap<string, unknown>) => {
   if (model.ref.providerID !== Provider.ID.opencode) return []
   if (model.cost.some((cost) => cost.input > 0 || cost.output > 0)) return []
   return FREE_TIER_TOOLS.filter((name) => !declared.has(name)).map((name) => ({
@@ -308,6 +318,10 @@ export const layer = Layer.effect(
       )
       // Hooks see the default output limit and may change or remove it. Titles and generate keep the provider default,
       // because their reasoning is hard to budget.
+      // Snapshot the pre-hook messages first: hooks mutate the draft's
+      // messages array in place, so anything not identical to these after the
+      // hook is hook-produced and needs validating at the boundary.
+      const untouched = new Set<unknown>(input.messages)
       const shaped = yield* shape(
         {
           sessionID: session.id,
@@ -322,12 +336,7 @@ export const layer = Layer.effect(
         },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )
-      // A plugin hook may return messages outside the core message shape
-      // (for example plain-string content). Normalize those at the hook
-      // boundary so a plugin can never crash the runner downstream: string
-      // content becomes one text part, anything else that does not decode is
-      // dropped with a warning.
-      const checked = sanitizeHookMessages(shaped.messages as ReadonlyArray<unknown>)
+      const checked = sanitizeHookMessages(shaped.messages, untouched)
       if (checked.dropped.length > 0)
         yield* Effect.logWarning("Dropping malformed messages from session hook", {
           kind,

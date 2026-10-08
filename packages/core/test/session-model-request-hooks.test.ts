@@ -168,18 +168,22 @@ describe("SessionModelRequest hook message boundary", () => {
       )
       const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
 
+      const history = Message.user("history")
       const prepared = yield* requests.primary({
         session,
         agent: Agent.ID.make("build"),
         model,
         system: [],
-        messages: [],
+        messages: [history],
       })
 
+      expect(prepared.event.messages[0]).toBe(history)
       expect(prepared.event.messages.map((message) => message.content)).toEqual([
+        [{ type: "text", text: "history" }],
         [{ type: "text", text: "plain string" }],
       ])
       expect(prepared.request.messages.map((message) => message.content)).toEqual([
+        [{ type: "text", text: "history" }],
         [{ type: "text", text: "plain string" }],
       ])
     }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
@@ -199,6 +203,8 @@ describe("SessionModelRequest hook message boundary", () => {
       })
 
       expect(prepared.request.messages).toEqual(input)
+      expect(prepared.event.messages).toEqual(input)
+      expect(prepared.event.messages[0]).toBe(input[0])
     }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
   )
 })
