@@ -104,6 +104,9 @@ export interface RunRecord {
   stopReason?: string
   budgetExceededAt?: string
   lastBudgetPingAt?: string
+  /** When the parent was first told this child's context passed
+   * CONTEXT_NOTICE_TOKENS; the notice is sent once per child run. */
+  contextNotifiedAt?: string
   retrying?: {
     until: string
     attempt: number
