@@ -458,17 +458,21 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return contextOfSnapshot(current)
   }
 
+  // The editable text is the effective span (B39 rule 4): a whole heading item
+  // shows its sections applied, as the read pane does. Sections have no
+  // difference between text and fullText.
   function resolvedText(node: TreeNode): string {
     const chain = chainFor(node)
     if (!chain) return ""
     const scopesValue = scopes()
-    return resolve({
+    const resolved = resolve({
       upstream: chain.upstream,
       records: chain.customizations,
       splits: chain.splits,
       scopes: scopesValue,
       address: chain.address,
-    }).text
+    })
+    return resolved.fullText ?? resolved.text
   }
 
   function threeWayFor(node: TreeNode): { original: string; mine: string; upstream: string } | undefined {

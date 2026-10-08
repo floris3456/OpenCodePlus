@@ -225,3 +225,32 @@ test("no ancestor customization gives no notice, and a write to the parent itsel
   if ("refusal" in parent) throw new Error(parent.refusal)
   expect(parent.notice).toBeUndefined()
 })
+
+test("a Defaults write for one agent is checked from that agent's Project view", () => {
+  const records = [rec("project", "seat", PARENT_GLOBAL)]
+  const memo = { ...input(records), agents: [...input(records).agents, { id: "alpha", scope: "defaults" as const }] }
+  const row = rowId(memo, "section:defaults:alpha:system:role:seat/routing")
+  const result = saveText(memo, row, "## Routing\nDefaults for alpha.\n")
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.notice).toBe(
+    'Saved, but "Seat" (section:project:alpha:system:role:seat) at Project replaces this text; edit or reset that row for this change to take effect.',
+  )
+})
+
+test("saving a whole heading item with an edited child keeps that edit at its level, each heading once", () => {
+  const records = [rec("project", "seat/routing", "## Routing\nOld project child.\n")]
+  const whole = "# Seat\n\n## Role\nR.\n\n## Routing\nWhole routing.\n\n## Merges\nM.\n\n# Tail\n\nT.\n"
+  const result = saveText(input(records), rowId(input(records), "item:project:alpha:system:role"), whole)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.some((record) => record.level === "project" && record.section === "seat/routing" && record.text?.includes("Whole routing."))).toBe(true)
+  const text = resolve({
+    upstream: item,
+    records: [...result.records],
+    splits: [],
+    scopes,
+    address: { level: "project", agent: "alpha", item: "system:role", section: null },
+  }).assembled
+  expect(headings(text)).toEqual(SEAT_HEADINGS)
+  expect(text).toContain("Whole routing.")
+  expect(text).not.toContain("Old project child.")
+})

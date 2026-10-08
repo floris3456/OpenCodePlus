@@ -968,10 +968,13 @@ function hiddenNotice(
 ): string | undefined {
   const sectionId = chain.address.section
   if (sectionId === null) return undefined
+  // An agent sees its own text from Project down, so a Defaults or Global write
+  // is checked there: a Project copy hides it even though the write's own chain
+  // does not include Project.
   const viewers: Address[] =
     chain.address.agent === null
       ? memo.ctx.agents.filter((agent) => applies(chain.upstream, agent.id)).map((agent) => ({ ...chain.address, level: "project", agent: agent.id }))
-      : [chain.address]
+      : [{ ...chain.address, level: "project" }]
   return viewers.flatMap((address): string[] => {
     const shadow = shadowOf({ upstream: chain.upstream, records, splits: chain.splits, scopes: memo.ctx.scopes, address }, sectionId)
     const node = shadow === undefined ? undefined : resolutionChain(address, memo.ctx.scopes)[shadow.rank]
