@@ -1641,15 +1641,20 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   })
-  // Write level: the winner's own Project/Global row, else Global, else the
-  // agent's own tier when Global is not in its chain.
+  // Write level: for an agent (not a team member), always the chat's Project
+  // level so other projects are never affected. For a team member, keep the
+  // level that supplies the model, else Global, else the team's tier,
+  // because member resolution and tree rows sit at the team's definition
+  // level and cannot resolve a Project-level member row.
   const winnerSource = effective?.source
   const writeLevel: Level =
-    winnerSource === "project" || winnerSource === "global"
-      ? winnerSource
-      : runtime.scopes.global.has(pick.agent)
-        ? "global"
-        : owner.level
+    owner.kind === "agent"
+      ? "project"
+      : winnerSource === "project" || winnerSource === "global"
+        ? winnerSource
+        : runtime.scopes.global.has(pick.agent)
+          ? "global"
+          : owner.level
   const ownerPath = owner.kind === "member" ? `${owner.team}/:${pick.agent}` : pick.agent
   const rowId = `item:${writeLevel}:${ownerPath}:${modelItemId(target)}`
   // The rows shown at the write level: the union down the chain from there.
