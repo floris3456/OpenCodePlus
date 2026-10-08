@@ -120,7 +120,7 @@ export function mergeUnits(base: string, yours: string, upstream: string): Merge
       entries.push({ type: "change", id, kind: "yours", base: span, yours: left, upstream: span, included: true })
       continue
     }
-    if (left.join("") === right.join("")) {
+    if (sameUnits(left, right)) {
       entries.push({ type: "change", id, kind: "same", base: span, yours: left, upstream: right, included: true })
       continue
     }
@@ -164,24 +164,49 @@ export function renderMerge(entries: readonly MergeEntry[], include: ReadonlySet
       const yoursOn = include.has(entry.id)
       const upstreamOn = entry.upstreamId !== undefined && include.has(entry.upstreamId)
       if (yoursOn) out.push(...entry.yours)
-      // Yours is the last unit of its text when it lacks a final newline: keep upstream on its own line.
-      if (yoursOn && upstreamOn && !endsLine(entry.yours)) out.push("\n")
       if (upstreamOn) out.push(...entry.upstream)
       if (!yoursOn && !upstreamOn) out.push(...entry.base)
       continue
     }
     out.push(...(include.has(entry.id) ? entryYours(entry) : entry.base))
   }
-  return out.join("")
+  return joinUnits(out)
 }
 
 function entryYours(entry: MergeChange): readonly string[] {
   return entry.kind === "upstream" ? entry.upstream : entry.yours
 }
 
-function endsLine(units: readonly string[]): boolean {
-  const last = units[units.length - 1]
-  return last === undefined || last === "" || last.endsWith("\n")
+// Units keep their own trailing whitespace, but a unit that was the last of its
+// text has none, so a unit from another side may follow it with no separator.
+// Exactly one separator goes between two adjacent units that lack one: a space
+// between prose sentences, a line break otherwise.
+function joinUnits(units: readonly string[]): string {
+  const parts = units.filter((unit) => unit !== "")
+  return parts.map((unit, index) => (index === 0 ? unit : separatorBetween(parts[index - 1] ?? "", unit) + unit)).join("")
+}
+
+function separatorBetween(previous: string, next: string): string {
+  if (/\s$/.test(previous) || /^\s/.test(next)) return ""
+  if (isBlockUnit(previous) || !/^[\p{L}\p{N}"'`(]/u.test(next)) return "\n"
+  return " "
+}
+
+function isBlockUnit(unit: string): boolean {
+  const line = unit.split("\n")[0] ?? ""
+  return isFence(line) || isHeading(line) || isTableRow(line) || isListItem(line)
+}
+
+// Units are compared without their trailing whitespace: the space before the
+// next sentence is not a change to this one (B41).
+function unitKey(unit: string): string {
+  return unit.replace(/\s+$/, "")
+}
+
+function sameUnits(left: readonly string[], right: readonly string[]): boolean {
+  const keys = left.map(unitKey)
+  const other = right.map(unitKey)
+  return keys.length === other.length && keys.every((key, index) => key === other[index])
 }
 
 function joinLines(lines: readonly string[], start: number, end: number, trailing: boolean): string {
@@ -248,10 +273,13 @@ function isSpace(char: string): boolean {
   return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f" || char === "\v"
 }
 
+// Regions overlap, or two insertions meet at one point. An insertion at the
+// edge of a replaced span is a separate change (B41: appending a sentence
+// changes one unit, not two).
 function touches(region: UnitRegion, end: number, group: readonly UnitRegion[]): boolean {
   if (region.start < end) return true
   if (region.start > end) return false
-  return region.start === region.end || group.some((other) => other.start === other.end && other.start === end)
+  return region.start === region.end && group.some((other) => other.start === other.end && other.start === end)
 }
 
 interface UnitRegion {
@@ -264,7 +292,7 @@ interface UnitRegion {
 function regionsOf(base: readonly string[], changed: readonly string[]): UnitRegion[] {
   const regions: { start: number; end: number; units: string[] }[] = []
   let open: { start: number; end: number; units: string[] } | undefined
-  for (const edit of unitScript(base, changed)) {
+  for (const edit of unitScript(base.map(unitKey), changed.map(unitKey))) {
     if (edit.op === "keep") {
       if (open !== undefined) regions.push(open)
       open = undefined

@@ -123,8 +123,27 @@ test("both sides included on a final unit without a newline keeps upstream on it
   const entries = mergeUnits("One.\nTwo.", "One.\nTwo mine.", "One.\nTwo up.")
   const both = entries.find((entry) => entry.type === "change" && entry.kind === "both")
   if (both?.type !== "change" || both.upstreamId === undefined) throw new Error("expected a both entry")
-  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("One.\nTwo mine.\nTwo up.")
+  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("One.\nTwo mine. Two up.")
   expect(renderMerge(entries, new Set([both.id]))).toBe("One.\nTwo mine.")
+})
+
+test("both sides included after a line break in a block keeps upstream on its own line", () => {
+  const entries = mergeUnits("# T\nb", "# T\nmine", "# T\n- theirs")
+  const both = entries.find((entry) => entry.type === "change" && entry.kind === "both")
+  if (both?.type !== "change" || both.upstreamId === undefined) throw new Error("expected a both entry")
+  expect(renderMerge(entries, new Set([both.id, both.upstreamId]))).toBe("# T\nmine\n- theirs")
+})
+
+test("appending a sentence after a changed last sentence: two entries, one separator in every combination", () => {
+  const entries = mergeUnits("A. B.", "A. B. C.", "A. B2.")
+  const [upstream, yours] = changes(entries)
+  if (upstream === undefined || yours === undefined) throw new Error("expected two change entries")
+  expect(changes(entries).map((entry) => entry.kind)).toEqual(["upstream", "yours"])
+  expect(renderMerge(entries, new Set([upstream.id, yours.id]))).toBe("A. B2. C.")
+  expect(renderMerge(entries, defaultInclude(entries))).toBe("A. B2. C.")
+  expect(renderMerge(entries, new Set([yours.id]))).toBe("A. B. C.")
+  expect(renderMerge(entries, new Set([upstream.id]))).toBe("A. B2.")
+  expect(renderMerge(entries, new Set())).toBe("A. B.")
 })
 
 test("the final newline is no change: a middle-sentence edit is one yours entry and the last unit is unchanged", () => {
