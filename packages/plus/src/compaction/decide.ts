@@ -26,8 +26,10 @@ import {
 //      own models and marked the decision `metadata["quota.switch"]`; when the
 //      chat model's cold list is not empty, its models replace CPA's.
 //
-// A team `compactWith` arming (the in-memory consumeColdCompaction) takes
-// priority over all of it: it is the user's explicit instruction for one chat.
+// An armed list (a team `compactWith`, or `/compact-cold`; the in-memory
+// consumeColdCompaction) takes priority over all of it: it is the user's
+// explicit instruction for one chat, and it has no `optional`: a manual
+// compaction reports its failure.
 
 // "First step of a new prompt": core's decision boundary cannot say it (its
 // `fresh` is only a brand-new epoch, which is never cold), so Plus's own
@@ -79,22 +81,20 @@ export interface CompactionDecisionContext {
   readonly agent?: CompactionDefaults
   /** The shared Defaults `compaction:*` rows for every agent. */
   readonly agents?: CompactionDefaults
-  /** The team `compactWith` model for this chat, when it armed one. */
-  readonly teamModel?: string
+  /** The models armed for this chat's next compaction (#1 writes, #2… fall back), when some were armed. */
+  readonly armed?: readonly string[]
   /** Absent when cold compacting is not consulted for this decision. */
   readonly cold?: ColdCompactionState
 }
 
 /**
- * Mutate `event` for the chat's own model. The team arming wins outright; on
+ * Mutate `event` for the chat's own model. An armed list wins outright; on
  * the CPA account-switch mark the chat model's cold list replaces CPA's own
  * models only when it is not empty.
  */
 export function decideCompaction(event: SessionCompactionDecision, context: CompactionDecisionContext): void {
-  if (context.teamModel !== undefined) {
-    event.compact = true
-    event.portable = true
-    event.compactionModel = Model.Ref.parse(context.teamModel)
+  if (context.armed !== undefined) {
+    armModels(event, context.armed)
     return
   }
   const effective = effectiveCompaction({

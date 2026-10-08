@@ -186,6 +186,30 @@ export function createWarming(context: Plugin.Context) {
     })
   }
 
+  // Compacts this chat now with its cold-cache list; the chat's compaction line
+  // then names the model that wrote the summary.
+  async function compactCold(): Promise<void> {
+    const route = context.ui.router.current()
+    if (route.type !== "session") {
+      context.ui.toast.show({ variant: "warning", message: "Open a chat to compact it with the cold-cache model" })
+      return
+    }
+    const next = await plus["compaction.cold"]({ sessionID: route.sessionID }).catch((error: unknown) => {
+      context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+      return undefined
+    })
+    if (next === undefined) return
+    if (!next.ok) {
+      context.ui.toast.show({ variant: "warning", message: next.where })
+      return
+    }
+    const [first, ...fallbacks] = next.models
+    context.ui.toast.show({
+      variant: "info",
+      message: `Compacting with ${first}${fallbacks.length === 0 ? "" : ` (fallback ${fallbacks.join(", ")})`}`,
+    })
+  }
+
   async function followCompact(): Promise<void> {
     const route = context.ui.router.current()
     if (route.type !== "session") {
@@ -240,6 +264,7 @@ export function createWarming(context: Plugin.Context) {
   return {
     toggle,
     toggleCompact,
+    compactCold,
     followCompact,
     follow,
     Footer,

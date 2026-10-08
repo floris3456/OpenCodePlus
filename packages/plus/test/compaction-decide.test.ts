@@ -3,6 +3,7 @@
 // account-switch replacement and the team compactWith priority.
 import { expect, test } from "bun:test"
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
+import type { SessionDomain } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
@@ -15,12 +16,14 @@ import {
   markPromptAdmitted,
   type ColdCompactionState,
 } from "../src/compaction/decide.js"
-import { compactionRowsOf, createState, decideCompactionFor, type PlusState } from "../src/index.js"
+import { compactColdNow } from "../src/compaction/cold-now.js"
+import { compactionRowsOf } from "../src/compaction/rows.js"
+import { createState, decideCompactionFor, type PlusState } from "../src/index.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { effectiveCompaction, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { canonicalJson, sha256 } from "../src/monitor/fingerprint.js"
 import type { RequestFingerprintData, RequestRow } from "../src/monitor/ledger.js"
-import { agentInfo, fullContext } from "./harness.js"
+import { agentInfo, context, fullContext } from "./harness.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -177,7 +180,7 @@ test("isCold treats a running, warm, compacted or unknown-lifetime chat as not c
 test("the team compactWith arming takes priority over per-model settings and cold arming", () => {
   const event = decision()
   decideCompaction(event, {
-    teamModel: "team/summary#high",
+    armed: ["team/summary#high"],
     rows: { compactionStrategy: { value: "local", level: "project" } },
     every: settings({ coldCompact: "on", coldModels: ["proxy/one", "proxy/two"] }),
     cold: cold(),
@@ -188,6 +191,66 @@ test("the team compactWith arming takes priority over per-model settings and col
   expect(event.compactionFallbacks).toBeUndefined()
   expect(event.optional).toBeUndefined()
   expect(event.metadata).toBeUndefined()
+})
+
+test("an armed list of three: #1 writes, #2 and #3 fall back, and no optional (a manual compaction reports failure)", () => {
+  const event = decision()
+  decideCompaction(event, { armed: ["proxy/one#high", "proxy/two", "proxy/three"], cold: cold({ active: true }) })
+  expect(event.compact).toBe(true)
+  expect(event.portable).toBe(true)
+  expect(event.compactionModel).toEqual(Model.Ref.parse("proxy/one#high"))
+  expect(event.compactionFallbacks).toEqual([Model.Ref.parse("proxy/two"), Model.Ref.parse("proxy/three")])
+  expect(event.optional).toBeUndefined()
+})
+
+// The `compaction.cold` RPC's logic: a chat on build and proxy/chat-model whose
+// session records each manual compaction it is asked for.
+function wiringSession(sessionID: string, onCompact: (input: unknown) => void) {
+  return context({
+    session: {
+      get: () => Effect.succeed({ id: Session.ID.make(sessionID), agent: "build", model: { providerID: "proxy", id: "chat-model" } }),
+      compact: (input: unknown) => {
+        onCompact(input)
+        return Effect.succeed(undefined)
+      },
+    } as unknown as SessionDomain,
+  })
+}
+
+test("compaction.cold arms the chat's list and asks core for one manual compaction", async () => {
+  const sessionID = "ses_cold_now"
+  const asked: unknown[] = []
+  const result = await compactColdNow(wiringSession(sessionID, (input) => asked.push(input)), coldState(["proxy/one", "proxy/two"]), sessionID)
+  expect(result).toEqual({ ok: true, models: ["proxy/one", "proxy/two"] })
+  expect(asked).toEqual([{ sessionID: Session.ID.make(sessionID) }])
+})
+
+test("compaction.cold with no list says where to add one and asks core for nothing", async () => {
+  const sessionID = "ses_cold_none"
+  const asked: unknown[] = []
+  const result = await compactColdNow(wiringSession(sessionID, (input) => asked.push(input)), coldState([]), sessionID)
+  expect(result).toEqual({
+    ok: false,
+    reason: "no-list",
+    where: "Instructions › build › proxy/chat-model › Warming › Compact cold caches with another model (a adds one)",
+  })
+  expect(asked).toEqual([])
+})
+
+test("an armed list is consumed by the next decision: only that one compacts", async () => {
+  const sessionID = "ses_armed_once"
+  const state = coldState(["proxy/one", "proxy/two", "proxy/three"])
+  const ledger = fakeLedger(requestRow(Date.now()))
+  const ctx = wiringSession(sessionID, () => {})
+  await compactColdNow(ctx, state, sessionID)
+  const first = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
+  await Effect.runPromise(decideCompactionFor(ctx, state, first, ledger))
+  expect(first.compactionModel).toEqual(Model.Ref.parse("proxy/one"))
+  expect(first.compactionFallbacks).toEqual([Model.Ref.parse("proxy/two"), Model.Ref.parse("proxy/three")])
+  expect(first.optional).toBeUndefined()
+  const second = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
+  await Effect.runPromise(decideCompactionFor(ctx, state, second, ledger))
+  expect(second.compact).toBeUndefined()
 })
 
 test("a quota.switch decision takes the chat model's list when it is not empty", () => {

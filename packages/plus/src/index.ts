@@ -42,7 +42,6 @@ import {
   effectiveCompaction,
   everySettings,
   MODEL_SETTINGS_FIELDS,
-  resolveModelCompactionFields,
   roundedWarmingFor,
   setModelSettingsRecord,
   settingsFor,
@@ -96,6 +95,8 @@ import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./w
 import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
+import { compactColdNow } from "./compaction/cold-now.js"
+import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionWarming } from "@opencode/plugin/effect/session"
@@ -3792,6 +3793,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         yield* emitWarmingChanged(state, input.sessionID)
         return status
       }),
+    "compaction.cold": (input) => Effect.promise(() => compactColdNow(ctx, state, input.sessionID)),
   }
 }
 
@@ -3841,30 +3843,6 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
   )
 }
 
-// The (agent, model) resolution inputs a warming or compaction decision walks:
-// the agent's model rows down its runtime chain plus the Defaults › Models rows.
-export function modelRowContextOf(
-  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
-  agentID: string,
-  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
-) {
-  const agent = dedupeAgents([
-    ...state.cachedAgents.filter((entry) => entry.team !== undefined),
-    ...state.cachedAgents.filter((entry) => entry.team === undefined),
-  ]).find((entry) => entry.id === agentID)
-  const team = agent?.team === undefined ? undefined : { level: scopeLevel(agent.scope), team: agent.team }
-  const runtime =
-    agent === undefined
-      ? { level: "project" as const, scopes: state.cachedScopes }
-      : runtimeScope({ id: agent.id, level: scopeLevel(agent.scope), ...(team === undefined ? {} : { team }) }, state.cachedScopes)
-  const target = { providerID: model.providerID, modelID: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) }
-  return {
-    input: { models: state.cachedModels, scopes: runtime.scopes, level: runtime.level, agent: agentID, ...(team === undefined ? {} : { team }) },
-    target,
-    key: { providerID: model.providerID, modelID: model.id },
-  }
-}
-
 export function warmingRowsOf(
   state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
   agentID: string,
@@ -3879,16 +3857,6 @@ export function warmingRowsOf(
     ...(modelRow === undefined ? {} : { model: modelRow }),
     ...(everyRow === undefined ? {} : { every: everyRow }),
   }
-}
-
-/** The compaction fields the agent's model rows set for this chat's model. */
-export function compactionRowsOf(
-  state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
-  agentID: string,
-  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
-) {
-  const context = modelRowContextOf(state, agentID, model)
-  return resolveModelCompactionFields(context.input, context.target)
 }
 
 /**
@@ -3943,11 +3911,11 @@ export function decideCompactionFor(
   ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
 ): Effect.Effect<void> {
   return Effect.promise(async () => {
-    // A team compactWith arming is the user's explicit instruction: it wins,
-    // and nothing below needs reading.
-    const teamModel = consumeColdCompaction(event.sessionID)
-    if (teamModel !== undefined) {
-      decideCompaction(event, { teamModel })
+    // An armed list (a team compactWith, or `compaction.cold`) is the user's
+    // explicit instruction: it wins, and nothing below needs reading.
+    const armed = consumeColdCompaction(event.sessionID)
+    if (armed !== undefined) {
+      decideCompaction(event, { armed })
       return
     }
     // Cold is consulted only at the first auto decision after a prompt: the
@@ -5228,12 +5196,6 @@ async function teamPolicyRows(
   )
   if (members.length === 0) return []
   return teamPolicyItems(policyMembersOf(members.map((agent) => ({ id: agent.id, team: agent.team }))), await liveRunScopes(teamsDataDir()))
-}
-
-function scopeLevel(scope: "project" | "global" | "defaults"): Level {
-  if (scope === "global") return "global"
-  if (scope === "defaults") return "defaults"
-  return "project"
 }
 
 // Per-agent active-model cache: the answer to "what model should this agent

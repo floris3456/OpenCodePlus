@@ -156,7 +156,7 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
   return {
     delegate: (input, caller) => guarded(() => lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => delegateHandler(ctx, state, input, caller))),
     finish: (input, caller) => guarded(() => finishHandler(input, caller, state.permissions)),
-    followup: (input, caller) => guarded(() => followupHandler(ctx, input, caller, state.permissions)),
+    followup: (input, caller) => guarded(() => followupHandler(ctx, state, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
     set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
