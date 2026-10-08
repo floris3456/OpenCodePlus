@@ -2,7 +2,9 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
 import {
+  COMPACTION_STRATEGIES,
   fromWords,
+  isDefaultSwitchField,
   isEvery,
   isModelSettingRowId,
   modelSettingEffective,
@@ -10,10 +12,12 @@ import {
   MODEL_SETTING_LABELS,
   parseModelFieldItemId,
   parseModelSettingItemId,
+  type ModelDefaultField,
   type ModelSettingsField,
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
 import { homeCategoryLabel, orderedCategories } from "../../instructions/categories.js"
+import { parseModelText } from "../../instructions/ops.js"
 import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
@@ -132,9 +136,9 @@ export function createInstructionsDialogs(
     return addMcp()
   }
 
-  // Enter on a Defaults › Models field row: one prompt for that field,
-  // prefilled with the row's own value; an empty answer clears it so the
-  // level below decides, and the effective value shows as the placeholder.
+  // Enter on a Defaults › Models field row: a switch toggles, Strategy cycles,
+  // the compaction model and instructions prompt, and the warming fields prompt
+  // for one value. Empty inherits; the effective value shows as the placeholder.
   async function editModelSetting(node: TreeNode): Promise<void> {
     if (disposed) return
     const parsed = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
@@ -142,24 +146,48 @@ export function createInstructionsDialogs(
       context.ui.toast.show({ variant: "error", message: "This row cannot be edited" })
       return
     }
+    const field = parsed.field
+    if (isDefaultSwitchField(field)) {
+      await state.toggleModelSwitch(node)
+      return
+    }
+    if (field === "compactionStrategy") {
+      const current = state.modelCompactionView(node)
+      const at = current === undefined ? -1 : (COMPACTION_STRATEGIES as readonly string[]).indexOf(current)
+      const next = COMPACTION_STRATEGIES[(at + 1) % COMPACTION_STRATEGIES.length]!
+      await state.editModelSettings(node, { compactionStrategy: next })
+      return
+    }
     const current = await currentSnapshot()
     if (disposed || current === undefined) return
     const effective = state.modelDefaultsView(node)
     if (effective === undefined) return
     const label = isEvery(parsed.key) ? "Every model" : `${parsed.key.providerID}/${parsed.key.modelID}`
-    const field = parsed.field
-    const now = modelSettingEffective(effective, field)
+    const now = modelSettingEffective(effective, field as ModelSettingsField)
     const variants = isEvery(parsed.key)
       ? []
       : ((current.hostModels ?? []).find((entry) => entry.providerID === parsed.key.providerID && entry.modelID === parsed.key.modelID)?.variants ?? [])
+    const own = effective.record?.[field]
     const raw = await context.ui.dialog.prompt({
       title: `${MODEL_SETTING_LABELS[field]} · ${label}`,
       description: `${fieldHelp(field, variants)} Empty inherits.${now === undefined ? "" : ` Now: ${now.text} (${fromWords(now.from)}).`}`,
-      value: effective.record?.[field] ?? "",
+      value: typeof own === "string" ? own : "",
       placeholder: now?.text ?? "",
     })
     if (disposed || raw === undefined) return
-    await state.editModelSettings(node, { [field]: raw.trim().length === 0 ? null : raw.trim() })
+    const text = raw.trim()
+    if (isCompactionText(field)) {
+      await state.editModelSettings(node, { [field]: text.length === 0 ? (field === "compactionInstructions" ? "" : null) : text } as never)
+      return
+    }
+    await state.editModelSettings(node, { [field]: text.length === 0 ? null : text } as never)
+  }
+
+  // The compaction model and instructions keep a typed value for now (I2b
+  // makes Model a picker); "" clears the model and is an empty prompt for the
+  // instructions.
+  function isCompactionText(field: string): boolean {
+    return field === "compactionModel" || field === "compactionInstructions"
   }
 
   // Enter on one field row under an agent/member/preset model row: edit that
@@ -176,6 +204,30 @@ export function createInstructionsDialogs(
     const current = await currentSnapshot()
     if (disposed || current === undefined) return
     const field = parsed.field
+    if (field === "compactWarm" || field === "coldCompact") {
+      await state.toggleModelSwitch(node)
+      return
+    }
+    if (field === "compactionStrategy") {
+      const value = (node.badges.value ?? "").split(" ")[0]?.toLowerCase() ?? "auto"
+      const at = (COMPACTION_STRATEGIES as readonly string[]).indexOf(value)
+      const next = COMPACTION_STRATEGIES[(at + 1) % COMPACTION_STRATEGIES.length]!
+      await state.setModelCompaction(node, { compactionStrategy: next })
+      return
+    }
+    if (field === "compactionModel" || field === "compactionInstructions") {
+      const target = `${parsed.target.providerID}/${parsed.target.modelID}`
+      const raw = await context.ui.dialog.prompt({
+        title: `${MODEL_FIELD_LABELS[field]} · ${target}`,
+        description: `${fieldHelp(field, [])} Empty ${field === "compactionInstructions" ? "is an empty prompt" : "inherits"}.`,
+        value: "",
+        placeholder: node.badges.value ?? "",
+      })
+      if (disposed || raw === undefined) return
+      const text = raw.trim()
+      await state.setModelCompaction(node, { [field]: text.length === 0 ? (field === "compactionInstructions" ? "" : null) : text } as never)
+      return
+    }
     if (field === "model") {
       const raw = await pickCatalogModel()
       if (disposed || raw === undefined) return
@@ -246,7 +298,38 @@ export function createInstructionsDialogs(
     return `${provider}/${modelID}`
   }
 
-// a on an item row appends a section to that item: prompt for the name and
+// a on a cold-cache list: the catalogue picker (provider → model → variant),
+// then append. An inherited list is copied to this level first.
+  async function addColdModel(node: TreeNode): Promise<void> {
+    if (disposed) return
+    const current = await currentSnapshot()
+    if (disposed || current === undefined) return
+    const picked = await pickCatalogModel()
+    if (disposed || picked === undefined) return
+    const target = parseModelText(picked)
+    if (target === undefined) {
+      context.ui.toast.show({ variant: "error", message: `"${picked}" is not a model` })
+      return
+    }
+    const variants =
+      (current.hostModels ?? []).find((entry) => entry.providerID === target.providerID && entry.modelID === target.modelID)?.variants ?? []
+    if (variants.length === 0) {
+      await state.addColdModel(node, picked)
+      return
+    }
+    const variant = await context.ui.dialog.select<string>({
+      title: "Variant",
+      placeholder: "The variant this model compacts with",
+      options: [
+        { title: "(none)", value: "", description: "The model without a variant" },
+        ...variants.toSorted().map((entry) => ({ title: entry, value: entry })),
+      ],
+    })
+    if (disposed || variant === undefined) return
+    await state.addColdModel(node, variant.length === 0 ? picked : `${picked}#${variant}`)
+  }
+
+  // a on an item row appends a section to that item: prompt for the name and
   // body, reuse the manual splitter boundary path in state.addSection, then
   // persist both halves of the boundary contract (the SplitRecord boundary
   // and the CustomizationRecord text) in one mutate.
@@ -1299,7 +1382,7 @@ export function createInstructionsDialogs(
     await state.deleteCategory(node)
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, editModelField, editModelSetting, addRule, editRule, relink, when, move, renameCategory, renameRow, deleteCategory, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, move, renameCategory, renameRow, deleteCategory, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>
@@ -1333,11 +1416,14 @@ function errorMessage(error: unknown): string {
 }
 
 // What one Defaults › Models field means, for its prompt.
-function fieldHelp(field: ModelSettingsField, variants: readonly string[]): string {
+function fieldHelp(field: ModelDefaultField, variants: readonly string[]): string {
   if (field === "warming")
     return "off, on, or the total time to keep the cache warm after the last reply (1m to 24h). A time rounds up to whole pings: 30m with a 4m ping is 32m."
   if (field === "interval")
     return "Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT."
   if (field === "prompt") return "The text of the keep-alive request."
+  if (field === "compactionModel") return "provider/model with an optional #variant; empty inherits the maintenance compaction model, otherwise the chat's model."
+  if (field === "compactionInstructions") return "The summary request's instructions; an empty prompt is a value of its own."
+  if (field === "compactionStrategy") return "auto follows the model's policy; local writes a text summary; remote uses the provider."
   return `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}.`
 }

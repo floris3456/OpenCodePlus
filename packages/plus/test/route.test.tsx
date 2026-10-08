@@ -1011,7 +1011,11 @@ test("no model field command binding normalizes onto the reset key r", async () 
     await goto(fixture, "item:project:alice:model:acme/nova-1", "acme/nova-1")
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
+    // The Warming group row, then its Warming field row inside it.
     await moveTo(fixture, "Warming")
+    await expand(fixture)
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("Warming"))
     // The keymap lowercases each comma-separated token: a bind of "R" is a
     // second `r` and would win over the reset command.
     const tokens = binds(fixture).flatMap((bind) => bind.split(",")).map((token) => token.trim().toLowerCase())
@@ -4044,7 +4048,9 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => listPane(frame).includes("Effort"))
     const open = listPane(fixture.captureCharFrame())
-    for (const label of ["Model", "Effort", "Warming", "Ping every"]) expect(open).toContain(label)
+    // The row shows Model, Effort and the Warming and Compaction groups; the
+    // group's fields appear when it opens.
+    for (const label of ["Model", "Effort", "Warming", "Compaction"]) expect(open).toContain(label)
     // The Model field picks from the host catalog and writes only that field
     // (the candidate is replaced in place).
     await moveTo(fixture, "Model")
@@ -4053,14 +4059,21 @@ test("enter on a model row opens its field rows and one field edits alone; w is 
     expect(fixture.fake.selectInputs.map((input) => input.title)).toEqual(["Model provider", "Model"])
     const own = fixture.fake.mutateInputs[0].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
     expect(own).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-2" })])
-    // The Warming field prompts for its own value and writes it alone.
+    // The Warming group opens into its fields; the Warming field prompts for
+    // its own value and writes it alone.
     await moveTo(fixture, "Warming")
+    await expand(fixture)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Ping every"))
+    dispatch(fixture, "down")
+    await fixture.waitForFrame((frame) => selectedRow(frame).includes("off · built-in"))
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.mutateInputs.length === 2)
     expect(fixture.fake.promptInputs.at(-1)?.title).toBe("Warming · acme/nova-1")
     const warming = fixture.fake.mutateInputs[1].records.filter((entry) => entry.type === "model" && entry.agent === "alice" && entry.removed !== true)
     expect(warming).toEqual([expect.objectContaining({ providerID: "acme", modelID: "nova-1", warming: "45m" })])
-    // The Effort picker names the candidate, not the row label ("Effort").
+    // The Effort picker names the candidate, not the row label ("Effort"):
+    // up from the Warming field passes the Warming group to reach it.
+    dispatch(fixture, "up")
     dispatch(fixture, "up")
     await fixture.waitForFrame((frame) => selectedRow(frame).includes("Effort"))
     dispatch(fixture, "return")
@@ -4136,6 +4149,10 @@ test("a Defaults › Models row opens into its fields, and enter on a field edit
     expect(listPane(fixture.captureCharFrame())).not.toContain("Ping every")
     // Enter (like →) opens the row instead of asking for every field in turn.
     expect(dispatch(fixture, "return")).toBe(true)
+    await fixture.waitForFrame((frame) => listPane(frame).includes("Warming"))
+    // The Warming group opens into its fields.
+    await moveTo(fixture, "Warming")
+    await expand(fixture)
     await fixture.waitForFrame((frame) => listPane(frame).includes("Keep-alive prompt"))
     const open = listPane(fixture.captureCharFrame())
     for (const label of ["Warming", "Ping every", "Keep-alive prompt", "Effort"]) expect(open).toContain(label)

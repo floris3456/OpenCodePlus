@@ -3,7 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
-import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LABELS, MODELS_GROUP_ID, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
+import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LABELS, MODEL_SETTINGS_FIELDS, MODELS_GROUP_ID, parseModelFieldItemId, parseModelSettingItemId, type ModelSettingsField } from "../../instructions/model-settings.js"
 import { formatDuration } from "../../instructions/model.js"
 import { modelDefaultsViewOf } from "../../instructions/snapshot.js"
 import type { Snapshot } from "../../rpc.js"
@@ -85,8 +85,12 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   const defaults = modelDefaultsView(node, snapshot)
   const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
   if (defaults !== undefined && setting !== undefined) {
-    const effective = modelSettingEffective(defaults, setting.field)
-    facts.push([MODEL_SETTING_LABELS[setting.field].toLowerCase(), effective === undefined ? "none" : `${effective.text} · ${fromWords(effective.from)}`, "value"] as Fact)
+    facts.push(["field", MODEL_SETTING_LABELS[setting.field].toLowerCase(), "value"] as Fact)
+    facts.push(["value", node.badges.value ?? "none"] as Fact)
+    if ((MODEL_SETTINGS_FIELDS as readonly string[]).includes(setting.field)) {
+      const effective = modelSettingEffective(defaults, setting.field as ModelSettingsField)
+      facts.push([MODEL_SETTING_LABELS[setting.field].toLowerCase(), effective === undefined ? "none" : `${effective.text} · ${fromWords(effective.from)}`, "value"] as Fact)
+    }
     if (setting.field === "warming" && defaults.on.value)
       facts.push(["window", `${Math.round(defaults.duration.value / defaults.interval.value)} × ${formatDuration(defaults.interval.value)} pings`])
     facts.push(["applies to", defaults.key.providerID === undefined ? "every model" : `${defaults.key.providerID}/${defaults.key.modelID}, unless an agent's own model row sets it`])

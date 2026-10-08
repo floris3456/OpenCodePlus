@@ -347,10 +347,15 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
         if (node.kind === "group") for (const child of node.children()) walk(child)
       }
       for (const group of groups) walk(group)
-      // A Defaults › Models row's field rows: built from the row alone.
-      if (isModelDefaultRowId(lazy.id))
-        for (const field of lazy.children())
-          push({ id: field.id, kind: field.kind, label: field.label, depth: field.depth, orphan: false, lazy: field, parent: undefined, address: field.address, sectionIds: [] })
+      // A Defaults › Models row's field rows: built from the row alone, through
+// the Warming and Compaction groups and the cold-cache list.
+      if (isModelDefaultRowId(lazy.id)) {
+        const walkField = (node: Lazy) => {
+          push({ id: node.id, kind: node.kind, label: node.label, depth: node.depth, orphan: false, lazy: node, parent: undefined, address: node.address, sectionIds: [] })
+          if (node.kind === "group") for (const child of node.children()) walkField(child)
+        }
+        for (const child of lazy.children()) walkField(child)
+      }
       return
     }
     push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [] })

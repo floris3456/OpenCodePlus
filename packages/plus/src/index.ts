@@ -38,6 +38,7 @@ import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { pickModelRow, type ModelPick } from "./instructions/ops.js"
 import {
+  compactionFieldsOf,
   everySettings,
   MODEL_SETTINGS_FIELDS,
   roundedWarmingFor,
@@ -1656,6 +1657,15 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
       })
       if ("error" in parsed) return invalidModelSettings(parsed.error)
+      const compact = compactionFieldsOf({
+        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
+        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
+        ...(input.coldModels === undefined ? {} : { coldModels: input.coldModels }),
+        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
+        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
+        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+      })
+      if ("error" in compact) return invalidModelSettings(compact.error)
       const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
         value === undefined ? undefined : value === null ? null : (parsed.fields[field] ?? null)
       const fields = {
@@ -1665,6 +1675,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.effort === undefined
           ? {}
           : { effort: input.effort === null || input.effort.trim().length === 0 ? null : input.effort.trim() }),
+        ...compact.fields,
       }
       const updated = new Date().toISOString()
       // A warming time rounds up to whole intervals against opencode.json too.
@@ -6761,6 +6772,12 @@ function toSnapshot(
             ...(record.warming === undefined ? {} : { warming: record.warming }),
             ...(record.interval === undefined ? {} : { interval: record.interval }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
+            ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+            ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
+            ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
+            ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
+            ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
+            ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
             ...(record.originalCandidate === undefined ? {} : { originalCandidate: { ...record.originalCandidate } }),
             updated: record.updated,

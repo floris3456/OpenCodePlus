@@ -49,7 +49,7 @@ test("the sidebar lists catalogues, origins, owners and teams with their members
   // The first owner shows by default, with its categories as tabs.
   expect(ws.owner?.key).toBe("agent:project:build")
   // No Skills tab: skills live under Tools › skill › Permissions › Skills.
-  expect(ws.categories.map((node) => node.label)).toEqual(["Settings", "Models", "Compaction", "Tools", "Base", "System"])
+  expect(ws.categories.map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Base", "System"])
   expect(ws.category?.label).toBe("Settings")
 })
 

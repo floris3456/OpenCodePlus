@@ -1,14 +1,19 @@
 import { expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { controlItems, controlRecord, controlSnapshot } from "./agent-controls-fixture.js"
-import { dispatch, reach, selectedRow } from "./instructions-nav.js"
-import { renderInstructionsRoute } from "./tui.js"
+import { dispatch, expand, footer, moveTo, reach, selectedRow, sleep } from "./instructions-nav.js"
+import { createSnapshot, renderInstructionsRoute } from "./tui.js"
 
 const build = Agent.Info.default(Agent.ID.make("build"))
 
 // Each test reaches its row the way a user does: the live filter with the
 // row's id, then enter ("go to").
 const selected = selectedRow
+
+// The list pane's text (the sidebar and the inspector sit behind dividers).
+function listText(frame: string): string {
+  return frame.split("\n").map((line) => line.split("│")[1] ?? "").join("\n")
+}
 
 for (const width of [80, 120]) {
   test(`Enter cycles Mode Primary → Subagent → All in the production route at ${width} columns`, async () => {
@@ -37,29 +42,7 @@ for (const width of [80, 120]) {
   })
 }
 
-test("Enter cycles Strategy Auto → Local → Remote and back without deleting saved local customization", async () => {
-  const id = "item:project:build:compaction:strategy"
-  const saved = [
-    controlRecord("compaction:model", { text: "acme/small" }),
-    controlRecord("compaction:instructions", { text: "Keep decisions and tests." }),
-  ]
-  await using fixture = await renderInstructionsRoute({
-    snapshots: [
-      controlSnapshot(saved),
-      ...["local", "remote", "auto"].map((text, index) => controlSnapshot([
-        ...saved, controlRecord("compaction:strategy", { text }),
-      ], { revision: index + 2 })),
-    ],
-  })
-  await reach(fixture, id, "Strategy")
-  for (const [index, text] of ["local", "remote", "auto"].entries()) {
-    dispatch(fixture, "return")
-    await fixture.waitForFrame((frame) => fixture.fake.mutateInputs.length === index + 1 && !frame.includes("Loading…"))
-    const records = fixture.fake.mutateInputs[index].records
-    expect(records).toContainEqual(expect.objectContaining({ item: "compaction:strategy", text }))
-    for (const record of saved) expect(records).toContainEqual(record)
-  }
-})
+
 
 test("Enter on Mode still cycles after opening its narrow detail pane", async () => {
   const id = "item:project:build:setting:mode"
@@ -222,7 +205,6 @@ for (const [item, label, text] of [
   ["setting:description", "Description", "A careful reviewer"],
   ["setting:color", "Color", "#123456"],
   ["setting:steps", "Steps", "12"],
-  ["compaction:model", "Model", "acme/compact#fast"],
 ]) {
   test(`${label} edits in a one-line prompt and persists ${item} through state`, async () => {
     const id = `item:project:build:${item}`
@@ -238,41 +220,50 @@ for (const [item, label, text] of [
   })
 }
 
-test("Instructions uses the full-width editor and persists compaction:instructions through state", async () => {
-  const item = "compaction:instructions"
-  const text = "Keep test evidence.\nKeep pending tasks."
-  const id = `item:project:build:${item}`
+// The cold-cache list takes B8's move keys: `m` picks a row up, ↑/↓ change the
+// try order in a draft, Enter drops with one write. Esc restores with no write.
+test("m, arrows and Enter reorder the cold-cache list with one write; Esc writes nothing", async () => {
+  const list = ["a/one", "b/two", "c/three"]
+  const model = {
+    type: "model" as const, level: "project" as const, agent: "build", providerID: "acme", modelID: "nova",
+    coldCompact: "on", coldModels: list, updated: "2026-09-26",
+  }
+  const moved = { ...model, coldModels: ["b/two", "a/one", "c/three"] }
+  const snapshot = (record: typeof model, revision: number) =>
+    createSnapshot({ agents: [{ id: "build", scope: "defaults", fileBacked: false, origin: "native" }], items: controlItems(), records: [record], revision })
   await using fixture = await renderInstructionsRoute({
-    snapshots: [controlSnapshot(), controlSnapshot([controlRecord(item, { text })], { revision: 2 })],
+    snapshots: [snapshot(model, 1), snapshot(moved, 2), snapshot(moved, 3)],
   })
-  await reach(fixture, id, "Instructions")
+  // Reach the model row, open it, open Warming, then the cold-cache group.
+  await reach(fixture, "item:project:build:model:acme/nova", "acme/nova")
   dispatch(fixture, "return")
-  await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-  const editor = fixture.renderer.currentFocusedEditor
-  expect(editor).toBeDefined()
-  editor?.setText(text)
-  dispatch(fixture, "ctrl+s")
-  await fixture.waitForFrame((frame) => frame.includes('Saved "Instructions"') && !frame.includes("ctrl+s save"))
-  expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item, text, section: null }))
-})
-
-test("Remote fields show retained values and refuse Enter, e, Space and reset in the route", async () => {
-  const id = "item:project:build:compaction:model"
-  await using fixture = await renderInstructionsRoute({
-    snapshots: [controlSnapshot([
-      controlRecord("compaction:strategy", { text: "remote" }),
-      controlRecord("compaction:model", { text: "acme/small" }),
-    ])],
-  })
-  await reach(fixture, id, "Model")
-  expect(fixture.captureCharFrame()).toContain("acme/small")
-  expect(fixture.captureCharFrame()).toContain("retained")
-  expect(dispatch(fixture, "return")).toBe(true)
-  await fixture.waitForFrame((frame) => frame.includes("choose Auto or Local"))
-  expect(dispatch(fixture, "e")).toBe(false)
-  expect(dispatch(fixture, "space")).toBe(false)
-  expect(dispatch(fixture, "r")).toBe(false)
-  expect(fixture.fake.mutateInputs).toEqual([])
+  await sleep(80)
+  await moveTo(fixture, "Warming")
+  await expand(fixture)
+  await moveTo(fixture, "other model")
+  await expand(fixture)
+  await moveTo(fixture, "a/one")
+  // m pick up, ↓ move down one, Enter drops: one write with the new order.
+  dispatch(fixture, "m")
+  await sleep(150)
+  await fixture.waitForFrame((frame) => footer(frame).includes("move in try order"))
+  dispatch(fixture, "down")
+  dispatch(fixture, "return")
+  await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
+  const written = fixture.fake.mutateInputs[0].records.find((record) => record.type === "model")
+  expect(written?.coldModels).toEqual(["b/two", "a/one", "c/three"])
+  await fixture.waitForFrame((frame) => listText(frame).includes("2 a/one"))
+  // m, ↓, Esc restores: no second write, order untouched.
+  await moveTo(fixture, "a/one")
+  await sleep(80)
+  dispatch(fixture, "m")
+  await sleep(150)
+  await fixture.waitForFrame((frame) => footer(frame).includes("move in try order"))
+  dispatch(fixture, "down")
+  dispatch(fixture, "escape")
+  await fixture.waitForFrame((frame) => !footer(frame).includes("move in try order"))
+  expect(fixture.fake.mutateInputs.length).toBe(1)
+  expect(selectedRow(fixture.captureCharFrame())).toContain("2 a/one")
 })
 
 test("r removes only the current Mode override and exposes global provenance", async () => {
@@ -339,18 +330,4 @@ test("r on a member-preset entity resets all nine scoped controls while retainin
   expect(dispatch(fixture, "r")).toBe(false)
 })
 
-test("saving empty compaction instructions creates an explicit empty prompt instead of resetting", async () => {
-  const id = "item:project:build:compaction:instructions"
-  const global = controlRecord("compaction:instructions", { level: "global", text: "Inherited summary prompt" })
-  await using fixture = await renderInstructionsRoute({
-    snapshots: [controlSnapshot([global]), controlSnapshot([global, controlRecord("compaction:instructions", { text: "" })], { revision: 2 })],
-  })
-  await reach(fixture, id, "Instructions")
-  dispatch(fixture, "return")
-  await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-  fixture.renderer.currentFocusedEditor?.setText("")
-  dispatch(fixture, "ctrl+s")
-  await fixture.waitForFrame((frame) => /value\s+Empty prompt/.test(frame))
-  expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({ item: "compaction:instructions", level: "project", text: "" }))
-  expect(fixture.fake.mutateInputs[0].records).toContainEqual(global)
-})
+

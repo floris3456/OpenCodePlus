@@ -79,10 +79,13 @@ import {
   modelDefaultValue,
   modelDefaultView,
   modelSettingEffective,
+  MODEL_DEFAULT_FIELDS,
+  MODEL_SETTINGS_FIELDS,
   parseModelDefaultItemId,
   parseModelFieldItemId,
   parseModelSettingItemId,
   settingsFor,
+  type ModelDefaultField,
   type ModelSettingsField,
   type ModelSettingsKey,
 } from "./instructions/model-settings.js"
@@ -1068,6 +1071,12 @@ function setModelDefaults(
     interval?: string
     prompt?: string
     effort?: string
+    compactWarm?: string
+    coldCompact?: string
+    coldModels?: readonly string[]
+    compactionStrategy?: string
+    compactionModel?: string
+    compactionInstructions?: string
     text?: string
     pin?: boolean
     active?: boolean
@@ -1086,6 +1095,12 @@ function setModelDefaults(
       input.interval === undefined &&
       input.prompt === undefined &&
       input.effort === undefined &&
+      input.compactWarm === undefined &&
+      input.coldCompact === undefined &&
+      input.coldModels === undefined &&
+      input.compactionStrategy === undefined &&
+      input.compactionModel === undefined &&
+      input.compactionInstructions === undefined &&
       input.state === undefined
     )
       return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
@@ -1099,6 +1114,12 @@ function setModelDefaults(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
+        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
+        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
+        ...(input.coldModels === undefined ? {} : { coldModels: [...input.coldModels] }),
+        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
+        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
+        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
         actor,
       }),
     )
@@ -1112,7 +1133,7 @@ function clearModelDefaults(
   node: TreeNode,
   actor: Plus.Actor,
   verb: "reset" | "remove",
-  fields: readonly ModelSettingsField[] = ["warming", "interval", "prompt", "effort"],
+  fields: readonly ModelDefaultField[] = [...MODEL_DEFAULT_FIELDS],
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const key = defaultsKeyOf(node)
@@ -1473,7 +1494,14 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           id,
           view,
           label: node.label,
-          ...(setting === undefined ? {} : { field: setting.field, value: modelSettingEffective(resolved, setting.field) ?? null }),
+          ...(setting === undefined
+            ? {}
+            : {
+                field: setting.field,
+                value: (MODEL_SETTINGS_FIELDS as readonly string[]).includes(setting.field)
+                  ? (modelSettingEffective(resolved, setting.field as ModelSettingsField) ?? null)
+                  : null,
+              }),
           summary: modelDefaultValue(resolved),
           warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
           interval: { value: resolved.interval.value, from: resolved.interval.from },
