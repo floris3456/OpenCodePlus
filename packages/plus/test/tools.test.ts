@@ -869,7 +869,7 @@ test("delete without confirm refuses and deletes nothing", async () => {
 test("every tool carries the plugin origin, no pinned, and namespace/codemode/permission set", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(9)
+  expect(registered).toHaveLength(10)
   for (const tool of registered) {
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
     expect(tool.options?.namespace).toBe("instructions")
@@ -882,7 +882,7 @@ test("every tool carries the plugin origin, no pinned, and namespace/codemode/pe
 test("every tool first description line is within 120 characters", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(9)
+  expect(registered).toHaveLength(10)
   for (const tool of registered) {
     const first = tool.description.split("\n", 1)[0] ?? ""
     expect(first.length).toBeLessThanOrEqual(120)
@@ -920,7 +920,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
   await Effect.runPromise(activate(ctx, state))
-  expect(await toolIds()).toHaveLength(9)
+  expect(await toolIds()).toHaveLength(10)
   expect(await skillIds()).toContain(teachingSkillId)
   // Only the install side: the harness instruction domain disposes to a no-op,
   // so the disposal proof below rests on the skill, tool and MCP domains.
@@ -940,7 +940,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   const installed = [...state.tooling]
   await Effect.runPromise(activate(ctx, state))
   expect(state.tooling).toEqual(installed)
-  expect(await toolIds()).toHaveLength(9)
+  expect(await toolIds()).toHaveLength(10)
   await Effect.runPromise(deactivate(state))
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
@@ -3400,4 +3400,110 @@ test("set requires changes when a section is sent; show reports it and its sourc
   expect((await runFail(set, { id: section.id, requires: ["tool:readr"] })).message).toContain('no row "tool:readr" exists; did you mean tool:reader')
   await runOk(set, { id: section.id, requires: null })
   expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
+})
+
+// ── row links (S2a B9–B12): the production instructions_link tool ─────────
+//
+// The tool's contract: no target inspects outgoing/incoming links; target
+// upserts, type defaults either, enabled:false masks. Both ends must be in the
+// same level/owner view; a refusal writes no record and no log line.
+
+async function rowIdOf(api: PlusApi, item: string): Promise<string> {
+  const snapshot = await snapshotOf(api)
+  const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === item)
+  if (node === undefined) throw new Error(`missing row ${item}`)
+  return node.id
+}
+
+async function linksOf(project: string) {
+  return (await load(project)).records.filter((record) => record.type === "rowlink")
+}
+
+test("instructions_link upserts, inspects both directions, and masks with enabled:false", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  const created = (await runOk(link, { id: reader, target: question })) as { type: string; enabled: boolean; status: string }
+  expect(created.type).toBe("either")
+  expect(created.enabled).toBe(true)
+  expect(created.status).toContain("either")
+  // Stored as one rowlink record, no second representation.
+  const stored = await linksOf(project)
+  expect(stored).toHaveLength(1)
+  expect(stored[0]).toMatchObject({ item: "tool:reader", target: "tool:question", link: "either" })
+  // Inspect from the primary: outgoing. From the connected end: incoming.
+  const outgoing = (await runOk(link, { id: reader })) as { links: { direction: string; target: string }[] }
+  expect(outgoing.links.map(({ direction, target }) => ({ direction, target }))).toEqual([
+    { direction: "outgoing", target: "tool:question" },
+  ])
+  const incoming = (await runOk(link, { id: question })) as { links: { direction: string; item: string }[] }
+  expect(incoming.links.map(({ direction, item }) => ({ direction, item }))).toEqual([
+    { direction: "incoming", item: "tool:reader" },
+  ])
+  // A second upsert on the same pair replaces it (still one record) and takes the new type.
+  await runOk(link, { id: reader, target: question, type: "oneway" })
+  const replaced = await linksOf(project)
+  expect(replaced).toHaveLength(1)
+  expect(replaced[0]?.link).toBe("oneway")
+  // enabled:false stores a tombstone that still inspects, marked disabled.
+  await runOk(link, { id: reader, target: question, enabled: false })
+  const masked = (await runOk(link, { id: reader })) as { links: { enabled: boolean }[] }
+  expect(masked.links).toHaveLength(1)
+  expect(masked.links[0]?.enabled).toBe(false)
+  expect((await linksOf(project))[0]?.enabled).toBe(false)
+  // An unrelated set write must carry the rowlink over, not drop it (the
+  // memo's rowlinks ride along in the delta).
+  await runOk(need(tools, "instructions_set"), { id: reader, state: "off" })
+  expect(await linksOf(project)).toHaveLength(1)
+})
+
+test("instructions_link refuses a self, unknown or cross-level link without writing or logging", async () => {
+  const { api, tools, project } = await freshFixture({
+    agents: [agentInfo("alpha", "role"), agentInfo("beta", "role")],
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const reader = await rowIdOf(api, "tool:reader")
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  // A different owner at the same level, and a different level entirely.
+  const otherOwner = nodes.find((node) => node.address?.item === "tool:reader" && node.address.agent === "beta")
+  const otherLevel = nodes.find((node) => node.address?.item === "tool:reader" && node.address.level === "preset")
+  const before = await snapshotOf(api)
+  const beforeLog = await Bun.file(projectLogPath(project)).exists()
+  expect((await runFail(link, { id: reader, target: reader })).message).toContain("cannot link to itself")
+  expect((await runFail(link, { id: reader, target: "item:defaults:alpha:tool:missing" })).message).toContain("row.unknown")
+  if (otherOwner === undefined || otherLevel === undefined) throw new Error("fixture lacks a mixed owner or level row")
+  expect((await runFail(link, { id: reader, target: otherOwner.id })).message).toContain("not in the same level and owner")
+  expect((await runFail(link, { id: reader, target: otherLevel.id })).message).toContain("not in the same level and owner")
+  // Nothing was written and no change-log line appeared.
+  expect((await snapshotOf(api)).records).toEqual(before.records)
+  expect(await Bun.file(projectLogPath(project)).exists()).toBe(beforeLog)
+})
+
+test("instructions_link refuses a protected agent's row before any write", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project, {
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const link = need(tools, "instructions_link")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  expect((await runFail(link, { id: reader, target: question })).message).toContain("agent.protected")
+  expect(await linksOf(project)).toEqual([])
 })

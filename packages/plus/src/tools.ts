@@ -76,6 +76,8 @@ import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, Split
 import { buildTreeMemo } from "./instructions/tree.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
+import { rowlinksOf } from "./instructions/resolve-memo.js"
+import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
 import type { StoredRecord } from "./instructions/store.js"
 import {
@@ -171,6 +173,13 @@ const DeleteDescription =
 const LogDescription =
   "Change history (who/what/when).\n" +
   "Reads the change log newest-first with where/limit/offset filtering."
+
+const LinkDescription =
+  "Inspect or set a row link between two rows of one owner and level (B9–B12).\n" +
+  "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled and the level/owner it is stored at.\n" +
+  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), oneway (turning id on saves target off; target on leaves id alone), shownWhenOn / shownWhenOff (the target is sent only while id is on / off).\n" +
+  "enabled:false stores a tombstone that masks the pair at this level, including an upstream link; enabled true or omitted stores a live link.\n" +
+  "Both ends must resolve in the same level and owner view; an unknown, protected or self link refuses without writing."
 
 const Field = Schema.Union([
   Schema.Literal("id"),
@@ -336,6 +345,20 @@ const LogInput = Schema.Struct({
   where: Schema.optionalKey(Schema.String),
   limit: Schema.optionalKey(Schema.Number),
   offset: Schema.optionalKey(Schema.Number),
+})
+
+const LinkInput = Schema.Struct({
+  id: Schema.String,
+  target: Schema.optionalKey(Schema.String),
+  type: Schema.optionalKey(
+    Schema.Union([
+      Schema.Literal("either"),
+      Schema.Literal("oneway"),
+      Schema.Literal("shownWhenOn"),
+      Schema.Literal("shownWhenOff"),
+    ]),
+  ),
+  enabled: Schema.optionalKey(Schema.Boolean),
 })
 
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
@@ -572,6 +595,18 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             }),
           )
           return { output: result.value }
+        }),
+    })
+    editor.add({
+      name: "link",
+      description: LinkDescription,
+      input: LinkInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: (input, context) =>
+        Effect.gen(function* () {
+          return yield* linkRow(api, input, actorFrom(context))
         }),
     })
   })
@@ -823,6 +858,70 @@ function setLink(
   })
 }
 
+// `link {id, target?, type?, enabled?}`: inspect a row's links, or upsert the
+// link whose primary is `id`. Both ends must resolve in one owner/level view
+// (B11); every refusal happens before the write, so a refused call leaves the
+// records and the change log untouched.
+function linkRow(
+  api: PlusApi,
+  input: { id: string; target?: string; type?: RowlinkType; enabled?: boolean },
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const snapshot = yield* snapshotOrFail(api)
+    const memo = memoFromSnapshot(snapshot)
+    const node = findRow(memo, input.id)
+    if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+    const address = node.address
+    if (address === undefined || address.item === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: `link.invalid: "${node.label}" is not a row a link can address` }))
+    const primary: RowlinkEndpoint = { item: address.item, section: address.section }
+    const scopes = contextOfSnapshot(snapshot)
+    if (input.target === undefined) {
+      return {
+        output: {
+          id: input.id,
+          item: address.item,
+          section: address.section,
+          links: rowlinkView(rowlinksOf(memo), scopes, address, primary),
+        },
+      }
+    }
+    const targetNode = findRow(memo, input.target)
+    if (targetNode === undefined) return yield* Effect.fail(unknownError(input.target, memo))
+    const targetAddress = targetNode.address
+    if (targetAddress === undefined || targetAddress.item === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: `link.invalid: "${targetNode.label}" is not a row a link can address` }))
+    if (!sameOwnerView(address, targetAddress))
+      return yield* Effect.fail(
+        new Tool.Error({ message: `link.invalid: "${node.label}" and "${targetNode.label}" are not in the same level and owner` }),
+      )
+    if (sameEndpoint(primary, targetAddress.item, targetAddress.section))
+      return yield* Effect.fail(new Tool.Error({ message: `link.invalid: "${node.label}" cannot link to itself` }))
+    const protectedPrimary = protectedOf(snapshot, node)
+    if (protectedPrimary !== undefined) return yield* Effect.fail(protectedError(protectedPrimary))
+    const protectedTarget = protectedOf(snapshot, targetNode)
+    if (protectedTarget !== undefined) return yield* Effect.fail(protectedError(protectedTarget))
+    const type = input.type ?? "either"
+    const next = writeRowlink(
+      rowlinksOf(memo),
+      address,
+      primary,
+      { item: targetAddress.item, section: targetAddress.section },
+      type,
+      input.enabled,
+      new Date().toISOString(),
+    )
+    const withoutRowlinks = memo.records.filter((record) => record.type !== "rowlink")
+    const status =
+      input.enabled === false
+        ? `Masked the ${type} link between "${node.label}" and "${targetNode.label}" at this level`
+        : `Linked "${node.label}" to "${targetNode.label}" (${type})`
+    const applied = yield* mutateDelta(api, memo, [...withoutRowlinks, ...next], actor, status)
+    return { output: { id: input.id, target: input.target, type, enabled: input.enabled !== false, ...applied } }
+  })
+}
+
 // The string form of a preset: an agent preset id, else `<team>/<member>`
 // (team ids never hold `/`, so the first one splits); a team owner takes a
 // team preset id. Undefined when no preset answers to it.
@@ -968,7 +1067,13 @@ function mutateOp(
   actor: Plus.Actor,
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   const models = op.models ?? modelsOfMemo(memo)
-  return mutateDelta(api, memo, [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo)], actor, op.status)
+  return mutateDelta(
+    api,
+    memo,
+    [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo), ...rowlinksOf(memo)],
+    actor,
+    op.status,
+  )
 }
 
 // A model op: customizations, splits and rules pass through unchanged; the

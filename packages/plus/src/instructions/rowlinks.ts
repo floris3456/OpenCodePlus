@@ -25,7 +25,7 @@
 // without falling back to an upstream marker.
 
 import type { Address, Catalogue, ChainNode, Level, Scopes, TeamRef } from "./model.js"
-import { resolutionChain, scopedTo } from "./model.js"
+import { catalogueForAddress, resolutionChain, sameTeam, scopedTo } from "./model.js"
 
 export type RowlinkType = "either" | "oneway" | "shownWhenOn" | "shownWhenOff" | "shownAlways"
 
@@ -74,6 +74,104 @@ export function endpointOf(record: Pick<RowlinkRecord, "item" | "section">): Row
 
 export function sameEndpoint(endpoint: RowlinkEndpoint, item: string, section: string | null): boolean {
   return endpoint.item === item && endpoint.section === section
+}
+
+/** Two addresses in the same owner/level view (B11): both ends of a link must share it. */
+export function sameOwnerView(left: Address, right: Address): boolean {
+  return (
+    left.level === right.level &&
+    left.agent === right.agent &&
+    sameTeam(left.team, right.team) &&
+    sameTeam(left.memberOf, right.memberOf) &&
+    catalogueForAddress(left) === catalogueForAddress(right)
+  )
+}
+
+/** The stored view of one effective link: the wire shape the link tool reports. */
+export interface RowlinkView {
+  readonly direction: "outgoing" | "incoming"
+  /** The primary endpoint (the switch, or the gate's condition row). */
+  readonly item: string
+  readonly section: string | null
+  /** The connected endpoint (switched off, or gated). */
+  readonly target: string
+  readonly targetSection: string | null
+  readonly type: RowlinkType
+  /** false is a tombstone that masks the pair at its level. */
+  readonly enabled: boolean
+  readonly level: Level
+  readonly agent: string | null
+  readonly team?: TeamRef
+  readonly catalogue?: Catalogue
+  readonly updated: string
+}
+
+/** Every effective link touching `endpoint`, as the tool's inspect view reports it. */
+export function rowlinkView(
+  links: readonly RowlinkRecord[],
+  scopes: Scopes,
+  address: Address,
+  endpoint: RowlinkEndpoint,
+): RowlinkView[] {
+  const { live, masked } = effectiveRowlinks(links, scopes, address)
+  return [...live, ...masked].flatMap((link): RowlinkView[] => {
+    const direction = sameEndpoint(endpoint, link.item, link.section)
+      ? "outgoing"
+      : sameEndpoint(endpoint, link.target, link.targetSection)
+        ? "incoming"
+        : undefined
+    if (direction === undefined) return []
+    return [
+      {
+        direction,
+        item: link.item,
+        section: link.section,
+        target: link.target,
+        targetSection: link.targetSection,
+        type: link.link,
+        enabled: link.enabled !== false,
+        level: link.level,
+        agent: link.agent,
+        ...(link.team === undefined ? {} : { team: link.team }),
+        ...(link.catalogue === undefined ? {} : { catalogue: link.catalogue }),
+        updated: link.updated,
+      },
+    ]
+  })
+}
+
+/**
+ * The new link list after upserting the pair `primary`↔`target` at `address`.
+ * Any record this same level already holds for the pair is replaced, so the
+ * pair stays one record and the change is a single upsert in the delta write.
+ * `enabled === false` stores a tombstone, which masks an upstream link of the
+ * same pair at this level.
+ */
+export function writeRowlink(
+  links: readonly RowlinkRecord[],
+  address: { readonly level: Level; readonly agent: string | null; readonly team?: TeamRef; readonly catalogue?: Catalogue },
+  primary: RowlinkEndpoint,
+  target: RowlinkEndpoint,
+  link: RowlinkType,
+  enabled: boolean | undefined,
+  updated: string,
+): RowlinkRecord[] {
+  const record: RowlinkRecord = {
+    type: "rowlink",
+    level: address.level,
+    agent: address.agent,
+    ...(address.team === undefined ? {} : { team: address.team }),
+    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+    item: primary.item,
+    section: primary.section,
+    target: target.item,
+    targetSection: target.section,
+    link,
+    ...(enabled === false ? { enabled: false } : {}),
+    updated,
+  }
+  const key = rowlinkKey(record)
+  return [...links.filter((existing) => !(scopedTo(existing, address) && rowlinkKey(existing) === key)), record]
 }
 
 /** The row-id token a condition reads as (`tool:x`, `!perm:shell:git-push`), for the `requires` view. */
@@ -225,11 +323,13 @@ export function linksTouching(
   address: Address,
   endpoint: RowlinkEndpoint,
 ): { readonly direction: "outgoing" | "incoming"; readonly link: RowlinkRecord }[] {
-  return effectiveRowlinks(links, scopes, address).live.flatMap((link) => {
-    if (sameEndpoint(endpoint, link.item, link.section)) return [{ direction: "outgoing" as const, link }]
-    if (sameEndpoint(endpoint, link.target, link.targetSection)) return [{ direction: "incoming" as const, link }]
-    return []
-  })
+  return effectiveRowlinks(links, scopes, address).live.flatMap(
+    (link): { readonly direction: "outgoing" | "incoming"; readonly link: RowlinkRecord }[] => {
+      if (sameEndpoint(endpoint, link.item, link.section)) return [{ direction: "outgoing", link }]
+      if (sameEndpoint(endpoint, link.target, link.targetSection)) return [{ direction: "incoming", link }]
+      return []
+    },
+  )
 }
 
 

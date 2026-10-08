@@ -368,6 +368,40 @@ function compareForTest(left: StoredRecord, right: StoredRecord): number {
   return JSON.stringify(left) < JSON.stringify(right) ? -1 : 1
 }
 
+function rowlink(overrides?: Partial<Extract<StoredRecord, { type: "rowlink" }>>): StoredRecord {
+  return {
+    type: "rowlink",
+    level: "project",
+    agent: "alpha",
+    item: "tool:a",
+    section: null,
+    target: "tool:b",
+    targetSection: null,
+    link: "either",
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+test("rowlink records round-trip through save then load, including a tombstone", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    rowlink(),
+    rowlink({ item: "tool:a", target: "tool:c", link: "shownWhenOn", enabled: false }),
+    rowlink({ level: "global", agent: null, item: "tool:d", target: "tool:e", link: "oneway" }),
+  ]
+  const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  expect(saved.ok).toBe(true)
+  const loaded = await load(project)
+  // A rowlink-only store needs no migration and reads back byte-identically.
+  expect(loaded.rowlinksMigrated).toBe(false)
+  expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
+  // A second save of the same rows is a no-op: no dual representation drift.
+  expect(
+    await save(project, { expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision, records: [...loaded.records].reverse() }),
+  ).toMatchObject({ ok: true, changed: { project: false, global: false } })
+})
+
 function team(overrides?: Partial<Extract<StoredRecord, { type: "team" }>>): StoredRecord {
   return {
     type: "team",

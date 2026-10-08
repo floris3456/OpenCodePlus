@@ -1,0 +1,181 @@
+// Row links (plus-1.2.0 S2a, B9–B12): the pure link algebra the tool and the
+// request-time gates read. One stored concept covers a write-time switch
+// (`either`/`oneway`) and a read-time gate (`shownWhenOn`/`shownWhenOff`); a
+// tombstone masks a pair at its level. These tests use the real helpers and
+// the real chain resolution, never a reimplementation.
+import { expect, test } from "bun:test"
+import type { Address, Scopes } from "../src/instructions/model.js"
+import {
+  conditionIds,
+  effectiveRowlinks,
+  gatedConditions,
+  linksTouching,
+  migrateRequires,
+  rowlinkKey,
+  rowlinkView,
+  sameOwnerView,
+  switchedOff,
+  switchPartners,
+  writeRowlink,
+  type RowlinkRecord,
+} from "../src/instructions/rowlinks.js"
+
+const UPDATED = "2026-01-01T00:00:00.000Z"
+
+// A two-agent scope set: project/alpha and global/alpha both exist so an
+// address's chain carries a node above its own level (for inheritance tests).
+function scopes(overrides: Partial<Scopes> = {}): Scopes {
+  return {
+    global: new Set(["alpha"]),
+    defaults: new Set<string>(),
+    ...overrides,
+  }
+}
+
+function link(
+  overrides: Partial<RowlinkRecord> & Pick<RowlinkRecord, "item" | "target" | "link">,
+): RowlinkRecord {
+  return {
+    type: "rowlink",
+    level: "project",
+    agent: "alpha",
+    section: null,
+    targetSection: null,
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+function address(overrides: Partial<Address> = {}): Address {
+  return { level: "project", agent: "alpha", item: "tool:a", section: null, ...overrides }
+}
+
+test("effectiveRowlinks keeps the nearest level's record and masks a tombstone", () => {
+  const scopesHere = scopes()
+  const own = link({ item: "tool:a", target: "tool:b", link: "either" })
+  // A tombstone at the same level as the live link replaces it; a live link
+  // at a lower level is shadowed by a tombstone at a nearer level.
+  const inherited = link({ level: "global", item: "tool:a", target: "tool:c", link: "shownWhenOn" })
+  const masked = link({ item: "tool:a", target: "tool:c", link: "shownWhenOn", enabled: false })
+  const { live, masked: gone } = effectiveRowlinks([own, inherited, masked], scopesHere, address())
+  expect(live.map((record) => rowlinkKey(record))).toEqual([rowlinkKey(own)])
+  expect(gone.map((record) => rowlinkKey(record))).toEqual([rowlinkKey(masked)])
+})
+
+test("effectiveRowlinks: a live record at this level shadows the level above", () => {
+  const above = link({ level: "global", item: "tool:a", target: "tool:b", link: "either" })
+  const here = link({ item: "tool:a", target: "tool:b", link: "oneway" })
+  const { live } = effectiveRowlinks([above, here], scopes(), address())
+  expect(live).toHaveLength(1)
+  expect(live[0]?.link).toBe("oneway")
+  expect(live[0]?.level).toBe("project")
+})
+
+test("sameOwnerView: level, owner, team and catalogue must all match", () => {
+  expect(sameOwnerView(address(), address({ item: "tool:b" }))).toBe(true)
+  expect(sameOwnerView(address(), address({ level: "global" }))).toBe(false)
+  expect(sameOwnerView(address(), address({ agent: "beta" }))).toBe(false)
+  expect(sameOwnerView(address(), address({ catalogue: "teams" }))).toBe(false)
+})
+
+test("writeRowlink upserts one record per pair at this level and stores a tombstone on enabled:false", () => {
+  const first = writeRowlink([], address(), { item: "tool:a", section: null }, { item: "tool:b", section: null }, "either", undefined, UPDATED)
+  expect(first).toEqual([link({ item: "tool:a", target: "tool:b", link: "either" })])
+  const masked = writeRowlink(first, address(), { item: "tool:a", section: null }, { item: "tool:b", section: null }, "either", false, UPDATED)
+  expect(masked).toHaveLength(1)
+  expect(masked[0]?.enabled).toBe(false)
+  // A different pair is added, not replacing the first.
+  const both = writeRowlink(masked, address(), { item: "tool:a", section: null }, { item: "tool:c", section: null }, "oneway", undefined, UPDATED)
+  expect(both).toHaveLength(2)
+})
+
+test("switchedOff fires one hop, symmetric for either and primary-only for oneway", () => {
+  const either = link({ item: "tool:a", target: "tool:b", link: "either" })
+  const oneway = link({ item: "tool:c", target: "tool:d", link: "oneway" })
+  const links = [either, oneway]
+  // Toggling either end of `either` turns the other off.
+  expect(switchedOff(links, scopes(), address(), { item: "tool:a", section: null })).toEqual([{ item: "tool:b", section: null }])
+  expect(switchedOff(links, scopes(), address(), { item: "tool:b", section: null })).toEqual([{ item: "tool:a", section: null }])
+  // `oneway` fires only from its primary.
+  expect(switchedOff(links, scopes(), address(), { item: "tool:c", section: null })).toEqual([{ item: "tool:d", section: null }])
+  expect(switchedOff(links, scopes(), address(), { item: "tool:d", section: null })).toEqual([])
+  // No cascade: turning the switched-off target on fires nothing.
+  expect(switchedOff([either], scopes(), address(), { item: "tool:b", section: null })).toEqual([{ item: "tool:a", section: null }])
+})
+
+test("switchPartners reports the effective partner in both directions", () => {
+  const either = link({ item: "tool:a", target: "tool:b", link: "either" })
+  const oneway = link({ item: "tool:c", target: "tool:d", link: "oneway" })
+  expect(switchPartners([either, oneway], scopes(), address(), { item: "tool:a", section: null }).map((p) => p.endpoint)).toEqual([
+    { item: "tool:b", section: null },
+  ])
+  expect(switchPartners([either, oneway], scopes(), address(), { item: "tool:b", section: null }).map((p) => p.endpoint)).toEqual([
+    { item: "tool:a", section: null },
+  ])
+  // oneway's target is not a partner in the reverse direction.
+  expect(switchPartners([either, oneway], scopes(), address(), { item: "tool:d", section: null })).toEqual([])
+})
+
+test("linksTouching and rowlinkView report outgoing and incoming effective links", () => {
+  const outgoing = link({ item: "tool:a", target: "tool:b", link: "either" })
+  const incoming = link({ item: "tool:c", target: "tool:a", link: "shownWhenOn" })
+  const touching = linksTouching([outgoing, incoming], scopes(), address(), { item: "tool:a", section: null })
+  expect(touching.map(({ direction, link }) => [direction, link.target])).toEqual([
+    ["outgoing", "tool:b"],
+    ["incoming", "tool:a"],
+  ])
+  const view = rowlinkView([outgoing, incoming], scopes(), address(), { item: "tool:a", section: null })
+  expect(view.map(({ direction, type, enabled }) => ({ direction, type, enabled }))).toEqual([
+    { direction: "outgoing", type: "either", enabled: true },
+    { direction: "incoming", type: "shownWhenOn", enabled: true },
+  ])
+})
+
+test("gatedConditions reads the nearest level's gate list, tombstone means always", () => {
+  const on = link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })
+  const off = link({ item: "tool:y", target: "system:s", link: "shownWhenOff" })
+  const gate = gatedConditions([on, off], scopes(), address({ item: "system:s" }))
+  expect(gate?.ids).toEqual(["tool:x", "!tool:y"])
+  expect(gate?.here).toBe(true)
+  // A tombstone at this level means "always" and replaces the upstream gate.
+  const upstreamOn = link({ level: "global", item: "tool:x", target: "system:s", link: "shownWhenOn" })
+  const mask = link({ item: "tool:x", target: "system:s", link: "shownWhenOn", enabled: false })
+  const masked = gatedConditions([upstreamOn, mask], scopes(), address({ item: "system:s" }))
+  expect(masked?.ids).toEqual([])
+  // No gate link at all: the caller reads the text's own marker.
+  expect(gatedConditions([link({ item: "tool:x", target: "tool:z", link: "either" })], scopes(), address({ item: "system:s" }))).toBeUndefined()
+})
+
+test("conditionIds: shownAlways (the migrated empty list) means no condition", () => {
+  expect(conditionIds([link({ item: "tool:x", target: "system:s", link: "shownAlways" })])).toEqual([])
+  expect(conditionIds([link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })])).toEqual(["tool:x"])
+})
+
+test("migrateRequires turns a requires list into gates and is idempotent", () => {
+  const records = [
+    {
+      type: "customization" as const,
+      level: "project" as const,
+      agent: "alpha",
+      item: "system:tools-and-rules",
+      section: "tools-and-rules/questions",
+      requires: ["tool:question", "!perm:shell:git-push"],
+      updated: UPDATED,
+    },
+  ]
+  const once = migrateRequires(records)
+  expect(once.migrated).toBe(true)
+  expect(once.records[0]).not.toHaveProperty("requires")
+  expect(once.rowlinks.map((record) => [record.item, record.target, record.link])).toEqual([
+    ["tool:question", "system:tools-and-rules", "shownWhenOn"],
+    ["perm:shell:git-push", "system:tools-and-rules", "shownWhenOff"],
+  ])
+  // An empty list is `shownAlways`; a store with no requires field is a no-op.
+  const empty = migrateRequires([{ type: "customization" as const, level: "project" as const, agent: "alpha", item: "x", section: null, requires: [], updated: UPDATED }])
+  expect(empty.rowlinks[0]?.link).toBe("shownAlways")
+  const noop = migrateRequires([{ type: "customization" as const, level: "project" as const, agent: "alpha", item: "x", section: null, updated: UPDATED }])
+  expect(noop.migrated).toBe(false)
+  expect(noop.rowlinks).toEqual([])
+  // Idempotent: migrating the already-migrated record yields no new rowlinks.
+  expect(migrateRequires(once.records).migrated).toBe(false)
+})
