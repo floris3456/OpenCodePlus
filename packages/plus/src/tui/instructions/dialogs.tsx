@@ -252,7 +252,7 @@ export function createInstructionsDialogs(
   // and the CustomizationRecord text) in one mutate.
   async function addSection(node: TreeNode | undefined): Promise<void> {
     if (disposed) return
-    if (!node || node.kind !== "item" || node.address === undefined || node.actions?.split !== true) {
+    if (!node || (node.kind !== "item" && node.kind !== "section") || node.address === undefined || (node.kind === "item" && node.actions?.split !== true)) {
       context.ui.toast.show({ variant: "error", message: "This row does not support sections" })
       return
     }

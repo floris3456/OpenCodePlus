@@ -66,7 +66,7 @@ import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { derive, manual, slice } from "./sections.js"
+import { derive, manual, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
 
 export interface OpSuccess {
@@ -1002,30 +1002,103 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   const node = found.node
   const memo = found.memo
   const address = node.address
-  if (!address || node.kind !== "item") return { refusal: `"${node.label}" does not support sections` }
-  if (node.actions?.split !== true) return { refusal: `"${node.label}" does not support sections` }
+  if (!address || (node.kind !== "item" && node.kind !== "section")) return { refusal: `"${node.label}" does not support sections` }
+  if (node.kind === "item" && node.actions?.split !== true) return { refusal: `"${node.label}" does not support sections` }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
-  const currentText = resolvedTextOf(memo, chain)
+
+  const itemAddress: Address = { ...address, section: null }
+  const currentText = resolvedTextOf(memo, { ...chain, address: itemAddress })
   const preview = resolveSplit({
     text: currentText,
     title: chain.upstream.title,
     splits: chain.splits,
     scopes: memo.ctx.scopes,
-    address: chain.address,
+    address: itemAddress,
   })
-  const existing =
+
+  if (preview.kind === "heading") {
+    const isSection = node.kind === "section"
+    const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
+    if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
+
+    const sectionsInSpan = targetSection !== undefined
+      ? preview.sections.filter((s) => s.start >= targetSection.start && s.end <= targetSection.end)
+      : preview.sections
+    const lastLeaf = sectionsInSpan[sectionsInSpan.length - 1] ?? targetSection ?? preview.sections[preview.sections.length - 1]
+    if (lastLeaf === undefined) return { refusal: `Could not add "${name}" to "${node.label}"` }
+
+    const hashCount = targetSection !== undefined
+      ? Math.max(2, targetSection.depth + 2)
+      : (() => {
+          const wrapper = wrappingSection(preview)
+          const nonPreamble = preview.sections.filter((s) => s.id !== "preamble")
+          const topDepth = wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 1)
+          return Math.max(2, topDepth + 1)
+        })()
+
+    const hashes = "#".repeat(hashCount)
+    const headingLine = `${hashes} ${name}`
+    const body = text.trim()
+    const sectionBlock = body.length > 0 ? `${headingLine}\n\n${body}` : headingLine
+
+    const leafAddress: Address = { ...itemAddress, section: lastLeaf.id }
+    const currentLeafText = resolve({
+      upstream: chain.upstream,
+      records: chain.customizations,
+      splits: chain.splits,
+      scopes: memo.ctx.scopes,
+      address: leafAddress,
+    }).text
+    const trimmedLeaf = currentLeafText.trimEnd()
+    const newLeafText = trimmedLeaf.length > 0 ? `${trimmedLeaf}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
+
+    const nextCustomizations = merge(
+      chain.customizations,
+      leafAddress,
+      { text: newLeafText },
+      chain.upstream,
+      memo.ctx.scopes,
+      chain.splits,
+    )
+
+    return {
+      records: nextCustomizations,
+      splits: chain.splits,
+      status: `Added "${name}" to "${node.label}"`,
+      retryHint: `added "${name}" against a stale revision; retry to apply`,
+    }
+  }
+
+  const isSection = node.kind === "section"
+  const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
+  if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
+
+  const existing: Boundary[] =
     preview.kind === "manual"
       ? preview.sections
           .filter((section) => section.id !== "preamble")
-          .map((section) => ({ id: section.id, name: section.name, start: section.start }))
-      : [{ id: "existing", name: chain.upstream.title, start: 0 }]
-  const nextStart = currentText.length
+          .map((section) => ({ id: section.id, name: section.name, start: section.start, depth: section.depth }))
+      : preview.kind === "block"
+        ? preview.sections
+            .filter((section) => section.id !== "preamble")
+            .map((section) => ({ id: section.id, name: section.name, start: section.start, depth: section.depth }))
+        : [{ id: "existing", name: chain.upstream.title, start: 0, depth: 0 }]
+
+  const insertPos = targetSection !== undefined ? targetSection.end : currentText.length
+  const newDepth = targetSection !== undefined ? (targetSection.depth ?? 0) + 1 : 0
   const used = new Set(existing.map((entry) => entry.id))
-  const boundaries = [...existing, { id: claim(slugify(name), used), name, start: nextStart }]
-  const split = manual(currentText, boundaries)
-  const added = split.sections.find((section) => section.start === nextStart && section.name === name)
-  if (!added) return { refusal: `Could not add "${name}" to "${node.label}"` }
+  const newId = claim(slugify(name), used)
+  const shiftAmount = text.length
+
+  const shiftedBoundaries: Boundary[] = existing.map((b) => {
+    if (b.start >= insertPos) return { ...b, start: b.start + shiftAmount }
+    return b
+  })
+  const boundaries = [...shiftedBoundaries, { id: newId, name, start: insertPos, depth: newDepth }].sort(
+    (left, right) => left.start - right.start || (left.depth ?? 0) - (right.depth ?? 0),
+  )
+
   const rest = chain.splits.filter((record) => !(record.item === address.item && scopedTo(record, address)))
   const nextSplits: SplitRecord[] = [
     ...rest,
@@ -1040,16 +1113,29 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
       updated: now(),
     },
   ]
-  const sectionAddress: Address = { ...address, section: added.id }
-  const sectionUpstream = upstreamSliceOf(split, currentText, added.id)
-  const nextCustomizations = merge(
-    chain.customizations,
+
+  const sectionAddress: Address = { ...itemAddress, section: newId }
+  let nextCustomizations = chain.customizations
+  if (insertPos < currentText.length) {
+    const nextText = currentText.slice(0, insertPos) + text + currentText.slice(insertPos)
+    nextCustomizations = merge(
+      nextCustomizations,
+      itemAddress,
+      { text: nextText },
+      chain.upstream,
+      memo.ctx.scopes,
+      nextSplits,
+    )
+  }
+  nextCustomizations = merge(
+    nextCustomizations,
     sectionAddress,
     { text },
-    { text: sectionUpstream, fingerprint: fingerprint(sectionUpstream) },
+    chain.upstream,
     memo.ctx.scopes,
     nextSplits,
   )
+
   return {
     records: nextCustomizations,
     splits: nextSplits,

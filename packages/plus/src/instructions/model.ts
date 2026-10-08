@@ -959,7 +959,7 @@ export interface SplitRecord {
   readonly team?: TeamRef
   /** Shared-inventory rows only (`agent === null`); absent means the Agents catalogue. */
   readonly catalogue?: Catalogue
-  readonly boundaries: readonly { id: string; name: string; start: number }[]
+  readonly boundaries: readonly { id: string; name: string; start: number; depth?: number }[]
   readonly updated: string
 }
 
@@ -1655,7 +1655,22 @@ export function resolveWhole(input: ChainInput): Resolved {
       if (ids !== undefined && !gate(ids)) excluded.add(section.id)
     }
   const { text: fullAssembled, spans } = assembleWithSpans(text, split, overridden)
-  const assembled = assembleWithOverrides(text, split, excluded, overridden)
+  let assembled = assembleWithOverrides(text, split, excluded, overridden)
+  if (split.kind === "heading" && overridden.size > 0) {
+    const derivedSplit = derive(fullAssembled, input.upstream.title)
+    if (derivedSplit.sections.length > split.sections.length) {
+      const derivedExcluded = new Set(
+        derivedSplit.sections.map((section) => section.id).filter((id) => sectionState(input, chain, id) === "off"),
+      )
+      const overridesOnDerived = new Map<string, string>()
+      for (const [id, val] of overridden) {
+        if (derivedSplit.sections.some((s) => s.id === id && !derivedSplit.sections.some((child) => child.id.startsWith(`${id}/`)))) {
+          overridesOnDerived.set(id, val)
+        }
+      }
+      assembled = assembleWithOverrides(fullAssembled, derivedSplit, derivedExcluded, overridesOnDerived)
+    }
+  }
 
   const hasOwnSectionText = split.sections.some((sec) => {
     const ownSec = at(sectionRecords(input, sec.id), input.address)
@@ -1757,8 +1772,11 @@ function resolveSection(input: ChainInput): Resolved {
   if (cached !== undefined) return cached
 
   const whole = resolveWhole({ ...input, address: { ...input.address, section: null } })
+  const hasManual = input.splits.some((s) => s.item === input.address.item && scopedTo(s, input.address))
+  const hasSectionOverrides = input.records.some((c) => c.item === input.address.item && c.section !== null && c.text !== undefined && scopedTo(c, input.address))
+  const baseText = !hasManual && hasSectionOverrides ? (whole.fullText ?? whole.assembled ?? whole.text) : whole.text
   const split = resolveSplit({
-    text: whole.text,
+    text: baseText,
     title: input.upstream.title,
     splits: input.splits,
     scopes: input.scopes,
@@ -1769,7 +1787,7 @@ function resolveSection(input: ChainInput): Resolved {
   const values = chain.map((node) => valueAt(input, sectioned, node, id))
   const textAt = values.findIndex((value) => value?.text !== undefined)
   const stateAt = values.findIndex((value) => value?.state !== undefined)
-  const upstreamSlice = definition === undefined ? "" : slice(whole.text, definition)
+  const upstreamSlice = definition === undefined ? "" : slice(baseText, definition)
   const text = textAt === -1 ? upstreamSlice : (values[textAt]?.text ?? "")
   const own = at(sectioned, input.address)
   const sourceNode = textAt === -1 ? (stateAt === -1 ? undefined : chain[stateAt]) : chain[textAt]
@@ -1975,6 +1993,11 @@ export function sectionOverrides(input: ChainInput, chain: readonly ChainNode[])
     const override = chain.map((node) => sectionTextAt(input, node, section.id)).find((text) => text !== undefined)
     if (override === undefined) continue
     out.set(section.id, override)
+  }
+  for (const record of recordsEntry.records) {
+    if (record.section === null || out.has(record.section)) continue
+    const override = chain.map((node) => sectionTextAt(input, node, record.section!)).find((text) => text !== undefined)
+    if (override !== undefined) out.set(record.section, override)
   }
   if (sectionOverridesCache.size >= sectionOverridesCacheLimit) {
     const oldest = sectionOverridesCache.keys().next()

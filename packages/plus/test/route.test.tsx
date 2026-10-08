@@ -386,7 +386,7 @@ test("add agent asks the name, then the preset, on the Project Agents group", as
 })
 
 test("a on an instruction row adds a section with split plus customization records", async () => {
-  const body = "# Purpose\n\na\n\n# Usage\n\nb\n"
+  const body = "guide body text\n"
   const after: Snapshot = createSnapshot({
     // The rebuilt tree still has the agent the section was added under.
     agents: [projectAgent("Implementer")],
@@ -611,6 +611,41 @@ test("a on a tool row adds a section", async () => {
     await fixture.waitForFrame((frame) => selectedRow(frame).includes("bash") && /[▸▾]/.test(selectedRow(frame)))
     await showSection(fixture, "Flags")
     expect(listPane(fixture.captureCharFrame())).toContain("Flags")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("a on a section row opens the add-section dialog directly without category fallback", async () => {
+  const headingText = "## Main\nMain content.\n"
+  const before = createSnapshot({
+    agents: [projectAgent("Implementer")],
+    items: [
+      {
+        id: "system:guide",
+        kind: "system",
+        group: "project",
+        title: "Guide",
+        text: headingText,
+        enabled: true,
+        fingerprint: "fp-guide",
+      },
+    ],
+  })
+  const fixture = await renderInstructionsRoute({
+    snapshots: [before],
+    width: 120,
+    height: 40,
+    dialogs: { prompts: ["SubSection", "sub content"] },
+  })
+  try {
+    await goto(fixture, "item:project:Implementer:system:guide", "Guide")
+    await showSection(fixture, "Main")
+    await goto(fixture, "section:project:Implementer:system:guide:main", "Main")
+    expect(dispatch(fixture, "a")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes('Added "SubSection"'))
+    expect(fixture.fake.dialogSelects.length).toBe(0)
+    expect(fixture.fake.dialogPrompts.map((entry) => entry[0])).toEqual(["Section name", "Section text"])
   } finally {
     fixture.destroy()
   }

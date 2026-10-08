@@ -17,6 +17,7 @@ export interface Boundary {
   readonly id: string
   readonly name: string
   readonly start: number
+  readonly depth?: number
 }
 
 export function derive(text: string, title: string): Split {
@@ -33,12 +34,14 @@ export function manual(text: string, boundaries: readonly Boundary[]): Split {
   if (sorted.length > 0 && hasContent(text.slice(0, sorted[0].start)))
     sections.push({ id: "preamble", name: "Preamble", depth: 0, start: 0, end: sorted[0].start })
   sorted.forEach((boundary, index) => {
+    const depth = boundary.depth ?? 0
+    const end = sorted.slice(index + 1).find((next) => (next.depth ?? 0) <= depth)?.start ?? text.length
     sections.push({
       id: boundary.id,
       name: boundary.name,
-      depth: 0,
+      depth,
       start: boundary.start,
-      end: index + 1 < sorted.length ? sorted[index + 1].start : text.length,
+      end,
     })
   })
   return { kind: "manual", sections }
@@ -357,7 +360,7 @@ function isDropped(id: string, excluded: ReadonlySet<string>): boolean {
   return parts.some((_, index) => excluded.has(parts.slice(0, index + 1).join("/")))
 }
 
-function parentIndexes(sections: readonly Section[]): (number | undefined)[] {
+export function parentIndexes(sections: readonly Section[]): (number | undefined)[] {
   const parents: (number | undefined)[] = sections.map(() => undefined)
   const stack: number[] = []
   sections.forEach((section, index) => {

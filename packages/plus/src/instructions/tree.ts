@@ -3213,6 +3213,7 @@ function lazySection(
     depth,
     ...(options?.introduction === true ? { introduction: true as const } : {}),
     address,
+    add: "section",
     actions: {
       toggle: true,
       // A wrapper's own body is presentation: an edit would store its section
