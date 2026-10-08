@@ -202,8 +202,86 @@ test("a system-row or role change keeps prefix fingerprints, adds exactly one Sy
   expect(synthetics[0].text).toContain("replaces the earlier text")
   expect(synthetics[0].text).toContain("Speak like a pirate")
 
-  // The request messages contain the note
-  expect(turn2.messages.some((m) => String(m.content).includes("Speak like a pirate"))).toBe(true)
+  // The request messages contain the note as one text part
+  const texts = turn2.messages
+    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+    .map((c) => ((c as { text?: unknown }).text as string | undefined) ?? "")
+  expect(texts.some((t) => t.includes("Speak like a pirate"))).toBe(true)
+  expect(turn2.messages.every((m) => Array.isArray(m.content))).toBe(true)
+})
+
+test("a mid-chat plan change pushes a note shaped as one text part and never twice", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, synthetics } = createHarness()
+
+  const state = { appliedParts: new Map() }
+  const input1: PublishPartsInput = {
+    applyInput: {
+      agents: [{ id: "alpha", level: "project" }],
+      items: [
+        makeItem({ id: "tool:reader", kind: "tool", text: "read files", enabled: true, agents: ["alpha"] }),
+        makeItem({ id: "system:role", kind: "system", text: "You are helpful.", enabled: true, agents: ["alpha"] }),
+      ],
+      records: [],
+      splits: [],
+      scopes: { global: new Set(), defaults: new Set() },
+    },
+  }
+
+  await applyPublishParts(ctx, state, input1)
+  let hook = contextCallbacks.at(-1)!
+
+  const turn1 = sessionEvent(
+    "ses_note_shape",
+    "alpha",
+    { reader: { description: "read files", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful." }],
+  )
+  await Effect.runPromise(hook(turn1))
+  expect(turn1.messages).toHaveLength(0)
+
+  // Mid-chat change: a permission row flips, like the crash report
+  const input2: PublishPartsInput = {
+    applyInput: {
+      agents: [{ id: "alpha", level: "project" }],
+      items: [
+        makeItem({ id: "tool:reader", kind: "tool", text: "read files", enabled: false, agents: ["alpha"] }),
+        makeItem({ id: "system:role", kind: "system", text: "You are helpful.", enabled: true, agents: ["alpha"] }),
+      ],
+      records: [],
+      splits: [],
+      scopes: { global: new Set(), defaults: new Set() },
+    },
+  }
+  await applyPublishParts(ctx, state, input2)
+  hook = contextCallbacks.at(-1)!
+
+  const turn2 = sessionEvent(
+    "ses_note_shape",
+    "alpha",
+    { reader: { description: "read files", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful." }],
+  )
+  await Effect.runPromise(hook(turn2))
+
+  // The pushed note is a user message whose content is one text part — never
+  // a bare string, which crashes the model request downstream.
+  expect(synthetics).toHaveLength(1)
+  expect(turn2.messages).toHaveLength(1)
+  expect(turn2.messages[0]?.role).toBe("user")
+  expect(turn2.messages[0]?.content).toEqual([{ type: "text", text: synthetics[0]?.text }])
+
+  // Re-sending the prompt does not push the note twice
+  const turn3 = sessionEvent(
+    "ses_note_shape",
+    "alpha",
+    { reader: { description: "read files", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful." }],
+  )
+  turn3.messages.push(...turn2.messages)
+  await Effect.runPromise(hook(turn3))
+  expect(turn3.messages).toHaveLength(1)
+  expect(synthetics).toHaveLength(1)
 })
 
 test("folding in after compaction / model switch / new chat", async () => {

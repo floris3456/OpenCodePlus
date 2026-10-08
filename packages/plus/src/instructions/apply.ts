@@ -1615,8 +1615,8 @@ export async function installSessionPlans(
             if (!hasNote) {
               event.messages.push({
                 role: "user",
-                content: noteText,
-              } as never)
+                content: [{ type: "text", text: noteText }],
+              } as SessionContext["messages"][number])
             }
           }
 
