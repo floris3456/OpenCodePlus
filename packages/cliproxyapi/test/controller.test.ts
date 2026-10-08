@@ -16,6 +16,8 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
   const state = {
     known: false,
     status: 200,
+    /** Status of the unauthenticated health probe, which answers `protocol: 1` while CPA is reachable. */
+    health: 200,
     reads: 0,
     /** Requests that stall for a second before answering, as during a server freeze. */
     stalls: 0,
@@ -43,7 +45,8 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
         state.stalls--
         await Bun.sleep(1000)
       }
-      if (!request.headers.has("Authorization")) return Response.json({ protocol: 1, mode: state.snapshot.mode })
+      if (!request.headers.has("Authorization"))
+        return Response.json({ protocol: 1, mode: state.snapshot.mode }, { status: state.health })
       if (!state.known) return new Response(null, { status: 401 })
       return Response.json(state.snapshot, { status: state.status })
     },
@@ -341,6 +344,62 @@ test("an unenrolled chat recovers from a transient bridge failure and backs off 
   const bound = f.state.reads
   await controller.tick()
   expect(f.state.reads).toBeGreaterThan(bound)
+})
+
+test("CPA forgetting an enrolled chat resets it as a new enrollment instead of pausing it", async () => {
+  const f = fixture()
+  let clock = 1_000_000
+  const controller = controllerFor(f, { now: () => clock })
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, generation: 3, cursor: 5 }
+  await controller.decide(f.event())
+  await controller.response("ses_test", "proxy", "model", ackResponse(3))
+  expect([...f.store.values()][0]?.generation).toBe(3)
+  const capability = [...f.store.values()][0]!.capability
+  // CPA restarted and forgot this chat's enrollment: the events endpoint answers 401 while the
+  // unauthenticated health probe still answers `protocol: 1`. The route is not paused; it is reset
+  // to a fresh enrollment at generation 0 keeping its capability (notice ids are idempotent).
+  f.state.known = false
+  const forgotten = f.event()
+  await controller.decide(forgotten)
+  expect(forgotten.refusal).toBeUndefined()
+  expect(await controller.status("ses_test")).toEqual([])
+  const claim = claimOf(await controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href))
+  expect(claim).toMatchObject({ generation: 0 })
+  const reset = [...f.store.values()][0]!
+  expect(reset.generation).toBe(0)
+  expect(reset.cursor).toBe(0)
+  expect(reset.capability).toBe(capability)
+  // The next model request enrolls the chat again as a new chat; CPA acknowledges generation 1, and
+  // the background tick resumes polling after the enrollment backoff.
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, generation: 1, cursor: 5 }
+  await controller.response("ses_test", "proxy", "model", ackResponse(1))
+  expect([...f.store.values()][0]?.generation).toBe(1)
+  // The chat is running again: the next tick polls the re-enrolled route normally.
+  await controller.activity("ses_test", true)
+  clock += UNENROLLED_BACKOFF
+  const reads = f.state.reads
+  await controller.tick()
+  expect(f.state.reads).toBeGreaterThan(reads)
+  expect([...f.store.values()][0]?.generation).toBe(1)
+})
+
+test("a 401 whose health probe fails still pauses the chat", async () => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, generation: 3 }
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(3))
+  expect([...f.store.values()][0]?.generation).toBe(3)
+  // CPA forgot the enrollment, but its health probe is unhealthy: this is not "not enrolled".
+  f.state.known = false
+  f.state.health = 500
+  const event = f.event()
+  await f.controller.decide(event)
+  expect(event.refusal?.type).toBe("quota.unavailable")
+  expect([...f.store.values()][0]?.generation).toBe(3)
+  await expect(f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)).rejects.toThrow()
 })
 
 function ackResponse(generation = 1, alias = "Small") {
