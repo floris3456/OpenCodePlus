@@ -8,7 +8,7 @@ import { teamsDataDir } from "../instructions/paths.js"
 import { put, take } from "./inbox.js"
 import { queue } from "./merge.js"
 import { requireSession, requireWorktree } from "./availability.js"
-import { consumeStopIntent, deliverInbox } from "./lifecycle.js"
+import { consumeStopIntent, deliverInbox, withoutHold } from "./lifecycle.js"
 import { armColdCompaction, isSessionWarm } from "./cold-compaction.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { bound, mayReach, relationOf, row } from "./reach.js"
@@ -296,7 +296,7 @@ async function admitIdleChild(
   parentId: string,
   itemID?: string,
 ): Promise<RunRecord> {
-  const resumed = current.state === "stopped" ? transition(consumeStopIntent(current), "starting", "followup") : current
+  const resumed = withoutHold(current.state === "stopped" ? transition(consumeStopIntent(current), "starting", "followup") : current)
   const open = resumed.attempts.at(-1)
   const started = open === undefined || isAttemptTerminal(open.state) ? startAttempt(resumed, { trigger: "followup", prompt: text }) : resumed
   const queued = started.attempts[started.attempts.length - 1]
