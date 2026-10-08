@@ -535,6 +535,27 @@ Added 2026-10-08 evening (build seat, continuing the run)
   `/compact-cold` with its palette entry and toasts (§5), and the team
   followup default (a stopped cold child without `compactWith` uses its
   model's list; refuses with `E_STOPPED` when empty).
+- **B35. WP-F (G5): fingerprints stored as deltas.** Measured
+  (`run/evidence/plus-1.2.0/monitor-store/F0-measure.md`): the workspace
+  ledger is 2.16 GB, 97.7% of it `request_fingerprint.message_prefixes`,
+  and 99.9% of a long session's entries repeat its previous fingerprint. A
+  fingerprint row stores its message list as a delta: `prefix_base` (the
+  session's previous fingerprint's request id), `prefix_shared` (how many
+  leading entries equal the base's) and only the entries after them. Every
+  64th row of a session, and the first, is a keyframe (full list, no base),
+  so reading one row walks at most 63 rows; reading a session in order
+  rebuilds each list from the one before. System parts, tools and options
+  stay as they are (2% of the size). Migration happens as rows are read: a
+  session read in order rewrites its legacy full rows as deltas in one
+  transaction (the change triggers then move its revision once; the next
+  read folds once more and writes nothing). Retention deletes keep chains
+  whole: before rows are deleted, the first surviving row of each session
+  becomes a keyframe. No VACUUM in 1.2.0: freed pages are reused, so the
+  file stops growing; it shrinks only by a manual VACUUM (documented). Proof:
+  over a **copy** of the real ledger, every session's verdicts, causes and
+  reports are identical before and after migration, the copy's
+  `request_fingerprint` pages drop by over 90%, and single-row reads return
+  the same lists.
 - **B25. A shadowed `set` says so.** A write to a section that a
   customization of its parent hides returns a notice naming that row, in the
   tool, the TUI and the CLI alike.
