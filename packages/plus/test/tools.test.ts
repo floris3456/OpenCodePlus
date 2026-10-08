@@ -1132,6 +1132,36 @@ async function mergeFixture(): Promise<{ api: PlusApi; tools: Map<string, Tool.I
   return { api: reader.api, tools: reader.tools, id: await readerRowId(reader.api) }
 }
 
+// A heading-derived item: its customization is stored at the section level.
+const headingOriginal = "# Reader\nAlpha one.\nBeta two.\n"
+const headingMine = "# Reader\nAlpha mine.\nBeta two.\n"
+const headingUpstream = "# Reader\nAlpha one.\nBeta upstream.\n"
+
+test("take on a heading-derived item follows upstream for the whole row", async () => {
+  const { project } = await tempProject()
+  const writer = await readerAt(project, headingOriginal)
+  const writerId = await readerRowId(writer.api)
+  await runOk(need(writer.tools, "instructions_set"), { id: writerId, text: headingMine })
+  const reader = await readerAt(project, headingUpstream)
+  const id = await readerRowId(reader.api)
+  const before = await snapshotOf(reader.api)
+  const customBefore = before.records.filter((record) => record.type === "customization" && record.item === "tool:reader")
+  const taken = (await runOk(need(reader.tools, "instructions_set"), { id, resolve: "take" })) as { status: string }
+  expect(taken.status).toBe(`Took upstream for "reader"`)
+  const after = await snapshotOf(reader.api)
+  const customAfter = after.records.filter(
+    (record): record is Plus.SnapshotCustomizationRecord => record.type === "customization" && record.item === "tool:reader",
+  )
+  const upstream = (await runOk(need(reader.tools, "instructions_show"), { id, view: "upstream" })) as { text: string }
+  const shown = (await runOk(need(reader.tools, "instructions_show"), { id })) as { text: string }
+  expect({ before: customBefore.length, textAfter: customAfter.filter((record) => record.text !== undefined).length }).toEqual({
+    before: 1,
+    textAfter: 0,
+  })
+  // The resolved view carries no final newline; the upstream text has one.
+  expect(shown.text).toBe(upstream.text.replace(/\n+$/, ""))
+})
+
 test("show diff proposes merge units with their kinds and defaults", async () => {
   const { tools, id } = await mergeFixture()
   const diff = (await runOk(need(tools, "instructions_show"), { id, view: "diff" })) as {
