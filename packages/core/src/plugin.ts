@@ -8,6 +8,7 @@ import type { PersistentPty } from "./persistent-pty.js"
 import { Cause, Context, Effect, Exit, Latch, Layer, Logger, Queue, References, Scope, Semaphore } from "effect"
 import { Bus } from "./bus.js"
 import { PluginHost } from "./plugin/host.js"
+import { PluginHooks } from "./plugin/hooks.js"
 import { type Failure, type Generation, Service } from "./plugin/service.js"
 import { State } from "./state.js"
 
@@ -61,6 +62,8 @@ const layer = Layer.effect(
         })
       })
       const exit = yield* Effect.suspend(() => plugin.effect({ ...host, storage: pluginStorage(plugin.id) })).pipe(
+        // A hook registered while this plugin loads is attributed to it in request-prepare timeouts.
+        Effect.provideService(PluginHooks.CurrentPlugin, plugin.id),
         grouped,
         inherit,
         Effect.updateContext((context: Context.Context<never>) =>
