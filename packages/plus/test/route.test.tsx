@@ -1299,34 +1299,24 @@ test("enter on a yellow node opens the three-pane diff and k keeps mine", async 
   }
 })
 
-test("t on a conflicted Take result opens the merged editor and cannot save until resolved", async () => {
+test("t on a both-changed unit saves yours as the merge, with no markers", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [reviewSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
     dispatch(fixture, "return")
     await fixture.waitForFrame((frame) => frame.includes("Upstream change"))
+    expect(fixture.fake.mutateInputs).toEqual([])
     dispatch(fixture, "t")
-    await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
-    const editor = fixture.renderer.currentFocusedEditor
-    // The same proposal e opens: both sides changed the only line, so the
-    // markers are present and nothing has been persisted or acknowledged.
-    expect(editor?.plainText).toBe("<<<<<<< yours\nmine\n=======\nnew-upstream\n>>>>>>> upstream")
-    expect(fixture.captureCharFrame()).toContain("cannot be applied automatically")
-    expect(fixture.fake.mutateInputs).toEqual([])
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
-    expect(fixture.fake.mutateInputs).toEqual([])
-    editor?.setText("merged text")
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes('Edited "sample"'))
+    await fixture.waitForFrame((frame) => frame.includes('Merged "sample"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)
-    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "merged text" })
+    expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({ type: "customization", text: "mine" })
+    expect(JSON.stringify(fixture.fake.mutateInputs[0].records)).not.toContain("<<<<<<<")
   } finally {
     fixture.destroy()
   }
 })
 
-test("t on a clean merge persists the merged text and clears the review only after t", async () => {
+test("t on a both-changed paragraph saves yours and clears the review only after t", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [mergeSnapshot()], width: 120, height: 40 })
   try {
     await gotoMcpItem(fixture)
@@ -1344,7 +1334,7 @@ test("t on a clean merge persists the merged text and clears the review only aft
     expect(fixture.fake.mutateInputs[0].records[0]).toMatchObject({
       type: "customization",
       item: "mcp:sample",
-      text: "one\ntwo upstream\nthree\nfour\ncustom tail\n",
+      text: "one\ntwo\nthree\nfour\ncustom tail\n",
       basedOn: fingerprint("one\ntwo upstream\nthree\nfour\n"),
       basedOnText: "one\ntwo upstream\nthree\nfour\n",
       acknowledged: fingerprint("one\ntwo upstream\nthree\nfour\n"),
@@ -1388,11 +1378,9 @@ test("enter on a yellow node resolves e edit through the route", async () => {
     await fixture.waitForFrame((frame) => frame.includes("ctrl+s save"))
     const editor = fixture.renderer.currentFocusedEditor
     expect(editor).toBeDefined()
-    // e edits a merge of the upstream change onto yours; both changed the
-    // same line, so the draft carries conflict markers and cannot be saved.
-    expect(editor?.plainText).toBe("<<<<<<< yours\nmine\n=======\nnew-upstream\n>>>>>>> upstream")
-    dispatch(fixture, "ctrl+s")
-    await fixture.waitForFrame((frame) => frame.includes("Conflict markers remain"))
+    // e edits the merged rows as the include set renders them; both sides
+    // changed the one unit, so yours is the draft: no markers, and it saves.
+    expect(editor?.plainText).toBe("mine")
     expect(fixture.fake.mutateInputs.length).toBe(0)
     editor?.setText("merged text")
     dispatch(fixture, "ctrl+s")
@@ -3963,7 +3951,7 @@ test("take on a state review drops yours; with text under review too the diff fo
     const record = second.fake.mutateInputs[0].records.find((entry) => entry.type === "customization" && entry.item === "tool:bash")
     expect(record).toMatchObject({ text: "mine", basedOnText: "old" })
     expect(record !== undefined && "state" in record).toBe(false)
-    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t take merged")))
+    await until(second, (frame) => frame.split("\n").some((line) => line.includes("k keep mine") && line.includes("t save merged")))
   } finally {
     second.destroy()
   }

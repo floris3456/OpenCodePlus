@@ -1,8 +1,7 @@
 // Structured sentence-level three-way merge for markdown instructions.
 //
-// `merge3` in diff-lines.ts merges whole lines and fences any region both
-// sides touched with conflict markers. A prose paragraph is one line, so two
-// edits in it always conflict. This module instead segments each side into
+// A whole-line merge treats a prose paragraph as one line, so two edits in it
+// always conflict. This module instead segments each side into
 // small units (sentences of a prose paragraph, headings, list items, table
 // rows, fenced blocks, blank runs), diffs base→yours and base→upstream on
 // those units, aligns the two diffs into entries, and renders the merged text
@@ -82,7 +81,7 @@ export type MergeEntry = UnchangedUnit | MergeChange
 /**
  * Three-way merge on units: diffs base→yours and base→upstream, then aligns
  * overlapping (or edge-touching insertion) regions into one entry per group,
- * exactly like `merge3` groups line regions. Unchanged gaps stay per-unit
+ * the way a line merge groups line regions. Unchanged gaps stay per-unit
  * entries so the order is explicit.
  */
 export function mergeUnits(base: string, yours: string, upstream: string): MergeEntry[] {
