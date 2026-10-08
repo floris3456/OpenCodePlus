@@ -1074,12 +1074,11 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
   if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
 
+  const existingSplit = chain.splits.find((record) => record.item === address.item && scopedTo(record, address))
   const existing: Boundary[] =
-    preview.kind === "manual"
-      ? preview.sections
-          .filter((section) => section.id !== "preamble")
-          .map((section) => ({ id: section.id, name: section.name, start: section.start, depth: section.depth }))
-      : preview.kind === "block"
+    existingSplit !== undefined
+      ? [...existingSplit.boundaries]
+      : preview.kind === "manual" || preview.kind === "block"
         ? preview.sections
             .filter((section) => section.id !== "preamble")
             .map((section) => ({ id: section.id, name: section.name, start: section.start, depth: section.depth }))
@@ -1089,15 +1088,23 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   const newDepth = targetSection !== undefined ? (targetSection.depth ?? 0) + 1 : 0
   const used = new Set(existing.map((entry) => entry.id))
   const newId = claim(slugify(name), used)
-  const shiftAmount = text.length
+  const newBoundary: Boundary = { id: newId, name, start: insertPos, depth: newDepth }
 
-  const shiftedBoundaries: Boundary[] = existing.map((b) => {
-    if (b.start >= insertPos) return { ...b, start: b.start + shiftAmount }
-    return b
-  })
-  const boundaries = [...shiftedBoundaries, { id: newId, name, start: insertPos, depth: newDepth }].sort(
-    (left, right) => left.start - right.start || (left.depth ?? 0) - (right.depth ?? 0),
-  )
+  let insertIndex = existing.length
+  if (targetSection !== undefined) {
+    const targetIdx = existing.findIndex((b) => b.id === targetSection.id)
+    if (targetIdx !== -1) {
+      insertIndex = targetIdx + 1
+      while (
+        insertIndex < existing.length &&
+        (existing[insertIndex].start < targetSection.end ||
+          (existing[insertIndex].depth ?? 0) > (targetSection.depth ?? 0))
+      ) {
+        insertIndex += 1
+      }
+    }
+  }
+  const boundaries = [...existing.slice(0, insertIndex), newBoundary, ...existing.slice(insertIndex)]
 
   const rest = chain.splits.filter((record) => !(record.item === address.item && scopedTo(record, address)))
   const nextSplits: SplitRecord[] = [
@@ -1115,23 +1122,13 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   ]
 
   const sectionAddress: Address = { ...itemAddress, section: newId }
-  let nextCustomizations = chain.customizations
-  if (insertPos < currentText.length) {
-    const nextText = currentText.slice(0, insertPos) + text + currentText.slice(insertPos)
-    nextCustomizations = merge(
-      nextCustomizations,
-      itemAddress,
-      { text: nextText },
-      chain.upstream,
-      memo.ctx.scopes,
-      nextSplits,
-    )
-  }
-  nextCustomizations = merge(
-    nextCustomizations,
+  const split = manual(currentText, boundaries)
+  const sectionUpstream = upstreamSliceOf(split, currentText, newId)
+  const nextCustomizations = merge(
+    chain.customizations,
     sectionAddress,
     { text },
-    chain.upstream,
+    { text: sectionUpstream, fingerprint: fingerprint(sectionUpstream) },
     memo.ctx.scopes,
     nextSplits,
   )

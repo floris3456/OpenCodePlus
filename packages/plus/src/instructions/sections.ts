@@ -29,7 +29,10 @@ export function derive(text: string, title: string): Split {
 }
 
 export function manual(text: string, boundaries: readonly Boundary[]): Split {
-  const sorted = [...boundaries].sort((left, right) => left.start - right.start)
+  const indexMap = new Map(boundaries.map((b, i) => [b, i]))
+  const sorted = [...boundaries].sort(
+    (left, right) => left.start - right.start || (indexMap.get(left)! - indexMap.get(right)!),
+  )
   const sections: Section[] = []
   if (sorted.length > 0 && hasContent(text.slice(0, sorted[0].start)))
     sections.push({ id: "preamble", name: "Preamble", depth: 0, start: 0, end: sorted[0].start })
@@ -48,7 +51,10 @@ export function manual(text: string, boundaries: readonly Boundary[]): Split {
 }
 
 export function assemble(text: string, split: Split, excluded: ReadonlySet<string>): string {
-  const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
+  const indexMap = new Map(split.sections.map((s, i) => [s, i]))
+  const ordered = [...split.sections].sort(
+    (left, right) => left.start - right.start || (indexMap.get(left)! - indexMap.get(right)!),
+  )
   const kept = ordered.filter((section) => !isDropped(section.id, excluded))
   const parents = parentIndexes(ordered)
   const indexBySection = new Map(ordered.map((section, index) => [section, index]))
@@ -83,7 +89,10 @@ export function assembleWithSpans(
   split: Split,
   overrides: ReadonlyMap<string, string>,
 ): AssembledWithSpans {
-  const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
+  const indexMap = new Map(split.sections.map((s, i) => [s, i]))
+  const ordered = [...split.sections].sort(
+    (left, right) => left.start - right.start || (indexMap.get(left)! - indexMap.get(right)!),
+  )
   const parents = parentIndexes(ordered)
   const children = new Map<number, number[]>()
   parents.forEach((parent, index) => {
@@ -105,21 +114,20 @@ export function assembleWithSpans(
     const section = ordered[index]
     if (section === undefined) return
     const secStart = out.length
-    const override = overrides.get(section.id)
-    if (override !== undefined) {
-      out += separate(override)
-      spans.set(section.id, { start: secStart, end: out.length })
-      return
-    }
     const kids = children.get(index) ?? []
     if (kids.length === 0) {
-      const content = text.slice(section.start, section.end)
-      out += content
+      const override = overrides.get(section.id)
+      if (override !== undefined) {
+        out += separate(override)
+      } else {
+        out += text.slice(section.start, section.end)
+      }
       spans.set(section.id, { start: secStart, end: out.length })
       return
     }
     const starts = kids.map((child) => ordered[child]?.start ?? section.end)
-    const own = text.slice(section.start, Math.min(...starts))
+    const override = overrides.get(section.id)
+    const own = override !== undefined ? override : text.slice(section.start, Math.min(...starts))
     out += separate(own)
     for (const child of kids) {
       emit(child)
@@ -168,7 +176,10 @@ export function assembleWithOverrides(
   excluded: ReadonlySet<string>,
   overrides: ReadonlyMap<string, string>,
 ): string {
-  const ordered = [...split.sections].sort((left, right) => left.start - right.start || left.depth - right.depth)
+  const indexMap = new Map(split.sections.map((s, i) => [s, i]))
+  const ordered = [...split.sections].sort(
+    (left, right) => left.start - right.start || (indexMap.get(left)! - indexMap.get(right)!),
+  )
   const parents = parentIndexes(ordered)
   const children = new Map<number, number[]>()
   parents.forEach((parent, index) => {
@@ -185,12 +196,15 @@ export function assembleWithOverrides(
     const section = ordered[index]
     if (section === undefined) return ""
     if (isDropped(section.id, excluded)) return ""
-    const override = overrides.get(section.id)
-    if (override !== undefined) return separate(override)
     const kids = children.get(index) ?? []
-    if (kids.length === 0) return text.slice(section.start, section.end)
+    if (kids.length === 0) {
+      const override = overrides.get(section.id)
+      if (override !== undefined) return separate(override)
+      return text.slice(section.start, section.end)
+    }
     const starts = kids.map((child) => ordered[child]?.start ?? section.end)
-    const own = text.slice(section.start, Math.min(...starts))
+    const override = overrides.get(section.id)
+    const own = override !== undefined ? override : text.slice(section.start, Math.min(...starts))
     return separate(own) + kids.map(effective).join("")
   }
   const tops = ordered.map((_, index) => index).filter((index) => parents[index] === undefined)
@@ -366,7 +380,7 @@ export function parentIndexes(sections: readonly Section[]): (number | undefined
   sections.forEach((section, index) => {
     while (stack.length > 0) {
       const top = sections[stack[stack.length - 1]]
-      if (top.depth < section.depth && top.end > section.start) break
+      if (top.depth < section.depth && top.end >= section.start) break
       stack.pop()
     }
     parents[index] = stack.length > 0 ? stack[stack.length - 1] : undefined

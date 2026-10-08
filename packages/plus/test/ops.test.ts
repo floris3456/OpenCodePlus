@@ -856,25 +856,111 @@ test("heading-derived item addSection on item row appends at top depth and split
   expect(customizations[0].text).toContain("## C\n\nC content.")
 })
 
-test("manual split addSection on section X inserts at end of X span with depth+1 and shifts later boundaries", () => {
-  const manualText = "Part one.\nPart two.\n"
+test("manual item with sections A and B: Global customizes A, Project adds A.1 without item-level record, showing A(Global) + A.1 + B and not shadowed on Global change", () => {
+  const manualText = "A original text.\nB original text.\n"
   const item = {
-    id: "system:manual-doc",
+    id: "system:manual-ab",
     kind: "system" as const,
     group: "project" as const,
-    title: "Manual Doc",
+    title: "Manual AB",
     text: manualText,
     enabled: true,
     fingerprint: fingerprint(manualText),
   }
   const splitRecord = {
     type: "split" as const,
-    level: "project" as const,
-    agent: "alpha",
-    item: "system:manual-doc",
+    level: "defaults" as const,
+    agent: null,
+    item: "system:manual-ab",
     boundaries: [
-      { id: "one", name: "One", start: 0, depth: 0 },
-      { id: "two", name: "Two", start: 10, depth: 0 },
+      { id: "a", name: "A", start: 0, depth: 0 },
+      { id: "b", name: "B", start: 17, depth: 0 },
+    ],
+    updated: "2026-10-08T00:00:00.000Z",
+  }
+  const globalCustomization: CustomizationRecord = {
+    type: "customization",
+    level: "global",
+    agent: "alpha",
+    item: "system:manual-ab",
+    section: "a",
+    text: "A global custom text.",
+    basedOn: fingerprint("A original text.\n"),
+    updated: "2026-10-08T00:00:00.000Z",
+  }
+  const input = baseInput({
+    items: [...baseInput().items, item],
+    records: [splitRecord, globalCustomization],
+  })
+  const sectionARowId = findId(input, "system:manual-ab:a")
+  const ok = addSection(input, sectionARowId, "A.1", "A.1 child text.")
+  if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
+
+  // 1. No item-level record is written at Project (assert the records)
+  const projectRecords = ok.records.filter((r) => r.item === "system:manual-ab" && r.level === "project")
+  expect(projectRecords.some((r) => r.section === null)).toBe(false)
+  const a1Record = projectRecords.find((r) => r.text === "A.1 child text.")
+  expect(a1Record).toBeDefined()
+
+  // 2. Project resolved text is A(Global) + A.1 + B in that order
+  const address = { level: "project" as const, agent: "alpha", item: "system:manual-ab", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(["alpha"]), defaults: new Set() },
+    address,
+  })
+  expect(resolved.assembled).toBe("A global custom text.\n\nA.1 child text.\n\nB original text.")
+
+  // 3. Tree shows A.1 as A's child
+  const inputAfterAdd = baseInput({
+    items: [...baseInput().items, item],
+    records: [...ok.records, ...ok.splits],
+  })
+  const nodes = expandedTree(inputAfterAdd)
+  const aNode = nodes.find((n) => n.id.endsWith("system:manual-ab:a"))
+  const a1Node = nodes.find((n) => n.label === "A.1")
+  expect(aNode).toBeDefined()
+  expect(a1Node).toBeDefined()
+  expect(a1Node?.kind).toBe("section")
+  expect(a1Node?.depth).toBe(aNode!.depth + 1)
+
+  // 4. Then change Global's A text again: Project resolved text shows new Global A text, still followed by A.1 (not shadowed)
+  const updatedGlobalRecords = ok.records.map((r) =>
+    r.level === "global" && r.item === "system:manual-ab" && r.section === "a"
+      ? { ...r, text: "New Global A text." }
+      : r,
+  )
+  const resolvedUpdated = resolve({
+    upstream: item,
+    records: updatedGlobalRecords,
+    splits: ok.splits,
+    scopes: { global: new Set(["alpha"]), defaults: new Set() },
+    address,
+  })
+  expect(resolvedUpdated.assembled).toBe("New Global A text.\n\nA.1 child text.\n\nB original text.")
+})
+
+test("a on the last section of a manual item appends at the end", () => {
+  const manualText = "A original text.\nB original text.\n"
+  const item = {
+    id: "system:manual-ab",
+    kind: "system" as const,
+    group: "project" as const,
+    title: "Manual AB",
+    text: manualText,
+    enabled: true,
+    fingerprint: fingerprint(manualText),
+  }
+  const splitRecord = {
+    type: "split" as const,
+    level: "defaults" as const,
+    agent: null,
+    item: "system:manual-ab",
+    boundaries: [
+      { id: "a", name: "A", start: 0, depth: 0 },
+      { id: "b", name: "B", start: 17, depth: 0 },
     ],
     updated: "2026-10-08T00:00:00.000Z",
   }
@@ -882,20 +968,26 @@ test("manual split addSection on section X inserts at end of X span with depth+1
     items: [...baseInput().items, item],
     records: [splitRecord],
   })
-  const sectionOneRowId = findId(input, "system:manual-doc:one")
-  const insertedText = "Child text.\n"
-  const ok = addSection(input, sectionOneRowId, "SubOne", insertedText)
+  const sectionBRowId = findId(input, "system:manual-ab:b")
+  const ok = addSection(input, sectionBRowId, "B.1", "B.1 child text.")
   if ("refusal" in ok) throw new Error(`expected success, got refusal: ${ok.refusal}`)
 
-  const nextSplit = ok.splits.find((s) => s.item === "system:manual-doc")
-  if (!nextSplit) throw new Error("expected split record")
-  const subOneBoundary = nextSplit.boundaries.find((b) => b.name === "SubOne")
-  if (!subOneBoundary) throw new Error("expected SubOne boundary")
-  expect(subOneBoundary.start).toBe(10)
-  expect(subOneBoundary.depth).toBe(1)
-  const twoBoundary = nextSplit.boundaries.find((b) => b.name === "Two")
-  if (!twoBoundary) throw new Error("expected Two boundary")
-  expect(twoBoundary.start).toBe(10 + insertedText.length)
+  const nextSplit = ok.splits.find((s) => s.item === "system:manual-ab" && s.level === "project")
+  expect(nextSplit).toBeDefined()
+  const b1Boundary = nextSplit?.boundaries.find((b) => b.name === "B.1")
+  expect(b1Boundary).toBeDefined()
+  expect(b1Boundary?.start).toBe(manualText.length)
+  expect(b1Boundary?.depth).toBe(1)
+
+  const address = { level: "project" as const, agent: "alpha", item: "system:manual-ab", section: null }
+  const resolved = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address,
+  })
+  expect(resolved.assembled).toBe("A original text.\nB original text.\n\nB.1 child text.")
 })
 
 test("added section can be toggled off and edited with assembled text reflecting it", () => {
