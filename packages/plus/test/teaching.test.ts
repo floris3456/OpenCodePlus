@@ -5,6 +5,17 @@ import { Effect, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline } from "../src/instructions/merge-units.js"
+import {
+  COMPACTION_STRATEGIES,
+  MODEL_DEFAULT_FIELDS,
+  MODEL_FIELD_NAMES,
+  compactionFieldsOf,
+  modelFieldItemId,
+  modelSettingRowId,
+  parseModelFieldItemId,
+  parseModelSettingItemId,
+} from "../src/instructions/model-settings.js"
 import { discover } from "../src/instructions/discover.js"
 import { query } from "../src/instructions/query.js"
 import { teachingFilePath, teachingItemId, teachingSkillId } from "../src/instructions/paths.js"
@@ -187,6 +198,96 @@ test("a plugin origin does not survive Skill.Info decoding, so the skill matches
   expect(row).toMatchObject({ kind: "skill", group: "plus" })
   const file = discovered.items.find((item) => item.id === teachingItemId)
   expect(file).toMatchObject({ kind: "system", group: "plus", title: "OpenCodePlus", text: teachingContent })
+})
+
+test("documented per-model compaction ids are the ones the real parsers produce", async () => {
+  for (const field of ["compactWarm", "coldCompact", "coldModels", "compactionStrategy", "compactionModel", "compactionInstructions"] as const) {
+    expect(MODEL_DEFAULT_FIELDS).toContain(field)
+    expect(teachingSkillContent).toContain(field)
+  }
+  expect(MODEL_FIELD_NAMES).toContain("compactionModel")
+  expect(MODEL_FIELD_NAMES).toContain("compactionInstructions")
+
+  const every = modelSettingRowId({}, "compactWarm")
+  expect(every).toBe("item:defaults:/models:modelsetting:compactWarm:*")
+  expect(parseModelSettingItemId(every.replace("item:defaults:/models:", ""))).toEqual({ key: {}, field: "compactWarm" })
+
+  const one = modelSettingRowId({ providerID: "openai", modelID: "gpt-5" }, "coldModels")
+  expect(one).toBe("item:defaults:/models:modelsetting:coldModels:openai/gpt-5")
+  expect(parseModelSettingItemId(one.replace("item:defaults:/models:", ""))).toEqual({
+    key: { providerID: "openai", modelID: "gpt-5" },
+    field: "coldModels",
+  })
+  // The stable shape the skill quotes for a Defaults field row.
+  expect(teachingSkillContent).toContain("item:defaults:/models:modelsetting:<field>:<* or provider/model>")
+
+  const agentField = modelFieldItemId({ providerID: "anthropic", modelID: "claude-opus-4", variant: "high" }, "compactionModel")
+  expect(agentField).toBe("modelfield:compactionModel:anthropic/claude-opus-4@high")
+  expect(parseModelFieldItemId(agentField)).toEqual({
+    target: { providerID: "anthropic", modelID: "claude-opus-4", variant: "high" },
+    field: "compactionModel",
+  })
+  expect(teachingSkillContent).toContain("modelfield:<field>:<provider>/<model>[@variant]")
+})
+
+test("documented compaction values validate with the real field parser", async () => {
+  expect(COMPACTION_STRATEGIES).toEqual(["auto", "local", "remote"])
+  expect(teachingSkillContent).toContain("`auto`, `local` or `remote`")
+
+  const on = compactionFieldsOf({ compactWarm: "on" })
+  expect("fields" in on && on.fields.compactWarm).toBe("on")
+  const list = compactionFieldsOf({ coldModels: "a/one#high, b/two" })
+  expect("fields" in list && list.fields.coldModels).toEqual(["a/one#high", "b/two"])
+  const strategy = compactionFieldsOf({ compactionStrategy: "local" })
+  expect("fields" in strategy && strategy.fields.compactionStrategy).toBe("local")
+  const model = compactionFieldsOf({ compactionModel: "cheap/model#high" })
+  expect("fields" in model && model.fields.compactionModel).toBe("cheap/model#high")
+  const cleared = compactionFieldsOf({ coldModels: "" })
+  expect("fields" in cleared && cleared.fields.coldModels).toBeNull()
+  expect("error" in compactionFieldsOf({ compactionStrategy: "fast" })).toBe(true)
+  expect("error" in compactionFieldsOf({ coldModels: "a/one, a/one" })).toBe(true)
+})
+
+test("documented merge kinds, defaults and B41 match the real engine", async () => {
+  const original = "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven."
+  const mine = "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
+  const upstream = "Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.\n"
+  const entries = mergeUnits(original, mine, upstream)
+  const changes = entries.flatMap((entry) => (entry.type === "change" ? [entry] : []))
+  expect(changes.map((entry) => [entry.id, entry.kind])).toEqual([
+    ["m0", "yours"],
+    ["m1", "upstream"],
+    ["m2", "both"],
+    ["m3", "same"],
+  ])
+  const both = changes.find((entry) => entry.kind === "both")
+  expect(both?.upstreamId).toBe("m2:upstream")
+
+  const defaults = defaultInclude(entries)
+  expect(defaults.has("m2")).toBe(true)
+  expect(defaults.has("m2:upstream")).toBe(false)
+  const merged = renderMerge(entries, defaults)
+  expect(merged).toBe("Alpha mine.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same.")
+  expect(merged).not.toContain("<<<<<<<")
+  // The documented example include set shows both sides of a `both` unit, still
+  // without markers, and defaults to the ids `show` returns.
+  const chosen = renderMerge(entries, new Set(["m0", "m1", "m2", "m2:upstream", "m3"]))
+  expect(chosen).toContain("Epsilon yours.")
+  expect(chosen).toContain("Epsilon upstream.")
+  expect(chosen).not.toContain("<<<<<<<")
+
+  // B41: the final newline is not part of the comparison (the fixture above
+  // ends in a `same` unit, not a `both`), and units compare without trailing
+  // whitespace, so one appended sentence is one change, not two.
+  expect(withoutFinalNewline(upstream)).toBe("Alpha one.\nBeta two.\nGamma upstream.\nDelta four.\nEpsilon upstream.\nZeta six.\nEta same.")
+  expect(mergeUnits("A.\nB.", "A.\nB.", "A.\nB.\n").some((entry) => entry.type === "change")).toBe(false)
+  expect(mergeUnits("One. Two.", "One. Two. Three.", "One. Two.").filter((entry) => entry.type === "change")).toHaveLength(1)
+})
+
+test("the skill documents the compact-warm follow and compact-cold commands", async () => {
+  for (const phrase of ["/compact-warm", "<leader>j", "follow the model settings", "/compact-cold", 'resolve: "merge"']) {
+    expect(teachingSkillContent).toContain(phrase)
+  }
 })
 
 test("the release workflow is listed under Plus skills without relabeling unrelated skills", async () => {

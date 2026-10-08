@@ -29,7 +29,7 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 ## Row ids
 
-- \`item:<level>:<owner>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`. Defaults › Models rows (the keep-alive defaults every agent falls back to) use \`modeldefault:*\` for Every model and \`modeldefault:<provider>/<model>\`, e.g. \`item:defaults:/models:modeldefault:cliproxyapi/claude-opus-5-5\`; each holds one field row per field, \`modelsetting:<warming|interval|prompt|effort>:<* or provider/model>\`, e.g. \`item:defaults:/models:modelsetting:interval:*\`.
+- \`item:<level>:<owner>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`. Defaults › Models rows (the keep-alive and compaction defaults every agent falls back to) use \`modeldefault:*\` for Every model and \`modeldefault:<provider>/<model>\`, e.g. \`item:defaults:/models:modeldefault:cliproxyapi/claude-opus-5-5\`; each holds one field row per field, \`modelsetting:<field>:<* or provider/model>\`, where \`<field>\` is \`warming|interval|prompt|effort|compactWarm|coldCompact|coldModels|compactionStrategy|compactionModel|compactionInstructions\`, e.g. \`item:defaults:/models:modelsetting:interval:*\`.
 - \`section:…:<sectionId>\` — one section inside a row; list exact ids with \`show({ id, view: "sections" })\`.
 - \`agent:<level>:<id>\` — one agent's subtree. Only project/global/defaults agent ids accept \`view: "assembled"\`.
 - \`team:<level>:<name>\` — one team; \`team:<level>:<team>:<member>\` — one member of it.
@@ -84,11 +84,40 @@ Models are live: each agent subtree has a \`Models\` group holding the union dow
 
 Agent settings use \`item:<level>:<owner>:setting:<field>\`: \`enabled\` and \`hidden\` accept \`state\`; \`mode\`, \`description\`, \`color\`, and \`steps\` accept \`text\`. Mode is primary/subagent/all, color is six-digit #RRGGBB, steps is a positive integer; empty color/steps clear that field. Hidden changes discovery, not permissions. These controls use the same preset/Defaults/scope chain, but their fallback is the agent's configuration, not the off-by-default tool policy. They do not support sections or pins. Filter with \`item:setting\`.
 
-Compaction rows are \`compaction:strategy\`, \`compaction:model\`, and \`compaction:instructions\`, all accepting \`text\`. Strategy is auto/local/remote. Auto follows the active model's policy; local uses the per-agent model (provider/model#variant), otherwise a configured maintenance compaction model, otherwise the active session model. Instructions inherit the maintenance compaction agent unless overridden; empty instructions explicitly clear the prompt, while Reset resumes inheritance. Remote uses provider capabilities and ignores local model/instruction values without discarding them; unsupported remote compaction fails explicitly. All scopes and agent/member presets support these rows. Filter with \`item:compaction\`.
+Compaction rows are \`compaction:strategy\`, \`compaction:model\`, and \`compaction:instructions\`, all accepting \`text\`. Strategy is auto/local/remote. Auto follows the active model's policy; local uses the per-agent model (provider/model#variant), otherwise a configured maintenance compaction model, otherwise the active session model. Instructions inherit the maintenance compaction agent unless overridden; empty instructions explicitly clear the prompt, while Reset resumes inheritance. Remote uses provider capabilities and ignores local model/instruction values without discarding them; unsupported remote compaction fails explicitly. All scopes and agent/member presets support these rows. Filter with \`item:compaction\`. These agent-wide rows are the old Compaction tab; the same values also exist per model, below.
+
+## Per-model compaction
+
+Compaction, warming and the cold-cache list are model settings: they never change a chat's request prefix. A model can set them at any level, and a store without the fields behaves and sends exactly as before.
+
+- A **Defaults › Models field row** \`item:defaults:/models:modelsetting:<field>:<* or provider/model>\` sets one field for Every model (\`*\`) or one model. \`set({ id, text })\` writes it; empty text clears it so the level below decides:
+  - \`compactWarm\`, \`coldCompact\`: \`on\` or \`off\`.
+  - \`coldModels\`: the try order as a comma list, e.g. \`a/one#high, b/two\`; each is \`provider/model[#variant]\`, listed once.
+  - \`compactionStrategy\`: \`auto\`, \`local\` or \`remote\`.
+  - \`compactionModel\`: \`provider/model[#variant]\`.
+  - \`compactionInstructions\`: the summary prompt; \`""\` is an explicit empty prompt.
+- An **agent/member/preset model row** exposes the same fields as \`modelfield:<field>:<provider>/<model>[@variant]\` field rows under its \`item:<level>:<owner>:model:…\` row: \`compactWarm\`, the \`coldCompact\` cold-cache group (whose list rows are \`item:<level>:<owner>:coldmodel:<model>:cold:<index>\`, in try order) and the Compaction group's \`compactionStrategy\`, \`compactionModel\` and \`compactionInstructions\`. The TUI edits them (Warming ▸ "Compact before cold" and the cold-cache list, Compaction ▸ Strategy/Model/Instructions); each field row shows its effective value and, when inherited, its source.
+
+Resolution, field by field:
+
+- \`compactWarm\`, \`coldCompact\`, \`coldModels\`: the agent's model row chain (project → … → defaults) → Defaults › this model → Every model → built-in (\`off\`, \`off\`, no models). The list resolves as a whole: the first level that sets a list wins, and its rows append or drop there.
+- \`compactionStrategy\`, \`compactionModel\`, \`compactionInstructions\`: the model row chain → the agent's agent-wide \`compaction:*\` rows → Defaults › this model → Every model → the shared Defaults rows for every agent → opencode.json or the maintenance compaction agent → built-in (\`auto\`, no model, no instructions).
+
+\`compactWarm\` is the model's default "Compact before cold"; each chat has its own on/off/default switch (\`/compact-warm\`, \`<leader>j\`), and the palette "Compact before cold: follow the model settings" resets it. \`/compact-cold\` compacts now with the chat model's list (#1, then #2… as fallbacks); with no list it names where to add one and changes no model.
 
 Permission rules are live: turning a rule \`off\` installs core deny rules \`{ action, resource, effect: "deny" }\` for that agent only (appended; core evaluates last-match-wins) and scrubs matching lines from tool descriptions, system parts, the base part, and catalog descriptions. \`show\` on a perm row previews the scrub and displays any refusal \`message\`. \`create({ kind:"rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds a custom rule — \`level\` defaults to \`project\`, and a rule with no \`agent\` is shared: it displays as the canonical Defaults row \`item:defaults::perm:<tool>:<id>\` without changing where it is stored; \`delete({ id, confirm:true })\` removes only user-created rules. \`set({ id, message })\` updates the refusal message shown to the model. An agent may change its own rules; only \`protectedAgents\` (enforced again at the shared API boundary when the actor is a tool) and \`confirm:true\` refuse a write.
 
 Patterns are CORE WILDCARDS over the parsed command text — NOT regex. \`*\` spans any run (including empty and spaces), \`?\` matches exactly one character. For shell the resource is the parsed command text, so \`git *\` also matches a bare \`git\` (core rewrites a trailing " *" into an optional group). For file tools the resource is the file path (\`*.env*\`, \`**/.git/**\`); for webfetch the URL (\`*github.com*\`); for subagent/skill the exact agent/skill id. Keywords derive from the pattern (head plus subcommands, stopping at wildcards/flags: \`"git push *"\` scrubs lines mentioning "git push", not every "git" line).
+
+## Review merge (sentence rows)
+
+\`show({ id, view: "diff" })\` returns \`mineDiff\`, \`upstreamDiff\`, a one-line \`summary\`, and \`merge: { units, text }\`. A unit is \`{ id, kind, yours, upstream, base, included }\` with \`kind\` \`yours\`, \`upstream\`, \`both\` or \`same\`. A \`both\` unit (the same sentence changed on each side) has a second id \`<id>:upstream\` with \`included: false\` by default, so yours starts included and upstream's starts excluded. A prose paragraph is split into sentences; headings, list items, table rows, fenced blocks and blank runs are their own units. \`merge.text\` is the default merged text and carries no conflict markers.
+
+\`set({ id, resolve: "merge", include: [unit ids] })\` saves a choice: \`include\` holds the \`merge.units\` ids to keep and may name either side of a \`both\` unit; omit it for the defaults. The render is stored, and one equal to the current upstream is recorded as \`take\` (follow upstream) instead. \`resolve: "keep"\` acknowledges upstream and keeps your text; \`resolve: "take"\` drops your text; \`resolve: "edit"\` stores \`text\` against the current upstream. \`set\` with \`text\` under \`resolve: "merge"\` refuses: a merge takes \`include\`, an edit takes \`text\`.
+
+Texts and units are compared and rendered without their final newline (B41): a stored text and the live upstream that differ only by it are not a change, and units are compared without trailing whitespace, so appending a sentence changes one unit, not two.
+
+Example: \`list({ where: "review:true" })\` → \`show({ id, view: "diff" })\` → review \`merge.units\` → \`set({ id, resolve: "merge", include: ["m0", "m2:upstream"] })\` (ids as \`show\` returns them; omit \`include\` for the defaults). \`set({ id, resolve: "take" })\` follows upstream outright.
 
 ## Instructions that follow capabilities
 

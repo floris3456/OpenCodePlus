@@ -178,6 +178,41 @@ Outcome 9 mandates that rolling back to a previously installed release is **one 
 
 However, on a live system running background services, rollback **cannot** be performed by an unfenced local symlink replacement and service restart. Performing an unfenced switch cuts off active sessions mid-execution, ignores controller generation invariants, and bypasses session admission fencing.
 
+### Back Up Instructions Stores Before Rolling Back from Plus 1.2.0
+
+OpenCodePlus 1.2.0 stores Instructions records in JSONL files that the generic
+update/rollback database backup does **not** cover. `backupDatabase`
+(`packages/cli/src/services/plus-update.ts`) copies only the session database
+(`databasePath(global.data)`) and its `-wal`/`-shm` into
+`global.data/update-backups`; `restoreDatabase` restores only those, and
+`install.sh` only creates configuration. The Instructions records are separate:
+`<OPENCODE_CONFIG_DIR>/instructions/records.jsonl` (global; `log.jsonl` sits
+beside it) and `<project>/.opencodeplus/instructions/records.jsonl` per project.
+
+A measured probe (`run/evidence/plus-1.2.0/rollback-store/REPORT.md`, in the
+workspace repository) tested an already-migrated 1.2.0 store under an earlier
+Plus release (1.1.18). Merely opening the store did not erase anything, and a
+load plus a no-op save wrote nothing (the file stayed byte-identical). But the
+older release has no record types for 1.2.0's `folder`/`order` records and no
+fields for its per-model compaction settings, so its **next real write to the
+global store** rewrote the file from the records it understood and silently
+dropped both. A project-only write left the global file unchanged, which does
+not prove that every new project field survives. An older release whose own
+migration flag is true can also trigger that write on read, so opening a newer
+store is not automatically harmless.
+
+**Requirement.** Before rolling a host back from 1.2.0 to an earlier Plus
+release, privately copy the global config `instructions/` directory (at least
+`records.jsonl`, and `log.jsonl` beside it) **and** each active project's
+`.opencodeplus/instructions/` directory. Restoring must never copy an old file
+over newer work automatically; reconcile by hand. This is an operator backup,
+not a new rollback mechanism: keep using the existing release authority and
+activation contract, and do not add a rollback script or installer change.
+
+**Limit.** Link/rowlink downgrade compatibility was not measured, and this is
+not a general claim that opening every newer store on an older release is
+harmless. The session-database backup does not cover the Instructions JSONL.
+
 ### Production Transition Requirements
 
 A safe production rollback requires a coordinated five-phase transition:
