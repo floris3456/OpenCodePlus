@@ -677,9 +677,13 @@ Added 2026-10-08 evening (build seat, continuing the run)
   compares and renders the three texts with trailing newlines removed; a
   saved merge has none (as stored texts), and a merge equal to upstream
   without it is a take. `take` on an item follows upstream for the whole
-  row: its section customizations at that level go in the same write.
-  Sentence units stay as B13 has them (a paragraph without sentence
-  punctuation is one unit).
+  row: its section customizations at that level go in the same write; a
+  `take` on a section drops only the text of that section's descendants at
+  that level, never a sibling's. Sentence units stay as B13 has them (a
+  paragraph without sentence punctuation is one unit), but units are
+  compared without their trailing whitespace: the space that separates a
+  sentence from the next one is not a change to it, so appending a sentence
+  changes one unit, not two.
 
 ## Design notes per area
 

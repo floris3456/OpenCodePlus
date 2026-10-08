@@ -354,7 +354,23 @@ declare module "./resolve-memo.js" {
     reviewCountCache?: Map<string, number>
     selfReviewCache?: Map<string, boolean>
     controlItems?: readonly Item[]
+    modelViewCache?: Map<string, ModelDefaultView>
   }
+}
+
+// Defaults › Models views, once per memo and row: workspaceOf re-emits the rows on each pass,
+// and a memo is rebuilt whenever the store or the catalogue changes (a new snapshot).
+function cachedModelView(memo: Memo, id: string, compute: () => ModelDefaultView): ModelDefaultView {
+  let cache = memo.modelViewCache
+  if (cache === undefined) {
+    cache = new Map<string, ModelDefaultView>()
+    memo.modelViewCache = cache
+  }
+  const cached = cache.get(id)
+  if (cached !== undefined) return cached
+  const value = compute()
+  cache.set(id, value)
+  return value
 }
 
 function cachedReviewCount(memo: Memo, id: string, compute: () => number): number {
@@ -871,7 +887,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
   const address: Address = { level: "defaults", agent: null, item, section: null }
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
   const view = (): ModelDefaultView =>
-    modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+    cachedModelView(memo, item, () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   // The row opens (→) into one row per field; each field edits on its own.
   return {
     id: modelDefaultRowId(key),
@@ -887,17 +903,17 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
     // model row: Effort, the Warming group (Warming, Ping every, Keep-alive
     // prompt, Compact before cold and the cold-cache list) and Compaction.
     children: () => [
-      lazyModelDefaultField(ctx, key, record, "effort", 3),
+      lazyModelDefaultField(ctx, memo, key, record, "effort", 3),
       modelGroup(memo, {
         id: defaultGroupRowId(key, "warming"),
         label: "Warming",
         depth: 3,
-        summary: () => defaultsWarmingSummary(ctx, key, record),
+        summary: () => defaultsWarmingSummary(ctx, memo, key, record),
         children: [
-          () => lazyModelDefaultField(ctx, key, record, "warming", 4),
-          () => lazyModelDefaultField(ctx, key, record, "interval", 4),
-          () => lazyModelDefaultField(ctx, key, record, "prompt", 4),
-          () => lazyModelDefaultField(ctx, key, record, "compactWarm", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "warming", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "interval", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "prompt", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactWarm", 4),
           () => lazyDefaultColdGroup(ctx, memo, key, record, 4),
         ],
       }),
@@ -907,9 +923,9 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
         depth: 3,
         summary: () => compactionStrategyWord(defaultsCompaction(ctx, key, record).strategy.value),
         children: [
-          () => lazyModelDefaultField(ctx, key, record, "compactionStrategy", 4),
-          () => lazyModelDefaultField(ctx, key, record, "compactionModel", 4),
-          () => lazyModelDefaultField(ctx, key, record, "compactionInstructions", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionStrategy", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionModel", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInstructions", 4),
         ],
       }),
     ],
@@ -928,9 +944,9 @@ function defaultsCompaction(ctx: BuildContext, key: ModelSettingsKey, record: Mo
   })
 }
 
-function defaultsWarmingSummary(ctx: BuildContext, key: ModelSettingsKey, record: ModelSettingsRecord | undefined): string {
+function defaultsWarmingSummary(ctx: BuildContext, memo: Memo, key: ModelSettingsKey, record: ModelSettingsRecord | undefined): string {
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
-  const view = modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+  const view = cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   return view.on.value ? `${formatDuration(view.duration.value)} · every ${formatDuration(view.interval.value)}` : "off"
 }
 
@@ -939,6 +955,7 @@ function defaultsWarmingSummary(ctx: BuildContext, key: ModelSettingsKey, record
 // reports its own value and, when inherited, its source.
 function lazyModelDefaultField(
   ctx: BuildContext,
+  memo: Memo,
   key: ModelSettingsKey,
   record: ModelSettingsRecord | undefined,
   field: ModelDefaultField,
@@ -946,7 +963,7 @@ function lazyModelDefaultField(
 ): Lazy {
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
   const view = (): ModelDefaultView =>
-    modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+    cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   const own = record?.[field] !== undefined
   const switchField = isDefaultSwitchField(field)
   const value = (): string => {
