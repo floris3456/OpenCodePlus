@@ -1609,6 +1609,8 @@ export async function installSessionPlans(
 
           yield* applyPinnedPlans(ctx, event, pin!, classifier)
           pin.lastRequestAt = Date.now()
+          if (event.model.variant !== undefined) pin.model.variant = String(event.model.variant)
+          if (event.model.variant === undefined) delete pin.model.variant
         })
       })
       installed.push(registration)

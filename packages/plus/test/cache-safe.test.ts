@@ -909,3 +909,66 @@ test("variant model retains variant on repin and shapes matching compaction whil
   expect(compactionNoVariant.system).toEqual(noVariantSystem)
   expect(compactionNoVariant.tools).toEqual(noVariantTools)
 })
+
+test("mid-chat variant effort change updates pin variant on non-rebuild request and shapes matching compaction", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, compactionCallbacks, synthetics } = createHarness()
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  const input = alphaPlan("You are helpful.\n\n## Rules\nBe nice.")
+  await applyPublishParts(ctx, state, input)
+  const contextHook = contextCallbacks.at(-1)!
+  const compactionHook = compactionCallbacks.at(-1)!
+
+  // 1. Initial request pins with variant "high"
+  const turn1 = sessionEvent(
+    "ses_effort_change",
+    "alpha",
+    { reader: { description: "raw tool desc", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful.\n\n## Rules\nBe nice." }],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "high" },
+  )
+  await Effect.runPromise(contextHook(turn1))
+
+  const pin = sessionPins.getPin("ses_effort_change")
+  expect(pin).toBeDefined()
+  expect(pin!.model.variant).toBe("high")
+
+  // 2. Mid-chat effort change: context request with variant "xhigh" (not a rebuild moment)
+  const turn2 = sessionEvent(
+    "ses_effort_change",
+    "alpha",
+    { reader: { description: "raw tool desc", input: { type: "object" } } },
+    [{ type: "text", text: "You are helpful.\n\n## Rules\nBe nice." }],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "xhigh" },
+  )
+  await Effect.runPromise(contextHook(turn2))
+  expect(pin!.model.variant).toBe("xhigh")
+
+  // 3. Compaction with new variant "xhigh" is shaped
+  const rawTools = { reader: { description: "raw tool desc", input: { type: "object" as const } } }
+  const rawSystem = [{ type: "text" as const, text: "Raw unshaped system text" }]
+  const compactionXhigh = sessionEvent(
+    "ses_effort_change",
+    "alpha",
+    { ...rawTools },
+    [...rawSystem],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "xhigh" },
+  )
+  await Effect.runPromise(compactionHook(compactionXhigh))
+  expect(compactionXhigh.system[0]?.text).toBe(turn1.system[0]?.text)
+  expect(compactionXhigh.tools).toEqual(turn1.tools)
+  expect(synthetics).toHaveLength(0)
+
+  // 4. Compaction with old variant "high" is not shaped
+  const compactionHigh = sessionEvent(
+    "ses_effort_change",
+    "alpha",
+    { ...rawTools },
+    [...rawSystem],
+    { providerID: "anthropic", id: "claude-3-5-sonnet", variant: "high" },
+  )
+  await Effect.runPromise(compactionHook(compactionHigh))
+  expect(compactionHigh.system).toEqual(rawSystem)
+  expect(compactionHigh.tools).toEqual(rawTools)
+})
