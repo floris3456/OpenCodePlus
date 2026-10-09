@@ -6,7 +6,7 @@ import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION,
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
 import { measurement } from "./measurement.js"
 import { estimateTokens } from "./attribution.js"
-import { foldUnread, unreadGain, type UnreadIndex, type UnreadKey, type UnreadRead, type UnreadWrite } from "./unread-index.js"
+import { foldUnread, unreadGain, type UnreadIndex, type UnreadKey, type UnreadKeyWork, type UnreadRead, type UnreadWrite } from "./unread-index.js"
 
 type Segment = {
   name: string
@@ -52,6 +52,9 @@ type SegmentInfo = {
 // request with several earlier ones, so per-call segment work dominated the
 // Monitor's load time on long chats.
 const segmentCache = new WeakMap<RequestFingerprintData, SegmentInfo>()
+export const UNREAD_METADATA_CACHE_LIMIT = { entries: 4096, bytes: 1024 * 1024 } as const
+const messageSegmentCache = new Map<string, { segment: Segment; bytes: number }>()
+const unreadMetadataBytes = { segments: 2, append: 2 }
 
 function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
   const cached = segmentCache.get(fp)
@@ -137,8 +140,11 @@ function segments(fp: RequestFingerprintData): Segment[] {
     },
     ...(fp.protocol === "anthropic-messages" ? [...tools, ...system] : [...system, ...tools]),
     ...fp.messagePrefixes.map((p) => {
+      const identity = JSON.stringify([p.idx, p.kind ?? p.role, p.contentHash ?? p.prefixHash, p.prefixHash, p.chars, p.estimatedTokens])
+      const cached = messageSegmentCache.get(identity)
+      if (cached) return cached.segment
       const name = `message ${p.idx + 1} (${p.kind ?? p.role})`
-      return {
+      const segment = {
         name,
         kind: "message" as const,
         hash: p.contentHash ?? p.prefixHash,
@@ -148,6 +154,18 @@ function segments(fp: RequestFingerprintData): Segment[] {
         // A plain index spells itself; anything else is read back from the name.
         index: Number.isSafeInteger(p.idx) && p.idx >= 0 ? p.idx : messageIndex(name),
       }
+      const bytes = Buffer.byteLength(JSON.stringify([identity, { segment, bytes: UNREAD_METADATA_CACHE_LIMIT.bytes }])) + 1
+      // A large/irregular record is still analyzed; only its optional metadata
+      // cache entry is refused. No fingerprint source objects are retained here.
+      if (bytes > UNREAD_METADATA_CACHE_LIMIT.bytes) return segment
+      messageSegmentCache.set(identity, { segment, bytes })
+      unreadMetadataBytes.segments += bytes
+      while (messageSegmentCache.size > UNREAD_METADATA_CACHE_LIMIT.entries || unreadMetadataBytes.segments > UNREAD_METADATA_CACHE_LIMIT.bytes) {
+        const first = messageSegmentCache.entries().next().value!
+        messageSegmentCache.delete(first[0])
+        unreadMetadataBytes.segments -= first[1].bytes
+      }
+      return segment
     }),
   ]
 }
@@ -855,18 +873,38 @@ export interface RequestSummary {
 
 const unreadKeysCache = new WeakMap<RequestFingerprintData, { read: readonly UnreadKey[]; write: readonly UnreadKey[] }>()
 const unreadKeyWeights = new WeakMap<RequestFingerprintData, number>()
+const unreadObjectWeights = new WeakMap<object, number>()
+// Identity-keyed metadata works for delta-decoded and legacy full-row records.
+// FIFO eviction changes recomputation only, never the set of comparisons.
+const unreadAppendCache = new Map<string, { prefix: string; mode: string; key: UnreadKey; bytes: number }>()
+
+/** Process-wide optional metadata, independently bounded outside the per-Session
+ * analysis LRU. Conservative UTF-8 table sizes include framing and the maximum
+ * byte-counter width. These are not engine heap bytes.
+ */
+export function unreadMetadataCacheWeight() {
+  return { bytes: unreadMetadataBytes.segments + unreadMetadataBytes.append, segments: messageSegmentCache.size, prefixes: unreadAppendCache.size }
+}
 
 /** Derived-key cache reachable through a retained fingerprint, including the
  * unused half when only a read or write requested keys. Never generates keys.
  * Counting this alongside write/read metadata is conservative (shared arrays).
  */
 export function unreadFingerprintKeyWeight(fp: RequestFingerprintData): number {
-  const cached = unreadKeyWeights.get(fp)
-  if (cached !== undefined) return cached
   const keys = unreadKeysCache.get(fp)
-  if (!keys) return 0
-  const bytes = Buffer.byteLength(JSON.stringify(keys))
-  unreadKeyWeights.set(fp, bytes)
+  const cached = unreadKeyWeights.get(fp)
+  // Exactly the original {read:[...],write:[...]} UTF-8 size, summing immutable
+  // key-object sizes rather than reserializing every shared prefix per row.
+  const bytes = cached ?? (keys ? 18 + [keys.read, keys.write].reduce((sum, list) => sum + 2 + list.reduce((sum, key) => sum + unreadObjectWeight(key), 0) + Math.max(0, list.length - 1), 0) : 0)
+  if (keys && cached === undefined) unreadKeyWeights.set(fp, bytes)
+  return bytes
+}
+
+function unreadObjectWeight(value: object): number {
+  const cached = unreadObjectWeights.get(value)
+  if (cached !== undefined) return cached
+  const bytes = Buffer.byteLength(JSON.stringify(value))
+  unreadObjectWeights.set(value, bytes)
   return bytes
 }
 
@@ -874,7 +912,7 @@ export function unreadFingerprintKeyWeight(fp: RequestFingerprintData): number {
  * Responses lineage, and Anthropic marked-prefix/private-tail replacement.
  * Hashes contain identity only; annotations and token sizes never enter keys.
  */
-export function unreadFingerprintKeys(fp: RequestFingerprintData | undefined, write: boolean): readonly UnreadKey[] {
+export function unreadFingerprintKeys(fp: RequestFingerprintData | undefined, write: boolean, work?: UnreadKeyWork): readonly UnreadKey[] {
   if (!fp || !supportedFingerprint(fp)) return []
   const cached = unreadKeysCache.get(fp)
   if (cached) return write ? cached.write : cached.read
@@ -887,8 +925,29 @@ export function unreadFingerprintKeys(fp: RequestFingerprintData | undefined, wr
     : fp.previousResponseId ? ["present"] : ["none", "present"]
   let prefix = ""
   for (const part of info.segments) {
-    prefix = sha256(canonicalJson([prefix, part.name, part.prefixHash ?? part.hash]))
-    read.push({ key: `append:${mode}:${prefix}` })
+    const hash = part.prefixHash ?? part.hash
+    const identity = JSON.stringify([prefix, part.name, hash])
+    const known = part.kind === "message" ? unreadAppendCache.get(identity) : undefined
+    prefix = known?.prefix ?? new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 16)
+    if (work) {
+      if (known) work.prefixHits++
+      if (!known) work.prefixHashes++
+    }
+    const key = known?.mode === mode ? known.key : { key: `append:${mode}:${prefix}` }
+    if (work && known?.mode === mode) work.sharedKeys++
+    read.push(key)
+    if (part.kind === "message" && known?.mode !== mode) {
+      const bytes = Buffer.byteLength(JSON.stringify([identity, { prefix, mode, key, bytes: UNREAD_METADATA_CACHE_LIMIT.bytes }])) + 1
+      if (bytes <= UNREAD_METADATA_CACHE_LIMIT.bytes) {
+        unreadAppendCache.set(identity, { prefix, mode, key, bytes })
+        unreadMetadataBytes.append += bytes - (known?.bytes ?? 0)
+        while (unreadAppendCache.size > UNREAD_METADATA_CACHE_LIMIT.entries || unreadMetadataBytes.append > UNREAD_METADATA_CACHE_LIMIT.bytes) {
+          const first = unreadAppendCache.entries().next().value!
+          unreadAppendCache.delete(first[0])
+          unreadMetadataBytes.append -= first[1].bytes
+        }
+      }
+    }
   }
   modes.forEach((mode) => writes.push({ key: `append:${mode}:${prefix}` }))
   if (fp.protocol === "openai-responses") {

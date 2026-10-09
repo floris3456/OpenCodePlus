@@ -1,8 +1,11 @@
-import { expect, test } from "bun:test"
-import { cacheLifetime, foldSession, prefixDiff, unreadFingerprintKeys, unreadFingerprintKeyWeight, windowedSessionSignals } from "../src/monitor/cache.js"
+import { afterEach, expect, test } from "bun:test"
+import { cacheLifetime, foldSession, prefixDiff, unreadFingerprintKeys, unreadFingerprintKeyWeight, unreadMetadataCacheWeight, UNREAD_METADATA_CACHE_LIMIT, windowedSessionSignals } from "../src/monitor/cache.js"
 import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import type { RequestFingerprintData, RequestRow } from "../src/monitor/ledger.js"
 import { foldUnread, unreadGain, unreadIndexWeight } from "../src/monitor/unread-index.js"
+import { cleanupLedgers, ledger } from "./monitor-fixture.js"
+
+afterEach(cleanupLedgers)
 
 function row(index: number, change: Partial<RequestRow> = {}): RequestRow {
   return { id: `r${index}`, sessionID: "unread", kind: "step", created: index * 10, started: index * 10, ended: index * 10 + 1, status: "completed", isTitle: false, provider: "fixture", model: "fixture", agent: "build", inputTokens: 100_000, outputTokens: 1, reasoningTokens: 0, cacheReadTokens: index + 100, cacheWriteTokens: 100_000, cost: 0, ...change }
@@ -134,4 +137,47 @@ test("a later rolling 1h marker cannot extend the original 5m write lifetime", (
   const analysis = foldSession(rows, [], new Map([["r0", before], ["r1", after]])).analysis
   expect(analysis.writes[0]!.lifetime).toBe(300_000)
   expect(windowedSessionSignals(analysis, { since: 0, until: 4_000_000 }).unread).toBe(1000)
+})
+
+test("real delta-decoded prefixes share rolling keys; seed changes preserve old folds", async () => {
+  const db = await ledger()
+  const messages = Array.from({ length: 100 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `message${i}` }))
+  db.session({ id: "unread" }, 0)
+  for (const index of [0, 1]) {
+    db.requestFingerprint({ requestID: `r${index}`, sessionID: "unread", created: index * 10, ...fingerprintWireBody({ prompt_cache_retention: "24h", messages: [...messages, ...(index ? [{ role: "user", content: "appended" }] : [])] }) })
+  }
+  const fingerprints = db.getFingerprints("unread")
+  expect(fingerprints[0]!.messagePrefixes[0]).toBe(fingerprints[1]!.messagePrefixes[0])
+  const original = foldUnread([row(0), row(1)], new Map(fingerprints.map((fp) => [fp.requestID, fp])), cacheLifetime, unreadFingerprintKeys)
+  expect(original.unreadIndex.work.prefixHits).toBe(100)
+  expect(original.unreadIndex.work.sharedKeys).toBe(100)
+  expect(original.reads[0]!.keys.at(-1)).toBe(original.reads[1]!.keys.at(-2))
+  expect(unreadFingerprintKeyWeight(fingerprints[0]!)).toBe(Buffer.byteLength(JSON.stringify({ read: unreadFingerprintKeys(fingerprints[0], false), write: unreadFingerprintKeys(fingerprints[0], true) })))
+  const keys = JSON.stringify(original.reads[0]!.keys)
+  const changed = { ...fingerprints[0]!, requestID: "r2", optionsKeys: { ...fingerprints[0]!.optionsKeys, prompt_cache_retention: sha256(JSON.stringify("1h")) } }
+  const replacement = foldUnread([row(2)], new Map([["r2", changed]]), cacheLifetime, unreadFingerprintKeys)
+  expect(replacement.unreadIndex.work.prefixHits).toBe(0)
+  expect(replacement.unreadIndex.work.prefixHashes).toBeGreaterThanOrEqual(100)
+  expect(JSON.stringify(original.reads[0]!.keys)).toBe(keys)
+  expect(prefixDiff(fingerprints[0], changed).reusable).toBe(false)
+  expect(unreadGain(original.unreadIndex, original.writes[0]!, 100_000_000, false)).toBe(1)
+})
+
+test("bounded metadata tables evict without changing keys, and refuse oversized metadata without omitting comparisons", () => {
+  const first = fp(0, { prompt_cache_retention: "24h", messages: [{ role: "user", content: "metadata-retention-control" }] })
+  const keys = unreadFingerprintKeys(first, false)
+  for (let i = 0; i < 5000; i++) unreadFingerprintKeys(fp(i, { prompt_cache_retention: "24h", messages: [{ role: "user", content: `metadata-${i}` }] }), false)
+  const weight = unreadMetadataCacheWeight()
+  expect(weight.bytes).toBeLessThanOrEqual(2 * UNREAD_METADATA_CACHE_LIMIT.bytes)
+  expect(weight.prefixes).toBeLessThanOrEqual(UNREAD_METADATA_CACHE_LIMIT.entries)
+  expect(weight.segments).toBeLessThanOrEqual(UNREAD_METADATA_CACHE_LIMIT.entries)
+  const replay = { ...first, messagePrefixes: first.messagePrefixes.map((part) => ({ ...part })) }
+  const work = { prefixHashes: 0, prefixHits: 0, sharedKeys: 0 }
+  expect(unreadFingerprintKeys(replay, false, work)).toEqual(keys)
+  expect(work.prefixHashes).toBeGreaterThan(0)
+  const huge = { ...first, messagePrefixes: first.messagePrefixes.map((part) => ({ ...part, kind: "k".repeat(UNREAD_METADATA_CACHE_LIMIT.bytes + 1) })) }
+  const before = unreadMetadataCacheWeight()
+  expect(unreadFingerprintKeys(huge, false).length).toBe(keys.length)
+  expect(prefixDiff(huge, { ...huge }).reusable).toBe(true)
+  expect(unreadMetadataCacheWeight()).toEqual(before)
 })

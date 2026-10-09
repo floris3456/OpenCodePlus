@@ -1,5 +1,6 @@
 import { unreadFingerprintKeyWeight, type SessionFold } from "./cache.js"
 import { unreadIndexWeight } from "./unread-index.js"
+import type { RequestFingerprintData } from "./ledger.js"
 
 // Serialized retained content is a deterministic budget, not a JS heap estimate.
 // Sized for the existing 40k × 200-prefix qualification. Oversized individual
@@ -65,7 +66,7 @@ export class AnalysisCache {
     }
     for (const fp of fold.analysis.fingerprints.values()) {
       if (!fp) continue
-      weight.bytes += this.bytes(fp)
+      weight.bytes += this.fingerprintBytes(fp)
       // Do not memoize absent derived keys: a later completion can first need
       // them while retaining the same fingerprint object.
       weight.bytes += unreadFingerprintKeyWeight(fp)
@@ -103,6 +104,18 @@ export class AnalysisCache {
     if (existing !== undefined) return existing
     const bytes = Buffer.byteLength(JSON.stringify(value), "utf8")
     this.sizes.set(value, bytes)
+    return bytes
+  }
+
+  private fingerprintBytes(fp: RequestFingerprintData) {
+    const existing = this.sizes.get(fp)
+    if (existing !== undefined) return existing
+    // The exact full JSON size, without serializing the shared message records
+    // for every delta-decoded row. Keep the original budget units/limits: this
+    // does not discount shared parts or turn the byte budget into a heap claim.
+    const bytes = Buffer.byteLength(JSON.stringify({ ...fp, messagePrefixes: [] }), "utf8") +
+      fp.messagePrefixes.reduce((sum, part) => sum + this.bytes(part), 0) + Math.max(0, fp.messagePrefixes.length - 1)
+    this.sizes.set(fp, bytes)
     return bytes
   }
 

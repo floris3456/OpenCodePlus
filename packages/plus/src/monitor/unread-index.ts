@@ -7,6 +7,12 @@ export interface UnreadKey {
   readonly tail?: string
 }
 
+export interface UnreadKeyWork {
+  prefixHashes: number
+  prefixHits: number
+  sharedKeys: number
+}
+
 export interface UnreadWrite {
   readonly row: number
   readonly at: number
@@ -55,7 +61,7 @@ export interface UnreadIndex {
   readonly buckets: ReadonlyMap<string, Bucket>
   readonly subscriptions: ReadonlyMap<string, { expires: number; floor: number }>
   /** Actual construction work for this fold, not model/provider cache work. */
-  readonly work: { rows: number; replayedRows: number; keys: number; memberships: number; nodes: number; copiedBuckets: number; copiedSubscriptions: number }
+  readonly work: UnreadKeyWork & { rows: number; replayedRows: number; keys: number; memberships: number; nodes: number; copiedBuckets: number; copiedSubscriptions: number }
 }
 
 // Two maxima with distinct tails suffice to exclude one identical private tail.
@@ -109,11 +115,11 @@ export function foldUnread(
   rows: readonly RequestRow[],
   fingerprints: ReadonlyMap<string, RequestFingerprintData | undefined>,
   lifetime: (row: RequestRow, fp: RequestFingerprintData | undefined) => number | undefined,
-  keys: (fp: RequestFingerprintData | undefined, write: boolean) => readonly UnreadKey[],
+  keys: (fp: RequestFingerprintData | undefined, write: boolean, work?: UnreadKeyWork) => readonly UnreadKey[],
   previous?: { readonly writes: readonly UnreadWrite[]; readonly reads: readonly UnreadRead[]; readonly unreadIndex: UnreadIndex },
   from = 0,
 ) {
-  const work = { rows: 0, replayedRows: 0, keys: 0, memberships: 0, nodes: 0, copiedBuckets: 0, copiedSubscriptions: 0 }
+  const work = { rows: 0, replayedRows: 0, keys: 0, memberships: 0, nodes: 0, copiedBuckets: 0, copiedSubscriptions: 0, prefixHashes: 0, prefixHits: 0, sharedKeys: 0 }
   const reads = previous?.reads.filter((read) => read.row < from) ?? []
   const writes = previous?.writes.filter((write) => write.row < from) ?? []
   // Appends share immutable numeric trees. Corrections replay prefix reads and
@@ -145,14 +151,14 @@ export function foldUnread(
     const fp = fingerprints.get(row.id)
     const identity = { row: from + index, at: row.started, cacheRead: row.cacheReadTokens, provider: row.provider, model: row.model, agent: row.agent, isTitle: row.isTitle }
     if (row.cacheReadTokens > 0) {
-      const read = { ...identity, keys: keys(fp, false) }
+      const read = { ...identity, keys: keys(fp, false, work) }
       reads.push(read)
       add(buckets, subscriptions, read, work)
     }
     if (row.cacheWriteTokens <= 0) return
     const duration = lifetime(row, fp)
     if (duration === undefined) return
-    const write = { ...identity, tokens: row.cacheWriteTokens, lifetime: duration, keys: keys(fp, true) }
+    const write = { ...identity, tokens: row.cacheWriteTokens, lifetime: duration, keys: keys(fp, true, work) }
     writes.push(write)
     subscribe(write)
   })

@@ -78,3 +78,23 @@ test("completion first creates derived keys on a retained fingerprint and is cha
   expect(bounded.get("completed")).toBeUndefined()
   expect(completed.fold.analysis.work.details).toBe(0)
 })
+
+test("shared-part size accounting remains exactly the full UTF-8 fingerprint JSON budget", async () => {
+  const value = await fixture()
+  const original = value.fold.analysis.fingerprints.get("synthetic")!
+  const larger = { ...original, messagePrefixes: Array.from({ length: 200 }, (_, idx) => ({ ...original.messagePrefixes[0]!, idx, kind: "quoted \"λ\" 😀" })) }
+  const before = new AnalysisCache()
+  const after = new AnalysisCache()
+  before.set("s", value)
+  after.set("s", { ...value, fold: foldSession(value.fold.rows, [], new Map([["synthetic", larger]])) })
+  expect(after.stats().bytes - before.stats().bytes).toBe(Buffer.byteLength(JSON.stringify(larger)) - Buffer.byteLength(JSON.stringify(original)))
+  const shared = { ...larger, messagePrefixes: Array.from({ length: 200 }, () => larger.messagePrefixes[0]!) }
+  const copies = { ...shared, messagePrefixes: shared.messagePrefixes.map((part) => ({ ...part })) }
+  const charge = (fp: typeof shared) => {
+    const cache = new AnalysisCache()
+    cache.set("s", { ...value, fold: foldSession(value.fold.rows, [], new Map([["synthetic", fp]])) })
+    return cache.stats().bytes
+  }
+  // Sharing reduces computation, not this deterministic admission metric.
+  expect(charge(shared)).toBe(charge(copies))
+})
