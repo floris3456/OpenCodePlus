@@ -98,6 +98,7 @@ import {
 import { presetOfAddress } from "./presets.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
+import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
 import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, slice, wrappingSection, type Boundary } from "./sections.js"
@@ -361,6 +362,8 @@ export interface OpSuccess {
   readonly records: CustomizationRecord[]
   readonly splits: SplitRecord[]
   readonly models?: readonly ModelRecord[]
+  /** The op's complete rowlink list, when it changed links (the legacy `requires` adapter). */
+  readonly rowlinks?: readonly RowlinkRecord[]
   readonly status: string
   readonly retryHint: string
   /** Set when the write is saved but the assembled text does not send it (B25): names the row that replaces it. */
@@ -1097,10 +1100,21 @@ export function setRequires(input: MemoInput, rowId: string, ids: readonly strin
       if (value.includes(id.startsWith("!") ? bare : `!${bare}`)) return { refusal: `"${bare}" cannot be required both on and off` }
     }
   }
-  const next = merge(chain.customizations, chain.address, { requires: value }, chain.upstream, memo.ctx.scopes)
+  // Compatibility adapter (B43): the stored condition is a rowlink list for
+  // the target at this level, not a customization field, so the two authorities
+  // cannot disagree on reload. The customization records pass through
+  // unchanged; `value` was validated above.
+  const updated = new Date().toISOString()
+  const rowlinks = requiresGateRecords(
+    memo.ctx.scopes.rowlinks ?? [],
+    chain.address,
+    { item: chain.address.item, section: chain.address.section },
+    value,
+    updated,
+  )
   const status =
     value === null ? `"${node.label}" is sent as the level above or its text says` : `"${node.label}" is sent ${value.length === 0 ? "always" : `when ${describeCondition(value)}`}`
-  return { records: next, splits: chain.splits, status, retryHint: `set when "${node.label}" is sent against a stale revision; retry to apply` }
+  return { records: chain.customizations, splits: chain.splits, rowlinks, status, retryHint: `set when "${node.label}" is sent against a stale revision; retry to apply` }
 }
 
 export function saveText(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): OpResult {
@@ -1294,9 +1308,17 @@ export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRes
   if (chain.address.section === null) {
     next = resetModelRecords(next, chain.address)
   }
+  // A local "shown when" list is a rowlink override too: reset drops it, so
+  // the level above or the text decides again (B43).
+  const localGate = (link: RowlinkRecord): boolean =>
+    scopedTo(link, chain.address) &&
+    (link.link === "shownWhenOn" || link.link === "shownWhenOff" || link.link === "shownAlways") &&
+    link.target === chain.address.item &&
+    link.targetSection === chain.address.section
   return {
     records: next,
     splits: chain.splits,
+    rowlinks: (memo.ctx.scopes.rowlinks ?? []).filter((link) => !localGate(link)),
     status: `Reset "${node.label}" to default`,
     retryHint: `reset "${node.label}" against a stale revision; retry to apply`,
   }

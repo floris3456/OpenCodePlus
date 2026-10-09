@@ -582,6 +582,17 @@ export const RecordKey = Schema.Union([
     tool: Schema.String,
     id: Schema.String,
   }),
+  Schema.Struct({
+    type: Schema.Literal("rowlink"),
+    level: Level,
+    agent: Schema.NullOr(Schema.String),
+    team: Schema.optionalKey(TeamOwner),
+    catalogue: Schema.optionalKey(Catalogue),
+    item: Schema.String,
+    section: Schema.NullOr(Schema.String),
+    target: Schema.String,
+    targetSection: Schema.NullOr(Schema.String),
+  }),
 ]).annotate({ identifier: "Plus.RecordKey" })
 
 export interface MutateChanges extends Schema.Schema.Type<typeof MutateChanges> {}

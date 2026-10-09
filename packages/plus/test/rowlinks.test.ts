@@ -167,9 +167,14 @@ test("migrateRequires turns a requires list into gates and is idempotent", () =>
   expect(once.migrated).toBe(true)
   expect(once.records[0]).not.toHaveProperty("requires")
   expect(once.rowlinks.map((record) => [record.item, record.target, record.link])).toEqual([
+    ["system:tools-and-rules", "system:tools-and-rules", "shownAlways"],
     ["tool:question", "system:tools-and-rules", "shownWhenOn"],
     ["perm:shell:git-push", "system:tools-and-rules", "shownWhenOff"],
   ])
+  // The first entry is the target-local replacement barrier: same endpoints on
+  // both sides, marking the whole list local so unrelated inherited pairs do
+  // not leak in.
+  expect(once.rowlinks[0]).toMatchObject({ section: "tools-and-rules/questions", targetSection: "tools-and-rules/questions" })
   // An empty list is `shownAlways`; a store with no requires field is a no-op.
   const empty = migrateRequires([{ type: "customization" as const, level: "project" as const, agent: "alpha", item: "x", section: null, requires: [], updated: UPDATED }])
   expect(empty.rowlinks[0]?.link).toBe("shownAlways")

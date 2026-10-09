@@ -77,7 +77,8 @@ import { buildTreeMemo } from "./instructions/tree.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
 import { rowlinksOf } from "./instructions/resolve-memo.js"
-import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkType } from "./instructions/rowlinks.js"
+import { markerIn } from "./instructions/requires.js"
+import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkRecord, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
 import type { StoredRecord } from "./instructions/store.js"
 import {
@@ -176,8 +177,8 @@ const LogDescription =
 
 const LinkDescription =
   "Inspect or set a row link between two rows of one owner and level (B9–B12).\n" +
-  "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled and the level/owner it is stored at.\n" +
-  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), oneway (turning id on saves target off; target on leaves id alone), shownWhenOn / shownWhenOff (the target is sent only while id is on / off).\n" +
+  "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled, the level/owner it is stored at, and whether it is a shipped <!-- requires --> marker (shipped, from text).\n" +
+  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), oneway (turning id on saves target off; target on leaves id alone), shownWhenOn / shownWhenOff (the target is sent only while id is on / off). A gate's primary must be a whole row, not a section.\n" +
   "enabled:false stores a tombstone that masks the pair at this level, including an upstream link; enabled true or omitted stores a live link.\n" +
   "Both ends must resolve in the same level and owner view; an unknown, protected or self link refuses without writing."
 
@@ -878,12 +879,19 @@ function linkRow(
     const primary: RowlinkEndpoint = { item: address.item, section: address.section }
     const scopes = contextOfSnapshot(snapshot)
     if (input.target === undefined) {
+      // The shipped `<!-- requires -->` marker on the endpoint's own text is an
+      // effective incoming link too (B43); report it with its "text"
+      // provenance alongside the stored links.
+      const customizations = memo.records.filter((record): record is CustomizationRecord => record.type === "customization")
+      const splits = memo.records.filter((record): record is SplitRecord => record.type === "split")
+      const upstream = upstreamOf(memo, address)
+      const marker = upstream === undefined ? [] : (markerIn(resolve({ upstream, records: customizations, splits, scopes, address }).text) ?? [])
       return {
         output: {
           id: input.id,
           item: address.item,
           section: address.section,
-          links: rowlinkView(rowlinksOf(memo), scopes, address, primary),
+          links: rowlinkView(rowlinksOf(memo), scopes, address, primary, marker),
         },
       }
     }
@@ -903,6 +911,13 @@ function linkRow(
     const protectedTarget = protectedOf(snapshot, targetNode)
     if (protectedTarget !== undefined) return yield* Effect.fail(protectedError(protectedTarget))
     const type = input.type ?? "either"
+    // A gate's primary is a condition row; a section is not a row the gate can
+    // read (its on/off is not one answer), so refuse rather than silently use
+    // the whole item's state.
+    if (type !== "either" && type !== "oneway" && primary.section !== null)
+      return yield* Effect.fail(
+        new Tool.Error({ message: `link.invalid: a "${type}" gate cannot have a section as its condition; condition the whole row` }),
+      )
     const next = writeRowlink(
       rowlinksOf(memo),
       address,
@@ -966,7 +981,8 @@ function computeSet(
     const rest = { ...input, requires: undefined }
     const more = rest.mode !== undefined || rest.text !== undefined || rest.state !== undefined || rest.pin !== undefined || rest.resolve !== undefined
     if ("refusal" in first || !more) return first
-    return computeSet(withModels(first.records, first.splits), rest)
+    const stepped = computeSet({ ...withModels(first.records, first.splits), rowlinks: first.rowlinks }, rest)
+    return "refusal" in stepped || first.rowlinks === undefined ? stepped : { ...stepped, rowlinks: first.rowlinks }
   }
   if (input.mode !== undefined) {
     const first = setAgentMode(memo, input.id, input.mode, sharedMemo)
@@ -1063,14 +1079,15 @@ function mutateDelta(
 function mutateOp(
   api: PlusApi,
   memo: MemoInput,
-  op: { records: CustomizationRecord[]; splits: SplitRecord[]; models?: readonly ModelRecord[]; status: string },
+  op: { records: CustomizationRecord[]; splits: SplitRecord[]; models?: readonly ModelRecord[]; rowlinks?: readonly RowlinkRecord[]; status: string },
   actor: Plus.Actor,
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   const models = op.models ?? modelsOfMemo(memo)
+  const rowlinks = op.rowlinks ?? rowlinksOf(memo)
   return mutateDelta(
     api,
     memo,
-    [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo), ...rowlinksOf(memo)],
+    [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo), ...rowlinks],
     actor,
     op.status,
   )

@@ -1,5 +1,6 @@
 import type { Plus } from "../rpc.js"
 import type { Catalogue, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, TeamRef } from "./model.js"
+import type { RowlinkRecord } from "./rowlinks.js"
 import type { StoredRecord } from "./store.js"
 import { stable } from "./store.js"
 
@@ -90,14 +91,26 @@ export function recordKeyOf(record: StoredRecord): Plus.RecordKey | undefined {
     }
   if (record.type === "rule")
     return { type: "rule", level: record.level, agent: record.agent, ...teamField(record), ...catalogueField(record), tool: record.tool, id: record.id }
+  if (record.type === "rowlink")
+    return {
+      type: "rowlink",
+      level: record.level,
+      agent: record.agent,
+      ...teamField(record),
+      ...catalogueField(record),
+      item: record.item,
+      section: record.section,
+      target: record.target,
+      targetSection: record.targetSection,
+    }
   return undefined
 }
 
-function teamField(record: CustomizationRecord | SplitRecord | ModelRecord | RuleRecord): { team?: TeamRef } {
+function teamField(record: CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord): { team?: TeamRef } {
   return record.team === undefined ? {} : { team: record.team }
 }
 
-function catalogueField(record: CustomizationRecord | SplitRecord | ModelRecord | RuleRecord): { catalogue?: Catalogue } {
+function catalogueField(record: CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord): { catalogue?: Catalogue } {
   return record.catalogue === undefined ? {} : { catalogue: record.catalogue }
 }
 
@@ -110,6 +123,8 @@ function keyTarget(key: Plus.RecordKey): string {
   if (key.type === "split") return `item:${key.level}:${agent}:${key.item}`
   if (key.type === "model")
     return `model:${key.level}:${agent}:${key.providerID}/${key.modelID}${key.variant === undefined ? "" : `@${key.variant}`}`
+  if (key.type === "rowlink")
+    return `rowlink:${key.level}:${agent}:${key.item}:${key.section ?? ""}:${key.target}:${key.targetSection ?? ""}`
   return `rule:${key.level}:${agent}:${key.tool}:${key.id}`
 }
 
