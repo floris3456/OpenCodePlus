@@ -2145,6 +2145,14 @@ describe("OpenAI Responses route", () => {
         cacheWriteInputTokens: 2,
         reasoningTokens: 0,
         totalTokens: 7,
+        provenance: {
+          inputTokens: { source: "reported", completeness: "complete" },
+          outputTokens: { source: "reported", completeness: "complete" },
+          cacheReadInputTokens: { source: "reported", completeness: "complete" },
+          cacheWriteInputTokens: { source: "reported", completeness: "complete" },
+          reasoningTokens: { source: "reported", completeness: "complete" },
+          nonCachedInputTokens: { source: "derived", completeness: "complete" },
+        },
         providerMetadata: {
           openai: {
             input_tokens: 5,
@@ -2160,8 +2168,8 @@ describe("OpenAI Responses route", () => {
       expect(response.events).toEqual([
         { type: "step-start", index: 0 },
         { type: "text-start", id: "msg_1", providerMetadata: { openai: { itemId: "msg_1" } } },
-        { type: "text-delta", id: "msg_1", text: "Hello" },
-        { type: "text-delta", id: "msg_1", text: "!" },
+        { type: "text-delta", id: "msg_1", text: "Hello", providerMetadata: undefined },
+        { type: "text-delta", id: "msg_1", text: "!", providerMetadata: undefined },
         { type: "text-end", id: "msg_1" },
         {
           type: "step-finish",
@@ -4043,6 +4051,11 @@ describe("OpenAI Responses route", () => {
         cacheReadInputTokens: undefined,
         reasoningTokens: undefined,
         totalTokens: 6,
+        provenance: {
+          inputTokens: { source: "reported", completeness: "complete" },
+          outputTokens: { source: "reported", completeness: "complete" },
+          nonCachedInputTokens: { source: "derived", completeness: "partial" },
+        },
         providerMetadata: { openai: { input_tokens: 5, output_tokens: 1 } },
       })
 
@@ -4052,12 +4065,14 @@ describe("OpenAI Responses route", () => {
           type: "tool-input-start",
           id: "call_1",
           name: "lookup",
+          namespace: undefined,
           providerMetadata: { openai: { itemId: "fc_item_1" } },
         },
         {
           type: "tool-input-delta",
           id: "call_1",
           name: "lookup",
+          namespace: undefined,
           text: '{"query"',
           input: {},
         },
@@ -4065,6 +4080,7 @@ describe("OpenAI Responses route", () => {
           type: "tool-input-delta",
           id: "call_1",
           name: "lookup",
+          namespace: undefined,
           text: ':"weather"}',
           input: { query: "weather" },
         },
@@ -4072,12 +4088,14 @@ describe("OpenAI Responses route", () => {
           type: "tool-input-end",
           id: "call_1",
           name: "lookup",
+          namespace: undefined,
           providerMetadata: { openai: { itemId: "fc_item_1" } },
         },
         {
           type: "tool-call",
           id: "call_1",
           name: "lookup",
+          namespace: undefined,
           input: { query: "weather" },
           providerExecuted: undefined,
           providerMetadata: { openai: { itemId: "fc_item_1" } },
