@@ -2,6 +2,7 @@ import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
 import {
   coldModelItemId,
+  compactionFieldsOf,
   effectiveCompaction,
   everySettings,
   hostModelOf,
@@ -2395,11 +2396,21 @@ export function parentModelRowId(rowId: string, target: { providerID: string; mo
   return `${rowId.slice(0, at)}${modelItemId(target)}`
 }
 
+export type ModelFieldEdit =
+  | { readonly fields: ModelEditFields }
+  | { readonly compaction: ModelCompactionFieldValues }
+  | { readonly error: string }
+
+// Interpret one field row's Enter text for the field the row names. Model /
+// Effort are candidate edits, Warming / Ping every / Keep-alive prompt are
+// warming settings, and the compaction fields run through the shared C1
+// validator (model-settings.ts). No field falls through to `prompt`: writing a
+// compaction value must never overwrite the keep-alive prompt.
 export function modelFieldEdit(
   field: ModelFieldName,
   target: { providerID: string; modelID: string; variant?: string },
   text: string,
-): { readonly fields: ModelEditFields } | { readonly error: string } {
+): ModelFieldEdit {
   if (field === "model") {
     const parsed = parseModelText(text)
     if (parsed === undefined) return { error: `takes provider/model or provider/model#variant (got "${text}")` }
@@ -2427,7 +2438,16 @@ export function modelFieldEdit(
   const base = { providerID: target.providerID, modelID: target.modelID, ...(target.variant === undefined ? {} : { variant: target.variant }) }
   if (field === "warming") return { fields: { ...base, warming: text } }
   if (field === "interval") return { fields: { ...base, interval: text } }
-  return { fields: { ...base, prompt: text } }
+  if (field === "prompt") return { fields: { ...base, prompt: text } }
+  const asTyped =
+    field === "compactionStrategy" ? { compactionStrategy: text }
+      : field === "compactionModel" ? { compactionModel: text }
+        : field === "compactionInstructions" ? { compactionInstructions: text }
+          : field === "compactWarm" ? { compactWarm: text }
+            : { coldCompact: text }
+  const validated = compactionFieldsOf(asTyped)
+  if ("error" in validated) return { error: validated.error }
+  return { compaction: validated.fields }
 }
 
 // A model row's text replaces the candidate: "provider/model" or
@@ -2450,12 +2470,23 @@ export function parseModelText(text: string): { providerID: string; modelID: str
 export function setModelFieldRow(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
-  const parsed = found.node.address === undefined ? undefined : parseModelFieldItemId(found.node.address.item)
-  if (parsed === undefined) return { refusal: `"${found.node.label}" is not a model field` }
+  const address = found.node.address
+  const parsed = address === undefined ? undefined : parseModelFieldItemId(address.item)
+  if (parsed === undefined || address === undefined) return { refusal: `"${found.node.label}" is not a model field` }
   const parent = parentModelRowId(found.node.id, parsed.target)
   if (parent === undefined) return { refusal: `"${found.node.label}" is not a model field` }
   const edit = modelFieldEdit(parsed.field, parsed.target, text)
   if ("error" in edit) return { refusal: edit.error }
+  if ("compaction" in edit) {
+    const models = modelsOfInput(input)
+    const next = setModelCompaction(models, modelScopeOf(address), parsed.target, edit.compaction, now())
+    if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no changes to save` }
+    return {
+      models: next,
+      status: `Updated "${found.node.label}"`,
+      retryHint: `edited "${found.node.label}" against a stale revision; retry to apply`,
+    }
+  }
   return editModelRow(input, parent, edit.fields, sharedMemo)
 }
 
@@ -2481,6 +2512,27 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
   if (parsed.field === "warming" || parsed.field === "interval" || parsed.field === "prompt") {
     if (local[parsed.field] === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
     const next = setModelSettings(models, addr, parsed.target, { [parsed.field]: null }, now())
+    if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no override to reset` }
+    return {
+      models: next,
+      status: `Reset "${found.node.label}"`,
+      retryHint: `reset "${found.node.label}" against a stale revision; retry to apply`,
+    }
+  }
+
+  // Compaction fields (Compact before cold, Strategy, Model, Instructions) use
+  // the C1 store: null clears this level so the level below (or Defaults ›
+  // Models) decides again. An explicit empty Instructions is a value, not a
+  // reset, so reset only fires when this level actually sets the field.
+  if (
+    parsed.field === "compactWarm" ||
+    parsed.field === "coldCompact" ||
+    parsed.field === "compactionStrategy" ||
+    parsed.field === "compactionModel" ||
+    parsed.field === "compactionInstructions"
+  ) {
+    if (local[parsed.field] === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
+    const next = setModelCompaction(models, addr, parsed.target, { [parsed.field]: null } as ModelCompactionFieldValues, now())
     if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no override to reset` }
     return {
       models: next,
