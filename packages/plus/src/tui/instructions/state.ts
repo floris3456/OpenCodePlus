@@ -77,12 +77,15 @@ import {
 } from "../../instructions/ops.js"
 import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
+import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js"
 import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
+import { rowlinkView, sameOwnerView, sameEndpoint, writeRowlink, type RowlinkType, type RowlinkEndpoint, type RowlinkRecord } from "../../instructions/rowlinks.js"
+import { expandedTree } from "../../instructions/tree.js"
 
 export type { TreeNode }
 
-export function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[] {
+export function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord)[] {
   return records
     .map((record) => {
       const converted = recordOf(record)
@@ -92,8 +95,8 @@ export function recordsOf(records: readonly SnapshotRecord[]): (CustomizationRec
       return converted
     })
     .filter(
-      (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord =>
-        record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule",
+      (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord =>
+        record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule" || record.type === "rowlink",
     )
 }
 
@@ -205,6 +208,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   const [filter, setFilter] = createSignal<string>("")
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
+  // The S1b pick-up move draft: while set, the tree renders this layout instead
+  // of the snapshot's. One write on drop, none on cancel.
+  const [move, setMove] = createSignal<MoveState | undefined>(undefined)
   let disposed = false
   let generation = 0
 
@@ -292,7 +298,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return value
   })
 
-  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord | RuleRecord)[]>(() => {
+  const recordsForTree = createMemo<(CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord)[]>(() => {
     const current = snapshot()
     if (!current) return []
     return recordsOf(current.records)
@@ -515,6 +521,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         }
 
         const payload: Plus.MutateInputDelta = {
+          actor: { type: "tui" },
           changes: {
             upsert: delta.upsert.map(snapshotRecordOf).filter((r): r is SnapshotRecord => r !== undefined),
             remove: delta.remove,
@@ -640,7 +647,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const preservedRules =
       nextRules ?? converted.filter((record): record is RuleRecord => record.type === "rule")
 
-    const nextSnapshotRecords = toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules)
+    const nextSnapshotRecords = [...toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules), ...current.records.filter((record) => record.type === "rowlink")]
     setSnapshot({ ...current, records: nextSnapshotRecords })
 
     lastOpStatus = successStatus
@@ -654,15 +661,21 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   function memoInput(): MemoInput {
+    const movement = move()
+    const draft = movement?.layout
     return {
       items: itemsForTree(),
-      records: recordsForTree(),
+      records: movement?.section === undefined ? recordsForTree() : [
+        ...movement.section.records,
+        ...movement.section.splits,
+        ...recordsForTree().filter((record) => record.type === "model" || record.type === "rule"),
+      ],
       agents: agentsForTree(),
       teams: teamsForTree(),
       modelSettings: modelSettingsForTree(),
       hostModels: hostModelsForTree(),
-      folders: snapshot()?.folders ?? [],
-      orders: snapshot()?.orders ?? [],
+      folders: draft?.folders ?? snapshot()?.folders ?? [],
+      orders: draft?.orders ?? snapshot()?.orders ?? [],
       ...presetStateForTree(),
     }
   }
@@ -904,6 +917,54 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   function moveRow(node: TreeNode, target: RowTarget): Promise<boolean> {
     return layoutAction(planRowMove(memoInput(), layoutNow(), node.id, target, new Date().toISOString()))
+  }
+
+  // ---- pick-up move mode (S1b) ----
+
+  function beginMove(node: TreeNode): boolean {
+    if (move() !== undefined) return false
+    const started = startMove(node, layoutNow())
+    if ("refusal" in started) {
+      setStatus(started.refusal)
+      return false
+    }
+    setMove(started.state)
+    return true
+  }
+
+  // One arrow press. Returns the tree ids to open (the folder entered), so the
+  // moved row stays visible.
+  function stepMove(step: MoveStep): readonly string[] {
+    const current = move()
+    if (current === undefined) return []
+    const advanced = advanceMove(memoInput(), current, step)
+    if ("refusal" in advanced) {
+      setStatus(advanced.refusal)
+      return []
+    }
+    setMove(advanced.state)
+    return advanced.expand
+  }
+
+  async function commitMove(): Promise<boolean> {
+    const current = move()
+    if (current === undefined) return false
+    if (current.isSection && current.section === undefined) {
+      setMove(undefined)
+      return true
+    }
+    const ok = current.section === undefined
+      ? await layoutAction({ target: current.target, status: current.status, layout: current.layout })
+      : await persist(current.section.records, current.section.splits, current.status, current.section.retryHint)
+    // On failure the store still holds the old order, so the preview goes too.
+    if (move() === current) setMove(undefined)
+    return ok
+  }
+
+  function cancelMove(): boolean {
+    const had = move() !== undefined
+    setMove(undefined)
+    return had
   }
 
   function renameFolder(node: TreeNode, to: string): Promise<boolean> {
@@ -1591,8 +1652,62 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return had
   }
 
+  const [linkPrimary, setLinkPrimary] = createSignal<TreeNode>()
+  function beginRowlink(node: TreeNode): boolean {
+    if (node.address === undefined) {
+      setStatus("This row cannot be linked")
+      return false
+    }
+    setLinkPrimary(node)
+    setStatus(`Link from "${node.label}": navigate to another row and press L; Esc cancels`)
+    return true
+  }
+  function linksFor(node: TreeNode) {
+    const memo = treeMemo()
+    return node.address === undefined || memo === undefined ? [] : rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, node.address, node.address)
+  }
+  async function saveRowlink(primary: TreeNode, target: RowlinkEndpoint, link: Exclude<RowlinkType, "shownAlways">, enabled = true): Promise<boolean> {
+    const current = snapshot()
+    const address = primary.address
+    if (current === undefined || address === undefined) return false
+    if (sameEndpoint(address, target.item, target.section)) {
+      setStatus("A row cannot link to itself")
+      return false
+    }
+    const converted = recordsOf(current.records)
+    const links = writeRowlink(converted.filter((record) => record.type === "rowlink"), address, address, target, link, enabled, now())
+    setSnapshot({ ...current, records: [...current.records.filter((record) => record.type !== "rowlink"), ...links.map(snapshotRecordOf).filter((record): record is SnapshotRecord => record !== undefined)] })
+    lastOpStatus = enabled ? `Linked "${primary.label}" (${link})` : `Masked link from "${primary.label}"`
+    localVersion++
+    const version = localVersion
+    const edit = new Promise<boolean>((resolve) => pendingEdits.push({ version, resolve }))
+    void scheduleDrain()
+    return edit
+  }
+  function rowlinkTarget(node: TreeNode): boolean {
+    const primary = linkPrimary()
+    if (primary?.address === undefined || node.address === undefined || !sameOwnerView(primary.address, node.address) || sameEndpoint(primary.address, node.address.item, node.address.section)) {
+      setStatus("Link endpoints must be different rows in the same owner and level")
+      return false
+    }
+    return true
+  }
+  function cancelRowlink() { setLinkPrimary(undefined) }
+
   return {
+    linkPrimary,
+    beginRowlink,
+    linksFor,
+    linkRows: () => expandedTree(memoInput()),
+    saveRowlink,
+    rowlinkTarget,
+    cancelRowlink,
     snapshot,
+    move,
+    beginMove,
+    stepMove,
+    commitMove,
+    cancelMove,
     coldMove,
     toggleModelSwitch,
     modelCompactionView,

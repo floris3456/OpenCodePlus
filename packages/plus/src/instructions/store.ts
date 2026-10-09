@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Option, Schema } from "effect"
 import { folderRef, tabKeys, tabOfItem, uniqueFolderId, type FolderRecord, type OrderRecord } from "./folders.js"
+import { migrateRequires, type RowlinkRecord } from "./rowlinks.js"
 import type { Boundary } from "./sections.js"
 import { assembleWithOverrides, derive, manual, slice } from "./sections.js"
 import type {
@@ -29,7 +30,7 @@ export type { CustomizationRecord, SplitRecord }
 export type { ModelRecord, ModelSettingsRecord, OriginalCandidate, RuleRecord }
 export type { TeamRecord }
 export type { EntryRecord, LinkRecord, PresetRecord }
-export type { FolderRecord, OrderRecord }
+export type { FolderRecord, OrderRecord, RowlinkRecord }
 export type StoredRecord =
   | CustomizationRecord
   | SplitRecord
@@ -42,6 +43,7 @@ export type StoredRecord =
   | PresetRecord
   | FolderRecord
   | OrderRecord
+  | RowlinkRecord
 
 // A category record (plus-1.1.12) is read only: the load migrates it into
 // folders and order records (migrateCategories), so it never reaches a caller.
@@ -74,6 +76,8 @@ export interface Loaded {
   readonly wholeRowsMigrated: boolean
   /** True when this load turned category records into folders and order records. */
   readonly foldersMigrated: boolean
+  /** True when this load turned a customization's `requires` list into rowlink records. */
+  readonly rowlinksMigrated: boolean
 }
 
 export interface SaveInput {
@@ -119,6 +123,7 @@ export function loadedFromSave(saved: SaveSuccess, records: readonly StoredRecor
     splitsMigrated: false,
     wholeRowsMigrated: false,
     foldersMigrated: false,
+    rowlinksMigrated: false,
   }
 }
 
@@ -341,6 +346,29 @@ const V2Order = Schema.Struct({
   updated: Schema.String,
 })
 
+// Row links (rowlinks.ts): switches and gates between two rows of one owner
+// and level. `requires` on a customization migrates into these at load.
+const V2Rowlink = Schema.Struct({
+  type: Schema.Literal("rowlink"),
+  level: LevelSchema,
+  agent: Schema.Union([Schema.String, Schema.Null]),
+  team: Schema.optional(V2TeamRef),
+  catalogue: Schema.optional(CatalogueSchema),
+  item: Schema.String,
+  section: Schema.Union([Schema.String, Schema.Null]),
+  target: Schema.String,
+  targetSection: Schema.Union([Schema.String, Schema.Null]),
+  link: Schema.Union([
+    Schema.Literal("either"),
+    Schema.Literal("oneway"),
+    Schema.Literal("shownWhenOn"),
+    Schema.Literal("shownWhenOff"),
+    Schema.Literal("shownAlways"),
+  ]),
+  enabled: Schema.optional(Schema.Boolean),
+  updated: Schema.String,
+})
+
 const V2Record = Schema.Union([
   V2Customization,
   V2Split,
@@ -354,6 +382,7 @@ const V2Record = Schema.Union([
   V2Category,
   V2Folder,
   V2Order,
+  V2Rowlink,
 ])
 
 const V2Header = Schema.Struct({
@@ -404,10 +433,11 @@ export async function load(projectDir: string): Promise<Loaded> {
     const skills = migrateSkillPermissions(presets.records)
     const splits = migrateSplitRows(skills.records)
     const wholeRows = migrateWholeRows(splits.records)
+    const rowlinks = migrateRequires(wholeRows.records)
     return {
       projectRevision: projectParsed.revision,
       globalRevision: globalParsed.revision,
-      records: wholeRows.records,
+      records: [...rowlinks.records, ...rowlinks.rowlinks],
       migrated: false,
       cataloguesMigrated: catalogues.migrated,
       presetsMigrated: presets.migrated,
@@ -415,6 +445,7 @@ export async function load(projectDir: string): Promise<Loaded> {
       splitsMigrated: splits.migrated,
       wholeRowsMigrated: wholeRows.migrated,
       foldersMigrated: folders.migrated,
+      rowlinksMigrated: rowlinks.migrated,
     }
   }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
@@ -425,7 +456,8 @@ export async function load(projectDir: string): Promise<Loaded> {
   const skills = migrateSkillPermissions(presets.records)
   const splits = migrateSplitRows(skills.records)
   const wholeRows = migrateWholeRows(splits.records)
-  const routed = route(wholeRows.records)
+  const rowlinks = migrateRequires(wholeRows.records)
+  const routed = route([...rowlinks.records, ...rowlinks.rowlinks])
   return {
     projectRevision: projectParsed.revision,
     globalRevision: globalParsed.revision,
@@ -437,6 +469,7 @@ export async function load(projectDir: string): Promise<Loaded> {
     splitsMigrated: splits.migrated,
     wholeRowsMigrated: wholeRows.migrated,
     foldersMigrated: folders.migrated,
+    rowlinksMigrated: rowlinks.migrated,
   }
 }
 
@@ -868,12 +901,21 @@ export async function ensureCatalogues(projectDir: string): Promise<{
   splitsMigrated: boolean
   wholeRowsMigrated: boolean
   foldersMigrated: boolean
+  rowlinksMigrated: boolean
   loaded: Loaded
   revision: number
 }> {
   const current = await load(projectDir)
-  const none = { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, foldersMigrated: false }
-  if (!current.cataloguesMigrated && !current.presetsMigrated && !current.skillsMigrated && !current.splitsMigrated && !current.wholeRowsMigrated && !current.foldersMigrated)
+  const none = { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, foldersMigrated: false, rowlinksMigrated: false }
+  if (
+    !current.cataloguesMigrated &&
+    !current.presetsMigrated &&
+    !current.skillsMigrated &&
+    !current.splitsMigrated &&
+    !current.wholeRowsMigrated &&
+    !current.foldersMigrated &&
+    !current.rowlinksMigrated
+  )
     return { ...none, loaded: current, revision: current.globalRevision }
   const saved = await save(projectDir, {
     expectedProjectRevision: current.projectRevision,
@@ -888,6 +930,7 @@ export async function ensureCatalogues(projectDir: string): Promise<{
     splitsMigrated: current.splitsMigrated,
     wholeRowsMigrated: current.wholeRowsMigrated,
     foldersMigrated: current.foldersMigrated,
+    rowlinksMigrated: current.rowlinksMigrated,
     loaded: await load(projectDir),
     revision: saved.globalRevision,
   }
@@ -905,7 +948,7 @@ async function write(projectDir: string, input: SaveInput, options?: SaveOptions
   // catalogue duplication and the retired-preset move are the same situation:
   // both sides of `same` are already migrated (the load applied them in
   // memory), so only these flags make the moved records reach disk.
-  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated || current.foldersMigrated
+  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated || current.foldersMigrated || current.rowlinksMigrated
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
   // A read-triggered migration never writes a missing project store, and a
   // forced rewrite still never writes an empty one into a directory that has
@@ -1071,6 +1114,23 @@ function parseV2(lines: string[]): (StoredRecord | LegacyCategory)[] {
         },
       ]
     if (record.type === "order") return [{ type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }]
+    if (record.type === "rowlink")
+      return [
+        {
+          type: "rowlink",
+          level: record.level,
+          agent: record.agent,
+          ...(record.team === undefined ? {} : { team: record.team }),
+          ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+          item: record.item,
+          section: record.section,
+          target: record.target,
+          targetSection: record.targetSection,
+          link: record.link,
+          ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
+          updated: record.updated,
+        },
+      ]
     if (record.type === "team")
       return [
         {
@@ -1277,6 +1337,20 @@ function sortKey(record: StoredRecord): string[] {
     ]
   if (record.type === "rule")
     return ["rule", record.tool, record.id, String(record.agent), teamKey, catalogueKey, record.level, record.updated]
+  if (record.type === "rowlink")
+    return [
+      "rowlink",
+      String(record.agent),
+      teamKey,
+      catalogueKey,
+      record.level,
+      record.item,
+      record.section ?? "",
+      record.target,
+      record.targetSection ?? "",
+      record.link,
+      record.updated,
+    ]
   return [
     record.type,
     record.item,
@@ -1359,6 +1433,21 @@ export function stable(record: StoredRecord): StoredRecord {
     }
   if (record.type === "order")
     return { type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }
+  if (record.type === "rowlink")
+    return {
+      type: "rowlink",
+      level: record.level,
+      agent: record.agent,
+      ...(record.team === undefined ? {} : { team: { level: record.team.level, team: record.team.team } }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      item: record.item,
+      section: record.section,
+      target: record.target,
+      targetSection: record.targetSection,
+      link: record.link,
+      ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
+      updated: record.updated,
+    }
   if (record.type === "modelSettings")
     return {
       type: "modelSettings",

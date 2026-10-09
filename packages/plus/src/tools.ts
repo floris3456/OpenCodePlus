@@ -24,6 +24,7 @@ import {
   planFolderDelete,
   planFolderRename,
   planRowMove,
+  planSectionMove,
   removalPlan,
   rowToken,
   type LayoutChange,
@@ -76,10 +77,14 @@ import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, Split
 import { buildTreeMemo } from "./instructions/tree.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
+import { rowlinksOf } from "./instructions/resolve-memo.js"
+import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
 import type { StoredRecord } from "./instructions/store.js"
 import {
   everySettings,
+  compactionFieldsOf,
+  setModelCompaction,
   hostModelOf,
   isModelDefaultRowId,
   isModelFieldRowId,
@@ -131,14 +136,16 @@ const SetDescription =
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
+  "Model and Defaults › Models rows accept compactWarm/coldCompact (on|off), compactionStrategy (auto|local|remote), compactionModel (provider/model#variant), compactionInstructions, and coldModels (ordered array or comma list). Null inherits; empty strings inherit except compactionInstructions, where empty is an explicit empty prompt. coldModels:[] explicitly disables the list. Emitted modelfield:/modelsetting: field rows take text and reset; coldCompact is a group, not a scalar field row, and no modelsetting:coldModels row is emitted. Use list's actual ids.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
   "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
 
 const MoveDescription =
-  "Move a row or folder (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
+  "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
   "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
-  "Moves are display only: nothing here changes what the model sees. Sections cannot move yet."
+  "A section moves before or after a sibling under the same parent inside its own item; the item's text is rewritten so the request order changes (a heading-derived move folds the consumed same-level child texts into the parent).\n" +
+  "Row and folder moves are display only: nothing there changes what the model sees."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -171,6 +178,13 @@ const DeleteDescription =
 const LogDescription =
   "Change history (who/what/when).\n" +
   "Reads the change log newest-first with where/limit/offset filtering."
+
+const LinkDescription =
+  "Inspect or set a row link between two rows of one owner and level (B9–B12).\n" +
+  "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled and the level/owner it is stored at.\n" +
+  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), oneway (turning id on saves target off; target on leaves id alone), shownWhenOn / shownWhenOff (the target is sent only while id is on / off).\n" +
+  "enabled:false stores a tombstone that masks the pair at this level, including an upstream link; enabled true or omitted stores a live link.\n" +
+  "Both ends must resolve in the same level and owner view; an unknown, protected or self link refuses without writing."
 
 const Field = Schema.Union([
   Schema.Literal("id"),
@@ -255,6 +269,12 @@ const SetInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
+  compactWarm: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldCompact: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldModels: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Array(Schema.String)]))),
+  compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
   rename: Schema.optionalKey(Schema.String).annotate({
     description:
       "Rename this agent, on-disk team member or Project/Global team row to this new name/id, or a folder row to a new name. " +
@@ -338,6 +358,20 @@ const LogInput = Schema.Struct({
   offset: Schema.optionalKey(Schema.Number),
 })
 
+const LinkInput = Schema.Struct({
+  id: Schema.String,
+  target: Schema.optionalKey(Schema.String),
+  type: Schema.optionalKey(
+    Schema.Union([
+      Schema.Literal("either"),
+      Schema.Literal("oneway"),
+      Schema.Literal("shownWhenOn"),
+      Schema.Literal("shownWhenOff"),
+    ]),
+  ),
+  enabled: Schema.optionalKey(Schema.Boolean),
+})
+
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
   return runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
@@ -418,13 +452,15 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
+          if (input.compactWarm !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined)
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; compaction fields are set on model or Defaults › Models rows` }))
           if (input.warming !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
           if (input.include !== undefined && input.resolve !== "merge")
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
-          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo)
+          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -446,6 +482,12 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (node.kind === "section") {
+            const op = planSectionMove(memo, input.id, input, new Date().toISOString())
+            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+            const applied = yield* mutateOp(api, memo, op, actor)
+            return { output: { id: input.id, target: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          }
           const change = planRowMove(memo, layoutOf(snapshot), input.id, input, new Date().toISOString())
           const applied = yield* applyLayout(api, snapshot, change, actor)
           return { output: { id: input.id, ...applied } }
@@ -572,6 +614,18 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             }),
           )
           return { output: result.value }
+        }),
+    })
+    editor.add({
+      name: "link",
+      description: LinkDescription,
+      input: LinkInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: (input, context) =>
+        Effect.gen(function* () {
+          return yield* linkRow(api, input, actorFrom(context))
         }),
     })
   })
@@ -823,6 +877,70 @@ function setLink(
   })
 }
 
+// `link {id, target?, type?, enabled?}`: inspect a row's links, or upsert the
+// link whose primary is `id`. Both ends must resolve in one owner/level view
+// (B11); every refusal happens before the write, so a refused call leaves the
+// records and the change log untouched.
+function linkRow(
+  api: PlusApi,
+  input: { id: string; target?: string; type?: RowlinkType; enabled?: boolean },
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const snapshot = yield* snapshotOrFail(api)
+    const memo = memoFromSnapshot(snapshot)
+    const node = findRow(memo, input.id)
+    if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+    const address = node.address
+    if (address === undefined || address.item === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: `link.invalid: "${node.label}" is not a row a link can address` }))
+    const primary: RowlinkEndpoint = { item: address.item, section: address.section }
+    const scopes = contextOfSnapshot(snapshot)
+    if (input.target === undefined) {
+      return {
+        output: {
+          id: input.id,
+          item: address.item,
+          section: address.section,
+          links: rowlinkView(rowlinksOf(memo), scopes, address, primary),
+        },
+      }
+    }
+    const targetNode = findRow(memo, input.target)
+    if (targetNode === undefined) return yield* Effect.fail(unknownError(input.target, memo))
+    const targetAddress = targetNode.address
+    if (targetAddress === undefined || targetAddress.item === undefined)
+      return yield* Effect.fail(new Tool.Error({ message: `link.invalid: "${targetNode.label}" is not a row a link can address` }))
+    if (!sameOwnerView(address, targetAddress))
+      return yield* Effect.fail(
+        new Tool.Error({ message: `link.invalid: "${node.label}" and "${targetNode.label}" are not in the same level and owner` }),
+      )
+    if (sameEndpoint(primary, targetAddress.item, targetAddress.section))
+      return yield* Effect.fail(new Tool.Error({ message: `link.invalid: "${node.label}" cannot link to itself` }))
+    const protectedPrimary = protectedOf(snapshot, node)
+    if (protectedPrimary !== undefined) return yield* Effect.fail(protectedError(protectedPrimary))
+    const protectedTarget = protectedOf(snapshot, targetNode)
+    if (protectedTarget !== undefined) return yield* Effect.fail(protectedError(protectedTarget))
+    const type = input.type ?? "either"
+    const next = writeRowlink(
+      rowlinksOf(memo),
+      address,
+      primary,
+      { item: targetAddress.item, section: targetAddress.section },
+      type,
+      input.enabled,
+      new Date().toISOString(),
+    )
+    const withoutRowlinks = memo.records.filter((record) => record.type !== "rowlink")
+    const status =
+      input.enabled === false
+        ? `Masked the ${type} link between "${node.label}" and "${targetNode.label}" at this level`
+        : `Linked "${node.label}" to "${targetNode.label}" (${type})`
+    const applied = yield* mutateDelta(api, memo, [...withoutRowlinks, ...next], actor, status)
+    return { output: { id: input.id, target: input.target, type, enabled: input.enabled !== false, ...applied } }
+  })
+}
+
 // The string form of a preset: an agent preset id, else `<team>/<member>`
 // (team ids never hold `/`, so the first one splits); a team owner takes a
 // team preset id. Undefined when no preset answers to it.
@@ -854,12 +972,15 @@ function computeSet(
   // it: a follow-up op runs against the interim records the first produced, so
   // it resolves through its own memo.
   sharedMemo?: Memo,
+  // Refuses a write-time switch onto a protected owner's row before any record
+  // changes (B9). Supplied by the tool actor; absent leaves switches unguarded.
+  isProtected?: (owner: string | null) => boolean,
 ): ReturnType<typeof setRequires> {
   const preserved = modelsOfMemo(memo)
   const preservedRules = rulesOfMemo(memo)
   const withModels = (records: readonly CustomizationRecord[], splits: readonly SplitRecord[]): MemoInput => ({
     ...memo,
-    records: [...records, ...splits, ...preserved, ...preservedRules],
+    records: [...records, ...splits, ...preserved, ...preservedRules, ...rowlinksOf(memo)],
   })
   // The condition is its own field: set it, then whatever else came with it.
   if (input.requires !== undefined) {
@@ -867,12 +988,12 @@ function computeSet(
     const rest = { ...input, requires: undefined }
     const more = rest.mode !== undefined || rest.text !== undefined || rest.state !== undefined || rest.pin !== undefined || rest.resolve !== undefined
     if ("refusal" in first || !more) return first
-    return computeSet(withModels(first.records, first.splits), rest)
+    return computeSet(withModels(first.records, first.splits), rest, undefined, isProtected)
   }
   if (input.mode !== undefined) {
     const first = setAgentMode(memo, input.id, input.mode, sharedMemo)
     if ("refusal" in first || (input.state === undefined && input.text === undefined && input.pin === undefined && input.resolve === undefined)) return first
-    return computeSet(withModels(first.records, first.splits), { ...input, mode: undefined })
+    return computeSet(withModels(first.records, first.splits), { ...input, mode: undefined }, undefined, isProtected)
   }
   if (input.resolve !== undefined) {
     if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text, undefined, sharedMemo)
@@ -880,7 +1001,7 @@ function computeSet(
     if ("refusal" in first) return first
     let interim: MemoInput = withModels(first.records, first.splits)
     if (input.state !== undefined) {
-      const second = setEnabled(interim, input.id, input.state === "on")
+      const second = setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
       if ("refusal" in second) return second
       interim = withModels(second.records, second.splits)
       if (input.pin === undefined) return second
@@ -892,7 +1013,7 @@ function computeSet(
     const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
-    const second = setEnabled(interim, input.id, input.state === "on")
+    const second = setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
     if ("refusal" in second) return second
     const interim2: MemoInput = withModels(second.records, second.splits)
     return setPin(interim2, input.id, input.pin)
@@ -901,7 +1022,7 @@ function computeSet(
     const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
-    return setEnabled(interim, input.id, input.state === "on")
+    return setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
   }
   if (input.text !== undefined && input.pin !== undefined) {
     const first = saveText(memo, input.id, input.text, sharedMemo)
@@ -910,15 +1031,15 @@ function computeSet(
     return setPin(interim, input.id, input.pin)
   }
   if (input.state !== undefined && input.pin !== undefined) {
-    const first = setEnabled(memo, input.id, input.state === "on", sharedMemo)
+    const first = setEnabled(memo, input.id, input.state === "on", sharedMemo, isProtected)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
     return setPin(interim, input.id, input.pin)
   }
   if (input.text !== undefined) return saveText(memo, input.id, input.text, sharedMemo)
-  if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on", sharedMemo)
+  if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on", sharedMemo, isProtected)
   if (input.pin !== undefined) return setPin(memo, input.id, input.pin, sharedMemo)
-  return toggle(memo, input.id, sharedMemo)
+  return toggle(memo, input.id, sharedMemo, isProtected)
 }
 
 function computeSplit(
@@ -968,7 +1089,13 @@ function mutateOp(
   actor: Plus.Actor,
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   const models = op.models ?? modelsOfMemo(memo)
-  return mutateDelta(api, memo, [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo)], actor, op.status)
+  return mutateDelta(
+    api,
+    memo,
+    [...op.records, ...op.splits, ...models, ...rulesOfMemo(memo), ...rowlinksOf(memo)],
+    actor,
+    op.status,
+  )
 }
 
 // A model op: customizations, splits and rules pass through unchanged; the
@@ -1007,11 +1134,35 @@ function setModel(
     interval?: string
     prompt?: string
     effort?: string
+    compactWarm?: string | null
+    coldCompact?: string | null
+    coldModels?: string | readonly string[] | null
+    compactionStrategy?: string | null
+    compactionModel?: string | null
+    compactionInstructions?: string | null
   },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
+    const compaction = compactionFieldsOf(input)
+    if ("error" in compaction) return yield* Effect.fail(new Tool.Error({ message: compaction.error }))
+    // Compose candidate/warming and C1 changes in memory, then persist once.
+    // A bad warming edit must not leave an otherwise valid C1 update behind.
+    if (Object.keys(compaction.fields).length > 0) {
+      if (input.active !== undefined || input.state !== undefined || input.pin !== undefined || input.resolve !== undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}": set compaction separately from activation, state, pin or review` }))
+      const target = input.text === undefined ? modelTargetOfAddress(node) : parseModelText(input.text)
+      if (target === undefined || node?.address === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes provider/model or provider/model#variant` }))
+      const edit = input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.prompt !== undefined
+        ? editModelRow(memo, id, { ...target, ...(input.warming === undefined ? {} : { warming: input.warming }), ...(input.interval === undefined ? {} : { interval: input.interval }), ...(input.prompt === undefined ? {} : { prompt: input.prompt }) })
+        : undefined
+      if (edit !== undefined && "refusal" in edit) return yield* Effect.fail(new Tool.Error({ message: edit.refusal }))
+      const models = setModelCompaction(edit?.models ?? modelsOfMemo(memo), node.address, target, compaction.fields, new Date().toISOString())
+      const applied = yield* mutateModels(api, memo, models, `Updated "${label}"`, actor)
+      return { output: { id, ...applied } }
+    }
     // Cache warming for this agent on this model at this level; "" inherits.
     if (input.warming !== undefined && input.text === undefined && input.interval === undefined && input.prompt === undefined) {
       const warming = input.warming
@@ -1118,7 +1269,8 @@ function resetModelField(
 
 // Defaults › Models rows (model-settings.ts) edit through modelSettings.set, not
 // the inventory mutate: they are server-owned rows like teams. A string sets a
-// field, "" clears it, absent leaves it; `state` sets the warming switch.
+// field, "" clears it (except compactionInstructions), absent leaves it;
+// `state` sets the warming switch. C1 null clears; [] sets an empty cold list.
 function setModelDefaults(
   api: PlusApi,
   node: TreeNode,
@@ -1129,12 +1281,12 @@ function setModelDefaults(
     interval?: string
     prompt?: string
     effort?: string
-    compactWarm?: string
-    coldCompact?: string
-    coldModels?: readonly string[]
-    compactionStrategy?: string
-    compactionModel?: string
-    compactionInstructions?: string
+    compactWarm?: string | null
+    coldCompact?: string | null
+    coldModels?: string | readonly string[] | null
+    compactionStrategy?: string | null
+    compactionModel?: string | null
+    compactionInstructions?: string | null
     text?: string
     pin?: boolean
     active?: boolean
@@ -1164,6 +1316,8 @@ function setModelDefaults(
       return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
     const key = defaultsKeyOf(node)
     if (key === undefined) return yield* Effect.fail(unknownError(node.id))
+    const compaction = compactionFieldsOf(input)
+    if ("error" in compaction) return yield* Effect.fail(new Tool.Error({ message: compaction.error }))
     const result = yield* Effect.promise(() =>
       api.setModelSettings({
         ...key,
@@ -1172,12 +1326,7 @@ function setModelDefaults(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
-        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
-        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
-        ...(input.coldModels === undefined ? {} : { coldModels: [...input.coldModels] }),
-        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
-        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
-        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+        ...compaction.fields,
         actor,
       }),
     )
@@ -1260,7 +1409,7 @@ function setPerm(
       if (limitOf(input.text) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
       const text = String(limitOf(input.text))
-      const op = computeSet(memo, { id, text }, treeMemo)
+      const op = computeSet(memo, { id, text }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateOp(api, memo, op, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1268,7 +1417,7 @@ function setPerm(
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
-    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo)
+    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, op, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }

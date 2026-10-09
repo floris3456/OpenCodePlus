@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import {
   fingerprint,
   resolve,
+  type Address,
   type CustomizationRecord,
   type Item,
   type Scopes,
@@ -77,6 +78,23 @@ function rowId(memo: MemoInput, id: string): string {
 }
 
 const PARENT_GLOBAL = "# Seat\n\n## Role\nR2.\n\n## Routing\nOld routing.\n\n## Merges\nM.\n"
+
+test("live Parent add, Child edit and Parent save retain the outside Sibling", () => {
+  const text = "# Parent\n\nPARENT_CANARY\n\n## Child\n\nCHILD_CANARY\n\n# Sibling\n\nSIBLING_CANARY\n"
+  const upstream = { ...item, text, fingerprint: fingerprint(text) }
+  const fixture = (records: readonly CustomizationRecord[]): MemoInput => ({ ...input(records), items: [upstream] })
+  const added = addSection(fixture([]), "section:global:alpha:system:role:parent", "Added", "ADDED_CANARY")
+  if ("refusal" in added) throw new Error(added.refusal)
+  const edited = saveText(fixture(added.records), "section:global:alpha:system:role:parent/child", "## Child\n\nCHILD_CANARY\n\nCHILD_EDIT_CANARY\n")
+  if ("refusal" in edited) throw new Error(edited.refusal)
+  const parent = resolve({ upstream, records: edited.records, splits: [], scopes, address: { level: "global", agent: "alpha", item: item.id, section: "parent" } }).text
+  const saved = saveText(fixture(edited.records), "section:global:alpha:system:role:parent", parent + "PARENT_EDIT_CANARY")
+  if ("refusal" in saved) throw new Error(saved.refusal)
+  const full = resolve({ upstream, records: saved.records, splits: [], scopes, address: { level: "global", agent: "alpha", item: item.id, section: null } }).fullText!
+  expect(headings(full)).toEqual(["# Parent", "## Child", "## Added", "# Sibling"])
+  for (const canary of ["PARENT_CANARY", "CHILD_CANARY", "CHILD_EDIT_CANARY", "ADDED_CANARY", "PARENT_EDIT_CANARY", "SIBLING_CANARY"]) expect(full.split(canary)).toHaveLength(2)
+  expect(expandedTree(fixture(saved.records)).filter((row) => row.kind === "section" && row.address?.level === "global" && row.address.item === "system:role").map((row) => row.label)).toEqual(["Parent", "Child", "Added", "Sibling"])
+})
 
 test("a parent's full-span customization sends each heading once, with the child's edit", () => {
   const text = assembled([
@@ -253,4 +271,165 @@ test("saving a whole heading item with an edited child keeps that edit at its le
   expect(headings(text)).toEqual(SEAT_HEADINGS)
   expect(text).toContain("Whole routing.")
   expect(text).not.toContain("Old project child.")
+})
+
+// The a36 live defect: Role with `## Parent` + `### Child` + `## Other`. `a` on
+// Parent added `### Added` as Child's sibling, but the old add wrote the sibling
+// into Child's own override, so Child's editor contained Added. B39: the write
+// is Parent's effective full span, the child editor stays its own slice.
+const DOC = "## Parent\nP.\n\n### Child\nC.\n\n## Other\nO.\n"
+const docItem: Item = {
+  id: "system:doc",
+  kind: "system",
+  group: "none",
+  title: "Doc",
+  text: DOC,
+  enabled: true,
+  fingerprint: fingerprint(DOC),
+  agents: ["alpha"],
+}
+
+const docScopes: Scopes = { global: new Set(["alpha"]), defaults: new Set(["alpha"]) }
+
+function docRec(level: "project" | "global" | "defaults", section: string, text: string): CustomizationRecord {
+  return {
+    type: "customization",
+    level,
+    agent: level === "defaults" ? null : "alpha",
+    item: "system:doc",
+    section,
+    text,
+    basedOn: fingerprint(DOC),
+    updated: UPDATED,
+  }
+}
+
+function docInput(records: readonly CustomizationRecord[], splits: readonly SplitRecord[] = []): MemoInput {
+  return {
+    items: [
+      docItem,
+      { id: "tool:plain", kind: "tool", group: "native", title: "plain", text: "plain body", enabled: true, fingerprint: fingerprint("plain body") },
+      { id: "mcp:docs", kind: "mcp", group: "none", title: "docs", text: "server config", enabled: true, fingerprint: fingerprint("server config") },
+    ],
+    records: [...records, ...splits],
+    agents: [
+      { id: "alpha", scope: "project" },
+      { id: "alpha", scope: "global" },
+    ],
+    links: [{ type: "link", level: "project", agent: "alpha", preset: { kind: "agent", id: "build" }, updated: UPDATED }],
+    teams: [],
+  }
+}
+
+function docRow(memo: MemoInput, section: string | null, item = "system:doc", level: Address["level"] = "project"): string {
+  const node = expandedTree(memo).find(
+    (candidate) =>
+      candidate.address?.item === item &&
+      candidate.address?.section === section &&
+      candidate.address?.level === level &&
+      candidate.address?.team === undefined,
+  )
+  if (node === undefined) throw new Error(`no ${level} ${item} row (section ${section})`)
+  return node.id
+}
+
+function docAssembled(records: readonly CustomizationRecord[], splits: readonly SplitRecord[] = []): string {
+  return resolve({
+    upstream: docItem,
+    records: [...records],
+    splits: [...splits],
+    scopes: docScopes,
+    address: { level: "project", agent: "alpha", item: "system:doc", section: null },
+  }).assembled
+}
+
+function docSection(records: readonly CustomizationRecord[], splits: readonly SplitRecord[], id: string): string {
+  return resolve({
+    upstream: docItem,
+    records: [...records],
+    splits: [...splits],
+    scopes: docScopes,
+    address: { level: "project", agent: "alpha", item: "system:doc", section: id },
+  }).text
+}
+
+test("adding under Parent writes Parent's full span: Child's editor excludes the sibling, the item has each heading once", () => {
+  const memo = docInput([])
+  const added = addSection(memo, docRow(memo, "parent"), "Added", "Added text.")
+  if ("refusal" in added) throw new Error(added.refusal)
+
+  // One record, on Parent's address, holding Parent's span plus the new child.
+  const own = added.records.filter((record) => record.item === "system:doc")
+  expect(own).toHaveLength(1)
+  expect(own[0].section).toBe("parent")
+
+  const childEditor = docSection(added.records, added.splits, "parent/child")
+  expect(childEditor).toContain("C.")
+  expect(childEditor).not.toContain("Added")
+
+  const parentEditor = docSection(added.records, added.splits, "parent")
+  expect(parentEditor).toContain("### Child")
+  expect(parentEditor).toContain("### Added")
+
+  const whole = docAssembled(added.records, added.splits)
+  expect(headings(whole)).toEqual(["## Parent", "### Child", "### Added", "## Other"])
+  expect(whole.match(/### Added/g)).toHaveLength(1)
+  expect(whole).toContain("Added text.")
+})
+
+test("a parent add folds a consumed same-level child edit once, and a parent save keeps the children on reload", () => {
+  const memo = docInput([docRec("project", "parent/child", "### Child\nEdited child.\n")])
+  const added = addSection(memo, docRow(memo, "parent"), "Added", "Added text.")
+  if ("refusal" in added) throw new Error(added.refusal)
+
+  // The child's edited text survives inside Parent's span; the consumed
+  // same-level child record is gone, so an older record cannot undo the add.
+  const parentRecord = added.records.find((record) => record.item === "system:doc" && record.section === "parent")
+  expect(parentRecord?.text).toContain("Edited child.")
+  expect(added.records.some((record) => record.section === "parent/child" && record.text !== undefined)).toBe(false)
+  const whole = docAssembled(added.records, added.splits)
+  expect(headings(whole)).toEqual(["## Parent", "### Child", "### Added", "## Other"])
+  expect(whole.match(/Child/g)).toHaveLength(1)
+  expect(whole).toContain("Edited child.")
+
+  // A parent edit then reload keeps both children exactly once.
+  const reload = docInput(added.records, added.splits)
+  const saved = saveText(reload, docRow(reload, "parent"), "## Parent\nP2.\n\n### Child\nC2.\n\n### Added\nA2.\n")
+  if ("refusal" in saved) throw new Error(saved.refusal)
+  const after = docAssembled(saved.records, saved.splits)
+  expect(headings(after)).toEqual(["## Parent", "### Child", "### Added", "## Other"])
+  expect(after).toContain("P2.")
+  expect(after).toContain("C2.")
+  expect(after).toContain("A2.")
+  expect(after).toContain("O.")
+})
+
+test("a more-specific child override stays effective after a less-specific parent add", () => {
+  const records = [
+    docRec("global", "parent", "## Parent\nGlobal parent.\n\n### Child\nGlobal child.\n"),
+    docRec("project", "parent/child", "### Child\nProject child.\n"),
+  ]
+  const memo = docInput(records)
+  const added = addSection(memo, docRow(memo, "parent", "system:doc", "global"), "Added", "Added text.")
+  if ("refusal" in added) throw new Error(added.refusal)
+
+  // The Project child is more specific than the Global parent, so it stays a
+  // record and keeps winning inside the parent's span.
+  expect(added.records.some((record) => record.level === "project" && record.section === "parent/child" && record.text === "### Child\nProject child.\n")).toBe(true)
+  const whole = docAssembled(added.records, added.splits)
+  expect(headings(whole)).toEqual(["## Parent", "### Child", "### Added", "## Other"])
+  expect(whole).toContain("Project child.")
+  expect(whole).not.toContain("Global child.")
+  expect(whole.match(/Child/g)).toHaveLength(1)
+})
+
+test("an invalid or protected add refuses and writes nothing", () => {
+  const memo = docInput([])
+  const missing = addSection(memo, "section:project:alpha:system:doc:missing", "X", "x")
+  if (!("refusal" in missing)) throw new Error("expected missing-section refusal")
+  expect("records" in missing).toBe(false)
+  const unsupported = addSection(memo, docRow(memo, null, "mcp:docs", "defaults"), "X", "x")
+  if (!("refusal" in unsupported)) throw new Error("expected unsupported refusal")
+  expect(unsupported.refusal).toBe(`"docs" does not support sections`)
+  expect("records" in unsupported).toBe(false)
 })

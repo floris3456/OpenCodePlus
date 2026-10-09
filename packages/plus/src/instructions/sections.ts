@@ -215,6 +215,11 @@ export function renderSections(
       out += separate(own)
       for (const kid of kids) emit(kid)
       out += separate(tail)
+      // A saved full heading span need not end in a newline. Its final
+      // derived child is not itself an override, so preserve the boundary
+      // before the next outside sibling rather than joining its heading to
+      // the parent's last body line. Manual offsets remain untouched.
+      if (split.kind === "heading" && piece.applied && !out.endsWith("\n")) out += "\n\n"
     }
     spans.set(piece.id, { start, end: out.length })
   }

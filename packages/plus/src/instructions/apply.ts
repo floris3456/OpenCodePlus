@@ -495,7 +495,7 @@ export function controlPlans(input: ApplyInput): readonly { agent: string; rows:
     const unique = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
       const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
       if (item === undefined) return []
-      const value = resolvedFor(item, agent, input)
+      const value = resolvedFor(item, agent, input, gateFor(input, agent))
       // A false upstream state (e.g. a disabled member file) is a ceiling.
       if (id === "setting:enabled" && (!item.enabled || !value.enabled)) return [{ id, text: "", enabled: false }]
       // Text controls assemble like every other text kind: the description and
@@ -819,6 +819,23 @@ export function rowGate(input: ApplyInput, agent: ApplyAgent): (ids: readonly st
   return gateOf(isOn)
 }
 
+// The gate for one agent, built once per apply input: gating every text kind
+// (B12) asks for it on each plan, and `rowGate` resolves every row it names.
+const gateCache = new WeakMap<ApplyInput, Map<string, (ids: readonly string[]) => boolean>>()
+
+function gateFor(input: ApplyInput, agent: ApplyAgent): (ids: readonly string[]) => boolean {
+  let perAgent = gateCache.get(input)
+  if (perAgent === undefined) {
+    perAgent = new Map()
+    gateCache.set(input, perAgent)
+  }
+  const hit = perAgent.get(agent.id)
+  if (hit !== undefined) return hit
+  const gate = rowGate(input, agent)
+  perAgent.set(agent.id, gate)
+  return gate
+}
+
 interface RoleCandidate {
   readonly agent: string
   readonly text: string
@@ -827,7 +844,7 @@ interface RoleCandidate {
 
 function roleCandidates(input: ApplyInput): RoleCandidate[] {
   return input.agents.flatMap((agent) => {
-    const gate = rowGate(input, agent)
+    const gate = gateFor(input, agent)
     return input.items.flatMap((item) => {
       if (item.kind !== "system") return []
       if (item.id !== "system:role") return []
@@ -887,7 +904,7 @@ export function skillPlans(input: ApplyInput): SkillPlans {
     input.items.flatMap((item) => {
       if (item.kind !== "skill") return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
+      const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       if (!skillCustomized(item, resolved)) return []
       if (resolved.enabled) return []
       return [{ agent: agent.id, skill: parseId(item.id, "skill:") }]
@@ -897,7 +914,7 @@ export function skillPlans(input: ApplyInput): SkillPlans {
     input.items.flatMap((item) => {
       if (item.kind !== "skill") return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
+      const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       if (!skillCustomized(item, resolved)) return []
       if (!resolved.enabled) return []
       if (resolved.assembled === item.text) return []
@@ -1286,7 +1303,7 @@ function basePlans(input: ApplyInput): BasePlan[] {
     input.items.flatMap((item) => {
       if (item.kind !== "base") return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
+      const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       if (isNoop(item, resolved)) return []
       if (!resolved.enabled) return []
       return [{ agent: agent.id, template: parseId(item.id, "base:"), text: resolved.assembled, upstream: item.text }]
@@ -1321,7 +1338,7 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
       if (!applies(item, agent.id)) return []
-      const resolved = resolvedFor(item, agent, input)
+      const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       const tool = parseId(item.id, "tool:")
       const params = paramPlans(input, agent, edited.get(tool))
       // isNoop compares only text and enablement (it is shared with base and
@@ -1363,7 +1380,7 @@ function editedParams(input: ApplyInput): Map<string, Item[]> {
 function paramPlans(input: ApplyInput, agent: ApplyAgent, params: readonly Item[] | undefined): ParamPlan[] {
   return (params ?? []).flatMap((param) => {
     if (!applies(param, agent.id)) return []
-    const resolved = resolvedFor(param, agent, input)
+    const resolved = resolvedFor(param, agent, input, gateFor(input, agent))
     const enabled = resolved.enabled || param.required === true
     if (enabled && normalizeLossless(resolved.assembled) === normalizeLossless(param.text)) return []
     return [{ name: param.title, enabled, text: resolved.assembled }]
@@ -1380,7 +1397,7 @@ interface InstructionCandidate {
 
 function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
   return input.agents.flatMap((agent) => {
-    const gate = rowGate(input, agent)
+    const gate = gateFor(input, agent)
     return input.items.flatMap((item) => {
       if (item.kind !== "system") return []
       if (item.id === "system:role") return []

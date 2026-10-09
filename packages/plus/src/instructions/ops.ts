@@ -48,6 +48,7 @@ import {
   reset as resetModelRecords,
   resolve,
   resolveActiveModel,
+  resolveEnabled,
   resolutionChain,
   resolveResolution,
   resolveSplit,
@@ -87,9 +88,11 @@ import {
   folderIdOfRef,
   folderOf,
   folderRef,
+  groupScope,
   renameFolderRecord,
   reparent,
   setOrder,
+  setOrderScope,
   splitLayout,
   tabOfGroupId,
   tabOfItem,
@@ -97,11 +100,12 @@ import {
   type OrderRecord,
 } from "./folders.js"
 import { presetOfAddress } from "./presets.js"
+import { switchedOff } from "./rowlinks.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { derive, headingSpan, manual, slice, wrappingSection, type Boundary } from "./sections.js"
+import { derive, headingSpan, manual, parentIndexes, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
 
 // Folders and display order (S1a). A move is planned from the folder and order
@@ -317,6 +321,267 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
   return { target: token, status: `Moved "${node.label}" ${where}`, layout: plan }
 }
 
+// A section move (plus-1.2.0 B42). It reorders one section before or after a
+// sibling under the same parent, inside the same item. A heading-derived move
+// rewrites the parent's effective span (the B39 parent-save); a manual split
+// rewrites effective text and remaps its stable boundaries. State, pin and
+// condition records are never touched; only consumed text fields go.
+// Cross-item and cross-parent (nesting) moves refuse atomically.
+export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarget, updated: string): OpResult {
+  const found = findNode(memo, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || address.section === null) return { refusal: `"${node.label}" is not a section` }
+  if (target.into !== undefined) return { refusal: `"${node.label}" moves only before or after a sibling section in its own parent` }
+  const siblingId = target.before ?? target.after
+  if (siblingId === undefined) return { refusal: `say where "${node.label}" goes: before or after a sibling section` }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  const siblingFound = findNode(memo, siblingId)
+  if (siblingFound === undefined) return { refusal: unknownRowRefusal(siblingId) }
+  const sibling = siblingFound.node
+  const siblingAddress = sibling.address
+  if (siblingAddress === undefined || siblingAddress.section === null) return { refusal: `"${sibling.label}" is not a section` }
+  if (
+    siblingAddress.item !== address.item ||
+    siblingAddress.agent !== address.agent ||
+    siblingAddress.level !== address.level ||
+    !sameTeam(siblingAddress.team, address.team) ||
+    catalogueOf(siblingAddress.catalogue) !== catalogueOf(address.catalogue)
+  )
+    return { refusal: `"${node.label}" and "${sibling.label}" are in different items; sections move only within their own item` }
+
+  const memberMemo = found.memo
+  const chain = chainFor(memberMemo, node)
+  if (chain === undefined) return { refusal: `Item not found for "${node.label}"` }
+  const itemAddress: Address = { ...address, section: null }
+  const whole = resolve({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: memberMemo.ctx.scopes,
+    address: itemAddress,
+  })
+  const hasManual = winningSplit(chain.splits, itemAddress, memberMemo.ctx.scopes) !== undefined
+  // Assembly trims its final newline. Restore a separator before relocating a
+  // final heading span, or its body would run into the next heading.
+  const effectiveText = whole.fullText ?? whole.assembled
+  const baseText = !hasManual ? `${effectiveText}\n` : whole.text
+  const split = resolveSplit({
+    text: baseText,
+    title: chain.upstream.title,
+    splits: chain.splits,
+    scopes: memberMemo.ctx.scopes,
+    address: itemAddress,
+  })
+  if (split.kind === "whole") return { refusal: `"${node.label}" has no sibling sections to reorder` }
+  const moved = split.sections.find((section) => section.id === address.section)
+  if (moved === undefined) return { refusal: `Section not found for "${node.label}"` }
+  const anchor = split.sections.find((section) => section.id === siblingAddress.section)
+  if (anchor === undefined) return { refusal: `Section not found for "${sibling.label}"` }
+  const parents = parentIndexes(split.sections)
+  const indexOf = new Map(split.sections.map((section, index) => [section.id, index]))
+  const movedIndex = indexOf.get(moved.id)
+  const anchorIndex = indexOf.get(anchor.id)
+  if (movedIndex === undefined || anchorIndex === undefined || moved.id === anchor.id)
+    return { refusal: `"${node.label}" cannot move beside "${sibling.label}"` }
+  const parentIdOf = (index: number): string | null => {
+    const parent = parents[index]
+    return parent === undefined ? null : split.sections[parent].id
+  }
+  const parentId = parentIdOf(movedIndex)
+  if (parentId !== parentIdOf(anchorIndex))
+    return { refusal: `"${node.label}" is not a sibling of "${sibling.label}"; sections move only within the same parent` }
+
+  const before = target.before !== undefined
+  const where = `${before ? "before" : "after"} "${sibling.label}"`
+  const status = `Moved "${node.label}" ${where}`
+
+  if (split.kind !== "manual") {
+    if (split.sections.some((section, index) => split.sections.some((other, otherIndex) =>
+      otherIndex !== index && other.name === section.name && parents[index] === parents[otherIndex],
+    ))) return { refusal: "Repeated sibling heading titles have occurrence-based identities; rename them before moving" }
+    const parent = parentId === null ? undefined : split.sections.find((section) => section.id === parentId)
+    const pStart = parent?.start ?? 0
+    const pEnd = parent?.end ?? baseText.length
+    const text = moveRawBlock(baseText, moved, anchor, before)
+    const reordered = resolveSplit({ text, title: chain.upstream.title, splits: chain.splits, scopes: memberMemo.ctx.scopes, address: itemAddress })
+    // Heading ids are occurrence-based. Refuse when reordering would attach an
+    // existing id to different content (notably repeated sibling titles).
+    if (split.sections.some((section, index) => {
+      const nextIndex = reordered.sections.findIndex((entry) => entry.id === section.id)
+      const next = reordered.sections[nextIndex]
+      if (next === undefined) return true
+      // Compare each heading's own body, not its reordered descendant span.
+      const child = split.sections[index + 1]
+      const nextChild = reordered.sections[nextIndex + 1]
+      const end = child !== undefined && child.depth > section.depth ? child.start : section.end
+      const nextEnd = nextChild !== undefined && nextChild.depth > next.depth ? nextChild.start : next.end
+      return baseText.slice(section.start, end).trimEnd() !== text.slice(next.start, nextEnd).trimEnd()
+    })) return { refusal: "Section heading identities would change on reorder; rename repeated headings before moving" }
+    const parentText = parentId === null ? text : text.slice(pStart, pEnd)
+    // Fold the same-level child texts the rewritten parent now contains, then
+    // store the parent's span. A child at a more specific level survives and
+    // still wins over the parent's copy (B39 rules 2 and 4).
+    const consumed =
+      parentId === null
+        ? resolveSplit({ text: parentText, title: chain.upstream.title, splits: chain.splits, scopes: memberMemo.ctx.scopes, address: itemAddress }).sections.map(
+            (section) => section.id,
+          )
+        : headingSpan(parentText, parent?.depth ?? 0).inner.map((child) => `${parentId}/${child.rel}`)
+    let records = chain.customizations
+    for (const id of consumed) records = dropSectionText(records, { ...address, section: id })
+    records = merge(records, parentId === null ? itemAddress : { ...address, section: parentId }, { text: parentText }, chain.upstream, memberMemo.ctx.scopes, chain.splits)
+    return { records, splits: chain.splits, status, retryHint: `moved "${node.label}" against a stale revision; retry to apply` }
+  }
+
+  // Manual split: move the effective block and shift every boundary by the same
+  // offset map, so stable ids keep their content at their new positions.
+  const winner = winningSplit(chain.splits, itemAddress, memberMemo.ctx.scopes)
+  if (winner === undefined) return { refusal: `Section not found for "${node.label}"` }
+  // Manual ids do not derive from headings. Use the rendered spans to fold
+  // child edits without measuring boundaries against text of a different size.
+  // A parent override can hide a manual child entirely: no safe span exists.
+  const rendered = `${effectiveText}\n`
+  const movedSpan = whole.spans?.get(moved.id)
+  const anchorSpan = whole.spans?.get(anchor.id)
+  if (movedSpan === undefined || anchorSpan === undefined || winner.boundaries.some((boundary) => !whole.spans?.has(boundary.id)))
+    return { refusal: `"${node.label}" is hidden by a manual parent override; reset or edit that parent before moving its sections` }
+  const movedBlock = { start: movedSpan.start, end: movedSpan.end === effectiveText.length ? rendered.length : movedSpan.end }
+  const anchorBlock = { start: anchorSpan.start, end: anchorSpan.end === effectiveText.length ? rendered.length : anchorSpan.end }
+  const length = movedBlock.end - movedBlock.start
+  const rawInsert = before ? anchorBlock.start : anchorBlock.end
+  const insert = rawInsert <= movedBlock.start ? rawInsert : rawInsert - length
+  const text = moveRawBlock(rendered, movedBlock, anchorBlock, before)
+  const boundaries = winner.boundaries.map((boundary) => ({
+    id: boundary.id,
+    name: boundary.name,
+    start: mapMovedOffset(whole.spans!.get(boundary.id)!.start, movedBlock.start, movedBlock.end, insert),
+    ...(boundary.depth === undefined ? {} : { depth: boundary.depth }),
+  }))
+  const records = merge(dropSectionText(chain.customizations, itemAddress), itemAddress, { text }, chain.upstream, memberMemo.ctx.scopes, chain.splits)
+  const rest = chain.splits.filter((record) => !(record.item === itemAddress.item && scopedTo(record, address)))
+  const splits: SplitRecord[] = [
+    ...rest,
+    {
+      type: "split",
+      level: address.level,
+      agent: address.agent,
+      ...(address.team !== undefined ? { team: address.team } : {}),
+      ...catalogueField(address),
+      item: address.item,
+      boundaries,
+      updated,
+    },
+  ]
+  return { records, splits, status, retryHint: `moved "${node.label}" against a stale revision; retry to apply` }
+}
+
+// Move the block [block.start, block.end) of `text` immediately before or
+// after `anchor` (both within the same parent), shifting the offsets between.
+function moveRawBlock(text: string, block: { readonly start: number; readonly end: number }, anchor: { readonly start: number; readonly end: number }, before: boolean): string {
+  const raw = text.slice(block.start, block.end)
+  const without = text.slice(0, block.start) + text.slice(block.end)
+  const at = (before ? anchor.start : anchor.end) <= block.start ? (before ? anchor.start : anchor.end) : (before ? anchor.start : anchor.end) - (block.end - block.start)
+  return without.slice(0, at) + raw + without.slice(at)
+}
+
+// Where an offset lands after [start, end) moved to `insert` (an index into
+// the text with the block removed). Offsets inside the block travel with it.
+function mapMovedOffset(offset: number, start: number, end: number, insert: number): number {
+  if (offset >= start && offset < end) return insert + (offset - start)
+  const shifted = offset >= end ? offset - (end - start) : offset
+  return shifted < insert ? shifted : shifted + (end - start)
+}
+
+function winningSplit(splits: readonly SplitRecord[], address: Address, scopes: Scopes): SplitRecord | undefined {
+  return resolutionChain(address, scopes)
+    .map((node) => splits.find((split) => split.item === address.item && scopedTo(split, node)))
+    .find((split) => split !== undefined)
+}
+
+// The display token a row contributes to an ordered list: an item id, a
+// `folder:<id>` ref, or an owner row id (an agent, a team, a team member).
+// Built-in group headings and tab groups have none, so they cannot move.
+export function listToken(node: TreeNode): string | undefined {
+  if (node.address !== undefined) return node.address.section === null ? node.address.item : undefined
+  const at = node.id.indexOf(FOLDER_MARK)
+  if (at !== -1) return folderRef(node.id.slice(at + FOLDER_MARK.length))
+  return node.kind === "agent" || node.kind === "team" ? node.id : undefined
+}
+
+// The nearest ancestor of `nodes[index]` (the row one indent shallower).
+function parentOf(nodes: readonly TreeNode[], index: number): TreeNode | undefined {
+  const depth = nodes[index]?.depth
+  if (depth === undefined || depth === 0) return undefined
+  for (let at = index - 1; at >= 0; at--) if ((nodes[at]?.depth ?? -1) < depth) return nodes[at]
+  return undefined
+}
+
+// The rows directly under `parent`, in display order.
+function directChildNodes(nodes: readonly TreeNode[], parent: TreeNode): TreeNode[] {
+  const index = nodes.findIndex((node) => node.id === parent.id)
+  if (index === -1) return []
+  const out: TreeNode[] = []
+  for (let at = index + 1; at < nodes.length; at++) {
+    const row = nodes[at]!
+    if (row.depth <= parent.depth) break
+    if (row.depth === parent.depth + 1) out.push(row)
+  }
+  return out
+}
+
+/**
+ * Reorder a row or owner within a non-tab list group (a tab's origin subgroup
+ * or a sidebar catalogue list), recorded as a `group:<id>` order. No folders
+ * and no nesting: the row keeps its group and only changes its place among its
+ * siblings. Built-in group headings have no token and refuse.
+ */
+export function planGroupMove(
+  memo: MemoInput,
+  layout: LayoutRecords,
+  rowId: string,
+  target: RowTarget,
+  updated: string,
+): LayoutChange {
+  const nodes = expandedTree(memo)
+  const at = nodes.findIndex((node) => node.id === rowId)
+  const node = nodes[at]
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
+  const token = listToken(node)
+  if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }
+  if (target.into !== undefined) return { refusal: `"${node.label}" reorders in its own list; it cannot enter a folder here` }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  const siblingId = target.before ?? target.after
+  if (siblingId === undefined) return { refusal: "say where it goes: before or after a row" }
+  if (siblingId === rowId) return { refusal: `"${node.label}" cannot go beside itself` }
+  const siblingAt = nodes.findIndex((candidate) => candidate.id === siblingId)
+  const sibling = nodes[siblingAt]
+  if (sibling === undefined) return { refusal: unknownRowRefusal(siblingId) }
+  const parent = parentOf(nodes, at)
+  const siblingParent = parentOf(nodes, siblingAt)
+  if (parent === undefined || siblingParent === undefined || parent.id !== siblingParent.id)
+    return { refusal: `"${sibling.label}" is not in the same list` }
+  if (rowToken(parent) !== undefined) return { refusal: `"${node.label}" moves through its tab's folders` }
+  const anchor = listToken(sibling)
+  if (anchor === undefined) return { refusal: `"${sibling.label}" cannot be a destination` }
+  const siblings = directChildNodes(nodes, parent).flatMap((child) => {
+    const entry = listToken(child)
+    return entry === undefined ? [] : [entry]
+  })
+  const without = siblings.filter((entry) => entry !== token)
+  const index = without.indexOf(anchor)
+  if (index === -1) return { refusal: `"${sibling.label}" is not in the same list` }
+  const insertAt = target.after === undefined ? index : index + 1
+  const items = [...without.slice(0, insertAt), token, ...without.slice(insertAt)]
+  return {
+    target: token,
+    status: `Moved "${node.label}" ${target.after === undefined ? "before" : "after"} "${sibling.label}"`,
+    layout: { folders: layout.folders, orders: setOrderScope(layout.orders, groupScope(parent.id), items, updated) },
+  }
+}
+
 // A folder created in a tab's top level or inside a folder, listed last there.
 export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string): LayoutChange {
   const trimmed = name.trim()
@@ -325,7 +590,10 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   const at = nodes.findIndex((node) => node.id === rowId)
   const node = nodes[at]
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
-  const token = rowToken(node)
+  // Origin subgroups are presentation headings; Add Folder belongs to their tab.
+  const tabIndex = tabGroupIndex(nodes, at)
+  const container = node.kind === "group" && rowToken(node) === undefined && tabIndex !== undefined ? nodes[tabIndex]! : node
+  const token = rowToken(container)
   const folderId = token === undefined ? undefined : folderIdOfRef(token)
   const parent = folderId === undefined ? undefined : folderOf(layout.folders, folderId)
   const tab = token?.startsWith("tab:") === true ? token.slice("tab:".length) : parent?.tab
@@ -336,7 +604,7 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   const folder = created.folders.at(-1)
   if (folder === undefined) return { refusal: "the folder was not created" }
   const orders =
-    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, at), folderRef(folder.id)], updated) : created.orders
+    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, container === node ? at : tabIndex!), folderRef(folder.id)], updated) : created.orders
   return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: { folders: created.folders, orders } }
 }
 
@@ -820,12 +1088,58 @@ function boundariesEqual(
   })
 }
 
-export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo): OpResult {
+// ── write-time switches (B9, B10) ─────────────────────────────────────────
+//
+// An `either`/`oneway` rowlink is a durable on/off relationship: turning the
+// primary on saves the connected rows off *in the same save*, like exclusive
+// models and teams, so a request never evaluates it. `either` fires from
+// whichever end turns on; `oneway` only from its primary. One hop only: the
+// rows it turns off do not fire their own links (B10). Only the effective
+// links fire — `switchedOff` reads the same nearest-level/tombstone answer the
+// link tool reports, so an upstream switch masked at this level does nothing.
+// A connected row owned by a protected agent refuses the whole write before
+// any record changes (`isProtected`, supplied by the tool actor only).
+
+type SwitchResult = { readonly records: CustomizationRecord[]; readonly disabled: readonly string[] } | { readonly refusal: string }
+
+function applySwitches(
+  memo: Memo,
+  chain: { readonly address: Address; readonly customizations: CustomizationRecord[] },
+  records: CustomizationRecord[],
+  on: boolean,
+  isProtected?: (owner: string | null) => boolean,
+): SwitchResult {
+  if (!on) return { records, disabled: [] }
+  const targets = switchedOff(
+    memo.ctx.scopes.rowlinks ?? [],
+    memo.ctx.scopes,
+    chain.address,
+    { item: chain.address.item, section: chain.address.section },
+  )
+  if (targets.length === 0) return { records, disabled: [] }
+  if (isProtected?.(chain.address.agent) === true)
+    return { refusal: `agent.protected: row belongs to protected agent "${chain.address.agent}"; turning this on would disable a linked row` }
+  let out = records
+  const disabled: string[] = []
+  for (const endpoint of targets) {
+    const address = { ...chain.address, item: endpoint.item, section: endpoint.section }
+    const upstream = upstreamFor(memo.ctx.items, address)
+    if (upstream === undefined) return { refusal: `Linked row "${endpoint.item}" cannot be switched` }
+    // Already off (by inheritance or an earlier row): writing an off record
+    // would be noise, and an off toggle never writes a linked row at all.
+    if (!resolve({ upstream, records: out, splits: memo.ctx.splits, scopes: memo.ctx.scopes, address }).enabled) continue
+    out = merge(out, address, { state: "off" }, upstream, memo.ctx.scopes)
+    disabled.push(endpoint.item)
+  }
+  return { records: out, disabled }
+}
+
+export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): OpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const control = entityControlId(found.memo, node, "setting:enabled")
-  if (control !== undefined) return toggle(input, control, sharedMemo)
+  if (control !== undefined) return toggle(input, control, sharedMemo, isProtected)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
@@ -847,29 +1161,56 @@ export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRe
     chain.upstream,
     memo.ctx.scopes,
   )
+  const turnedOn = !resolved.enabled
+  const switched = applySwitches(memo, chain, next, turnedOn, isProtected)
+  if ("refusal" in switched) return switched
+  const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
   return {
-    records: next,
+    records: switched.records,
     splits: chain.splits,
-    status: resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`,
+    status: `${resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`}${suffix}`,
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
   }
 }
 
-export function setEnabled(input: MemoInput, rowId: string, value: boolean, sharedMemo?: Memo): OpResult {
+export function setEnabled(
+  input: MemoInput,
+  rowId: string,
+  value: boolean,
+  sharedMemo?: Memo,
+  isProtected?: (owner: string | null) => boolean,
+): OpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const control = entityControlId(found.memo, node, "setting:enabled")
-  if (control !== undefined) return setEnabled(input, control, value, sharedMemo)
+  if (control !== undefined) return setEnabled(input, control, value, sharedMemo, isProtected)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
   const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream, memo.ctx.scopes)
+  // Switches fire only on an actual off→on transition, exactly as `toggle`
+  // does: an explicit `state:"on"` on an already-on row writes nothing new.
+  const wasOn = resolve({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: memo.ctx.scopes,
+    address: chain.address,
+  }).enabled
+  const switched = applySwitches(memo, chain, next, value && !wasOn, isProtected)
+  if ("refusal" in switched) return switched
+  const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
-  const created = next.find((record) => sameAddress(record, chain.address))
-  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
+  const created = switched.records.find((record) => sameAddress(record, chain.address))
+  if (
+    switched.disabled.length === 0 &&
+    existing !== undefined &&
+    created !== undefined &&
+    customizationsEqualWithoutUpdated(existing, created)
+  )
     return {
       records: chain.customizations,
       splits: chain.splits,
@@ -877,9 +1218,9 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean, shar
       retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
     }
   return {
-    records: next,
+    records: switched.records,
     splits: chain.splits,
-    status: value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
+    status: `${value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`}${suffix}`,
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
   }
 }
@@ -948,7 +1289,12 @@ export function toggleGroup(
     }
     // The chain context makes merge record what the chain above resolves,
     // exactly as `toggle` does for one row.
-    records = merge(records, address, { state: want ? "on" : "off" }, upstream, memo.ctx.scopes)
+    const wasOn = resolve({ upstream, records, splits, scopes: memo.ctx.scopes, address }).enabled
+    const next = merge(records, address, { state: want ? "on" : "off" }, upstream, memo.ctx.scopes)
+    const switched = applySwitches(memo, { address, customizations: records }, next, want && !wasOn,
+      (owner) => owner !== null && isProtected?.(owner) === true)
+    if ("refusal" in switched) return switched
+    records = switched.records
     applied += 1
   }
   if (applied === 0) return { refusal: skipped[0] ?? `"${label}" has no toggleable rows` }
@@ -1127,6 +1473,30 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         address: chain.address,
       })
 
+      // Section patches can replace existing spans, not create a new heading
+      // skeleton. A structural whole-item edit must supply that skeleton as
+      // one span; otherwise the old Full text stub can hide every new heading.
+      // Manual boundaries retain their existing section-edit contract.
+      if (
+        currentSplit.kind !== "manual" &&
+        (currentSplit.sections.length !== newSplit.sections.length ||
+          currentSplit.sections.some((section, index) => section.id !== newSplit.sections[index]?.id))
+      ) {
+        const records = chain.customizations.reduce(
+          (out, record) =>
+            record.section !== null && record.text !== undefined && sameAddress(record, { ...chain.address, section: record.section })
+              ? merge(out, { ...chain.address, section: record.section }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
+              : out,
+          chain.customizations,
+        )
+        return {
+          records: merge(records, chain.address, { text }, chain.upstream, memo.ctx.scopes, chain.splits),
+          splits: chain.splits,
+          status: `Saved "${node.label}"`,
+          retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
+        }
+      }
+
       let customizations = chain.customizations
       customizations = merge(customizations, chain.address, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
 
@@ -1163,16 +1533,12 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
       }
     } else {
-      chain.customizations = chain.customizations.filter(
-        (r) =>
-          !(
-            r.item === chain.address.item &&
-            r.level === chain.address.level &&
-            r.agent === chain.address.agent &&
-            sameTeam(r.team, chain.address.team) &&
-            catalogueMatches(chain.address.agent, r.catalogue, chain.address.catalogue) &&
-            r.section !== null
-          ),
+      chain.customizations = chain.customizations.reduce(
+        (out, record) =>
+          record.section !== null && record.text !== undefined && sameAddress(record, { ...chain.address, section: record.section })
+            ? merge(out, { ...chain.address, section: record.section }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
+            : out,
+        chain.customizations,
       )
     }
   }
@@ -1374,44 +1740,58 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
     if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
 
-    const sectionsInSpan = targetSection !== undefined
-      ? preview.sections.filter((s) => s.start >= targetSection.start && s.end <= targetSection.end)
-      : preview.sections
-    const lastLeaf = sectionsInSpan[sectionsInSpan.length - 1] ?? targetSection ?? preview.sections[preview.sections.length - 1]
-    if (lastLeaf === undefined) return { refusal: `Could not add "${name}" to "${node.label}"` }
-
-    const hashCount = targetSection !== undefined
-      ? Math.max(2, targetSection.depth + 2)
+    // B39: a heading-derived section's customization is its full span, so an add
+    // appends to the end of the selected parent's EFFECTIVE span and writes that
+    // parent. Writing a deeper leaf instead buries the new heading inside the
+    // leaf's override (the live a36 defect: "Added" showed up in Child's own
+    // editor). For an item row use the wrapper, if present, otherwise save the
+    // full item span: a top-level sibling must not live in the last leaf's copy.
+    const appendDepth = targetSection !== undefined
+      ? targetSection.depth + 1
       : (() => {
           const wrapper = wrappingSection(preview)
           const nonPreamble = preview.sections.filter((s) => s.id !== "preamble")
-          const topDepth = wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 1)
-          return Math.max(2, topDepth + 1)
+          return wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 0)
         })()
+    const anchor = targetSection ?? wrappingSection(preview)
 
-    const hashes = "#".repeat(hashCount)
+    const hashes = "#".repeat(Math.max(2, appendDepth + 1))
     const headingLine = `${hashes} ${name}`
     const body = text.trim()
     const sectionBlock = body.length > 0 ? `${headingLine}\n\n${body}` : headingLine
 
-    const leafAddress: Address = { ...itemAddress, section: lastLeaf.id }
-    const currentLeafText = resolve({
+    // The anchor's resolved text is its effective full span, with the child
+    // overrides that win over it (B39 rule 2) already applied. Writing that span
+    // back and folding the consumed same-level child texts keeps their content
+    // once and cannot lose it on a reload; more specific children stay.
+    const anchorAddress: Address = { ...itemAddress, section: anchor?.id ?? null }
+    const resolvedAnchor = resolve({
       upstream: chain.upstream,
       records: chain.customizations,
       splits: chain.splits,
       scopes: memo.ctx.scopes,
-      address: leafAddress,
-    }).text
-    const trimmedLeaf = currentLeafText.trimEnd()
-    const newLeafText = trimmedLeaf.length > 0 ? `${trimmedLeaf}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
+      address: anchorAddress,
+    })
+    const anchorText = anchor === undefined ? (resolvedAnchor.fullText ?? resolvedAnchor.assembled) : resolvedAnchor.text
+    const trimmedAnchor = anchorText.trimEnd()
+    const newAnchorText = trimmedAnchor.length > 0 ? `${trimmedAnchor}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
 
-    const nextCustomizations = merge(
-      chain.customizations,
-      leafAddress,
-      { text: newLeafText },
+    const folded = anchor === undefined
+      ? preview.sections.reduce((records, section) => dropSectionText(records, { ...itemAddress, section: section.id }), chain.customizations)
+      : chain.customizations
+    const written = merge(
+      folded,
+      anchorAddress,
+      { text: newAnchorText },
       chain.upstream,
       memo.ctx.scopes,
       chain.splits,
+    )
+    const nextCustomizations = withoutInnerChildren(
+      memo,
+      { ...chain, address: anchorAddress },
+      written,
+      newAnchorText,
     )
 
     return {

@@ -58,6 +58,7 @@ test("load returns empty when both stores are absent", async () => {
     skillsMigrated: false,
     splitsMigrated: false,
     wholeRowsMigrated: false,
+    rowlinksMigrated: false,
   })
 })
 
@@ -71,7 +72,9 @@ test("save then load round-trips project and global records", async () => {
     customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
     customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
     customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
-    // "Shown when" is stored on its own field and survives the round trip.
+    // "Shown when" used to be stored on the customization's own field; the
+    // load migrates it into rowlink records (rowlinks.ts), so the round trip
+    // reads the migrated shape and no `requires` field survives.
     customization({ agent: "alpha", item: "system:tools-and-rules", section: "tools-and-rules/questions", requires: ["tool:question", "!perm:shell:git-push"] }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
@@ -82,7 +85,37 @@ test("save then load round-trips project and global records", async () => {
   expect(loaded.migrated).toBe(false)
   expect(loaded.cataloguesMigrated).toBe(false)
   expect(loaded.presetsMigrated).toBe(false)
-  expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
+  expect(loaded.rowlinksMigrated).toBe(true)
+  const expected: StoredRecord[] = [
+    customization({ agent: "alpha", text: "custom" }),
+    customization({ level: "defaults", agent: null, item: "system:role", text: "shared" }),
+    customization({ level: "defaults", agent: null, catalogue: "teams", item: "system:role", text: "shared" }),
+    customization({ level: "global", agent: "beta", item: "skill:x", state: "off" }),
+    customization({ agent: "alpha", item: "system:tools-and-rules", section: "tools-and-rules/questions" }),
+    {
+      type: "rowlink",
+      level: "project",
+      agent: "alpha",
+      item: "tool:question",
+      section: null,
+      target: "system:tools-and-rules",
+      targetSection: "tools-and-rules/questions",
+      link: "shownWhenOn",
+      updated: UPDATED,
+    },
+    {
+      type: "rowlink",
+      level: "project",
+      agent: "alpha",
+      item: "perm:shell:git-push",
+      section: null,
+      target: "system:tools-and-rules",
+      targetSection: "tools-and-rules/questions",
+      link: "shownWhenOff",
+      updated: UPDATED,
+    },
+  ]
+  expect([...loaded.records].sort(compareForTest)).toEqual([...expected].sort(compareForTest))
 })
 
 test("records route into project vs global files", async () => {
@@ -334,6 +367,40 @@ test("save reports per-store changed flags and a stale save reports none", async
 function compareForTest(left: StoredRecord, right: StoredRecord): number {
   return JSON.stringify(left) < JSON.stringify(right) ? -1 : 1
 }
+
+function rowlink(overrides?: Partial<Extract<StoredRecord, { type: "rowlink" }>>): StoredRecord {
+  return {
+    type: "rowlink",
+    level: "project",
+    agent: "alpha",
+    item: "tool:a",
+    section: null,
+    target: "tool:b",
+    targetSection: null,
+    link: "either",
+    updated: UPDATED,
+    ...overrides,
+  }
+}
+
+test("rowlink records round-trip through save then load, including a tombstone", async () => {
+  const { project } = await isolated()
+  const records: StoredRecord[] = [
+    rowlink(),
+    rowlink({ item: "tool:a", target: "tool:c", link: "shownWhenOn", enabled: false }),
+    rowlink({ level: "global", agent: null, item: "tool:d", target: "tool:e", link: "oneway" }),
+  ]
+  const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  expect(saved.ok).toBe(true)
+  const loaded = await load(project)
+  // A rowlink-only store needs no migration and reads back byte-identically.
+  expect(loaded.rowlinksMigrated).toBe(false)
+  expect([...loaded.records].sort(compareForTest)).toEqual([...records].sort(compareForTest))
+  // A second save of the same rows is a no-op: no dual representation drift.
+  expect(
+    await save(project, { expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision, records: [...loaded.records].reverse() }),
+  ).toMatchObject({ ok: true, changed: { project: false, global: false } })
+})
 
 function team(overrides?: Partial<Extract<StoredRecord, { type: "team" }>>): StoredRecord {
   return {
