@@ -24,6 +24,7 @@ import {
   planFolderDelete,
   planFolderRename,
   planRowMove,
+  planSectionMove,
   removalPlan,
   rowToken,
   type LayoutChange,
@@ -136,9 +137,10 @@ const SetDescription =
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
 
 const MoveDescription =
-  "Move a row or folder (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
+  "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
   "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
-  "Moves are display only: nothing here changes what the model sees. Sections cannot move yet."
+  "A section moves before or after a sibling under the same parent inside its own item; the item's text is rewritten so the request order changes (a heading-derived move folds the consumed same-level child texts into the parent).\n" +
+  "Row and folder moves are display only: nothing there changes what the model sees."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -446,6 +448,12 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (node.kind === "section") {
+            const op = planSectionMove(memo, input.id, input, new Date().toISOString())
+            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+            const applied = yield* mutateOp(api, memo, op, actor)
+            return { output: { id: input.id, target: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          }
           const change = planRowMove(memo, layoutOf(snapshot), input.id, input, new Date().toISOString())
           const applied = yield* applyLayout(api, snapshot, change, actor)
           return { output: { id: input.id, ...applied } }

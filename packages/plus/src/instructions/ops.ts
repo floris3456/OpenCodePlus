@@ -100,7 +100,7 @@ import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { derive, headingSpan, manual, slice, wrappingSection, type Boundary } from "./sections.js"
+import { derive, headingSpan, manual, parentIndexes, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
 
 // Folders and display order (S1a). A move is planned from the folder and order
@@ -314,6 +314,161 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
           ? `after "${after.label}"`
           : ""
   return { target: token, status: `Moved "${node.label}" ${where}`, layout: plan }
+}
+
+// A section move (plus-1.2.0 B42). It reorders one section before or after a
+// sibling under the same parent, inside the same item: a heading-derived move
+// rewrites the parent's effective span (the B39 parent-save, folding the
+// consumed same-level child texts into it), a manual split moves the raw block
+// in the base text and shifts the boundaries that follow. State, pin and
+// condition records are never touched; only consumed text fields go.
+// Cross-item and cross-parent (nesting) moves refuse atomically.
+export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarget, updated: string): OpResult {
+  const found = findNode(memo, rowId)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const node = found.node
+  const address = node.address
+  if (address === undefined || address.section === null) return { refusal: `"${node.label}" is not a section` }
+  if (target.into !== undefined) return { refusal: `"${node.label}" moves only before or after a sibling section in its own parent` }
+  const siblingId = target.before ?? target.after
+  if (siblingId === undefined) return { refusal: `say where "${node.label}" goes: before or after a sibling section` }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  const siblingFound = findNode(memo, siblingId)
+  if (siblingFound === undefined) return { refusal: unknownRowRefusal(siblingId) }
+  const sibling = siblingFound.node
+  const siblingAddress = sibling.address
+  if (siblingAddress === undefined || siblingAddress.section === null) return { refusal: `"${sibling.label}" is not a section` }
+  if (
+    siblingAddress.item !== address.item ||
+    siblingAddress.agent !== address.agent ||
+    siblingAddress.level !== address.level ||
+    !sameTeam(siblingAddress.team, address.team) ||
+    catalogueOf(siblingAddress.catalogue) !== catalogueOf(address.catalogue)
+  )
+    return { refusal: `"${node.label}" and "${sibling.label}" are in different items; sections move only within their own item` }
+
+  const memberMemo = found.memo
+  const chain = chainFor(memberMemo, node)
+  if (chain === undefined) return { refusal: `Item not found for "${node.label}"` }
+  const itemAddress: Address = { ...address, section: null }
+  const whole = resolve({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: memberMemo.ctx.scopes,
+    address: itemAddress,
+  })
+  const hasManual = chain.splits.some((record) => record.item === itemAddress.item && scopedTo(record, itemAddress))
+  const hasSectionOverrides = chain.customizations.some(
+    (record) => record.item === itemAddress.item && record.section !== null && record.text !== undefined && scopedTo(record, itemAddress),
+  )
+  // Heading-derived reorder folds child edits, so it moves the effective text;
+  // a manual split moves raw base text and shifts the boundaries to match.
+  const baseText = !hasManual && hasSectionOverrides ? (whole.fullText ?? whole.assembled ?? whole.text) : whole.text
+  const split = resolveSplit({
+    text: baseText,
+    title: chain.upstream.title,
+    splits: chain.splits,
+    scopes: memberMemo.ctx.scopes,
+    address: itemAddress,
+  })
+  if (split.kind === "whole") return { refusal: `"${node.label}" has no sibling sections to reorder` }
+  const moved = split.sections.find((section) => section.id === address.section)
+  if (moved === undefined) return { refusal: `Section not found for "${node.label}"` }
+  const anchor = split.sections.find((section) => section.id === siblingAddress.section)
+  if (anchor === undefined) return { refusal: `Section not found for "${sibling.label}"` }
+  const parents = parentIndexes(split.sections)
+  const indexOf = new Map(split.sections.map((section, index) => [section.id, index]))
+  const movedIndex = indexOf.get(moved.id)
+  const anchorIndex = indexOf.get(anchor.id)
+  if (movedIndex === undefined || anchorIndex === undefined || moved.id === anchor.id)
+    return { refusal: `"${node.label}" cannot move beside "${sibling.label}"` }
+  const parentIdOf = (index: number): string | null => {
+    const parent = parents[index]
+    return parent === undefined ? null : split.sections[parent].id
+  }
+  const parentId = parentIdOf(movedIndex)
+  if (parentId !== parentIdOf(anchorIndex))
+    return { refusal: `"${node.label}" is not a sibling of "${sibling.label}"; sections move only within the same parent` }
+
+  const before = target.before !== undefined
+  const where = `${before ? "before" : "after"} "${sibling.label}"`
+  const status = `Moved "${node.label}" ${where}`
+
+  if (split.kind !== "manual") {
+    const parent = parentId === null ? undefined : split.sections.find((section) => section.id === parentId)
+    const pStart = parent?.start ?? 0
+    const pEnd = parent?.end ?? baseText.length
+    const text = moveRawBlock(baseText, moved, anchor, before)
+    const parentText = parentId === null ? text : text.slice(pStart, pEnd)
+    // Fold the same-level child texts the rewritten parent now contains, then
+    // store the parent's span. A child at a more specific level survives and
+    // still wins over the parent's copy (B39 rules 2 and 4).
+    const consumed =
+      parentId === null
+        ? resolveSplit({ text: parentText, title: chain.upstream.title, splits: chain.splits, scopes: memberMemo.ctx.scopes, address: itemAddress }).sections.map(
+            (section) => section.id,
+          )
+        : headingSpan(parentText, parent?.depth ?? 0).inner.map((child) => `${parentId}/${child.rel}`)
+    let records = chain.customizations
+    for (const id of consumed) records = dropSectionText(records, { ...address, section: id })
+    records = merge(records, parentId === null ? itemAddress : { ...address, section: parentId }, { text: parentText }, chain.upstream, memberMemo.ctx.scopes, chain.splits)
+    return { records, splits: chain.splits, status, retryHint: `moved "${node.label}" against a stale revision; retry to apply` }
+  }
+
+  // Manual split: move the raw block and shift every boundary by the same
+  // offset map, so stable ids keep their content at their new positions.
+  const winner = winningSplit(chain.splits, itemAddress, memberMemo.ctx.scopes)
+  if (winner === undefined) return { refusal: `Section not found for "${node.label}"` }
+  const length = moved.end - moved.start
+  const rawInsert = before ? anchor.start : anchor.end
+  const insert = rawInsert <= moved.start ? rawInsert : rawInsert - length
+  const text = moveRawBlock(baseText, moved, anchor, before)
+  const boundaries = winner.boundaries.map((boundary) => ({
+    id: boundary.id,
+    name: boundary.name,
+    start: mapMovedOffset(boundary.start, moved.start, moved.end, insert),
+    ...(boundary.depth === undefined ? {} : { depth: boundary.depth }),
+  }))
+  const records = merge(chain.customizations, itemAddress, { text }, chain.upstream, memberMemo.ctx.scopes, chain.splits)
+  const rest = chain.splits.filter((record) => !(record.item === itemAddress.item && scopedTo(record, address)))
+  const splits: SplitRecord[] = [
+    ...rest,
+    {
+      type: "split",
+      level: address.level,
+      agent: address.agent,
+      ...(address.team !== undefined ? { team: address.team } : {}),
+      ...catalogueField(address),
+      item: address.item,
+      boundaries,
+      updated,
+    },
+  ]
+  return { records, splits, status, retryHint: `moved "${node.label}" against a stale revision; retry to apply` }
+}
+
+// Move the block [block.start, block.end) of `text` immediately before or
+// after `anchor` (both within the same parent), shifting the offsets between.
+function moveRawBlock(text: string, block: { readonly start: number; readonly end: number }, anchor: { readonly start: number; readonly end: number }, before: boolean): string {
+  const raw = text.slice(block.start, block.end)
+  const without = text.slice(0, block.start) + text.slice(block.end)
+  const at = (before ? anchor.start : anchor.end) <= block.start ? (before ? anchor.start : anchor.end) : (before ? anchor.start : anchor.end) - (block.end - block.start)
+  return without.slice(0, at) + raw + without.slice(at)
+}
+
+// Where an offset lands after [start, end) moved to `insert` (an index into
+// the text with the block removed). Offsets inside the block travel with it.
+function mapMovedOffset(offset: number, start: number, end: number, insert: number): number {
+  if (offset >= start && offset < end) return insert + (offset - start)
+  const shifted = offset >= end ? offset - (end - start) : offset
+  return shifted < insert ? shifted : shifted + (end - start)
+}
+
+function winningSplit(splits: readonly SplitRecord[], address: Address, scopes: Scopes): SplitRecord | undefined {
+  return resolutionChain(address, scopes)
+    .map((node) => splits.find((split) => split.item === address.item && scopedTo(split, node)))
+    .find((split) => split !== undefined)
 }
 
 // A folder created in a tab's top level or inside a folder, listed last there.
