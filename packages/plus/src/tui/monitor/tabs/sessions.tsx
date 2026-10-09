@@ -135,7 +135,7 @@ export function SessionsTab(props: SessionsTabProps) {
                     <text fg={fg()} width={10}>{formatTokens(s.cacheRead)}</text>
                   </Show>
                   <Show when={showHitRate()}>
-                    <text fg={fg()} width={10}>{`${Math.round(s.hitRate * 100)}%`}</text>
+                    <text fg={fg()} width={10}>{s.hitRate === undefined ? "—" : `${Math.round(s.hitRate * 100)}%`}</text>
                   </Show>
                   <Show when={showCost()}>
                     <text fg={fg()} width={10}>{formatCost(s.cost) ?? "$0.00"}</text>

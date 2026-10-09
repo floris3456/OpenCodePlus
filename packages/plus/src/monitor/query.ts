@@ -65,7 +65,7 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
     const analysis = target === window ? requests.totals : requestReport(ledger, input, context, target).totals
     // Unknown pricing is omitted everywhere, never merged to a free zero: the
     // baseline zero is dropped unless the request analysis supplies a cost.
-    const { missCost: _baseline, ...baseline } = totals
+    const { missCost: _baseline, hitRate: _legacyRate, ...baseline } = totals
     const { missCost, ...analysisRest } = analysis
     const merged: MonitorTotals = {
       ...baseline,

@@ -1361,6 +1361,9 @@ export const MonitorTotals = Schema.Struct({
   missTokens: Schema.optionalKey(Schema.Number),
   missCost: Schema.optionalKey(Schema.Number),
   hitRate: Schema.optionalKey(Schema.Number),
+  measuredRequests: Schema.optionalKey(Schema.Number),
+  unknownRequests: Schema.optionalKey(Schema.Number),
+  measuredInput: Schema.optionalKey(Schema.Number),
   steps: Schema.Number,
   calls: Schema.Number,
   errors: Schema.Number,
@@ -1444,6 +1447,13 @@ export const MonitorRequest = Schema.Struct({
   cacheWrite: Schema.Number,
   cost: Schema.Number,
   verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none", "error"]),
+  measurement: Schema.optionalKey(Schema.Struct({
+    state: Schema.Literals(["running", "legacy-unknown", "unknown-version", "inconsistent", "unavailable", "not-reported", "reported"]),
+    input: Schema.optionalKey(Schema.Number),
+    read: Schema.optionalKey(Schema.Number),
+    write: Schema.optionalKey(Schema.Number),
+    share: Schema.optionalKey(Schema.Number),
+  })),
   cause: Schema.optionalKey(
     Schema.Literals([
       "compacted",
@@ -1541,7 +1551,10 @@ export const MonitorAgentRow = Schema.Struct({
   agent: Schema.String,
   model: Schema.optionalKey(Schema.String),
   steps: Schema.Number,
-  hitRate: Schema.Number,
+  hitRate: Schema.optionalKey(Schema.Number),
+  measuredRequests: Schema.optionalKey(Schema.Number),
+  unknownRequests: Schema.optionalKey(Schema.Number),
+  measuredInput: Schema.optionalKey(Schema.Number),
   misses: Schema.Number,
   tokens: Schema.Number,
   cost: Schema.Number,
@@ -1569,7 +1582,10 @@ export const MonitorSessionRow = Schema.Struct({
   output: Schema.Number,
   reasoning: Schema.Number,
   cost: Schema.Number,
-  hitRate: Schema.Number,
+  hitRate: Schema.optionalKey(Schema.Number),
+  measuredRequests: Schema.optionalKey(Schema.Number),
+  unknownRequests: Schema.optionalKey(Schema.Number),
+  measuredInput: Schema.optionalKey(Schema.Number),
   misses: Schema.Number,
 }).annotate({ identifier: "Plus.MonitorSessionRow" })
 

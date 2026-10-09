@@ -53,7 +53,7 @@ export function createMissToast(context: Plugin.Context): MissToast {
     if (screenSessionID() !== sessionID) return
     context.ui.toast.show({
       variant: "warning",
-      message: `Cache miss · ${res.notReused.toLocaleString("en-US")} tokens not reused · ${res.causeText} · type /monitor for details`,
+      message: `Cache shortfall estimate · ${res.notReused.toLocaleString("en-US")} tokens · ${res.causeText} · type /monitor for details`,
     })
   }
 

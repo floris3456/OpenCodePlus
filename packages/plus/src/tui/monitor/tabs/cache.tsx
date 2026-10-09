@@ -199,7 +199,7 @@ export function CacheTab(props: CacheTabProps) {
                   {`[${req.verdict.toUpperCase()}] `}
                 </text>
                 <text fg={theme().text.base}>
-                  {`Cause: ${req.causeText ?? req.cause ?? "none"}${req.confidence ? ` (${req.confidence})` : ""}`}
+                  {`Observation: ${req.measurement?.state ?? "legacy-unknown"} · ${req.causeText ?? "provider cause unknown"}`}
                 </text>
                 <Show when={req.expected !== undefined}>
                   <text fg={theme().text.muted}>
@@ -207,7 +207,7 @@ export function CacheTab(props: CacheTabProps) {
                   </text>
                 </Show>
                 <text fg={theme().text.muted}>
-                  {` · Cache read: ${formatTokens(req.cacheRead)} · Miss tokens: ${formatTokens(req.missTokens ?? 0)}`}
+                  {` · Reported read: ${req.measurement?.read === undefined ? "—" : formatTokens(req.measurement.read)} · Shortfall estimate: ${formatTokens(req.missTokens ?? 0)}`}
                 </text>
               </box>
 

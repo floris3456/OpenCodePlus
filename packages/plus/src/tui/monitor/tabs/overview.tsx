@@ -80,7 +80,7 @@ export function OverviewTab(props: OverviewTabProps) {
                 when={dimensions().width >= 100}
                 fallback={
                   <text fg={theme().text.base} wrapMode="none" truncate>
-                    {`In: ${formatTokens(totals().input)} · Read: ${formatTokens(totals().cacheRead)} · Write: ${formatTokens(totals().cacheWrite)} · Out: ${formatTokens(totals().output)} · R: ${formatTokens(totals().reasoning)} · Hit: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
+                    {`In: ${formatTokens(totals().input)} · Read: ${formatTokens(totals().cacheRead)} · Write: ${formatTokens(totals().cacheWrite)} · Reuse: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
                   </text>
                 }
               >
@@ -88,9 +88,12 @@ export function OverviewTab(props: OverviewTabProps) {
                   {`Input: ${formatTokens(totals().input)} (uncached) · Cache Read: ${formatTokens(totals().cacheRead)} · Cache Write: ${formatTokens(totals().cacheWrite)}`}
                 </text>
                 <text fg={theme().text.base} wrapMode="none" truncate>
-                  {`Output: ${formatTokens(totals().output)} · Reasoning: ${formatTokens(totals().reasoning)} · Hit Rate: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
+                  {`Output: ${formatTokens(totals().output)} · Reasoning: ${formatTokens(totals().reasoning)} · Input reuse: ${totals().hitRate === undefined ? "—" : `${Math.round(totals().hitRate! * 100)}%`}`}
                 </text>
               </Show>
+              <text fg={theme().text.muted} wrapMode="none" truncate>
+                {`Coverage: ${totals().measuredRequests ?? 0} measured · ${totals().unknownRequests ?? 0} unknown (warming excluded)`}
+              </text>
               <Show when={contextInfo()}>
                 {(ctx) => (
                   <text fg={theme().text.muted} wrapMode="none" truncate>
@@ -187,7 +190,7 @@ export function OverviewTab(props: OverviewTabProps) {
                 { text: pad(agent.agent, 16), width: 16 },
                 ...(showModel() ? [{ text: pad(agent.model ?? "—", 18), width: 18 }] : []),
                 { text: pad(String(agent.steps), 8), width: 8 },
-                { text: pad(`${Math.round(agent.hitRate * 100)}%`, 10), width: 10 },
+                 { text: pad(agent.hitRate === undefined ? "—" : `${Math.round(agent.hitRate * 100)}%`, 10), width: 10 },
                 { text: pad(String(agent.misses), 8), width: 8 },
                 { text: pad(formatTokens(agent.tokens), 10), width: 10 },
                 { text: pad(formatCost(agent.cost) ?? "$0.00", 10), width: 10 },

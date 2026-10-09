@@ -10,6 +10,7 @@ import {
 } from "./cache.js"
 import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
+import { reuseRate } from "./measurement.js"
 
 interface SessionRow {
   id: string
@@ -72,11 +73,11 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   if (cached && cached.revision === revision) return dataOf(cached.fold)
   // The mark is read before the rows: a write in between shows as a change next time.
   const mark = ledger.sessionRevision(id)
-  if (cached && !cached.perRequest && cached.mark === mark) {
+  if (cached && cached.mark === mark) {
     cached.revision = revision
     return dataOf(cached.fold)
   }
-  const changed = cached && !cached.perRequest ? ledger.changedFingerprints(id, cached.mark) : []
+  const changed = cached ? ledger.changedFingerprints(id, cached.mark) : []
   const rows = ledger.getRequests(id)
   const facts = ledger.getContextFacts(id)
   const updated = cached && !cached.perRequest ? updatedFingerprints(ledger, id, cached.fold, changed) : undefined
@@ -88,10 +89,11 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   }
   if (cached && cached.perRequest) {
     const fingerprints = new Map(cached.fold.analysis.fingerprints)
+    for (const requestID of changed) fingerprints.set(requestID, ledger.getFingerprint(requestID))
     for (const r of rows.slice(cached.fold.rows.length)) {
       fingerprints.set(r.id, ledger.getFingerprint(r.id))
     }
-    const from = firstChange(cached.fold, rows, facts, [])
+    const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, fingerprints, { previous: cached.fold, from })
     cache.set(id, { revision, mark, perRequest: true, fold, lastFrom: from })
     return dataOf(fold)
@@ -244,7 +246,7 @@ export function requestReport(
     const after =
       compact === undefined
         ? undefined
-        : rows.find((r) => r.started >= compact && r.kind !== "compaction" && r.kind !== "ping" && !r.isTitle)
+        : rows.find((r) => r.started >= compact && r.started < window.until && r.kind !== "compaction" && r.kind !== "ping" && !r.isTitle)
     return {
       id,
       rows,
@@ -306,28 +308,13 @@ export function requestReport(
     }
   }
 
-  // The hit rate reads only requests that produced a cache verdict. An errored
-  // request's tokens are real usage but must not move the rate; its input and
-  // cache read are excluded here while remaining in the token totals above.
-  const rateOf = (rows: readonly MonitorRequest[]) =>
-    rows.reduce(
-      (acc, r) =>
-        r.verdict === "error"
-          ? acc
-          : { input: acc.input + (r.input ?? 0), cacheRead: acc.cacheRead + (r.cacheRead ?? 0) },
-      { input: 0, cacheRead: 0 },
-    )
-  const hitRateOf = (rate: { readonly input: number; readonly cacheRead: number }, legacyRead: number, legacyInput: number) =>
-    (rate.cacheRead + legacyRead) / Math.max(1, rate.cacheRead + legacyRead + rate.input + legacyInput)
-
   const pingRows = requests.filter((r) => r.kind === "ping")
   const misses = requests.filter(isMiss)
   const legacy = analyses.flatMap((a) => a.legacy)
   const legacyTotal = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
     legacy.reduce((n, s) => n + s[key], 0)
-  const rateTotals = rateOf(requests)
   const totals: Partial<MonitorTotals> = {
-    ...(requests.length ? totalsFor(requests) : { requests: 0, hitRate: 0, misses: 0 }),
+    ...(requests.length ? totalsFor(requests) : { requests: 0, misses: 0 }),
     pings: pingRows.length,
     pingCost: sum(pingRows, "cost"),
     missTokens: sum(misses, "missTokens"),
@@ -339,7 +326,7 @@ export function requestReport(
     cacheRead: sum(requests, "cacheRead") + legacyTotal("cache_read"),
     cacheWrite: sum(requests, "cacheWrite") + legacyTotal("cache_write"),
     cost: sum(requests, "cost") + legacyTotal("cost"),
-    hitRate: hitRateOf(rateTotals, legacyTotal("cache_read"), legacyTotal("input")),
+    ...reuseRate(requests, legacy.length),
   }
 
   const sections: { -readonly [K in keyof MonitorReport]?: MonitorReport[K] } = {
@@ -489,8 +476,8 @@ export function requestReport(
         output: number
         reasoning: number
         cost: number
-        rateInput: number
-        rateCacheRead: number
+        measured: MonitorRequest[]
+        legacy: number
         lastActive: number
       }
     >()
@@ -509,8 +496,8 @@ export function requestReport(
           output: 0,
           reasoning: 0,
           cost: 0,
-          rateInput: 0,
-          rateCacheRead: 0,
+          measured: [],
+          legacy: 0,
           lastActive: 0,
         }
         agentMap.set(key, entry)
@@ -528,10 +515,7 @@ export function requestReport(
       entry.output += r.output
       entry.reasoning += r.reasoning
       entry.cost += r.cost
-      if (r.verdict !== "error") {
-        entry.rateInput += r.input
-        entry.rateCacheRead += r.cacheRead
-      }
+      entry.measured.push(r)
       if (r.at > entry.lastActive) entry.lastActive = r.at
     }
     // v1 step rows carry their own agent/model and tokens; a mixed ledger must
@@ -545,8 +529,7 @@ export function requestReport(
       entry.output += step.output
       entry.reasoning += step.reasoning
       entry.cost += step.cost
-      entry.rateInput += step.input
-      entry.rateCacheRead += step.cache_read
+      entry.legacy++
       if (step.started > entry.lastActive) entry.lastActive = step.started
     }
     sections.agents = [...agentMap.values()]
@@ -554,7 +537,7 @@ export function requestReport(
         agent: e.agent,
         model: e.model,
         steps: e.steps,
-        hitRate: e.rateCacheRead / Math.max(1, e.rateInput + e.rateCacheRead),
+        ...reuseRate(e.measured, e.legacy),
         misses: e.misses,
         tokens: e.input + e.cacheRead + e.cacheWrite + e.output + e.reasoning,
         cost: e.cost,
@@ -574,7 +557,6 @@ export function requestReport(
       const rs = requests.filter((r) => r.sessionID === s.id)
       const sessionLegacy = analyses.find((a) => a.id === s.id)?.legacy ?? []
       const base = totalsFor(rs)
-      const rate = rateOf(rs)
       const legacySum = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
         sessionLegacy.reduce((n, step) => n + step[key], 0)
       const input = base.input + legacySum("input")
@@ -600,7 +582,7 @@ export function requestReport(
         cacheRead,
         cacheWrite: base.cacheWrite + legacySum("cache_write"),
         cost: base.cost + legacySum("cost"),
-        hitRate: hitRateOf(rate, legacySum("cache_read"), legacySum("input")),
+        ...reuseRate(rs, sessionLegacy.length),
         requests: base.requests,
         steps: base.steps + sessionLegacy.length,
         misses: base.misses,

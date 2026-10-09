@@ -4,6 +4,7 @@ import { Model } from "@opencode/schema/model"
 import { Option, Schema } from "effect"
 import { canonicalJson, sha256, type CacheControlMarker } from "./fingerprint.js"
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
+import { measurement } from "./measurement.js"
 
 type Segment = {
   name: string
@@ -19,7 +20,7 @@ export const promptTokens = (r: RequestRow) => r.inputTokens + r.cacheReadTokens
 export const isMiss = (r: MonitorRequest) => r.verdict === "miss" || r.verdict === "partial"
 
 export function causeWords(cause: string | undefined, changedPart?: string): string {
-  if (cause === "compacted") return "after compaction (expected)"
+  if (cause === "compacted") return "compaction occurred"
   if (cause === "model-switch") return "model switched"
   if (cause === "agent-switch") return "agent switched"
   if (cause === "prefix-changed") return changedPart ? `prompt changed · ${changedPart}` : "prompt changed"
@@ -410,17 +411,14 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
 }
 
 /** Conservative idle lifetime, per README; unknown/disk-cache TTL stays unknown. */
-export function cacheLifetime(r: Pick<RequestRow, "provider" | "model">, fp?: RequestFingerprintData): number | undefined {
+export function cacheLifetime(_r: Pick<RequestRow, "provider" | "model">, fp?: RequestFingerprintData): number | undefined {
   const ttl = fp?.optionsKeys["prompt_cache_options.ttl"]
   if (ttl === sha256(canonicalJson("24h"))) return 86_400_000
   if (ttl === sha256(canonicalJson("1h"))) return 3_600_000
   if (ttl === sha256(canonicalJson("30m"))) return 1_800_000
   if (fp?.cacheControl?.some((m) => m.ttl === "1h")) return 3_600_000
-  if (/anthropic/i.test(r.provider ?? "") || fp?.protocol === "anthropic-messages") return 300_000
-  if (/deepseek|gemini|google|zai|mistral/i.test(`${r.provider}/${r.model}`)) return undefined
+  if (fp?.protocol === "anthropic-messages" && fp.cacheControl?.some((m) => m.type === "ephemeral")) return 300_000
   if (fp?.optionsKeys.prompt_cache_retention === sha256(canonicalJson("24h"))) return 86_400_000
-  if (r.provider === "openai" && /gpt-(?:[6-9]|5\.[6-9])/.test(r.model ?? "")) return 1_800_000
-  if (/openai|cliproxy|cpa/i.test(r.provider ?? "") || fp?.protocol.startsWith("openai")) return 300_000
   return undefined
 }
 
@@ -469,14 +467,6 @@ function reusablePrefixChanged(
     const index = messageIndexIn(c.name)
     return index !== undefined && index < lastCommon
   })
-}
-
-// The reusable prefix a completed request left behind: the tokens it actually
-// read back, or — when it only created the prefix (a cold write) — the tokens
-// it wrote. An errored or usage-less request leaves nothing.
-function warmPrefixTokens(previous: RequestRow | undefined): number {
-  if (!previous) return 0
-  return previous.cacheReadTokens > 0 ? previous.cacheReadTokens : previous.cacheWriteTokens
 }
 
 type Diff = ReturnType<typeof prefixDiff>
@@ -548,44 +538,14 @@ function diffStep(
   previous: RequestRow | undefined,
   previousFp: RequestFingerprintData | undefined,
   fp: RequestFingerprintData | undefined,
-  previousWarm: RequestRow | undefined,
 ): DiffStep {
   const diff = diffOf(previous && previousFp, fp)
-  const warm = warmPrefixTokens(previousWarm)
-  const expected = !diff.known
-    ? undefined
-    : diff.append && previous && promptTokens(previous) > 0
-      ? promptTokens(previous)
-      : // A reused prefix measured by the earlier request's actual cache read is
-        // the honest size when its uncached tail (a ping's private prompt) was
-        // replaced: the provider cached exactly that much.
-        diff.reusable && previous && previous.cacheReadTokens > 0
-        ? previous.cacheReadTokens
-        : // The last request that reported cache usage measured the prefix the
-          // provider actually holds; a segment estimate is a lower bound. Take
-          // whichever is larger, so rolling markers (common 0) and a partial
-          // diff both report the real reusable size.
-          warm > diff.common
-          ? warm
-          : diff.common
+  const measured = previous && measurement(previous)
+  // Common characters are not a lower bound in tokens. Only the selected,
+  // compatible measured anchor can support a local shortfall estimate.
+  const warm = measured?.state === "reported" ? (measured.read || measured.write) : undefined
+  const expected = diff.reusable && warm !== undefined && warm > 0 ? warm : undefined
   return { diff, expected, changed: reusablePrefixChanged(diff.changes, previousFp, fp) }
-}
-
-// The last completed request of the same identity that reported any cache
-// usage. It is the baseline for a full or partial bust: an errored ping or a
-// usage-less request cannot have warmed or measured the prefix.
-function previousWarmRequest(r: RequestRow, earlier: readonly RequestRow[]): RequestRow | undefined {
-  return earlier.findLast(
-    (p) =>
-      p.status === "completed" &&
-      p.ended !== undefined &&
-      !p.isTitle &&
-      p.provider === r.provider &&
-      p.model === r.model &&
-      p.variant === r.variant &&
-      p.agent === r.agent &&
-      (p.cacheReadTokens > 0 || p.cacheWriteTokens > 0),
-  )
 }
 
 interface TimingStep {
@@ -606,39 +566,10 @@ function timingStep(
   previous: RequestRow | undefined,
 ): TimingStep {
   const pings = earlier.slice(lastRealIndex + 1).filter((p) => p.kind === "ping")
-  // Only a genuinely completed, successful request of the same provider, model,
-  // variant and agent can have refreshed the reusable prefix. A running
-  // (unfinished) or error ping, or one under a different identity, cannot.
-  const healthyCompatible = (p: RequestRow) =>
-    p.status === "completed" &&
-    p.ended !== undefined &&
-    p.provider === r.provider &&
-    p.model === r.model &&
-    p.variant === r.variant &&
-    p.agent === r.agent
-  // Rolling Anthropic breakpoints move to the newest message on every step, so
-  // no two wire bodies ever compare as reusable and the fingerprint link below
-  // finds nothing. A completed request that reported cache usage still warmed
-  // the provider's prefix, so it anchors the idle gap when no reusable link is
-  // known. An errored or usage-less request did not.
-  const lastWarmIndex = earlier.findLastIndex(
-    (p) => healthyCompatible(p) && (p.cacheReadTokens > 0 || p.cacheWriteTokens > 0),
-  )
-  const lastWarm = earlier[lastWarmIndex]
-  // The gap runs from the latest start among the refreshing request, a
-  // keep-alive that read the cache back and the last warm request. Rows are in
-  // start order, so a refreshing request at or before the last warm one cannot
-  // move that start: it is searched for only after it (searching all of them
-  // diffed every pair of requests). A keep-alive that read the cache is itself
-  // a warm request, so it never moves the start either.
-  const refreshes = (p: RequestRow) => healthyCompatible(p) && reusableOf(fingerprints.get(p.id), fp)
-  const refreshed = previous && refreshes(previous) ? previous : findLastAfter(earlier, lastWarmIndex, refreshes)
-  const gap = previous
-    ? r.started -
-      // Prefer the latest request that can actually have refreshed the prefix.
-      // Only when none can (a session's first request) fall back to the
-      // previous request's start.
-      (Math.max(refreshed?.started ?? 0, lastWarm?.started ?? 0) || previous.started)
+  // Age and size use the same basis. Completion is a conservative local
+  // timing boundary, not a measurement of provider cache readiness.
+  const gap = previous?.ended !== undefined && reusableOf(fingerprints.get(previous.id), fp)
+    ? r.started - previous.ended
     : undefined
   const lifetime = cacheLifetime(r, fp)
   const warmingFact = lastFact(
@@ -665,14 +596,6 @@ function timingStep(
   return { pings, gap, lifetime, warming }
 }
 
-// The last row after position `after` that matches.
-function findLastAfter(rows: readonly RequestRow[], after: number, match: (row: RequestRow) => boolean) {
-  for (let i = rows.length - 1; i > after; i--) {
-    if (match(rows[i]!)) return rows[i]
-  }
-  return undefined
-}
-
 interface CauseStep {
   readonly accounts: MonitorRequestDetail["accounts"]
   readonly instructions: MonitorRequestDetail["instructions"]
@@ -682,21 +605,16 @@ interface CauseStep {
   readonly causeText: string
   readonly confidence: MonitorRequest["confidence"]
   readonly evidence: string
-  /** Exact reusable tokens not read when the drop-based partial rule applies. */
-  readonly missOverride: number | undefined
 }
 
 function causeStep(
   r: RequestRow,
   previous: RequestRow | undefined,
   last: RequestRow | undefined,
-  earlier: readonly RequestRow[],
   between: readonly ContextFactRow[],
   diff: ReturnType<typeof prefixDiff>,
   changed: boolean,
   expected: number | undefined,
-  warm: RequestRow | undefined,
-  timing: TimingStep,
 ): CauseStep {
   const accounts = between
     .filter((f) => f.kind === "account_switch" || f.kind === "quota_handoff")
@@ -721,11 +639,10 @@ function causeStep(
   const switched =
     last !== undefined && (last.provider !== r.provider || last.model !== r.model || last.variant !== r.variant)
   const agent = last !== undefined && last.agent !== r.agent
-  const cold = !previous || compacted || switched || agent
   // A request still running has no usage yet. Judging its zero cache read
   // against the expected prefix called every in-flight step a miss, so an
   // agent querying its own chat always saw its current step as one.
-  if (!cold && r.status === "running")
+  if (r.status === "running")
     return {
       accounts,
       instructions,
@@ -735,7 +652,6 @@ function causeStep(
       causeText: "unknown",
       confidence: "unknown",
       evidence: "Request still running; no usage reported yet",
-      missOverride: undefined,
     }
   // An errored request carries an error and no usage: it is neither a hit nor
   // a cache verdict. Give it its own outcome so it is excluded from the hit
@@ -749,45 +665,18 @@ function causeStep(
       cause: undefined,
       causeText: "unknown",
       confidence: "unknown",
-      evidence: "Request failed; no cache usage was reported",
-      missOverride: undefined,
+      evidence: "Request failed; cache measurement is independent of the execution outcome",
     }
 
-  const reported =
-    r.cacheReadTokens > 0 ||
-    r.cacheWriteTokens > 0 ||
-    earlier.some(
-      (p) => p.provider === r.provider && p.model === r.model && (p.cacheReadTokens > 0 || p.cacheWriteTokens > 0),
-    )
-
-  // The reusable prefix the last successful request left behind, whether it
-  // read it back or only created it with a cold write. Rolling Anthropic
-  // breakpoints mean reads only ever grow along a session's prefix, so a
-  // smaller read this time is prefix the provider did not reuse.
-  const warmRead = warm ? warmPrefixTokens(warm) : 0
-  const drop = warmRead > 0 ? warmRead - r.cacheReadTokens : 0
-  const expired =
-    !cold && timing.gap !== undefined && timing.lifetime !== undefined && timing.gap > timing.lifetime
-  const pingsFailed = timing.pings.filter((p) => p.status === "error").length
-
-  const verdict: MonitorRequest["verdict"] = cold
-    ? "cold"
-    : !reported
-      ? "none"
-      : // A full bust: the previous warm prefix was not read at all, so the
-        // provider reused none of it (whether it reported the rewrite as fresh
-        // input or as a cache write).
-        r.cacheReadTokens === 0 && warmRead > 0
-        ? "miss"
-        : // A partial bust: the prefix shrank. A small drop (below one
-          // cacheable block) is rounding, not a lost prefix.
-          drop >= 1024
-          ? "partial"
-          : expected !== undefined && expected >= 1024 && r.cacheReadTokens < expected * 0.5
-            ? "miss"
-            : expected !== undefined && expected >= 1024 && r.cacheReadTokens < expected * 0.9
-              ? "partial"
-              : "hit"
+  const measured = measurement(r)
+  const usable = measured.state === "reported" && measured.input !== undefined && measured.read !== undefined
+  const bounded = usable && expected !== undefined ? Math.min(expected, measured.input!) : undefined
+  const shortfall = bounded === undefined ? 0 : Math.max(0, bounded - measured.read!)
+  const verdict: MonitorRequest["verdict"] = !usable
+    ? "none"
+    : shortfall >= 1024
+      ? measured.read === 0 ? "miss" : "partial"
+      : measured.read! > 0 ? "hit" : "none"
 
   const cause: MonitorRequest["cause"] = quotaSwitchCompacted
     ? "account-changed-compacted-first"
@@ -799,39 +688,29 @@ function causeStep(
           ? "agent-switch"
           : changed
             ? "prefix-changed"
-            : expired && verdict !== "hit" && (diff.reusable || warmRead > 0)
-              ? "cache-expired"
-              : accounts.length
+            : accounts.length
                 ? "account-changed"
                 : "unknown"
-
-  const confidence: MonitorRequest["confidence"] =
-    cause === "unknown" ? "unknown" : cause === "cache-expired" || cause === "account-changed" ? "likely" : "certain"
-
-  const firstNamed = diff.changes.find((c) => c.name !== "cache markers") ?? diff.changes[0]
-  const causeText = causeWords(cause, firstNamed?.name)
-  const evidence =
-    cause === "account-changed-compacted-first"
-      ? "First request after compaction armed by provider account switch; cold start expected"
-      : cause === "compacted"
-        ? "First request after compaction; cold start expected"
-      : cause === "model-switch"
-        ? `Model / variant switched: ${last?.provider}/${last?.model}/${last?.variant ?? "default"} → ${r.provider}/${r.model}/${r.variant ?? "default"}`
-        : cause === "agent-switch"
-          ? `Agent switched: ${last?.agent} → ${r.agent}`
-          : cause === "prefix-changed"
-            ? `${firstNamed?.name} ${firstNamed?.change}${instructions.length ? `; instruction update: ${instructions.flatMap((i) => i.keys).join(", ")}` : ""}${reverts.length ? "; revert coincides" : ""}`
-            : cause === "cache-expired"
-              ? `Reusable prefix unchanged; gap ${timing.gap}ms since the last successful request exceeds lifetime ${timing.lifetime}ms; keep-alive pings ${timing.pings.length === 0 ? "none" : `${pingsFailed}/${timing.pings.length} failed`}; warming ${timing.warming ?? "not recorded"}`
-              : cause === "account-changed"
-                ? "Provider account changed between requests"
-                : verdict === "miss" && r.cacheReadTokens === 0 && warmRead > 0
-                  ? `Reusable prefix of ${warmRead} tokens read 0 times (${r.cacheWriteTokens} written); provider-side eviction or routing`
-                  : !previous
-                    ? "First recorded request; cold start expected"
-                    : !diff.known
-                      ? "Fingerprint unavailable; provider-side eviction or routing cannot be determined"
-                      : `Reusable prefix not fully reused${timing.gap !== undefined && timing.lifetime !== undefined && timing.gap <= timing.lifetime ? ", within cache lifetime" : ""}; provider-side eviction or routing`
+  // These are co-occurring local facts, not a proved provider cause. Do not
+  // choose the first differing option as an explanation of provider behavior.
+  const observed = [
+    ...(compacted ? ["Compaction occurred"] : []),
+    ...(switched ? ["Model / variant switched"] : []),
+    ...(agent ? ["Agent switched"] : []),
+    ...(accounts.length ? ["Provider account changed"] : []),
+    ...diff.changes.map((part) => `${part.name} ${part.change}`),
+    ...(instructions.length ? ["Instruction update observed"] : []),
+    ...(reverts.length ? ["Revert observed"] : []),
+  ]
+  const reported = measured.state === "legacy-unknown"
+    ? `Legacy record: stored cache read ${r.cacheReadTokens}; field presence unknown`
+    : measured.state !== "reported"
+      ? `Cache read unavailable (${measured.state})`
+      : `Reported cache read ${measured.read}${measured.input === undefined ? "; inclusive input unavailable" : ` / ${measured.input} input`}`
+  const comparison = expected === undefined
+    ? "No reliable reusable-token estimate; no comparable measured baseline"
+    : `Compatible measured anchor ${previous?.id}; local shortfall estimate ${shortfall} tokens (bounded by current input)`
+  const evidence = [reported, comparison, ...observed, "Provider cause unavailable"].join("; ")
 
   return {
     accounts,
@@ -839,13 +718,9 @@ function causeStep(
     reverts,
     verdict,
     cause,
-    causeText,
-    confidence,
+    causeText: cause === "unknown" ? "provider cause unknown" : `observed: ${causeWords(cause)}`,
+    confidence: "unknown",
     evidence,
-    // A partial bust's exact unreused prefix is the read drop; the segment
-    // estimate would undercount it because the provider rewrote far less. A
-    // full bust needs no override: `expected` already carries the warm prefix.
-    missOverride: verdict === "partial" && drop >= 1024 ? drop : undefined,
   }
 }
 
@@ -856,15 +731,13 @@ interface CostStep {
 
 function costStep(
   r: RequestRow,
-  verdict: MonitorRequest["verdict"],
   expected: number | undefined,
-  missOverride: number | undefined,
   facts: Facts,
 ): CostStep {
-  const missing =
-    verdict === "miss" || verdict === "partial"
-      ? missOverride ?? Math.min(r.inputTokens + r.cacheWriteTokens, Math.max(0, (expected ?? 0) - r.cacheReadTokens))
-      : 0
+  const measured = measurement(r)
+  const missing = measured.state === "reported" && measured.input !== undefined && measured.read !== undefined && expected !== undefined
+    ? Math.max(0, Math.min(expected, measured.input) - measured.read)
+    : 0
   // Nothing missed costs nothing; the recorded pricing is read only for a miss.
   if (missing === 0) return { missing, missCost: 0 }
   const pricing = lastFact(
@@ -1010,35 +883,48 @@ export function foldSession(
   let streaks: ReadonlyMap<string, number> = point?.streaks ?? new Map()
   const ordered = factsOf(facts)
   const earlier = rows.slice(0, from)
+  const responses = new Map(earlier.flatMap((row) => {
+    const id = fingerprints.get(row.id)?.responseId
+    return id ? [[id, row] as const] : []
+  }))
 
   for (const r of rows.slice(from)) {
     const fp = fingerprints.get(r.id)
-    const linked = fp?.previousResponseId
-      ? earlier.findLast((p) => p.provider === r.provider && p.model === r.model && fingerprints.get(p.id)?.responseId === fp.previousResponseId)
-      : undefined
-    const previous = linked ?? earlier.findLast((p) => p.provider === r.provider && p.model === r.model)
+    const eligible = (p: RequestRow) => p.provider === r.provider && p.model === r.model &&
+      p.status === "completed" && p.ended !== undefined && p.ended <= r.started && !p.isTitle &&
+      (p.kind !== "generate" || r.kind === "generate")
+    const linked = fp?.previousResponseId ? responses.get(fp.previousResponseId) : undefined
+    // An explicit branch link never falls back to its sibling. Unlinked
+    // lookup is deliberately bounded; missing older context remains unknown.
+    const previous = fp?.previousResponseId
+      ? linked && eligible(linked) ? linked : undefined
+      : earlier.slice(-64).findLast(eligible)
     const lastRealIndex = earlier.findLastIndex((p) => p.kind !== "ping" && !p.isTitle)
     const lastReal = earlier[lastRealIndex]
     const last = r.kind === "ping" || r.isTitle ? earlier.at(-1) : lastReal
     const between = factsBetween(ordered, last?.started ?? 0, r.started)
 
     // 1. Diff: calculate prefix diff and expected tokens
-    const warm = previousWarmRequest(r, earlier)
-    const { diff, expected, changed } = diffStep(
+    const { diff, expected: anchor, changed } = diffStep(
       previous,
       previous ? fingerprints.get(previous.id) : undefined,
       fp,
-      warm,
     )
+    const measured = measurement(r)
+    const compatible = previous?.variant === r.variant && previous?.agent === r.agent &&
+      !between.some((fact) => fact.kind === "compaction" || fact.kind === "account_switch" || fact.kind === "quota_handoff")
+    const expected = compatible && anchor !== undefined
+      ? measured.input === undefined ? anchor : Math.min(anchor, measured.input)
+      : undefined
 
     // 2. Timing: compute gap, cache lifetime, pings and warming status
     const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, ordered, previous)
 
     // 3. Cause: determine cache verdict, root cause, confidence and evidence
-    const cause = causeStep(r, previous, last, earlier, between, diff, changed, expected, warm, timing)
+    const cause = causeStep(r, previous, last, between, diff, changed, expected)
 
     // 4. Cost: compute miss tokens and re-read cost from recorded pricing
-    const cost = costStep(r, cause.verdict, expected, cause.missOverride, ordered)
+    const cost = costStep(r, expected, ordered)
 
     const request: MonitorRequest = {
       id: r.id,
@@ -1060,13 +946,11 @@ export function foldSession(
       cacheWrite: r.cacheWriteTokens,
       cost: r.cost,
       verdict: cause.verdict,
+      measurement: measured,
       ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
-      confidence: cause.verdict === "hit" && expected !== undefined ? "certain" : cause.confidence,
-      evidence:
-        cause.verdict === "hit" && cause.cause === "unknown"
-          ? `Cache read ${r.cacheReadTokens}; expected reusable prefix ${expected ?? "unknown"} tokens${expected !== undefined && expected < 1024 ? "; below the 1024-token miss threshold" : ""}`
-          : cause.evidence,
+      confidence: cause.confidence,
+      evidence: cause.evidence,
       ...(expected === undefined ? {} : { expected }),
       missTokens: cost.missing,
       ...(cost.missCost === undefined ? {} : { missCost: cost.missCost }),
@@ -1074,12 +958,12 @@ export function foldSession(
 
     const lines = [
       request.evidence ?? cause.evidence,
-      `Expected reusable prefix: ${expected ?? "unknown"} tokens (${diff.append ? "previous real prompt usage" : diff.reusable ? "measured through the marked cache boundary" : "segment-size estimate"}); actual cache read: ${r.cacheReadTokens}`,
+      `Reusable-token estimate: ${expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
       `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
-      `Gap ${timing.gap ?? "unknown"}ms; lifetime ${timing.lifetime ?? "unknown"}ms; warming ${timing.warming ?? "not recorded"}`,
+      `Gap ${timing.gap ?? "unknown"}ms; requested/nominal retention ${timing.lifetime ?? "unknown"}ms (not proof of expiry); warming configured ${timing.warming ?? "not recorded"}`,
       cost.missCost === undefined
         ? "Miss cost unavailable: per-token pricing was not recorded"
-        : `Miss tokens ${cost.missing}; processing cost USD ${cost.missCost} (not net savings)`,
+        : `Local shortfall estimate ${cost.missing}; processing-cost scenario USD ${cost.missCost} (not billed loss or net savings)`,
     ]
 
     details.push({
@@ -1142,6 +1026,7 @@ export function foldSession(
     points.push({ streaks, named: names.size, unstable: unstable.length })
 
     earlier.push(r)
+    if (fp?.responseId) responses.set(fp.responseId, r)
   }
 
   const reads: UnreadRead[] = []
@@ -1267,12 +1152,17 @@ export function windowedSessionSignals(
   let cost = 0
   for (const ping of pings) {
     cost += ping.request.cost
+    if (ping.request.verdict === "error" || ping.request.measurement?.state !== "reported" ||
+      ((ping.request.measurement.read ?? 0) + (ping.request.measurement.write ?? 0)) === 0) continue
     // Only a next request inside this window under the same selection describes
     // the ping's effect; an excluded request belongs to another query.
     const next = inWindow.find(
       (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
     )
-    if (next?.request.verdict === "hit") followedByHit++
+    if (!next || next.request.provider !== ping.request.provider || next.request.model !== ping.request.model ||
+      next.request.variant !== ping.request.variant ||
+      !reusableOf(analysis.fingerprints.get(ping.request.id), analysis.fingerprints.get(next.request.id))) continue
+    if (next.request.verdict === "hit") followedByHit++
     else if (next && isMiss(next.request)) followedByMiss++
   }
 
