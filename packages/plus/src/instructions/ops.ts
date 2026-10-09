@@ -1473,6 +1473,30 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         address: chain.address,
       })
 
+      // Section patches can replace existing spans, not create a new heading
+      // skeleton. A structural whole-item edit must supply that skeleton as
+      // one span; otherwise the old Full text stub can hide every new heading.
+      // Manual boundaries retain their existing section-edit contract.
+      if (
+        currentSplit.kind !== "manual" &&
+        (currentSplit.sections.length !== newSplit.sections.length ||
+          currentSplit.sections.some((section, index) => section.id !== newSplit.sections[index]?.id))
+      ) {
+        const records = chain.customizations.reduce(
+          (out, record) =>
+            record.section !== null && record.text !== undefined && sameAddress(record, { ...chain.address, section: record.section })
+              ? merge(out, { ...chain.address, section: record.section }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
+              : out,
+          chain.customizations,
+        )
+        return {
+          records: merge(records, chain.address, { text }, chain.upstream, memo.ctx.scopes, chain.splits),
+          splits: chain.splits,
+          status: `Saved "${node.label}"`,
+          retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
+        }
+      }
+
       let customizations = chain.customizations
       customizations = merge(customizations, chain.address, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
 
@@ -1509,16 +1533,12 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         retryHint: `saved "${node.label}" against a stale revision; retry to apply`,
       }
     } else {
-      chain.customizations = chain.customizations.filter(
-        (r) =>
-          !(
-            r.item === chain.address.item &&
-            r.level === chain.address.level &&
-            r.agent === chain.address.agent &&
-            sameTeam(r.team, chain.address.team) &&
-            catalogueMatches(chain.address.agent, r.catalogue, chain.address.catalogue) &&
-            r.section !== null
-          ),
+      chain.customizations = chain.customizations.reduce(
+        (out, record) =>
+          record.section !== null && record.text !== undefined && sameAddress(record, { ...chain.address, section: record.section })
+            ? merge(out, { ...chain.address, section: record.section }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
+            : out,
+        chain.customizations,
       )
     }
   }
