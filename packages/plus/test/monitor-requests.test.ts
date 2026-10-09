@@ -506,7 +506,7 @@ test("v1 to v2 migration keeps v1 rows while creating empty v2 tables", async ()
 
   // Open through createLedger (migrates in place)
   const migrated = createLedger(dbFile)
-  expect(migrated.db.query("select value from meta where key = 'schema'").get()).toEqual({ value: "2" })
+  expect(migrated.db.query("select value from meta where key = 'schema'").get()).toEqual({ value: "3" })
 
   // Verify v1 rows are intact
   expect(migrated.db.query("select id, title from session where id = 'ses_v1'").get()).toEqual({ id: "ses_v1", title: "v1 title" })

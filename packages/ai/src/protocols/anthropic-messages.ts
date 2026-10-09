@@ -1177,6 +1177,41 @@ const mapUsage = (usage: AnthropicUsage | undefined, providerMetadataKey: string
     cacheWriteInputTokens: cacheWrite,
     reasoningTokens: ProviderShared.sumTokens(...iterations.map((item) => item.output_tokens_details?.thinking_tokens)),
     totalTokens: ProviderShared.totalTokens(inputTokens, outputTokens, undefined),
+    provenance: {
+      inputTokens: {
+        source: "derived",
+        completeness: iterations.every(
+          (item) =>
+            item.input_tokens != null &&
+            item.cache_read_input_tokens != null &&
+            item.cache_creation_input_tokens != null,
+        )
+          ? "complete"
+          : "partial",
+      },
+      nonCachedInputTokens: {
+        source: "reported",
+        completeness: iterations.every((item) => item.input_tokens != null) ? "complete" : "partial",
+      },
+      cacheReadInputTokens: {
+        source: "reported",
+        completeness: iterations.every((item) => item.cache_read_input_tokens != null) ? "complete" : "partial",
+      },
+      cacheWriteInputTokens: {
+        source: "reported",
+        completeness: iterations.every((item) => item.cache_creation_input_tokens != null) ? "complete" : "partial",
+      },
+      outputTokens: {
+        source: "reported",
+        completeness: iterations.every((item) => item.output_tokens != null) ? "complete" : "partial",
+      },
+      reasoningTokens: {
+        source: "reported",
+        completeness: iterations.every((item) => item.output_tokens_details?.thinking_tokens != null)
+          ? "complete"
+          : "partial",
+      },
+    },
     providerMetadata: { [providerMetadataKey]: usage },
   })
 }
@@ -1204,6 +1239,36 @@ const mergeUsage = (left: Usage | undefined, right: Usage | undefined, providerM
     cacheWriteInputTokens,
     reasoningTokens,
     totalTokens: ProviderShared.totalTokens(inputTokens, outputTokens, undefined),
+    provenance: {
+      ...left.provenance,
+      ...right.provenance,
+      // A delta may contain output only. Recompute completeness from the merged components,
+      // not from the partial sum on either cumulative frame.
+      inputTokens: {
+        source: "derived",
+        completeness: (["nonCachedInputTokens", "cacheReadInputTokens", "cacheWriteInputTokens"] as const).every(
+          (field) =>
+            (right[field] === undefined ? left.provenance?.[field] : right.provenance?.[field])?.completeness ===
+            "complete",
+        )
+          ? "complete"
+          : "partial",
+      },
+      ...Object.fromEntries(
+        (
+          [
+            "nonCachedInputTokens",
+            "cacheReadInputTokens",
+            "cacheWriteInputTokens",
+            "outputTokens",
+            "reasoningTokens",
+          ] as const
+        ).flatMap((field) => {
+          const value = right[field] === undefined ? left.provenance?.[field] : right.provenance?.[field]
+          return value ? [[field, value]] : []
+        }),
+      ),
+    },
     providerMetadata: {
       [providerMetadataKey]:
         mergeJsonRecords(left.providerMetadata?.[providerMetadataKey], right.providerMetadata?.[providerMetadataKey]) ??

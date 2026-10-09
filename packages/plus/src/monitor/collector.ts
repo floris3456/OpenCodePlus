@@ -138,7 +138,7 @@ export function createCollector(options: CollectorOptions): Collector {
   function startStep(sessionID: string, data: Data) {
     const state = track(sessionID)
     const messageID = String(data.assistantMessageID)
-    if (ledger.getRequests(sessionID).some((row) => row.messageID === messageID && row.ended !== undefined)) return
+    if (ledger.db.query("select 1 from step where session_id = ? and message_id = ? and ended is not null").get(sessionID, messageID)) return
     if (state.steps.has(messageID)) return
     const model = data.model as { id?: string; providerID?: string; variant?: string } | undefined
     const agent = typeof data.agent === "string" ? data.agent : undefined
@@ -299,7 +299,7 @@ export function createCollector(options: CollectorOptions): Collector {
   function endStep(sessionID: string, data: Data, failed: boolean) {
     const state = track(sessionID)
     const messageID = String(data.assistantMessageID)
-    if (ledger.getRequests(sessionID).some((row) => row.messageID === messageID && row.ended !== undefined)) return
+    if (ledger.db.query("select 1 from step where session_id = ? and message_id = ? and ended is not null").get(sessionID, messageID)) return
     const step = state.steps.get(messageID)
     state.steps.delete(messageID)
     const tokens = data.tokens as

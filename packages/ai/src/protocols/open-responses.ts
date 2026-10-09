@@ -854,6 +854,21 @@ export const mapUsage = (usage: OpenResponsesUsage | null | undefined, providerM
     cacheWriteInputTokens: cacheWrite,
     reasoningTokens: reasoning,
     totalTokens: ProviderShared.totalTokens(usage.input_tokens, usage.output_tokens, usage.total_tokens),
+    provenance: {
+      ...(usage.input_tokens == null ? {} : { inputTokens: { source: "reported", completeness: "complete" } }),
+      ...(usage.output_tokens == null ? {} : { outputTokens: { source: "reported", completeness: "complete" } }),
+      ...(cached == null ? {} : { cacheReadInputTokens: { source: "reported", completeness: "complete" } }),
+      ...(cacheWrite == null ? {} : { cacheWriteInputTokens: { source: "reported", completeness: "complete" } }),
+      ...(reasoning == null ? {} : { reasoningTokens: { source: "reported", completeness: "complete" } }),
+      ...(nonCached === undefined
+        ? {}
+        : {
+            nonCachedInputTokens: {
+              source: "derived",
+              completeness: cached != null && cacheWrite != null ? "complete" : "partial",
+            },
+          }),
+    },
     providerMetadata: { [providerMetadataKey]: usage },
   })
 }

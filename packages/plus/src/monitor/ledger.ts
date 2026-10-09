@@ -9,6 +9,8 @@
 import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import path from "node:path"
+import { Schema } from "effect"
+import { inconsistentObservation, Observation, readObservation, type RequestObservation } from "./observation.js"
 import { errorFingerprint } from "./fingerprint.js"
 import { teamsDataDir } from "../instructions/paths.js"
 import type {
@@ -20,7 +22,7 @@ import type {
 
 export const RETENTION_DAYS = 90
 
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 export const HOUR = 3_600_000
 
@@ -412,6 +414,8 @@ export interface RequestRow {
   readonly cost: number
   readonly messageID?: string
   readonly created: number
+  /** Absent for legacy accounting rows. Unsupported versions are unavailable, not legacy. */
+  readonly observation?: RequestObservation
 }
 
 export interface RequestFingerprintData {
@@ -445,6 +449,10 @@ export function endRequestWindow(ledger: Ledger, start: RequestStart, end: Reque
     const existing = rows.find((row) => row.messageID === start.messageID && row.ended !== undefined)
     if (existing) return existing
     const candidates = rows.filter((row) => row.kind === start.kind && (row.messageID === undefined || row.messageID === start.messageID) && row.started >= start.started && row.started <= end.ended)
+    // Exact invocation observations cannot be reconciled by a publication-time guess or
+    // overwritten with compaction/Step aggregate accounting. Keep that on `step` only.
+    const observed = candidates.filter((row) => row.observation !== undefined)
+    if (observed.length > 0) return observed.at(-1)
     const chosen = oldest ? candidates.find((row) => row.ended === undefined) ?? candidates.at(-1) : candidates.at(-1)
     if (!chosen) ledger.requestStarted(start)
     // Compaction Ended.tokens is the aggregate of its attempts, not per-attempt usage.
@@ -487,6 +495,8 @@ export interface Ledger {
   changedFingerprints(sessionID: string, since: number): readonly string[]
   requestStarted(req: RequestStart): void
   requestEnded(id: string, end: RequestEnd): void
+  /** Exact-ID terminal measurement, written after requestEnded. Never inferred from Session aggregates. */
+  requestObserved(id: string, observation: Observation): void
   requestFingerprint(fp: RequestFingerprintData): void
   contextFact(fact: ContextFact): void
   relabelLatestRequest(sessionID: string, fromKind: string, toKind: string): void
@@ -520,10 +530,18 @@ export function ledgerAt(file: string = defaultLedgerPath()): Ledger {
 export function createLedger(file: string): Ledger {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new Database(file, { create: true })
+  // Check before any migration, pragma or metadata write; never downgrade an unknown writer.
+  const hasMeta = db.query("select name from sqlite_master where type = 'table' and name = 'meta'").get()
+  const version = hasMeta ? db.query<{ value: string }, []>("select value from meta where key = 'schema'").get()?.value : undefined
+  if (version !== undefined && !["1", "2", String(SCHEMA_VERSION)].includes(version)) {
+    db.close()
+    throw new Error("Unsupported monitor ledger schema")
+  }
   db.exec("pragma journal_mode = wal")
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")
   db.exec(schema)
+  if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "observation")) db.exec("alter table request add column observation text")
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "finish")) db.exec("alter table request add column finish text")
   const fingerprintColumns = db.query<{ name: string }, []>("pragma table_info(request_fingerprint)").all()
   for (const name of ["previous_response_id", "response_id"]) {
@@ -625,7 +643,7 @@ export function createLedger(file: string): Ledger {
       cache_write_tokens = coalesce($cacheWrite, cache_write_tokens),
       cost = coalesce($cost, cost),
       message_id = coalesce($message, message_id)
-    where id = $id`)
+    where id = $id and observation is null`)
   const upsertFingerprint = db.query(`
     insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, prefix_base, prefix_shared, prefix_depth, cache_key, cache_control, body_hash, created, previous_response_id, response_id)
     values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $prefixBase, $prefixShared, $prefixDepth, $cacheKey, $cacheControl, $bodyHash, $created, $previousResponse, $response)
@@ -1074,6 +1092,17 @@ export function createLedger(file: string): Ledger {
         $message: end.messageID ?? null,
       }),
     requestFingerprint: (fp) => storeFingerprint(fp),
+    requestObserved: (id, observation) => {
+      const clean = Schema.decodeUnknownSync(Observation)(observation)
+      if (clean.inputTokens !== undefined && clean.provenance?.inputTokens?.completeness === "partial")
+        throw new Error("Partial input total cannot supply an inclusive measurement")
+      const request = findRequest.get(id)
+      if (request?.observation !== null && request?.observation !== undefined) return
+      if (!request || request.ended === null)
+        throw new Error("Monitor observation requires an ended request")
+      // Unknown payloads belong to a newer writer; duplicates are first-observation-wins.
+      db.query("update request set observation = ? where id = ? and observation is null").run(JSON.stringify(inconsistentObservation(clean) ? { ...clean, inconsistent: true } : clean), id)
+    },
     contextFact: (fact) =>
       insertContextFact.run({
         $session: fact.sessionID,
@@ -1138,6 +1167,7 @@ function toRequestRow(row: Record<string, unknown>): RequestRow {
     cost: Number(row.cost ?? 0),
     messageID: typeof row.message_id === "string" ? row.message_id : undefined,
     created: Number(row.created ?? row.started),
+    observation: typeof row.observation === "string" ? readObservation(row.observation) : undefined,
   }
 }
 

@@ -338,7 +338,7 @@ test("an older monitor.db migrates in place and keeps its rows readable", async 
     expect(report.totals.input).toBe(100)
     expect(report.requests?.find((entry) => entry.id === "req_old")).toMatchObject({ sessionID: "ses_old" })
     expect(migrated.getFingerprint("req_old")?.bodyHash).toBe("bodyhash")
-    expect(migrated.db.query<{ value: string }, []>("select value from meta where key = 'schema'").get()?.value).toBe("2")
+    expect(migrated.db.query<{ value: string }, []>("select value from meta where key = 'schema'").get()?.value).toBe("3")
   } finally {
     migrated.close()
   }

@@ -1,6 +1,11 @@
 import { Schema } from "effect"
 import { ProviderMetadata } from "./options.js"
 
+const fieldProvenance = Schema.Struct({
+  source: Schema.Literals(["reported", "derived"]),
+  completeness: Schema.Literals(["complete", "partial"]),
+})
+
 /**
  * Token usage reported by an LLM provider.
  *
@@ -56,6 +61,19 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
   cacheWriteInputTokens: Schema.optional(Schema.Number),
   reasoningTokens: Schema.optional(Schema.Number),
   totalTokens: Schema.optional(Schema.Number),
+  /** Measurement provenance, independent of the compatibility accounting values above.
+   * Absence is unknown; in particular it must not turn a partial sum into a complete total.
+   */
+  provenance: Schema.optional(
+    Schema.Struct({
+      inputTokens: Schema.optional(fieldProvenance),
+      cacheReadInputTokens: Schema.optional(fieldProvenance),
+      cacheWriteInputTokens: Schema.optional(fieldProvenance),
+      nonCachedInputTokens: Schema.optional(fieldProvenance),
+      outputTokens: Schema.optional(fieldProvenance),
+      reasoningTokens: Schema.optional(fieldProvenance),
+    }),
+  ),
   providerMetadata: Schema.optional(ProviderMetadata),
 }) {
   /**
@@ -70,6 +88,46 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
 
   static from(input: UsageInput) {
     return input instanceof Usage ? input : new Usage(input)
+  }
+
+  /** Sparse monitor view. Accounting compatibility values are never evidence of presence.
+   * Protocols without provenance deliberately have no usable measurement coverage yet.
+   */
+  observation(completeness: "final" | "partial" | "unavailable") {
+    const fields = [
+      "inputTokens",
+      "cacheReadInputTokens",
+      "cacheWriteInputTokens",
+      "nonCachedInputTokens",
+      "outputTokens",
+      "reasoningTokens",
+    ] as const
+    const valueOf = (field: (typeof fields)[number]) => {
+      const value = this[field]
+      return completeness !== "unavailable" &&
+        value !== undefined &&
+        Number.isFinite(value) &&
+        this.provenance?.[field]?.completeness === "complete"
+        ? value
+        : undefined
+    }
+    return {
+      version: 1 as const,
+      completeness,
+      inputTokens: valueOf("inputTokens"),
+      cacheReadInputTokens: valueOf("cacheReadInputTokens"),
+      cacheWriteInputTokens: valueOf("cacheWriteInputTokens"),
+      nonCachedInputTokens: valueOf("nonCachedInputTokens"),
+      outputTokens: valueOf("outputTokens"),
+      reasoningTokens: valueOf("reasoningTokens"),
+      provenance: this.provenance,
+      inconsistent:
+        fields.some((field) => this[field] !== undefined && (!Number.isFinite(this[field]) || this[field] < 0)) ||
+        (this.inputTokens !== undefined &&
+          this.cacheReadInputTokens !== undefined &&
+          this.cacheWriteInputTokens !== undefined &&
+          this.cacheReadInputTokens + this.cacheWriteInputTokens > this.inputTokens),
+    }
   }
 }
 

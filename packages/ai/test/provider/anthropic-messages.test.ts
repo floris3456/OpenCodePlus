@@ -1692,6 +1692,14 @@ describe("Anthropic Messages route", () => {
         cacheReadInputTokens: undefined,
         cacheWriteInputTokens: undefined,
         totalTokens: 6,
+        provenance: {
+          inputTokens: { source: "derived", completeness: "partial" },
+          nonCachedInputTokens: { source: "reported", completeness: "complete" },
+          cacheReadInputTokens: { source: "reported", completeness: "partial" },
+          cacheWriteInputTokens: { source: "reported", completeness: "partial" },
+          outputTokens: { source: "reported", completeness: "complete" },
+          reasoningTokens: { source: "reported", completeness: "partial" },
+        },
         providerMetadata: { anthropic: { input_tokens: 5, output_tokens: 1 } },
       })
 
