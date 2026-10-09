@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { InputRenderable, TextareaRenderable } from "@opentui/core"
-import type { FormFields, LocationRef } from "@opencode/client"
+import type { FormFields, IntegrationInfo, LocationRef } from "@opencode/client"
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onMount } from "solid-js"
@@ -247,7 +247,65 @@ test("uses the active location for integration data without scoping credential r
   }
 })
 
-async function renderIntegration(activeLocation?: LocationRef, form?: FormFields) {
+test.each([
+  { width: 80, height: 24 },
+  { width: 140, height: 42 },
+])("native CLIProxyAPI forwards URL and key to its integration at %j", async (size) => {
+  const fixture = await renderIntegration(
+    undefined,
+    undefined,
+    {
+      id: "cliproxyapi",
+      name: "CLIProxyAPI",
+      connections: [],
+      methods: [
+        {
+          type: "key",
+          label: "CLIProxyAPI API key",
+          form: [
+            {
+              type: "string",
+              key: "baseURL",
+              title: "CLIProxyAPI URL",
+              required: true,
+              placeholder: "https://cpa.example.com/v1",
+            },
+          ],
+        },
+      ],
+    },
+    size,
+  )
+  try {
+    const frame = fixture.app.captureCharFrame()
+    expect(frame).toContain("Popular")
+    expect(frame).toContain("CLIProxyAPI")
+    fixture.app.mockInput.pressEnter()
+    await fixture.app.waitForFrame((frame) => frame.includes("CLIProxyAPI URL"))
+    await fixture.app.mockInput.typeText("http://127.0.0.1:8317/v1")
+    fixture.app.mockInput.pressEnter()
+    await fixture.app.waitForFrame((frame) => frame.includes("API key") && !frame.includes("CLIProxyAPI URL"))
+    await fixture.app.mockInput.typeText("synthetic-cpa-key")
+    fixture.app.mockInput.pressEnter()
+    await fixture.app.waitFor(() => fixture.requests.length === 1)
+    expect(fixture.requests).toEqual([
+      {
+        method: "POST",
+        path: "/api/integration/cliproxyapi/connect/key",
+        body: { key: "synthetic-cpa-key", answer: { baseURL: "http://127.0.0.1:8317/v1" } },
+      },
+    ])
+  } finally {
+    fixture.app.renderer.destroy()
+  }
+})
+
+async function renderIntegration(
+  activeLocation?: LocationRef,
+  form?: FormFields,
+  native?: IntegrationInfo,
+  size = { width: 100, height: 30 },
+) {
   const events = createEventStream()
   const requests: Array<{ method: string; path: string; body?: unknown }> = []
   const locations: LocationRef[] = []
@@ -274,7 +332,7 @@ async function renderIntegration(activeLocation?: LocationRef, form?: FormFields
       return json({
         location,
         data: [
-          {
+          native ?? {
             id: "openai",
             name: "OpenAI",
             methods: [{ type: "key", label: "API key", form }],
@@ -284,7 +342,7 @@ async function renderIntegration(activeLocation?: LocationRef, form?: FormFields
       })
     }
 
-    if (request.method === "POST" && url.pathname === "/api/integration/openai/connect/key") {
+    if (request.method === "POST" && url.pathname === `/api/integration/${native?.id ?? "openai"}/connect/key`) {
       requests.push({ method: request.method, path: url.pathname, body: await request.json() })
       return new Response(null, { status: 204 })
     }
@@ -351,7 +409,11 @@ async function renderIntegration(activeLocation?: LocationRef, form?: FormFields
       location.set(activeLocation)
       void data.location.integration
         .sync(activeLocation)
-        .then(() => dialog.replace(() => <DialogIntegration integrationID="openai" autoConnect />))
+        .then(() =>
+          dialog.replace(() => (
+            <DialogIntegration integrationID={native ? undefined : "openai"} autoConnect={!native} />
+          )),
+        )
     })
     return null
   }
@@ -378,12 +440,14 @@ async function renderIntegration(activeLocation?: LocationRef, form?: FormFields
         </ConfigProvider>
       </TestTuiContexts>
     ),
-    { width: 100, height: 30, kittyKeyboard: true },
+    { ...size, kittyKeyboard: true },
   )
 
   app.renderer.start()
-  await app.waitForFrame(
-    (frame) => frame.includes("Add account") && frame.includes("Personal") && frame.includes("Work"),
+  await app.waitForFrame((frame) =>
+    native
+      ? frame.includes("Connect an integration") && frame.includes(native.name)
+      : frame.includes("Add account") && frame.includes("Personal") && frame.includes("Work"),
   )
   await app.waitFor(() => app.renderer.currentFocusedEditor instanceof InputRenderable)
 

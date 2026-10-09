@@ -14,6 +14,19 @@ const integration = (value: Partial<IntegrationInfo> & Pick<IntegrationInfo, "id
 })
 
 describe("integrationOptions", () => {
+  test("offers native CLIProxyAPI first without inventing an entry when its plugin is disabled", () => {
+    const list = [
+      integration({ id: "opencode-go", name: "OpenCode Go" }),
+      integration({ id: "cliproxyapi", name: "CLIProxyAPI", methods: [{ type: "key" }] }),
+      integration({ id: "anthropic", name: "Anthropic" }),
+    ]
+    expect(integrationOptions(list).map((item) => item.id)).toEqual(["cliproxyapi", "opencode-go", "anthropic"])
+    expect(integrationOptions(list.filter((item) => item.id !== "cliproxyapi")).map((item) => item.id)).toEqual([
+      "opencode-go",
+      "anthropic",
+    ])
+  })
+
   test("keeps popular integrations first and sorts the rest alphabetically", () => {
     expect(
       integrationOptions([

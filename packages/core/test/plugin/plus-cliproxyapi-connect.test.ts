@@ -134,8 +134,13 @@ describe("opencode.plus.cliproxyapi /connect", () => {
             expect((yield* models.get(providerID, Model.ID.make("gpt-5")))?.name).toBe("gpt-5")
             expect(claude?.package).toBe("@opencode/ai/providers/anthropic-compatible")
             expect(claude?.variants.map((variant) => String(variant.id))).toEqual(["high", "max"])
-            expect(seen.authorization[0]).toBe("Bearer cpa-key")
-            expect(seen.urls[0]).toBe("/v1/models?details=true")
+            // The unauthenticated quota probe races the catalogue request.
+            const catalogue = seen.urls.indexOf("/v1/models?details=true")
+            expect(catalogue).toBeGreaterThanOrEqual(0)
+            expect(seen.authorization[catalogue]).toBe("Bearer cpa-key")
+            expect(
+              seen.authorization.filter((_, index) => seen.urls[index] !== "/v1/models?details=true"),
+            ).not.toContain("Bearer cpa-key")
             expect((yield* providers.available()).map((provider) => provider.id)).toContain(providerID)
           }),
         ),

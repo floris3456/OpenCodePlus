@@ -6,7 +6,7 @@ Hosts that do not use CPA see nothing from it.
 
 ## Turning it on and off
 
-- **On, the normal way:** run `/connect` and choose **CLIProxyAPI**, then enter
+- **On, the normal way:** run `/connect` and choose **CLIProxyAPI** (first in Popular), then enter
   the CPA URL (ending in `/v1`) and an API key. The `cliproxyapi` integration,
   provider and model catalogue are always registered; connecting makes the
   provider available and its models sync immediately, with no
