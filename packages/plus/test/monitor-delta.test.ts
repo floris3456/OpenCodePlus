@@ -105,11 +105,13 @@ test("raw fingerprint base correction and session move invalidate decoded descen
 
 test("additive migration explicitly replaces legacy plain triggers on a synthetic copy", async () => {
   const db = await ledger()
+  db.requestStarted({ id: "legacy", sessionID: "s", started: 0, kind: "step" })
+  db.contextFact({ sessionID: "s", at: 0, kind: "fixture" })
   // Separate SQLite fixture is a copy, never a live monitor database.
   const copy = `${db.path}.copy`
   db.db.exec(`vacuum into '${copy}'`)
   const sql = new Database(copy)
-  sql.exec("delete from meta where key = 'analysis_delta'")
+  sql.exec("delete from meta where key = 'analysis_delta'; delete from analysis_change")
   for (const table of ["request", "context_fact"]) {
     for (const operation of ["insert", "update", "delete"]) sql.exec(`drop trigger ${table}_change_${operation}`)
     sql.exec(`create trigger ${table}_change_insert after insert on ${table} begin
@@ -118,8 +120,12 @@ test("additive migration explicitly replaces legacy plain triggers on a syntheti
   sql.close()
   const migrated = createLedger(copy)
   try {
+    expect(sessionFold(migrated, "s").rows.map((row) => row.id)).toEqual(["legacy"])
+    expect(sessionFold(migrated, "s").facts).toHaveLength(1)
+    const mark = migrated.sessionRevision("s")
     migrated.requestStarted({ id: "new", sessionID: "s", started: 1, kind: "step" })
-    expect(migrated.changedRequests("s", 0)?.map((row) => row.id)).toEqual(["new"])
+    expect(migrated.changedRequests("s", mark)?.map((row) => row.id)).toEqual(["new"])
+    expect(sessionFold(migrated, "s").rows.map((row) => row.id)).toEqual(["legacy", "new"])
     expect(migrated.db.query("select value from meta where key = 'analysis_delta'").get()).toEqual({ value: "1" })
   } finally { migrated.close() }
 })
