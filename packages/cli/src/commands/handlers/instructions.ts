@@ -237,6 +237,8 @@ export interface InstructionsInvocation {
   readonly server?: string
   readonly standalone: boolean
   readonly args: readonly string[]
+  /** A malformed transport flag (for example a missing `--server` value). */
+  readonly error?: string
 }
 
 export function instructionsInvocation(argv: readonly string[]): InstructionsInvocation | undefined {
@@ -252,6 +254,14 @@ export function instructionsInvocation(argv: readonly string[]): InstructionsInv
 }
 
 export const runInstructionsCli = Effect.fn("cli.instructions.cli")(function* (invocation: InstructionsInvocation) {
+  // A malformed transport flag is a usage refusal, decided before any service
+  // discovery: otherwise a missing `--server` value silently falls back to the
+  // managed service instead of naming the mistake.
+  if (invocation.error !== undefined) {
+    process.stderr.write(`${invocation.error}${EOL}`)
+    process.exitCode = 2
+    return
+  }
   const server = yield* ServerConnection.resolve({
     server: invocation.server,
     standalone: invocation.standalone,
@@ -259,13 +269,17 @@ export const runInstructionsCli = Effect.fn("cli.instructions.cli")(function* (i
   })
   const client = OpenCode.make({ baseUrl: server.endpoint.url, headers: Service.headers(server.endpoint) })
   const plus = client.rpc(Definition)
+  // Resolve the caller's directory once, at dispatch time, so the request
+  // carries the real caller cwd. The SDK forwards only `options.location`; the
+  // launcher's restore-cwd preload has already chdir'd to the caller project.
+  const location = { directory: process.cwd() }
   const deps: InstructionDeps = {
     productNamespace: Product.namespace,
     binaryName: Product.binaryName,
     readFile: (path) => Bun.file(path).text(),
     readStdin: () => readAllStdin(),
-    ops: () => plus["instructions.ops"](undefined).then((output) => output.ops),
-    run: (op, input) => plus["instructions.run"]({ op, input }) as Promise<unknown>,
+    ops: () => plus["instructions.ops"](undefined, { location }).then((output) => output.ops),
+    run: (op, input) => plus["instructions.run"]({ op, input }, { location }) as Promise<unknown>,
     serverVersion: () =>
       Effect.runPromise(ServiceHandover.serverVersion(server.endpoint)).catch(() => "unknown"),
   }
@@ -275,12 +289,20 @@ export const runInstructionsCli = Effect.fn("cli.instructions.cli")(function* (i
   process.exitCode = result.exitCode
 })
 
+// The op grammar's value-taking flags (parseInstructionsArgs). One of these
+// must consume the following token as its value even when that value looks like
+// a transport flag, so `set row --text --server` keeps the literal text while
+// a bare trailing `--server` is still detected as missing its own value.
+const OP_VALUE_FLAGS = new Set(["--json", "--text", "--text-file"])
+
 // Split the subcommand's own `--server`/`--standalone` (ServerParams) from the
-// op argv, so neither is mistaken for an op parameter.
+// op argv, so neither is mistaken for an op parameter. A malformed transport
+// flag is reported (not swallowed) so dispatch can refuse before discovery.
 function splitServerFlags(args: readonly string[]): InstructionsInvocation {
   const rest: string[] = []
   let server: string | undefined
   let standalone = false
+  let error: string | undefined
   let endOfOptions = false
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
@@ -306,19 +328,38 @@ function splitServerFlags(args: readonly string[]): InstructionsInvocation {
     if (arg === "--no-print-logs") continue
     if (arg === "--server") {
       const value = args[i + 1]
-      if (value !== undefined) {
+      if (value === undefined || value.startsWith("--")) error = "Option --server expects a value."
+      else {
         server = value
         i++
       }
       continue
     }
     if (arg.startsWith("--server=")) {
-      server = arg.slice("--server=".length)
+      const value = arg.slice("--server=".length)
+      if (value === "") error = "Option --server expects a value."
+      else server = value
+      continue
+    }
+    // Consume the value of a value-taking op flag verbatim, so a flag-looking
+    // payload (`--text --server`) is not stolen as the transport flag.
+    if (OP_VALUE_FLAGS.has(arg)) {
+      rest.push(arg)
+      const value = args[i + 1]
+      if (value !== undefined) {
+        rest.push(value)
+        i++
+      }
       continue
     }
     rest.push(arg)
   }
-  return { ...(server === undefined ? {} : { server }), standalone, args: rest }
+  return {
+    ...(server === undefined ? {} : { server }),
+    ...(error === undefined ? {} : { error }),
+    standalone,
+    args: rest,
+  }
 }
 
 export default Runtime.handler(
@@ -329,6 +370,7 @@ export default Runtime.handler(
       server: Option.getOrUndefined(input.server),
       standalone: input.standalone,
       args: tail.args,
+      ...(tail.error === undefined ? {} : { error: tail.error }),
     })
   }),
 )

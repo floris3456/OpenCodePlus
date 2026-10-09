@@ -337,4 +337,47 @@ describe("pre-Effect argv dispatch", () => {
     expect(instructionsInvocation(["bun", "plus.ts", "--help"])).toBeUndefined()
     expect(instructionsInvocation(["bun", "plus.ts"])).toBeUndefined()
   })
+
+  test("reports a missing --server value instead of swallowing it", () => {
+    // A missing explicit endpoint must refuse as a usage error, never fall
+    // through to managed-service discovery.
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "list", "--server"])).toEqual({
+      error: "Option --server expects a value.",
+      standalone: false,
+      args: ["list"],
+    })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--server=", "list"])).toEqual({
+      error: "Option --server expects a value.",
+      standalone: false,
+      args: ["list"],
+    })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "show", "abc", "--server"])?.server).toBeUndefined()
+  })
+
+  test("keeps a flag-looking payload for the value-taking op flags", async () => {
+    // `set row --text --server`: --server is the text value, not a transport
+    // flag, so it must survive the pre-parser and reach the op grammar intact.
+    const invocation = instructionsInvocation(["bun", "plus.ts", "instructions", "set", "row", "--text", "--server"])
+    expect(invocation).toEqual({ standalone: false, args: ["set", "row", "--text", "--server"] })
+    const parsed = await parseInstructionsArgs(invocation!.args, ops, io)
+    expect(parsed).toEqual({ kind: "run", op: "set", input: { id: "row", text: "--server" } })
+
+    // The same holds for --json and --text-file payloads.
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "set", "row", "--json", "--standalone"])).toEqual({
+      standalone: false,
+      args: ["set", "row", "--json", "--standalone"],
+    })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "set", "row", "--text-file", "--server"])).toEqual({
+      standalone: false,
+      args: ["set", "row", "--text-file", "--server"],
+    })
+  })
+
+  test("still extracts a real --server value that follows an op flag", () => {
+    // Only the bare transport flag is consumed after a value-taking op flag has
+    // taken its own value: `--text hi --server http://x` keeps both.
+    expect(
+      instructionsInvocation(["bun", "plus.ts", "instructions", "set", "row", "--text", "hi", "--server", "http://x"]),
+    ).toEqual({ server: "http://x", standalone: false, args: ["set", "row", "--text", "hi"] })
+  })
 })
