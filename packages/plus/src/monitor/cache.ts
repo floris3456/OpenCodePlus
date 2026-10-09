@@ -854,6 +854,21 @@ export interface RequestSummary {
 }
 
 const unreadKeysCache = new WeakMap<RequestFingerprintData, { read: readonly UnreadKey[]; write: readonly UnreadKey[] }>()
+const unreadKeyWeights = new WeakMap<RequestFingerprintData, number>()
+
+/** Derived-key cache reachable through a retained fingerprint, including the
+ * unused half when only a read or write requested keys. Never generates keys.
+ * Counting this alongside write/read metadata is conservative (shared arrays).
+ */
+export function unreadFingerprintKeyWeight(fp: RequestFingerprintData): number {
+  const cached = unreadKeyWeights.get(fp)
+  if (cached !== undefined) return cached
+  const keys = unreadKeysCache.get(fp)
+  if (!keys) return 0
+  const bytes = Buffer.byteLength(JSON.stringify(keys))
+  unreadKeyWeights.set(fp, bytes)
+  return bytes
+}
 
 /** Index the same three reuse cases as prefixDiff: ordered append, exact
  * Responses lineage, and Anthropic marked-prefix/private-tail replacement.

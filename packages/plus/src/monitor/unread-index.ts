@@ -176,3 +176,48 @@ export function unreadGain(index: UnreadIndex, write: UnreadWrite, cutoff: numbe
   )), 0)
   return Math.max(0, read - write.cacheRead)
 }
+
+const nodeWeights = new WeakMap<Node, { serializedBytes: number; nodes: number }>()
+const indexWeights = new WeakMap<UnreadIndex, { serializedBytes: number; nodes: number; memberships: number; buckets: number; subscriptions: number }>()
+
+/** Retained index objects absent from writes/reads/resume. This counts the UTF-8
+ * serialization of numeric trees, map entries and construction-work metadata,
+ * not engine/allocator heap bytes. Shared immutable subtrees are measured once
+ * and reused across append folds. Keys already present on writes/reads are
+ * deliberately counted here too: this is a conservative serialization budget.
+ */
+export function unreadIndexWeight(index: UnreadIndex) {
+  const cached = indexWeights.get(index)
+  if (cached) return cached
+  const weight = {
+    serializedBytes: Buffer.byteLength(JSON.stringify(index.work)) + 12,
+    nodes: 0,
+    memberships: 0,
+    buckets: index.buckets.size,
+    subscriptions: index.subscriptions.size,
+  }
+  for (const [key, bucket] of index.buckets) {
+    const root = nodeWeight(bucket.root)
+    // [key,{length,capacity,root}], including its list separator.
+    weight.serializedBytes += Buffer.byteLength(JSON.stringify([key, { length: bucket.length, capacity: bucket.capacity, root: null }])) - 4 + root.serializedBytes + 1
+    weight.nodes += root.nodes
+    weight.memberships += bucket.length
+  }
+  for (const entry of index.subscriptions) weight.serializedBytes += Buffer.byteLength(JSON.stringify(entry)) + 1
+  indexWeights.set(index, weight)
+  return weight
+}
+
+function nodeWeight(node: Node): { serializedBytes: number; nodes: number } {
+  const cached = nodeWeights.get(node)
+  if (cached) return cached
+  const left = node.left ? nodeWeight(node.left) : undefined
+  const right = node.right ? nodeWeight(node.right) : undefined
+  const weight = {
+    serializedBytes: Buffer.byteLength(JSON.stringify({ first: node.first, last: node.last, all: node.all, real: node.real })) +
+      (left ? left.serializedBytes + 8 : 0) + (right ? right.serializedBytes + 9 : 0),
+    nodes: 1 + (left?.nodes ?? 0) + (right?.nodes ?? 0),
+  }
+  nodeWeights.set(node, weight)
+  return weight
+}

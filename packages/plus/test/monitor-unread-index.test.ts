@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { cacheLifetime, foldSession, prefixDiff, unreadFingerprintKeys, windowedSessionSignals } from "../src/monitor/cache.js"
+import { cacheLifetime, foldSession, prefixDiff, unreadFingerprintKeys, unreadFingerprintKeyWeight, windowedSessionSignals } from "../src/monitor/cache.js"
 import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import type { RequestFingerprintData, RequestRow } from "../src/monitor/ledger.js"
-import { foldUnread, unreadGain } from "../src/monitor/unread-index.js"
+import { foldUnread, unreadGain, unreadIndexWeight } from "../src/monitor/unread-index.js"
 
 function row(index: number, change: Partial<RequestRow> = {}): RequestRow {
   return { id: `r${index}`, sessionID: "unread", kind: "step", created: index * 10, started: index * 10, ended: index * 10 + 1, status: "completed", isTitle: false, provider: "fixture", model: "fixture", agent: "build", inputTokens: 100_000, outputTokens: 1, reasoningTokens: 0, cacheReadTokens: index + 100, cacheWriteTokens: 100_000, cost: 0, ...change }
@@ -63,8 +63,10 @@ test("range maxima preserve strict time boundaries, titles, selection, and write
 test("many long-retention writes retain read maxima, not pairs; append touches one suffix row", () => {
   const rows = Array.from({ length: 4096 }, (_, i) => row(i))
   const fingerprint = fp(0)
+  expect(unreadFingerprintKeyWeight(fingerprint)).toBe(0)
   const fingerprints = new Map(rows.map((row) => [row.id, fingerprint]))
   const previous = foldUnread(rows, fingerprints, cacheLifetime, unreadFingerprintKeys)
+  expect(unreadFingerprintKeyWeight(fingerprint)).toBeGreaterThan(0)
   expect(previous.unreadIndex.work.memberships).toBe(4095)
   expect(previous.unreadIndex.buckets.size).toBe(1)
   const stack = [...previous.unreadIndex.buckets.values()].map((bucket) => bucket.root)
@@ -77,11 +79,19 @@ test("many long-retention writes retain read maxima, not pairs; append touches o
     if (node.right) stack.push(node.right)
   }
   expect(retained.size).toBeLessThanOrEqual(2 * 4095 + 14)
+  const weight = unreadIndexWeight(previous.unreadIndex)
+  expect(weight).toMatchObject({ nodes: retained.size, memberships: 4095, buckets: 1, subscriptions: 2 })
+  const serialized = Buffer.byteLength(JSON.stringify([previous.unreadIndex.work, [...previous.unreadIndex.buckets], [...previous.unreadIndex.subscriptions]]))
+  expect(weight.serializedBytes).toBeGreaterThanOrEqual(serialized)
+  expect(weight.serializedBytes - serialized).toBeLessThanOrEqual(12)
+  expect(unreadIndexWeight(previous.unreadIndex)).toBe(weight)
   const next = row(4096)
   fingerprints.set(next.id, fingerprint)
   const appended = foldUnread([...rows, next], fingerprints, cacheLifetime, unreadFingerprintKeys, previous, rows.length)
   expect(appended.unreadIndex.work).toMatchObject({ rows: 1, replayedRows: 0, memberships: 1 })
   expect(appended.unreadIndex.work.nodes).toBeLessThanOrEqual(14)
+  expect(unreadIndexWeight(appended.unreadIndex).serializedBytes).toBeGreaterThan(weight.serializedBytes)
+  expect(unreadIndexWeight(previous.unreadIndex)).toBe(weight)
   const visits = { visits: 0 }
   expect(unreadGain(appended.unreadIndex, appended.writes[0]!, 100_000_000, false, visits)).toBe(4096)
   expect(visits.visits).toBeLessThanOrEqual(30)
