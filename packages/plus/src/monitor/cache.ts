@@ -6,6 +6,7 @@ import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION,
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
 import { measurement } from "./measurement.js"
 import { estimateTokens } from "./attribution.js"
+import { foldUnread, unreadGain, type UnreadIndex, type UnreadKey, type UnreadRead, type UnreadWrite } from "./unread-index.js"
 
 type Segment = {
   name: string
@@ -844,6 +845,7 @@ export interface SessionAnalysis {
   readonly fingerprints: Map<string, RequestFingerprintData | undefined>
   readonly writes: readonly UnreadWrite[]
   readonly reads: readonly UnreadRead[]
+  readonly unreadIndex: UnreadIndex
 }
 
 export interface RequestSummary {
@@ -851,47 +853,68 @@ export interface RequestSummary {
   readonly previous?: MonitorRequestDetail["previous"]
 }
 
-export interface CompatibleRead {
-  readonly at: number
-  readonly gained: number
-  readonly isTitle: boolean
-}
+const unreadKeysCache = new WeakMap<RequestFingerprintData, { read: readonly UnreadKey[]; write: readonly UnreadKey[] }>()
 
-interface UnreadWrite {
-  readonly at: number
-  readonly tokens: number
-  readonly cacheRead: number
-  readonly lifetime: number
-  readonly provider: string | undefined
-  readonly model: string | undefined
-  readonly agent: string | undefined
-  readonly isTitle: boolean
-  readonly fp: RequestFingerprintData | undefined
-  readonly reads: readonly CompatibleRead[]
-}
-
-interface UnreadRead {
-  readonly at: number
-  readonly cacheRead: number
-  readonly provider: string | undefined
-  readonly model: string | undefined
-  readonly agent: string | undefined
-  readonly isTitle: boolean
-  readonly fp: RequestFingerprintData | undefined
-}
-
-function findFirstReadAfter(reads: readonly UnreadRead[], time: number): number {
-  let low = 0
-  let high = reads.length
-  while (low < high) {
-    const mid = (low + high) >> 1
-    if (reads[mid]!.at <= time) {
-      low = mid + 1
-    } else {
-      high = mid
+/** Index the same three reuse cases as prefixDiff: ordered append, exact
+ * Responses lineage, and Anthropic marked-prefix/private-tail replacement.
+ * Hashes contain identity only; annotations and token sizes never enter keys.
+ */
+export function unreadFingerprintKeys(fp: RequestFingerprintData | undefined, write: boolean): readonly UnreadKey[] {
+  if (!fp || !supportedFingerprint(fp)) return []
+  const cached = unreadKeysCache.get(fp)
+  if (cached) return write ? cached.write : cached.read
+  const info = getSegmentInfo(fp)
+  const read: UnreadKey[] = []
+  const writes: UnreadKey[] = []
+  const mode = fp.protocol === "openai-responses" && fp.previousResponseId ? `linked:${fp.previousResponseId}` : fp.previousResponseId ? "present" : "none"
+  const modes = fp.protocol === "openai-responses"
+    ? [...(fp.previousResponseId ? [] : ["none"]), ...(fp.responseId ? [`linked:${fp.responseId}`] : [])]
+    : fp.previousResponseId ? ["present"] : ["none", "present"]
+  let prefix = ""
+  for (const part of info.segments) {
+    prefix = sha256(canonicalJson([prefix, part.name, part.prefixHash ?? part.hash]))
+    read.push({ key: `append:${mode}:${prefix}` })
+  }
+  modes.forEach((mode) => writes.push({ key: `append:${mode}:${prefix}` }))
+  if (fp.protocol === "openai-responses") {
+    const identity = sha256(canonicalJson(info.prefix.map((part) => [part.name, part.hash])))
+    if (fp.previousResponseId) read.push({ key: `lineage:${fp.previousResponseId}:${identity}` })
+    if (fp.responseId) writes.push({ key: `lineage:${fp.responseId}:${identity}` })
+  }
+  if (fp.protocol === "anthropic-messages" && info.boundary >= 0) {
+    const messages = info.segments.filter((part) => part.index !== undefined)
+    // Ordinary wire fingerprints have contiguous ordinals. The set fallback
+    // preserves tailMissing's semantics for older irregular fingerprint lists.
+    const tails = new Map<number, string>()
+    let tail = ""
+    for (const part of messages.toReversed()) {
+      tails.set(part.index!, tail)
+      tail = sha256(canonicalJson([part.name, part.hash, tail]))
+    }
+    let marked = ""
+    for (const part of info.prefix.filter((part) => part.name !== "cache markers")) {
+      marked = sha256(canonicalJson([marked, part.name, part.prefixHash ?? part.hash]))
+    }
+    for (let boundary = 0; boundary <= info.boundary; boundary++) {
+      const part = messages[boundary]
+      if (info.firstMessage >= 0 && part) marked = sha256(canonicalJson([marked, part.name, part.prefixHash ?? part.hash]))
+      const identity = info.firstMessage >= 0 ? marked : info.segments
+        .filter((part) => part.index === undefined ? part.name !== "cache markers" : part.index <= boundary)
+        .reduce((hash, part) => sha256(canonicalJson([hash, part.name, part.prefixHash ?? part.hash])), "")
+      const suffix = info.firstMessage >= 0 ? tails.get(boundary) ?? "" : messages
+        .filter((part) => part.index! > boundary)
+        .filter((part, index, parts) => parts.findIndex((other) => other.name === part.name && other.hash === part.hash) === index)
+        .sort((a, b) => a.index! - b.index! || a.name.localeCompare(b.name) || a.hash.localeCompare(b.hash))
+        .toReversed().reduce((hash, part) => sha256(canonicalJson([part.name, part.hash, hash])), "")
+      const key = `${identity}:${sha256(reusableMarkerSignature(fp, boundary))}`
+      read.push({ key: `tail:atLeast:${mode}:${key}`, tail: suffix })
+      if (boundary === info.boundary) read.push({ key: `tail:exact:${mode}:${key}`, tail: suffix })
+      modes.forEach((mode) => writes.push({ key: `tail:${boundary === info.boundary ? "atLeast" : "exact"}:${mode}:${key}`, tail: suffix }))
     }
   }
-  return low
+  const result = { read, write: writes }
+  unreadKeysCache.set(fp, result)
+  return write ? result.write : result.read
 }
 
 // The streak state after one row, so a later analysis can resume there.
@@ -1076,61 +1099,7 @@ export function foldSession(
     if (fp?.responseId) responses.set(fp.responseId, r)
   }
 
-  const reads: UnreadRead[] = []
-  for (const r of rows) {
-    if (r.cacheReadTokens <= 0) continue
-    reads.push({
-      at: r.started,
-      cacheRead: r.cacheReadTokens,
-      provider: r.provider,
-      model: r.model,
-      agent: r.agent,
-      isTitle: r.isTitle,
-      fp: fingerprints.get(r.id),
-    })
-  }
-
-  // Precompute immutable write/read compatibility and token gains inside the
-  // revision fold. Report-time windowedSessionSignals applies cutoff, window,
-  // title inclusion, and identity filters cheaply over these numeric records.
-  const writes: UnreadWrite[] = []
-  for (const r of rows) {
-    if (r.cacheWriteTokens <= 0) continue
-    const fp = fingerprints.get(r.id)
-    const lifetime = cacheLifetime(r, fp)
-    if (lifetime === undefined) continue
-
-    const compatibleReads: CompatibleRead[] = []
-    const startIdx = findFirstReadAfter(reads, r.started)
-    for (let i = startIdx; i < reads.length; i++) {
-      const read = reads[i]!
-      if (read.at > r.started + lifetime) break
-      if (read.provider !== r.provider || read.model !== r.model) continue
-      const gained = read.cacheRead - r.cacheReadTokens
-      if (gained <= 0) continue
-      if (reusableOf(fp, read.fp)) {
-        compatibleReads.push({
-          at: read.at,
-          gained,
-          isTitle: read.isTitle,
-        })
-        if (!read.isTitle && gained >= r.cacheWriteTokens) break
-      }
-    }
-
-    writes.push({
-      at: r.started,
-      tokens: r.cacheWriteTokens,
-      cacheRead: r.cacheReadTokens,
-      lifetime,
-      provider: r.provider,
-      model: r.model,
-      agent: r.agent,
-      isTitle: r.isTitle,
-      fp,
-      reads: compatibleReads,
-    })
-  }
+  const unread = foldUnread(rows, fingerprints, cacheLifetime, unreadFingerprintKeys, resume?.previous.analysis, from)
 
   const positions = new Map(rows.map((row, index) => [row.id, index]))
   const work = { details: 0 }
@@ -1146,7 +1115,7 @@ export function foldSession(
       detail,
       work,
       get details() { return summaries.map((entry) => detail(entry.request.id)!) },
-      unstable, fingerprints, writes, reads,
+      unstable, fingerprints, ...unread,
     },
     rows,
     facts,
@@ -1245,13 +1214,7 @@ export function windowedSessionSignals(
     if (!selectedModel(write.provider, write.model) || !selectedAgent(write.agent)) continue
     // Not yet expired by the cutoff: it may still be read, so it is not unread.
     if (write.at + write.lifetime > window.until) continue
-    let maxRead = 0
-    for (const read of write.reads) {
-      if (read.at >= window.until) break
-      if (!included(read.isTitle)) continue
-      if (read.gained > maxRead) maxRead = read.gained
-      if (maxRead >= write.tokens) break
-    }
+    const maxRead = unreadGain(analysis.unreadIndex, write, window.until, filter.titles === true)
     unread += Math.max(0, write.tokens - maxRead)
   }
 
