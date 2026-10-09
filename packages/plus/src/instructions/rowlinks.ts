@@ -24,7 +24,7 @@
 // "always" and migrates to it, so a level can say "sent with no condition"
 // without falling back to an upstream marker.
 
-import type { Address, Catalogue, ChainNode, Level, Scopes, TeamRef } from "./model.js"
+import type { Address, Catalogue, ChainNode, From, Level, Scopes, TeamRef } from "./model.js"
 import { catalogueForAddress, resolutionChain, sameTeam, scopedTo } from "./model.js"
 
 export type RowlinkType = "either" | "oneway" | "shownWhenOn" | "shownWhenOff" | "shownAlways"
@@ -103,38 +103,92 @@ export interface RowlinkView {
   readonly agent: string | null
   readonly team?: TeamRef
   readonly catalogue?: Catalogue
+  /** True for a shipped `<!-- requires -->` marker link read from the target's text. */
+  readonly shipped: boolean
+  /** Where a shipped pair is grounded; one of the row's chain levels, or "text". */
+  readonly from: From | "text"
   readonly updated: string
 }
 
-/** Every effective link touching `endpoint`, as the tool's inspect view reports it. */
+function viewOf(link: RowlinkRecord, from: From | "text", shipped: boolean): Omit<RowlinkView, "direction"> {
+  return {
+    item: link.item,
+    section: link.section,
+    target: link.target,
+    targetSection: link.targetSection,
+    type: link.link,
+    enabled: link.enabled !== false,
+    level: link.level,
+    agent: link.agent,
+    ...(link.team === undefined ? {} : { team: link.team }),
+    ...(link.catalogue === undefined ? {} : { catalogue: link.catalogue }),
+    shipped,
+    from,
+    updated: link.updated,
+  }
+}
+
+/**
+ * Every effective link touching `endpoint`, as the tool's inspect view reports
+ * it: stored links (a tombstone still reported, marked disabled) plus the
+ * shipped `<!-- requires -->` marker links on the endpoint's own text, so
+ * inspect and request assembly give the same effective answer (B43). The
+ * internal replacement barrier never appears as a user link.
+ */
 export function rowlinkView(
   links: readonly RowlinkRecord[],
   scopes: Scopes,
   address: Address,
   endpoint: RowlinkEndpoint,
+  markerIds: readonly string[] = [],
 ): RowlinkView[] {
-  const { live, masked } = effectiveRowlinks(links, scopes, address)
-  return [...live, ...masked].flatMap((link): RowlinkView[] => {
+  const visible = links.filter((link) => !isReplacementBarrier(link))
+  const { live, masked } = effectiveRowlinks(visible, scopes, address)
+  const chain = resolutionChain(address, scopes)
+  const fromOf = (link: RowlinkRecord): From | "text" => chain.find((node) => scopedTo(link, node))?.from ?? { kind: "upstream" }
+  const stored = [...live, ...masked].flatMap((link): RowlinkView[] => {
     const direction = sameEndpoint(endpoint, link.item, link.section)
       ? "outgoing"
       : sameEndpoint(endpoint, link.target, link.targetSection)
         ? "incoming"
         : undefined
     if (direction === undefined) return []
+    return [{ direction, ...viewOf(link, fromOf(link), false) }]
+  })
+  const shipped = markerView(markerIds, endpoint, live, masked)
+  return [...stored, ...shipped]
+}
+
+// The shipped marker pairs of an inspected endpoint: each marker id is an
+// incoming condition on the endpoint unless a stored live/tombstone pair
+// already speaks for that exact pair.
+function markerView(
+  markerIds: readonly string[],
+  endpoint: RowlinkEndpoint,
+  live: readonly RowlinkRecord[],
+  masked: readonly RowlinkRecord[],
+): RowlinkView[] {
+  if (markerIds.length === 0) return []
+  const covered = new Set([...live, ...masked].map((link) => rowlinkKey(link)))
+  return markerIds.flatMap((raw): RowlinkView[] => {
+    const off = raw.startsWith("!")
+    const bare = off ? raw.slice(1) : raw
+    const key = JSON.stringify([bare, null, endpoint.item, endpoint.section])
+    if (covered.has(key)) return []
     return [
       {
-        direction,
-        item: link.item,
-        section: link.section,
-        target: link.target,
-        targetSection: link.targetSection,
-        type: link.link,
-        enabled: link.enabled !== false,
-        level: link.level,
-        agent: link.agent,
-        ...(link.team === undefined ? {} : { team: link.team }),
-        ...(link.catalogue === undefined ? {} : { catalogue: link.catalogue }),
-        updated: link.updated,
+        direction: "incoming",
+        item: bare,
+        section: null,
+        target: endpoint.item,
+        targetSection: endpoint.section,
+        type: off ? "shownWhenOff" : "shownWhenOn",
+        enabled: true,
+        level: "defaults",
+        agent: null,
+        shipped: true,
+        from: "text",
+        updated: "",
       },
     ]
   })
@@ -187,30 +241,209 @@ export function conditionIds(links: readonly RowlinkRecord[]): string[] {
   return links.map(conditionToken)
 }
 
+/** One effective gate pair: the primary condition row and the gated endpoint. */
+export interface GatePair {
+  readonly item: string
+  readonly section: string | null
+  readonly target: string
+  readonly targetSection: string | null
+  readonly link: RowlinkType
+  readonly enabled: boolean
+  /** True for a shipped `<!-- requires -->` marker read from the target's own text. */
+  readonly shipped: boolean
+}
+
+/** The effective gate answer for one endpoint: the condition ids and provenance. */
+export interface GateAnswer {
+  readonly ids: readonly string[]
+  readonly from: ChainNode["from"] | "text"
+  readonly here: boolean
+  /** A target-local replacement barrier defines the whole list at its level. */
+  readonly barrier: boolean
+  /** Every effective pair, lowest level first; shipped marker pairs included. */
+  readonly pairs: readonly GatePair[]
+}
+
+// A target-local replacement barrier (the migrated `requires` list or
+// `set({requires})`): a `shownAlways` link whose two endpoints are the target
+// itself. It says "this level defines the whole condition list; do not AND in
+// anything inherited or shipped below". It is not a public link type and never
+// shows as a user link.
+export function isReplacementBarrier(link: RowlinkRecord): boolean {
+  return (
+    link.link === "shownAlways" &&
+    link.item === link.target &&
+    link.section === link.targetSection
+  )
+}
+
+function barrierOf(link: RowlinkRecord, item: string, section: string | null): boolean {
+  return isReplacementBarrier(link) && link.item === item && link.section === section
+}
+
+function sameGateTarget(link: RowlinkRecord, item: string, section: string | null): boolean {
+  return link.target === item && link.targetSection === section
+}
+
+// The shipped `<!-- requires -->` marker conditions for the endpoint, as pairs.
+function markerPairs(
+  ids: readonly string[],
+  item: string,
+  section: string | null,
+): { readonly key: string; readonly id: string; readonly pair: GatePair }[] {
+  return ids.map((raw) => {
+    const off = raw.startsWith("!")
+    const bare = off ? raw.slice(1) : raw
+    return {
+      key: JSON.stringify([bare, null, item, section]),
+      id: raw,
+      pair: {
+        item: bare,
+        section: null,
+        target: item,
+        targetSection: section,
+        link: off ? "shownWhenOff" : "shownWhenOn",
+        enabled: true,
+        shipped: true,
+      },
+    }
+  })
+}
+
+function pairOfStored(link: RowlinkRecord): GatePair {
+  return {
+    item: link.item,
+    section: link.section,
+    target: link.target,
+    targetSection: link.targetSection,
+    link: link.link,
+    enabled: link.enabled !== false,
+    shipped: false,
+  }
+}
+
 /**
- * The effective condition list for the endpoint gated by `links` at `address`,
- * or undefined when no stored link speaks for it (the caller then reads the
- * text's own marker). The nearest chain node that holds any gate link for the
- * endpoint wins entirely, matching `requires` inheritance; a node whose only
- * links are tombstones means "always".
+ * The effective gate answer for the endpoint at `address`: for each directed
+ * pair, the nearest chain node that says anything about it decides (a live
+ * gate, or a tombstone that masks it), so a nearer pair override/tombstone
+ * never erases unrelated inherited gates on the same target. A target-local
+ * replacement barrier masks everything below. Shipped `markerIds` (the
+ * target's own `<!-- requires -->` line) AND in with the stored pairs unless a
+ * stored tombstone masks that exact pair. Undefined when nothing at all speaks
+ * for the endpoint, so the caller reads the text's own marker.
  */
+export function gateAnswer(
+  links: readonly RowlinkRecord[],
+  scopes: Scopes,
+  address: Address,
+  markerIds: readonly string[] = [],
+): GateAnswer | undefined {
+  const item = address.item
+  const section = address.section
+  const gates = links.filter(isGate)
+  const marker = markerPairs(markerIds, item, section)
+  if (gates.length === 0 && marker.length === 0) return undefined
+  const chain = resolutionChain(address, scopes)
+  // A live barrier at the nearest level that holds one defines the whole list.
+  for (const node of chain) {
+    const barrier = gates.find((link) => scopedTo(link, node) && barrierOf(link, item, section))
+    if (barrier === undefined || barrier.enabled === false) continue
+    const list = gates.filter(
+      (link) =>
+        !barrierOf(link, item, section) && sameGateTarget(link, item, section) && link.enabled !== false && scopedTo(link, node),
+    )
+    return {
+      ids: conditionIds(list),
+      from: node.from,
+      here: scopedTo(barrier, address),
+      barrier: true,
+      pairs: list.map(pairOfStored),
+    }
+  }
+  const byPair = new Map<string, { readonly link: RowlinkRecord; readonly depth: number }>()
+  for (const link of gates) {
+    if (barrierOf(link, item, section) || !sameGateTarget(link, item, section)) continue
+    const depth = chain.findIndex((node) => scopedTo(link, node))
+    if (depth === -1) continue
+    const key = rowlinkKey(link)
+    const seen = byPair.get(key)
+    if (seen === undefined || depth < seen.depth) byPair.set(key, { link, depth })
+  }
+  const entries = [...byPair.values()]
+  const live = entries.filter((entry) => entry.link.enabled !== false)
+  const masked = entries.filter((entry) => entry.link.enabled === false)
+  const maskedKeys = new Set(masked.map((entry) => rowlinkKey(entry.link)))
+  const shipped = marker.filter((pair) => !maskedKeys.has(pair.key))
+  if (live.length === 0 && masked.length === 0 && shipped.length === 0) return undefined
+  const nearest = live.reduce<{ readonly link: RowlinkRecord; readonly depth: number } | undefined>(
+    (best, entry) => (best === undefined || entry.depth < best.depth ? entry : best),
+    undefined,
+  )
+  const from: ChainNode["from"] | "text" =
+    nearest === undefined ? (masked.length > 0 ? chain[masked[0]!.depth]!.from : "text") : chain[nearest.depth]!.from
+  return {
+    ids: conditionIds(live.map((entry) => entry.link)).concat(shipped.map((pair) => pair.id)),
+    from,
+    here: live.some((entry) => scopedTo(entry.link, address)),
+    barrier: false,
+    pairs: [...live.map((entry) => pairOfStored(entry.link)), ...shipped.map((pair) => pair.pair)],
+  }
+}
+
+/** The stored-only gate summary, kept for callers that do not read a text marker. */
 export function gatedConditions(
   links: readonly RowlinkRecord[],
   scopes: Scopes,
   address: Address,
-): { readonly ids: readonly string[]; readonly from: ChainNode["from"]; readonly here: boolean } | undefined {
-  const gates = links.filter(isGate)
-  if (gates.length === 0) return undefined
-  const chain = resolutionChain(address, scopes)
-  for (const node of chain) {
-    const at = gates.filter(
-      (link) => link.target === address.item && link.targetSection === address.section && scopedTo(link, node),
-    )
-    if (at.length === 0) continue
-    const live = at.filter((link) => link.enabled !== false)
-    return { ids: conditionIds(live), from: node.from, here: live.some((link) => scopedTo(link, address)) }
+): { readonly ids: readonly string[]; readonly from: ChainNode["from"] | "text"; readonly here: boolean } | undefined {
+  const answer = gateAnswer(links, scopes, address)
+  if (answer === undefined) return undefined
+  return { ids: answer.ids, from: answer.from, here: answer.here }
+}
+
+/**
+ * The rowlinks after the legacy `set({requires})` adapter: non-null replaces
+ * the target's condition list at this level (a target-local barrier plus one
+ * gate per id; `[]` is barrier only, meaning always), null removes every local
+ * gate for the target so the level above decides again. Only the target is
+ * touched: links the link tool stored for other pairs stay.
+ */
+export function requiresGateRecords(
+  links: readonly RowlinkRecord[],
+  address: { readonly level: Level; readonly agent: string | null; readonly team?: TeamRef; readonly catalogue?: Catalogue },
+  target: RowlinkEndpoint,
+  ids: readonly string[] | null,
+  updated: string,
+): RowlinkRecord[] {
+  const local = (link: RowlinkRecord): boolean =>
+    scopedTo(link, address) && isGate(link) && sameGateTarget(link, target.item, target.section)
+  const rest = links.filter((link) => !local(link))
+  if (ids === null) return rest
+  const barrier: RowlinkRecord = {
+    type: "rowlink",
+    level: address.level,
+    agent: address.agent,
+    ...(address.team === undefined ? {} : { team: address.team }),
+    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+    item: target.item,
+    section: target.section,
+    target: target.item,
+    targetSection: target.section,
+    link: "shownAlways",
+    updated,
   }
-  return undefined
+  return [
+    ...rest,
+    barrier,
+    ...ids.map(
+      (token): RowlinkRecord => ({
+        ...barrier,
+        item: token.startsWith("!") ? token.slice(1) : token,
+        section: null,
+        link: token.startsWith("!") ? "shownWhenOff" : "shownWhenOn",
+      }),
+    ),
+  ]
 }
 
 /**
@@ -367,8 +600,19 @@ export function migrateRequires<T extends { readonly type: string }>(records: re
       updated: carrier.updated,
     }
     if (carrier.requires.length === 0) {
-      rowlinks.push({ ...owner, item: carrier.item, section: carrier.section, link: "shownAlways" })
+      // An empty list is "always": a target-local barrier that masks any
+      // upstream marker and inherits nothing.
+      rowlinks.push({
+        ...owner,
+        item: carrier.item,
+        section: carrier.section,
+        link: "shownAlways",
+      })
     } else {
+      // A non-empty list replaces the target's list at this level: the
+      // barrier plus one pair per token, so the whole list is local and
+      // unrelated upstream pairs on the same target do not leak in.
+      rowlinks.push({ ...owner, item: carrier.item, section: carrier.section, link: "shownAlways" })
       for (const token of carrier.requires) {
         const off = token.startsWith("!")
         rowlinks.push({

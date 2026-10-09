@@ -8,6 +8,7 @@ import type { Address, Scopes } from "../src/instructions/model.js"
 import {
   conditionIds,
   effectiveRowlinks,
+  gateAnswer,
   gatedConditions,
   linksTouching,
   migrateRequires,
@@ -146,6 +147,41 @@ test("gatedConditions reads the nearest level's gate list, tombstone means alway
   expect(gatedConditions([link({ item: "tool:x", target: "tool:z", link: "either" })], scopes(), address({ item: "system:s" }))).toBeUndefined()
 })
 
+test("gateAnswer: a nearer pair mask keeps unrelated inherited gates on the same target", () => {
+  // global: A on and B on both gate system:s. project masks only the A pair.
+  const globalA = link({ level: "global", item: "tool:a", target: "system:s", link: "shownWhenOn" })
+  const globalB = link({ level: "global", item: "tool:b", target: "system:s", link: "shownWhenOn" })
+  const maskA = link({ item: "tool:a", target: "system:s", link: "shownWhenOn", enabled: false })
+  const answer = gateAnswer([globalA, globalB, maskA], scopes(), address({ item: "system:s" }))
+  // A is masked at project; B stays live from global. The old whole-target rule
+  // would have dropped B with A.
+  expect(answer?.ids).toEqual(["tool:b"])
+  expect(answer?.pairs.map((pair) => pair.item)).toEqual(["tool:b"])
+})
+
+test("gateAnswer: shipped markers AND in with stored gates unless a pair masks them", () => {
+  const stored = link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })
+  const combined = gateAnswer([stored], scopes(), address({ item: "system:s" }), ["tool:marker"])
+  expect(combined?.ids).toEqual(["tool:x", "tool:marker"])
+  expect(combined?.pairs.map((pair) => [pair.item, pair.shipped])).toEqual([
+    ["tool:x", false],
+    ["tool:marker", true],
+  ])
+  // A stored tombstone for the marker pair masks just that shipped pair.
+  const mask = link({ item: "tool:marker", target: "system:s", link: "shownWhenOn", enabled: false })
+  const masked = gateAnswer([stored, mask], scopes(), address({ item: "system:s" }), ["tool:marker"])
+  expect(masked?.ids).toEqual(["tool:x"])
+})
+
+test("gateAnswer: a replacement barrier defines the whole list at its level", () => {
+  const barrier = link({ item: "system:s", section: null, target: "system:s", targetSection: null, link: "shownAlways" })
+  const local = link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })
+  const upstream = link({ level: "global", item: "tool:y", target: "system:s", link: "shownWhenOn" })
+  const answer = gateAnswer([barrier, local, upstream], scopes(), address({ item: "system:s" }), ["tool:marker"])
+  expect(answer?.barrier).toBe(true)
+  expect(answer?.ids).toEqual(["tool:x"])
+})
+
 test("conditionIds: shownAlways (the migrated empty list) means no condition", () => {
   expect(conditionIds([link({ item: "tool:x", target: "system:s", link: "shownAlways" })])).toEqual([])
   expect(conditionIds([link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })])).toEqual(["tool:x"])
@@ -167,9 +203,14 @@ test("migrateRequires turns a requires list into gates and is idempotent", () =>
   expect(once.migrated).toBe(true)
   expect(once.records[0]).not.toHaveProperty("requires")
   expect(once.rowlinks.map((record) => [record.item, record.target, record.link])).toEqual([
+    ["system:tools-and-rules", "system:tools-and-rules", "shownAlways"],
     ["tool:question", "system:tools-and-rules", "shownWhenOn"],
     ["perm:shell:git-push", "system:tools-and-rules", "shownWhenOff"],
   ])
+  // The first entry is the target-local replacement barrier: same endpoints on
+  // both sides, marking the whole list local so unrelated inherited pairs do
+  // not leak in.
+  expect(once.rowlinks[0]).toMatchObject({ section: "tools-and-rules/questions", targetSection: "tools-and-rules/questions" })
   // An empty list is `shownAlways`; a store with no requires field is a no-op.
   const empty = migrateRequires([{ type: "customization" as const, level: "project" as const, agent: "alpha", item: "x", section: null, requires: [], updated: UPDATED }])
   expect(empty.rowlinks[0]?.link).toBe("shownAlways")

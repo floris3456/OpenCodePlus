@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
 import { assembleWithOverrides, derive, manual, renderSections, slice, type Override, type SectionSpan, type Shadow, type Split } from "./sections.js"
 import { hasRequirements, markerIn, stripMarkers } from "./requires.js"
-import { gatedConditions, type RowlinkRecord } from "./rowlinks.js"
+import { gateAnswer, type RowlinkRecord } from "./rowlinks.js"
 
 // `preset` holds the human's edits of presets (DESIGN §1); its records live
 // in the global store file.
@@ -1574,6 +1574,9 @@ export function scopesContentKey(scopes: Scopes): string {
     [...scopes.defaults].toSorted(),
     scopes.native === undefined ? null : [...scopes.native].toSorted(),
     scopes.links ?? [],
+    // Rowlink gates decide assembly and inspection (B43); two link states must
+    // not share a resolution-cache key.
+    scopes.rowlinks ?? [],
     scopes.entries ?? [],
     scopes.memberTeams === undefined ? null : [...scopes.memberTeams].toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
     scopes.presets === undefined ? null : (scopes.presets.contentKey ?? `identity:${identityKey(scopes.presets)}`),
@@ -1664,7 +1667,7 @@ export function resolveWhole(input: ChainInput): Resolved {
     [...full.spans.keys()].filter((id) => sectionState(input, chain, id) === "off"),
   )
   const reviewOf = reviewParts(input, own, () => aboveWholeFingerprint(input, whole, chain))
-  const linkGate = gatedConditions(input.scopes.rowlinks ?? [], input.scopes, input.address)
+  const linkGate = gateAnswer(input.scopes.rowlinks ?? [], input.scopes, input.address)
   const requires =
     linkGate !== undefined
       ? linkGate
@@ -1761,22 +1764,25 @@ export function shadowOf(input: ChainInput, id: string): Shadow | undefined {
   return resolveWhole({ ...input, address: { ...input.address, section: null } }).shadows?.get(id)
 }
 
-// A section's condition: the nearest level that set one, else the
-// `<!-- requires -->` line under its heading in its text.
+// A section's condition, evaluated at the actual section address (B43): the
+// effective gate pairs whose target is this section, ANDed with the section's
+// own `<!-- requires -->` line unless a stored pair masks it. A text marker
+// reached through `markerIn(text)` is the shipped upstream provenance.
 function sectionRequires(
   input: ChainInput,
   chain: readonly ChainNode[],
   id: string,
   text: string,
 ): { readonly ids: readonly string[]; readonly from: From | "text"; readonly here: boolean } | undefined {
-  const linkGate = gatedConditions(input.scopes.rowlinks ?? [], input.scopes, input.address)
-  if (linkGate !== undefined) return linkGate
+  const address: Address = { ...input.address, section: id }
+  const marker = markerIn(text)
+  const answer = gateAnswer(input.scopes.rowlinks ?? [], input.scopes, address, marker ?? [])
+  if (answer !== undefined) return { ids: answer.ids, from: answer.from, here: answer.here }
   const sectioned = sectionRecords(input, id)
   const values = chain.map((node) => valueAt(input, sectioned, node, id))
   const at = values.findIndex((value) => value?.requires !== undefined)
   const here = sectioned.some((record) => record.requires !== undefined && sameNode(record, { ...input.address, section: id }))
   if (at !== -1) return { ids: values[at]?.requires ?? [], from: chain[at].from, here }
-  const marker = markerIn(text)
   return marker === undefined ? undefined : { ids: marker, from: "text", here: false }
 }
 

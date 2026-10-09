@@ -10,7 +10,8 @@ import path from "node:path"
 import { createHandlers, createPlusApi, createState } from "../src/index.js"
 import { projectRecordsPath } from "../src/instructions/paths.js"
 import { load, loadedFromSave, save } from "../src/instructions/store.js"
-import { deltaOf, recordIdentity, recordKeyOf } from "../src/instructions/delta.js"
+import { deltaOf, keyIdentity, recordIdentity, recordKeyOf } from "../src/instructions/delta.js"
+import type { RowlinkRecord } from "../src/instructions/rowlinks.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
@@ -296,6 +297,37 @@ test("the delta identity and key agree, and deltaOf reports only changed rows", 
   expect(recordIdentity(row)).toBe(`customization\u0000item:project:alpha:tool:a\u0000\u0000`)
   expect(recordIdentity(row)).toBe(recordIdentity({ ...row, team: undefined }))
   expect(recordKeyOf(row)).toEqual({ type: "customization", level: "project", agent: "alpha", item: "tool:a", section: null })
+})
+
+test("a removed rowlink has a removal key whose identity matches the record", () => {
+  const rowlink: RowlinkRecord = {
+    type: "rowlink",
+    level: "project",
+    agent: "alpha",
+    item: "tool:a",
+    section: null,
+    target: "tool:b",
+    targetSection: null,
+    link: "either",
+    updated: UPDATED,
+  }
+  const key = recordKeyOf(rowlink)
+  expect(key).toEqual({
+    type: "rowlink",
+    level: "project",
+    agent: "alpha",
+    item: "tool:a",
+    section: null,
+    target: "tool:b",
+    targetSection: null,
+  })
+  // A delta that drops the link names its removal, and keyIdentity matches the
+  // record's own identity so the server removes exactly it.
+  const delta = deltaOf([rowlink], [])
+  expect(delta.remove).toHaveLength(1)
+  expect(delta.remove[0]).toEqual(key!)
+  expect(keyIdentity(delta.remove[0]!)).toBe(recordIdentity(rowlink))
+  expect(keyIdentity(key!)).toBe(recordIdentity(rowlink))
 })
 
 test("a tool set builds one resolution memo and sends a one-row delta", async () => {

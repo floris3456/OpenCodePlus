@@ -4001,3 +4001,81 @@ test("turning a protected owner's row on with a linked partner refuses atomicall
   expect(await Bun.file(projectLogPath(project)).exists()).toBe(beforeLog)
   expect(await customizationState(project, "tool:question")).toBeUndefined()
 })
+
+test("instructions_link refuses a section as a gate's primary without writing", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const section = nodes.find(
+    (node) => node.kind === "section" && node.address?.item === "system:tools-and-rules" && node.label === "Questions",
+  )
+  const question = await rowIdOf(api, "tool:question")
+  if (section === undefined) throw new Error("missing Questions section")
+  const before = await snapshotOf(api)
+  expect((await runFail(link, { id: section.id, target: question, type: "shownWhenOn" })).message).toContain(
+    "a \"shownWhenOn\" gate cannot have a section as its condition",
+  )
+  // A switch may still use a section endpoint; only the gate primary is refused.
+  expect((await snapshotOf(api)).records).toEqual(before.records)
+  expect(await linksOf(project)).toEqual([])
+})
+
+// B43: the legacy `set({requires})` writes only rowlink gates, so a reload
+// cannot leave two authoritative condition stores. The adapter's three cases:
+// non-null replaces the target's list at this level, [] means always, null
+// removes the local list to inherit again.
+test("set requires stores rowlinks only, survives reload, and null inherits again", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const show = need(tools, "instructions_show")
+  const set = need(tools, "instructions_set")
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const section = nodes.find((node) => node.id.startsWith("section:defaults:alpha:system:tools-and-rules:") && node.label === "Questions")
+  if (section === undefined) throw new Error("missing Questions section")
+  // Non-null: one barrier + one pair, and no `requires` field on any record.
+  await runOk(set, { id: section.id, requires: ["tool:reader"] })
+  const stored = await linksOf(project)
+  expect(stored.some((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules" && record.link === "shownWhenOn")).toBe(true)
+  const barrier = stored.find((record) => record.item === "system:tools-and-rules" && record.target === "system:tools-and-rules")
+  expect(barrier?.link).toBe("shownAlways")
+  expect((await load(project)).records.some((record) => record.type === "customization" && "requires" in record)).toBe(false)
+  // Inspect shows the effective answer (the stored pair, not the barrier).
+  const links = (await runOk(need(tools, "instructions_link"), { id: section.id })) as { links: { item: string; type: string; enabled: boolean }[] }
+  expect(links.links.filter((entry) => entry.item === "tool:reader").map((entry) => [entry.type, entry.enabled])).toEqual([["shownWhenOn", true]])
+  expect(links.links.some((entry) => entry.item === "system:tools-and-rules")).toBe(false)
+  // [] means always: the barrier alone, still no condition.
+  await runOk(set, { id: section.id, requires: [] })
+  const always = await linksOf(project)
+  expect(always.filter((record) => record.item === "tool:reader")).toEqual([])
+  expect(always.some((record) => record.item === "system:tools-and-rules" && record.link === "shownAlways")).toBe(true)
+  // null drops the local list: no stored gate for the target remains.
+  await runOk(set, { id: section.id, requires: null })
+  expect((await linksOf(project)).filter((record) => record.target === "system:tools-and-rules")).toEqual([])
+  expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
+})
+
+test("instructions_link reports a shipped requires marker with text provenance", async () => {
+  const { api, tools } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  // The shipped Tools and rules "Questions" section carries
+  // `<!-- requires: tool:question -->` in its text.
+  const section = nodes.find((node) => node.id.startsWith("section:defaults:alpha:system:tools-and-rules:") && node.label === "Questions")
+  if (section === undefined) throw new Error("missing Questions section")
+  const inspected = (await runOk(link, { id: section.id })) as { links: { item: string; shipped: boolean; from: unknown }[] }
+  expect(inspected.links.map((entry) => [entry.item, entry.shipped, entry.from])).toEqual([["tool:question", true, "text"]])
+})
