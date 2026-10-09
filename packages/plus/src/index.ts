@@ -24,6 +24,7 @@ import { controlItems, controlRecordError } from "./instructions/agent-controls.
 import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
+import { listOps, runOp, toolRegistry, withCliActor } from "./instructions-cli.js"
 import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
@@ -3255,6 +3256,21 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         const result = yield* Effect.promise(() => api.log(input))
         return result.value
       }),
+    // `opencodeplus instructions …` (B18): enumerate the live instruction
+    // tools, then run one through its own implementation. Refusals (including
+    // an unknown op) come back by value; `runOp` converts a thrown tool error
+    // into `{ error: { message } }`.
+    "instructions.ops": () =>
+      Effect.gen(function* () {
+        const tools = yield* ctx.tool.list()
+        return { ops: listOps(toolRegistry(tools)) }
+      }),
+    "instructions.run": (input) =>
+      Effect.gen(function* () {
+        const tools = yield* ctx.tool.list()
+        const result = yield* Effect.promise(() => runOp(toolRegistry(tools), input.op, input.input))
+        return result
+      }),
     "instructions.assembled": (input, context) =>
       Effect.gen(function* () {
         const result = yield* Effect.promise(() => api.assembled(input))
@@ -4416,7 +4432,7 @@ function refuseProtectedForTool(
   agentId: string | null | undefined,
   config: { readonly protectedAgents: readonly string[] },
 ): { code: "agent.protected"; message: string; data: Plus.AgentProtected } | undefined {
-  if (normalizeActor(actor).type !== "tool") return undefined
+  if (!isToolActor(normalizeActor(actor).type)) return undefined
   if (agentId === null || agentId === undefined || agentId === "") return undefined
   if (!config.protectedAgents.includes(agentId)) return undefined
   const reason = `agent.protected: row belongs to protected agent "${agentId}"`
@@ -4437,7 +4453,7 @@ function refuseProtectedItemCascade(
   item: string,
   config: { readonly protectedAgents: readonly string[] },
 ): { code: "agent.protected"; message: string; data: Plus.AgentProtected } | undefined {
-  if (normalizeActor(actor).type !== "tool") return undefined
+  if (!isToolActor(normalizeActor(actor).type)) return undefined
   const owner = records.find(
     (record): record is CustomizationRecord | SplitRecord =>
       (record.type === "customization" || record.type === "split") &&
@@ -4691,6 +4707,13 @@ function normalizeActor(actor: Plus.Actor | undefined): Plus.Actor {
     ...(actor.sessionID === undefined ? {} : { sessionID: actor.sessionID }),
     ...(actor.messageID === undefined ? {} : { messageID: actor.messageID }),
   }
+}
+
+// Protected rows refuse a tool actor. The CLI (`opencodeplus instructions …`,
+// B18) runs the same tool implementation with the actor recorded as `cli`, so
+// it is refused exactly like the model path.
+function isToolActor(type: Plus.Actor["type"]): boolean {
+  return type === "tool" || type === "cli"
 }
 
 function mutateTarget(rows: readonly StoredRecord[]): string {
@@ -5334,7 +5357,7 @@ function ensureTooling(ctx: Context, state: PlusState): Effect.Effect<void, neve
 async function installTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
   const api = createPlusApi(ctx, state)
   const teaching = await installTeaching(ctx)
-  const tools = await registerInstructionTools(ctx, api)
+  const tools = await registerInstructionTools(ctx, withCliActor(api))
   // The release namespace records intents and reads them back; it grants no
   // authority, so it installs with the rest of the tooling rather than behind one.
   const release = await registerReleaseTools(ctx)

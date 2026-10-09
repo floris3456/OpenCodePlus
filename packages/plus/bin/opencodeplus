@@ -87,6 +87,30 @@ unset OPENCODE_CONFIG_PROJECT_DISABLE
 #   it is refused. This fails safe: refusing is recoverable and instructs the user
 #   to run from the repository, whereas silently targeting the wrong project is not.
 
+# `instructions` is a real CLI subcommand (`opencodeplus instructions <op> …`),
+# not a directory: when it is the first non-flag argument, hand the invocation
+# to the CLI untouched. This skips both the refusal scan below (an op id or
+# value may name a refused subcommand, e.g. `instructions show run`) and
+# directory detection (no caller directory is appended: it would land in the
+# op's positional id). The Plus entrypoint (`src/plus.ts`) is the one that
+# registers the command and dispatches the dynamic op flags before Effect CLI;
+# the upstream `src/index.ts` used for the TUI has neither.
+first_nonflag=""
+for arg in "$@"; do
+  case "$arg" in
+    -*) continue ;;
+    *)
+      first_nonflag="$arg"
+      break
+      ;;
+  esac
+done
+
+if [ "$first_nonflag" = "instructions" ]; then
+  export OPENCODEPLUS_CALLER_CWD="$CALLER_DIR"
+  exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/plus.ts" "$@"
+fi
+
 # Pinned CLI subcommands from 'opencode --help'. Subcommands must be run from
 # the repository via 'bun run dev <subcommand>'; running them through opencodeplus
 # would misdirect cwd-sensitive handlers. This list mirrors the pinned CLI's

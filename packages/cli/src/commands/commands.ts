@@ -549,3 +549,27 @@ type RelaxedCommands = Omit<BaseCommands, "commands"> & {
 }
 
 export const Commands: RelaxedCommands = Root
+
+// `opencodeplus instructions <op> [<id>] [--<param> value …] [--json '<obj>']`
+// (Plus product only). Deliberately not attached to the shared `Commands`: the
+// Plus entrypoint derives `plusCommands` in `packages/cli/src/plus.ts` and adds
+// this node with the `instructions` handler, so the upstream CLI and its
+// handler map stay without it. The handler is reached through `plus.ts`'s
+// pre-Effect argv dispatch (dynamic --<param> flags and `--help` would
+// otherwise be rejected or intercepted by Effect CLI).
+export const InstructionsCommand = Spec.make("instructions", {
+  description: "Run an instructions op from the service (OpenCodePlus only; bare run lists ops)",
+  params: {
+    ...ServerParams,
+    args: Argument.string("args").pipe(
+      Argument.withDescription("Op, optional id, and op params (dynamic --<param> flags go after --)"),
+      Argument.variadic({ min: 0 }),
+    ),
+    json: Flag.string("json").pipe(
+      Flag.withDescription("Object params as a JSON object (merged under explicit flags)"),
+      Flag.optional,
+    ),
+    text: Flag.string("text").pipe(Flag.withDescription("Fill text directly (- reads stdin)"), Flag.optional),
+    textFile: Flag.string("text-file").pipe(Flag.withDescription("Fill text from a file"), Flag.optional),
+  },
+})

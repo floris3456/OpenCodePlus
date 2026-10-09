@@ -2,7 +2,9 @@
 
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { Effect } from "effect"
-import { Commands } from "./commands/commands"
+import { Commands, InstructionsCommand } from "./commands/commands"
+import { instructionsHandler } from "./commands/handlers"
+import { instructionsInvocation, runInstructionsCli } from "./commands/handlers/instructions"
 import { Runtime } from "./framework/runtime"
 import { Observability } from "@opencode/util/observability"
 import { Updater } from "./services/updater"
@@ -76,8 +78,15 @@ export const handlers = {
   "search-mcp": () => import("./commands/handlers/search-mcp"),
 }
 
-export const plusHandlers = handlers
-export const Handlers = Runtime.handlers(Commands, handlers)
+export const plusHandlers = { ...handlers, instructions: instructionsHandler }
+// Plus-only `instructions` command: derived in plus.ts so the shared `Commands`
+// and the upstream index.ts handler map stay untouched (the command never runs
+// under plain opencode).
+export const plusCommands = {
+  ...Commands,
+  commands: { ...Commands.commands, instructions: InstructionsCommand },
+}
+export const Handlers = Runtime.handlers(plusCommands, plusHandlers)
 
 if (import.meta.main || typeof Bun === "undefined" || process.argv[1]?.includes("vite")) {
   Effect.gen(function* () {
@@ -106,7 +115,12 @@ if (import.meta.main || typeof Bun === "undefined" || process.argv[1]?.includes(
         args: process.argv.slice(2),
       })
     }
-    return yield* Runtime.run(Commands, Handlers, { version: OPENCODE_VERSION })
+    const invocation = instructionsInvocation(process.argv)
+    if (invocation !== undefined) {
+      yield* runInstructionsCli(invocation)
+      return
+    }
+    return yield* Runtime.run(plusCommands, Handlers, { version: OPENCODE_VERSION })
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logError("cli process failed", {
