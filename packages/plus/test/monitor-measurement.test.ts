@@ -83,3 +83,14 @@ test("legacy, unknown version, invalid metrics, partial usage and overlap cannot
   const overlapping = { ...row("a", 10, usage(10000, 10000)), ended: 30 }
   expect(fold([overlapping, row("b", 20, usage(10000, 0))], [fp("a"), fp("b")])[1]!.request.expected).toBeUndefined()
 })
+
+test("warming is excluded from useful-work ratio; final usage on a failed request stays measurable", () => {
+  const requests = fold([
+    row("useful", 10, usage(1000, 100)),
+    { ...row("ping", 20, usage(9000, 9000)), kind: "ping" },
+    { ...row("failed", 30, usage(1000, 0)), status: "error" },
+  ], []).map((d) => d.request)
+  expect(reuseRate(requests)).toEqual({ hitRate: 0.05, measuredRequests: 2, unknownRequests: 0, measuredInput: 2000 })
+  expect(requests[2]?.verdict).toBe("error")
+  expect(isMiss(requests[2]!)).toBe(false)
+})
