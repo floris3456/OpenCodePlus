@@ -142,7 +142,12 @@ function cacheMarkers(body: Record<string, unknown>): CacheControlMarker[] {
     if (Array.isArray(value)) return value.forEach((part, i) => visit(part, `${target}[${i}]`))
     const obj = value as Record<string, unknown>
     const cc = obj.cache_control as { type?: unknown; ttl?: unknown } | undefined
-    if (cc && typeof cc === "object") markers.push({ target, type: String(cc.type ?? "ephemeral"), ...(typeof cc.ttl === "string" ? { ttl: cc.ttl } : {}), wireHash: sha256(canonicalJson(cc)) })
+    if (cc && typeof cc === "object") markers.push({
+      target,
+      type: cc.type === "ephemeral" ? "ephemeral" : "unknown",
+      ...(cc.ttl === "5m" || cc.ttl === "1h" ? { ttl: cc.ttl } : {}),
+      wireHash: sha256(canonicalJson(cc)),
+    })
     Object.entries(obj).filter(([key]) => key !== "cache_control").forEach(([key, child]) => {
       const label = markerPathTokens.has(key) ? key : `unknown[${sha256(key)}]`
       visit(child, target === "top" ? label : `${target}.${label}`)

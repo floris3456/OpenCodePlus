@@ -89,3 +89,18 @@ test("fixed option paths stay readable and canonical key reordering stays equal"
   expect(a.optionsHash).toBe(b.optionsHash)
   expect(prefixDiff({ requestID: "a", sessionID: "privacy", ...a }, { requestID: "b", sessionID: "privacy", ...b }).reusable).toBe(true)
 })
+
+test("unknown marker scalar values are hashed, never exported as readable type or retention", async () => {
+  const db = await ledger()
+  const secret = "SYNTHETIC_MARKER_VALUE_SECRET_38f9"
+  const make = (value: string) => ({ requestID: "marker", sessionID: "privacy", ...fingerprintWireBody({ messages: [{ role: "user", content: [{ type: "text", text: "fixture", cache_control: { type: value, ttl: value } }] }] }, { protocol: "anthropic-messages" }) })
+  const wire = make(secret)
+  expect(wire.cacheControl?.[0]).toMatchObject({ type: "unknown" })
+  expect(wire.cacheControl?.[0]?.ttl).toBeUndefined()
+  expect(prefixDiff(wire, make("different" )).reusable).toBe(false)
+  db.requestStarted({ id: "marker", sessionID: "privacy", kind: "step", started: 1 })
+  db.requestFingerprint(wire)
+  expect(JSON.stringify(wire)).not.toContain(secret)
+  expect(JSON.stringify(db.db.query("select * from request_fingerprint").all())).not.toContain(secret)
+  expect(JSON.stringify(queryMonitor(db, { scope: "session", sessionID: "privacy", view: "cache", id: "marker" }, { now: 10 }))).not.toContain(secret)
+})
