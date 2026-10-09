@@ -87,10 +87,19 @@ test("a in Models offers Folder and Model; picking Model preserves context witho
   }
 })
 
-test("m moves a model row into a folder of its tab through one layout write", async () => {
+test("m picks a model row up, right enters the folder below, Enter drops through one layout write", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
     folders: [{ type: "folder", level: "global", tab: "models", id: "models:work", name: "Work", items: [], updated: UPDATED }],
+    orders: [
+      {
+        type: "order",
+        level: "global",
+        scope: "tab:models",
+        items: ["model:openai/gpt-4o", "folder:models:work"],
+        updated: UPDATED,
+      },
+    ],
     records: [
       {
         type: "model",
@@ -111,22 +120,25 @@ test("m moves a model row into a folder of its tab through one layout write", as
       },
     ],
   })
-  const fixture = await renderInstructionsRoute({
-    snapshots: [snapshot],
-    dialogs: { selects: ["folder:models:work"] },
-  })
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot] })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await goto(fixture, "agent:project:Implementer", "Implementer")
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
     await category(fixture, "Models")
-    await moveTo(fixture, "claude-sonnet")
+    await moveTo(fixture, "gpt-4o")
     expect(dispatch(fixture, "m")).toBe(true)
+    await fixture.waitForFrame((frame) => footer(frame).includes("drop"))
+    expect(fixture.fake.selectInputs.length).toBe(0)
+    dispatch(fixture, "right")
+    await sleep(30)
+    expect(fixture.fake.layoutWrites.length).toBe(0)
+    dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.layoutWrites.length === 1)
     const write = fixture.fake.layoutWrites[0]
-    expect(write?.folders.find((folder) => folder.id === "models:work")?.items).toEqual(["model:anthropic/claude-sonnet"])
-    expect(fixture.fake.selectInputs[0].options.map((option) => option.title)).toEqual(["Top level of models", "Work"])
+    expect(write?.folders.find((folder) => folder.id === "models:work")?.items).toEqual(["model:openai/gpt-4o"])
+    expect(fixture.fake.selectInputs.length).toBe(0)
   } finally {
     fixture.destroy()
   }

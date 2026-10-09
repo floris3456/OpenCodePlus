@@ -26,6 +26,7 @@ import {
   type ShippedValue,
   type TeamRef,
 } from "./model.js"
+import type { RowlinkRecord } from "./rowlinks.js"
 
 /** One Native agent preset per native opencode agent (§3.4). */
 export const nativePresetIds = ["build", "plan", "general", "explore", "title", "summary", "compaction"] as const
@@ -112,6 +113,7 @@ export interface PresetEntry {
 /** Stored records the chain reads besides the inventory records. */
 export interface PresetState {
   readonly links?: readonly LinkRecord[]
+  readonly rowlinks?: readonly RowlinkRecord[]
   readonly entries?: readonly EntryRecord[]
   readonly presets?: readonly PresetRecord[]
 }
@@ -503,6 +505,7 @@ export function chainContext(input: ContextInput): ChainContext {
   return {
     ...scopesOf(input.agents),
     links: input.links ?? [],
+    rowlinks: input.rowlinks ?? [],
     entries: input.entries ?? [],
     presets: presetCatalog({ items: input.items, presets: input.presets ?? [] }),
     memberTeams: memberTeamsOf(input.teams ?? []),
@@ -513,6 +516,7 @@ export function chainContext(input: ContextInput): ChainContext {
 export function presetStateOf(records: readonly { readonly type: string }[]): Required<PresetState> {
   return {
     links: records.filter((record): record is LinkRecord => record.type === "link"),
+    rowlinks: records.filter((record): record is RowlinkRecord => record.type === "rowlink"),
     entries: records.filter((record): record is EntryRecord => record.type === "entry"),
     presets: records.filter((record): record is PresetRecord => record.type === "preset"),
   }

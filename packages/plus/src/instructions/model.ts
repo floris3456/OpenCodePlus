@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import type { Tool } from "@opencode/schema/tool"
 import { assembleWithOverrides, derive, manual, renderSections, slice, type Override, type SectionSpan, type Shadow, type Split } from "./sections.js"
-import { markerIn, stripMarkers } from "./requires.js"
+import { hasRequirements, markerIn, stripMarkers } from "./requires.js"
+import { gatedConditions, type RowlinkRecord } from "./rowlinks.js"
 
 // `preset` holds the human's edits of presets (DESIGN §1); its records live
 // in the global store file.
@@ -220,6 +221,7 @@ export interface ChainContext {
   /** Agent ids whose fallback is native/upstream (origin native or special). */
   readonly native?: ReadonlySet<string>
   readonly links?: readonly LinkRecord[]
+  readonly rowlinks?: readonly RowlinkRecord[]
   readonly entries?: readonly EntryRecord[]
   readonly presets?: PresetCatalog
   readonly memberTeams?: ReadonlyMap<string, readonly string[]>
@@ -1648,8 +1650,13 @@ export function resolveWhole(input: ChainInput): Resolved {
     [...full.spans.keys()].filter((id) => sectionState(input, chain, id) === "off"),
   )
   const reviewOf = reviewParts(input, own, () => aboveWholeFingerprint(input, whole, chain))
+  const linkGate = gatedConditions(input.scopes.rowlinks ?? [], input.scopes, input.address)
   const requires =
-    requiresAt === -1 ? undefined : { ids: values[requiresAt]?.requires ?? [], from: chain[requiresAt].from, here: own?.requires !== undefined }
+    linkGate !== undefined
+      ? linkGate
+      : requiresAt === -1
+        ? undefined
+        : { ids: values[requiresAt]?.requires ?? [], from: chain[requiresAt].from, here: own?.requires !== undefined }
   const gate = input.gate
   // Gated for one agent: a section whose condition it does not meet goes,
   // with its subsections; the row's own condition failing sends nothing.
@@ -1701,7 +1708,7 @@ export function resolveWhole(input: ChainInput): Resolved {
 
   const result: Resolved = {
     text,
-    assembled: gate === undefined ? assembled : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
+    assembled: gate === undefined ? (hasRequirements(assembled) ? stripMarkers(assembled) : assembled) : requires !== undefined && !gate(requires.ids) ? "" : stripMarkers(assembled),
     fullText: fullAssembled,
     spans,
     shadows: assembledRendered.shadows,
@@ -1748,6 +1755,8 @@ function sectionRequires(
   id: string,
   text: string,
 ): { readonly ids: readonly string[]; readonly from: From | "text"; readonly here: boolean } | undefined {
+  const linkGate = gatedConditions(input.scopes.rowlinks ?? [], input.scopes, input.address)
+  if (linkGate !== undefined) return linkGate
   const sectioned = sectionRecords(input, id)
   const values = chain.map((node) => valueAt(input, sectioned, node, id))
   const at = values.findIndex((value) => value?.requires !== undefined)
@@ -1797,7 +1806,7 @@ function resolveSection(input: ChainInput): Resolved {
   const requires = sectionRequires(input, chain, id, text)
   const result: Resolved = {
     text,
-    assembled: text,
+    assembled: hasRequirements(text) ? stripMarkers(text) : text,
     fullText: text,
     enabled: stateAt === -1 ? whole.enabled : values[stateAt]?.state === "on",
     pinned: whole.pinned,

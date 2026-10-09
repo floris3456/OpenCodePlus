@@ -15,13 +15,20 @@ export function recordIdentity(record: StoredRecord): string {
 }
 
 function catalogueOfRecord(record: StoredRecord): string {
-  if (record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule")
+  if (record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule" || record.type === "rowlink")
     return record.catalogue ?? ""
   return ""
 }
 
 function teamKeyOfRecord(record: StoredRecord): string {
-  if (record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule" || record.type === "link")
+  if (
+    record.type === "customization" ||
+    record.type === "split" ||
+    record.type === "model" ||
+    record.type === "rule" ||
+    record.type === "link" ||
+    record.type === "rowlink"
+  )
     return record.team === undefined ? "" : `${record.team.level}:${record.team.team}`
   return ""
 }
@@ -48,6 +55,7 @@ export function recordTarget(record: StoredRecord): string {
   if (record.type === "rule") return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
   if (record.type === "folder") return `folder:${record.id}`
   if (record.type === "order") return `order:${record.scope}`
+  if (record.type === "rowlink") return `rowlink:${record.level}:${record.agent ?? ""}:${record.item}:${record.section ?? ""}:${record.target}:${record.targetSection ?? ""}`
   const agent = record.agent ?? ""
   if (record.type === "split") return `item:${record.level}:${agent}:${record.item}`
   if (record.section !== null) return `section:${record.level}:${agent}:${record.item}:${record.section}`
@@ -287,6 +295,21 @@ export function snapshotRecordOf(record: StoredRecord): Plus.SnapshotRecord | un
       patterns: [...record.patterns],
       keywords: [...record.keywords],
       ...(record.message === undefined ? {} : { message: record.message }),
+      updated: record.updated,
+    }
+  if (record.type === "rowlink")
+    return {
+      type: "rowlink",
+      level: record.level,
+      agent: record.agent,
+      ...(record.team === undefined ? {} : { team: record.team }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      item: record.item,
+      section: record.section,
+      target: record.target,
+      targetSection: record.targetSection,
+      link: record.link,
+      ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
       updated: record.updated,
     }
   return undefined

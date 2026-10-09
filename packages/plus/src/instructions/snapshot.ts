@@ -13,6 +13,7 @@ import type {
   SplitRecord,
 } from "./model.js"
 import { chainContext, presetListing, withOwnerRoles, type PresetState } from "./presets.js"
+import type { RowlinkRecord, RowlinkType } from "./rowlinks.js"
 import {
   everySettings,
   isEvery,
@@ -104,10 +105,13 @@ export function agentOf(agent: Plus.AgentEntry): AgentSource {
   }
 }
 
-export function recordOf(record: Plus.SnapshotRecord): CustomizationRecord | SplitRecord | ModelRecord | RuleRecord {
+export function recordOf(
+  record: Plus.SnapshotRecord,
+): CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord {
   if (record.type === "split") return splitOf(record)
   if (record.type === "model") return modelOf(record)
   if (record.type === "rule") return ruleOf(record)
+  if (record.type === "rowlink") return rowlinkOf(record)
   return customizationOf(record)
 }
 
@@ -293,8 +297,12 @@ function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
     records: snapshot.records
       .map(recordOf)
       .filter(
-        (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord =>
-          record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule",
+        (record): record is CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord =>
+          record.type === "customization" ||
+          record.type === "split" ||
+          record.type === "model" ||
+          record.type === "rule" ||
+          record.type === "rowlink",
       ),
     agents: snapshot.agents.map(agentOf),
     teams: (snapshot.teams ?? []).map(teamOf),
@@ -310,6 +318,12 @@ function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
 export function presetStateOfSnapshot(snapshot: Plus.Snapshot): Required<PresetState> {
   return {
     links: (snapshot.links ?? []).map(linkOf),
+    // Rowlinks cross as inventory records (SnapshotRecord) so the link tool's
+    // delta write can upsert them and instructions.mutate carries stored ones
+    // over; pull them from the same records as every other row.
+    rowlinks: snapshot.records
+      .filter((record): record is Plus.SnapshotRowlinkRecord => record.type === "rowlink")
+      .map(rowlinkOf),
     entries: (snapshot.entries ?? []).map(entryOf),
     presets: (snapshot.presets ?? []).map(presetOf),
   }
@@ -338,6 +352,23 @@ export function linkOf(record: Plus.SnapshotLinkRecord): LinkRecord {
     ...(record.team === undefined ? {} : { team: { level: record.team.level, team: record.team.team } }),
     ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
     preset: presetRefOf(record.preset),
+    updated: record.updated,
+  }
+}
+
+export function rowlinkOf(record: Plus.SnapshotRowlinkRecord): RowlinkRecord {
+  return {
+    type: "rowlink",
+    level: record.level,
+    agent: record.agent,
+    ...(record.team === undefined ? {} : { team: { level: record.team.level, team: record.team.team } }),
+    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+    item: record.item,
+    section: record.section,
+    target: record.target,
+    targetSection: record.targetSection,
+    link: record.link as RowlinkType,
+    ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
     updated: record.updated,
   }
 }

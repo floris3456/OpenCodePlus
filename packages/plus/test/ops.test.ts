@@ -22,8 +22,11 @@ import {
   setPin,
   teamPlan,
   toggle,
+  toggleGroup,
   unknownRowRefusal,
 } from "../src/instructions/ops.js"
+import type { RowlinkRecord } from "../src/instructions/rowlinks.js"
+import { controlItems } from "../src/instructions/agent-controls.js"
 
 function baseInput(overrides?: Partial<MemoInput>): MemoInput {
   return {
@@ -151,6 +154,219 @@ function exactId(input: MemoInput, id: string): string {
   if (!node) throw new Error(`no row ${id}`)
   return node.id
 }
+
+// A rowlink record for the shared alpha rows the base fixture resolves.
+function switchLink(
+  item: string,
+  target: string,
+  link: "either" | "oneway" = "either",
+  enabled?: boolean,
+): readonly RowlinkRecord[] {
+  return [
+    {
+      type: "rowlink",
+      level: "project",
+      agent: "alpha",
+      item,
+      section: null,
+      target,
+      targetSection: null,
+      link,
+      ...(enabled === undefined ? {} : { enabled }),
+      updated: "2026-01-01T00:00:00.000Z",
+    },
+  ]
+}
+
+// A stored off customization for a shared alpha row, so a switch has a live
+// partner to turn off.
+function offRecord(item: string): CustomizationRecord {
+  return {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item,
+    section: null,
+    state: "off",
+    basedOn: `fp-${item.slice(item.indexOf(":") + 1)}`,
+    updated: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+test("turning a row on writes its either link's partner off in one save", () => {
+  // bash starts off so turning it on fires; coder keeps its native on value so
+  // the switch has a live partner to write off in the same result.
+  const input = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder"),
+    records: [offRecord("tool:bash")],
+  })
+  const result = setEnabled(input, findId(input, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  expect(result.status).toBe(`Enabled "bash"; disabled tool:coder`)
+  // Symmetric: with coder off and bash on, turning coder on turns bash off too.
+  const symmetric = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder"),
+    records: [offRecord("tool:coder")],
+  })
+  const reverse = setEnabled(symmetric, findId(symmetric, "tool:coder"), true)
+  if ("refusal" in reverse) throw new Error(`expected success, got ${reverse.refusal}`)
+  expect(reverse.records.some((record) => record.item === "tool:bash" && record.state === "off")).toBe(true)
+})
+
+test("oneway fires only from its primary and no switch cascades", () => {
+  // coder starts off; turning it on must leave bash alone (oneway never fires
+  // from its connected end).
+  const target = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    records: [offRecord("tool:coder")],
+  })
+  const targetResult = setEnabled(target, findId(target, "tool:coder"), true)
+  if ("refusal" in targetResult) throw new Error(`expected success, got ${targetResult.refusal}`)
+  expect(targetResult.records.some((record) => record.item === "tool:bash")).toBe(false)
+  // bash starts off; turning the primary on writes coder off.
+  const primary = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    records: [offRecord("tool:bash")],
+  })
+  const primaryResult = setEnabled(primary, findId(primary, "tool:bash"), true)
+  if ("refusal" in primaryResult) throw new Error(`expected success, got ${primaryResult.refusal}`)
+  expect(primaryResult.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  // No cascade: bash—coder and coder—sample; turning bash on disables coder but
+  // never follows coder's own link to sample.
+  const chain = baseInput({
+    rowlinks: [...switchLink("tool:bash", "tool:coder"), ...switchLink("tool:coder", "mcp:sample")],
+    records: [offRecord("tool:bash")],
+  })
+  const cascade = setEnabled(chain, findId(chain, "tool:bash"), true)
+  if ("refusal" in cascade) throw new Error(`expected success, got ${cascade.refusal}`)
+  expect(cascade.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  expect(cascade.records.some((record) => record.item === "mcp:sample" && record.state === "off")).toBe(false)
+})
+
+test("an off toggle writes no linked row, and an already-off partner is not rewritten", () => {
+  const input = baseInput({ rowlinks: switchLink("tool:bash", "tool:coder") })
+  // bash is on, so turning it off must leave coder untouched.
+  const off = setEnabled(input, findId(input, "tool:bash"), false)
+  if ("refusal" in off) throw new Error(`expected success, got ${off.refusal}`)
+  expect(off.records.some((record) => record.item === "tool:coder")).toBe(false)
+  // With coder already off, turning bash on does not re-write coder.
+  const coderOff = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder"),
+    records: [offRecord("tool:bash"), offRecord("tool:coder")],
+  })
+  const on = setEnabled(coderOff, findId(coderOff, "tool:bash"), true)
+  if ("refusal" in on) throw new Error(`expected success, got ${on.refusal}`)
+  expect(on.records.filter((record) => record.item === "tool:coder")).toHaveLength(1)
+})
+
+test("a same-level mask prevents a switch on an off-to-on transition", () => {
+  const masked = baseInput({ rowlinks: switchLink("tool:bash", "tool:coder", "either", false), records: [offRecord("tool:bash")] })
+  const result = setEnabled(masked, findId(masked, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.records.some((record) => record.item === "tool:coder")).toBe(false)
+})
+
+test("an inherited switch fires for the level below, a mixed owner's never does", () => {
+  // alpha exists at project and global, so the chain carries global/alpha and
+  // an upstream (global) switch reaches the project row.
+  const inherited = baseInput({
+    agents: [
+      { id: "alpha", scope: "project" },
+      { id: "alpha", scope: "global" },
+    ],
+    rowlinks: [
+      {
+        type: "rowlink",
+        level: "global",
+        agent: "alpha",
+        item: "tool:bash",
+        section: null,
+        target: "tool:coder",
+        targetSection: null,
+        link: "either",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    records: [offRecord("tool:bash")],
+  })
+  const result = setEnabled(inherited, findId(inherited, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  // A link owned by beta is not in alpha's chain and fires nothing.
+  const otherOwner = baseInput({
+    rowlinks: [
+      {
+        type: "rowlink",
+        level: "project",
+        agent: "beta",
+        item: "tool:bash",
+        section: null,
+        target: "tool:coder",
+        targetSection: null,
+        link: "either",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  })
+  const isolated = setEnabled(otherOwner, findId(otherOwner, "tool:bash"), true)
+  if ("refusal" in isolated) throw new Error(`expected success, got ${isolated.refusal}`)
+  expect(isolated.records.some((record) => record.item === "tool:coder")).toBe(false)
+})
+
+test("switches resolve section states rather than their whole-row state", () => {
+  const base = baseInput()
+  const sections = expandedTree(base).filter((node) => node.kind === "section" && node.address?.item === "tool:coder")
+  const primary = sections[0]!
+  const partner = sections[1]!
+  const primaryAddress = primary.address!
+  const partnerAddress = partner.address!
+  const off = { ...offRecord("tool:coder"), section: primaryAddress.section }
+  const links: RowlinkRecord[] = [{ ...switchLink("tool:coder", "tool:coder")[0]!, section: primaryAddress.section, targetSection: partnerAddress.section }]
+  const input = baseInput({ records: [off], rowlinks: links })
+  const result = setEnabled(input, primary.id, true)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.find((record) => record.section === partnerAddress.section)?.state).toBe("off")
+  expect(result.records.some((record) => record.item === "tool:coder" && record.section === null)).toBe(false)
+  const alreadyOff = { ...off, section: partnerAddress.section }
+  const repeat = setEnabled(baseInput({ records: [off, alreadyOff], rowlinks: links }), primary.id, true)
+  if ("refusal" in repeat) throw new Error(repeat.refusal)
+  expect(repeat.records.find((record) => record.section === partnerAddress.section)).toEqual(alreadyOff)
+})
+
+test("nearest inherited mask wins and group enabling applies one-hop switches", () => {
+  const links = switchLink("tool:bash", "mcp:sample")
+  const masked = baseInput({
+    agents: [{ id: "alpha", scope: "project" }, { id: "alpha", scope: "global" }],
+    rowlinks: [{ ...links[0]!, level: "global" }, { ...links[0]!, enabled: false }],
+    records: [offRecord("tool:bash")],
+  })
+  const result = setEnabled(masked, findId(masked, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.some((record) => record.item === "mcp:sample")).toBe(false)
+  const input = baseInput({ rowlinks: links, records: [offRecord("tool:bash")] })
+  const group = expandedTree(input).find((node) => node.id === "group:project:alpha:tools:native")!
+  expect(group).toBeDefined()
+  const enabled = toggleGroup(input, group.id, undefined, true)
+  if ("refusal" in enabled) throw new Error(enabled.refusal)
+  expect(enabled.records.find((record) => record.item === "mcp:sample")?.state).toBe("off")
+})
+
+test("switches handle boolean agent controls and refuse unsupported synthetic endpoints atomically", () => {
+  const base = baseInput()
+  const input = baseInput({
+    items: [...base.items, ...controlItems("alpha", { hidden: true })],
+    records: [offRecord("tool:bash")],
+    rowlinks: switchLink("tool:bash", "setting:hidden"),
+  })
+  const result = setEnabled(input, findId(input, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.find((record) => record.item === "setting:hidden")?.state).toBe("off")
+  const unsupported = { ...input, rowlinks: switchLink("tool:bash", "model:missing") }
+  const refused = setEnabled(unsupported, findId(unsupported, "tool:bash"), true)
+  expect(refused).toEqual({ refusal: 'Linked row "model:missing" cannot be switched' })
+  expect(input.records).toEqual([offRecord("tool:bash")])
+})
 
 test("toggle success disables a shared mcp row", () => {
   const input = baseInput()
@@ -684,7 +900,7 @@ test("row ids round-trip items with colons, sections, agents, and colon teams", 
   expect(fingerprint("upstream")).not.toBe(fingerprint("other"))
 })
 
-test("heading-derived item addSection on section S adds child after S's last descendant and writes into last leaf only", () => {
+test("heading-derived item addSection on section S writes S's full span, appending the child after its descendants", () => {
   const headingText = [
     "## A",
     "A text.",
@@ -715,10 +931,12 @@ test("heading-derived item addSection on section S adds child after S's last des
   // 1. Split is still kind: "heading", no split record added
   expect(ok.splits.some((s) => s.item === "system:heading-doc")).toBe(false)
 
-  // 2. The only customization written is on A2's address
+  // 2. B39: the only customization written is A's full span, not a leaf's. The
+  //    child test is added inside that span, so A1's own editor cannot see it.
   const customizations = ok.records.filter((r) => r.item === "system:heading-doc")
   expect(customizations).toHaveLength(1)
-  expect(customizations[0].section).toBe("a/a2")
+  expect(customizations[0].section).toBe("a")
+  expect(customizations[0].text).toContain("### New\n\nNew text.")
 
   // 3. Section "New" exists with depth of A + 1 whose parent is A, B is unchanged
   const address = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: null }
@@ -748,6 +966,16 @@ test("heading-derived item addSection on section S adds child after S's last des
   expect(sectionB?.depth).toBe(sectionA!.depth)
   expect(resolved.assembled).toContain("### New\n\nNew text.")
   expect(resolved.assembled).toContain("B text.")
+
+  // 4. The child's own editor is its own slice: it does not carry the sibling.
+  const child = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address: { ...address, section: "a/a1" },
+  })
+  expect(child.text).not.toContain("New")
 })
 
 test("heading-derived item customization on A1 survives addSection on A", () => {

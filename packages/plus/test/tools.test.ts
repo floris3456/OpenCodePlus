@@ -3,14 +3,14 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect, Exit } from "effect"
+import { Deferred, Effect, Exit, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { activate, createPlusApi, createState, createHandlers, deactivate } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
-import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
+import { globalLogPath, globalRecordsPath, globalTeamsPath, linkedProjectsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
 import { saveRun } from "../src/teams/run.js"
 import { load, save } from "../src/instructions/store.js"
 import { userBaseFile } from "../src/agents/base.js"
@@ -179,7 +179,20 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
                 keywords: [...record.keywords],
                 updated: record.updated,
               }
-            : {
+            : record.type === "rowlink"
+              ? {
+                  type: "rowlink" as const,
+                  level: record.level,
+                  agent: record.agent,
+                  item: record.item,
+                  section: record.section,
+                  target: record.target,
+                  targetSection: record.targetSection,
+                  link: record.link,
+                  ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
+                  updated: record.updated,
+                }
+              : {
                 type: "customization" as const,
                 level: record.level,
                 agent: record.agent,
@@ -257,6 +270,105 @@ async function runFail(tool: Tool.Info & { readonly id: string }, input: unknown
   return outcome.error
 }
 
+// Exercise the host boundary as well as execute: unknown keys would otherwise
+// bypass the registered schema and conceal missing callable API fields.
+function decoded(tool: Tool.Info, input: unknown) {
+  if (!Schema.isSchema(tool.input)) throw new Error("expected registered Effect schema")
+  return Schema.decodeUnknownSync(tool.input)(input)
+}
+
+test("C1 registered model set and emitted field reset persist atomically without changing identity or warming prompt", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const set = need(tools, "instructions_set")
+  const resetTool = need(tools, "instructions_reset")
+  const created = await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" }) as { id: string }
+  await runOk(set, decoded(set, { id: created.id, prompt: "keep alive" }))
+  const values = { compactWarm: "on", coldCompact: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "" }
+  const input = decoded(set, { id: created.id, ...values })
+  expect(input).toMatchObject(values)
+  await runOk(set, input)
+  const own = () => load(project).then((store) => store.records.find((record) => record.type === "model" && record.agent === "alpha"))
+  expect(await own()).toMatchObject({ ...values, providerID: "acme", modelID: "nova-2", prompt: "keep alive", active: true })
+  const before = await load(project)
+  const log = await Bun.file(globalLogPath()).text()
+  expect((await runFail(set, decoded(set, { id: created.id, prompt: "changed", compactWarm: "off", compactionModel: "invalid" }))).message).toContain("compaction model")
+  expect(await load(project)).toEqual(before)
+  expect(await Bun.file(globalLogPath()).text()).toBe(log)
+  expect((await runFail(set, decoded(set, { id: created.id, interval: "invalid", compactionStrategy: "local" }))).message).toContain("interval")
+  expect(await load(project)).toEqual(before)
+  const rows = expandedTree(memoInputOf(await snapshotOf(api)))
+  for (const field of ["compactWarm", "compactionStrategy", "compactionModel", "compactionInstructions"]) {
+    const row = rows.find((node) => node.id.startsWith("item:defaults:alpha:") && node.address?.item.startsWith(`modelfield:${field}:`))
+    if (row === undefined) throw new Error(`missing emitted ${field} row`)
+    await runOk(set, decoded(set, { id: row.id, text: field === "compactWarm" ? "off" : field === "compactionStrategy" ? "local" : field === "compactionModel" ? "acme/other" : "summarize" }))
+    expect(await own()).toMatchObject({ prompt: "keep alive", active: true })
+    await runOk(resetTool, decoded(resetTool, { id: row.id }))
+    expect(await own()).not.toHaveProperty(field)
+  }
+  await runOk(set, decoded(set, { id: created.id, coldModels: [], compactionInstructions: "" }))
+  expect(await own()).toMatchObject({ coldModels: [], compactionInstructions: "" })
+  await runOk(set, decoded(set, { id: created.id, coldModels: null, coldCompact: "", compactionInstructions: null }))
+  expect(await own()).not.toHaveProperty("coldModels")
+  expect(await own()).not.toHaveProperty("coldCompact")
+  expect(await own()).not.toHaveProperty("compactionInstructions")
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const protectedBefore = await load(project)
+  const protectedLog = await Bun.file(globalLogPath()).text()
+  const index = await Bun.file(linkedProjectsPath()).text().catch(() => undefined)
+  const records = await Bun.file(globalRecordsPath()).text()
+  expect((await runFail(set, decoded(set, { id: created.id, compactWarm: "on" }))).message).toContain("agent.protected")
+  expect((await runFail(resetTool, decoded(resetTool, { id: created.id }))).message).toContain("agent.protected")
+  expect(await load(project)).toEqual(protectedBefore)
+  expect(await Bun.file(globalLogPath()).text()).toBe(protectedLog)
+  expect(await Bun.file(globalRecordsPath()).text()).toBe(records)
+  expect(await Bun.file(linkedProjectsPath()).text().catch(() => undefined)).toBe(index)
+})
+
+test("C1 registered Defaults dispatcher accepts comma coldModels and truthful emitted field rows", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const set = need(tools, "instructions_set")
+  const rows = expandedTree(memoInputOf(await snapshotOf(api)))
+  const row = rows.find((node) => node.address?.item.startsWith("modeldefault:"))
+  if (row === undefined) throw new Error("missing Defaults model row")
+  await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", coldCompact: "off", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
+  const stored = (await load(project)).records.find((record) => record.type === "modelSettings")
+  expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", coldCompact: "off", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
+  const before = await load(project)
+  expect((await runFail(set, decoded(set, { id: row.id, prompt: "changed", coldModels: "acme/first,acme/first" }))).message).toContain("twice")
+  expect(await load(project)).toEqual(before)
+  const emitted = expandedTree(memoInputOf(await snapshotOf(api)))
+  expect(emitted.some((node) => node.address?.item.startsWith("modelsetting:coldModels:"))).toBe(false)
+  const instructions = emitted.find((node) => node.address?.item === `modelsetting:compactionInstructions:${row.address!.item.slice("modeldefault:".length)}`)
+  if (instructions === undefined) throw new Error("missing emitted Defaults instructions row")
+  await runOk(set, decoded(set, { id: instructions.id, text: "new summary" }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ compactionInstructions: "new summary", prompt: "keep alive" })
+  await runOk(need(tools, "instructions_reset"), { id: instructions.id })
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("compactionInstructions")
+  await runOk(set, decoded(set, { id: row.id, coldModels: [], compactionInstructions: "" }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ coldModels: [], compactionInstructions: "" })
+  await runOk(set, decoded(set, { id: row.id, coldModels: null, compactionInstructions: null }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("coldModels")
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("compactionInstructions")
+})
+
+test("C1 registered inherited model edits plant only local fields and reset reveals the lower level", async () => {
+  const { api, tools, project } = await freshFixture({ agents: [agentInfo("build", "role", modelRef("acme", "base"))], models: [modelInfo("acme", "base")], classifications: { base: "general" } })
+  const set = need(tools, "instructions_set")
+  await runOk(set, decoded(set, { id: "item:global:build:model:acme/base", compactionStrategy: "remote", compactionInstructions: "global summary" }))
+  await runOk(set, decoded(set, { id: "item:project:build:model:acme/base", compactionStrategy: "local", coldModels: ["acme/cold"] }))
+  const before = await load(project)
+  expect(before.records.find((record) => record.type === "model" && record.level === "global")).toMatchObject({ compactionStrategy: "remote", compactionInstructions: "global summary" })
+  expect(before.records.find((record) => record.type === "model" && record.level === "project")).toMatchObject({ compactionStrategy: "local", coldModels: ["acme/cold"] })
+  const row = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id.startsWith("item:project:build:") && node.address?.item.startsWith("modelfield:compactionStrategy:"))
+  if (row === undefined) throw new Error("missing inherited strategy field")
+  await runOk(need(tools, "instructions_reset"), decoded(need(tools, "instructions_reset"), { id: row.id }))
+  const after = await load(project)
+  expect(after.records.find((record) => record.type === "model" && record.level === "project")).not.toHaveProperty("compactionStrategy")
+  expect(after.records.filter((record) => record.level === "global")).toEqual(before.records.filter((record) => record.level === "global"))
+  const shown = await runOk(need(tools, "instructions_show"), { id: row.id })
+  expect(shown).toMatchObject({ field: "compactionStrategy", value: "Remote · global" })
+})
+
 function need(tools: Map<string, Tool.Info & { readonly id: string }>, id: string): Tool.Info & { readonly id: string } {
   const tool = tools.get(id)
   if (tool === undefined) throw new Error(`missing tool ${id}`)
@@ -271,6 +383,37 @@ async function freshFixture(overrides?: Partial<Parameters<typeof fullContext>[0
   await registerInstructionTools(ctx, api)
   return { ctx, api, tools: await readTools(ctx), project }
 }
+
+test("section move tool dispatch persists effective order and refuses invalid and protected requests without writes", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencode", "agent", "alpha.md"), formatMarkdown({}, "# One\nFirst.\n\n# Two\nSecond.\n"))
+  await Bun.write(path.join(project, ".opencode", "agent", "beta.md"), formatMarkdown({}, "# One\nOther.\n\n# Two\nOther second.\n"))
+  await linkToBuild(project, "project", ["alpha", "beta"])
+  const ctx = fixtureContext(project, { agents: [agentInfo("alpha"), agentInfo("beta")], tools: [{ id: "reader", description: "# One\nFirst.\n\n# Two\nSecond.\n", options: { codemode: false } }] })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const nodes = expandedTree(memoInputOf(snapshot))
+  const section = (id: string, agent = "alpha") => {
+    const node = nodes.find((node) => node.address?.item === "tool:reader" && node.address.section === id && node.address.level === "project" && node.address.agent === agent)
+    if (!node) throw new Error(`missing ${agent} ${id}`)
+    return node.id
+  }
+  const tool = need(tools, "instructions_move")
+  const before = await load(project)
+  expect((await runFail(tool, { id: section("two"), before: section("one", "beta") })).message).toContain("different items")
+  expect(await load(project)).toEqual(before)
+  await runOk(tool, { id: section("two"), before: section("one") })
+  const saved = await load(project)
+  const written = saved.records.find((record): record is Extract<typeof record, { type: "customization" }> => record.type === "customization" && record.agent === "alpha" && record.item === "tool:reader" && record.section === null)
+  expect(written?.text?.trim()).toBe("# Two\nSecond.\n# One\nFirst.")
+  const reload = await snapshotOf(api)
+  expect(expandedTree(memoInputOf(reload)).filter((node) => node.address?.item === "tool:reader" && node.address.level === "project" && node.address.agent === "alpha" && node.address.section !== null).map((node) => node.address?.section)).toEqual(["two", "one"])
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  expect((await runFail(tool, { id: section("one"), before: section("two") })).message).toContain("agent.protected")
+  expect(await load(project)).toEqual(saved)
+})
 
 async function readerRowId(api: PlusApi): Promise<string> {
   const snapshot = await snapshotOf(api)
@@ -856,7 +999,7 @@ test("delete without confirm refuses and deletes nothing", async () => {
 test("every tool carries the plugin origin, no pinned, and namespace/codemode/permission set", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(9)
+  expect(registered).toHaveLength(10)
   for (const tool of registered) {
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
     expect(tool.options?.namespace).toBe("instructions")
@@ -869,7 +1012,7 @@ test("every tool carries the plugin origin, no pinned, and namespace/codemode/pe
 test("every tool first description line is within 120 characters", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(9)
+  expect(registered).toHaveLength(10)
   for (const tool of registered) {
     const first = tool.description.split("\n", 1)[0] ?? ""
     expect(first.length).toBeLessThanOrEqual(120)
@@ -907,7 +1050,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
   await Effect.runPromise(activate(ctx, state))
-  expect(await toolIds()).toHaveLength(9)
+  expect(await toolIds()).toHaveLength(10)
   expect(await skillIds()).toContain(teachingSkillId)
   // Only the install side: the harness instruction domain disposes to a no-op,
   // so the disposal proof below rests on the skill, tool and MCP domains.
@@ -927,7 +1070,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   const installed = [...state.tooling]
   await Effect.runPromise(activate(ctx, state))
   expect(state.tooling).toEqual(installed)
-  expect(await toolIds()).toHaveLength(9)
+  expect(await toolIds()).toHaveLength(10)
   await Effect.runPromise(deactivate(state))
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
@@ -3387,4 +3530,278 @@ test("set requires changes when a section is sent; show reports it and its sourc
   expect((await runFail(set, { id: section.id, requires: ["tool:readr"] })).message).toContain('no row "tool:readr" exists; did you mean tool:reader')
   await runOk(set, { id: section.id, requires: null })
   expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
+})
+
+// ── row links (S2a B9–B12): the production instructions_link tool ─────────
+//
+// The tool's contract: no target inspects outgoing/incoming links; target
+// upserts, type defaults either, enabled:false masks. Both ends must be in the
+// same level/owner view; a refusal writes no record and no log line.
+
+async function rowIdOf(api: PlusApi, item: string): Promise<string> {
+  const snapshot = await snapshotOf(api)
+  const node = expandedTree(memoFromSnapshot(snapshot)).find((candidate) => candidate.address?.item === item)
+  if (node === undefined) throw new Error(`missing row ${item}`)
+  return node.id
+}
+
+async function linksOf(project: string) {
+  return (await load(project)).records.filter((record) => record.type === "rowlink")
+}
+
+test("instructions_link upserts, inspects both directions, and masks with enabled:false", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  const created = (await runOk(link, { id: reader, target: question })) as { type: string; enabled: boolean; status: string }
+  expect(created.type).toBe("either")
+  expect(created.enabled).toBe(true)
+  expect(created.status).toContain("either")
+  // Stored as one rowlink record, no second representation.
+  const stored = await linksOf(project)
+  expect(stored).toHaveLength(1)
+  expect(stored[0]).toMatchObject({ item: "tool:reader", target: "tool:question", link: "either" })
+  // Inspect from the primary: outgoing. From the connected end: incoming.
+  const outgoing = (await runOk(link, { id: reader })) as { links: { direction: string; target: string }[] }
+  expect(outgoing.links.map(({ direction, target }) => ({ direction, target }))).toEqual([
+    { direction: "outgoing", target: "tool:question" },
+  ])
+  const incoming = (await runOk(link, { id: question })) as { links: { direction: string; item: string }[] }
+  expect(incoming.links.map(({ direction, item }) => ({ direction, item }))).toEqual([
+    { direction: "incoming", item: "tool:reader" },
+  ])
+  // A second upsert on the same pair replaces it (still one record) and takes the new type.
+  await runOk(link, { id: reader, target: question, type: "oneway" })
+  const replaced = await linksOf(project)
+  expect(replaced).toHaveLength(1)
+  expect(replaced[0]?.link).toBe("oneway")
+  // enabled:false stores a tombstone that still inspects, marked disabled.
+  await runOk(link, { id: reader, target: question, enabled: false })
+  const masked = (await runOk(link, { id: reader })) as { links: { enabled: boolean }[] }
+  expect(masked.links).toHaveLength(1)
+  expect(masked.links[0]?.enabled).toBe(false)
+  expect((await linksOf(project))[0]?.enabled).toBe(false)
+  // An unrelated set write must carry the rowlink over, not drop it (the
+  // memo's rowlinks ride along in the delta).
+  await runOk(need(tools, "instructions_set"), { id: reader, state: "off" })
+  expect(await linksOf(project)).toHaveLength(1)
+})
+
+test("instructions_link refuses a self, unknown or cross-level link without writing or logging", async () => {
+  const { api, tools, project } = await freshFixture({
+    agents: [agentInfo("alpha", "role"), agentInfo("beta", "role")],
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const reader = await rowIdOf(api, "tool:reader")
+  const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  // A different owner at the same level, and a different level entirely.
+  const otherOwner = nodes.find((node) => node.address?.item === "tool:reader" && node.address.agent === "beta")
+  const otherLevel = nodes.find((node) => node.address?.item === "tool:reader" && node.address.level === "preset")
+  const before = await snapshotOf(api)
+  const beforeLog = await Bun.file(projectLogPath(project)).exists()
+  expect((await runFail(link, { id: reader, target: reader })).message).toContain("cannot link to itself")
+  expect((await runFail(link, { id: reader, target: "item:defaults:alpha:tool:missing" })).message).toContain("row.unknown")
+  if (otherOwner === undefined || otherLevel === undefined) throw new Error("fixture lacks a mixed owner or level row")
+  expect((await runFail(link, { id: reader, target: otherOwner.id })).message).toContain("not in the same level and owner")
+  expect((await runFail(link, { id: reader, target: otherLevel.id })).message).toContain("not in the same level and owner")
+  // Nothing was written and no change-log line appeared.
+  expect((await snapshotOf(api)).records).toEqual(before.records)
+  expect(await Bun.file(projectLogPath(project)).exists()).toBe(beforeLog)
+})
+
+test("instructions_link refuses a protected agent's row before any write", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project, {
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const link = need(tools, "instructions_link")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  expect((await runFail(link, { id: reader, target: question })).message).toContain("agent.protected")
+  expect(await linksOf(project)).toEqual([])
+})
+
+// ── write-time switches (B9, B10): the production set/toggle path ─────────
+//
+// `instructions_set state:"on"` (and a bare-id toggle) must write the linked
+// row off in the same save, through the real registered tool and a private
+// store, so the behaviour survives reload. Turning the row off writes nothing
+// linked; one hop only; a tombstone masks an inherited switch.
+
+async function customizationState(project: string, item: string): Promise<"on" | "off" | undefined> {
+  const record = (await load(project)).records.find(
+    (entry): entry is Extract<(typeof entry), { type: "customization" }> =>
+      entry.type === "customization" && entry.item === item && entry.section === null,
+  )
+  return record?.state
+}
+
+test("set state:on persists its either partner off in one save, and it stays off after reload", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  await runOk(link, { id: reader, target: question })
+  // Rows start off in this fixture; turn question on so the switch has a live
+  // target to save off.
+  await runOk(set, { id: question, state: "on" })
+  const before = await load(project)
+  const on = (await runOk(set, { id: reader, text: "updated reader", state: "on" })) as { status: string }
+  expect(on.status).toBe(`Enabled "reader"; disabled tool:question`)
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.item === "tool:question" && record.state === "off")).toBe(
+    true,
+  )
+  // Durable: reload the store and the off row is still there.
+  expect(await customizationState(project, "tool:question")).toBe("off")
+  const saved = await load(project)
+  expect(saved.projectRevision + saved.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
+  expect(saved.records.filter((record) => record.type === "rowlink")).toEqual(before.records.filter((record) => record.type === "rowlink"))
+  expect(saved.records.find((record) => record.type === "customization" && record.item === "tool:reader")).toMatchObject({ text: "updated reader", state: "on" })
+  // Turning reader back off leaves question off (no cascade, no resurrect).
+  await runOk(set, { id: reader, state: "off" })
+  expect(await customizationState(project, "tool:question")).toBe("off")
+})
+
+test("set state:on is symmetric for either and primary-only for oneway", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  await runOk(link, { id: reader, target: question, type: "oneway" })
+  // Turn the target on first; oneway leaves the primary alone.
+  await runOk(set, { id: question, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBeUndefined()
+  // Primary on turns the target off.
+  await runOk(set, { id: reader, state: "on" })
+  expect(await customizationState(project, "tool:question")).toBe("off")
+  // Either is symmetric: turn the target on and the primary goes off.
+  await runOk(link, { id: reader, target: question, type: "either" })
+  await runOk(set, { id: question, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+})
+
+test("a bare-id toggle writes the partner off in one hop and never cascades", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+      { id: "extra", description: "extra", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  const extra = await rowIdOf(api, "tool:extra")
+  // reader—question and question—extra. Turn question on, then reader off and
+  // on: the on toggle disables question only; question's own link to extra
+  // must not fire (no cascade).
+  await runOk(link, { id: reader, target: question })
+  await runOk(link, { id: question, target: extra })
+  await runOk(set, { id: question, state: "on" })
+  await runOk(set, { id: reader, state: "off" })
+  await runOk(set, { id: reader })
+  expect(await customizationState(project, "tool:question")).toBe("off")
+  expect(await customizationState(project, "tool:extra")).toBeUndefined()
+})
+
+test("a same-level disabled link masks a switch through the tool", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  // Store the switch, then mask it at the same level with enabled:false, and
+  // turn the target on so the switch would have fired if not masked.
+  await runOk(link, { id: reader, target: question })
+  await runOk(link, { id: reader, target: question, enabled: false })
+  await runOk(set, { id: question, state: "on" })
+  await runOk(set, { id: reader, state: "off" })
+  await runOk(set, { id: reader, state: "on" })
+  // The masked switch fires nothing: question stays on.
+  expect(await customizationState(project, "tool:question")).toBe("on")
+})
+
+test("turning a protected owner's row on with a linked partner refuses atomically", async () => {
+  const { project } = await tempProject()
+  // The protected row belongs to alpha; the reader and question rows do too,
+  // so the tool-actor guard must refuse the write before any record changes.
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project, {
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  // Seed the link directly: the link tool itself refuses protected owners, so
+  // the guard under test is the write-time path.
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records,
+      {
+        type: "rowlink" as const,
+        level: "project" as const,
+        agent: "alpha",
+        item: "tool:reader",
+        section: null,
+        target: "tool:question",
+        targetSection: null,
+        link: "either" as const,
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  })
+  if (!saved.ok) throw new Error("seed save failed")
+  const before = await snapshotOf(api)
+  const beforeLog = await Bun.file(projectLogPath(project)).exists()
+  const error = await runFail(set, { id: reader, state: "on" })
+  expect(error.message).toContain("agent.protected")
+  // No records and no log line changed.
+  expect((await snapshotOf(api)).records).toEqual(before.records)
+  expect((await load(project)).projectRevision).toBe(saved.projectRevision)
+  expect(await Bun.file(projectLogPath(project)).exists()).toBe(beforeLog)
+  expect(await customizationState(project, "tool:question")).toBeUndefined()
 })
