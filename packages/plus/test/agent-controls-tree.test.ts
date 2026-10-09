@@ -211,5 +211,3 @@ test("member-preset controls reset their team-scoped override without changing t
   if ("refusal" in entity) throw new Error(entity.refusal)
   expect(entity.records).toEqual([preset])
 })
-
-

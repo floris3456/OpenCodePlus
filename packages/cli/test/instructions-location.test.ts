@@ -76,12 +76,14 @@ async function cli(caller: string, args: string[], env: Record<string, string> =
       ...process.env,
       PWD: caller,
       PATH: `${path.dirname(process.execPath)}:${process.env.PATH ?? ""}`,
-      OPENCODE_PRODUCT: "opencodeplus",
       XDG_DATA_HOME: path.join(home, "data"),
       XDG_CONFIG_HOME: path.join(home, "config"),
       XDG_CACHE_HOME: path.join(home, "cache"),
       XDG_STATE_HOME: path.join(home, "state"),
       ...env,
+      // Source launchers must establish their own identity, as dev runtimes
+      // intentionally do not export OPENCODE_PRODUCT.
+      OPENCODE_PRODUCT: undefined,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -95,6 +97,26 @@ async function cli(caller: string, args: string[], env: Record<string, string> =
 }
 
 describe("instructions CLI emits the caller location", () => {
+  test("default TUI launcher does not opt into the Plus CLI product identity", async () => {
+    const root = await tempRoot()
+    // Capture only the shell exec environment; do not start a TUI or service.
+    await Bun.write(path.join(root, "bun"), '#!/bin/sh\nprintf "%s\\n" "${OPENCODE_PRODUCT-unset}" "$@"\n')
+    await fs.chmod(path.join(root, "bun"), 0o755)
+    for (const product of [undefined, "opencode"] as const) {
+      const child = Bun.spawn([launcher], {
+        cwd: root,
+        env: { ...process.env, PWD: root, PATH: `${root}:${process.env.PATH ?? ""}`, OPENCODE_PRODUCT: product },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const output = await new Response(child.stdout).text()
+      expect(await child.exited).toBe(0)
+      expect(output.split("\n")[0]).toBe(product ?? "unset")
+      expect(output).toContain(path.join(repoRoot, "packages/cli/src/index.ts"))
+      expect(output).not.toContain(path.join(repoRoot, "packages/cli/src/plus.ts"))
+    }
+  })
+
   test("two caller directories each get their own request location", async () => {
     const fixture = capture()
     try {

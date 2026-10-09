@@ -3755,7 +3755,7 @@ test("l relinks an agent to another preset with the current link preselected, an
   try {
     await goto(fixture, "agent:project:alice", "alice")
     expect(binds(fixture)).toContain("l")
-    expect(footer(fixture.captureCharFrame())).toContain("l link")
+    expect(footer(fixture.captureCharFrame())).toContain("l preset link")
     expect(dispatch(fixture, "l")).toBe(true)
     await until(fixture, () => fixture.fake.linkSets.length === 1)
     expect(fixture.fake.linkSets[0]).toEqual({ level: "project", agent: "alice", preset: basicPlanner })

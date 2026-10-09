@@ -213,7 +213,7 @@ export const SnapshotModelRecord = Schema.Struct({
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
-  active: Schema.optionalKey(Schema.Literal(true)),
+  active: Schema.optionalKey(Schema.Boolean),
   basedOn: Schema.optionalKey(Schema.String),
   warming: Schema.optionalKey(Schema.String),
   interval: Schema.optionalKey(Schema.String),
@@ -1837,7 +1837,7 @@ export const ModelRef = Schema.Struct({
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optionalKey(Schema.String),
-  active: Schema.optionalKey(Schema.Literal(true)),
+  active: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.ModelRef" })
 
 export interface CatalogModel extends Schema.Schema.Type<typeof CatalogModel> {}

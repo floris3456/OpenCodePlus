@@ -4,12 +4,13 @@ import { afterEach, expect, test } from "bun:test"
 import type { ModelDomain } from "@opencode/plugin/effect/model"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
-import { Effect, Stream } from "effect"
+import { Effect, Exit, PubSub, Scope, Stream } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { createHandlers, createState, watchHostEvents } from "../src/index.js"
+import { activate, createHandlers, createPlusApi, createState, deactivate, watchHostEvents } from "../src/index.js"
 import { agentInfo, fullContext, modelInfo, modelRef } from "./harness.js"
+import { onSharedStoreChanged } from "../src/shared-store-bus.js"
 
 const MINUTE = 60_000
 const roots: string[] = []
@@ -110,4 +111,42 @@ test("a model-updated event drops the host catalogue even when the refresh waits
   expect(state.hostModels).toBeUndefined()
   await picker()
   expect(counts.list).toBe(2)
+})
+
+test("a catalogue-only update advances snapshots without reinstalling unchanged instructions", async () => {
+  const project = await tempProject()
+  const models = [modelInfo("acceptance", "initial")]
+  const events = await Effect.runPromise(PubSub.unbounded<{ type: string; data: unknown }>())
+  const base = fullContext({ directory: project, models })
+  const ctx = { ...base, event: { subscribe: () => Stream.fromPubSub(events) } as never }
+  const state = createState()
+  const api = createPlusApi(ctx, state, { builtins: [] })
+  const scope = await Effect.runPromise(Scope.make())
+  const notices = { count: 0 }
+  const unsubscribe = onSharedStoreChanged((source) => { if (source === state) notices.count++ })
+  try {
+    await Effect.runPromise(activate(ctx, state))
+    const before = (await api.snapshot()).value
+    const plans = [...state.appliedParts.values()]
+    const published = state.publishedHostModels
+    const announced = notices.count
+    await Effect.runPromise(watchHostEvents(ctx, state).pipe(Scope.provide(scope)))
+    models.push(modelInfo("acceptance", "canary"))
+    // Control: the already cached snapshot still lacks the newly listed model.
+    expect((await api.snapshot()).value.hostModels?.some((model) => model.modelID === "canary")).toBe(false)
+    await Effect.runPromise(PubSub.publish(events, { type: Model.Event.Updated.type, data: {} }))
+    const deadline = Date.now() + 3000
+    while (state.publishedHostModels === published && Date.now() < deadline) await Bun.sleep(10)
+    expect(state.publishedHostModels).not.toBe(published)
+    expect(notices.count).toBe(announced + 1)
+    const after = (await api.snapshot()).value
+    expect(after.hostModels?.some((model) => model.modelID === "canary")).toBe(true)
+    expect(after.revision).toBe(before.revision)
+    expect(after.globalRevision).toBe(before.globalRevision)
+    expect([...state.appliedParts.values()]).toEqual(plans)
+  } finally {
+    unsubscribe()
+    await Effect.runPromise(Scope.close(scope, Exit.void))
+    await Effect.runPromise(deactivate(state))
+  }
 })

@@ -569,7 +569,18 @@ test("the instructions namespace still registers alongside team", async () => {
   await registerTeamTools(created.ctx, createTeamApi(created.ctx, state), shippedTable)
   expect(need(created.tools, "instructions_list").options?.namespace).toBe("instructions")
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
-  expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_"))).toHaveLength(9)
+  expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_")).toSorted()).toEqual([
+    "instructions_create",
+    "instructions_delete",
+    "instructions_link",
+    "instructions_list",
+    "instructions_log",
+    "instructions_move",
+    "instructions_reset",
+    "instructions_set",
+    "instructions_show",
+    "instructions_split",
+  ])
   expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(12)
 })
 
