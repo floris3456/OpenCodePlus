@@ -16,7 +16,8 @@ test("L picks a primary without writes, Esc cancels, L on another row writes onl
       { type: "model", level: "project", agent: "Implementer", providerID: "acme", modelID: "second", updated: "2026-01-01" },
     ],
   })
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], dialogs: { selects: ["either", true] }, width: 110, height: 40 })
+  const linked = { ...snapshot, revision: snapshot.revision + 1, records: [...snapshot.records, { type: "rowlink" as const, level: "project" as const, agent: "Implementer", item: "model:acme/first", section: null, target: "model:acme/second", targetSection: null, link: "either" as const, updated: "2026-01-01" }] }
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot, linked], dialogs: { selects: ["either", true, 0, "shownWhenOff", undefined, 0, "oneway", false] }, width: 110, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await toSidebar(fixture)
@@ -28,6 +29,10 @@ test("L picks a primary without writes, Esc cancels, L on another row writes onl
     expect(dispatch(fixture, "shift+l")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("finish link"))
     expect(fixture.fake.mutateInputs).toHaveLength(0)
+    dispatch(fixture, "shift+l")
+    await fixture.waitForFrame((frame) => frame.includes("different rows in the same owner"))
+    expect(fixture.fake.mutateInputs).toHaveLength(0)
+    expect(fixture.fake.dialogSelects).toHaveLength(0)
     dispatch(fixture, "escape")
     await fixture.waitForFrame((frame) => frame.includes("Row link cancelled"))
     expect(fixture.fake.mutateInputs).toHaveLength(0)
@@ -42,5 +47,17 @@ test("L picks a primary without writes, Esc cancels, L on another row writes onl
     expect("changes" in input && input.changes.upsert).toHaveLength(1)
     expect("changes" in input && input.changes.upsert[0]).toMatchObject({ type: "rowlink", item: "model:acme/first", target: "model:acme/second", link: "either" })
     expect("changes" in input && input.changes.remove).toHaveLength(0)
+    await sleep(100)
+    // Cancelling the final enabled/mask picker changes nothing, even after
+    // choosing a type. Editing an incoming link retains its named primary.
+    dispatch(fixture, "shift+l")
+    await sleep(100)
+    expect(fixture.fake.mutateInputs).toHaveLength(1)
+    dispatch(fixture, "shift+l")
+    for (let i = 0; i < 80 && fixture.fake.mutateInputs.length < 2; i++) await sleep(50)
+    expect(fixture.fake.mutateInputs).toHaveLength(2)
+    const mask = fixture.fake.mutateInputs[1]!
+    expect("changes" in mask && mask.changes.upsert).toHaveLength(1)
+    expect("changes" in mask && mask.changes.upsert[0]).toMatchObject({ type: "rowlink", item: "model:acme/first", target: "model:acme/second", link: "oneway", enabled: false })
   } finally { fixture.destroy() }
 })

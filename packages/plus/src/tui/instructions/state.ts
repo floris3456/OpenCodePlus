@@ -81,6 +81,7 @@ import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js
 import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { rowlinkView, sameOwnerView, sameEndpoint, writeRowlink, type RowlinkType, type RowlinkEndpoint, type RowlinkRecord } from "../../instructions/rowlinks.js"
+import { expandedTree } from "../../instructions/tree.js"
 
 export type { TreeNode }
 
@@ -1686,6 +1687,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     linkPrimary,
     beginRowlink,
     linksFor,
+    linkRows: () => expandedTree(memoInput()),
     saveRowlink,
     rowlinkTarget,
     cancelRowlink,

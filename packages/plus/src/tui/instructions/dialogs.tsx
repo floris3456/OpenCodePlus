@@ -1473,7 +1473,7 @@ export function createInstructionsDialogs(
     const link = links[picked]
     if (link === undefined) return
     // An incoming link edits its named primary, never reverses the pair.
-    const owner = state.nodes().find((candidate) => candidate.address !== undefined && sameOwnerView(node.address!, candidate.address) && sameEndpoint(candidate.address, link.item, link.section))
+    const owner = state.linkRows().find((candidate) => candidate.address !== undefined && sameOwnerView(node.address!, candidate.address) && sameEndpoint(candidate.address, link.item, link.section))
     if (owner === undefined) { state.setStatus(`Primary ${link.item} is not available in this view`); return }
     await editRowlink(owner, { item: link.target, section: link.targetSection }, link.type, link.enabled)
   }
