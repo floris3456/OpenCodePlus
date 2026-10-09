@@ -12,6 +12,7 @@ import {
   planGroupMove,
   planRowMove,
   rowToken,
+  tabGroupIndex,
   type LayoutChange,
   type LayoutRecords,
   type RowTarget,
@@ -68,7 +69,14 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep):
       return apply(state, planFor(input, state.layout, node, parent, step === "up" ? { before: neighbour.id } : { after: neighbour.id }))
     }
     case "in": {
-      const next = siblings[position + 1]
+      // Origin headings are fixed presentation structure, not folder boundaries.
+      // Their ordinary rows enter the first root folder of the same tab; within
+      // a folder or tab, Right retains its next-sibling nesting behavior.
+      const tabIndex = tabGroupIndex(nodes, index)
+      const origin = parent !== undefined && rowToken(parent) === undefined && tabIndex !== undefined
+      const next = origin
+        ? directChildren(nodes, nodes[tabIndex]!).find((entry) => folderTokenOf(entry) !== undefined)
+        : siblings[position + 1]
       if (next === undefined) return { refusal: `"${node.label}" has no folder below to enter` }
       if (next.address !== undefined && next.address.section !== null) return { refusal: `"${next.label}" is a section; moving sections is owed` }
       if (folderTokenOf(next) === undefined) return { refusal: `"${next.label}" is not a folder to enter` }
@@ -88,7 +96,7 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep):
 // planGroupMove. `parent` is the row's current container.
 function planFor(input: MemoInput, layout: LayoutRecords, node: TreeNode, parent: TreeNode | undefined, target: RowTarget): LayoutChange {
   const updated = new Date().toISOString()
-  const inTabOrFolder = parent === undefined || folderTokenOf(parent) !== undefined || rowToken(parent)?.startsWith("tab:") === true
+  const inTabOrFolder = target.into !== undefined || parent === undefined || folderTokenOf(parent) !== undefined || rowToken(parent)?.startsWith("tab:") === true
   return inTabOrFolder
     ? planRowMove(input, layout, node.id, target, updated)
     : planGroupMove(input, layout, node.id, target, updated)
