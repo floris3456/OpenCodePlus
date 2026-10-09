@@ -2,8 +2,41 @@ import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { createLedger, endRequestWindow } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger, usage } from "./monitor-fixture.js"
+import { CompactionObservation } from "@opencode/plugin/compaction-observation"
+import { Schema } from "effect"
 
 afterEach(cleanupLedgers)
+
+test("execution decisions are allow-listed, immutable history; unsupported decision values refuse writes", async () => {
+  const db = await ledger()
+  db.requestStarted({ id: "decision", sessionID: "s", kind: "compaction", started: 100 })
+  db.requestEnded("decision", { ended: 200, status: "error" })
+  const decision = {
+    version: 1 as const,
+    trigger: "manual" as const,
+    configuredStrategy: "auto" as const,
+    strategySource: "built-in" as const,
+    selectedStrategy: "text-summary" as const,
+    selectionReason: "anthropic-below-minimum" as const,
+    error: "SECRET PROVIDER ERROR",
+    system: "SECRET SYSTEM TEXT",
+    metadata: { "SECRET KEY": "SECRET VALUE" },
+  }
+  expect(() => Schema.decodeUnknownSync(CompactionObservation)({ ...decision, selectionReason: "SECRET REASON" })).toThrow()
+  expect(() => Schema.decodeUnknownSync(CompactionObservation)({ ...decision, version: 99 })).toThrow()
+  db.requestObserved("decision", { version: 1, completeness: "unavailable", compaction: decision })
+  const stored = db.getRequest("decision")?.observation?.compaction
+  expect(stored).toEqual({ version: 1, trigger: "manual", configuredStrategy: "auto", strategySource: "built-in", selectedStrategy: "text-summary", selectionReason: "anthropic-below-minimum" })
+  db.requestObserved("decision", { version: 1, completeness: "unavailable", compaction: { ...decision, configuredStrategy: "remote", selectedStrategy: "native", selectionReason: "explicit-remote" } })
+  expect(db.getRequest("decision")?.observation?.compaction).toEqual(stored)
+  const reopened = createLedger(db.path)
+  try {
+    expect(reopened.getRequest("decision")?.observation?.compaction).toEqual(stored)
+    expect(JSON.stringify(reopened.db.query("select observation from request").all())).not.toContain("SECRET")
+  } finally {
+    reopened.close()
+  }
+})
 
 test("legacy rows remain unknown; exact observations are idempotent, allow-listed, and survive aggregate settlement", async () => {
   const db = await ledger()

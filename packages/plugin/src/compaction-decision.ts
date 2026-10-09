@@ -2,6 +2,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { Session } from "@opencode/schema/session"
 import type { SessionError } from "@opencode/schema/session-error"
+import type { CompactionObservation } from "./compaction-observation.js"
 
 /** Runs at the native runner's safe boundary, including when automatic compaction is off. */
 export interface SessionCompactionDecision {
@@ -26,6 +27,14 @@ export interface SessionCompactionDecision {
    * from either this field or the agent, is refused.
    */
   strategy?: "auto" | "local" | "remote"
+  /** Read-only attribution hints for monitoring; these never select or request compaction. */
+  explanation?: {
+    readonly trigger?: "cold" | "handoff" | "armed"
+    readonly strategy?: {
+      readonly value: "auto" | "local" | "remote"
+      readonly source: CompactionObservation["strategySource"]
+    }
+  }
   /**
    * Replace the agent's compaction system text (`config?.system ?? fallback?.system`) for this
    * compaction. On the chat's own model it travels in the final user message; on another model it is

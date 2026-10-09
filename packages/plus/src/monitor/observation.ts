@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect"
+import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 
 const field = Schema.Struct({
   source: Schema.Literals(["reported", "derived"]),
@@ -14,6 +15,7 @@ export const Observation = Schema.Struct({
   invocationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   operationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   exchangeCount: Schema.optional(Schema.Number),
+  compaction: Schema.optional(CompactionObservation),
   inputTokens: Schema.optional(token),
   cacheReadInputTokens: Schema.optional(token),
   cacheWriteInputTokens: Schema.optional(token),

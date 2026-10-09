@@ -76,6 +76,7 @@ test("per-model strategy, model and instructions apply at each level with the ri
     every: settings({ compactionStrategy: "remote", compactionModel: "every/model", compactionInstructions: "every text" }),
   })
   expect(row.strategy).toBe("local")
+  expect(row.explanation?.strategy).toEqual({ value: "local", source: "project" })
   expect(row.compactionModel).toEqual(Model.Ref.parse("row/model#high"))
   expect(row.system).toBe("row text")
 
@@ -88,6 +89,7 @@ test("per-model strategy, model and instructions apply at each level with the ri
     every: settings({ compactionModel: "every/model" }),
   })
   expect(agentWide.strategy).toBe("remote")
+  expect(agentWide.explanation?.strategy).toEqual({ value: "remote", source: "agent" })
   expect(agentWide.compactionModel).toEqual(Model.Ref.parse("agent/model"))
   expect(agentWide.system).toBe("agent text")
 
@@ -99,12 +101,14 @@ test("per-model strategy, model and instructions apply at each level with the ri
     every: settings({ compactionStrategy: "remote", compactionModel: "every/model" }),
   })
   expect(defaults.strategy).toBe("local")
+  expect(defaults.explanation?.strategy).toEqual({ value: "local", source: "model" })
   expect(defaults.compactionModel).toEqual(Model.Ref.parse("defaults/model"))
 
   // Every model applies when nothing above it sets the field.
   const every = decision()
   decideCompaction(every, { rows: {}, every: settings({ compactionStrategy: "remote", compactionModel: "every/model", compactionInstructions: "every text" }) })
   expect(every.strategy).toBe("remote")
+  expect(every.explanation?.strategy).toEqual({ value: "remote", source: "every" })
   expect(every.compactionModel).toEqual(Model.Ref.parse("every/model"))
   expect(every.system).toBe("every text")
 
@@ -127,6 +131,7 @@ test("cold arming fires on a cold fresh step with #1, #2… and optional", () =>
   expect(event.compactionModel).toEqual(Model.Ref.parse("proxy/one#high"))
   expect(event.compactionFallbacks).toEqual([Model.Ref.parse("proxy/two"), Model.Ref.parse("proxy/three")])
   expect(event.optional).toBe(true)
+  expect(event.explanation?.trigger).toBe("cold")
   expect(event.metadata).toEqual({ "plus.cold": { models: ["proxy/one#high", "proxy/two", "proxy/three"] } })
 })
 

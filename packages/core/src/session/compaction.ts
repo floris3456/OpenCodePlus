@@ -16,6 +16,7 @@ import {
 } from "@opencode/ai"
 import { AnthropicMessages } from "@opencode/ai/protocols/anthropic-messages"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
+import type { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Layer, Option, Result, Stream } from "effect"
@@ -297,6 +298,36 @@ export const layer = Layer.effect(
         })
       const native =
         strategy === "remote" || (strategy === "auto" && !belowMinimum && context.model.compaction?.type === "native")
+      const observation: CompactionObservation = {
+        version: 1,
+        trigger:
+          trigger.reason === "manual" || trigger.reason === "overflow"
+            ? trigger.reason
+            : decision.compact && decision.explanation?.trigger
+              ? decision.explanation.trigger
+              : decision.compact && decision.metadata?.["quota.switch"] === true
+                ? "handoff"
+                : due(context, ceiling)
+                  ? "context-threshold"
+                  : "hook-request",
+        configuredStrategy,
+        modelPolicy: context.model.compaction?.type,
+        strategySource:
+          decision.strategy !== undefined
+            ? decision.explanation?.strategy?.value === decision.strategy
+              ? decision.explanation.strategy.source
+              : "decision-hook"
+            : context.agent.info.compaction?.strategy !== undefined
+              ? "agent-config"
+              : "built-in",
+        selectedStrategy: native ? "native" : "text-summary",
+        selectionReason:
+          decision.portable ? "portable-required"
+            : strategy === "local" ? "explicit-local"
+            : strategy === "remote" ? "explicit-remote"
+            : native ? "auto-native"
+            : belowMinimum ? "anthropic-below-minimum" : "auto-text",
+      }
       const completed = (owner: Trigger, result: Result) =>
         publish(owner, {
           ...result,
@@ -310,7 +341,11 @@ export const layer = Layer.effect(
           Effect.map((outcome) => (decision.optional && trigger.reason === "auto" ? { status: "skipped" } : outcome)),
         )
       if (native) {
-        const attempt = yield* Effect.result(compactNatively(trigger, budget, settings.keep, strategy))
+        const attempt = yield* Effect.result(
+          compactNatively(trigger, budget, settings.keep, strategy).pipe(
+            Effect.provideService(SessionModelObservation.Compaction, { ...observation, modelSource: "active-model" }),
+          ),
+        )
         if (Result.isSuccess(attempt)) return yield* completed(trigger, attempt.success)
         const failure = attempt.failure
         if (failure.error.type !== NATIVE_NOT_TRIGGERED) return yield* settle(failure)
@@ -349,6 +384,15 @@ export const layer = Layer.effect(
                 : undefined
               const result = yield* summarize(owner, budget, settings.keep, instruction, retained).pipe(
                 Effect.mapError((failure) => ({ ...failure, model: owner.context.model.ref })),
+                Effect.provideService(SessionModelObservation.Compaction, {
+                  ...observation,
+                  selectedStrategy: "text-summary",
+                  selectionReason: native ? "native-not-triggered" : observation.selectionReason,
+                  modelSource:
+                    chosen ? chosen === decision.compactionModel ? "decision-hook" : "fallback-list"
+                      : context.agent.info.compaction?.model ? "agent-config"
+                      : fallbackAgent?.model ? "compaction-agent" : "active-model",
+                }),
               )
               return { owner, result }
             }),
@@ -442,7 +486,19 @@ export const layer = Layer.effect(
           older: context.messages,
           recent,
           checkpointHandoff: true,
-        }).pipe(Effect.mapError((failure) => ({ ...failure, model: model.ref })))
+        }).pipe(
+          Effect.mapError((failure) => ({ ...failure, model: model.ref })),
+          Effect.provideService(SessionModelObservation.Compaction, {
+            version: 1,
+            trigger: "handoff",
+            configuredStrategy: context.agent.info.compaction?.strategy ?? "auto",
+            modelPolicy: context.model.compaction?.type,
+            strategySource: context.agent.info.compaction?.strategy !== undefined ? "agent-config" : "built-in",
+            selectedStrategy: "text-summary",
+            selectionReason: "checkpoint-handoff",
+            modelSource: "checkpoint-owner",
+          }),
+        )
         // Only readable text crosses this boundary, never source-model continuation state.
         return { owner, result: { ...result, providerState: undefined } }
       }).pipe(Effect.result)

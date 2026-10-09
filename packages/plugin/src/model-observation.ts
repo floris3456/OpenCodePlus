@@ -3,6 +3,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { Session } from "@opencode/schema/session"
 import type { TokenUsage } from "@opencode/schema/token-usage"
+import type { CompactionObservation } from "./compaction-observation.js"
 
 /** Read-only per AI invocation, never a Session accounting aggregate or a response-body hook. */
 export interface SessionModelObserved {
@@ -11,6 +12,7 @@ export interface SessionModelObserved {
   readonly model: Model.Ref
   readonly kind: "primary" | "compaction" | "title" | "generate"
   readonly purpose?: "warming"
+  readonly compaction?: CompactionObservation
   readonly invocationID: string
   readonly operationID: string
   readonly messageID?: string

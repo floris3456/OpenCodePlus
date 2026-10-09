@@ -24,13 +24,14 @@ import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionStore } from "@opencode/core/session/store"
 import { Model } from "@opencode/core/model"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Cause, Context, DateTime, Deferred, Effect, Fiber, Layer, Schema, Scope } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Fiber, Layer, Logger, Schema, Scope } from "effect"
 import { testEffect } from "./lib/effect"
 import { registerQuota } from "../../cliproxyapi/src/quota/register.js"
 import { context } from "../../plus/test/harness.js"
 import type { SessionModelObserved } from "@opencode/plugin/effect/session"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
+import { decideCompaction } from "../../plus/src/compaction/decide.js"
 
 const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
 class NativeModels extends Context.Service<NativeModels, Map<string, SessionRunnerModel.Resolved>>()(
@@ -408,6 +409,16 @@ for (const mode of ["endpoint", "trigger", "summary", "retry", "nudge"] as const
     expect(fixture.observations).toHaveLength(mode === "retry" || mode === "nudge" ? 2 : 1)
     expect(new Set(fixture.observations.map((event) => event.operationID)).size).toBe(1)
     expect(new Set(fixture.observations.map((event) => event.invocationID)).size).toBe(fixture.observations.length)
+    expect(fixture.observations.every((event) => Object.isFrozen(event.compaction))).toBe(true)
+    expect(fixture.observations.every((event) => event.compaction?.trigger === "manual")).toBe(true)
+    expect(fixture.observations[0]?.compaction).toMatchObject({
+      configuredStrategy: mode === "summary" || mode === "nudge" ? "local" : "auto",
+      strategySource: mode === "summary" || mode === "nudge" ? "agent-config" : "built-in",
+      selectedStrategy: mode === "summary" || mode === "nudge" ? "text-summary" : "native",
+      selectionReason: mode === "summary" || mode === "nudge" ? "explicit-local" : "auto-native",
+    })
+    expect(ledger.getRequests(fixture.sessionID).filter((row) => row.observation?.scope === "invocation").map((row) => row.observation?.compaction))
+      .toEqual(fixture.observations.map((event) => event.compaction))
     const measured = fixture.observations.filter((event) => event.usage.inputTokens !== undefined)
     expect(measured.map((event) => event.usage.inputTokens)).toEqual(mode === "nudge" ? [20, 20] : [20])
     expect(ledger.getRequests(fixture.sessionID).filter((row) => row.observation?.inputTokens !== undefined).map((row) => row.observation?.inputTokens)).toEqual(mode === "nudge" ? [20, 20] : [20])
@@ -418,6 +429,121 @@ for (const mode of ["endpoint", "trigger", "summary", "retry", "nudge"] as const
     }
   }))
 }
+
+for (const origin of ["threshold", "overflow", "cold", "armed", "handoff"] as const) {
+  it.live(`compaction execution observation preserves the actual ${origin} origin`, () => Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true })
+    yield* fixture.prompt("Conversation to compact")
+    if (origin !== "threshold" && origin !== "overflow") {
+      fixture.state.summary = true
+      yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
+        if (origin === "cold") decideCompaction(event, {
+          every: { type: "modelSettings", level: "defaults", updated: "fixture", coldCompact: "on", coldModels: ["openai/gpt-5.4-mini"] },
+          cold: { running: false, ready: true, active: false, compacted: false },
+        })
+        if (origin === "armed") decideCompaction(event, { armed: ["openai/gpt-5.4-mini"] })
+        if (origin === "handoff") {
+          event.compact = true
+          event.portable = true
+          event.metadata = { "quota.switch": true, private: "SECRET DECISION METADATA" }
+        }
+      }))
+    }
+    const loaded = yield* fixture.load
+    const outcome = yield* fixture.compaction.compact({
+      reason: origin === "overflow" ? "overflow" : "auto",
+      context: origin === "threshold" ? { ...loaded, model: { ...loaded.model, limit: { ...loaded.model.limit, context: 1 } } } : loaded,
+    })
+    expect(outcome).toEqual({ status: "completed" })
+    expect(fixture.observations).toHaveLength(1)
+    expect(fixture.observations[0]?.compaction).toMatchObject({
+      trigger: origin === "threshold" ? "context-threshold" : origin,
+      selectedStrategy: origin === "threshold" || origin === "overflow" ? "native" : "text-summary",
+      selectionReason: origin === "threshold" || origin === "overflow" ? "auto-native" : "portable-required",
+    })
+    expect(JSON.stringify(fixture.observations[0]?.compaction)).not.toContain("SECRET")
+    expect(fixture.state.calls).toBe(1)
+  }))
+}
+
+it.live("Auto without native policy records a provider-backed text summary, not a local-only operation", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true, policy: false })
+  fixture.state.summary = true
+  yield* fixture.prompt("Conversation to compact")
+  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  expect(fixture.state.calls).toBe(1)
+  expect(fixture.observations[0]?.compaction).toMatchObject({ configuredStrategy: "auto", strategySource: "built-in", selectedStrategy: "text-summary", selectionReason: "auto-text", modelSource: "active-model" })
+  expect(fixture.observations[0]?.compaction?.modelPolicy).toBeUndefined()
+  expect(fixture.observations[0]?.exchanges[0]?.transport).toBe("http")
+}))
+
+it.live("an explanation hint alone cannot arm compaction or override auto:false", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true })
+  yield* fixture.prompt("Conversation to compact")
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
+    event.explanation = { trigger: "cold", strategy: { value: "remote", source: "project" } }
+  }))
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "skipped" })
+  yield* fixture.compaction.transform((editor) => editor.configure({ auto: false }))
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => { event.compact = true }))
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "skipped" })
+  expect(fixture.state.calls).toBe(0)
+  expect(fixture.observations).toHaveLength(0)
+}))
+
+it.live("the executed summary fallback records its model source without fabricating a failed invocation", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true })
+  fixture.state.summary = true
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
+    event.strategy = "local"
+    event.compactionModel = Model.Ref.parse("unavailable/summary")
+    event.compactionFallbacks = [fixture.model.ref]
+  }))
+  yield* fixture.prompt("Conversation to compact")
+  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  expect(fixture.state.calls).toBe(1)
+  expect(fixture.observations).toHaveLength(1)
+  expect(fixture.observations[0]?.compaction).toMatchObject({ configuredStrategy: "local", strategySource: "decision-hook", selectedStrategy: "text-summary", modelSource: "fallback-list" })
+  expect(fixture.observations[0]?.model).toEqual(fixture.model.ref)
+}))
+
+it.live("execution decision survives hot strategy changes and distrusts overwritten source hints", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true })
+  const ledger = yield* Effect.acquireRelease(Effect.sync(() => createLedger(":memory:")), (ledger) => Effect.sync(() => ledger.close()))
+  yield* watchMonitor(context({ session: { hook: (name, callback, options) => fixture.hooks.register("session", name, callback, options) } }), () => undefined, () => ledger)
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
+    decideCompaction(event, { rows: { compactionStrategy: { value: "remote", level: "project" } } })
+    if (fixture.state.config?.strategy) event.strategy = fixture.state.config.strategy
+  }))
+  yield* fixture.prompt("Original conversation")
+  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  const first = fixture.observations[0]?.compaction
+  expect(first).toMatchObject({ configuredStrategy: "remote", strategySource: "project", selectedStrategy: "native", selectionReason: "explicit-remote" })
+  fixture.state.config = { strategy: "local", system: "PRIVATE CONFIG TEXT" }
+  fixture.state.summary = true
+  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  expect(fixture.observations[1]?.compaction).toMatchObject({ configuredStrategy: "local", strategySource: "decision-hook", selectedStrategy: "text-summary", selectionReason: "explicit-local" })
+  expect(fixture.observations[0]?.compaction).toEqual(first)
+  expect(ledger.getRequests(fixture.sessionID)[0]?.observation?.compaction).toEqual(first)
+  expect(JSON.stringify(ledger.getRequests(fixture.sessionID).map((row) => row.observation))).not.toContain("PRIVATE CONFIG TEXT")
+}))
+
+it.live("a throwing compaction decision observer cannot mutate the snapshot or retry model work", () => {
+  const logs: unknown[] = []
+  return Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true })
+    yield* fixture.hooks.register("session", "model.observed", (event) => Effect.sync(() => {
+      expect(() => Object.assign(event.compaction ?? {}, { selectedStrategy: "text-summary" })).toThrow()
+      throw new Error("PRIVATE_COMPACTION_OBSERVER_ERROR")
+    }))
+    yield* fixture.prompt("Conversation to compact")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect(fixture.state.calls).toBe(1)
+    expect(fixture.observations[0]?.compaction).toMatchObject({ selectedStrategy: "native", selectionReason: "auto-native" })
+    expect(logs.length).toBeGreaterThan(0)
+    expect(JSON.stringify(logs)).not.toContain("PRIVATE_COMPACTION_OBSERVER_ERROR")
+  }).pipe(Effect.provide(Logger.layer([Logger.make((entry) => { logs.push(entry.message) })])))
+})
 
 for (const anthropic of ["direct", "compatible"] as const) {
   it.live(`Anthropic ${anthropic}: Auto persists a native checkpoint and compaction iteration usage`, () =>
@@ -446,6 +572,7 @@ for (const anthropic of ["direct", "compatible"] as const) {
       expect(yield* fixture.compact).toEqual({ status: "completed" })
       expect(fixture.bodies).toHaveLength(1)
       expect(fixture.bodies[0].context_management).toBeUndefined()
+      expect(fixture.observations[0]?.compaction).toMatchObject({ selectedStrategy: "text-summary", selectionReason: "anthropic-below-minimum" })
       const last = (yield* fixture.load).messages.at(-1)
       expect(last).toMatchObject({ status: "completed", summary: "## Objective\n- Local summary" })
       expect(last).not.toHaveProperty("providerContext", expect.anything())
@@ -495,6 +622,8 @@ it.live("Anthropic Auto falls back to a local summary when it does not trigger c
     expect(fixture.observations).toHaveLength(2)
     expect(new Set(fixture.observations.map((event) => event.operationID)).size).toBe(1)
     expect(fixture.observations.map((event) => event.usage.outputTokens)).toEqual([40, 40])
+    expect(fixture.observations.map((event) => event.compaction?.selectionReason)).toEqual(["auto-native", "native-not-triggered"])
+    expect(fixture.observations.map((event) => event.compaction?.selectedStrategy)).toEqual(["native", "text-summary"])
     expect(fixture.bodies[0]).toHaveProperty("context_management")
     expect(fixture.bodies[1]).not.toHaveProperty("context_management")
     const last = (yield* fixture.load).messages.at(-1)
@@ -539,7 +668,8 @@ for (const endpoint of [false, true]) {
         expect(yield* fixture.compact).toEqual({ status: "completed" })
         expect(yield* fixture.checkpoint).toHaveProperty("messages")
         expect(fixture.bodies).toHaveLength(1)
-        expect(fixture.bodies[0].model).toBe("gpt-5.4-mini")
+         expect(fixture.bodies[0].model).toBe("gpt-5.4-mini")
+         expect(fixture.observations[0]?.compaction).toMatchObject({ configuredStrategy: "remote", strategySource: "agent-config", selectedStrategy: "native", selectionReason: "explicit-remote" })
       expect(JSON.stringify(fixture.bodies[0])).not.toContain("LOCAL CUSTOMIZATION")
         expect(fixture.state.config).toEqual({
           strategy: "remote",
@@ -587,7 +717,8 @@ for (const endpoint of [false, true]) {
         expect(yield* fixture.compaction.handoff({ reason: "auto", context: { ...loaded, model: target } })).toEqual({
           status: "completed",
         })
-        expect(marked).toEqual([true])
+         expect(marked).toEqual([true])
+         expect(fixture.observations.at(-1)?.compaction).toMatchObject({ trigger: "handoff", configuredStrategy: "remote", selectedStrategy: "text-summary", selectionReason: "checkpoint-handoff", modelSource: "checkpoint-owner" })
         const sent = JSON.stringify(fixture.bodies[2])
         expect(fixture.bodies[2].model).toBe("gpt-5.4-mini")
         expect(sent).toContain("encrypted_2")

@@ -2,6 +2,7 @@ export * as SessionModelObservation from "./model-observation.js"
 
 import { LLMEvent, Usage } from "@opencode/ai"
 import type { SessionModelObserved } from "@opencode/plugin/effect/session"
+import type { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import { Context, Effect, Exit } from "effect"
 import type { PluginHooks } from "../plugin/hooks.js"
 import type { Model } from "@opencode/schema/model"
@@ -29,6 +30,9 @@ export const Current = Context.Reference<Invocation | undefined>("SessionModelOb
 export const Purpose = Context.Reference<"warming" | undefined>("SessionModelObservation/Purpose", {
   defaultValue: () => undefined,
 })
+export const Compaction = Context.Reference<CompactionObservation | undefined>("SessionModelObservation/Compaction", {
+  defaultValue: () => undefined,
+})
 const Operation = Context.Reference<string | undefined>("SessionModelObservation/Operation", {
   defaultValue: () => undefined,
 })
@@ -44,7 +48,7 @@ export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.I
   return (effect, identity) =>
     Effect.flatMap(Operation, (operation) =>
       Effect.flatMap(Purpose, (purpose) =>
-        Effect.suspend(() => {
+        Effect.flatMap(Compaction, (compaction) => Effect.suspend(() => {
           const invocation: Invocation = {
             id: crypto.randomUUID(),
             terminal: false,
@@ -67,6 +71,7 @@ export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.I
               const event: SessionModelObserved = Object.freeze({
                 ...scope,
                 purpose,
+                compaction: compaction ? Object.freeze({ ...compaction }) : undefined,
                 model: Object.freeze({ ...scope.model }),
                 invocationID: invocation.id,
                 operationID: identity?.operationID ?? operation ?? operationID,
@@ -98,7 +103,7 @@ export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.I
               )
             }),
           )
-        }),
+        })),
       ),
     )
 }

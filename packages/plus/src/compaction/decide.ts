@@ -95,6 +95,7 @@ export interface CompactionDecisionContext {
 export function decideCompaction(event: SessionCompactionDecision, context: CompactionDecisionContext): void {
   if (context.armed !== undefined) {
     armModels(event, context.armed)
+    event.explanation = { ...event.explanation, trigger: "armed" }
     return
   }
   const effective = effectiveCompaction({
@@ -105,7 +106,10 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
     ...(context.agents === undefined ? {} : { agents: context.agents }),
   })
   // Built-in/inherit leaves the field untouched, so core keeps today's behaviour.
-  if (effective.strategy.from !== "built-in") event.strategy = effective.strategy.value
+  if (effective.strategy.from !== "built-in") {
+    event.strategy = effective.strategy.value
+    event.explanation = { ...event.explanation, strategy: { value: effective.strategy.value, source: effective.strategy.from } }
+  }
   if (effective.model.from !== "built-in" && effective.model.value !== undefined)
     event.compactionModel = Model.Ref.parse(effective.model.value)
   if (effective.instructions.from !== "built-in" && effective.instructions.value !== undefined)
@@ -113,12 +117,14 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
   const coldModels = effective.coldModels.value
   if (event.metadata?.["quota.switch"] === true) {
     if (coldModels.length > 0) armModels(event, coldModels)
+    event.explanation = { ...event.explanation, trigger: "handoff" }
     return
   }
   if (!coldFires(effective.coldCompact.value, coldModels, context.cold)) return
   armModels(event, coldModels)
   event.optional = true
   event.metadata = { ...event.metadata, "plus.cold": { models: [...coldModels] } }
+  event.explanation = { ...event.explanation, trigger: "cold" }
 }
 
 /** #1 writes the summary; #2… are its fallbacks, replacing CPA's single one. */

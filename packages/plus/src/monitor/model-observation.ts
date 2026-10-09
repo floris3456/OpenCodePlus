@@ -35,6 +35,7 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
           scope: "exchange",
           invocationID: event.invocationID,
           operationID: event.operationID,
+          compaction: event.compaction,
         })
       })
     ledger.requestStarted({ ...start, id, started: single?.started ?? event.started })
@@ -59,6 +60,7 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
       invocationID: event.invocationID,
       operationID: event.operationID,
       exchangeCount: event.exchangeCount,
+      compaction: event.compaction,
     })
     // A final HTTP response identifies the effective fingerprint; an unacknowledged WS frame does not.
     const response = !single ? event.exchanges.findLast((exchange) => exchange.outcome === "response") : undefined
