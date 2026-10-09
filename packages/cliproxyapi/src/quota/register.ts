@@ -95,19 +95,28 @@ export function registerQuota(ctx: Context, config: () => Config) {
         ? Effect.die(new Error("Credential quota handoff requires provider transport:http"))
         : Effect.void,
     )
-    const portable = (event: SessionRequest, kind: string) =>
+    const portable = (event: SessionRequest, kind: string, checkpointHandoff?: true) =>
       Effect.promise(async () => {
         if (!controller.enabled(event.model.providerID)) return
-        if (!(await controller.requiresPortable(event.sessionID, event.model.providerID, event.model.id, kind))) return
+        if (
+          !(await controller.requiresPortable(
+            event.sessionID,
+            event.model.providerID,
+            event.model.id,
+            kind,
+            checkpointHandoff,
+          ))
+        )
+          return
         event.messages = portableMessages(event.messages)
         delete event.options.previous_response_id
       })
     yield* ctx.session.hook("context", (event) => portable(event, "context"))
     yield* ctx.session.hook("compaction", (event) =>
       Effect.gen(function* () {
-        yield* portable(event, "compaction")
-        // Every decide hook has run by now: name the models actually armed.
-        yield* Effect.promise(() => controller.compacting(event.sessionID))
+        yield* portable(event, "compaction", event.checkpointHandoff)
+        // Ordinary compactions name the models actually armed; checkpoint conversions have no decision.
+        yield* Effect.promise(() => controller.compacting(event.sessionID, event.checkpointHandoff))
       }),
     )
     yield* ctx.session.hook("generate", (event) => portable(event, "generate"))

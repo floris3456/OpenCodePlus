@@ -194,3 +194,43 @@ test("quota then Plus warming preserves 90m/25m as a 100m window despite an old-
       expect(await store.status(sessionID)).toMatchObject({ active: false, compactAt: clock.now + 4 * MINUTE })
     })
   }))))
+
+test("checkpoint-handoff hooks distinguish source conversion from the target's summary and retain source guards", () =>
+  Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const f = yield* fixture()
+    yield* Effect.promise(async () => {
+      await f.decide(astra)
+      await f.trigger("compaction.decide", {
+        sessionID,
+        agent,
+        model: Model.Ref.parse("proxy/old-model"),
+        reason: "auto",
+        auto: true,
+        due: false,
+        boundary: { fresh: false, portable: false },
+        compactionModel: astra,
+      })
+      const request = (): SessionHooks["compaction"] => ({
+        sessionID,
+        agent,
+        model: astra,
+        checkpointHandoff: true,
+        system: [],
+        tools: {},
+        messages: [{
+          role: "assistant",
+          content: [{ type: "compaction", provider: ProviderID.make("openai"), encrypted: "fixture-source-checkpoint" }],
+        }],
+        options: { previous_response_id: "fixture-source-continuation" },
+      })
+      const source = request()
+      await f.trigger("compaction", source)
+      expect(source.messages).toEqual(request().messages)
+      expect(source.options.previous_response_id).toBe("fixture-source-continuation")
+      // Same identities, different purpose: the target's ordinary quota summary still rejects opaque input.
+      await expect(f.trigger("compaction", { ...request(), checkpointHandoff: undefined })).rejects.toThrow("opaque checkpoint")
+      // The source itself becomes pending, with no new decision hook to announce it.
+      f.pending.add("proxy/gpt-6-astra")
+      await expect(f.trigger("compaction", request())).rejects.toThrow("opaque checkpoint")
+    })
+  }))))

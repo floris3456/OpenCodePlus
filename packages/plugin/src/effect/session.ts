@@ -51,6 +51,8 @@ export interface SessionCompactionResult {
 }
 
 export interface SessionCompaction extends SessionContext {
+  /** Core is converting a native checkpoint on its original model, without a new compaction decision. */
+  readonly checkpointHandoff?: true
   /** Set to use this compaction and skip the model request. */
   result?: SessionCompactionResult
 }

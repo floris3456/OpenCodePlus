@@ -24,6 +24,8 @@ type Route = {
   alias?: string
   snapshot?: Snapshot
   decision?: SessionCompactionDecision
+  /** The prepared compaction consumes a source-bound checkpoint without a new decision. */
+  checkpointHandoff?: true
   active: boolean
   touched: number
   notices: Status[]
@@ -334,6 +336,8 @@ export class QuotaController {
     if (!route.decision) await this.poll(route)
     route.touched = this.io.now()
     const event = route.decision
+    // Claim the encrypted input, not the future summary or a checkpoint from an older source decision.
+    const checkpointHandoff = kind === "compaction" && route.checkpointHandoff === true
     const claim = {
       protocol: 1,
       installation: await this.identity,
@@ -343,9 +347,9 @@ export class QuotaController {
       kind,
       capability: createHash("sha256").update(route.stored.capability).digest("hex"),
       auto: event?.auto ?? true,
-      fresh: event?.boundary.fresh ?? false,
-      portable: event?.boundary.portable ?? true,
-      checkpoint: event?.boundary.checkpoint ?? "",
+      fresh: checkpointHandoff ? false : (event?.boundary.fresh ?? false),
+      portable: checkpointHandoff ? false : (event?.boundary.portable ?? true),
+      checkpoint: checkpointHandoff ? "" : (event?.boundary.checkpoint ?? ""),
       generation: route.stored.generation,
       intent: route.snapshot?.intent ?? "",
       // This client compacts when CPA refuses an account switch with quota_compact_required.
@@ -469,9 +473,22 @@ export class QuotaController {
     await this.save(route)
     return true
   }
-  async requiresPortable(session: string, provider: string, model: string, kind: string) {
-    if (kind === "compaction") return this.decisions.get(session)?.portable === true
+  async requiresPortable(session: string, provider: string, model: string, kind: string, checkpointHandoff?: true) {
     const route = await this.route(session, provider, model)
+    if (kind === "compaction") {
+      route.checkpointHandoff = checkpointHandoff
+      if (!checkpointHandoff) return this.decisions.get(session)?.portable === true
+      // Mandatory checkpoint conversion has no new decision. Poll the actual source route instead of
+      // borrowing a stale target decision, even when that target chose the source as its summary model.
+      await this.poll(route).catch((error: unknown) => this.refuse(route, error))
+      if (route.refusal) throw new Error(route.refusal)
+      return (
+        route.stored.replay ||
+        route.stored.switching !== undefined ||
+        !!route.snapshot?.intent ||
+        (route.mode !== "shadow" && !route.snapshot?.primary_used)
+      )
+    }
     return route.stored.replay || !!route.decision?.boundary.checkpoint
   }
   /**
@@ -479,7 +496,8 @@ export class QuotaController {
    * chat's account switch, the switching notice names the models the final decision chose (Plus may
    * have replaced CPA's own list), not the ones CPA configured.
    */
-  async compacting(session: string) {
+  async compacting(session: string, checkpointHandoff?: true) {
+    if (checkpointHandoff) return
     // The compaction hook carries the summary model, not the chat's model.
     // Only the current decision can arm a switch; earlier model routes stay pending.
     const decision = this.decisions.get(session)

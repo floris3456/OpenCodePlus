@@ -380,6 +380,97 @@ test("provider aliases sharing one model have distinct routes and capabilities",
   expect(f.state.routes).toContain("other/model")
 })
 
+test("checkpoint handoff checks the source even when the stale target chose it as its summary model", async () => {
+  const f = fixture("proxy/source")
+  f.state.known = true
+  // No new source decision runs for Core's mandatory native-checkpoint conversion.
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  const target = f.event()
+  await f.controller.decide(target)
+  expect(target.compactionModel).toEqual(Model.Ref.parse("proxy/source"))
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction")).toBe(true)
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(false)
+  const claim = claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href))
+  expect(claim).toMatchObject({ route: "proxy/source", kind: "compaction", portable: false, fresh: false, checkpoint: "" })
+
+  const notices = await f.controller.status("ses_test")
+  target.compactionModel = Model.Ref.parse("proxy/changed-summary")
+  await f.controller.compacting("ses_test", true)
+  expect(await f.controller.status("ses_test")).toEqual(notices)
+  await f.controller.response("ses_test", "proxy", "source", ackResponse(), "compaction")
+  expect(f.store.get("quota/ses_test/proxy/model")?.switching).toBe("")
+  expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(false)
+
+  // Marking one conversion neither consumes the target decision nor marks later ordinary compactions.
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction")).toBe(true)
+  expect(claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href)).portable).toBe(true)
+})
+
+test.each(["intent", "switch", "replay", "unenrolled", "unavailable"])(
+  "checkpoint handoff retains the source %s guard without a source decision",
+  async (guard) => {
+    const f = fixture()
+    f.state.known = true
+    await f.controller.decide(f.event())
+    f.state.snapshot = {
+      ...f.state.snapshot,
+      intent: guard === "intent" ? "source-handoff" : "",
+      primary_used: guard !== "unenrolled",
+    }
+    if (guard === "switch" || guard === "replay")
+      f.store.set("quota/ses_test/proxy/source", {
+        capability: "fixture-source-capability",
+        cursor: 0,
+        generation: 1,
+        retryIntent: "",
+        replay: guard === "replay",
+        ...(guard === "switch" ? { switching: "" } : {}),
+      })
+    if (guard === "unavailable") {
+      f.state.status = 503
+      await expect(f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).rejects.toThrow(
+        "Quota coordination unavailable",
+      )
+      return
+    }
+    expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(true)
+    expect(f.state.routes.at(-1)).toBe("proxy/source")
+  },
+)
+
+test("checkpoint handoff keeps shadow enrollment observational but blocks a pending source intent", async () => {
+  const f = fixture()
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow", primary_used: false }
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(false)
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, intent: "source-handoff" }
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(true)
+})
+
+test("checkpoint handoff does not claim a stale source checkpoint or alter primary claims", async () => {
+  const f = fixture()
+  f.state.known = true
+  await f.controller.decide({
+    ...f.event(),
+    model: Model.Ref.parse("proxy/source"),
+    boundary: { fresh: true, portable: true, checkpoint: "stale-source-checkpoint" },
+  })
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(false)
+  expect(claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href))).toMatchObject({
+    portable: false,
+    fresh: false,
+    checkpoint: "",
+  })
+  expect(claimOf(await f.controller.headers("ses_test", "proxy", "source", "primary", f.server.url.href))).toMatchObject({
+    portable: true,
+    fresh: true,
+    checkpoint: "stale-source-checkpoint",
+  })
+})
+
 test("auxiliary enrollment still requires portable first primary context", async () => {
   const f = fixture()
   f.state.known = true
