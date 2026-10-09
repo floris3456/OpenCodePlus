@@ -978,9 +978,9 @@ function computeSet(
 ): ReturnType<typeof setRequires> {
   const preserved = modelsOfMemo(memo)
   const preservedRules = rulesOfMemo(memo)
-  const withModels = (records: readonly CustomizationRecord[], splits: readonly SplitRecord[]): MemoInput => ({
+  const withModels = (records: readonly CustomizationRecord[], splits: readonly SplitRecord[], models: readonly ModelRecord[] = preserved): MemoInput => ({
     ...memo,
-    records: [...records, ...splits, ...preserved, ...preservedRules, ...rowlinksOf(memo)],
+    records: [...records, ...splits, ...models, ...preservedRules, ...rowlinksOf(memo)],
   })
   // The condition is its own field: set it, then whatever else came with it.
   if (input.requires !== undefined) {
@@ -1003,10 +1003,13 @@ function computeSet(
     if (input.state !== undefined) {
       const second = setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
       if ("refusal" in second) return second
-      interim = withModels(second.records, second.splits)
+      interim = withModels(second.records, second.splits, second.models)
       if (input.pin === undefined) return second
     }
-    if (input.pin !== undefined) return setPin(interim, input.id, input.pin)
+    if (input.pin !== undefined) {
+      const pinned = setPin(interim, input.id, input.pin)
+      return "refusal" in pinned ? pinned : { ...pinned, models: modelsOfMemo(interim) }
+    }
     return first
   }
   if (input.text !== undefined && input.state !== undefined && input.pin !== undefined) {
@@ -1015,8 +1018,9 @@ function computeSet(
     const interim: MemoInput = withModels(first.records, first.splits)
     const second = setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
     if ("refusal" in second) return second
-    const interim2: MemoInput = withModels(second.records, second.splits)
-    return setPin(interim2, input.id, input.pin)
+    const interim2: MemoInput = withModels(second.records, second.splits, second.models)
+    const pinned = setPin(interim2, input.id, input.pin)
+    return "refusal" in pinned ? pinned : { ...pinned, models: modelsOfMemo(interim2) }
   }
   if (input.text !== undefined && input.state !== undefined) {
     const first = saveText(memo, input.id, input.text, sharedMemo)
@@ -1033,8 +1037,9 @@ function computeSet(
   if (input.state !== undefined && input.pin !== undefined) {
     const first = setEnabled(memo, input.id, input.state === "on", sharedMemo, isProtected)
     if ("refusal" in first) return first
-    const interim: MemoInput = withModels(first.records, first.splits)
-    return setPin(interim, input.id, input.pin)
+    const interim: MemoInput = withModels(first.records, first.splits, first.models)
+    const pinned = setPin(interim, input.id, input.pin)
+    return "refusal" in pinned ? pinned : { ...pinned, models: modelsOfMemo(interim) }
   }
   if (input.text !== undefined) return saveText(memo, input.id, input.text, sharedMemo)
   if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on", sharedMemo, isProtected)
@@ -1145,6 +1150,10 @@ function setModel(
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
+    if (input.active === false) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deactivated with active:false; remove the candidate to mask it` }))
+    if ((input.active !== undefined || input.state !== undefined) &&
+      (input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.prompt !== undefined))
+      return yield* Effect.fail(new Tool.Error({ message: `"${label}": set candidate or warming separately from activation or state` }))
     const compaction = compactionFieldsOf(input)
     if ("error" in compaction) return yield* Effect.fail(new Tool.Error({ message: compaction.error }))
     // Compose candidate/warming and C1 changes in memory, then persist once.

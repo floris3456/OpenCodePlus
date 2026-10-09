@@ -3674,8 +3674,13 @@ for (const type of ["either", "oneway"] as const) {
     expect(activated.projectRevision + activated.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
     expect(activated.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
     expect(await customizationState(project, "tool:reader")).toBe("off")
+    expect((await runFail(set, { id: model, state: "off" })).message).toContain("cannot be toggled off by state")
+    expect(await load(project)).toEqual(activated)
     // Explicitly turning the target back on is the only resurrection. Either
     // masks the active model; oneway deliberately leaves it active.
+    const reverseEquivalent = toggle(memoInputOf(await snapshotOf(api)), reader)
+    if ("refusal" in reverseEquivalent) throw new Error(reverseEquivalent.refusal)
+    if (type === "either") expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ removed: true })
     await runOk(set, { id: reader, state: "on" })
     const reversed = await load(project)
     expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject(type === "either" ? { removed: true } : { active: true })
@@ -3693,6 +3698,55 @@ for (const type of ["either", "oneway"] as const) {
     }
   })
 }
+
+test("model rowlinks inherit, mask, stay one-hop and refuse protected writes atomically", async () => {
+  const { api, tools, project } = await freshFixture({
+    agents: [agentInfo("build", "role", modelRef("acme", "base"))],
+    models: [modelInfo("acme", "base"), modelInfo("acme", "alt")],
+    classifications: { base: "general", alt: "general" },
+    tools: [{ id: "reader", description: "reader", options: { codemode: false } }, { id: "extra", description: "extra", options: { codemode: false } }],
+  })
+  const set = need(tools, "instructions_set")
+  const link = need(tools, "instructions_link")
+  const create = need(tools, "instructions_create")
+  await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "global", agent: "build" })
+  const globalModel = "item:global:build:model:acme/alt"
+  const model = "item:project:build:model:acme/alt"
+  const reader = "item:project:build:tool:reader"
+  const extra = "item:project:build:tool:extra"
+  await runOk(link, { id: globalModel, target: "item:global:build:tool:reader", type: "either" })
+  await runOk(link, { id: reader, target: extra, type: "oneway" })
+  await runOk(set, { id: reader, state: "off" })
+  // The inherited either switches alt off when reader turns on at Project.
+  await runOk(set, { id: reader, state: "on" })
+  expect((await load(project)).records.find((record) => record.type === "model" && record.level === "project" && record.modelID === "alt")).toMatchObject({ removed: true })
+  await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "project", agent: "build" })
+  await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
+  await runOk(set, { id: extra, state: "on" })
+  await runOk(set, { id: model, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+  expect(await customizationState(project, "tool:extra")).toBe("on")
+  await runOk(set, { id: model, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+  // Tombstone only this level's relationship; the Global link survives.
+  await runOk(link, { id: model, target: reader, type: "either", enabled: false })
+  await runOk(set, { id: reader, state: "on" })
+  await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
+  await runOk(set, { id: model, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBe("on")
+  await runOk(link, { id: model, target: reader, type: "either" })
+  await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
+  const switchMemo = memoInputOf(await snapshotOf(api))
+  const unsupported = activateModelRow({ ...switchMemo, rowlinks: [...(switchMemo.rowlinks ?? []), {
+    type: "rowlink", level: "project", agent: "build", item: "model:acme/alt", section: null,
+    target: "setting:description", targetSection: null, link: "oneway", updated: "2026-01-01T00:00:00.000Z",
+  }] }, model)
+  expect(unsupported).toMatchObject({ refusal: 'Linked row "setting:description" has no switch state' })
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["build"] }))
+  const before = await load(project)
+  expect((await runFail(set, { id: model, state: "on" })).message).toContain("agent.protected")
+  expect(await load(project)).toEqual(before)
+})
 
 test("set state:on persists its either partner off in one save, and it stays off after reload", async () => {
   const { api, tools, project } = await freshFixture({

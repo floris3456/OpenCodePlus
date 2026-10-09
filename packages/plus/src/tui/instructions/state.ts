@@ -715,7 +715,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(result.refusal)
       return false
     }
-    return persist(result.records, result.splits, result.status, result.retryHint)
+    return persist(result.records, result.splits, result.status, result.retryHint, result.models)
   }
 
   // A group row turns its nearest toggleable rows on or off in one write
@@ -733,7 +733,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(result.refusal)
       return false
     }
-    return persist(result.records, result.splits, result.status, result.retryHint)
+    return persist(result.records, result.splits, result.status, result.retryHint, result.models)
   }
 
   async function toggleTeamsGroup(node: TreeNode, rows: readonly Lazy[]): Promise<boolean> {

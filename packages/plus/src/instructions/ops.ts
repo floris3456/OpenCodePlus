@@ -1126,6 +1126,8 @@ function applySwitches(
   const disabled: string[] = []
   for (const endpoint of targets) {
     const address = { ...chain.address, item: endpoint.item, section: endpoint.section }
+    if (isControl(endpoint.item) && !booleanControl(endpoint.item))
+      return { refusal: `Linked row "${endpoint.item}" has no switch state` }
     const model = modelTargetOf(address)
     if (model !== undefined && endpoint.section === null) {
       const active = effectiveModelAt(memo, address, modelOut)
@@ -1278,6 +1280,7 @@ export function toggleGroup(
   if (rows.length === 0) return { refusal: `"${label}" has no toggleable rows` }
   const want = target ?? !rows.every((row) => row.on)
   let records = [...memo.ctx.customizations]
+  let models = [...memo.ctx.models]
   const splits = [...memo.ctx.splits]
   const skipped: string[] = []
   let applied = 0
@@ -1307,9 +1310,10 @@ export function toggleGroup(
     const wasOn = resolve({ upstream, records, splits, scopes: memo.ctx.scopes, address }).enabled
     const next = merge(records, address, { state: want ? "on" : "off" }, upstream, memo.ctx.scopes)
     const switched = applySwitches(memo, { address, customizations: records }, next, want && !wasOn,
-      (owner) => owner !== null && isProtected?.(owner) === true)
+      (owner) => owner !== null && isProtected?.(owner) === true, models)
     if ("refusal" in switched) return switched
     records = switched.records
+    models = switched.models ?? models
     applied += 1
   }
   if (applied === 0) return { refusal: skipped[0] ?? `"${label}" has no toggleable rows` }
@@ -1317,6 +1321,7 @@ export function toggleGroup(
     records,
     splits,
     status: `${want ? "Enabled" : "Disabled"} ${applied} row${applied === 1 ? "" : "s"} in "${label}"${skipped.length === 0 ? "" : ` (skipped: ${skipped.join(", ")})`}`,
+    models,
     retryHint: `toggled "${label}" against a stale revision; retry to apply`,
   }
 }
