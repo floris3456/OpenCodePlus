@@ -251,6 +251,10 @@ export function requestReport(
       unstable: signals.unstable.map((entry) => ({ ...entry, sessionID: id })),
       fingerprints: analysis.fingerprints,
       unread: signals.unread,
+      nextExpiry: analysis.writes.reduce((next, write) => {
+        const expiry = write.at + write.lifetime
+        return expiry > window.until ? Math.min(next, expiry) : next
+      }, Infinity),
       pings: signals.pings,
       context: {
         sessionID: id,
@@ -626,5 +630,5 @@ export function requestReport(
     sections.sessions = ordered
   }
 
-  return { totals, sections }
+  return { totals, sections, nextExpiry: analyses.reduce((next, analysis) => Math.min(next, analysis.nextExpiry), Infinity) }
 }

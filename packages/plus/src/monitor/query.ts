@@ -23,12 +23,14 @@ import type {
 } from "../rpc.js"
 import { HOUR, type Ledger } from "./ledger.js"
 import { requestReport } from "./report.js"
+import { QueryCache, type QueryBoundary } from "./query-cache.js"
 
 const DEFAULT_TOP = 20
 const DEFAULT_FEED = 12
 const MAX_ROWS = 500
 
-const compactionSince = (alias: string) => `(select coalesce(max(at), 0) from context_fact where session_id = ${alias}.session_id and kind = 'compaction' and at < $until)`
+const compactionSince = (alias: string) =>
+  `(select coalesce(max(at), 0) from context_fact where session_id = ${alias}.session_id and kind = 'compaction' and at < $until)`
 
 export interface QueryContext {
   /** The Location's directory, for project scope. */
@@ -51,18 +53,58 @@ interface Window {
   readonly until: number
 }
 
+const queryCaches = new WeakMap<Ledger, QueryCache>()
+
+export function queryCacheStats(ledger: Ledger) {
+  return queryCaches.get(ledger)?.stats() ?? { entries: 0, bytes: 0, hits: 0, misses: 0 }
+}
+
 export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: QueryContext = {}): MonitorReport {
   const db = ledger.db
   const now = context.now ?? Date.now()
   const window = { since: input.since ?? 0, until: input.until ?? now + 1 }
+  const comparison =
+    input.compare === undefined ? undefined : { since: input.compare.since ?? 0, until: input.compare.until ?? now + 1 }
+  const cache = queryCaches.get(ledger) ?? new QueryCache()
+  queryCaches.set(ledger, cache)
+  const key = JSON.stringify([
+    input,
+    context.directory,
+    context.states ? [...context.states].toSorted(([a], [b]) => a.localeCompare(b)) : null,
+    context.agents ? [...context.agents].toSorted(([a], [b]) => a.localeCompare(b)) : null,
+  ])
+  const revision = ledger.revision()
+  const cached = cache.get(key, revision, [window.until, ...(comparison ? [comparison.until] : [])])
+  if (cached) return { ...cached, now }
   const group = input.group ?? "tool"
   const top = clamp(input.top ?? DEFAULT_TOP)
   const requests = requestReport(ledger, input, context, window)
+  const bounds: QueryBoundary[] = []
   // One grouped pass answers both: the totals sum every group, the table keeps the top ones.
   const read = (target: Window) => {
     const groups = groupsOf(db, input, context, target, group)
     const totals = totalsOf(db, input, context, target, groups)
-    const analysis = target === window ? requests.totals : requestReport(ledger, input, context, target).totals
+    const analyzed: typeof requests = target === window ? requests : requestReport(ledger, input, context, target)
+    const analysis = analyzed.totals
+    bounds.push({
+      until: target.until,
+      // Facets intentionally include the whole edge hour, so their population
+      // can change at an hour boundary before the next request/call timestamp.
+      nextExpiry: Math.min(analyzed.nextExpiry, (Math.floor(target.until / HOUR) + 1) * HOUR),
+      // Global timestamps are conservative for scoped queries. No payload or
+      // history is loaded; indexes locate the next existing cutoff boundary.
+      nextData:
+        db
+          .query<{ at: number | null }, [number, number, number, number]>(
+            `select min(at) as at from (
+        select min(started) as at from request where started >= ?
+        union all select min(started) from call where started >= ?
+        union all select min(started) from step where started >= ?
+        union all select min(at) from context_fact where at >= ?
+      )`,
+          )
+          .get(target.until, target.until, target.until, target.until)?.at ?? Infinity,
+    })
     // Unknown pricing is omitted everywhere, never merged to a free zero: the
     // baseline zero is dropped unless the request analysis supplies a cost.
     const { missCost: _baseline, hitRate: _legacyRate, ...baseline } = totals
@@ -75,7 +117,7 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
     }
     return { totals: merged, groups: groups.slice(0, top).map((entry) => entry.group) }
   }
-  return {
+  const report: MonitorReport = {
     now,
     ...read(window),
     ...requests.sections,
@@ -90,15 +132,15 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
         }
       : {}),
     feed: feedOf(db, input, context, window, clamp(input.feed ?? DEFAULT_FEED)),
-    ...(input.compare === undefined
-      ? {}
-      : { compare: read({ since: input.compare.since ?? 0, until: input.compare.until ?? now + 1 }) }),
+    ...(comparison === undefined ? {} : { compare: read(comparison) }),
     facets: facetsOf(db, input, context, window),
     marks: db
       .query<{ id: number; at: number; label: string }, []>("select id, at, label from mark order by at desc limit 50")
       .all()
       .map((row) => ({ id: row.id, at: row.at, label: row.label })),
   }
+  cache.set(key, revision, bounds, report)
+  return report
 }
 
 function clamp(value: number): number {
@@ -120,7 +162,8 @@ export function scopeOf(input: MonitorQueryInput, context: QueryContext): { cte:
       ), scope(id) as (
         select coalesce(parent_id, id) from ancestors where parent_id is null or parent_id not in (select id from session)
         union select s.id from session s join scope on s.parent_id = scope.id
-      )`, bindings: { $root: input.sessionID },
+      )`,
+      bindings: { $root: input.sessionID },
     }
   if (input.scope === "team" && input.team !== undefined)
     return { cte: "with scope(id) as (select id from session where team = $team)", bindings: { $team: input.team } }
