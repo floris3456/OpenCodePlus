@@ -14,6 +14,23 @@ import { gateAnswer, type RowlinkRecord } from "../src/instructions/rowlinks.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
+test("section assembly honors pair type changes, opposite markers and scoped barriers", () => {
+  const target = { target: "system:role", targetSection: "role/checks" }
+  const inherited = gate({ ...target, level: "global", item: "tool:question", link: "shownWhenOn" })
+  const barrier = (level: Level) => gate({ ...target, level, item: "system:role", section: "role/checks", link: "shownAlways" })
+  const role = { ...items[0]!, text: "# Role\n\n## Checks\n<!-- requires: tool:question -->\nRun checks.\n" }
+  for (const scenario of [
+    { links: [inherited, gate({ ...target, item: "tool:question", link: "oneway" })], kept: true },
+    { links: [gate({ ...target, item: "tool:question", link: "shownWhenOff" })], kept: true },
+    { links: [barrier("global"), gate({ ...target, item: "tool:team_check", link: "shownWhenOn" })], kept: false },
+    { links: [inherited, barrier("project")], kept: true },
+  ]) {
+    const input = { ...applyInput(scenario.links, [off("alpha", "tool:question"), off("alpha", "tool:team_check")]), items: [role, ...items.slice(1)] }
+    const agent = { id: "alpha", level: "project" as const }
+    expect(resolvedFor(role, agent, input, rowGate(input, agent)).assembled.includes("## Checks")).toBe(scenario.kept)
+  }
+})
+
 const roleText = `# Role
 
 ## Always

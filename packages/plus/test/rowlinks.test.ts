@@ -23,6 +23,31 @@ import {
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
+for (const scenario of [
+  { name: "nearer switch replaces inherited gate", links: [
+    { level: "global", item: "tool:a", link: "shownWhenOn" },
+    { level: "project", item: "tool:a", link: "oneway" },
+  ], marker: [], ids: [], inspected: [["tool:a", "oneway"]] },
+  { name: "stored opposite replaces shipped marker", links: [
+    { level: "project", item: "tool:a", link: "shownWhenOff" },
+  ], marker: ["tool:a"], ids: ["!tool:a"], inspected: [["tool:a", "shownWhenOff"]] },
+  { name: "nearer gate survives inherited barrier", links: [
+    { level: "global", item: "tool:s", link: "shownAlways" },
+    { level: "project", item: "tool:b", link: "shownWhenOn" },
+  ], marker: ["tool:m"], ids: ["tool:b"], inspected: [["tool:b", "shownWhenOn"]] },
+  { name: "local barrier hides farther gates and markers", links: [
+    { level: "global", item: "tool:a", link: "shownWhenOn" },
+    { level: "project", item: "tool:s", link: "shownAlways" },
+  ], marker: ["tool:m"], ids: [], inspected: [] },
+] as const) {
+  test(`gate/inspection consistency: ${scenario.name}`, () => {
+    const records = scenario.links.map((entry) => link({ ...entry, target: "tool:s" }))
+    const target = address({ item: "tool:s" })
+    expect(gateAnswer(records, scopes(), target, scenario.marker)?.ids).toEqual(scenario.ids)
+    expect(rowlinkView(records, scopes(), target, target, scenario.marker).map((entry) => [entry.item, entry.type])).toEqual(scenario.inspected.map((entry) => [...entry]))
+  })
+}
+
 // A two-agent scope set: project/alpha and global/alpha both exist so an
 // address's chain carries a node above its own level (for inheritance tests).
 function scopes(overrides: Partial<Scopes> = {}): Scopes {

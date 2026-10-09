@@ -4061,6 +4061,11 @@ test("set requires stores rowlinks only, survives reload, and null inherits agai
   await runOk(set, { id: section.id, requires: null })
   expect((await linksOf(project)).filter((record) => record.target === "system:tools-and-rules")).toEqual([])
   expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
+  // Reset takes the same rowlink removal through the durable tool boundary.
+  await runOk(set, { id: section.id, requires: [], text: "## Questions\nLocal question guidance." })
+  await runOk(need(tools, "instructions_reset"), { id: section.id })
+  expect((await linksOf(project)).filter((record) => record.target === "system:tools-and-rules")).toEqual([])
+  expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
 })
 
 test("instructions_link reports a shipped requires marker with text provenance", async () => {
@@ -4078,4 +4083,45 @@ test("instructions_link reports a shipped requires marker with text provenance",
   if (section === undefined) throw new Error("missing Questions section")
   const inspected = (await runOk(link, { id: section.id })) as { links: { item: string; shipped: boolean; from: unknown }[] }
   expect(inspected.links.map((entry) => [entry.item, entry.shipped, entry.from])).toEqual([["tool:question", true, "text"]])
+})
+
+test("durable section gates and inspection agree across pair replacements and barriers", async () => {
+  const { api, tools, project } = await freshFixture({ tools: [
+    { id: "reader", description: "Read", options: { codemode: false } },
+    { id: "question", description: "Ask", options: { codemode: false } },
+  ] })
+  const create = need(tools, "instructions_create")
+  await runOk(create, { kind: "agent", id: "gateprobe", scope: "global" })
+  await runOk(create, { kind: "agent", id: "gateprobe", scope: "project" })
+  await linkToBuild(project, "global", ["gateprobe"])
+  await linkToBuild(project, "project", ["gateprobe"])
+  const nodes = expandedTree(memoInputOf(await snapshotOf(api)))
+  const section = nodes.find((node) => node.address?.level === "project" && node.address.agent === "gateprobe" && node.label === "Questions")
+  if (section?.address === undefined) throw new Error("Missing project Questions section")
+  const target = section.address
+  const pair = (level: "project" | "global", item: string, link: "oneway" | "shownWhenOn" | "shownWhenOff" | "shownAlways") => ({
+    type: "rowlink" as const, level, agent: "gateprobe", item, section: link === "shownAlways" ? target.section : null,
+    target: target.item, targetSection: target.section, link, updated: "2026-01-01T00:00:00.000Z",
+  })
+  for (const scenario of [
+    { pairs: [pair("global", "tool:question", "shownWhenOn"), pair("project", "tool:question", "oneway")], inspected: [["tool:question", "oneway"]], kept: true },
+    { pairs: [pair("project", "tool:question", "shownWhenOff")], inspected: [["tool:question", "shownWhenOff"]], kept: true },
+    { pairs: [pair("global", target.item, "shownAlways"), pair("project", "tool:reader", "shownWhenOn")], inspected: [["tool:reader", "shownWhenOn"]], kept: false },
+    { pairs: [pair("global", "tool:reader", "shownWhenOn"), pair("project", target.item, "shownAlways")], inspected: [], kept: true },
+  ]) {
+    const loaded = await load(project)
+    const saved = await save(project, {
+      expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision,
+      records: [...loaded.records.filter((record) => record.type !== "rowlink"), ...scenario.pairs],
+    })
+    if (!saved.ok) throw new Error("Seed failed")
+    await runOk(need(tools, "instructions_set"), { id: "item:project:gateprobe:tool:question", state: "off" })
+    await runOk(need(tools, "instructions_set"), { id: "item:project:gateprobe:tool:reader", state: "off" })
+    expect((await linksOf(project)).length).toBe(scenario.pairs.length)
+    const inspected = await runOk(need(tools, "instructions_link"), { id: section.id }) as { links: { item: string; type: string }[] }
+    expect(inspected.links.map((entry) => [entry.item, entry.type])).toEqual(scenario.inspected)
+    const assembled = await api.assembled({ agent: "gateprobe" })
+    if (!assembled.ok) throw new Error(assembled.error.message)
+    expect(assembled.value.system.join("\n").includes("## Questions")).toBe(scenario.kept)
+  }
 })

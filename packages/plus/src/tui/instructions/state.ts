@@ -81,6 +81,7 @@ import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js
 import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { rowlinkView, sameOwnerView, sameEndpoint, writeRowlink, type RowlinkType, type RowlinkEndpoint, type RowlinkRecord } from "../../instructions/rowlinks.js"
+import { markerIn } from "../../instructions/requires.js"
 import { expandedTree } from "../../instructions/tree.js"
 
 export type { TreeNode }
@@ -635,6 +636,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     retryHint: string,
     nextModels?: readonly ModelRecord[],
     nextRules?: readonly RuleRecord[],
+    nextRowlinks?: readonly RowlinkRecord[],
   ): Promise<boolean> {
     const current = snapshot()
     if (!current) {
@@ -647,7 +649,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const preservedRules =
       nextRules ?? converted.filter((record): record is RuleRecord => record.type === "rule")
 
-    const nextSnapshotRecords = [...toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules), ...current.records.filter((record) => record.type === "rowlink")]
+    const links = nextRowlinks === undefined ? current.records.filter((record) => record.type === "rowlink") : nextRowlinks.map(snapshotRecordOf).filter((record): record is SnapshotRecord => record !== undefined)
+    const nextSnapshotRecords = [...toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules), ...links]
     setSnapshot({ ...current, records: nextSnapshotRecords })
 
     lastOpStatus = successStatus
@@ -1127,7 +1130,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return false
     }
     if (blockedControlWrite(node)) return false
-    return persist(result.records, result.splits, result.status, result.retryHint)
+    return persist(result.records, result.splits, result.status, result.retryHint, undefined, undefined, result.rowlinks)
   }
 
   // A snapshot update can make an already-open local editor unavailable.
@@ -1666,7 +1669,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
   function linksFor(node: TreeNode) {
     const memo = treeMemo()
-    return node.address === undefined || memo === undefined ? [] : rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, node.address, node.address)
+    const chain = chainFor(node)
+    if (node.address === undefined || memo === undefined || chain === undefined) return []
+    // Inspect the source span, not assembled/fullText (which strips markers).
+    const marker = markerIn(resolve({ ...chain, records: chain.customizations, scopes: memo.ctx.scopes }).text) ?? []
+    return rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, node.address, node.address, marker)
   }
   async function saveRowlink(primary: TreeNode, target: RowlinkEndpoint, link: Exclude<RowlinkType, "shownAlways">, enabled = true): Promise<boolean> {
     const current = snapshot()

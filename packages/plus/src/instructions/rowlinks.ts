@@ -16,8 +16,8 @@
 // level overrides it, just as a stored row override shadows an upstream row.
 //
 // Records inherit down the owner chain like every other record: the nearest
-// level that says anything about a target decides it (its live links replace
-// the levels below, and a lone tombstone masks them). Both ends of a link
+// level that says anything about a directed pair decides its type and state.
+// A replacement barrier suppresses only farther gates on its target. Both ends of a link
 // belong to one owner and level view; mixed owners never see each other.
 //
 // `shownAlways` is never accepted from the link tool: `requires: []` means
@@ -142,8 +142,9 @@ export function rowlinkView(
   endpoint: RowlinkEndpoint,
   markerIds: readonly string[] = [],
 ): RowlinkView[] {
-  const visible = links.filter((link) => !isReplacementBarrier(link))
-  const { live, masked } = effectiveRowlinks(visible, scopes, address)
+  const effective = effectiveRowlinks(links, scopes, address)
+  const live = effective.live.filter((link) => !isReplacementBarrier(link))
+  const masked = effective.masked.filter((link) => !isReplacementBarrier(link))
   const chain = resolutionChain(address, scopes)
   const fromOf = (link: RowlinkRecord): From | "text" => chain.find((node) => scopedTo(link, node))?.from ?? { kind: "upstream" }
   const stored = [...live, ...masked].flatMap((link): RowlinkView[] => {
@@ -155,7 +156,8 @@ export function rowlinkView(
     if (direction === undefined) return []
     return [{ direction, ...viewOf(link, fromOf(link), false) }]
   })
-  const shipped = markerView(markerIds, endpoint, live, masked)
+  const barrier = effective.live.some((link) => barrierOf(link, endpoint.item, endpoint.section))
+  const shipped = markerView(barrier ? [] : markerIds, endpoint, live, masked)
   return [...stored, ...shipped]
 }
 
@@ -340,7 +342,10 @@ export function gateAnswer(
 ): GateAnswer | undefined {
   const item = address.item
   const section = address.section
-  const gates = links.filter(isGate)
+  // Resolve every type before selecting gates: a nearer switch replaces an
+  // inherited gate for the same directed endpoint pair too.
+  const effective = effectiveRowlinks(links, scopes, address)
+  const gates = [...effective.live, ...effective.masked]
   const marker = markerPairs(markerIds, item, section)
   if (gates.length === 0 && marker.length === 0) return undefined
   const chain = resolutionChain(address, scopes)
@@ -350,31 +355,24 @@ export function gateAnswer(
     if (barrier === undefined || barrier.enabled === false) continue
     const list = gates.filter(
       (link) =>
-        !barrierOf(link, item, section) && sameGateTarget(link, item, section) && link.enabled !== false && scopedTo(link, node),
+        isGate(link) && !barrierOf(link, item, section) && sameGateTarget(link, item, section) && link.enabled !== false,
     )
     return {
       ids: conditionIds(list),
-      from: node.from,
-      here: scopedTo(barrier, address),
+      from: chain.find((candidate) => list.some((link) => scopedTo(link, candidate)))?.from ?? node.from,
+      here: scopedTo(barrier, address) || list.some((link) => scopedTo(link, address)),
       barrier: true,
       pairs: list.map(pairOfStored),
     }
   }
-  const byPair = new Map<string, { readonly link: RowlinkRecord; readonly depth: number }>()
-  for (const link of gates) {
-    if (barrierOf(link, item, section) || !sameGateTarget(link, item, section)) continue
-    const depth = chain.findIndex((node) => scopedTo(link, node))
-    if (depth === -1) continue
-    const key = rowlinkKey(link)
-    const seen = byPair.get(key)
-    if (seen === undefined || depth < seen.depth) byPair.set(key, { link, depth })
-  }
-  const entries = [...byPair.values()]
-  const live = entries.filter((entry) => entry.link.enabled !== false)
+  const entries = gates
+    .filter((link) => !barrierOf(link, item, section) && sameGateTarget(link, item, section))
+    .map((link) => ({ link, depth: chain.findIndex((node) => scopedTo(link, node)) }))
+  const live = entries.filter((entry) => entry.link.enabled !== false && isGate(entry.link))
   const masked = entries.filter((entry) => entry.link.enabled === false)
-  const maskedKeys = new Set(masked.map((entry) => rowlinkKey(entry.link)))
-  const shipped = marker.filter((pair) => !maskedKeys.has(pair.key))
-  if (live.length === 0 && masked.length === 0 && shipped.length === 0) return undefined
+  const coveredKeys = new Set(entries.map((entry) => rowlinkKey(entry.link)))
+  const shipped = marker.filter((pair) => !coveredKeys.has(pair.key))
+  if (entries.length === 0 && shipped.length === 0) return undefined
   const nearest = live.reduce<{ readonly link: RowlinkRecord; readonly depth: number } | undefined>(
     (best, entry) => (best === undefined || entry.depth < best.depth ? entry : best),
     undefined,
@@ -534,7 +532,12 @@ export function effectiveRowlinks(
   }
   const live: RowlinkRecord[] = []
   const masked: RowlinkRecord[] = []
-  for (const { link } of byPair.values()) {
+  const barriers = [...byPair.values()].filter(({ link }) => isReplacementBarrier(link) && link.enabled !== false)
+  for (const { link, depth } of byPair.values()) {
+    // Barriers suppress only farther gates; pair precedence still includes
+    // switches, type changes and tombstones at more-specific scopes.
+    if (isGate(link) && !isReplacementBarrier(link) && barriers.some((barrier) =>
+      barrier.depth < depth && sameGateTarget(barrier.link, link.target, link.targetSection))) continue
     if (link.enabled === false) masked.push(link)
     else live.push(link)
   }
