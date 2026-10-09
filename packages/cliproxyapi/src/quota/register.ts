@@ -49,9 +49,7 @@ export function registerQuota(ctx: Context, config: () => Config) {
         status: (input) => Effect.promise(() => controller.status(input.sessionID)),
       })
       .pipe(Effect.orDie)
-    yield* ctx.session.hook("compaction.decide", (event) =>
-      controller.enabled(event.model.providerID) ? Effect.promise(() => controller.decide(event)) : Effect.void,
-    )
+    yield* ctx.session.hook("compaction.decide", (event) => Effect.promise(() => controller.decide(event)))
     yield* ctx.session.hook("model.request", (event) =>
       Effect.promise(async () => {
         if (!controller.enabled(event.model.providerID)) return
@@ -83,7 +81,10 @@ export function registerQuota(ctx: Context, config: () => Config) {
     )
     yield* ctx.session.hook("warming", (event) =>
       Effect.promise(async () => {
-        if (controller.enabled(event.model.providerID) && !(await controller.warming(event.sessionID)))
+        if (
+          controller.enabled(event.model.providerID) &&
+          !(await controller.warming(event.sessionID, event.model.providerID, event.model.id))
+        )
           event.settings = undefined
       }),
     )

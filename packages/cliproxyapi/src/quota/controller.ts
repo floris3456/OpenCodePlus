@@ -85,6 +85,7 @@ function modelLabel(ref: Model.Ref): string {
 /** Owns polling and admission claims. Compaction itself remains entirely in Core. */
 export class QuotaController {
   private readonly routes = new Map<string, Promise<Route>>()
+  private readonly decisions = new Map<string, SessionCompactionDecision>()
   private readonly running = new Set<string>()
 
   private readonly identity: Promise<string>
@@ -240,6 +241,10 @@ export class QuotaController {
     await this.save(route)
   }
   async decide(event: SessionCompactionDecision) {
+    // The compaction hook names the summary model, which can differ from the chat's route.
+    // Remember only this boundary's decision, including moves off coordinated providers.
+    this.decisions.set(event.sessionID, event)
+    if (!this.enabled(event.model.providerID)) return
     const route = await this.route(event.sessionID, event.model.providerID, event.model.id)
     route.decision = event
     route.touched = this.io.now()
@@ -465,11 +470,8 @@ export class QuotaController {
     return true
   }
   async requiresPortable(session: string, provider: string, model: string, kind: string) {
+    if (kind === "compaction") return this.decisions.get(session)?.portable === true
     const route = await this.route(session, provider, model)
-    if (kind === "compaction") {
-      const routes = await Promise.all(this.routes.values())
-      return routes.some((value) => value.session === session && value.decision?.portable === true)
-    }
     return route.stored.replay || !!route.decision?.boundary.checkpoint
   }
   /**
@@ -479,33 +481,28 @@ export class QuotaController {
    */
   async compacting(session: string) {
     // The compaction hook carries the summary model, not the chat's model.
-    // Find the already-armed chat route instead of creating a summary-model route,
-    // which has no pending switch and would leave CPA's pre-decision notice intact.
-    const routes = await Promise.all(this.routes.values())
-    for (const route of routes.filter((route) => route.session === session && this.enabled(route.provider))) {
-      if (route.stored.switching === undefined) continue
-      const decision = route.decision
-      if (decision?.metadata?.["quota.switch"] !== true) continue
-      const models = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
-      const first = decision.compactionModel ? modelLabel(decision.compactionModel) : undefined
-      route.notices = [
-        {
-          sessionID: session,
-          kind: "switching",
-          text: `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${first ?? "the agent's compaction model"}${models.length > 0 ? ` (fallback ${models.map(modelLabel).join(", ")})` : ""} first.`,
-        },
-      ]
-    }
+    // Only the current decision can arm a switch; earlier model routes stay pending.
+    const decision = this.decisions.get(session)
+    if (decision?.metadata?.["quota.switch"] !== true || !this.enabled(decision.model.providerID)) return
+    const route = await this.routes.get(this.key(session, decision.model.providerID, decision.model.id))
+    if (route?.stored.switching === undefined) return
+    const models = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
+    const first = decision.compactionModel ? modelLabel(decision.compactionModel) : undefined
+    route.notices = [
+      {
+        sessionID: session,
+        kind: "switching",
+        text: `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${first ?? "the agent's compaction model"}${models.length > 0 ? ` (fallback ${models.map(modelLabel).join(", ")})` : ""} first.`,
+      },
+    ]
   }
   /**
    * A refusal does not end the warming window: each ping asks again in headers(), and one still refused
    * fails before it reaches the provider, so Core retries it soon after.
    */
-  async warming(session: string) {
-    const routes = await Promise.all(this.routes.values())
-    return !routes.some(
-      (route) => route.session === session && (route.snapshot?.intent || route.stored.switching !== undefined),
-    )
+  async warming(session: string, provider: string, model: string) {
+    const route = await this.route(session, provider, model)
+    return !route.snapshot?.intent && route.stored.switching === undefined
   }
   async status(session: string) {
     const routes = await Promise.all(this.routes.values())

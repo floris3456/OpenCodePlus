@@ -271,6 +271,103 @@ test("healthy native checkpoints stay bound; auto-off handoff keeps replay porta
   expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(true)
 })
 
+test.each(["intent", "switch"])("warming scopes a pending %s to its session, provider and model", async (pending) => {
+  const f = fixture()
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, intent: pending === "intent" ? "old-handoff" : "" }
+  const current = Model.Ref.parse("proxy/gpt-6-astra")
+  const routes = [
+    f.event(),
+    { ...f.event(), model: Model.Ref.parse("other/gpt-6-astra") },
+    { ...f.event(), sessionID: Session.ID.make("ses_unrelated"), model: current },
+  ]
+  for (const event of routes) {
+    await f.controller.decide(event)
+    if (pending === "switch") {
+      await f.controller.response(event.sessionID, event.model.providerID, event.model.id, switchRefusal())
+      expect(await f.controller.retry(event.sessionID, event.model.providerID, event.model.id)).toBe(true)
+    }
+    expect(await f.controller.warming(event.sessionID, event.model.providerID, event.model.id)).toBe(false)
+  }
+  f.state.snapshot = { ...f.state.snapshot, intent: "" }
+  await f.controller.decide({ ...f.event(), model: current })
+  expect(await f.controller.warming("ses_test", "proxy", "gpt-6-astra")).toBe(true)
+  // Returning to a pending route still blocks it; changing the chat model did not resolve the handoff.
+  for (const event of routes)
+    expect(await f.controller.warming(event.sessionID, event.model.providerID, event.model.id)).toBe(false)
+})
+
+test("compaction portability follows the current chat decision, including a different summary model", async () => {
+  const f = fixture("proxy/summary", "other/fallback")
+  f.state.known = true
+  await f.controller.decide(f.event())
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "summary", "compaction")).toBe(true)
+  expect(await f.controller.requiresPortable("ses_test", "other", "fallback", "compaction")).toBe(true)
+
+  const current = {
+    ...f.event(),
+    model: Model.Ref.parse("proxy/gpt-6-astra"),
+    boundary: { fresh: false, portable: false },
+  }
+  await f.controller.decide(current)
+  // Another session's later handoff must not replace this session's healthy decision either.
+  f.state.snapshot = { ...f.state.snapshot, intent: "unrelated-handoff" }
+  await f.controller.decide({ ...f.event(), sessionID: Session.ID.make("ses_unrelated"), model: current.model })
+  expect(current.compact).toBeUndefined()
+  expect(current.refusal).toBeUndefined()
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "gpt-6-astra", "context")).toBe(false)
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "gpt-6-astra", "compaction")).toBe(false)
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "summary", "compaction")).toBe(false)
+  expect(await f.controller.requiresPortable("ses_unrelated", "proxy", "gpt-6-astra", "compaction")).toBe(true)
+
+  // Switching back restores the genuine current-model handoff guard.
+  f.state.snapshot = { ...f.state.snapshot, intent: "" }
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "summary", "compaction")).toBe(true)
+  // A chat moving off coordinated providers must also retire its old decision for a CPA summary.
+  await f.controller.decide({ ...f.event(), model: Model.Ref.parse("uncoordinated/current") })
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "summary", "compaction")).toBe(false)
+})
+
+test("compaction completion and primary acknowledgement preserve other routes' pending switches", async () => {
+  const f = fixture("proxy/summary")
+  f.state.known = true
+  const old = f.event()
+  const current = { ...f.event(), model: Model.Ref.parse("proxy/gpt-6-astra") }
+  const unrelated = { ...current, sessionID: Session.ID.make("ses_unrelated") }
+  for (const event of [old, unrelated, current]) {
+    await f.controller.decide(event)
+    await f.controller.response(event.sessionID, event.model.providerID, event.model.id, switchRefusal())
+    expect(await f.controller.retry(event.sessionID, event.model.providerID, event.model.id)).toBe(true)
+    await f.controller.decide(event)
+  }
+  const notices = await f.controller.status("ses_test")
+  old.compactionModel = Model.Ref.parse("proxy/stale-summary")
+  current.compactionModel = Model.Ref.parse("proxy/current-summary")
+  await f.controller.compacting("ses_test")
+  expect((await f.controller.status("ses_test"))[0]).toEqual(notices[0])
+  expect((await f.controller.status("ses_test"))[1]?.text).toContain("proxy/current-summary")
+
+  await f.controller.response("ses_test", "proxy", "current-summary", ackResponse(), "compaction")
+  await f.controller.decide({
+    ...f.event(),
+    model: current.model,
+    boundary: { fresh: false, portable: true, checkpoint: "cmp_new" },
+  })
+  expect(f.store.get("quota/ses_test/proxy/model")?.switching).toBe("")
+  expect(f.store.get("quota/ses_test/proxy/gpt-6-astra")?.switching).toBe("")
+  await f.controller.response("ses_test", "proxy", "gpt-6-astra", ackResponse(2, "Large"), "primary")
+  expect(f.store.get("quota/ses_test/proxy/gpt-6-astra")?.switching).toBeUndefined()
+  expect(f.store.get("quota/ses_test/proxy/model")?.switching).toBe("")
+  expect(f.store.get("quota/ses_unrelated/proxy/gpt-6-astra")?.switching).toBe("")
+  expect(await f.controller.warming("ses_test", "proxy", "gpt-6-astra")).toBe(true)
+  expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(false)
+  expect(await f.controller.warming("ses_unrelated", "proxy", "gpt-6-astra")).toBe(false)
+})
+
 test("provider aliases sharing one model have distinct routes and capabilities", async () => {
   const f = fixture()
   const primary = await f.controller.headers("ses_test", "proxy", "model", "title", f.server.url.href)
@@ -440,7 +537,7 @@ test("an account-switch refusal compacts once with the configured model, then th
       text: "Small is used up; this chat compacts before it continues on Large. Compacting with proxy/cheap-model#high first.",
     },
   ])
-  expect(await f.controller.warming("ses_test")).toBe(false)
+  expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(false)
   // Core's decision before the rebuilt request asks for a portable summary by the configured model.
   const retried = f.event()
   await f.controller.decide(retried)
@@ -465,7 +562,7 @@ test("an account-switch refusal compacts once with the configured model, then th
       text: "Continuing on Large after compacting.",
     },
   ])
-  expect(await f.controller.warming("ses_test")).toBe(true)
+  expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(true)
   // Nothing entered the model's context; the next run clears the notice.
   expect(f.notices.size).toBe(0)
   await f.controller.activity("ses_test", true)
@@ -666,7 +763,7 @@ test("a poll that stalls past its timeout once pauses the chat only until the ne
   await controller.tick()
   expect(await controller.status("ses_test")).toEqual([{ sessionID: "ses_test", kind: "paused", text: UNANSWERED }])
   // The refusal does not end the warming window: the ping itself asks again.
-  expect(await controller.warming("ses_test")).toBe(true)
+  expect(await controller.warming("ses_test", "proxy", "model")).toBe(true)
   // Still frozen at the ping: it polls again and is refused from that poll, before reaching the provider.
   f.state.stalls = 1
   const before = f.state.reads
