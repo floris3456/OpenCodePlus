@@ -1055,17 +1055,32 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     void state.remove(node)
   }
 
-  // m on a cold-cache list row: pick it up (↑/↓ move, Enter drops, Esc
-// restores); elsewhere on an item row or a folder: move it into a folder or
-// the tab's top level.
-  function moveToCategory() {
+  // m: pick the row up (S1b, B8). A cold-cache list row keeps its own try-order
+  // mode; an item row, a folder or a sidebar owner reorders with the arrows and
+  // drops with Enter through one layout write.
+  function startMove() {
     const node = current()
     if (node === undefined) return
     if (isColdListRow(node) && (parseColdModelItemId(node.address?.item ?? "") !== undefined || parseColdDefaultItemId(node.address?.item ?? "") !== undefined)) {
       state.beginColdMove(node)
       return
     }
-    void dialogs.move(node)
+    state.beginMove(node)
+  }
+
+  // One arrow press in the move mode. The entered folder opens so the moved row
+  // stays on screen.
+  function stepMove(step: "up" | "down" | "in" | "out") {
+    const open = state.stepMove(step)
+    if (open.length > 0) setListOpen(new Set([...listOpen(), ...open]))
+  }
+
+  async function commitMove() {
+    await state.commitMove()
+  }
+
+  function cancelMove() {
+    state.cancelMove()
   }
 
   function moveColdBy(delta: -1 | 1) {
@@ -1187,6 +1202,16 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (item === undefined) return false
     if (parseColdModelItemId(item) !== undefined || parseColdDefaultItemId(item) !== undefined) return true
     return parseModelSettingItemId(item)?.field === "coldCompact" || parseModelFieldItemId(item)?.field === "coldCompact"
+  }
+
+  // A row the move mode can pick up: a cold-cache list row keeps its try-order
+// mode; an item whole row, a folder or a sidebar owner row reorders with S1b.
+  function moveCandidate(node: TreeNode | undefined): boolean {
+    if (node === undefined || node.badges.disabled !== undefined) return false
+    if (isColdListRow(node)) return true
+    if (node.kind === "item") return node.address !== undefined && node.address.section === null
+    if (node.kind === "agent" || node.kind === "team") return true
+    return folderName(node) !== undefined
   }
 
   // The compaction switch rows (Space toggles): the `Compact before cold` field
@@ -1458,6 +1483,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (state.snapshot() === undefined) return [["esc", "back"]]
     if (filtering()) return [["type", "to filter"], ["↑↓", "move"], ["enter", "go to"], ["ctrl+space", "toggle"], ["esc", "clear filter"]]
     if (state.coldMove() !== undefined) return [["↑↓", "move in try order"], ["enter", "drop"], ["esc", "cancel"]]
+    if (state.move() !== undefined) return [["↑↓", "move"], ["→", "into folder"], ["←", "out"], ["enter", "drop"], ["esc", "cancel"]]
     const node = current()
     const row = currentRow()
     const hints: [string, string][] = [["↑↓", "move"]]
@@ -1487,7 +1513,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node?.actions?.requires === true) hints.push(["w", "shown when"])
     hints.push(["a", "add"])
     if (isLinkable(node?.owner)) hints.push(["l", "link"])
-    if (node?.kind === "item" && node.address !== undefined && node.address.section === null) hints.push(["m", "move"])
+    if (moveCandidate(node)) hints.push(["m", "move"])
     if (renameCandidateOf(node, state.snapshot())?.target !== undefined || folderName(node) !== undefined) hints.push(["shift+r", "rename"])
     if (node?.actions?.remove === true || folderName(node) !== undefined) hints.push(["d", "delete"])
     if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
@@ -1534,6 +1560,19 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           { bind: "down", title: "Move later", group: "Instructions", run: () => moveColdBy(1) },
           { bind: "return", title: "Drop here", group: "Instructions", run: () => void commitColdMove() },
           { bind: "escape", title: "Cancel move", group: "Instructions", run: cancelColdMove },
+        ],
+      }
+    // Picking a row up (S1b, B8): arrows preview the new place in the pane,
+    // Enter drops as one write, Esc restores with no write.
+    if (state.move() !== undefined)
+      return {
+        commands: [
+          { bind: "up", title: "Move up", group: "Instructions", run: () => stepMove("up") },
+          { bind: "down", title: "Move down", group: "Instructions", run: () => stepMove("down") },
+          { bind: "left", title: "Leave the folder", group: "Instructions", run: () => stepMove("out") },
+          { bind: "right", title: "Enter the folder below", group: "Instructions", run: () => stepMove("in") },
+          { bind: "return", title: "Drop here", group: "Instructions", run: () => void commitMove() },
+          { bind: "escape", title: "Cancel move", group: "Instructions", run: cancelMove },
         ],
       }
     const node = current()
@@ -1584,8 +1623,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "a", title: "Add", group: "Instructions", run: add },
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: () => void dialogs.relink(current()) }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },
-        ...(node?.kind === "item" && node.address !== undefined && node.address.section === null
-          ? [{ bind: "m", title: "Move to a category", group: "Instructions", run: moveToCategory }]
+        ...(moveCandidate(node)
+          ? [{ bind: "m", title: "Move", group: "Instructions", run: startMove }]
           : []),
         {
           bind: "shift+r",
@@ -1684,6 +1723,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 row={row}
                 sidebar
                 {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key, row.key === workspace().owner?.key)?.on } : {})}
+                moving={state.move()?.rowId === row.node.id}
                 selected={row.key === navRow()?.key}
                 focused={focus() === "nav" && !modal()}
                 onHoverChange={(hovering) => hoverRow("nav", row.key, hovering)}
@@ -1788,6 +1828,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 <RowLine
                   context={props.context}
                   row={row}
+                  moving={state.move()?.rowId === row.node.id}
                   selected={row.key === listRow()?.key}
                   focused={focus() === "list" && !modal()}
                   onHoverChange={(hovering) => hoverRow("list", row.key, hovering)}

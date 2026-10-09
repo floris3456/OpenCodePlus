@@ -71,6 +71,8 @@ export interface RowLineProps {
   readonly sidebar?: boolean
   /** An owner's tools switched on; none is a warning (the agent cannot act). */
   readonly tools?: number
+  /** This row is picked up in the S1b move mode; show the moving marker. */
+  readonly moving?: boolean
   readonly onSelect?: () => void
   readonly onActivate?: () => void
   /** The mouse entered/left this row: E / ctrl+E target the hovered pane. */
@@ -147,6 +149,11 @@ export function RowLine(props: RowLineProps) {
             {`${glyph()} `}
           </text>
         )}
+      </Show>
+      <Show when={props.moving}>
+        <text flexShrink={0} wrapMode="none" fg={theme().text.formfield.selected}>
+          {"↕ "}
+        </text>
       </Show>
       <text
         flexShrink={1}
