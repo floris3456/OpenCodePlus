@@ -79,6 +79,23 @@ function rowId(memo: MemoInput, id: string): string {
 
 const PARENT_GLOBAL = "# Seat\n\n## Role\nR2.\n\n## Routing\nOld routing.\n\n## Merges\nM.\n"
 
+test("live Parent add, Child edit and Parent save retain the outside Sibling", () => {
+  const text = "# Parent\n\nPARENT_CANARY\n\n## Child\n\nCHILD_CANARY\n\n# Sibling\n\nSIBLING_CANARY\n"
+  const upstream = { ...item, text, fingerprint: fingerprint(text) }
+  const fixture = (records: readonly CustomizationRecord[]): MemoInput => ({ ...input(records), items: [upstream] })
+  const added = addSection(fixture([]), "section:global:alpha:system:role:parent", "Added", "ADDED_CANARY")
+  if ("refusal" in added) throw new Error(added.refusal)
+  const edited = saveText(fixture(added.records), "section:global:alpha:system:role:parent/child", "## Child\n\nCHILD_CANARY\n\nCHILD_EDIT_CANARY\n")
+  if ("refusal" in edited) throw new Error(edited.refusal)
+  const parent = resolve({ upstream, records: edited.records, splits: [], scopes, address: { level: "global", agent: "alpha", item: item.id, section: "parent" } }).text
+  const saved = saveText(fixture(edited.records), "section:global:alpha:system:role:parent", parent + "PARENT_EDIT_CANARY")
+  if ("refusal" in saved) throw new Error(saved.refusal)
+  const full = resolve({ upstream, records: saved.records, splits: [], scopes, address: { level: "global", agent: "alpha", item: item.id, section: null } }).fullText!
+  expect(headings(full)).toEqual(["# Parent", "## Child", "## Added", "# Sibling"])
+  for (const canary of ["PARENT_CANARY", "CHILD_CANARY", "CHILD_EDIT_CANARY", "ADDED_CANARY", "PARENT_EDIT_CANARY", "SIBLING_CANARY"]) expect(full.split(canary)).toHaveLength(2)
+  expect(expandedTree(fixture(saved.records)).filter((row) => row.kind === "section" && row.address?.level === "global" && row.address.item === "system:role").map((row) => row.label)).toEqual(["Parent", "Child", "Added", "Sibling"])
+})
+
 test("a parent's full-span customization sends each heading once, with the child's edit", () => {
   const text = assembled([
     rec("global", "seat", PARENT_GLOBAL),
