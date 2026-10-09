@@ -658,10 +658,15 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   function memoInput(): MemoInput {
-    const draft = move()?.layout
+    const movement = move()
+    const draft = movement?.layout
     return {
       items: itemsForTree(),
-      records: recordsForTree(),
+      records: movement?.section === undefined ? recordsForTree() : [
+        ...movement.section.records,
+        ...movement.section.splits,
+        ...recordsForTree().filter((record) => record.type === "model" || record.type === "rule"),
+      ],
       agents: agentsForTree(),
       teams: teamsForTree(),
       modelSettings: modelSettingsForTree(),
@@ -941,7 +946,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   async function commitMove(): Promise<boolean> {
     const current = move()
     if (current === undefined) return false
-    const ok = await layoutAction({ target: current.target, status: current.status, layout: current.layout })
+    if (current.isSection && current.section === undefined) {
+      setMove(undefined)
+      return true
+    }
+    const ok = current.section === undefined
+      ? await layoutAction({ target: current.target, status: current.status, layout: current.layout })
+      : await persist(current.section.records, current.section.splits, current.status, current.section.retryHint)
     // On failure the store still holds the old order, so the preview goes too.
     if (move() === current) setMove(undefined)
     return ok

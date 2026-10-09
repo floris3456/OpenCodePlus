@@ -63,6 +63,44 @@ const MODELS = [
   { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "anthropic", modelID: "claude-sonnet", updated: UPDATED },
 ]
 
+test("section arrows preview; Esc restores with zero writes and Enter uses one text mutation", async () => {
+  const middleLine = (frame: string, label: string) => frame.split("\n").findIndex((line) => line.split("│")[1]?.includes(label))
+  const base = createSnapshot({ agents: [build], items: [tool("tool:read", "read", "## First\nfirst body\n## Second\nsecond body\n")] })
+  const fixture = await renderInstructionsRoute({ snapshots: [base], width: 130, height: 45 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await goto(fixture, "agent:defaults:build", "build")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
+    await category(fixture, "Tools")
+    await moveTo(fixture, "read")
+    dispatch(fixture, "right")
+    await moveTo(fixture, "Description")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => frame.includes("First") && frame.includes("Second"))
+    await moveTo(fixture, "Second")
+    dispatch(fixture, "m")
+    await fixture.waitForFrame((frame) => footer(frame).includes("reorder siblings"))
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => middleLine(frame, "Second") < middleLine(frame, "First"))
+    expect(fixture.fake.mutateInputs).toHaveLength(0)
+    dispatch(fixture, "escape")
+    await fixture.waitForFrame((frame) => !footer(frame).includes("drop") && middleLine(frame, "First") < middleLine(frame, "Second"))
+    expect(fixture.fake.mutateInputs).toHaveLength(0)
+    expect(selectedRow(fixture.captureCharFrame())).toContain("Second")
+    dispatch(fixture, "m")
+    await fixture.waitForFrame((frame) => footer(frame).includes("drop"))
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => middleLine(frame, "Second") < middleLine(frame, "First"))
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.mutateInputs.length === 1)
+    expect(fixture.fake.layoutWrites).toHaveLength(0)
+    expect(fixture.fake.mutateInputs[0]!.records.some((record) => record.type === "customization" && record.text?.indexOf("Second")! < record.text?.indexOf("First")!)).toBe(true)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("m picks a model row up: arrows preview with no write, Enter drops once, Esc restores", async () => {
   const base = createSnapshot({ agents: [projectAgent("Implementer")], records: MODELS })
   const fixture = await renderInstructionsRoute({ snapshots: [base], width: 100, height: 40 })

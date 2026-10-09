@@ -4,13 +4,15 @@
 // press into a new previewed layout through the S1a planners (`planRowMove` for
 // tabs and folders, `planGroupMove` for origin/sidebar lists). Nothing here
 // writes to the store: the draft is a `LayoutRecords` the screen feeds to the
-// tree until Enter drops it as one write or Esc throws it away. A section move
-// is refused here and stays owed until the fold-on-move rule is settled.
+// tree until Enter drops it as one write or Esc throws it away. Section drafts
+// carry the B42 planner's text records and split boundaries instead of layout.
 import { folderIdOfRef, folderRef, type FolderRecord } from "../../instructions/folders.js"
 import {
   listToken,
   planGroupMove,
   planRowMove,
+  planSectionMove,
+  type OpResult,
   rowToken,
   type LayoutChange,
   type LayoutRecords,
@@ -25,6 +27,8 @@ export interface MoveState {
   readonly layout: LayoutRecords
   readonly target: string
   readonly status: string
+  readonly section?: Exclude<OpResult, { refusal: string }>
+  readonly isSection?: boolean
 }
 
 export type MoveStep = "up" | "down" | "in" | "out"
@@ -40,10 +44,10 @@ function folderTokenOf(node: TreeNode | undefined): string | undefined {
   return token !== undefined && folderIdOfRef(token) !== undefined ? token : undefined
 }
 
-// Pick a row up. Refuses structural rows (level tabs, group headings, sections).
+// Pick a row up. Refuses structural rows (level tabs and group headings).
 export function startMove(node: TreeNode, layout: LayoutRecords): MoveStart {
   if (node.address !== undefined && node.address.section !== null)
-    return { refusal: `"${node.label}" is a section; moving sections is owed` }
+    return { state: { rowId: node.id, layout, target: node.id, isSection: true, status: `Moving "${node.label}"` } }
   const token = listToken(node)
   if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }
   return { state: { rowId: node.id, layout, target: token, status: `Moving "${node.label}"` } }
@@ -58,8 +62,20 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep):
   const node = nodes[index]
   if (node === undefined) return { refusal: "That row is gone" }
   const parent = parentOf(nodes, index)
-  const siblings = parent === undefined ? [] : directChildren(nodes, parent)
+  const section = node.address !== undefined && node.address.section !== null
+  const siblings = section
+    ? nodes.filter((entry, at) => entry.address?.section !== undefined && entry.address.section !== null && parentOf(nodes, at)?.id === parent?.id)
+    : parent === undefined ? [] : directChildren(nodes, parent)
   const position = siblings.findIndex((entry) => entry.id === state.rowId)
+  if (node.address !== undefined && node.address.section !== null) {
+    if (step === "in" || step === "out")
+      return { refusal: "Sections move only within the same parent; cross-parent nesting is not supported (B42)" }
+    const neighbour = siblings[position + (step === "up" ? -1 : 1)]
+    if (neighbour === undefined) return { refusal: "Already at the edge of its sibling sections" }
+    const change = planSectionMove(input, node.id, step === "up" ? { before: neighbour.id } : { after: neighbour.id }, new Date().toISOString())
+    if ("refusal" in change) return change
+    return { state: { ...state, section: change, status: change.status }, expand: [] }
+  }
   switch (step) {
     case "up":
     case "down": {

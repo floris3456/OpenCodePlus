@@ -151,7 +151,7 @@ test("folders nest: moving into a sibling folder reparents it and out returns it
   expect(out.layout.folders.find((record) => record.id === "tools:inner")?.parent).toBeUndefined()
 })
 
-test("built-in group headings and sections cannot be picked up", () => {
+test("built-in group headings refuse while sections enter their own move mode", () => {
   const input = memoOf([])
   const nodes = expandedTree(input)
   const heading = startMove(nodeNamed(nodes, NATIVE), noLayout)
@@ -162,7 +162,7 @@ test("built-in group headings and sections cannot be picked up", () => {
   const section = expandedTree(withReader).find((node) => node.address !== undefined && node.address.section !== null)
   expect(section).toBeDefined()
   const refused = startMove(section!, noLayout)
-  expect("refusal" in refused && refused.refusal).toContain("section")
+  expect("state" in refused && refused.state.isSection).toBe(true)
 })
 
 test("sidebar owner lists reorder through a group order and cannot enter folders", () => {

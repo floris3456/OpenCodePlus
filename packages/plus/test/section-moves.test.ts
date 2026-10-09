@@ -1,12 +1,69 @@
 import { expect, test } from "bun:test"
 import { fingerprint, resolve, type CustomizationRecord, type Item, type SplitRecord } from "../src/instructions/model.js"
-import { planSectionMove } from "../src/instructions/ops.js"
+import { addSection, planSectionMove } from "../src/instructions/ops.js"
+import { advanceMove, startMove } from "../src/tui/instructions/move.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
 
 const updated = "2026-01-01T00:00:00.000Z"
 const text = "# Seat\n\n## Role\nR.\n\n## Routing\nOld routing.\n\n## Merges\nM.\n\n# Tail\n\nT.\n"
 const item: Item = { id: "system:role", kind: "system", group: "none", title: "Role", text, enabled: true, fingerprint: fingerprint(text), agents: ["alpha"] }
 const scopes = { global: new Set(["alpha"]), defaults: new Set(["alpha"]) }
+
+test("section move previews records without mutating its input and refuses nesting", () => {
+  const input = memo()
+  const node = expandedTree(input).find((entry) => entry.id === row(input, "seat/role"))!
+  const started = startMove(node, { folders: [], orders: [] })
+  if ("refusal" in started) throw new Error(started.refusal)
+  const before = JSON.stringify(input)
+  const advanced = advanceMove(input, started.state, "down")
+  if ("refusal" in advanced) throw new Error(advanced.refusal)
+  expect(advanced.state.rowId).toBe(node.id)
+  expect(advanced.state.section).toBeDefined()
+  expect(JSON.stringify(input)).toBe(before)
+  expect(advanceMove(input, started.state, "in")).toHaveProperty("refusal")
+  expect(advanceMove(input, started.state, "out")).toHaveProperty("refusal")
+})
+
+test("repeated heading titles refuse atomically instead of changing occurrence identities", () => {
+  const source = { ...item, text: "## Same\nfirst\n## Same\nsecond\n" }
+  const input = memo([], source)
+  const nodes = expandedTree(input).filter((node) => node.address?.section !== null && node.address?.level === "project")
+  const before = JSON.stringify(input)
+  expect(planSectionMove(input, nodes[1]!.id, { before: nodes[0]!.id }, updated)).toHaveProperty("refusal")
+  expect(JSON.stringify(input)).toBe(before)
+})
+
+test("whole-item heading add does not bury the sibling in the previous section override", () => {
+  const source = { ...item, text: "## First\nfirst\n## Last\nlast\n" }
+  const local = { ...record("project", "last", "## Last\nedited last\n"), pin: true }
+  const input = memo([local], source)
+  const node = expandedTree(input).find((node) => node.address?.item === source.id && node.address.section === null && node.address.level === "project")!
+  const result = addSection(input, node.id, "New", "new body")
+  if ("refusal" in result) throw new Error(result.refusal)
+  const last = resolve({ upstream: source, records: result.records, splits: result.splits, scopes, address: { level: "project", agent: "alpha", item: source.id, section: "last" } })
+  expect(last.text).toContain("edited last")
+  expect(last.text).not.toContain("New")
+  expect(assembled(source, result.records, result.splits)).toContain("## New")
+  expect(result.records.find((record) => record.section === "last")).toMatchObject({ pin: true, text: undefined })
+})
+
+test("nested manual edits move with stable boundaries; hidden boundary refuses", () => {
+  const source = { ...item, text: "parent\naaa\nbbb\ntail\n" }
+  const split: SplitRecord = { type: "split", level: "global", agent: "alpha", item: item.id, boundaries: [
+    { id: "p", name: "Parent", start: 0, depth: 0 },
+    { id: "a", name: "A", start: 7, depth: 1 },
+    { id: "b", name: "B", start: 11, depth: 1 },
+    { id: "t", name: "Tail", start: 15, depth: 0 },
+  ], updated }
+  const input = memo([split, record("project", "a", "long edited a\n")], source)
+  const result = move(input, "b", "a")
+  expect(assembled(source, result.records, result.splits)).toBe("parent\n\nbbb\nlong edited a\n\ntail")
+  expect(row(memo([...result.records, ...result.splits], source), "a")).toBe(row(input, "a"))
+  const hidden = memo([split, record("project", "p", "replacement parent\n")], source)
+  const before = JSON.stringify(hidden)
+  expect(planSectionMove(hidden, row(hidden, "b"), { before: row(hidden, "a") }, updated)).toHaveProperty("refusal")
+  expect(JSON.stringify(hidden)).toBe(before)
+})
 
 function record(level: "project" | "global", section: string, body: string): CustomizationRecord {
   return { type: "customization", level, agent: "alpha", item: item.id, section, text: body, basedOn: item.fingerprint, updated }

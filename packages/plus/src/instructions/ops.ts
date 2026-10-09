@@ -395,10 +395,27 @@ export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarge
   const status = `Moved "${node.label}" ${where}`
 
   if (split.kind !== "manual") {
+    if (split.sections.some((section, index) => split.sections.some((other, otherIndex) =>
+      otherIndex !== index && other.name === section.name && parents[index] === parents[otherIndex],
+    ))) return { refusal: "Repeated sibling heading titles have occurrence-based identities; rename them before moving" }
     const parent = parentId === null ? undefined : split.sections.find((section) => section.id === parentId)
     const pStart = parent?.start ?? 0
     const pEnd = parent?.end ?? baseText.length
     const text = moveRawBlock(baseText, moved, anchor, before)
+    const reordered = resolveSplit({ text, title: chain.upstream.title, splits: chain.splits, scopes: memberMemo.ctx.scopes, address: itemAddress })
+    // Heading ids are occurrence-based. Refuse when reordering would attach an
+    // existing id to different content (notably repeated sibling titles).
+    if (split.sections.some((section, index) => {
+      const nextIndex = reordered.sections.findIndex((entry) => entry.id === section.id)
+      const next = reordered.sections[nextIndex]
+      if (next === undefined) return true
+      // Compare each heading's own body, not its reordered descendant span.
+      const child = split.sections[index + 1]
+      const nextChild = reordered.sections[nextIndex + 1]
+      const end = child !== undefined && child.depth > section.depth ? child.start : section.end
+      const nextEnd = nextChild !== undefined && nextChild.depth > next.depth ? nextChild.start : next.end
+      return baseText.slice(section.start, end).trimEnd() !== text.slice(next.start, nextEnd).trimEnd()
+    })) return { refusal: "Section heading identities would change on reorder; rename repeated headings before moving" }
     const parentText = parentId === null ? text : text.slice(pStart, pEnd)
     // Fold the same-level child texts the rewritten parent now contains, then
     // store the parent's span. A child at a more specific level survives and
@@ -1623,8 +1640,8 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     // appends to the end of the selected parent's EFFECTIVE span and writes that
     // parent. Writing a deeper leaf instead buries the new heading inside the
     // leaf's override (the live a36 defect: "Added" showed up in Child's own
-    // editor). For an item row the new heading is a top-level sibling, so it is
-    // appended to the last section that encloses its own depth.
+    // editor). For an item row use the wrapper, if present, otherwise save the
+    // full item span: a top-level sibling must not live in the last leaf's copy.
     const appendDepth = targetSection !== undefined
       ? targetSection.depth + 1
       : (() => {
@@ -1632,9 +1649,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
           const nonPreamble = preview.sections.filter((s) => s.id !== "preamble")
           return wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 0)
         })()
-    const anchor =
-      targetSection ?? preview.sections.filter((s) => s.id !== "preamble" && s.depth <= appendDepth).at(-1)
-    if (anchor === undefined) return { refusal: `Could not add "${name}" to "${node.label}"` }
+    const anchor = targetSection ?? wrappingSection(preview)
 
     const hashes = "#".repeat(Math.max(2, appendDepth + 1))
     const headingLine = `${hashes} ${name}`
@@ -1645,19 +1660,23 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     // overrides that win over it (B39 rule 2) already applied. Writing that span
     // back and folding the consumed same-level child texts keeps their content
     // once and cannot lose it on a reload; more specific children stay.
-    const anchorAddress: Address = { ...itemAddress, section: anchor.id }
-    const anchorText = resolve({
+    const anchorAddress: Address = { ...itemAddress, section: anchor?.id ?? null }
+    const resolvedAnchor = resolve({
       upstream: chain.upstream,
       records: chain.customizations,
       splits: chain.splits,
       scopes: memo.ctx.scopes,
       address: anchorAddress,
-    }).text
+    })
+    const anchorText = anchor === undefined ? (resolvedAnchor.fullText ?? resolvedAnchor.assembled) : resolvedAnchor.text
     const trimmedAnchor = anchorText.trimEnd()
     const newAnchorText = trimmedAnchor.length > 0 ? `${trimmedAnchor}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
 
+    const folded = anchor === undefined
+      ? preview.sections.reduce((records, section) => dropSectionText(records, { ...itemAddress, section: section.id }), chain.customizations)
+      : chain.customizations
     const written = merge(
-      chain.customizations,
+      folded,
       anchorAddress,
       { text: newAnchorText },
       chain.upstream,
