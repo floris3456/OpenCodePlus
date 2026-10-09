@@ -5,7 +5,8 @@ import { Auth } from "../route/auth.js"
 import { Endpoint } from "../route/endpoint.js"
 import { Protocol } from "../route/protocol.js"
 import { HttpTransport } from "../route/transport/index.js"
-import { LLMRequest, type ToolDefinition, type ToolEntry } from "../schema/index.js"
+import { LLMRequest, Usage, type ToolDefinition, type ToolEntry } from "../schema/index.js"
+import { openaiCacheDiagnostic } from "./utils/openai-cache-diagnostic.js"
 import { resolveEffortUpdates } from "../effort-updates.js"
 import { OpenResponses } from "./open-responses.js"
 import { OpenResponsesOptions } from "./utils/open-responses-options.js"
@@ -292,7 +293,19 @@ const step = (state: OpenResponses.ParserState, input: OpenResponses.Event) => {
       : ProviderShared.eventError(ADAPTER, `${event.type} is missing item_id`)
   if (event.type === "response.output_item.done" && event.item && ResponsesHostedTools.isItem(event.item, HOSTED_TOOLS))
     return ResponsesHostedTools.onDone(state, event.item, HOSTED_TOOLS)
-  return OpenResponses.step(state, event)
+  if (event.type !== "response.completed") return OpenResponses.step(state, event)
+  return Effect.gen(function* () {
+    const [next, events] = yield* OpenResponses.step(state, event)
+    // Only the native Responses completed boundary owns this extension; compatible routes do not infer support.
+    const diagnostic = openaiCacheDiagnostic(event.response?.prompt_cache_diagnostics)
+    if (!diagnostic) return [next, events] as const
+    return [
+      next,
+      events.map((event) => event.type === "finish" || event.type === "step-finish"
+        ? { ...event, usage: new Usage({ ...event.usage, promptCacheDiagnostic: diagnostic }) }
+        : event),
+    ] as const
+  })
 }
 
 export const protocol = Protocol.make({

@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { ProviderMetadata } from "./options.js"
+import { PromptCacheDiagnostic } from "./prompt-cache-diagnostic.js"
 
 const fieldProvenance = Schema.Struct({
   source: Schema.Literals(["reported", "derived"]),
@@ -61,6 +62,8 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
   cacheWriteInputTokens: Schema.optional(Schema.Number),
   reasoningTokens: Schema.optional(Schema.Number),
   totalTokens: Schema.optional(Schema.Number),
+  /** Best-effort comparison estimates, separate from all actual token counters. */
+  promptCacheDiagnostic: Schema.optional(PromptCacheDiagnostic),
   /** Measurement provenance, independent of the compatibility accounting values above.
    * Absence is unknown; in particular it must not turn a partial sum into a complete total.
    */
@@ -114,6 +117,7 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
     return {
       version: 1 as const,
       completeness,
+      ...(this.promptCacheDiagnostic ? { promptCacheDiagnostic: this.promptCacheDiagnostic } : {}),
       inputTokens: valueOf("inputTokens"),
       cacheReadInputTokens: valueOf("cacheReadInputTokens"),
       cacheWriteInputTokens: valueOf("cacheWriteInputTokens"),

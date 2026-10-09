@@ -66,6 +66,7 @@ export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.I
               )
               Object.values(usage.provenance ?? {}).forEach(Object.freeze)
               Object.freeze(usage.provenance)
+              Object.freeze(usage.promptCacheDiagnostic)
               const accounting = invocation.usage ? SessionUsage.tokens(invocation.usage) : undefined
               if (accounting) Object.freeze(accounting.cache)
               const event: SessionModelObserved = Object.freeze({

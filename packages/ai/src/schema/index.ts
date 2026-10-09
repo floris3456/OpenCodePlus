@@ -1,6 +1,7 @@
 export * from "./ids.js"
 export * from "./options.js"
 export * from "./usage.js"
+export * from "./prompt-cache-diagnostic.js"
 export * from "./messages.js"
 export * from "./events.js"
 export * from "./errors.js"

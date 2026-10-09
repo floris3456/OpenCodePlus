@@ -1060,6 +1060,7 @@ export function foldSession(
       verdict: cause.verdict,
       outcome: r.status,
       ...(r.observation?.version === 1 && r.observation.compaction ? { compaction: r.observation.compaction } : {}),
+      ...(r.observation?.version === 1 && r.observation.promptCacheDiagnostic ? { promptCacheDiagnostic: r.observation.promptCacheDiagnostic } : {}),
       measurement: measured,
       ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
@@ -1162,6 +1163,10 @@ function requestDetail(
   return {
     ...summary,
     lines: [
+      ...(request.promptCacheDiagnostic ? [
+        `Provider-reported cache diagnostic (OpenAI Responses v1): ${request.promptCacheDiagnostic.outcome}; reported outcome ${request.promptCacheDiagnostic.reportedOutcome}; reason ${request.promptCacheDiagnostic.reason ?? "unknown"}`,
+        `Provider comparison estimates (not actual usage or billing): reusable prefix ${request.promptCacheDiagnostic.comparisonReusableTokens ?? "unknown"}; missed ${request.promptCacheDiagnostic.cacheMissedTokens ?? "unknown"}; comparison baseline unrecorded. Best effort; first classified reason only; does not prove physical eviction or deployment support. Local facts remain independent.`,
+      ] : []),
       ...(request.compaction ? [
         `Compaction decision at execution: trigger ${request.compaction.trigger}; configured ${request.compaction.configuredStrategy} (${request.compaction.strategySource}); selected ${request.compaction.selectedStrategy}; reason ${request.compaction.selectionReason}; model source ${request.compaction.modelSource ?? "unrecorded"}; model policy ${request.compaction.modelPolicy ?? "unconfigured"}`,
       ] : []),

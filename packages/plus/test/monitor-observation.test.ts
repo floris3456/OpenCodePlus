@@ -5,8 +5,38 @@ import { cleanupLedgers, collect, ledger, usage } from "./monitor-fixture.js"
 import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import { Schema } from "effect"
 import { queryMonitor } from "../src/monitor/query.js"
+import { Observation } from "../src/monitor/observation.js"
 
 afterEach(cleanupLedgers)
+
+test("native diagnostic boundary refuses unsupported versions, reasons and fabricated verdicts", async () => {
+  const db = await ledger()
+  db.requestStarted({ id: "native", sessionID: "s", kind: "step", started: 100 })
+  db.requestEnded("native", { ended: 200, status: "completed" })
+  const diagnostic = {
+    version: 1 as const,
+    source: "provider-reported" as const,
+    protocol: "openai-responses" as const,
+    outcome: "unknown" as const,
+    reportedOutcome: "unavailable" as const,
+    auth: "PRIVATE_AUTH", body: "PRIVATE_BODY", error: "PRIVATE_ERROR", prompt: "PRIVATE_PROMPT",
+  }
+  expect(() => db.requestObserved("native", { version: 1, completeness: "final", promptCacheDiagnostic: { ...diagnostic, outcome: "cache_miss" } })).toThrow()
+  // Deliberately exercise the unknown input decoder rather than lying to the typed observer contract.
+  const decode = Schema.decodeUnknownSync(Observation)
+  expect(() => decode({ version: 1, completeness: "final", promptCacheDiagnostic: { ...diagnostic, version: 2 } })).toThrow()
+  expect(() => decode({ version: 1, completeness: "final", promptCacheDiagnostic: { ...diagnostic, reason: "PRIVATE_REASON" } })).toThrow()
+  expect(() => decode({ version: 1, completeness: "final", promptCacheDiagnostic: { ...diagnostic, cacheMissedTokens: Infinity } })).toThrow()
+  db.requestObserved("native", { version: 1, completeness: "final", promptCacheDiagnostic: diagnostic })
+  expect(db.getRequest("native")?.observation?.promptCacheDiagnostic).toEqual({
+    version: 1, source: "provider-reported", protocol: "openai-responses", outcome: "unknown", reportedOutcome: "unavailable",
+  })
+  expect(JSON.stringify(db.db.query("select observation from request").all())).not.toContain("PRIVATE")
+  const report = queryMonitor(db, { scope: "session", sessionID: "s", view: "cache", id: "native" }, { now: 300 })
+  expect(report.detail?.request.promptCacheDiagnostic?.outcome).toBe("unknown")
+  expect(report.detail?.request.measurement?.state).toBe("not-reported")
+  expect(JSON.stringify(report)).not.toContain("PRIVATE")
+})
 
 test("execution decisions are allow-listed, immutable history; unsupported decision values refuse writes", async () => {
   const db = await ledger()

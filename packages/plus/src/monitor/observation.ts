@@ -1,5 +1,6 @@
 import { Option, Schema } from "effect"
 import { CompactionObservation } from "@opencode/plugin/compaction-observation"
+import { PromptCacheDiagnostic } from "@opencode/plugin/prompt-cache-diagnostic"
 
 const field = Schema.Struct({
   source: Schema.Literals(["reported", "derived"]),
@@ -16,6 +17,7 @@ export const Observation = Schema.Struct({
   operationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   exchangeCount: Schema.optional(Schema.Number),
   compaction: Schema.optional(CompactionObservation),
+  promptCacheDiagnostic: Schema.optional(PromptCacheDiagnostic),
   inputTokens: Schema.optional(token),
   cacheReadInputTokens: Schema.optional(token),
   cacheWriteInputTokens: Schema.optional(token),

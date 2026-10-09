@@ -23,6 +23,7 @@ import { DateTime, Effect, Exit, Layer, Logger, Stream } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
+import { queryMonitor } from "../../plus/src/monitor/query.js"
 import { context } from "../../plus/test/harness.js"
 import { testEffect } from "./lib/effect"
 import { PluginTestLayer } from "./plugin/fixture"
@@ -52,6 +53,12 @@ for (const mode of [
   "write-refusal",
   "ws-write-refusal",
   "final-refusal",
+  "native-hit",
+  "native-miss",
+  "native-expired",
+  "native-unavailable",
+  "native-unknown-reason",
+  "native-unknown-outcome",
 ] as const) {
   it.live(`automatic monitor capture: ${mode}`, () => {
     const logs: unknown[] = []
@@ -72,6 +79,13 @@ for (const mode of [
         (ledger) => Effect.sync(() => ledger.close()),
       )
       const received: string[] = []
+      const native = mode === "native-hit" ? { type: "cache_hit" }
+        : mode === "native-miss" ? { type: "cache_miss", reason: "tools_changed", comparison_reusable_tokens: 9000, cache_missed_tokens: 8000 }
+        : mode === "native-expired" ? { type: "comparison_response_not_found" }
+        : mode === "native-unavailable" ? { type: "unavailable" }
+        : mode === "native-unknown-reason" ? { type: "cache_miss", reason: "PRIVATE_UNKNOWN_REASON" }
+        : mode === "native-unknown-outcome" ? { type: "PRIVATE_UNKNOWN_OUTCOME" }
+        : undefined
       const server = yield* Effect.acquireRelease(
         Effect.sync(() =>
           Bun.serve({
@@ -88,7 +102,7 @@ for (const mode of [
                 return new Response('data: {"type":"response.created","response":{"id":"fixture"}}\n\n', {
                   headers: { "content-type": "text/event-stream" },
                 })
-              const terminal = `data: ${JSON.stringify({ type: "response.completed", response: { id: "PRIVATE_RESPONSE_ID", status: "completed", output: [], usage: { input_tokens: 1005, output_tokens: 5, input_tokens_details: { cached_tokens: 100, cache_write_tokens: 900 }, private_metadata: "PRIVATE_USAGE_METADATA" } } })}\n\n`
+              const terminal = `data: ${JSON.stringify({ type: "response.completed", response: { id: "PRIVATE_RESPONSE_ID", status: "completed", output: [], ...(native ? { prompt_cache_diagnostics: { ...native, prompt: "PRIVATE_DIAGNOSTIC_PROMPT", schema: "PRIVATE_DIAGNOSTIC_SCHEMA", auth: "PRIVATE_DIAGNOSTIC_AUTH", error: "PRIVATE_DIAGNOSTIC_ERROR" } } : {}), usage: { input_tokens: 1005, output_tokens: 5, input_tokens_details: { cached_tokens: 100, cache_write_tokens: 900 }, private_metadata: "PRIVATE_USAGE_METADATA" } } })}\n\n`
               return new Response(mode === "duplicate-usage" ? terminal + terminal : terminal, {
                 headers: { "content-type": "text/event-stream", "x-private": "PRIVATE_RESPONSE_HEADER" },
               })
@@ -209,6 +223,32 @@ for (const mode of [
         usage: { completeness: "final", inputTokens: 1005, cacheReadInputTokens: 100, cacheWriteInputTokens: 900 },
       })
       expect(Object.isFrozen(last)).toBe(true)
+      if (native) {
+        const diagnostic = last?.usage.promptCacheDiagnostic
+        if (!diagnostic) throw new Error("Missing passive diagnostic")
+        expect(diagnostic?.outcome).toBe(mode === "native-hit" ? "cache_hit" : mode === "native-miss" ? "cache_miss" : "unknown")
+        expect(diagnostic?.source).toBe("provider-reported")
+        expect(Object.isFrozen(diagnostic)).toBe(true)
+        expect(() => Object.assign(diagnostic, { outcome: "cache_miss" })).toThrow()
+        expect(JSON.stringify(last?.usage)).not.toContain("PRIVATE")
+        expect(received[0]).not.toContain("comparison_response_id")
+        expect(received[0]).not.toContain("prompt_cache_options")
+        const stored = ledger.getRequests(session.id)[0]
+        if (!stored) throw new Error("Missing observed request")
+        expect(stored.observation?.promptCacheDiagnostic).toEqual(diagnostic)
+        const reopened = yield* Effect.acquireRelease(
+          Effect.sync(() => createLedger(ledger.path)),
+          (ledger) => Effect.sync(() => ledger.close()),
+        )
+        expect(reopened.getRequest(stored.id)?.observation?.promptCacheDiagnostic).toEqual(diagnostic)
+        expect(JSON.stringify(reopened.db.query("select observation from request").all())).not.toContain("PRIVATE")
+        const detail = queryMonitor(reopened, { scope: "session", sessionID: session.id, view: "cache", id: stored.id })
+        expect(detail.detail?.request.promptCacheDiagnostic).toEqual(diagnostic)
+        expect(detail.detail?.request.measurement?.read).toBe(100)
+        expect(detail.detail?.lines.join("\n")).toContain("Provider-reported cache diagnostic")
+        expect(detail.detail?.lines.join("\n")).toContain("not actual usage or billing")
+        expect(JSON.stringify(detail)).not.toContain("PRIVATE_DIAGNOSTIC")
+      }
       if (mode === "retry") {
         expect(observed[0]?.outcome).toBe("failed")
         expect(observed[0]?.usage.completeness).toBe("unavailable")
