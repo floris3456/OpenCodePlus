@@ -52,9 +52,23 @@ interface SessionData {
   readonly rows: readonly RequestRow[]
   readonly facts: readonly ContextFactRow[]
   readonly analysis: SessionAnalysis
+  readonly fold: SessionFold
 }
 
 const sessionCache = new WeakMap<Ledger, Map<string, CachedSession>>()
+export const ANALYSIS_CACHE_LIMIT = { sessions: 128, rows: 50_000 } as const
+
+function remember(cache: Map<string, CachedSession>, id: string, entry: CachedSession) {
+  cache.delete(id)
+  if (entry.fold.rows.length > ANALYSIS_CACHE_LIMIT.rows) return
+  cache.set(id, entry)
+  let rows = [...cache.values()].reduce((sum, value) => sum + value.fold.rows.length, 0)
+  for (const [key, value] of cache) {
+    if (cache.size <= ANALYSIS_CACHE_LIMIT.sessions && rows <= ANALYSIS_CACHE_LIMIT.rows) break
+    rows -= value.fold.rows.length
+    cache.delete(key)
+  }
+}
 
 // One session's rows, facts and analysis. The analysis folds in-place writes
 // (request completion, a corrected final wire fingerprint, a kind relabel), so
@@ -69,6 +83,10 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   const cache = sessionCache.get(ledger) ?? new Map<string, CachedSession>()
   sessionCache.set(ledger, cache)
   const cached = cache.get(id)
+  if (cached) {
+    cache.delete(id)
+    cache.set(id, cached)
+  }
   const revision = ledger.revision()
   if (cached && cached.revision === revision) return dataOf(cached.fold)
   // The mark is read before the rows: a write in between shows as a change next time.
@@ -84,7 +102,7 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   if (cached && !cached.perRequest && updated && updated.size > 0) {
     const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, updated, { previous: cached.fold, from })
-    cache.set(id, { revision, mark, perRequest: false, fold, lastFrom: from })
+    remember(cache, id, { revision, mark, perRequest: false, fold, lastFrom: from })
     return dataOf(fold)
   }
   if (cached && cached.perRequest) {
@@ -95,20 +113,17 @@ function sessionData(ledger: Ledger, id: string): SessionData {
     }
     const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, fingerprints, { previous: cached.fold, from })
-    cache.set(id, { revision, mark, perRequest: true, fold, lastFrom: from })
+    remember(cache, id, { revision, mark, perRequest: true, fold, lastFrom: from })
     return dataOf(fold)
   }
   const loaded = sessionFingerprints(ledger, rows)
   const fold = foldSession(rows, facts, loaded.fingerprints)
-  cache.set(id, { revision, mark, perRequest: loaded.perRequest, fold, lastFrom: 0 })
+  remember(cache, id, { revision, mark, perRequest: loaded.perRequest, fold, lastFrom: 0 })
   return dataOf(fold)
 }
 
 export function sessionFold(ledger: Ledger, id: string): SessionFold {
-  sessionData(ledger, id)
-  const cached = sessionCache.get(ledger)?.get(id)
-  if (!cached) throw new Error(`Missing fold for session ${id}`)
-  return cached.fold
+  return sessionData(ledger, id).fold
 }
 
 export function sessionFoldResumeFrom(ledger: Ledger, id: string): number | undefined {
@@ -116,7 +131,7 @@ export function sessionFoldResumeFrom(ledger: Ledger, id: string): number | unde
 }
 
 function dataOf(fold: SessionFold): SessionData {
-  return { rows: fold.rows, facts: fold.facts, analysis: fold.analysis }
+  return { rows: fold.rows, facts: fold.facts, analysis: fold.analysis, fold }
 }
 
 // The cached fingerprints with the changed ones reloaded (or dropped when deleted).
@@ -183,16 +198,15 @@ export function requestReport(
 
   // Hooks can record a request before the asynchronous host lookup learns its
   // session; include these rows rather than silently losing real requests.
-  const ids = ledger.db
+  const selected = ledger.db
     .query<{ id: string }, [typeof scope.bindings]>(
       `${scope.cte}
-    select distinct session_id as id from request ${scope.cte ? "where session_id in (select id from scope)" : ""}
-    union select distinct session_id as id from step ${scope.cte ? "where session_id in (select id from scope)" : ""}`,
+    select distinct session_id as id from request where started >= $monitorSince and started < $monitorUntil ${scope.cte ? "and session_id in (select id from scope)" : ""}
+    union select distinct session_id as id from step where started >= $monitorSince and started < $monitorUntil ${scope.cte ? "and session_id in (select id from scope)" : ""}
+    union select distinct session_id as id from context_fact where at >= $monitorSince and at < $monitorUntil ${scope.cte ? "and session_id in (select id from scope)" : ""}`,
     )
-    .all(scope.bindings)
+    .all({ ...scope.bindings, $monitorSince: window.since, $monitorUntil: window.until })
     .map((s) => s.id)
-
-  const selected = [...new Set([...sessions.map((s) => s.id), ...ids])]
 
   const legacyMap = new Map<string, LegacyStep[]>()
   const hasLegacySteps =

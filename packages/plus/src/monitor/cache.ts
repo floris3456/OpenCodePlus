@@ -961,7 +961,9 @@ export function foldSession(
       `Reusable-token estimate: ${expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
       `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
       `Gap ${timing.gap ?? "unknown"}ms; requested/nominal retention ${timing.lifetime ?? "unknown"}ms (not proof of expiry); warming configured ${timing.warming ?? "not recorded"}`,
-      cost.missCost === undefined
+      expected === undefined && measured.share !== 1
+        ? "Local shortfall and cost scenario unavailable without a comparable measurement"
+        : cost.missCost === undefined
         ? "Miss cost unavailable: per-token pricing was not recorded"
         : `Local shortfall estimate ${cost.missing}; processing-cost scenario USD ${cost.missCost} (not billed loss or net savings)`,
     ]

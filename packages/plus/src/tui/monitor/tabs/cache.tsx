@@ -207,7 +207,7 @@ export function CacheTab(props: CacheTabProps) {
                   </text>
                 </Show>
                 <text fg={theme().text.muted}>
-                  {` · Reported read: ${req.measurement?.read === undefined ? "—" : formatTokens(req.measurement.read)} · Shortfall estimate: ${formatTokens(req.missTokens ?? 0)}`}
+                  {` · Reported read: ${req.measurement?.read === undefined ? "—" : formatTokens(req.measurement.read)} · Shortfall estimate: ${req.expected === undefined && req.measurement?.share !== 1 ? "—" : formatTokens(req.missTokens ?? 0)}`}
                 </text>
               </box>
 
