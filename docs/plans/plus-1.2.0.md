@@ -711,9 +711,21 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   leave same-tab folders. Display-only moves must not alter assembled prompts.
 - S2a's tool contract is `link({id, target?, type?, enabled?})`: without target,
   inspect outgoing and incoming links; with target, upsert a link whose primary
-  is id. Type defaults to `either`; `enabled:false` masks the pair/type at this
+  is id. Type defaults to `either`; `enabled:false` masks that endpoint pair at this
   level, including upstream links. Types and ownership follow B9–B12. Both ends
   must be in the same owner/level view; invalid links refuse without writing.
+- **B43, gate consistency:** one directed endpoint pair has one effective type;
+  a nearer pair override/tombstone must not erase unrelated inherited gates on
+  the same target. Request assembly and link inspection use that same effective
+  answer, including shipped-marker links and their upstream provenance. Section
+  gates evaluate the actual section address, not its whole item. Keep legacy
+  `set({requires})` as a compatibility adapter to rowlinks: non-null replaces
+  the target's condition list at that level, `[]` explicitly means always, and
+  null removes the local list override to inherit again. Migration and writes
+  must not leave two authoritative condition stores. A target-local replacement
+  barrier can reuse the internal `shownAlways` sentinel; it is not a public fifth
+  link type. Pair masks remain pair-local. Test reload, unrelated inherited gates,
+  protected refusal and real request text for these observed failures.
 - S4 can start as S4a for already-landed compaction/merge documentation and the
   measured rollback warning; S4b finalizes move/link/CLI teaching and help after
   integration. S4a does not edit S2a's tool registration or S1b's TUI help.
@@ -725,7 +737,9 @@ has its G3 evidence. Remaining acceptance is not inferred from unit tests.
   The updater's database backup does not include Instructions JSONL. Before
   rollback, retain private copies of global and project Instructions stores;
   never automatically restore old files over newer work. Rowlink downgrade
-  compatibility remains to be measured after S2a. This is not a general claim
+  probe now also confirms: old read/no-op retained a migrated rowlink, but a real
+  old global write erased it (`rollback-store/checks/rowlink-downgrade.log`). This
+  is not a general claim
   that opening every newer store on 1.1.18 is harmless: another migration may
   itself trigger a write.
 - S4a review found an unfinished WP-E tool path. Confirmed through production
