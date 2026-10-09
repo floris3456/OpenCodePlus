@@ -19,6 +19,7 @@ import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { DateTime, Effect, Layer } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
+import { queryMonitor } from "../../plus/src/monitor/query.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
 import { context } from "../../plus/test/harness.js"
 import { testEffect } from "./lib/effect"
@@ -135,6 +136,10 @@ it.live("Anthropic reported TTL buckets reach the Core observer and reopened led
     expect(row?.inputTokens).toBe(5)
     expect(row?.cacheWriteTokens).toBe(900)
     expect(JSON.stringify(reopened.db.query("select observation from request").all())).not.toContain("PRIVATE")
+    const report = queryMonitor(reopened, { scope: "session", sessionID: session.id, view: "cache", id: row!.id }, { now: row!.started + 60_000 })
+    expect(report.requests?.[0]?.measurement?.writeByTTL).toEqual({ "5m": 700, "1h": 200 })
+    expect(report.detail?.request.measurement?.writeByTTL).toEqual({ "5m": 700, "1h": 200 })
+    expect(JSON.stringify(report)).not.toContain("PRIVATE")
   }).pipe(
     Effect.provide(SessionModelTransport.makeLayer({ open: () => Effect.die("Unexpected WebSocket") })),
     Effect.provide(client),

@@ -26,6 +26,7 @@ export function measurement(row: RequestRow): NonNullable<MonitorRequest["measur
     ...(input === undefined ? {} : { input }),
     ...(read === undefined ? {} : { read }),
     ...(write === undefined ? {} : { write }),
+    ...(usage.cacheWriteInputTokensByTTL === undefined ? {} : { writeByTTL: usage.cacheWriteInputTokensByTTL }),
     ...(usage.completeness === "final" && input !== undefined && input > 0 && read !== undefined ? { share: read / input } : {}),
   }
 }

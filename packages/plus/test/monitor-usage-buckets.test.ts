@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { Observation, readObservation } from "../src/monitor/observation.js"
 import { createLedger } from "../src/monitor/ledger.js"
+import { queryMonitor } from "../src/monitor/query.js"
+import { MonitorReport } from "../src/rpc.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
@@ -29,6 +31,11 @@ test("TTL allowlist preserves zero/missing and strips unknown buckets and privat
     expect(reopened.getRequest("sparse")?.observation?.cacheWriteInputTokensByTTL?.["1h"]).toBeUndefined()
     expect(JSON.stringify(reopened.db.query("select observation from request").all())).not.toContain("PRIVATE")
     expect(JSON.stringify(reopened.db.query("select observation from request").all())).not.toContain("24h")
+    const report = Schema.decodeUnknownSync(MonitorReport)(queryMonitor(reopened, { scope: "session", sessionID: "s", view: "cache", id: "sparse" }, { now: 10 }))
+    expect(report.requests?.[0]?.measurement?.writeByTTL).toEqual({ "5m": 0 })
+    expect(report.detail?.request.measurement?.writeByTTL?.["1h"]).toBeUndefined()
+    expect(JSON.stringify(report)).not.toContain("PRIVATE")
+    expect(report.totals.missCost).toBeUndefined()
   } finally {
     reopened.close()
   }

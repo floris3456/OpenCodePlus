@@ -89,7 +89,7 @@ test("quiet requested as-of context survives activity selection without full-his
   db.contextFact({ sessionID: "quiet", at: 90, kind: "compaction" })
   const reads = spyOn(db, "getRequests")
   const report = queryMonitor(db, { scope: "session", sessionID: "quiet", view: "overview", since: 200, until: 500 }, { now: 700 })
-  expect(report.context).toEqual([{ sessionID: "quiet", now: 5000, atCompaction: 5000 }])
+  expect(report.context).toEqual([{ sessionID: "quiet", now: 5000, atCompaction: 5000, inputState: "stored" }])
   expect(report.totals.requests).toBe(0)
   expect(reads).not.toHaveBeenCalled()
   reads.mockRestore()
