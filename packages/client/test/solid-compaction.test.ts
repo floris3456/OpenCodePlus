@@ -3,6 +3,19 @@ import { createRoot } from "solid-js"
 import { createData, type CreateDataInput } from "../src/solid"
 import { OpenCode, type OpenCodeEvent, type SessionInboxCompaction, type SessionInboxInfo } from "../src/promise"
 
+test.each([true, false])("a live failed compaction retains its attempted model (started=%s)", (started) => {
+  using fixture = setup()
+  if (started)
+    fixture.emit({ ...event, type: "session.compaction.started", data: { sessionID, reason: "auto" } })
+  const model = { providerID: "summary-provider", id: "failed-summary", variant: "low" }
+  fixture.emit({
+    ...event,
+    type: "session.compaction.failed",
+    data: { sessionID, reason: "auto", model, error: { type: "provider.rate-limit", message: "Synthetic 429" } },
+  })
+  expect(fixture.data.session.message.list(sessionID)).toMatchObject([{ type: "compaction", status: "failed", model }])
+})
+
 test("admits compaction before model setup and serializes the following prompt", async () => {
   using fixture = setup()
   const compact = fixture.data.session.compact({ sessionID, model: { providerID: "demo", id: "model" } })

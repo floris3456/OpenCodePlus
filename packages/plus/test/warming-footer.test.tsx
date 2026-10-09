@@ -5,6 +5,41 @@ import { createTestTheme, renderPlusFixture } from "./tui.js"
 
 const MINUTE = 60_000
 
+test("follow model settings clears both chat switches and refuses a success toast when resetting fails", async () => {
+  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
+  const calls: unknown[] = []
+  const state = { fail: false }
+  const status = { sessionID: "ses_follow", chat: "default" as const, compact: true, compactSource: "model" as const, active: false, now: Date.now() }
+  await using fixture = await renderPlusFixture({
+    snapshots: [],
+    route: { type: "session", sessionID: "ses_follow" },
+    rpc: {
+      "warming.status": async () => status,
+      "warming.set": async (input: unknown) => { calls.push(input); return status },
+      "warming.compact": async (input: unknown) => {
+        calls.push(input)
+        if (state.fail) throw new Error("compact reset failed")
+        return status
+      },
+    },
+    render: (context) => {
+      warming.current = createWarming(context)
+      return <warming.current.Footer sessionID="ses_follow" />
+    },
+  })
+  try {
+    await warming.current!.follow()
+    expect(calls).toEqual([{ sessionID: "ses_follow", chat: "default" }, { sessionID: "ses_follow", on: "default" }])
+    expect(fixture.fake.toasts.at(-1)?.message).toBe("Cache warming for this chat follows the model settings")
+    state.fail = true
+    await warming.current!.follow()
+    expect(fixture.fake.toasts.at(-1)?.variant).toBe("error")
+    expect(fixture.fake.toasts.at(-1)?.message).toBe("compact reset failed")
+  } finally {
+    warming.current?.dispose()
+  }
+})
+
 test("the real footer turns from the countdown to a yellow cache cold when the window runs out, and stays", async () => {
   const opened = Date.now()
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
