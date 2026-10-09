@@ -477,20 +477,25 @@ export class QuotaController {
    * chat's account switch, the switching notice names the models the final decision chose (Plus may
    * have replaced CPA's own list), not the ones CPA configured.
    */
-  async compacting(session: string, provider: string, model: string) {
-    const route = await this.route(session, provider, model)
-    if (route.stored.switching === undefined) return
-    const decision = route.decision
-    if (decision?.metadata?.["quota.switch"] !== true) return
-    const models = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
-    const first = decision.compactionModel ? modelLabel(decision.compactionModel) : undefined
-    route.notices = [
-      {
-        sessionID: session,
-        kind: "switching",
-        text: `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${first ?? "the agent's compaction model"}${models.length > 0 ? ` (fallback ${models.map(modelLabel).join(", ")})` : ""} first.`,
-      },
-    ]
+  async compacting(session: string) {
+    // The compaction hook carries the summary model, not the chat's model.
+    // Find the already-armed chat route instead of creating a summary-model route,
+    // which has no pending switch and would leave CPA's pre-decision notice intact.
+    const routes = await Promise.all(this.routes.values())
+    for (const route of routes.filter((route) => route.session === session && this.enabled(route.provider))) {
+      if (route.stored.switching === undefined) continue
+      const decision = route.decision
+      if (decision?.metadata?.["quota.switch"] !== true) continue
+      const models = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
+      const first = decision.compactionModel ? modelLabel(decision.compactionModel) : undefined
+      route.notices = [
+        {
+          sessionID: session,
+          kind: "switching",
+          text: `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${first ?? "the agent's compaction model"}${models.length > 0 ? ` (fallback ${models.map(modelLabel).join(", ")})` : ""} first.`,
+        },
+      ]
+    }
   }
   /**
    * A refusal does not end the warming window: each ping asks again in headers(), and one still refused

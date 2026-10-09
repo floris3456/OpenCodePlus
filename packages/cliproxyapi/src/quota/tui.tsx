@@ -11,7 +11,10 @@ export function createQuota(context: Plugin.Context) {
       const [notices, setNotices] = createSignal<Status[]>([])
       const load = async () => {
         const session = props.sessionID
-        const result = await rpc.status({ sessionID: session }).catch(() => [])
+        // Controllers are Location-scoped. A chat opened through the public API
+        // need not live at the client's default location (notably standalone).
+        const location = context.data.session.get(session)?.location
+        const result = await rpc.status({ sessionID: session }, { location }).catch(() => [])
         if (session === props.sessionID) setNotices([...result])
       }
       createEffect(() => {

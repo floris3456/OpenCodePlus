@@ -228,8 +228,16 @@ export function createWarming(context: Plugin.Context) {
   async function follow(): Promise<void> {
     const route = context.ui.router.current()
     if (route.type !== "session") return
-    const next = await plus["warming.set"]({ sessionID: route.sessionID, chat: "default" }).catch(() => undefined)
-    if (next !== undefined && tracked.sessionID === route.sessionID) setStatus(next)
+    // Following model settings resets both chat overrides, not just warming.
+    // Otherwise a previous /compact-warm flip silently keeps shadowing the model.
+    const next = await plus["warming.set"]({ sessionID: route.sessionID, chat: "default" })
+      .then(() => plus["warming.compact"]({ sessionID: route.sessionID, on: "default" }))
+      .catch((error: unknown) => {
+        context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+        return undefined
+      })
+    if (next === undefined) return
+    if (tracked.sessionID === route.sessionID) setStatus(next)
     context.ui.toast.show({ variant: "info", message: "Cache warming for this chat follows the model settings" })
   }
 

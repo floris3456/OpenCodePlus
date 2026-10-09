@@ -106,8 +106,7 @@ export function registerQuota(ctx: Context, config: () => Config) {
       Effect.gen(function* () {
         yield* portable(event, "compaction")
         // Every decide hook has run by now: name the models actually armed.
-        if (controller.enabled(event.model.providerID))
-          yield* Effect.promise(() => controller.compacting(event.sessionID, event.model.providerID, event.model.id))
+        yield* Effect.promise(() => controller.compacting(event.sessionID))
       }),
     )
     yield* ctx.session.hook("generate", (event) => portable(event, "generate"))
