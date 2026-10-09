@@ -173,6 +173,8 @@ export interface PlusState {
    * as does a model.updated event, and the catalogue expires after five minutes.
    */
   hostModels?: readonly HostModel[]
+  /** Last catalogue announced to open Instructions views, independent of installed agents. */
+  publishedHostModels?: string
   /**
    * The raw provider catalogue the cached `hostModels` derive from, read in
    * the same call. Base-template classification, model validation and the
@@ -5673,8 +5675,13 @@ function publishFresh(
         specialOverrides: [...specialRoleOverrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
         scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
       })
+      // Catalogue-only changes do not alter installed instructions. They still
+      // invalidate open views, without reinstalling unchanged agent/tool rows.
+      const hostModels = JSON.stringify(discovered.hostModels)
+      const catalogueChanged = hostModels !== state.publishedHostModels
+      state.publishedHostModels = hostModels
       if (state.projectRevision !== undefined && fingerprint === state.fingerprint) {
-        if (!force) return discovered
+        if (!force && !catalogueChanged) return discovered
         // Core debounces its own reload, so a just-written agent file cannot
         // move the fingerprint yet; the file mutation itself is the change.
         state.snapshotGeneration++
