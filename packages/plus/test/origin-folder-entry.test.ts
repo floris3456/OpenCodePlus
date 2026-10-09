@@ -7,7 +7,7 @@ import type { FolderRecord, OrderRecord } from "../src/instructions/folders.js"
 import { folderRef } from "../src/instructions/folders.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
-const item = (o: Partial<Item> & Pick<Item,"id"|"kind"|"title">): Item => {
+const item = (o: Partial<Item> & Pick<Item, "id" | "kind" | "title">): Item => {
   const text = o.text ?? "default text"
   return { group: "native", text, enabled: true, fingerprint: fingerprint(text), ...o }
 }
@@ -36,4 +36,10 @@ test("ordinary origin-group tools can enter a tab-root folder and return home", 
   if (!("state" in left)) return
   expect(left.state.layout.folders[0]!.items).toEqual([])
   expect(expandedTree({ ...input, ...left.state.layout }).find((n) => n.id === node.id)?.depth).toBe(node.depth)
+  const reordered = advanceMove({ ...input, ...left.state.layout }, left.state, "down")
+  expect("state" in reordered).toBe(true)
+  if (!("state" in reordered)) return
+  expect(reordered.state.layout.orders.find((entry) => entry.scope.includes(":native"))?.items).toEqual(["tool:reader", "tool:bash"])
+  expect(items.map((entry) => entry.text)).toEqual(["default text", "default text"])
+  expect(folder.items).toEqual([])
 })
