@@ -1110,7 +1110,10 @@ test("heading-derived item addSection on item row appends at top depth and split
   expect(ok.splits.some((s) => s.item === "system:heading-doc")).toBe(false)
   const customizations = ok.records.filter((r) => r.item === "system:heading-doc")
   expect(customizations).toHaveLength(1)
-  expect(customizations[0].section).toBe("b")
+  // A top-level sibling belongs to the whole item, not B's leaf span.
+  expect(customizations[0].section).toBe(null)
+  expect(customizations[0].text).toContain("## A")
+  expect(customizations[0].text).toContain("## B")
   expect(customizations[0].text).toContain("## C\n\nC content.")
 })
 
