@@ -684,7 +684,7 @@ test("row ids round-trip items with colons, sections, agents, and colon teams", 
   expect(fingerprint("upstream")).not.toBe(fingerprint("other"))
 })
 
-test("heading-derived item addSection on section S adds child after S's last descendant and writes into last leaf only", () => {
+test("heading-derived item addSection on section S writes S's full span, appending the child after its descendants", () => {
   const headingText = [
     "## A",
     "A text.",
@@ -715,10 +715,12 @@ test("heading-derived item addSection on section S adds child after S's last des
   // 1. Split is still kind: "heading", no split record added
   expect(ok.splits.some((s) => s.item === "system:heading-doc")).toBe(false)
 
-  // 2. The only customization written is on A2's address
+  // 2. B39: the only customization written is A's full span, not a leaf's. The
+  //    child test is added inside that span, so A1's own editor cannot see it.
   const customizations = ok.records.filter((r) => r.item === "system:heading-doc")
   expect(customizations).toHaveLength(1)
-  expect(customizations[0].section).toBe("a/a2")
+  expect(customizations[0].section).toBe("a")
+  expect(customizations[0].text).toContain("### New\n\nNew text.")
 
   // 3. Section "New" exists with depth of A + 1 whose parent is A, B is unchanged
   const address = { level: "project" as const, agent: "alpha", item: "system:heading-doc", section: null }
@@ -748,6 +750,16 @@ test("heading-derived item addSection on section S adds child after S's last des
   expect(sectionB?.depth).toBe(sectionA!.depth)
   expect(resolved.assembled).toContain("### New\n\nNew text.")
   expect(resolved.assembled).toContain("B text.")
+
+  // 4. The child's own editor is its own slice: it does not carry the sibling.
+  const child = resolve({
+    upstream: item,
+    records: ok.records,
+    splits: ok.splits,
+    scopes: { global: new Set(), defaults: new Set() },
+    address: { ...address, section: "a/a1" },
+  })
+  expect(child.text).not.toContain("New")
 })
 
 test("heading-derived item customization on A1 survives addSection on A", () => {
