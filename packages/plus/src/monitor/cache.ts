@@ -2,14 +2,16 @@
 import type { MonitorRequest, MonitorRequestDetail } from "../rpc.js"
 import { Model } from "@opencode/schema/model"
 import { Option, Schema } from "effect"
-import { canonicalJson, sha256, type CacheControlMarker } from "./fingerprint.js"
+import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION, type CacheControlMarker, type WireFingerprint } from "./fingerprint.js"
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
 import { measurement } from "./measurement.js"
+import { estimateTokens } from "./attribution.js"
 
 type Segment = {
   name: string
   kind: MonitorRequestDetail["segments"][number]["kind"]
   hash: string
+  prefixHash?: string
   chars: number
   tokens: number
   /** The zero-based message index the name spells ("message 3 (…)" is 2); undefined for other parts. */
@@ -73,14 +75,16 @@ function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
 }
 
 function segments(fp: RequestFingerprintData): Segment[] {
-  const system = fp.systemParts.map((p) => ({
-    name: `system part ${p.source}`,
+  const wire = fp as RequestFingerprintData & WireFingerprint
+  const systemChars = fp.systemParts.reduce((sum, p) => sum + p.chars, 0)
+  const system = [{
+    name: "system wire",
     kind: "system" as const,
-    hash: p.hash,
-    chars: p.chars,
-    tokens: p.estimatedTokens,
+    hash: wire.systemHash ?? "",
+    chars: systemChars,
+    tokens: estimateTokens(systemChars),
     index: undefined,
-  }))
+  }]
   const tools = fp.tools.flatMap((p) => [
     {
       name: `tool ${p.name} description`,
@@ -88,6 +92,14 @@ function segments(fp: RequestFingerprintData): Segment[] {
       hash: p.descHash,
       chars: p.chars,
       tokens: p.estimatedTokens,
+      index: undefined,
+    },
+    {
+      name: `tool ${p.name} wire`,
+      kind: "tool" as const,
+      hash: p.wireHash ?? "",
+      chars: 0,
+      tokens: 0,
       index: undefined,
     },
     {
@@ -129,7 +141,8 @@ function segments(fp: RequestFingerprintData): Segment[] {
       return {
         name,
         kind: "message" as const,
-        hash: p.prefixHash,
+        hash: p.contentHash ?? p.prefixHash,
+        prefixHash: p.prefixHash,
         chars: p.chars,
         tokens: p.estimatedTokens,
         // A plain index spells itself; anything else is read back from the name.
@@ -220,7 +233,7 @@ function reusablePrefixEqual(a: Segment[], b: Segment[], boundary: number): bool
     while (i < a.length && !keep(a[i]!)) i++
     while (j < b.length && !keep(b[j]!)) j++
     if (i >= a.length || j >= b.length) return i >= a.length && j >= b.length
-    if (a[i]!.name !== b[j]!.name || a[i]!.hash !== b[j]!.hash) return false
+    if (a[i]!.name !== b[j]!.name || (a[i]!.prefixHash ?? a[i]!.hash) !== (b[j]!.prefixHash ?? b[j]!.hash)) return false
     i++
     j++
   }
@@ -278,6 +291,7 @@ function reusableOf(before: RequestFingerprintData | undefined, after: RequestFi
 
 // The same decisions as prefixDiff, in its order.
 function decideReusable(before: RequestFingerprintData, after: RequestFingerprintData): boolean {
+  if (!supportedFingerprint(before) || !supportedFingerprint(after) || before.protocol !== after.protocol) return false
   const aInfo = getSegmentInfo(before)
   const bInfo = getSegmentInfo(after)
   if (before.previousResponseId && !after.previousResponseId) return false
@@ -293,12 +307,29 @@ function decideReusable(before: RequestFingerprintData, after: RequestFingerprin
   const b = bInfo.segments
   if (a.length > b.length || before.protocol !== after.protocol) return false
   const last = a.length - 1
-  if (last >= 0 && (a[last]!.hash !== b[last]!.hash || a[last]!.name !== b[last]!.name)) return false
-  return a.every((part, i) => part.hash === b[i]!.hash && part.name === b[i]!.name)
+  if (last >= 0 && ((a[last]!.prefixHash ?? a[last]!.hash) !== (b[last]!.prefixHash ?? b[last]!.hash) || a[last]!.name !== b[last]!.name)) return false
+  return a.every((part, i) => (part.prefixHash ?? part.hash) === (b[i]!.prefixHash ?? b[i]!.hash) && part.name === b[i]!.name)
+}
+
+/** Version/policy are independent of storage schema. Legacy missing fields cannot
+ * reconstruct omitted roles, strictness or strings. Fallback has no known policy.
+ */
+const supportedCache = new WeakMap<RequestFingerprintData, boolean>()
+
+function supportedFingerprint(fp: RequestFingerprintData): boolean {
+  const cached = supportedCache.get(fp)
+  if (cached !== undefined) return cached
+  const wire = fp as RequestFingerprintData & WireFingerprint
+  const supported = wire.fingerprintVersion === FINGERPRINT_VERSION && wire.policyVersion === FINGERPRINT_POLICY_VERSION &&
+    ["openai-chat", "openai-responses", "anthropic-messages"].includes(fp.protocol) &&
+    typeof wire.systemHash === "string" && fp.tools.every((p) => typeof p.wireHash === "string") &&
+    fp.messagePrefixes.every((p) => typeof p.contentHash === "string")
+  supportedCache.set(fp, supported)
+  return supported
 }
 
 export function prefixDiff(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined) {
-  if (!before || !after) {
+  if (!before || !after || !supportedFingerprint(before) || !supportedFingerprint(after)) {
     return { known: false, append: false, reusable: false, common: 0, changes: [] as MonitorRequestDetail["segments"] }
   }
   const aInfo = getSegmentInfo(before)
@@ -336,7 +367,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
     }
   }
 
-  const end = a.findIndex((p, i) => p.hash !== b[i]?.hash || p.name !== b[i]?.name)
+  const end = a.findIndex((p, i) => (p.prefixHash ?? p.hash) !== (b[i]?.prefixHash ?? b[i]?.hash) || p.name !== b[i]?.name)
   const isPureAppend = end < 0 && a.length <= b.length && before.protocol === after.protocol
 
   if (isPureAppend) {
