@@ -26,6 +26,7 @@ import { ServiceHandover } from "../../services/service-handover"
 import { errorMessage } from "../../util/error"
 
 export interface JsonProperty {
+  readonly anyOf?: ReadonlyArray<JsonProperty>
   readonly type?: string | ReadonlyArray<string>
   readonly description?: string
   readonly items?: {
@@ -154,7 +155,8 @@ export async function parseInstructionsArgs(
       } else flags.push({ name: bare.slice(0, eq), value: bare.slice(eq + 1) })
       continue
     }
-    if (arg.startsWith("-") && arg.length > 1) return usageError(`Unknown option ${arg}: only --<param> options are supported.`)
+    if (arg.startsWith("-") && arg.length > 1)
+      return usageError(`Unknown option ${arg}: only --<param> options are supported.`)
     positionals.push(arg)
   }
   if (positionals.length > 0) op = positionals[0]
@@ -197,7 +199,10 @@ export async function parseInstructionsArgs(
   return { kind: "run", op, input }
 }
 
-export async function runInstructionsCommand(argv: readonly string[], deps: InstructionDeps): Promise<InstructionResult> {
+export async function runInstructionsCommand(
+  argv: readonly string[],
+  deps: InstructionDeps,
+): Promise<InstructionResult> {
   if (deps.productNamespace !== "opencodeplus")
     return { exitCode: 2, stdout: "", stderr: `The instructions command is available in OpenCodePlus only.${EOL}` }
   let ops: readonly OpDescriptor[]
@@ -280,8 +285,7 @@ export const runInstructionsCli = Effect.fn("cli.instructions.cli")(function* (i
     readStdin: () => readAllStdin(),
     ops: () => plus["instructions.ops"](undefined, { location }).then((output) => output.ops),
     run: (op, input) => plus["instructions.run"]({ op, input }, { location }) as Promise<unknown>,
-    serverVersion: () =>
-      Effect.runPromise(ServiceHandover.serverVersion(server.endpoint)).catch(() => "unknown"),
+    serverVersion: () => Effect.runPromise(ServiceHandover.serverVersion(server.endpoint)).catch(() => "unknown"),
   }
   const result = yield* Effect.promise(() => runInstructionsCommand(invocation.args, deps))
   if (result.stdout) process.stdout.write(result.stdout)
@@ -398,7 +402,9 @@ function firstLine(description: string): string {
 }
 
 function renderType(property: JsonProperty): string {
-  const types = property.type === undefined ? ["string"] : Array.isArray(property.type) ? [...property.type] : [property.type]
+  property = flagProperty(property)
+  const types =
+    property.type === undefined ? ["string"] : Array.isArray(property.type) ? [...property.type] : [property.type]
   if (types.includes("array")) {
     const items = property.items?.type
     const item = items === undefined ? "string" : Array.isArray(items) ? items.join("|") : items
@@ -408,7 +414,9 @@ function renderType(property: JsonProperty): string {
 }
 
 function coerceFlag(name: string, value: string | undefined, property: JsonProperty): { value: unknown } | string {
-  const types = property.type === undefined ? ["string"] : Array.isArray(property.type) ? [...property.type] : [property.type]
+  property = flagProperty(property)
+  const types =
+    property.type === undefined ? ["string"] : Array.isArray(property.type) ? [...property.type] : [property.type]
   if (value === "null" && types.includes("null")) return { value: null }
   if (types.includes("array")) {
     if (value === undefined) return `Option --${name} expects a value.`
@@ -423,7 +431,10 @@ function coerceFlag(name: string, value: string | undefined, property: JsonPrope
     return { value: coerced }
   }
   if (types.includes("object")) return `Parameter --${name} is an object: pass it with --json.`
-  if (types.includes("boolean") && (value === undefined || value === "true" || value === "false" || value === "1" || value === "0")) {
+  if (
+    types.includes("boolean") &&
+    (value === undefined || value === "true" || value === "false" || value === "1" || value === "0")
+  ) {
     if (value === undefined) return { value: true }
     return { value: value === "true" || value === "1" }
   }
@@ -432,7 +443,11 @@ function coerceFlag(name: string, value: string | undefined, property: JsonPrope
   return coerceScalar(name, value, property.type)
 }
 
-function coerceScalar(name: string, value: string, type: string | ReadonlyArray<string> | undefined): { value: unknown } | string {
+function coerceScalar(
+  name: string,
+  value: string,
+  type: string | ReadonlyArray<string> | undefined,
+): { value: unknown } | string {
   const types = type === undefined ? ["string"] : Array.isArray(type) ? [...type] : [type]
   if (types.includes("number") || types.includes("integer")) {
     const number = Number(value)
@@ -450,6 +465,7 @@ function coerceScalar(name: string, value: string, type: string | ReadonlyArray<
 }
 
 function appendFlag(input: Record<string, unknown>, name: string, value: unknown, property: JsonProperty): void {
+  property = flagProperty(property)
   const types = property.type === undefined ? [] : Array.isArray(property.type) ? property.type : [property.type]
   const current = input[name]
   if (types.includes("array") && Array.isArray(current) && Array.isArray(value)) {
@@ -457,6 +473,20 @@ function appendFlag(input: Record<string, unknown>, name: string, value: unknown
     return
   }
   input[name] = value
+}
+
+// Effect serializes nullable/union tool inputs as anyOf, not type arrays.
+// Preserve the array branch's item type when presenting the CLI flag grammar.
+function flagProperty(property: JsonProperty): JsonProperty {
+  if (property.anyOf === undefined) return property
+  const branches = property.anyOf.map(flagProperty)
+  return {
+    ...property,
+    type: branches.flatMap((branch) =>
+      branch.type === undefined ? [] : typeof branch.type === "string" ? [branch.type] : [...branch.type],
+    ),
+    items: branches.find((branch) => branch.items !== undefined)?.items,
+  }
 }
 
 function isUnknownMethod(error: unknown): boolean {
