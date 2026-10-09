@@ -263,4 +263,3 @@ test("manual split with depth preserves hierarchy in assemble and parentIndexes,
   expect(nestedAssembled).toContain("Alpha content.")
   expect(nestedAssembled).toContain("Beta content.")
 })
-
