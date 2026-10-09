@@ -133,6 +133,8 @@ function systemFingerprints(text: string, idx: number, namedParts?: ReadonlyArra
   return parts
 }
 
+const markerPathTokens = new Set(["system", "tools", "messages", "input", "content", "function"])
+
 function cacheMarkers(body: Record<string, unknown>): CacheControlMarker[] {
   const markers: CacheControlMarker[] = []
   const visit = (value: unknown, target: string) => {
@@ -141,21 +143,55 @@ function cacheMarkers(body: Record<string, unknown>): CacheControlMarker[] {
     const obj = value as Record<string, unknown>
     const cc = obj.cache_control as { type?: unknown; ttl?: unknown } | undefined
     if (cc && typeof cc === "object") markers.push({ target, type: String(cc.type ?? "ephemeral"), ...(typeof cc.ttl === "string" ? { ttl: cc.ttl } : {}), wireHash: sha256(canonicalJson(cc)) })
-    Object.entries(obj).filter(([key]) => key !== "cache_control").forEach(([key, child]) => visit(child, target === "top" ? key : `${target}.${key}`))
+    Object.entries(obj).filter(([key]) => key !== "cache_control").forEach(([key, child]) => {
+      const label = markerPathTokens.has(key) ? key : `unknown[${sha256(key)}]`
+      visit(child, target === "top" ? label : `${target}.${label}`)
+    })
   }
   visit(body, "top")
   return markers
 }
 
+// Only these wire fields may become readable diagnostic labels. Schemas and
+// unknown subtrees stay whole hashes: their keys are authored content too.
+const optionPaths = new Set([
+  "model", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options",
+  "reasoning", "temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty",
+  "max_output_tokens", "max_tokens", "max_completion_tokens", "service_tier", "seed",
+  "text", "parallel_tool_calls", "tool_choice", "thinking", "output_config", "container",
+  "context_management", "reasoning_effort", "response_format",
+  "prompt_cache_options.ttl", "prompt_cache_options.comparison_response_id",
+  "reasoning.effort", "reasoning.summary", "text.verbosity", "text.format",
+  "text.format.type", "text.format.name", "text.format.strict", "text.format.schema",
+  "response_format.type", "response_format.json_schema", "response_format.json_schema.name",
+  "response_format.json_schema.strict", "response_format.json_schema.schema",
+  "thinking.type", "thinking.budget_tokens", "output_config.effort", "output_config.format",
+  "output_config.format.type", "output_config.format.schema", "tool_choice.type",
+  "tool_choice.name", "tool_choice.function", "tool_choice.function.name",
+  "tool_choice.disable_parallel_tool_use",
+])
+const optionContainers = new Set([
+  "prompt_cache_options", "reasoning", "text", "text.format", "response_format",
+  "response_format.json_schema", "thinking", "output_config", "output_config.format",
+  "tool_choice", "tool_choice.function",
+])
+
 function optionFingerprints(body: Record<string, unknown>, keys: readonly string[]) {
   const result: Record<string, string> = {}
-  const visit = (key: string, value: unknown) => {
+  const visit = (path: string | undefined, label: string, value: unknown) => {
     if (value === undefined) return
-    result[key] = sha256(canonicalJson(value))
-    if (value !== null && typeof value === "object" && !Array.isArray(value))
-      Object.entries(value).forEach(([name, child]) => visit(`${key}.${name}`, child))
+    result[label] = sha256(canonicalJson(value))
+    if (path === undefined || !optionContainers.has(path) || value === null || typeof value !== "object" || Array.isArray(value)) return
+    Object.entries(value).forEach(([name, child]) => {
+      const next = `${path}.${name}`
+      const readable = !name.includes(".") && optionPaths.has(next)
+      visit(readable ? next : undefined, readable ? next : `${label}.unknown[${sha256(name)}]`, child)
+    })
   }
-  keys.forEach((key) => visit(key, body[key]))
+  keys.forEach((key) => {
+    const readable = !key.includes(".") && optionPaths.has(key)
+    visit(readable ? key : undefined, readable ? key : `unknown[${sha256(key)}]`, body[key])
+  })
   return result
 }
 
