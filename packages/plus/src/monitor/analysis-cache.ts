@@ -53,8 +53,9 @@ export class AnalysisCache {
     }
     this.remove(id)
     if (weight.rows > this.limits.rows) return
-    // Charge repeated references conservatively. Sum each small object rather
-    // than serializing the whole fold (which would invoke its legacy details getter).
+    // Sum small objects rather than serializing the whole fold (which would
+    // invoke its legacy details getter). Fingerprint objects are charged once
+    // below; read/write indexes refer to those same objects.
     for (const group of [fold.rows, fold.facts, fold.analysis.summaries, fold.analysis.unstable]) {
       for (const entry of group) {
         weight.bytes += this.bytes(entry)
@@ -67,12 +68,15 @@ export class AnalysisCache {
       weight.segments += fp.messagePrefixes.length + fp.systemParts.length + fp.tools.length * 3 + Object.keys(fp.optionsKeys).length + (fp.cacheControl?.length ?? 0)
       if (weight.bytes > this.limits.bytes || weight.segments > this.limits.segments) return
     }
-    // Resume streaks and write/read indexes are retained too. Counting each
-    // reference overestimates shared arrays instead of hiding growing indexes.
+    // Resume streaks and write/read indexes are retained too. Their `fp` is a
+    // reference into the already charged fingerprint map, not another copy.
     for (const point of fold.resume) weight.bytes += this.bytes([...point.streaks]) + 32
     for (const group of [fold.analysis.writes, fold.analysis.reads]) {
       for (const entry of group) {
-        weight.bytes += this.bytes(entry)
+        const existing = this.sizes.get(entry)
+        const bytes = existing ?? Buffer.byteLength(JSON.stringify({ ...entry, fp: undefined }), "utf8")
+        if (existing === undefined) this.sizes.set(entry, bytes)
+        weight.bytes += bytes
         if (weight.bytes > this.limits.bytes) return
       }
     }
