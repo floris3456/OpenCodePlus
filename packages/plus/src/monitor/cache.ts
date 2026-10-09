@@ -988,6 +988,7 @@ export function foldSession(
       cost: r.cost,
       verdict: cause.verdict,
       outcome: r.status,
+      ...(r.observation?.version === 1 && r.observation.compaction ? { compaction: r.observation.compaction } : {}),
       measurement: measured,
       ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
@@ -1143,6 +1144,9 @@ function requestDetail(
   return {
     ...summary,
     lines: [
+      ...(request.compaction ? [
+        `Compaction decision at execution: trigger ${request.compaction.trigger}; configured ${request.compaction.configuredStrategy} (${request.compaction.strategySource}); selected ${request.compaction.selectedStrategy}; reason ${request.compaction.selectionReason}; model source ${request.compaction.modelSource ?? "unrecorded"}; model policy ${request.compaction.modelPolicy ?? "unconfigured"}`,
+      ] : []),
       ...(measured.scope ? [`Observation scope: ${measured.scope}; invocation ${measured.invocationID}; operation ${measured.operationID}; outcome ${r.status}`] : []),
       request.evidence ?? cause.evidence,
       `Reusable-token estimate: ${request.expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,

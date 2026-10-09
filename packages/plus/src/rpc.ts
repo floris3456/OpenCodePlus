@@ -2,6 +2,7 @@ export * as Plus from "./rpc.js"
 
 import { Schema } from "effect"
 import { Rpc } from "@opencode/schema/rpc"
+import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 
 export type Level = typeof Level.Type
 export const Level = Schema.Union([
@@ -1449,6 +1450,7 @@ export const MonitorRequest = Schema.Struct({
   cost: Schema.Number,
   verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none", "error"]),
   outcome: Schema.optionalKey(Schema.String),
+  compaction: Schema.optionalKey(CompactionObservation),
   measurement: Schema.optionalKey(Schema.Struct({
     state: Schema.Literals(["running", "legacy-unknown", "unknown-version", "inconsistent", "unavailable", "not-reported", "reported"]),
     scope: Schema.optionalKey(Schema.Literals(["invocation", "exchange"])),

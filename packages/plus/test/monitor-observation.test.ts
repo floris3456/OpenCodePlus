@@ -4,6 +4,7 @@ import { createLedger, endRequestWindow } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger, usage } from "./monitor-fixture.js"
 import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import { Schema } from "effect"
+import { queryMonitor } from "../src/monitor/query.js"
 
 afterEach(cleanupLedgers)
 
@@ -33,6 +34,10 @@ test("execution decisions are allow-listed, immutable history; unsupported decis
   try {
     expect(reopened.getRequest("decision")?.observation?.compaction).toEqual(stored)
     expect(JSON.stringify(reopened.db.query("select observation from request").all())).not.toContain("SECRET")
+    const report = queryMonitor(reopened, { scope: "session", sessionID: "s", view: "cache", id: "decision" }, { now: 300 })
+    expect(report.detail?.request.compaction).toEqual(stored)
+    expect(report.detail?.lines[0]).toContain("configured auto (built-in); selected text-summary; reason anthropic-below-minimum")
+    expect(JSON.stringify(report)).not.toContain("SECRET")
   } finally {
     reopened.close()
   }
