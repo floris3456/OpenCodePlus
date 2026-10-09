@@ -133,6 +133,7 @@ const SetDescription =
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
+  "Model and Defaults › Models rows accept compactWarm/coldCompact (on|off), compactionStrategy (auto|local|remote), compactionModel (provider/model#variant), compactionInstructions, and coldModels (ordered array or comma list). Null inherits; empty strings inherit except compactionInstructions, where empty is an explicit empty prompt. coldModels:[] explicitly disables the list. Emitted modelfield:/modelsetting: field rows take text and reset; coldCompact is a group, not a scalar field row, and no modelsetting:coldModels row is emitted. Use list's actual ids.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
   "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
@@ -1152,7 +1153,8 @@ function resetModelField(
 
 // Defaults › Models rows (model-settings.ts) edit through modelSettings.set, not
 // the inventory mutate: they are server-owned rows like teams. A string sets a
-// field, "" clears it, absent leaves it; `state` sets the warming switch.
+// field, "" clears it (except compactionInstructions), absent leaves it;
+// `state` sets the warming switch. C1 null clears; [] sets an empty cold list.
 function setModelDefaults(
   api: PlusApi,
   node: TreeNode,

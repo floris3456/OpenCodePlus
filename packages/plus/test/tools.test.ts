@@ -10,7 +10,7 @@ import path from "node:path"
 import { activate, createPlusApi, createState, createHandlers, deactivate } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
-import { globalLogPath, globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
+import { globalLogPath, globalRecordsPath, globalTeamsPath, linkedProjectsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
 import { saveRun } from "../src/teams/run.js"
 import { load, save } from "../src/instructions/store.js"
 import { userBaseFile } from "../src/agents/base.js"
@@ -301,10 +301,14 @@ test("C1 registered model set and emitted field reset persist atomically without
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const protectedBefore = await load(project)
   const protectedLog = await Bun.file(globalLogPath()).text()
+  const index = await Bun.file(linkedProjectsPath()).text().catch(() => undefined)
+  const records = await Bun.file(globalRecordsPath()).text()
   expect((await runFail(set, decoded(set, { id: created.id, compactWarm: "on" }))).message).toContain("agent.protected")
   expect((await runFail(resetTool, decoded(resetTool, { id: created.id }))).message).toContain("agent.protected")
   expect(await load(project)).toEqual(protectedBefore)
   expect(await Bun.file(globalLogPath()).text()).toBe(protectedLog)
+  expect(await Bun.file(globalRecordsPath()).text()).toBe(records)
+  expect(await Bun.file(linkedProjectsPath()).text().catch(() => undefined)).toBe(index)
 })
 
 test("C1 registered Defaults dispatcher accepts comma coldModels and truthful emitted field rows", async () => {
@@ -327,6 +331,29 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
   expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ compactionInstructions: "new summary", prompt: "keep alive" })
   await runOk(need(tools, "instructions_reset"), { id: instructions.id })
   expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("compactionInstructions")
+  await runOk(set, decoded(set, { id: row.id, coldModels: [], compactionInstructions: "" }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ coldModels: [], compactionInstructions: "" })
+  await runOk(set, decoded(set, { id: row.id, coldModels: null, compactionInstructions: null }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("coldModels")
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("compactionInstructions")
+})
+
+test("C1 registered inherited model edits plant only local fields and reset reveals the lower level", async () => {
+  const { api, tools, project } = await freshFixture({ agents: [agentInfo("build", "role", modelRef("acme", "base"))], models: [modelInfo("acme", "base")], classifications: { base: "general" } })
+  const set = need(tools, "instructions_set")
+  await runOk(set, decoded(set, { id: "item:global:build:model:acme/base", compactionStrategy: "remote", compactionInstructions: "global summary" }))
+  await runOk(set, decoded(set, { id: "item:project:build:model:acme/base", compactionStrategy: "local", coldModels: ["acme/cold"] }))
+  const before = await load(project)
+  expect(before.records.find((record) => record.type === "model" && record.level === "global")).toMatchObject({ compactionStrategy: "remote", compactionInstructions: "global summary" })
+  expect(before.records.find((record) => record.type === "model" && record.level === "project")).toMatchObject({ compactionStrategy: "local", coldModels: ["acme/cold"] })
+  const row = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id.startsWith("item:project:build:") && node.address?.item.startsWith("modelfield:compactionStrategy:"))
+  if (row === undefined) throw new Error("missing inherited strategy field")
+  await runOk(need(tools, "instructions_reset"), decoded(need(tools, "instructions_reset"), { id: row.id }))
+  const after = await load(project)
+  expect(after.records.find((record) => record.type === "model" && record.level === "project")).not.toHaveProperty("compactionStrategy")
+  expect(after.records.filter((record) => record.level === "global")).toEqual(before.records.filter((record) => record.level === "global"))
+  const shown = await runOk(need(tools, "instructions_show"), { id: row.id })
+  expect(shown).toMatchObject({ field: "compactionStrategy", value: "Remote · global" })
 })
 
 function need(tools: Map<string, Tool.Info & { readonly id: string }>, id: string): Tool.Info & { readonly id: string } {
