@@ -65,7 +65,11 @@ const layer = Layer.effect(
       )
 
     const prepareContextBounded = (sessionID: SessionSchema.ID) =>
-      bounded(prepareContext(sessionID), { kind: "stage", label: "loading the session context" })
+      bounded(prepareContext(sessionID), { kind: "stage", label: "loading the session context" }).pipe(
+        // A conversion is model execution, not request preparation: never put its stream under the
+        // preparation timeout. It must finish before promoting input to the newly selected model.
+        Effect.tap((selected) => prepareHandoff(selected)),
+      )
     const loadContextBounded = (selected: SessionContext.Selection) =>
       bounded(context.load(selected), { kind: "stage", label: "loading the session context" })
 
@@ -133,14 +137,9 @@ const layer = Layer.effect(
                     const selected = yield* context.select(sessionID)
                     const model = yield* context.resolveModel(selected.session)
                     // Preview updates without admitting them after the already-delivered compaction marker.
-                    const history = yield* SessionHistory.preview(
-                      db,
-                      sessionID,
-                      selected.instructions,
-                      SessionProviderContext.provenance(model) ?? "local",
-                    )
-                    return yield* compaction.compact({
-                      reason: "manual",
+                    const history = yield* SessionHistory.preview(db, sessionID, selected.instructions, "latest")
+                    const trigger = {
+                      reason: "manual" as const,
                       inputID: pending.id,
                       context: {
                         session: selected.session,
@@ -150,7 +149,9 @@ const layer = Layer.effect(
                         initial: history.initial,
                         messages: history.messages,
                       },
-                    })
+                    }
+                    const converted = yield* compaction.handoff(trigger)
+                    return converted.status === "skipped" ? yield* compaction.compact(trigger) : converted
                   }).pipe(
                     Effect.catch((error) =>
                       bus.publish(SessionEvent.Compaction.Failed, {
@@ -218,6 +219,28 @@ const layer = Layer.effect(
       // A blocked initial instruction baseline must leave admitted input pending.
       yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
       return selected
+    })
+
+    const prepareHandoff = Effect.fn("SessionRunner.prepareHandoff")(function* (selected: SessionContext.Selection) {
+      const loaded = yield* bounded(
+        Effect.gen(function* () {
+          const messages = yield* SessionHistory.load(db, selected.session.id, "latest")
+          if (!messages.some(SessionProviderContext.isCheckpoint)) return
+          const model = yield* context.resolveModel(selected.session)
+          return {
+            session: selected.session,
+            agent: selected.agent,
+            tools: selected.tools,
+            model,
+            messages,
+            initial: yield* InstructionState.initial(db, selected.session.id, selected.instructions),
+          }
+        }),
+        { kind: "stage", label: "loading the checkpoint for model handoff" },
+      )
+      if (!loaded) return
+      const converted = yield* compaction.handoff({ reason: "auto", context: loaded })
+      if (converted.status === "failed") return yield* new StepFailedError({ error: converted.error })
     })
 
     /** Owns logical Step policy; each attempt owns its streaming, tools, and durable settlement. */

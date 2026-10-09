@@ -69,11 +69,13 @@ export type Outcome =
 
 export interface Interface extends State.Transformable<Editor> {
   readonly compact: (trigger: Trigger) => Effect.Effect<Outcome>
+  /** Convert an incompatible native window with its owner before the selected model can execute. */
+  readonly handoff: (trigger: Trigger) => Effect.Effect<Outcome>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCompaction") {}
 
-/** A summary fills `text` and `recent`; a native compaction fills `providerContext`. */
+/** Both retain `recent`; a summary fills `text`, and a native compaction fills `providerContext`. */
 type Result = {
   readonly text: string
   // todo: this should become a msg reference, we shouldnt be stringifying the recent history (confuses some models...)
@@ -339,14 +341,22 @@ export const layer = Layer.effect(
             }),
           ),
           Effect.flatMap(({ owner, instruction }) =>
-            summarize(owner, budget, settings.keep, instruction).pipe(
-              Effect.map((result) => ({ owner, result })),
-              Effect.mapError((failure) => ({ ...failure, model: owner.context.model.ref })),
-            ),
+            Effect.gen(function* () {
+              // Re-expanding an opaque window for local/overflow recovery must not select a smaller tail
+              // just because the summary input is now a full transcript rather than the native window.
+              const retained = context.messages.some(SessionProviderContext.isCheckpoint)
+                ? { older: owner.context.messages, recent: yield* retain(context, settings.keep) }
+                : undefined
+              const result = yield* summarize(owner, budget, settings.keep, instruction, retained).pipe(
+                Effect.mapError((failure) => ({ ...failure, model: owner.context.model.ref })),
+              )
+              return { owner, result }
+            }),
           ),
         )
       // `compactionFallbacks`, when present, is the whole list and replaces `compactionFallback`.
-      const fallbacks = decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
+      const fallbacks =
+        decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
       const choices: (Agent.Compaction["model"] | undefined)[] = [decision.compactionModel, ...fallbacks]
       const attempt = (index: number): Effect.Effect<{ owner: Trigger; result: Result }, Failure> =>
         local(choices[index]).pipe(
@@ -381,6 +391,77 @@ export const layer = Layer.effect(
       if (measured < messages.findLastIndex(SessionProviderContext.isCheckpoint)) return false
       return estimateContext(context) >= ceiling
     }
+
+    const handoff = Effect.fn("SessionCompaction.handoff")(function* (trigger: Trigger): Effect.fn.Return<Outcome> {
+      const context = trigger.context
+      const previous = previousCompaction(context.messages)
+      if (
+        !previous ||
+        !SessionProviderContext.isCheckpoint(previous) ||
+        SessionProviderContext.compatible(
+          previous.providerContext.provenance,
+          SessionProviderContext.provenance(context.model),
+        )
+      )
+        return { status: "skipped" }
+
+      const attempt = yield* Effect.gen(function* () {
+        if (!previous.model)
+          return yield* Effect.fail<Failure>({
+            error: {
+              type: "compaction.unavailable",
+              message: "The native checkpoint has no recorded model to write a portable summary",
+            },
+          })
+        // Neither the target nor a maintenance override can consume this checkpoint. Resolve its owner
+        // without changing the selected model, then verify the deployment before running request hooks.
+        const model = yield* models
+          .resolve({ ...context.session, model: previous.model }, modelCatalog.available)
+          .pipe(Effect.mapError((cause): Failure => ({ error: toSessionError(cause), model: previous.model })))
+        if (
+          !SessionProviderContext.compatible(
+            previous.providerContext.provenance,
+            SessionProviderContext.provenance(model),
+          )
+        )
+          return yield* Effect.fail<Failure>({
+            model: model.ref,
+            error: {
+              type: "compaction.unavailable",
+              message:
+                "The native checkpoint's original model deployment is unavailable; cannot write a portable summary",
+            },
+          })
+        const owner = { ...trigger, context: { ...context, model } }
+        const budget = calculateCeiling(
+          { ...model.limit, context: model.limit.context || UNKNOWN_WINDOW },
+          state.get().buffer,
+        )
+        const recent = yield* retain(context, state.get().keep)
+        const result = yield* summarize(owner, budget, state.get().keep, undefined, {
+          older: context.messages,
+          recent,
+          checkpointHandoff: true,
+        }).pipe(Effect.mapError((failure) => ({ ...failure, model: model.ref })))
+        // Only readable text crosses this boundary, never source-model continuation state.
+        return { owner, result: { ...result, providerState: undefined } }
+      }).pipe(Effect.result)
+      return Result.isSuccess(attempt)
+        ? yield* publish(attempt.success.owner, attempt.success.result)
+        : yield* publish(trigger, attempt.failure)
+    })
+
+    /** Native windows retain a separate readable tail, independent of what the provider compresses.
+     * Legacy windows lack it; recover only the tail from the durable transcript, not summary input.
+     */
+    const retain = Effect.fnUntraced(function* (context: SessionContext.Loaded, keep: number) {
+      const previous = previousCompaction(context.messages)
+      const messages =
+        previous && SessionProviderContext.isCheckpoint(previous) && !previous.recent
+          ? yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
+          : context.messages
+      return splitConversation(messages, keep, true)?.recent ?? ""
+    })
 
     /**
      * The local summary path resolves the compaction agent's model and system overrides. The maintenance
@@ -437,6 +518,8 @@ export const layer = Layer.effect(
 
     /**
      *   first:  [E1 … E8][E9 E10]                  →  [S1 + "E9 E10"]
+     *   same:   [S1 + "E9 E10"]                   →  [S2 + "E9 E10"]  no new conversation cannot age the tail out
+     *   small:  [S1 + "E9 E10"][E11]              →  [S2 + "E9 E10 E11"] when the combined tail fits
      *   again:  [S1 + "E9 E10"][E11 … E18][E19]    →  [S2 + "E19"]      S2 covers S1, E9 E10, and E11–E18
      *
      * The model is sent the older part, then the summary prompt:
@@ -463,9 +546,14 @@ export const layer = Layer.effect(
       budget: number,
       keep: number,
       instruction: string | undefined,
+      retained?: {
+        readonly older: ReadonlyArray<SessionMessage.Info>
+        readonly recent: string
+        readonly checkpointHandoff?: true
+      },
     ): Effect.fn.Return<Result, Failure> {
       const context = trigger.context
-      const split = splitConversation(context.messages, keep)
+      const split = retained ?? splitConversation(context.messages, keep)
       if (!split) return yield* Effect.fail(NOTHING_TO_COMPACT)
 
       const previous = previousCompaction(context.messages)
@@ -475,7 +563,7 @@ export const layer = Layer.effect(
       const prompt = instruction === undefined ? summaryPrompt : `${instruction}\n\n${summaryPrompt}`
       const headings = SUMMARY_TEMPLATE.split("\n").filter((line) => line.startsWith("##"))
       const filled = (text: string) => text.split("\n").some((line) => headings.includes(line.trim()))
-      const prepared = yield* prepare(context, split.older, budget)
+      const prepared = yield* prepare(context, split.older, budget, undefined, retained?.checkpointHandoff)
 
       // Hooks saw the request without the summary prompt, so it is appended here. A reply that ignores the
       // template gets one reminder before it counts as a failure.
@@ -509,10 +597,11 @@ export const layer = Layer.effect(
      *
      * Later requests open with that replacement window in place of the history it covers:
      *
-     *   [U U][item][new messages…]
+     *   [U U][item][retained readable tail][new messages…]
      *
      * window = the previous compaction and everything since. item = one encrypted compaction item, which only
-     * replays on the endpoint that made it. U = a user message as typed.
+     * replays on the endpoint that made it. U = a user message as typed. The separate readable tail remains
+     * outside the opaque checkpoint until actual newer conversation ages it out of `keep`.
      */
     const compactNatively = Effect.fnUntraced(function* (
       trigger: Trigger,
@@ -521,10 +610,26 @@ export const layer = Layer.effect(
       strategy: "auto" | "local" | "remote",
     ): Effect.fn.Return<Result, Failure> {
       const context = trigger.context
-      if (!context.messages.some(messageToText)) return yield* Effect.fail(NOTHING_TO_COMPACT)
+      if (!previousCompaction(context.messages) && !context.messages.some(messageToText))
+        return yield* Effect.fail(NOTHING_TO_COMPACT)
+      const recent = yield* retain(context, keep)
       const unsupported = (message: string) =>
         Effect.fail<Failure>({ error: { type: "provider.unsupported-operation", message } })
-      const prepared = yield* prepare(context, context.messages, budget, "session")
+      // A tail still retained beside the new window need not be compacted into it. Otherwise endpoints
+      // which preserve user messages would echo its wrapper, adding a copy on every compaction with no
+      // new conversation. A tail aged out by newer messages MUST enter the checkpoint instead.
+      const prepared = yield* prepare(
+        context,
+        context.messages.map((message) =>
+          message.type === "compaction" &&
+          message.status === "completed" &&
+          (recent === message.recent || recent.startsWith(`${message.recent}\n\n`))
+            ? { ...message, recent: "" }
+            : message,
+        ),
+        budget,
+        "session",
+      )
 
       // An explicit remote strategy must fail honestly when the route cannot compact natively: it may not
       // silently fall back to a local summary the caller did not ask for.
@@ -562,7 +667,7 @@ export const layer = Layer.effect(
         spend(context.session.id, usage && SessionUsage.record(usage, context.model.cost)).pipe(
           Effect.as<Result>({
             text: "",
-            recent: "",
+            recent,
             providerContext: SessionProviderContext.encode(provenance, window),
           }),
         )
@@ -577,9 +682,7 @@ export const layer = Layer.effect(
               // usage it reported before the failure settles.
               Effect.tapError((cause) => {
                 const usage = compactionUsage(cause)
-                return usage
-                  ? spend(context.session.id, SessionUsage.record(usage, context.model.cost))
-                  : Effect.void
+                return usage ? spend(context.session.id, SessionUsage.record(usage, context.model.cost)) : Effect.void
               }),
               // A normal answer means Anthropic did not compact; the outer strategy decides what happens.
               Effect.catch(
@@ -600,7 +703,7 @@ export const layer = Layer.effect(
         return unsupported(`Native compaction is not supported for ${request.model.provider}/${request.model.route.id}`)
       }
 
-      return yield* deliver(trigger, prepared, "", budget, send)
+      return yield* deliver(trigger, prepared, recent, budget, send)
     })
 
     /**
@@ -812,6 +915,7 @@ export const layer = Layer.effect(
       messages: ReadonlyArray<SessionMessage.Info>,
       budget: number,
       webSocket?: "session",
+      checkpointHandoff?: true,
     ) => {
       const base = transcript(context, messages)
       return requests.compaction({
@@ -822,6 +926,7 @@ export const layer = Layer.effect(
         system: base.system,
         messages: base.messages,
         webSocket,
+        checkpointHandoff,
         inputTokens: { measured: budget, estimated: 0 },
       })
     }
@@ -896,6 +1001,18 @@ export const layer = Layer.effect(
     return Service.of({
       transform: state.transform,
       reload: state.reload,
+      handoff: (trigger) =>
+        handoff(trigger).pipe(
+          Effect.onInterrupt(() =>
+            trigger.reason === "manual"
+              ? Effect.void
+              : publish(trigger, {
+                  model: previousCompaction(trigger.context.messages)?.model,
+                  error: { type: "compaction.interrupted", message: "Checkpoint conversion was interrupted" },
+                }),
+          ),
+          Effect.ensuring(Effect.sync(() => spent.delete(trigger.context.session.id))),
+        ),
       // A manual compaction settles through its `/compact` inbox item, which the runner owns.
       compact: (trigger) =>
         compact(trigger).pipe(
@@ -945,16 +1062,19 @@ const transcript = (context: SessionContext.Loaded, messages: ReadonlyArray<Sess
  * `older` gets summarized; `recent`, the newest messages within `keep` tokens, is kept verbatim as text beside
  * the summary. Undefined when there is nothing to compact.
  */
-const splitConversation = (messages: ReadonlyArray<SessionMessage.Info>, keep: number) => {
+const splitConversation = (messages: ReadonlyArray<SessionMessage.Info>, keep: number, summarized = false) => {
+  const previous = previousCompaction(messages)
   const entries = messages.flatMap((message, index) => {
-    const text = messageToText(message)
+    // The serialized tail is one indivisible segment. User-authored labels are not message boundaries.
+    const text = message === previous ? previous.recent : messageToText(message)
     return text ? [{ message, text, index }] : []
   })
-  if (entries.length === 0) return undefined
+  if (entries.length === 0) return previous ? { older: messages, recent: "" } : undefined
 
-  const recent = entries.slice(recentStart(entries, keep, previousCompaction(messages)))
+  const recent = entries.slice(recentStart(entries, keep, previous !== undefined || summarized))
+  const retained = recent[0]?.message === previous
   return {
-    older: messages.slice(0, recent[0]?.index ?? messages.length),
+    older: retained && previous ? [previous] : messages.slice(0, recent[0]?.index ?? messages.length),
     recent: recent.map((entry) => entry.text).join("\n\n"),
   }
 }
@@ -962,7 +1082,7 @@ const splitConversation = (messages: ReadonlyArray<SessionMessage.Info>, keep: n
 const recentStart = (
   entries: ReadonlyArray<{ readonly message: SessionMessage.Info; readonly text: string }>,
   keep: number,
-  previous: SessionMessage.CompactionCompleted | undefined,
+  summarized: boolean,
 ) => {
   // Drop the oldest entries until the rest fit the allowance, but always keep the newest one.
   const dropped = Math.min(
@@ -974,13 +1094,16 @@ const recentStart = (
   const userBoundary = entries.findLastIndex((entry, index) => index <= dropped && entry.message.type === "user")
   if (userBoundary > 0) return userBoundary
 
+  // There is already a summary to rewrite. Keep all fitting conversation, including its old tail;
+  // with no new conversation the tail survives unchanged even if the allowance was reduced.
+  if (summarized) return 0
+
   // Everything fits. Keep only the latest exchange so there is an older part left to summarize.
   const latestUser = entries.findLastIndex((entry) => entry.message.type === "user")
   if (latestUser > 0) return latestUser
 
-  // One exchange, nothing older. Summarize it all and keep nothing, unless a previous summary already
-  // kept recent text, in which case keep everything and summarize only the summary before it.
-  return previous?.recent ? 0 : entries.length
+  // One exchange with no previous checkpoint. Summarize it all and keep nothing.
+  return entries.length
 }
 
 const oldestToDrop = <T>(items: ReadonlyArray<T>, size: (item: T) => number, budget: number) => {

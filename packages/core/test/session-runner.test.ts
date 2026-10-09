@@ -591,6 +591,23 @@ const setup = Effect.gen(function* () {
 })
 
 type Scenario = Effect.Success<typeof setup>
+const installNative = Effect.fnUntraced(function* (s: Scenario) {
+  const model = Model.Ref.parse("fake/fake-model")
+  const provenance = SessionProviderContext.provenance({ model: s.currentModel, ref: model })
+  if (!provenance) return yield* Effect.die("Missing test provenance")
+  const providerContext = SessionProviderContext.encode(provenance, [
+    Message.assistant(CompactionPart.make({ provider: s.currentModel.provider, encrypted: "handoff-checkpoint" })),
+  ])
+  yield* s.bus.publish(SessionEvent.Compaction.Ended, {
+    sessionID,
+    reason: "auto",
+    model,
+    text: "",
+    recent: "[User]: Exact retained conversation 🦉",
+    providerContext,
+  })
+  return providerContext
+})
 const scenario = (
   name: string,
   body: (s: Scenario) => Effect.gen.Return<void, unknown, Layer.Success<typeof layer> | Scope.Scope>,
@@ -1501,6 +1518,109 @@ describe("SessionRunnerLLM", () => {
     expect(yield* s.inbox).toEqual([])
   })
 
+  for (const manual of [false, true]) {
+    scenario(
+      `converts native context with its previous model before ${manual ? "manual compaction" : "promoting the target prompt"}`,
+      function* (s) {
+        const compaction = yield* SessionCompaction.Service
+        yield* compaction.transform((editor) => editor.configure({ auto: false }))
+        yield* s.runPrompt("Original request")
+        yield* installNative(s)
+        const agents = yield* Agent.Service
+        yield* agents.transform((editor) =>
+          editor.update(Agent.defaultID, (agent) => {
+            agent.compaction = { strategy: "remote", model: Model.Ref.parse("fake/maintenance") }
+          }),
+        )
+        yield* s.session.switchModel({ sessionID, model: Model.Ref.parse("fake/replacement") })
+        yield* s.llm.push(TestLLM.text("## Objective\n- Portable converted summary", "handoff-summary"))
+        if (manual) {
+          yield* s.session.compact({ sessionID })
+          yield* s.resume
+        }
+        if (!manual) {
+          yield* s.llm.push(TestLLM.text("Target answer", "target-answer"))
+          yield* s.runPrompt("New target prompt")
+        }
+        expect(s.requests[1].model).toBe(model)
+        expect(JSON.stringify(s.requests[1].messages)).toContain("handoff-checkpoint")
+        expect(JSON.stringify(s.requests[1].messages)).not.toContain("Original request")
+        expect(JSON.stringify(s.requests[1].messages)).not.toContain("New target prompt")
+        const converted = (yield* s.messages).find((message) => message.type === "compaction")
+        expect(converted).toMatchObject({
+          status: "completed",
+          recent: "[User]: Exact retained conversation 🦉",
+          model: Model.Ref.parse("fake/fake-model"),
+        })
+        expect(converted).not.toHaveProperty("providerContext", expect.anything())
+        if (manual) {
+          yield* s.llm.push(TestLLM.text("Target answer", "target-answer"))
+          yield* s.runPrompt("New target prompt")
+        }
+        expect(s.requests[2].model).toBe(replacementModel)
+        expect(JSON.stringify(s.requests[2].messages)).toContain("Portable converted summary")
+        expect(JSON.stringify(s.requests[2].messages)).toContain("Exact retained conversation 🦉")
+        expect(JSON.stringify(s.requests[2].messages)).toContain("New target prompt")
+        expect(JSON.stringify(s.requests[2].messages)).not.toContain("handoff-checkpoint")
+        expect(yield* s.inbox).toHaveLength(0)
+      },
+    )
+  }
+
+  scenario(
+    "native conversion is not preparation-timed-out and cancellation leaves target input pending",
+    function* (s) {
+      yield* s.runPrompt("Original request")
+      const providerContext = yield* installNative(s)
+      yield* s.session.switchModel({ sessionID, model: Model.Ref.parse("fake/replacement") })
+      const streamed = yield* Deferred.make<void>()
+      yield* s.llm.push(
+        Stream.concat(
+          Stream.make(LLMEvent.textDelta({ id: "partial-conversion", text: "## Objective\n- Partial" })),
+          Stream.fromEffect(Deferred.succeed(streamed, undefined)).pipe(Stream.flatMap(() => Stream.never)),
+        ),
+      )
+      yield* s.admit("Pending target prompt")
+      const running = yield* s.resume.pipe(Effect.forkChild)
+      yield* Deferred.await(streamed)
+      yield* TestClock.adjust("2 minutes")
+      expect((yield* s.messages).find((message) => message.type === "compaction")).toMatchObject({ status: "running" })
+      yield* s.session.interrupt(sessionID)
+      yield* Fiber.await(running)
+      expect((yield* s.context)[0]).toMatchObject({ providerContext })
+      expect((yield* s.messages).find((message) => message.type === "compaction")).toMatchObject({
+        status: "failed",
+        model: Model.Ref.parse("fake/fake-model"),
+      })
+      expect(yield* s.inbox).toHaveLength(1)
+      expect(s.requests).toHaveLength(2)
+      expect(s.requests[1].model).toBe(model)
+    },
+  )
+
+  scenario("failed native conversion preserves the checkpoint and leaves target input pending", function* (s) {
+    yield* s.runPrompt("Original request")
+    const providerContext = yield* installNative(s)
+    yield* s.session.switchModel({ sessionID, model: Model.Ref.parse("fake/replacement") })
+    yield* s.llm.push(TestLLM.text("Not a summary", "bad-summary"), TestLLM.text("Still not a summary", "bad-retry"))
+    yield* s.admit("Waiting for conversion")
+    expect(yield* s.resume.pipe(Effect.exit)).toMatchObject({ _tag: "Failure" })
+    expect(s.requests).toHaveLength(3)
+    expect(s.requests.every((request) => request.model === model)).toBe(true)
+    expect((yield* s.context)[0]).toMatchObject({ providerContext })
+    expect(yield* s.inbox).toHaveLength(1)
+    expect(
+      (yield* s.messages).some((message) => message.type === "user" && message.text === "Waiting for conversion"),
+    ).toBe(false)
+    yield* s.llm.push(
+      TestLLM.text("## Objective\n- Recovery summary", "good-summary"),
+      TestLLM.text("Target answer", "answer"),
+    )
+    yield* s.resume
+    expect(s.requests.at(-1)?.model).toBe(replacementModel)
+    expect(yield* s.inbox).toHaveLength(0)
+  })
+
   scenario(
     "restores installed native context with auto disabled and preserves it across fork and revert",
     function* (s) {
@@ -1548,17 +1668,17 @@ describe("SessionRunnerLLM", () => {
         Message.system("Newest instructions"),
       ])
       expect(
-        (yield* s.session.messages({ sessionID: forked.id })).find((message) => message.type === "compaction"),
+        (yield* s.session.messages({ sessionID: forked.id })).find((message) => message.type === "compaction" && message.status === "completed"),
       ).toMatchObject({ providerContext })
 
       const original = s.currentModel
       s.currentModel = LanguageModel.update(original, { id: "different-deployment" })
       yield* s.session.prompt({ sessionID: forked.id, text: "Switched fork", resume: false })
-      yield* s.session.resume(forked.id)
-      expect(s.requests.at(-1)?.messages[0]?.content).toEqual([Message.text("Original request")])
-      expect(s.requests.at(-1)?.messages.filter((message) => message.role === "system")).toEqual([
-        Message.system("Newest instructions"),
-      ])
+      // This legacy fixture has no owner model. Do not silently re-expand and send its history elsewhere.
+      const sent = s.requests.length
+      expect(yield* s.session.resume(forked.id).pipe(Effect.exit)).toMatchObject({ _tag: "Failure" })
+      expect(s.requests).toHaveLength(sent)
+      expect(yield* s.session.inbox(forked.id)).toHaveLength(1)
       s.currentModel = original
 
       yield* s.bus.publish(SessionEvent.RevertEvent.Committed, { sessionID, to: checkpoint.id })
@@ -1571,7 +1691,7 @@ describe("SessionRunnerLLM", () => {
       ).toBe(false)
       expect(s.requests.at(-1)?.messages[0]?.content).toEqual([Message.text("Original request")])
       expect(
-        (yield* s.session.messages({ sessionID: forked.id })).find((message) => message.type === "compaction"),
+        (yield* s.session.messages({ sessionID: forked.id })).find((message) => message.type === "compaction" && message.status === "completed"),
       ).toMatchObject({ providerContext })
 
       const hooks = yield* PluginHooks.Service
@@ -3271,7 +3391,7 @@ describe("SessionRunnerLLM", () => {
     expect((yield* store.context(sessionID))[0]).toMatchObject({
       type: "compaction",
       summary: "## Objective\n- Preserve the updated task",
-      recent: `[User]: ${"Newest exact request ".repeat(180)}`,
+      recent: `[User]: ${"Recent exact request ".repeat(180)}\n\n[Assistant]: Continued\n\n[User]: ${"Newest exact request ".repeat(180)}`,
     })
   })
 
@@ -3316,7 +3436,11 @@ describe("SessionRunnerLLM", () => {
       "Second real request",
       "Third real request",
       "Fourth real request",
+      expect.stringContaining("<recent-context>"),
     ])
+    expect(userTexts(s.requests[6]).at(-1)).toContain("[User]: First real request")
+    expect(userTexts(s.requests[6]).at(-1)).toContain("[Assistant]: Earlier answer")
+    expect(userTexts(s.requests[6]).at(-1)).toContain('[Assistant tool call]: echo({"text":"continue"})\n[Tool result]: continue')
     expect(JSON.stringify(s.requests[6].messages)).not.toContain('"encrypted":"first"')
     const compaction = yield* SessionCompaction.Service
     yield* compaction.transform((editor) => editor.configure({ auto: false }))

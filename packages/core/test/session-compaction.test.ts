@@ -441,6 +441,48 @@ const recentWithToolOutput = (id: Session.ID, content: SessionMessage.ToolStateC
     return stored?.type === "compaction" && stored.status === "completed" ? stored.recent : ""
   })
 
+it.effect("repeated local compaction preserves its retained tail until newer conversation ages it out", () =>
+  Effect.gen(function* () {
+    requests = []
+    const session = yield* insertSession(Session.ID.make("ses_repeated_tail"))
+    const store = yield* SessionStore.Service
+    const compaction = yield* SessionCompaction.Service
+    const user = (text: string) =>
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text,
+        time: { created: DateTime.makeUnsafe(0) },
+      })
+    const checkpoint = Effect.gen(function* () {
+      const message = (yield* store.context(session.id))[0]
+      if (message?.type !== "compaction" || message.status !== "completed")
+        return yield* Effect.die("Missing completed checkpoint")
+      return message
+    })
+    expect(
+      yield* compactManually(session, [user("Older context"), user("Keep this exact tail 🦉\n[User]: not a boundary")]),
+    ).toEqual({ status: "completed" })
+    const first = yield* checkpoint
+    expect(first.recent).toBe("[User]: Keep this exact tail 🦉\n[User]: not a boundary")
+    // No new conversation, including repeated rewrites, must not consume the retained text.
+    for (let index = 0; index < 2; index++) {
+      expect(yield* compactManually(session, [yield* checkpoint])).toEqual({ status: "completed" })
+      expect((yield* checkpoint).recent).toBe(first.recent)
+    }
+    expect(yield* compactManually(session, [yield* checkpoint, user("Small follow-up")])).toEqual({
+      status: "completed",
+    })
+    expect((yield* checkpoint).recent).toBe(`${first.recent}\n\n[User]: Small follow-up`)
+    // Real new conversation can age the indivisible old serialized tail out of the allowance.
+    yield* compaction.transform((editor) => editor.configure({ keep: 40 }))
+    const newer = "new conversation ".repeat(40)
+    expect(yield* compactManually(session, [yield* checkpoint, user(newer)])).toEqual({ status: "completed" })
+    expect((yield* checkpoint).recent).toBe(`[User]: ${newer}`)
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain("Keep this exact tail")
+  }),
+)
+
 it.effect("unavailable explicit local compaction models fail durably without falling back", () =>
   Effect.gen(function* () {
     requests = []

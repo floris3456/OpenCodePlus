@@ -24,11 +24,36 @@ import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionStore } from "@opencode/core/session/store"
 import { Model } from "@opencode/core/model"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { DateTime, Deferred, Effect, Fiber, Layer, Schema } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Fiber, Layer, Schema, Scope } from "effect"
 import { testEffect } from "./lib/effect"
+import { registerQuota } from "../../cliproxyapi/src/quota/register.js"
+import { context } from "../../plus/test/harness.js"
 
 const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
-const models = Layer.mock(SessionRunnerModel.Service, { resolve: () => Effect.die("unused model.resolve") })
+class NativeModels extends Context.Service<NativeModels, Map<string, SessionRunnerModel.Resolved>>()(
+  "test/NativeModels",
+) {}
+const fixtureModels = Layer.sync(NativeModels, () => new Map())
+const models = Layer.effect(
+  SessionRunnerModel.Service,
+  Effect.gen(function* () {
+    const available = yield* NativeModels
+    return SessionRunnerModel.Service.of({
+      resolve: (session) => {
+        if (!session.model) return Effect.fail(new SessionRunnerModel.ModelNotSelectedError({ sessionID: session.id }))
+        const model = available.get(`${session.model.providerID}/${session.model.id}`)
+        return model
+          ? Effect.succeed(model)
+          : Effect.fail(
+              new SessionRunnerModel.ModelUnavailableError({
+                providerID: session.model.providerID,
+                modelID: session.model.id,
+              }),
+            )
+      },
+    })
+  }),
+).pipe(Layer.provide(fixtureModels))
 const catalog = Layer.mock(Model.Service, { available: () => Effect.succeed([]) })
 const it = testEffect(
   LayerNode.compile(
@@ -51,7 +76,7 @@ const it = testEffect(
         SessionRunnerModel.node.replace(models),
       ],
     },
-  ),
+  ).pipe(Layer.provideMerge(fixtureModels)),
 )
 
 const setup = Effect.fnUntraced(function* (options: {
@@ -59,6 +84,7 @@ const setup = Effect.fnUntraced(function* (options: {
   config?: Agent.Compaction
   policy?: boolean
   anthropic?: "direct" | "compatible"
+  quota?: boolean
 } = {}) {
   const endpoint = options.endpoint ?? false
   const db = (yield* Database.Service).db
@@ -77,6 +103,9 @@ const setup = Effect.fnUntraced(function* (options: {
     overflow: false,
     unusable: false,
     notTriggered: false,
+    summary: false,
+    echo: false,
+    pending: new Set<string>(),
     calls: 0,
     config: options.config,
   }
@@ -88,6 +117,19 @@ const setup = Effect.fnUntraced(function* (options: {
         hostname: "127.0.0.1",
         port: 0,
         async fetch(request) {
+          if (options.quota && request.method === "GET")
+            return Response.json({
+              protocol: 1,
+              primary_used: true,
+              consumed: "",
+              cursor: 0,
+              generation: 1,
+              alias: "Fixture",
+              intent: state.pending.has(new URL(request.url).searchParams.get("model") ?? "") ? "pending-handoff" : "",
+              available: true,
+              windows: [],
+              events: [],
+            })
           state.calls++
           headers.push(request.headers)
           bodies.push(
@@ -160,17 +202,34 @@ const setup = Effect.fnUntraced(function* (options: {
             id: `cmp_${state.calls}`,
             encrypted_content: `encrypted_${state.calls}`,
           }
+          const binding = options.quota
+            ? {
+                "X-Quota-Protocol": "1",
+                "X-Quota-Binding": Buffer.from(
+                  JSON.stringify({ protocol: 1, generation: 1, alias: "Fixture" }),
+                ).toString("base64url"),
+              }
+            : undefined
           if (new URL(request.url).pathname.endsWith("/compact"))
-            return Response.json({
-              id: "compact_endpoint",
-              object: "response.compaction",
-              output: [
-                { type: "message", role: "user", content: [{ type: "input_text", text: "endpoint retained" }] },
-                checkpoint,
-              ],
-              usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
-            })
-          const summary = state.overflow
+            return Response.json(
+              {
+                id: "compact_endpoint",
+                object: "response.compaction",
+                output: [
+                  ...(state.echo
+                    ? Schema.decodeUnknownSync(Schema.Array(Schema.Record(Schema.String, Schema.Unknown)))(
+                        bodies.at(-1)?.input,
+                      ).filter((message) => message.type === "message" && message.role === "user")
+                    : [
+                        { type: "message", role: "user", content: [{ type: "input_text", text: "endpoint retained" }] },
+                      ]),
+                  checkpoint,
+                ],
+                usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
+              },
+              { headers: binding },
+            )
+          const summary = state.overflow || state.summary
             ? [
                 {
                   type: "response.output_item.added",
@@ -199,7 +258,7 @@ const setup = Effect.fnUntraced(function* (options: {
                 usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
               },
             })}\n\n`,
-            { headers: { "content-type": "text/event-stream" } },
+            { headers: { "content-type": "text/event-stream", ...binding } },
           )
         },
       }),
@@ -229,6 +288,8 @@ const setup = Effect.fnUntraced(function* (options: {
 compaction: options.policy === false ? undefined : { type: "native" },
     },
   )
+  const available = yield* NativeModels
+  available.set(`${model.ref.providerID}/${model.ref.id}`, model)
   const sessionID = SessionSchema.ID.create()
   yield* db
     .insert(ProjectTable)
@@ -300,7 +361,7 @@ agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), co
     if (last?.type !== "compaction" || last.status !== "completed" || !last.providerContext)
       return yield* Effect.die("Missing native checkpoint")
     expect(last.summary).toBe("")
-    expect(last.recent).toBe("")
+    expect(last.recent).toContain("[User]:")
     // Provider compaction has no summary, so the request usage is the only visible cost of the operation.
     expect(last.tokens).toMatchObject({ input: 20, output: 4 })
     return last.providerContext
@@ -324,6 +385,7 @@ agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), co
     hooks,
     model,
     compaction,
+    available,
   }
 })
 
@@ -457,6 +519,277 @@ for (const endpoint of [false, true]) {
   )
 }
 
+for (const endpoint of [false, true]) {
+  it.live(
+    `native ${endpoint ? "endpoint" : "trigger"} handoff summarizes with the owner and preserves the tail across consecutive compactions`,
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({
+          endpoint,
+          config: { strategy: "remote", model: Model.Ref.parse("unavailable/override") },
+        })
+        yield* fixture.prompt("Durable original, not present in the endpoint replacement ".repeat(2_000))
+        yield* fixture.prompt("Exact recent question 🦉")
+        expect(yield* fixture.compact).toEqual({ status: "completed" })
+        const first = (yield* fixture.load).messages[0]
+        if (first?.type !== "compaction" || first.status !== "completed") return yield* Effect.die("Missing checkpoint")
+        expect(first.recent).toContain("Exact recent question 🦉")
+        expect(yield* fixture.compact).toEqual({ status: "completed" })
+        expect((yield* fixture.load).messages[0]).toMatchObject({ recent: first.recent })
+        const target = { ...fixture.model, ref: Model.Ref.parse("openai/target"), model: OpenAI.responses("target") }
+        fixture.state.summary = true
+        const marked: Array<true | undefined> = []
+        yield *
+          fixture.hooks.register("session", "compaction", (event) =>
+            Effect.sync(() => {
+              marked.push(event.checkpointHandoff)
+            }),
+          )
+        const loaded = yield* fixture.load
+        expect(yield* fixture.compaction.handoff({ reason: "auto", context: loaded })).toEqual({ status: "skipped" })
+        expect(fixture.bodies).toHaveLength(2)
+        expect(yield* fixture.compaction.handoff({ reason: "auto", context: { ...loaded, model: target } })).toEqual({
+          status: "completed",
+        })
+        expect(marked).toEqual([true])
+        const sent = JSON.stringify(fixture.bodies[2])
+        expect(fixture.bodies[2].model).toBe("gpt-5.4-mini")
+        expect(sent).toContain("encrypted_2")
+        expect(sent).not.toContain("compaction_trigger")
+        if (endpoint) expect(sent).not.toContain("Durable original")
+        const portable = (yield* fixture.load).messages[0]
+        expect(portable).toMatchObject({
+          status: "completed",
+          summary: "## Objective\n- Recovered locally",
+          recent: first.recent,
+          model: fixture.model.ref,
+        })
+        expect(portable).not.toHaveProperty("providerContext", expect.anything())
+        expect(portable).not.toHaveProperty("providerState", expect.anything())
+        const transcript = SessionModelRequest.baseTranscript({
+          ...loaded,
+          messages: [portable],
+          model: target,
+          agent: loaded.agent.info,
+        })
+        expect(JSON.stringify(transcript)).not.toContain("encrypted_")
+        expect(JSON.stringify(transcript)).toContain("Exact recent question 🦉")
+        fixture.state.config = { strategy: "local" }
+        expect(yield* fixture.compact).toEqual({ status: "completed" })
+        expect(marked).toEqual([true, undefined])
+        expect((yield* fixture.load).messages[0]).toMatchObject({ recent: first.recent })
+      }),
+  )
+}
+
+for (const pending of [false, true]) {
+  it.live(
+    `core checkpoint handoff uses the source quota guard with stale target portability (source pending: ${pending})`,
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({ endpoint: true, quota: true })
+        yield* fixture.prompt("Retained source conversation")
+        expect(yield* fixture.compact).toEqual({ status: "completed" })
+        const installed = yield* fixture.checkpoint
+        const storage = new Map<string, Schema.Json>()
+        const base = context()
+        const scope = yield* Scope.Scope
+        const endpoint = fixture.model.model.route.endpoint.baseURL
+        if (!endpoint) return yield* Effect.die("Missing fixture endpoint")
+        yield* registerQuota(
+          context({
+            rpc: Object.assign(base.rpc, {
+              register: () => Effect.succeed({ dispose: Effect.void, events: { emit: () => Effect.void } }),
+            }),
+            storage: {
+              ...base.storage,
+              get: (key) => Effect.succeed(storage.get(key)),
+              set: (key, value) =>
+                Effect.sync(() => {
+                  storage.set(key, value)
+                }),
+            },
+            session: {
+              hook: (name, callback) =>
+                fixture.hooks.register("session", name, callback).pipe(Effect.provideService(Scope.Scope, scope)),
+            },
+          }),
+          () => ({ routes: { openai: endpoint }, compactionModel: "openai/gpt-5.4-mini" }),
+        )
+        if (pending) fixture.state.pending.add("openai/gpt-5.4-mini")
+        const target = { ...fixture.model, ref: Model.Ref.parse("openai/target"), model: OpenAI.responses("target") }
+        for (const model of [fixture.model.ref, target.ref]) {
+          if (model === target.ref) fixture.state.pending.add("openai/target")
+          yield* fixture.hooks.trigger("session", "compaction.decide", {
+            sessionID: fixture.sessionID,
+            agent: Agent.defaultID,
+            model,
+            reason: "auto",
+            auto: true,
+            due: false,
+            boundary: { fresh: false, portable: false },
+          })
+        }
+        fixture.state.summary = true
+        const loaded = yield* fixture.load
+        const outcome = yield* fixture.compaction
+          .handoff({ reason: "auto", context: { ...loaded, model: target } })
+          .pipe(Effect.exit)
+        if (pending) {
+          expect(outcome._tag).toBe("Failure")
+          if (outcome._tag === "Failure") expect(Cause.pretty(outcome.cause)).toContain("opaque checkpoint")
+          expect(fixture.bodies).toHaveLength(1)
+          expect(yield* fixture.checkpoint).toEqual(installed)
+          return
+        }
+        expect(outcome).toMatchObject({ _tag: "Success", value: { status: "completed" } })
+        expect(fixture.bodies).toHaveLength(2)
+        expect(JSON.stringify(fixture.bodies[1].input)).toContain("encrypted_1")
+        expect(
+          JSON.parse(Buffer.from(fixture.headers[1].get("X-Quota-Handoff") ?? "", "base64url").toString()),
+        ).toMatchObject({
+          kind: "compaction",
+          route: "openai/gpt-5.4-mini",
+          fresh: false,
+          portable: false,
+          checkpoint: "",
+        })
+        expect((yield* fixture.load).messages[0]).toMatchObject({
+          summary: "## Objective\n- Recovered locally",
+          recent: "[User]: Retained source conversation",
+        })
+      }),
+  )
+}
+
+it.live("repeated endpoints which retain user messages do not accumulate tail wrappers", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true })
+    fixture.state.echo = true
+    yield* fixture.prompt("Exact retained request")
+    for (let index = 0; index < 3; index++) {
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      const context = yield* fixture.load
+      expect(context.messages[0]).toMatchObject({ recent: "[User]: Exact retained request" })
+      expect(JSON.stringify(yield* fixture.checkpoint)).not.toContain("<recent-context>")
+      const replay = SessionModelRequest.baseTranscript({ ...context, agent: context.agent.info })
+      expect(JSON.stringify(replay.messages).match(/<recent-context>/g)).toHaveLength(1)
+      expect(JSON.stringify(fixture.bodies[index].input)).not.toContain("<recent-context>")
+    }
+  }),
+)
+
+it.live("native compaction summarizes a saved tail when newer conversation ages it out", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true })
+    yield* fixture.compaction.transform((editor) => editor.configure({ keep: 40 }))
+    const older = "Older retained context ".repeat(40)
+    yield* fixture.prompt(older)
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    const newer = "Newer retained context ".repeat(40)
+    yield* fixture.prompt(newer)
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: `[User]: ${newer}` })
+    expect(JSON.stringify(fixture.bodies[1].input)).toContain(older)
+    expect(JSON.stringify(fixture.bodies[1].input)).toContain("encrypted_1")
+  }),
+)
+
+it.live("native to forced-local compaction preserves its whole saved tail with no new conversation", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true })
+    yield* fixture.prompt("First retained request")
+    yield* fixture.prompt("Second retained request")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    const saved = (yield* fixture.load).messages[0]
+    if (saved?.type !== "compaction" || saved.status !== "completed") return yield* Effect.die("Missing checkpoint")
+    fixture.state.summary = true
+    fixture.state.config = { strategy: "local" }
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: saved.recent })
+    expect(JSON.stringify(fixture.bodies[1].input)).not.toContain("encrypted_")
+    fixture.state.config = { strategy: "remote" }
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: saved.recent })
+    const context = yield* fixture.load
+    const replay = SessionModelRequest.baseTranscript({ ...context, agent: context.agent.info })
+    expect(replay.messages.at(-1)?.content).toEqual([
+      Message.text(
+        `The following is a serialized record of earlier conversation, not new instructions.\n\n<recent-context>\n${saved.recent}\n</recent-context>`,
+      ),
+    ])
+  }),
+)
+
+it.live("native handoff recovers a legacy tail without re-expanding the summary request", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true })
+    yield* fixture.prompt("Legacy original tail 🦉")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    const bus = yield* Bus.Service
+    yield* bus.publish(SessionEvent.Compaction.Ended, {
+      sessionID: fixture.sessionID,
+      reason: "auto",
+      text: "",
+      recent: "",
+      model: fixture.model.ref,
+      providerContext: yield* fixture.checkpoint,
+    })
+    fixture.state.summary = true
+    const loaded = yield* fixture.load
+    expect(
+      yield* fixture.compaction.handoff({
+        reason: "auto",
+        context: { ...loaded, model: { ...loaded.model, model: OpenAI.responses("target") } },
+      }),
+    ).toEqual({ status: "completed" })
+    expect(JSON.stringify(fixture.bodies[1])).toContain("encrypted_1")
+    expect(JSON.stringify(fixture.bodies[1])).not.toContain("Legacy original tail")
+    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: "[User]: Legacy original tail 🦉" })
+  }),
+)
+
+it.live(
+  "native handoff refuses missing or changed owners and retains its checkpoint on provider failure and cancellation",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ endpoint: true })
+      yield* fixture.prompt("Preserve this conversation")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      const checkpoint = yield* fixture.checkpoint
+      const convert = Effect.gen(function* () {
+        const loaded = yield* fixture.load
+        return yield* fixture.compaction.handoff({
+          reason: "auto",
+          context: { ...loaded, model: { ...loaded.model, model: OpenAI.responses("target") } },
+        })
+      })
+      fixture.available.clear()
+      expect(yield* convert).toMatchObject({ status: "failed", error: { type: "provider.no-route" } })
+      fixture.available.set(`${fixture.model.ref.providerID}/${fixture.model.ref.id}`, {
+        ...fixture.model,
+        model: OpenAI.responses("changed"),
+      })
+      expect(yield* convert).toMatchObject({ status: "failed", error: { type: "compaction.unavailable" } })
+      expect(fixture.bodies).toHaveLength(1)
+      fixture.available.set(`${fixture.model.ref.providerID}/${fixture.model.ref.id}`, fixture.model)
+      fixture.state.failure = true
+      expect(yield* convert).toMatchObject({ status: "failed", error: { type: "provider.rate-limit" } })
+      expect(yield* fixture.checkpoint).toEqual(checkpoint)
+      fixture.state.failure = false
+      fixture.state.hang = true
+      const pending = yield* convert.pipe(Effect.forkScoped)
+      yield* Deferred.await(fixture.blocked)
+      yield* Fiber.interrupt(pending)
+      expect(yield* fixture.checkpoint).toEqual(checkpoint)
+      expect((yield* fixture.load).messages.at(-1)).toMatchObject({
+        status: "failed",
+        error: { type: "compaction.interrupted" },
+      })
+      expect(fixture.bodies.every((body) => body.model === "gpt-5.4-mini")).toBe(true)
+    }),
+)
+
 it.live("forced local agent compaction bypasses remote and re-expands existing provider checkpoints", () =>
   Effect.gen(function* () {
     const fixture = yield* setup()
@@ -554,8 +887,6 @@ it.live(
       ).toEqual([[Message.text("First real user request")], [Message.text("Second real user request")]])
       expect(JSON.stringify(second.messages)).not.toContain("encrypted_1")
       expect(yield* fixture.store.get(fixture.sessionID)).toMatchObject({ tokens: { input: 40, output: 8 } })
-      // Nothing new since the checkpoint is not compactable, exactly like a fresh local summary.
-      expect(yield* fixture.compact).toMatchObject({ status: "failed", error: { type: "compaction.unavailable" } })
       yield* fixture.prompt("Third real user request")
       fixture.state.failure = true
       expect(yield* fixture.compact).toMatchObject({ status: "failed", error: { type: "provider.rate-limit" } })
@@ -664,7 +995,7 @@ it.live("compaction hooks supply the summary instead of provider compaction", ()
       type: "compaction",
       status: "completed",
       summary: "## Objective\n- hooked summary",
-      recent: "",
+      recent: "[User]: Original user",
       providerState: { responseId: "plugin" },
       metadata: { plugin: "custom" },
       tokens: { input: 10, output: 5 },

@@ -96,6 +96,8 @@ export interface Input {
   readonly transportKind?: SessionRequestKind
   /** False for a throwaway request (warming ping, `/generate`) that must not persist Session state. */
   readonly durable?: boolean
+  /** Mandatory native-to-readable conversion using the checkpoint owner, not a compaction decision's model. */
+  readonly checkpointHandoff?: true
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
   readonly inputTokens?: { readonly measured: number; readonly estimated: number }
 }
@@ -519,7 +521,15 @@ export const layer = Layer.effect(
 
     return Service.of({
       primary: (input) => prepare("primary", input, agentHook("context", input.agent)),
-      compaction: (input) => prepare("compaction", input, agentHook("compaction", input.agent)),
+      compaction: (input) =>
+        prepare("compaction", input, (draft, tools) =>
+          hooks.trigger("session", "compaction", {
+            ...draft,
+            agent: input.agent,
+            tools,
+            ...(input.checkpointHandoff ? { checkpointHandoff: input.checkpointHandoff } : {}),
+          }),
+        ),
       generate: (input) => prepare("generate", input, agentHook("generate", input.agent)),
       title: (input) => prepare("title", input, (draft) => hooks.trigger("session", "title", draft)),
     })
