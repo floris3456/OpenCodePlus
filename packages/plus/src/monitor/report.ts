@@ -11,6 +11,8 @@ import {
 import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
 import { reuseRate } from "./measurement.js"
+import { AnalysisCache } from "./analysis-cache.js"
+export { ANALYSIS_CACHE_LIMIT } from "./analysis-cache.js"
 
 interface SessionRow {
   id: string
@@ -37,17 +39,6 @@ interface LegacyStep {
   cost: number
 }
 
-interface CachedSession {
-  /** The ledger revision this entry was last confirmed at. */
-  revision: string
-  /** The session's change mark the entry was built from. */
-  readonly mark: number
-  /** The fingerprints were looked up per request (none stored under this session). */
-  readonly perRequest: boolean
-  readonly fold: SessionFold
-  readonly lastFrom?: number
-}
-
 interface SessionData {
   readonly rows: readonly RequestRow[]
   readonly facts: readonly ContextFactRow[]
@@ -55,22 +46,7 @@ interface SessionData {
   readonly fold: SessionFold
 }
 
-const sessionCache = new WeakMap<Ledger, Map<string, CachedSession>>()
-// Keep the qualification workload's 200 Sessions resident without allowing
-// either the Session map or its retained request population to grow forever.
-export const ANALYSIS_CACHE_LIMIT = { sessions: 256, rows: 50_000 } as const
-
-function remember(cache: Map<string, CachedSession>, id: string, entry: CachedSession) {
-  cache.delete(id)
-  if (entry.fold.rows.length > ANALYSIS_CACHE_LIMIT.rows) return
-  cache.set(id, entry)
-  let rows = [...cache.values()].reduce((sum, value) => sum + value.fold.rows.length, 0)
-  for (const [key, value] of cache) {
-    if (cache.size <= ANALYSIS_CACHE_LIMIT.sessions && rows <= ANALYSIS_CACHE_LIMIT.rows) break
-    rows -= value.fold.rows.length
-    cache.delete(key)
-  }
-}
+const sessionCache = new WeakMap<Ledger, AnalysisCache>()
 
 // One session's rows, facts and analysis. The analysis folds in-place writes
 // (request completion, a corrected final wire fingerprint, a kind relabel), so
@@ -82,13 +58,9 @@ function remember(cache: Map<string, CachedSession>, id: string, entry: CachedSe
 // analysis never depends on the query window, so it stays reusable across
 // window changes and polling.
 function sessionData(ledger: Ledger, id: string): SessionData {
-  const cache = sessionCache.get(ledger) ?? new Map<string, CachedSession>()
+  const cache = sessionCache.get(ledger) ?? new AnalysisCache()
   sessionCache.set(ledger, cache)
   const cached = cache.get(id)
-  if (cached) {
-    cache.delete(id)
-    cache.set(id, cached)
-  }
   const revision = ledger.revision()
   if (cached && cached.revision === revision) return dataOf(cached.fold)
   // The mark is read before the rows: a write in between shows as a change next time.
@@ -104,7 +76,7 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   if (cached && !cached.perRequest && updated && updated.size > 0) {
     const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, updated, { previous: cached.fold, from })
-    remember(cache, id, { revision, mark, perRequest: false, fold, lastFrom: from })
+    cache.set(id, { revision, mark, perRequest: false, fold, lastFrom: from })
     return dataOf(fold)
   }
   if (cached && cached.perRequest) {
@@ -115,12 +87,12 @@ function sessionData(ledger: Ledger, id: string): SessionData {
     }
     const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, fingerprints, { previous: cached.fold, from })
-    remember(cache, id, { revision, mark, perRequest: true, fold, lastFrom: from })
+    cache.set(id, { revision, mark, perRequest: true, fold, lastFrom: from })
     return dataOf(fold)
   }
   const loaded = sessionFingerprints(ledger, rows)
   const fold = foldSession(rows, facts, loaded.fingerprints)
-  remember(cache, id, { revision, mark, perRequest: loaded.perRequest, fold, lastFrom: 0 })
+  cache.set(id, { revision, mark, perRequest: loaded.perRequest, fold, lastFrom: 0 })
   return dataOf(fold)
 }
 
@@ -130,6 +102,10 @@ export function sessionFold(ledger: Ledger, id: string): SessionFold {
 
 export function sessionFoldResumeFrom(ledger: Ledger, id: string): number | undefined {
   return sessionCache.get(ledger)?.get(id)?.lastFrom
+}
+
+export function sessionCacheStats(ledger: Ledger) {
+  return sessionCache.get(ledger)?.stats() ?? { sessions: 0, rows: 0, bytes: 0, segments: 0 }
 }
 
 function dataOf(fold: SessionFold): SessionData {
