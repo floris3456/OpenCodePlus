@@ -3507,3 +3507,166 @@ test("instructions_link refuses a protected agent's row before any write", async
   expect((await runFail(link, { id: reader, target: question })).message).toContain("agent.protected")
   expect(await linksOf(project)).toEqual([])
 })
+
+// ── write-time switches (B9, B10): the production set/toggle path ─────────
+//
+// `instructions_set state:"on"` (and a bare-id toggle) must write the linked
+// row off in the same save, through the real registered tool and a private
+// store, so the behaviour survives reload. Turning the row off writes nothing
+// linked; one hop only; a tombstone masks an inherited switch.
+
+async function customizationState(project: string, item: string): Promise<"on" | "off" | undefined> {
+  const record = (await load(project)).records.find(
+    (entry): entry is Extract<(typeof entry), { type: "customization" }> =>
+      entry.type === "customization" && entry.item === item && entry.section === null,
+  )
+  return record?.state
+}
+
+test("set state:on persists its either partner off in one save, and it stays off after reload", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  await runOk(link, { id: reader, target: question })
+  // Rows start off in this fixture; turn question on so the switch has a live
+  // target to save off.
+  await runOk(set, { id: question, state: "on" })
+  const on = (await runOk(set, { id: reader, state: "on" })) as { status: string }
+  expect(on.status).toBe(`Enabled "reader"; disabled tool:question`)
+  const after = await snapshotOf(api)
+  expect(after.records.some((record) => record.type === "customization" && record.item === "tool:question" && record.state === "off")).toBe(
+    true,
+  )
+  // Durable: reload the store and the off row is still there.
+  expect(await customizationState(project, "tool:question")).toBe("off")
+  // Turning reader back off leaves question off (no cascade, no resurrect).
+  await runOk(set, { id: reader, state: "off" })
+  expect(await customizationState(project, "tool:question")).toBe("off")
+})
+
+test("set state:on is symmetric for either and primary-only for oneway", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  await runOk(link, { id: reader, target: question, type: "oneway" })
+  // Turn the target on first; oneway leaves the primary alone.
+  await runOk(set, { id: question, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBeUndefined()
+  // Primary on turns the target off.
+  await runOk(set, { id: reader, state: "on" })
+  expect(await customizationState(project, "tool:question")).toBe("off")
+  // Either is symmetric: turn the target on and the primary goes off.
+  await runOk(link, { id: reader, target: question, type: "either" })
+  await runOk(set, { id: reader, state: "off" })
+  await runOk(set, { id: question, state: "on" })
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+})
+
+test("a bare-id toggle writes the partner off in one hop and never cascades", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+      { id: "extra", description: "extra", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  const extra = await rowIdOf(api, "tool:extra")
+  // reader—question and question—extra. Turn question on, then reader off and
+  // on: the on toggle disables question only; question's own link to extra
+  // must not fire (no cascade).
+  await runOk(link, { id: reader, target: question })
+  await runOk(link, { id: question, target: extra })
+  await runOk(set, { id: question, state: "on" })
+  await runOk(set, { id: reader, state: "off" })
+  await runOk(set, { id: reader, state: "on" })
+  expect(await customizationState(project, "tool:question")).toBe("off")
+  expect(await customizationState(project, "tool:extra")).toBeUndefined()
+})
+
+test("a tombstone at this level masks an inherited switch through the tool", async () => {
+  const { api, tools, project } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const link = need(tools, "instructions_link")
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  const question = await rowIdOf(api, "tool:question")
+  // Store the switch, then mask it at the same level with enabled:false, and
+  // turn the target on so the switch would have fired if not masked.
+  await runOk(link, { id: reader, target: question })
+  await runOk(link, { id: reader, target: question, enabled: false })
+  await runOk(set, { id: question, state: "on" })
+  await runOk(set, { id: reader, state: "off" })
+  await runOk(set, { id: reader, state: "on" })
+  // The masked switch fires nothing: question stays on.
+  expect(await customizationState(project, "tool:question")).toBe("on")
+})
+
+test("turning a protected owner's row on with a linked partner refuses atomically", async () => {
+  const { project } = await tempProject()
+  // The protected row belongs to alpha; the reader and question rows do too,
+  // so the tool-actor guard must refuse the write before any record changes.
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project, {
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const reader = await rowIdOf(api, "tool:reader")
+  // Seed the link directly: the link tool itself refuses protected owners, so
+  // the guard under test is the write-time path.
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      ...loaded.records,
+      {
+        type: "rowlink" as const,
+        level: "project" as const,
+        agent: "alpha",
+        item: "tool:reader",
+        section: null,
+        target: "tool:question",
+        targetSection: null,
+        link: "either" as const,
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  })
+  if (!saved.ok) throw new Error("seed save failed")
+  const before = await snapshotOf(api)
+  const beforeLog = await Bun.file(projectLogPath(project)).exists()
+  const error = await runFail(set, { id: reader, state: "on" })
+  expect(error.message).toContain("agent.protected")
+  // No records and no log line changed.
+  expect((await snapshotOf(api)).records).toEqual(before.records)
+  expect(await Bun.file(projectLogPath(project)).exists()).toBe(beforeLog)
+  expect(await customizationState(project, "tool:question")).toBeUndefined()
+})

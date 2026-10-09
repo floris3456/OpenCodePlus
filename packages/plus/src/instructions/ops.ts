@@ -47,6 +47,7 @@ import {
   reset as resetModelRecords,
   resolve,
   resolveActiveModel,
+  resolveEnabled,
   resolutionChain,
   resolveResolution,
   resolveSplit,
@@ -96,6 +97,7 @@ import {
   type OrderRecord,
 } from "./folders.js"
 import { presetOfAddress } from "./presets.js"
+import { switchedOff } from "./rowlinks.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
@@ -819,12 +821,58 @@ function boundariesEqual(
   })
 }
 
-export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo): OpResult {
+// ── write-time switches (B9, B10) ─────────────────────────────────────────
+//
+// An `either`/`oneway` rowlink is a durable on/off relationship: turning the
+// primary on saves the connected rows off *in the same save*, like exclusive
+// models and teams, so a request never evaluates it. `either` fires from
+// whichever end turns on; `oneway` only from its primary. One hop only: the
+// rows it turns off do not fire their own links (B10). Only the effective
+// links fire — `switchedOff` reads the same nearest-level/tombstone answer the
+// link tool reports, so an upstream switch masked at this level does nothing.
+// A connected row owned by a protected agent refuses the whole write before
+// any record changes (`isProtected`, supplied by the tool actor only).
+
+type SwitchResult = { readonly records: CustomizationRecord[]; readonly disabled: readonly string[] } | { readonly refusal: string }
+
+function applySwitches(
+  memo: Memo,
+  chain: { readonly address: Address; readonly customizations: CustomizationRecord[] },
+  records: CustomizationRecord[],
+  on: boolean,
+  isProtected?: (owner: string | null) => boolean,
+): SwitchResult {
+  if (!on) return { records, disabled: [] }
+  const targets = switchedOff(
+    memo.ctx.scopes.rowlinks ?? [],
+    memo.ctx.scopes,
+    chain.address,
+    { item: chain.address.item, section: chain.address.section },
+  )
+  if (targets.length === 0) return { records, disabled: [] }
+  if (isProtected?.(chain.address.agent) === true)
+    return { refusal: `agent.protected: row belongs to protected agent "${chain.address.agent}"; turning this on would disable a linked row` }
+  let out = records
+  const disabled: string[] = []
+  for (const endpoint of targets) {
+    const address = { ...chain.address, item: endpoint.item, section: endpoint.section }
+    const upstream = upstreamFor(memo.ctx.items, address)
+    if (upstream === undefined) continue
+    // Already off (by inheritance or an earlier row): writing an off record
+    // would be noise, and an off toggle never writes a linked row at all.
+    if (!resolveEnabled({ upstream, records: out, splits: [], scopes: memo.ctx.scopes, address })) continue
+    out = merge(out, address, { state: "off" }, upstream, memo.ctx.scopes)
+    disabled.push(endpoint.item)
+  }
+  return { records: out, disabled }
+}
+
+export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): OpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const control = entityControlId(found.memo, node, "setting:enabled")
-  if (control !== undefined) return toggle(input, control, sharedMemo)
+  if (control !== undefined) return toggle(input, control, sharedMemo, isProtected)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
@@ -846,29 +894,56 @@ export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRe
     chain.upstream,
     memo.ctx.scopes,
   )
+  const turnedOn = !resolved.enabled
+  const switched = applySwitches(memo, chain, next, turnedOn, isProtected)
+  if ("refusal" in switched) return switched
+  const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
   return {
-    records: next,
+    records: switched.records,
     splits: chain.splits,
-    status: resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`,
+    status: `${resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`}${suffix}`,
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
   }
 }
 
-export function setEnabled(input: MemoInput, rowId: string, value: boolean, sharedMemo?: Memo): OpResult {
+export function setEnabled(
+  input: MemoInput,
+  rowId: string,
+  value: boolean,
+  sharedMemo?: Memo,
+  isProtected?: (owner: string | null) => boolean,
+): OpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const control = entityControlId(found.memo, node, "setting:enabled")
-  if (control !== undefined) return setEnabled(input, control, value, sharedMemo)
+  if (control !== undefined) return setEnabled(input, control, value, sharedMemo, isProtected)
   const memo = found.memo
   const refusal = toggleRefusal(node)
   if (refusal !== undefined) return { refusal }
   const chain = chainFor(memo, node)
   if (!chain) return { refusal: `Item not found for "${node.label}"` }
   const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream, memo.ctx.scopes)
+  // Switches fire only on an actual off→on transition, exactly as `toggle`
+  // does: an explicit `state:"on"` on an already-on row writes nothing new.
+  const wasOn = resolveEnabled({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: memo.ctx.scopes,
+    address: chain.address,
+  })
+  const switched = applySwitches(memo, chain, next, value && !wasOn, isProtected)
+  if ("refusal" in switched) return switched
+  const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
   const existing = chain.customizations.find((record) => sameAddress(record, chain.address))
-  const created = next.find((record) => sameAddress(record, chain.address))
-  if (existing !== undefined && created !== undefined && customizationsEqualWithoutUpdated(existing, created))
+  const created = switched.records.find((record) => sameAddress(record, chain.address))
+  if (
+    switched.disabled.length === 0 &&
+    existing !== undefined &&
+    created !== undefined &&
+    customizationsEqualWithoutUpdated(existing, created)
+  )
     return {
       records: chain.customizations,
       splits: chain.splits,
@@ -876,9 +951,9 @@ export function setEnabled(input: MemoInput, rowId: string, value: boolean, shar
       retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
     }
   return {
-    records: next,
+    records: switched.records,
     splits: chain.splits,
-    status: value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`,
+    status: `${value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`}${suffix}`,
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
   }
 }

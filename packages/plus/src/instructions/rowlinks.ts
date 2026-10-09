@@ -215,7 +215,10 @@ export function gatedConditions(
 
 /**
  * The connected endpoints a switch turns off when `toggled` turns on. `either`
- * fires whichever end is toggled; `oneway` fires only its primary. No cascade:
+ * fires whichever end is toggled; `oneway` fires only its primary. Only the
+ * effective links fire: the nearest chain node that says anything about a pair
+ * decides it, so a tombstone or gate at this level masks an upstream switch
+ * (`effectiveRowlinks`), exactly as the tool's view reports. No cascade:
  * callers write exactly these rows off and never follow their links.
  */
 export function switchedOff(
@@ -224,21 +227,10 @@ export function switchedOff(
   address: Address,
   toggled: RowlinkEndpoint,
 ): RowlinkEndpoint[] {
-  const switches = links.filter((link) => link.link === "either" || link.link === "oneway")
-  if (switches.length === 0) return []
-  const chain = resolutionChain(address, scopes)
-  const byKey = new Map<string, { link: RowlinkRecord; depth: number }>()
-  for (const link of switches) {
-    const depth = chain.findIndex((node) => scopedTo(link, node))
-    if (depth === -1) continue
-    const key = rowlinkKey(link)
-    const seen = byKey.get(key)
-    if (seen === undefined || depth < seen.depth) byKey.set(key, { link, depth })
-  }
-  return [...byKey.values()]
-    .filter(({ link }) => link.enabled !== false)
-    .flatMap(({ link }): RowlinkEndpoint[] => {
-      const primary = link.section === null ? { item: link.item, section: null } : { item: link.item, section: link.section }
+  return effectiveRowlinks(links, scopes, address)
+    .live.filter((link) => link.link === "either" || link.link === "oneway")
+    .flatMap((link): RowlinkEndpoint[] => {
+      const primary = { item: link.item, section: link.section }
       const connected = { item: link.target, section: link.targetSection }
       if (sameEndpoint(toggled, connected.item, connected.section)) return link.link === "either" ? [primary] : []
       if (sameEndpoint(toggled, primary.item, primary.section)) return [connected]

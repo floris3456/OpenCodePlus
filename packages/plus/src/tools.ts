@@ -447,7 +447,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
           if (input.include !== undefined && input.resolve !== "merge")
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
-          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo)
+          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -953,6 +953,9 @@ function computeSet(
   // it: a follow-up op runs against the interim records the first produced, so
   // it resolves through its own memo.
   sharedMemo?: Memo,
+  // Refuses a write-time switch onto a protected owner's row before any record
+  // changes (B9). Supplied by the tool actor; absent leaves switches unguarded.
+  isProtected?: (owner: string | null) => boolean,
 ): ReturnType<typeof setRequires> {
   const preserved = modelsOfMemo(memo)
   const preservedRules = rulesOfMemo(memo)
@@ -966,12 +969,12 @@ function computeSet(
     const rest = { ...input, requires: undefined }
     const more = rest.mode !== undefined || rest.text !== undefined || rest.state !== undefined || rest.pin !== undefined || rest.resolve !== undefined
     if ("refusal" in first || !more) return first
-    return computeSet(withModels(first.records, first.splits), rest)
+    return computeSet(withModels(first.records, first.splits), rest, undefined, isProtected)
   }
   if (input.mode !== undefined) {
     const first = setAgentMode(memo, input.id, input.mode, sharedMemo)
     if ("refusal" in first || (input.state === undefined && input.text === undefined && input.pin === undefined && input.resolve === undefined)) return first
-    return computeSet(withModels(first.records, first.splits), { ...input, mode: undefined })
+    return computeSet(withModels(first.records, first.splits), { ...input, mode: undefined }, undefined, isProtected)
   }
   if (input.resolve !== undefined) {
     if (input.pin === undefined && input.state === undefined) return resolveReview(memo, input.id, input.resolve, input.text, undefined, sharedMemo)
@@ -979,7 +982,7 @@ function computeSet(
     if ("refusal" in first) return first
     let interim: MemoInput = withModels(first.records, first.splits)
     if (input.state !== undefined) {
-      const second = setEnabled(interim, input.id, input.state === "on")
+      const second = setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
       if ("refusal" in second) return second
       interim = withModels(second.records, second.splits)
       if (input.pin === undefined) return second
@@ -991,7 +994,7 @@ function computeSet(
     const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
-    const second = setEnabled(interim, input.id, input.state === "on")
+    const second = setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
     if ("refusal" in second) return second
     const interim2: MemoInput = withModels(second.records, second.splits)
     return setPin(interim2, input.id, input.pin)
@@ -1000,7 +1003,7 @@ function computeSet(
     const first = saveText(memo, input.id, input.text, sharedMemo)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
-    return setEnabled(interim, input.id, input.state === "on")
+    return setEnabled(interim, input.id, input.state === "on", undefined, isProtected)
   }
   if (input.text !== undefined && input.pin !== undefined) {
     const first = saveText(memo, input.id, input.text, sharedMemo)
@@ -1009,15 +1012,15 @@ function computeSet(
     return setPin(interim, input.id, input.pin)
   }
   if (input.state !== undefined && input.pin !== undefined) {
-    const first = setEnabled(memo, input.id, input.state === "on", sharedMemo)
+    const first = setEnabled(memo, input.id, input.state === "on", sharedMemo, isProtected)
     if ("refusal" in first) return first
     const interim: MemoInput = withModels(first.records, first.splits)
     return setPin(interim, input.id, input.pin)
   }
   if (input.text !== undefined) return saveText(memo, input.id, input.text, sharedMemo)
-  if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on", sharedMemo)
+  if (input.state !== undefined) return setEnabled(memo, input.id, input.state === "on", sharedMemo, isProtected)
   if (input.pin !== undefined) return setPin(memo, input.id, input.pin, sharedMemo)
-  return toggle(memo, input.id, sharedMemo)
+  return toggle(memo, input.id, sharedMemo, isProtected)
 }
 
 function computeSplit(
@@ -1365,7 +1368,7 @@ function setPerm(
       if (limitOf(input.text) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
       const text = String(limitOf(input.text))
-      const op = computeSet(memo, { id, text }, treeMemo)
+      const op = computeSet(memo, { id, text }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateOp(api, memo, op, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1373,7 +1376,7 @@ function setPerm(
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
-    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo)
+    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, op, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }

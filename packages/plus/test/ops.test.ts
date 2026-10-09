@@ -24,6 +24,7 @@ import {
   toggle,
   unknownRowRefusal,
 } from "../src/instructions/ops.js"
+import type { RowlinkRecord } from "../src/instructions/rowlinks.js"
 
 function baseInput(overrides?: Partial<MemoInput>): MemoInput {
   return {
@@ -151,6 +152,165 @@ function exactId(input: MemoInput, id: string): string {
   if (!node) throw new Error(`no row ${id}`)
   return node.id
 }
+
+// A rowlink record for the shared alpha rows the base fixture resolves.
+function switchLink(
+  item: string,
+  target: string,
+  link: "either" | "oneway" = "either",
+  enabled?: boolean,
+): readonly RowlinkRecord[] {
+  return [
+    {
+      type: "rowlink",
+      level: "project",
+      agent: "alpha",
+      item,
+      section: null,
+      target,
+      targetSection: null,
+      link,
+      ...(enabled === undefined ? {} : { enabled }),
+      updated: "2026-01-01T00:00:00.000Z",
+    },
+  ]
+}
+
+// A stored off customization for a shared alpha row, so a switch has a live
+// partner to turn off.
+function offRecord(item: string): CustomizationRecord {
+  return {
+    type: "customization",
+    level: "project",
+    agent: "alpha",
+    item,
+    section: null,
+    state: "off",
+    basedOn: `fp-${item.slice(item.indexOf(":") + 1)}`,
+    updated: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+test("turning a row on writes its either link's partner off in one save", () => {
+  // bash starts off so turning it on fires; coder keeps its native on value so
+  // the switch has a live partner to write off in the same result.
+  const input = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder"),
+    records: [offRecord("tool:bash")],
+  })
+  const result = setEnabled(input, findId(input, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  expect(result.status).toBe(`Enabled "bash"; disabled tool:coder`)
+  // Symmetric: with coder off and bash on, turning coder on turns bash off too.
+  const symmetric = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder"),
+    records: [offRecord("tool:coder")],
+  })
+  const reverse = setEnabled(symmetric, findId(symmetric, "tool:coder"), true)
+  if ("refusal" in reverse) throw new Error(`expected success, got ${reverse.refusal}`)
+  expect(reverse.records.some((record) => record.item === "tool:bash" && record.state === "off")).toBe(true)
+})
+
+test("oneway fires only from its primary and no switch cascades", () => {
+  // coder starts off; turning it on must leave bash alone (oneway never fires
+  // from its connected end).
+  const target = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    records: [offRecord("tool:coder")],
+  })
+  const targetResult = setEnabled(target, findId(target, "tool:coder"), true)
+  if ("refusal" in targetResult) throw new Error(`expected success, got ${targetResult.refusal}`)
+  expect(targetResult.records.some((record) => record.item === "tool:bash")).toBe(false)
+  // bash starts off; turning the primary on writes coder off.
+  const primary = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    records: [offRecord("tool:bash")],
+  })
+  const primaryResult = setEnabled(primary, findId(primary, "tool:bash"), true)
+  if ("refusal" in primaryResult) throw new Error(`expected success, got ${primaryResult.refusal}`)
+  expect(primaryResult.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  // No cascade: bash—coder and coder—sample; turning bash on disables coder but
+  // never follows coder's own link to sample.
+  const chain = baseInput({
+    rowlinks: [...switchLink("tool:bash", "tool:coder"), ...switchLink("tool:coder", "mcp:sample")],
+    records: [offRecord("tool:bash")],
+  })
+  const cascade = setEnabled(chain, findId(chain, "tool:bash"), true)
+  if ("refusal" in cascade) throw new Error(`expected success, got ${cascade.refusal}`)
+  expect(cascade.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  expect(cascade.records.some((record) => record.item === "mcp:sample" && record.state === "off")).toBe(false)
+})
+
+test("an off toggle writes no linked row, and an already-off partner is not rewritten", () => {
+  const input = baseInput({ rowlinks: switchLink("tool:bash", "tool:coder") })
+  // bash is on, so turning it off must leave coder untouched.
+  const off = setEnabled(input, findId(input, "tool:bash"), false)
+  if ("refusal" in off) throw new Error(`expected success, got ${off.refusal}`)
+  expect(off.records.some((record) => record.item === "tool:coder")).toBe(false)
+  // With coder already off, turning bash on does not re-write coder.
+  const coderOff = baseInput({
+    rowlinks: switchLink("tool:bash", "tool:coder"),
+    records: [offRecord("tool:bash"), offRecord("tool:coder")],
+  })
+  const on = setEnabled(coderOff, findId(coderOff, "tool:bash"), true)
+  if ("refusal" in on) throw new Error(`expected success, got ${on.refusal}`)
+  expect(on.records.filter((record) => record.item === "tool:coder")).toHaveLength(1)
+})
+
+test("a tombstone masks an inherited switch, so the toggle fires nothing", () => {
+  const masked = baseInput({ rowlinks: switchLink("tool:bash", "tool:coder", "either", false) })
+  const result = setEnabled(masked, findId(masked, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.records.some((record) => record.item === "tool:coder")).toBe(false)
+})
+
+test("an inherited switch fires for the level below, a mixed owner's never does", () => {
+  // alpha exists at project and global, so the chain carries global/alpha and
+  // an upstream (global) switch reaches the project row.
+  const inherited = baseInput({
+    agents: [
+      { id: "alpha", scope: "project" },
+      { id: "alpha", scope: "global" },
+    ],
+    rowlinks: [
+      {
+        type: "rowlink",
+        level: "global",
+        agent: "alpha",
+        item: "tool:bash",
+        section: null,
+        target: "tool:coder",
+        targetSection: null,
+        link: "either",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    records: [offRecord("tool:bash")],
+  })
+  const result = setEnabled(inherited, findId(inherited, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
+  expect(result.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  // A link owned by beta is not in alpha's chain and fires nothing.
+  const otherOwner = baseInput({
+    rowlinks: [
+      {
+        type: "rowlink",
+        level: "project",
+        agent: "beta",
+        item: "tool:bash",
+        section: null,
+        target: "tool:coder",
+        targetSection: null,
+        link: "either",
+        updated: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  })
+  const isolated = setEnabled(otherOwner, findId(otherOwner, "tool:bash"), true)
+  if ("refusal" in isolated) throw new Error(`expected success, got ${isolated.refusal}`)
+  expect(isolated.records.some((record) => record.item === "tool:coder")).toBe(false)
+})
 
 test("toggle success disables a shared mcp row", () => {
   const input = baseInput()
