@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { AnalysisCache, ANALYSIS_CACHE_LIMIT } from "../src/monitor/analysis-cache.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
-import { foldSession } from "../src/monitor/cache.js"
+import { foldSession, unreadFingerprintKeyWeight } from "../src/monitor/cache.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
@@ -58,4 +58,23 @@ test("LRU eviction and replacement reconcile every accounted dimension", async (
     expect(cache.stats()[bound]).toBe(size[bound] * 2)
   }
   expect(value.fold.analysis.work.details).toBe(0)
+})
+
+test("completion first creates derived keys on a retained fingerprint and is charged before admission", async () => {
+  const value = await fixture()
+  const fp = value.fold.analysis.fingerprints.get("synthetic")!
+  const cache = new AnalysisCache()
+  cache.set("s", value)
+  const before = cache.stats().bytes
+  expect(unreadFingerprintKeyWeight(fp)).toBe(0)
+  const completed = { ...value, fold: foldSession(
+    [{ ...value.fold.rows[0]!, status: "completed", cacheReadTokens: 100 }], [], value.fold.analysis.fingerprints,
+  ) }
+  cache.set("s", completed)
+  expect(unreadFingerprintKeyWeight(fp)).toBeGreaterThan(0)
+  expect(cache.stats().bytes).toBeGreaterThan(before)
+  const bounded = new AnalysisCache({ ...ANALYSIS_CACHE_LIMIT, bytes: before })
+  bounded.set("completed", completed)
+  expect(bounded.get("completed")).toBeUndefined()
+  expect(completed.fold.analysis.work.details).toBe(0)
 })

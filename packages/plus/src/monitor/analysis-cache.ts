@@ -1,4 +1,5 @@
-import type { SessionFold } from "./cache.js"
+import { unreadFingerprintKeyWeight, type SessionFold } from "./cache.js"
+import { unreadIndexWeight } from "./unread-index.js"
 
 // Serialized retained content is a deterministic budget, not a JS heap estimate.
 // Sized for the existing 40k × 200-prefix qualification. Oversized individual
@@ -65,22 +66,26 @@ export class AnalysisCache {
     for (const fp of fold.analysis.fingerprints.values()) {
       if (!fp) continue
       weight.bytes += this.bytes(fp)
+      // Do not memoize absent derived keys: a later completion can first need
+      // them while retaining the same fingerprint object.
+      weight.bytes += unreadFingerprintKeyWeight(fp)
       weight.segments += fp.messagePrefixes.length + fp.systemParts.length + fp.tools.length * 3 + Object.keys(fp.optionsKeys).length + (fp.cacheControl?.length ?? 0)
       if (weight.bytes > this.limits.bytes || weight.segments > this.limits.segments) return
     }
-    // Resume streaks and write/read indexes are retained too. Their `fp` is a
-    // reference into the already charged fingerprint map, not another copy.
+    // Resume streaks and write/read indexes are retained too. Their keys refer
+    // to the derived-key arrays already charged with the fingerprint.
     for (const point of fold.resume) weight.bytes += this.bytes([...point.streaks]) + 32
     for (const group of [fold.analysis.writes, fold.analysis.reads]) {
       for (const entry of group) {
         const existing = this.sizes.get(entry)
-        const bytes = existing ?? Buffer.byteLength(JSON.stringify({ ...entry, fp: undefined }), "utf8")
+        const bytes = existing ?? Buffer.byteLength(JSON.stringify({ ...entry, keys: undefined }), "utf8")
         if (existing === undefined) this.sizes.set(entry, bytes)
         weight.bytes += bytes
         if (weight.bytes > this.limits.bytes) return
       }
     }
     weight.bytes += this.bytes([...fold.names])
+    weight.bytes += unreadIndexWeight(fold.analysis.unreadIndex).serializedBytes
     if (weight.bytes > this.limits.bytes || weight.segments > this.limits.segments) return
     this.entries.set(id, { value, weight })
     this.retained.rows += weight.rows
