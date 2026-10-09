@@ -8,6 +8,7 @@ import type { Address, Scopes } from "../src/instructions/model.js"
 import {
   conditionIds,
   effectiveRowlinks,
+  gateAnswer,
   gatedConditions,
   linksTouching,
   migrateRequires,
@@ -144,6 +145,41 @@ test("gatedConditions reads the nearest level's gate list, tombstone means alway
   expect(masked?.ids).toEqual([])
   // No gate link at all: the caller reads the text's own marker.
   expect(gatedConditions([link({ item: "tool:x", target: "tool:z", link: "either" })], scopes(), address({ item: "system:s" }))).toBeUndefined()
+})
+
+test("gateAnswer: a nearer pair mask keeps unrelated inherited gates on the same target", () => {
+  // global: A on and B on both gate system:s. project masks only the A pair.
+  const globalA = link({ level: "global", item: "tool:a", target: "system:s", link: "shownWhenOn" })
+  const globalB = link({ level: "global", item: "tool:b", target: "system:s", link: "shownWhenOn" })
+  const maskA = link({ item: "tool:a", target: "system:s", link: "shownWhenOn", enabled: false })
+  const answer = gateAnswer([globalA, globalB, maskA], scopes(), address({ item: "system:s" }))
+  // A is masked at project; B stays live from global. The old whole-target rule
+  // would have dropped B with A.
+  expect(answer?.ids).toEqual(["tool:b"])
+  expect(answer?.pairs.map((pair) => pair.item)).toEqual(["tool:b"])
+})
+
+test("gateAnswer: shipped markers AND in with stored gates unless a pair masks them", () => {
+  const stored = link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })
+  const combined = gateAnswer([stored], scopes(), address({ item: "system:s" }), ["tool:marker"])
+  expect(combined?.ids).toEqual(["tool:x", "tool:marker"])
+  expect(combined?.pairs.map((pair) => [pair.item, pair.shipped])).toEqual([
+    ["tool:x", false],
+    ["tool:marker", true],
+  ])
+  // A stored tombstone for the marker pair masks just that shipped pair.
+  const mask = link({ item: "tool:marker", target: "system:s", link: "shownWhenOn", enabled: false })
+  const masked = gateAnswer([stored, mask], scopes(), address({ item: "system:s" }), ["tool:marker"])
+  expect(masked?.ids).toEqual(["tool:x"])
+})
+
+test("gateAnswer: a replacement barrier defines the whole list at its level", () => {
+  const barrier = link({ item: "system:s", section: null, target: "system:s", targetSection: null, link: "shownAlways" })
+  const local = link({ item: "tool:x", target: "system:s", link: "shownWhenOn" })
+  const upstream = link({ level: "global", item: "tool:y", target: "system:s", link: "shownWhenOn" })
+  const answer = gateAnswer([barrier, local, upstream], scopes(), address({ item: "system:s" }), ["tool:marker"])
+  expect(answer?.barrier).toBe(true)
+  expect(answer?.ids).toEqual(["tool:x"])
 })
 
 test("conditionIds: shownAlways (the migrated empty list) means no condition", () => {
