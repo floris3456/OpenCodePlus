@@ -100,7 +100,10 @@ test("a long legacy Anthropic chat keeps accounting, unknown diagnoses and loads
     })
     expect(detail.request.expected).toBeUndefined()
   })
-  expect(details[300]?.request.cause).toBe("prefix-changed")
+  // Generated pre-version fingerprints cannot recover missing wire identity.
+  expect(details[300]?.request.cause).toBe("unknown")
+  expect(details[300]?.segments).toEqual([])
+  expect(details[300]?.instructions).toMatchObject([{ keys: ["AGENTS.md"] }])
   expect(details[900]?.accounts).toMatchObject([{ from: "Small", to: "Large" }])
   expect(plain(report)).toEqual(cold(cache))
   // Recorded at about 70 s before the speed-up; about 0.4 s after it. The bound leaves room for a slow machine.

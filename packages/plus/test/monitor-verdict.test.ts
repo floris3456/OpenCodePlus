@@ -149,7 +149,7 @@ test("a legacy read drop retains the system edit but cannot quantify a partial m
   legacy(detail.request)
   expect(detail.request.cause).toBe("prefix-changed")
   expect(detail.request).toMatchObject({ cacheRead: 38697, cacheWrite: 32650 })
-  expect(detail.request.evidence).toContain("system part base template changed")
+  expect(detail.request.evidence).toContain("system wire changed")
 })
 
 test("legacy zero after a long gap retains failed pings without asserting expiry", async () => {

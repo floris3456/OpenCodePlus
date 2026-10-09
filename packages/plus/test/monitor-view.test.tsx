@@ -225,7 +225,7 @@ test("the Cache tab shows legacy changes without a confident miss, and detail op
     expect(detailFrame).toContain("Observation: legacy-unknown")
     expect(detailFrame).toContain("observed: prefix-changed")
     expect(detailFrame).toContain("Reported read: —")
-    expect(detailFrame).toContain("Shortfall estimate: 0")
+    expect(detailFrame).toContain("Shortfall estimate: —")
     expect(detailFrame).not.toContain("Expected prefix:")
     expect(detailFrame).toContain("system: AGENTS.md")
     expect(detailFrame).toContain("Fingerprint Segments:")

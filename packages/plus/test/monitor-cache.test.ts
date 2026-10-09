@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Schema } from "effect"
 import { MonitorReport } from "../src/rpc.js"
-import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
+import { FINGERPRINT_POLICY_VERSION, FINGERPRINT_VERSION, fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { prefixDiff } from "../src/monitor/cache.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import type { Ledger } from "../src/monitor/ledger.js"
@@ -169,7 +169,7 @@ test("local changes remain observable independently of unknown legacy cache diag
       session: "system",
       options: { wire: body({ system: "new rules" }) },
       cause: "prefix-changed",
-      evidence: "system part AGENTS.md changed",
+      evidence: "system wire changed",
     },
     {
       session: "tool",
@@ -225,7 +225,7 @@ test("local changes remain observable independently of unknown legacy cache diag
     if (c.session === "system") {
       expect(report.detail?.instructions[0]?.keys).toEqual(["AGENTS.md"])
       expect(report.detail?.reverts).toEqual([{ at: 1600 }])
-      expect(report.detail?.firstDivergence).toBe("system part AGENTS.md")
+      expect(report.detail?.firstDivergence).toBe("system wire")
     }
     if (c.session === "account")
       expect(report.detail?.accounts[0]).toMatchObject({ from: "account-a", to: "account-b" })
@@ -290,7 +290,7 @@ test("signals: named changes, legacy pings without hit claims, marked unread wri
   request(db, "ineffective", "ineffective-ping", 2000, { kind: "ping", read: 4000, write: 0, input: 10 })
   request(db, "ineffective", "ineffective-b", 3000)
   const report = queryMonitor(db, { scope: "all", view: "overview" }, { now: 400_000 })
-  expect(report.unstable).toContainEqual({ sessionID: "unstable", segment: "system part AGENTS.md", streak: 3 })
+  expect(report.unstable).toContainEqual({ sessionID: "unstable", segment: "system wire", streak: 3 })
   expect(report.pings).toMatchObject({ sent: 3, cost: 0.03, followedByHit: 0, followedByMiss: 0 })
   expect(report.unread).toBeGreaterThanOrEqual(1000)
   expect(report.context?.find((c) => c.sessionID === "ping")).toEqual({
@@ -643,6 +643,7 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
       chars: 40,
       estimatedTokens: 10,
       prefixHash: `hash_p_${i}`,
+      contentHash: `hash_c_${i}`,
     })),
   )
   const systemPartsJson = JSON.stringify([
@@ -662,7 +663,7 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
   const insertFp = rawDb.prepare(
     // Keep the expiry/count gates on explicitly requested retention, not the
     // former undocumented universal five-minute lifetime.
-    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created, cache_control) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[{\"target\":\"system[0]\",\"type\":\"ephemeral\"}]')",
+    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created, cache_control, fingerprint_version, policy_version, system_hash) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[{\"target\":\"system[0]\",\"type\":\"ephemeral\"}]', ?, ?, 'system-wire')",
   )
   const insertFact = rawDb.prepare("insert into context_fact (session_id, at, kind, detail) values (?, ?, ?, ?)")
 
@@ -724,6 +725,8 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
         messagePrefixesJson,
         `body_${reqId}`,
         started,
+        FINGERPRINT_VERSION,
+        FINGERPRINT_POLICY_VERSION,
       )
     }
   }

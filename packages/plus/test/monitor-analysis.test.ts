@@ -13,7 +13,7 @@ import { Effect, Stream } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
+import { FINGERPRINT_POLICY_VERSION, FINGERPRINT_VERSION, fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { analyzeSession, windowedSessionSignals } from "../src/monitor/cache.js"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
 import { monitorQuery, watchMonitor } from "../src/monitor/plugin.js"
@@ -355,13 +355,13 @@ test("#8: unstable and unread honor the selection and the as-of cutoff, and expi
   const early = queryMonitor(db, { scope: "session", sessionID: "unstable", view: "overview", until: 3000 }, { now: 9000 })
   expect(early.unstable?.some((u) => u.sessionID === "unstable")).toBe(false)
   const late = queryMonitor(db, { scope: "session", sessionID: "unstable", view: "overview" }, { now: 9000 })
-  expect(late.unstable).toContainEqual({ sessionID: "unstable", segment: "system part system:1", streak: 3 })
+  expect(late.unstable).toContainEqual({ sessionID: "unstable", segment: "system wire", streak: 3 })
   const selected = queryMonitor(
     db,
     { scope: "session", sessionID: "unstable", view: "overview", since: 2500 },
     { now: 9000 },
   )
-  expect(selected.unstable).toContainEqual({ sessionID: "unstable", segment: "system part system:1", streak: 3 })
+  expect(selected.unstable).toContainEqual({ sessionID: "unstable", segment: "system wire", streak: 3 })
   // A later cutoff sees a change at 4000 as future; no write is needed for the
   // answer to evolve because the cutoff is applied at report time.
   const cutoff = queryMonitor(
@@ -437,7 +437,7 @@ test("#8: unstable prefix retains per-request streak and identity across histori
     { now: 9000 },
   )
   expect(beforeFuture.unstable).toEqual([
-    { sessionID: "hist-unstable", segment: "system part system:1", streak: 3 },
+    { sessionID: "hist-unstable", segment: "system wire", streak: 3 },
   ])
 
   // Future 5th change at 5000:
@@ -460,7 +460,7 @@ test("#8: unstable prefix retains per-request streak and identity across histori
   // Before-future-write and after-future-write equality:
   expect(afterFuture.unstable).toEqual(beforeFuture.unstable)
   expect(afterFuture.unstable).toEqual([
-    { sessionID: "hist-unstable", segment: "system part system:1", streak: 3 },
+    { sessionID: "hist-unstable", segment: "system wire", streak: 3 },
   ])
 
   // A later window sees the 5th change with streak 4:
@@ -470,7 +470,7 @@ test("#8: unstable prefix retains per-request streak and identity across histori
     { now: 9000 },
   )
   expect(late.unstable).toEqual([
-    { sessionID: "hist-unstable", segment: "system part system:1", streak: 4 },
+    { sessionID: "hist-unstable", segment: "system wire", streak: 4 },
   ])
 
   // Identity correctness: agent and model filters select matching identity and exclude mismatching identity
@@ -480,7 +480,7 @@ test("#8: unstable prefix retains per-request streak and identity across histori
     { now: 9000 },
   )
   expect(matchingAgent.unstable).toEqual([
-    { sessionID: "hist-unstable", segment: "system part system:1", streak: 3 },
+    { sessionID: "hist-unstable", segment: "system wire", streak: 3 },
   ])
 
   const otherAgent = queryMonitor(
@@ -496,7 +496,7 @@ test("#8: unstable prefix retains per-request streak and identity across histori
     { now: 9000 },
   )
   expect(matchingModel.unstable).toEqual([
-    { sessionID: "hist-unstable", segment: "system part system:1", streak: 3 },
+    { sessionID: "hist-unstable", segment: "system wire", streak: 3 },
   ])
 
   const otherModel = queryMonitor(
@@ -553,7 +553,7 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
   const SESSIONS = 40
   const REQUESTS = 40
   const prefixes = JSON.stringify(
-    Array.from({ length: 60 }, (_, i) => ({ idx: i, role: i % 2 ? "assistant" : "user", chars: 40, estimatedTokens: 10, prefixHash: `h${i}` })),
+    Array.from({ length: 60 }, (_, i) => ({ idx: i, role: i % 2 ? "assistant" : "user", chars: 40, estimatedTokens: 10, prefixHash: `h${i}`, contentHash: `c${i}` })),
   )
   const systemParts = JSON.stringify([{ source: "base", hash: "hb", chars: 1600, estimatedTokens: 400 }])
   raw.exec("BEGIN")
@@ -564,7 +564,7 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
   const insertFp = raw.prepare(
     // Explicit ephemeral markers retain the advancing-expiry work gate without
     // guessing retention from an OpenAI-compatible model name.
-    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created, cache_control) values (?, ?, 'anthropic-messages', ?, '[]', '', '{}', ?, ?, ?, '[{\"target\":\"system[0]\",\"type\":\"ephemeral\"}]')",
+    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created, cache_control, fingerprint_version, policy_version, system_hash) values (?, ?, 'anthropic-messages', ?, '[]', '', '{}', ?, ?, ?, '[{\"target\":\"system[0]\",\"type\":\"ephemeral\"}]', ?, ?, 'system-wire')",
   )
   const base = 1_000_000
   for (let s = 0; s < SESSIONS; s++) {
@@ -573,7 +573,7 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
     for (let r = 0; r < REQUESTS; r++) {
       const at = base + r * 1000
       insertRequest.run(`req_${s}_${r}`, id, `m_${s}_${r}`, "step", "build", "anthropic", "claude-3-7", at, at + 500, 500, 500, 150, 20, r === 0 ? 0 : 2500, 500, 0.01, at)
-      insertFp.run(`req_${s}_${r}`, id, systemParts, prefixes, `b_${s}_${r}`, at)
+      insertFp.run(`req_${s}_${r}`, id, systemParts, prefixes, `b_${s}_${r}`, at, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION)
     }
   }
   raw.exec("COMMIT")
@@ -716,8 +716,8 @@ test("#13: a genuinely changed marked part is a prefix change; a changed tail be
   expect(detail.request.confidence).toBe("unknown")
   expect(detail.request.measurement?.state).toBe("legacy-unknown")
   // The changed part sits inside the marked reusable prefix, so it is named.
-  expect(detail.segments.map((s) => s.name)).toContain("system part base template")
-  expect(detail.firstDivergence).toBe("system part base template")
+  expect(detail.segments.map((s) => s.name)).toContain("system wire")
+  expect(detail.firstDivergence).toBe("system wire")
 })
 
 test("#13: failed and incompatible legacy pings cannot supply a reusable-token estimate", async () => {
@@ -906,7 +906,7 @@ test("#8: agent/model selection filters pings, follow stats, unread and instabil
   expect(a.totals.cacheRead).toBe(8000)
   // Agent B's write is outside A's selection; Agent A's instability is in A.
   expect(a.unread).toBe(0)
-  expect(a.unstable).toContainEqual({ sessionID: "f", segment: "system part system:1", streak: 3 })
+  expect(a.unstable).toContainEqual({ sessionID: "f", segment: "system wire", streak: 3 })
   const b = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache", agents: ["B"] }, { now: 7_000_000 })
   // Neither legacy follow-up is measurable; A's ping and instability are not in B.
   expect(b.pings).toMatchObject({ sent: 1, cost: 0.02, followedByHit: 0, followedByMiss: 0 })
@@ -917,7 +917,7 @@ test("#8: agent/model selection filters pings, follow stats, unread and instabil
   const none = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache" }, { now: 7_000_000 })
   expect(none.pings).toMatchObject({ sent: 2, cost: 0.03, followedByHit: 0, followedByMiss: 0 })
   expect(none.unread).toBe(1000)
-  expect(none.unstable).toContainEqual({ sessionID: "f", segment: "system part system:1", streak: 3 })
+  expect(none.unstable).toContainEqual({ sessionID: "f", segment: "system wire", streak: 3 })
   // The model filter narrows the same way.
   const wrongModel = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache", models: ["anthropic/other"] }, { now: 7_000_000 })
   expect(wrongModel.pings).toMatchObject({ sent: 0, cost: 0 })
