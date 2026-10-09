@@ -573,7 +573,9 @@ function diffStep(
   // Common characters are not a lower bound in tokens. Only the selected,
   // compatible measured anchor can support a local shortfall estimate.
   const warm = measured?.state === "reported" ? (measured.read || measured.write) : undefined
-  const expected = diff.reusable && warm !== undefined && warm > 0 ? warm : undefined
+  // Interior marked content can match while the private tail is replaced.
+  // Aggregate usage does not locate a measured size at that interior boundary.
+  const expected = diff.append && warm !== undefined && warm > 0 ? warm : undefined
   return { diff, expected, changed: reusablePrefixChanged(diff.changes, previousFp, fp) }
 }
 
@@ -738,7 +740,9 @@ function causeStep(
       : `Reported cache read ${measured.read}${measured.input === undefined ? "; inclusive input unavailable" : ` / ${measured.input} input`}`
   const comparison = expected === undefined
     ? "No reliable reusable-token estimate; no comparable measured baseline"
-    : `Compatible measured anchor ${previous?.id}; local shortfall estimate ${shortfall} tokens (bounded by current input)`
+    : !usable
+      ? `Compatible measured anchor ${previous?.id}; local shortfall unavailable without complete current usage`
+      : `Compatible measured anchor ${previous?.id}; local shortfall estimate ${shortfall} tokens (bounded by current input)`
   const evidence = [reported, comparison, ...observed, "Provider cause unavailable"].join("; ")
 
   return {
@@ -941,7 +945,8 @@ export function foldSession(
     )
     const measured = measurement(r)
     const compatible = previous?.variant === r.variant && previous?.agent === r.agent &&
-      !between.some((fact) => fact.kind === "compaction" || fact.kind === "account_switch" || fact.kind === "quota_handoff")
+      !factsBetween(ordered, previous?.started ?? r.started, r.started).some((fact) =>
+        fact.kind === "compaction" || fact.kind === "account_switch" || fact.kind === "quota_handoff")
     const expected = compatible && anchor !== undefined
       ? measured.input === undefined ? anchor : Math.min(anchor, measured.input)
       : undefined
@@ -990,7 +995,7 @@ export function foldSession(
       `Reusable-token estimate: ${expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
       `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
       `Gap ${timing.gap ?? "unknown"}ms; requested/nominal retention ${timing.lifetime ?? "unknown"}ms (not proof of expiry); warming configured ${timing.warming ?? "not recorded"}`,
-      expected === undefined && measured.share !== 1
+      measured.state !== "reported" || measured.input === undefined || (expected === undefined && measured.share !== 1)
         ? "Local shortfall and cost scenario unavailable without a comparable measurement"
         : cost.missCost === undefined
         ? "Miss cost unavailable: per-token pricing was not recorded"

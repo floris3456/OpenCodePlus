@@ -10,14 +10,15 @@ export function measurement(row: RequestRow): NonNullable<MonitorRequest["measur
   const usage = row.observation
   if (!usage) return { state: "legacy-unknown" }
   if (usage.version !== 1) return { state: "unknown-version" }
-  const input = usage.inputTokens
-  const read = usage.cacheReadInputTokens
-  const write = usage.cacheWriteInputTokens
+  const input = usage.provenance?.inputTokens?.completeness === "partial" ? undefined : usage.inputTokens
+  const read = usage.provenance?.cacheReadInputTokens?.completeness === "partial" ? undefined : usage.cacheReadInputTokens
+  const write = usage.provenance?.cacheWriteInputTokens?.completeness === "partial" ? undefined : usage.cacheWriteInputTokens
   const values = [input, read, write, usage.nonCachedInputTokens, usage.outputTokens, usage.reasoningTokens]
   if (usage.inconsistent || values.some((n) => n !== undefined && (!Number.isFinite(n) || n < 0)) ||
     (input !== undefined && (read ?? 0) + (write ?? 0) > input)) return { state: "inconsistent" }
   return {
-    state: usage.completeness !== "final" ? "unavailable" : read === undefined ? "not-reported" : "reported",
+    state: usage.completeness !== "final" || usage.provenance?.cacheReadInputTokens?.completeness === "partial"
+      ? "unavailable" : read === undefined ? "not-reported" : "reported",
     ...(input === undefined ? {} : { input }),
     ...(read === undefined ? {} : { read }),
     ...(write === undefined ? {} : { write }),

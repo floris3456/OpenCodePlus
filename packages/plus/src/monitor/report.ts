@@ -100,7 +100,7 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   const changed = cached ? ledger.changedFingerprints(id, cached.mark) : []
   const rows = ledger.getRequests(id)
   const facts = ledger.getContextFacts(id)
-  const updated = cached && !cached.perRequest ? updatedFingerprints(ledger, id, cached.fold, changed) : undefined
+  const updated = cached && !cached.perRequest ? updatedFingerprints(ledger, id, rows, cached.fold, changed) : undefined
   if (cached && !cached.perRequest && updated && updated.size > 0) {
     const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, updated, { previous: cached.fold, from })
@@ -108,9 +108,9 @@ function sessionData(ledger: Ledger, id: string): SessionData {
     return dataOf(fold)
   }
   if (cached && cached.perRequest) {
-    const fingerprints = new Map(cached.fold.analysis.fingerprints)
+    const fingerprints = new Map(rows.map((row) => [row.id, cached.fold.analysis.fingerprints.get(row.id)]))
     for (const requestID of changed) fingerprints.set(requestID, ledger.getFingerprint(requestID))
-    for (const r of rows.slice(cached.fold.rows.length)) {
+    for (const r of rows.filter((row) => !cached.fold.analysis.fingerprints.has(row.id))) {
       fingerprints.set(r.id, ledger.getFingerprint(r.id))
     }
     const from = firstChange(cached.fold, rows, facts, changed)
@@ -137,11 +137,12 @@ function dataOf(fold: SessionFold): SessionData {
 }
 
 // The cached fingerprints with the changed ones reloaded (or dropped when deleted).
-function updatedFingerprints(ledger: Ledger, id: string, fold: SessionFold, changed: readonly string[]) {
-  const fingerprints = new Map(fold.analysis.fingerprints)
+function updatedFingerprints(ledger: Ledger, id: string, rows: readonly RequestRow[], fold: SessionFold, changed: readonly string[]) {
+  const surviving = new Set(rows.map((row) => row.id))
+  const fingerprints = new Map([...fold.analysis.fingerprints].filter(([key]) => surviving.has(key)))
   for (const requestID of changed) {
     const fp = ledger.getFingerprint(requestID)
-    if (fp?.sessionID === id) fingerprints.set(requestID, fp)
+    if (fp?.sessionID === id && surviving.has(requestID)) fingerprints.set(requestID, fp)
     else fingerprints.delete(requestID)
   }
   return fingerprints
@@ -476,7 +477,23 @@ export function requestReport(
   }
 
   if (view === "overview") {
-    sections.context = analyses.map((a) => a.context)
+    const active = new Set(selected)
+    // Activity selection bounds expensive folds, not the requested as-of
+    // context population. Quiet Sessions need only indexed predecessor reads.
+    const quiet = sessions.filter((session) => !active.has(session.id))
+    const snapshot = quiet.length ? ledger.db.query<{ now: number; atCompaction: number | null }, [{ $session: string; $until: number }]>(`
+      select coalesce((select input_tokens + cache_read_tokens + cache_write_tokens from request
+        where session_id = $session and started < $until and kind != 'ping' and is_title = 0
+        order by started desc, id desc limit 1), 0) as now,
+      (select input_tokens + cache_read_tokens + cache_write_tokens from request
+        where session_id = $session and started < $until and kind not in ('ping', 'compaction') and is_title = 0
+        and started >= (select max(at) from context_fact where session_id = $session and kind = 'compaction' and at < $until)
+        order by started, id limit 1) as atCompaction
+    `) : undefined
+    sections.context = [...analyses.map((a) => a.context), ...quiet.map((session) => {
+      const state = snapshot!.get({ $session: session.id, $until: window.until })!
+      return { sessionID: session.id, now: state.now, ...(state.atCompaction === null ? {} : { atCompaction: state.atCompaction }) }
+    })]
     sections.topMisses = [...misses]
       .sort((a, b) => (b.missCost ?? 0) - (a.missCost ?? 0) || (b.missTokens ?? 0) - (a.missTokens ?? 0))
       .slice(0, 3)

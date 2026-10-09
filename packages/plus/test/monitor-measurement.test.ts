@@ -108,3 +108,37 @@ test("failed and incompatible pings receive no followed-by-hit credit", () => {
     expect(windowedSessionSignals(analyzed, { since: 0, until: 30 }).pings.followedByHit).toBe(variant === "compatible" ? 1 : 0)
   }
 })
+
+test("interior marked equality cannot locate a whole-request measured read", () => {
+  const marked = { role: "user", content: [{ type: "text", text: "small boundary", cache_control: { type: "ephemeral" } }] }
+  const fingerprints = ["a", "b"].map((id) => ({
+    requestID: id, sessionID: "synthetic", ...fingerprintWireBody({ messages: [marked, { role: "user", content: id.repeat(20000) }] }, { protocol: "anthropic-messages" }),
+  }))
+  const result = fold([row("a", 10, usage(12000, 10000)), row("b", 20, usage(3000, 0))], fingerprints)[1]!.request
+  expect(result.expected).toBeUndefined()
+  expect(result.missTokens).toBe(0)
+  expect(isMiss(result)).toBe(false)
+})
+
+test("auxiliary requests cannot hide invalidating facts after the selected anchor", () => {
+  for (const kind of ["account_switch", "quota_handoff", "compaction"]) {
+    for (const auxiliary of [false, true]) {
+      const rows = [row("a", 10, usage(10000, 10000)), ...(auxiliary ? [{ ...row("g", 20, usage(100, 0)), kind: "generate" }] : []), row("b", 30, usage(10000, 0))]
+      const request = foldSession(rows, [{ id: 1, sessionID: "synthetic", at: 15, kind }], new Map([fp("a"), fp("b")].map((p) => [p.requestID, p]))).analysis.details.at(-1)!.request
+      expect(request.expected).toBeUndefined()
+      expect(isMiss(request)).toBe(false)
+    }
+  }
+})
+
+test("partial components in a final envelope are not exact read shares or measured write anchors", () => {
+  const read = row("read", 10, { ...usage(5000, 5000), provenance: { cacheReadInputTokens: { source: "derived", completeness: "partial" } } })
+  expect(measurement(read)).toMatchObject({ state: "unavailable", input: 5000 })
+  expect(measurement(read).read).toBeUndefined()
+  expect(measurement(read).share).toBeUndefined()
+  expect(reuseRate(fold([read], []).map((d) => d.request)).measuredRequests).toBe(0)
+  const write = row("a", 10, { ...usage(5000, 0, 5000), provenance: { cacheWriteInputTokens: { source: "derived", completeness: "partial" } } })
+  const result = fold([write, row("b", 20, usage(5000, 0))], [fp("a"), fp("b")])[1]!.request
+  expect(result.expected).toBeUndefined()
+  expect(isMiss(result)).toBe(false)
+})

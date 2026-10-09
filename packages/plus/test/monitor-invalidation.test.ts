@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { createLedger } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
-import { ANALYSIS_CACHE_LIMIT, sessionFoldResumeFrom } from "../src/monitor/report.js"
+import { ANALYSIS_CACHE_LIMIT, sessionFold, sessionFoldResumeFrom } from "../src/monitor/report.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
@@ -77,4 +77,36 @@ test("analysis retention is bounded and eviction changes work, not query results
   expect(query("s0")).toEqual(first)
   expect(reads).toHaveBeenCalledTimes(1)
   reads.mockRestore()
+})
+
+test("quiet requested as-of context survives activity selection without full-history reads", async () => {
+  const db = await ledger()
+  db.session({ id: "quiet" }, 1)
+  for (const [id, started, input] of [["old", 100, 5000], ["future", 600, 9999]] as const) {
+    db.requestStarted({ id, sessionID: "quiet", kind: "step", started })
+    db.requestEnded(id, { status: "completed", ended: started + 1, usage: { input, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } })
+  }
+  db.contextFact({ sessionID: "quiet", at: 90, kind: "compaction" })
+  const reads = spyOn(db, "getRequests")
+  const report = queryMonitor(db, { scope: "session", sessionID: "quiet", view: "overview", since: 200, until: 500 }, { now: 700 })
+  expect(report.context).toEqual([{ sessionID: "quiet", now: 5000, atCompaction: 5000 }])
+  expect(report.totals.requests).toBe(0)
+  expect(reads).not.toHaveBeenCalled()
+  reads.mockRestore()
+})
+
+test("prune reconciles retained fingerprint references to surviving requests", async () => {
+  const db = await ledger()
+  for (let cycle = 1; cycle <= 6; cycle++) {
+    const id = `r${cycle}`
+    db.requestStarted({ id, sessionID: "pruned", kind: "step", started: cycle * 100 })
+    db.requestEnded(id, { ended: cycle * 100 + 1, status: "completed" })
+    db.requestFingerprint({ requestID: id, sessionID: "pruned", created: cycle * 100, ...fingerprintWireBody({ input: `synthetic-${cycle}` }) })
+    sessionFold(db, "pruned")
+    db.prune(cycle * 100)
+    const folded = sessionFold(db, "pruned")
+    expect(folded.rows.map((r) => r.id)).toEqual([id])
+    expect([...folded.analysis.fingerprints.keys()]).toEqual([id])
+    expect(db.getFingerprints("pruned")).toHaveLength(1)
+  }
 })
