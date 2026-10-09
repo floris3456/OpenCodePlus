@@ -38,12 +38,53 @@ Implementation status:
   rather than a global narrow/widen, so the Inspector's width moves opposite
   the key while the Owners width moves with it.
 - Follow-up (2026-09-28, Stage H there): **Take result is a real three-way
-  merge proposal**. Comparison 3 is `yours → merged result` (`merge3` applied
-  onto yours, not raw upstream), `t` accepts a clean merge as merged text with
-  the distinct `Merged "…"` status, a clean fast-forward whose merged result
-  equals upstream drops the override, and a conflicted proposal opens the same
-  merged editor `e` opens and resolves nothing until every marker is removed.
-  Computing or viewing the proposal never mutates or acknowledges anything.
+  merge proposal**. Comparison 3 is `yours → merged result` applied onto yours,
+  not raw upstream; `t` accepts a clean merge as merged text with the distinct
+  `Merged "…"` status, and a clean fast-forward whose merged result equals
+  upstream drops the override. Computing or viewing the proposal never mutates
+  or acknowledges anything.
+- **Superseded in 1.2.0 (S3, B13/B14/B41): the merge is sentence rows, not
+  text markers.** `merge-units.ts` splits each side into small units (sentences
+  of a prose paragraph, headings, list items, table rows, fenced blocks, blank
+  runs), diffs base→yours and base→upstream on them, and aligns the two diffs
+  into entries. The review screen shows each changed unit as a row to include or
+  exclude, and the tools API carries the same proposal: `show({view:"diff"})`
+  returns `merge.units` (id, kind, yours, upstream, base, included) with the
+  default text; `set({resolve:"merge", include:[unit ids]})` saves a choice,
+  while `keep`, `take` and `edit` stay. No `<<<<<<< / ======= / >>>>>>>`
+  conflict markers are produced or edited, and a merge equal to upstream is
+  recorded as a take. The final newline is not part of the comparison (B41).
+
+### 1.2.0 structure and automation
+
+Folders live **inside** an existing tab, not as new category tabs. Row/folder
+moves and sidebar ordering are display-only. Section moves instead reorder the
+effective text within the same item and parent, never generic nesting; invalid
+cross-item/parent moves refuse atomically. Same-level child text consumed by a
+parent rewrite is folded in and cleared, preserving switches, other fields,
+more-specific overrides and stable section ids.
+
+Heading-derived parent edits are full spans, child headings included. Assembly
+re-derives them without duplicates; same/more-specific child edits replace only
+children still present. Saving a parent absorbs same-level child text; manual
+splits retain span-replacement behavior. Add appends a trailing section. Sections
+reach MCP tool/parameter and agent/member descriptions, not MCP server config;
+keep-alive and per-model compaction prompts remain whole.
+
+`L` manages row links: `either` (mutual exclusion), `oneway` (primary switches
+target off), `shownWhenOn` and `shownWhenOff` (ANDed request gates). Switches act
+one hop. Both ends share owner/level view; pair-local masks suppress inherited
+links without masking unrelated pairs. Inspection includes upstream marker
+provenance; marker text is stripped from requests. No public fifth link type.
+
+The `instructions-tools` skill documents `link({id,target?,type?,enabled?})`,
+`move({id,into?,before?,after?})`, and the CLI mirror:
+`opencodeplus instructions <list|show|set|reset|split|create|delete|log|link|move>`.
+Flags come from registered schemas; structured inputs use `--json`, long text
+uses `--text-file` or `--text -`. Protected-row and delete-confirmation refusals
+remain. Always list ids: six typed compaction fields belong on model/Defaults
+model rows; `coldCompact` is a group, and there is no scalar `coldModels` row.
+Set its ordered array on the model row, or edit the TUI cold-cache list.
 
 Priorities, from the owner of the screen:
 
@@ -112,21 +153,20 @@ each one tab:
 
 1. **Upstream change** — original → new upstream (what changed above you)
 2. **Your change** — original → yours
-3. **Take result** — yours → **merged result**: the three-way merge (`merge3`)
-   applied onto yours, so non-overlapping custom text and upstream changes both
-   appear; only regions both sides changed differently are fenced with
-   `<<<<<<< yours / ======= / >>>>>>> upstream` markers.
+3. **Take result** — yours → **merged result**: the sentence-row merge
+   (`merge-units.ts`) applied onto yours, so non-overlapping custom text and
+   upstream changes both appear. Each changed unit is a row; a `both` unit (the
+   same sentence changed on each side) is two rows, yours included by default
+   and upstream's shown excluded and highlighted.
 
-`k` keep yours · `t` take the merged result · `e` edit the same merged
-proposal. A clean merge persists the merged text as the reviewed customization
-with the distinct internal `Merged "…"` status; a clean fast-forward whose
-merged result exactly equals the current upstream drops the override and
-follows upstream, but is detected, never accepted automatically. A conflicted
-proposal persists and acknowledges nothing: `t` (like `e`) opens the merged
-editor with the markers, and saving is refused until every one is removed.
-Viewing or computing the proposal never mutates records or clears the review.
-The same view opens on demand (`c` compare) for any row whose text you have
-overridden, not only when flagged.
+In 1.2.0 the review screen carries the merge as unit rows, never as text
+markers: no `<<<<<<< / ======= / >>>>>>>` is produced or edited. Space includes
+or excludes the selected row, `k` keeps yours, `u` takes upstream, `t` saves the
+merge as shown, and `e` edits the merged text the include set renders. A merge
+equal to the current upstream is saved as a take (follow upstream). Viewing or
+computing the proposal never mutates records or clears the review. The same view
+opens on demand (`c` compare) for any row whose text you have overridden, not
+only when flagged.
 
 Every comparison renders the **complete text of both sides** — one full-range
 hunk (`unifiedDiff` with `context: Number.POSITIVE_INFINITY`) instead of the
@@ -358,10 +398,12 @@ ignores them, a wide terminal re-clamps and re-applies them).
 ## 5. Functional fixes delivered alongside
 
 1. Real diff (opentui `<diff>`, OpenCode diff tokens) instead of three stacked texts.
-2. `t` / `e` in a review work on a real three-way merge proposal: `t` accepts
-   a clean merge as merged text (`Merged "…"`) or fast-forwards to upstream
-   when the merge equals it, and `e` edits the same proposal (conflicts
-   marked; saving refused until they are resolved).
+2. The review merge is sentence rows (`merge-units.ts`, 1.2.0): Space includes
+   or excludes each changed unit, `k` keeps yours, `u` takes upstream, `t`
+   saves the merge as shown (`Merged "…"`, or a take when it equals upstream),
+   and `e` edits the rendered merged text. No conflict markers are produced or
+   edited; the tools API carries the same proposal through
+   `show({view:"diff"}).merge` and `set({resolve:"merge", include:[…]})`.
 3. On-demand compare (`c`) for any row whose text you have overridden.
 4. The editor asks before discarding a changed draft; `ctrl+d` previews the change.
 5. Live filter; `n`/`N` jump to the next row to review; PgUp/PgDn/Home/End.

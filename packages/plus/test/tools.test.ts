@@ -31,6 +31,7 @@ import { resolve } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
+import { teachingSkillContent } from "../src/instructions/teaching.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { memoInputOf, presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -285,6 +286,9 @@ test("C1 registered model set and emitted field reset persist atomically without
   const created = await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" }) as { id: string }
   await runOk(set, decoded(set, { id: created.id, prompt: "keep alive" }))
   const values = { compactWarm: "on", coldCompact: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "" }
+  // Bind the taught six typed fields to the registered schema and real write,
+  // not just the permissive field-id parser.
+  for (const field of Object.keys(values)) expect(teachingSkillContent).toContain(`\`${field}\``)
   const input = decoded(set, { id: created.id, ...values })
   expect(input).toMatchObject(values)
   await runOk(set, input)
@@ -339,6 +343,11 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
   expect(await load(project)).toEqual(before)
   const emitted = expandedTree(memoInputOf(await snapshotOf(api)))
   expect(emitted.some((node) => node.address?.item.startsWith("modelsetting:coldModels:"))).toBe(false)
+  expect(teachingSkillContent).toContain("no `modelsetting:coldModels` field row is emitted")
+  const bogus = `item:defaults:/models:modelsetting:coldModels:${row.address!.item.slice("modeldefault:".length)}`
+  const untouched = await load(project)
+  expect((await runFail(set, decoded(set, { id: bogus, text: "acme/guessed" }))).message).toContain("row.unknown")
+  expect(await load(project)).toEqual(untouched)
   const instructions = emitted.find((node) => node.address?.item === `modelsetting:compactionInstructions:${row.address!.item.slice("modeldefault:".length)}`)
   if (instructions === undefined) throw new Error("missing emitted Defaults instructions row")
   await runOk(set, decoded(set, { id: instructions.id, text: "new summary" }))
