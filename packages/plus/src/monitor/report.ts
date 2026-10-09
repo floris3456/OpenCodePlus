@@ -253,7 +253,7 @@ export function requestReport(
       { since, until: window.until },
       { agents: input.agents, models: input.models, titles: input.titles },
     )
-    const details = analysis.details.filter(
+    const details = analysis.summaries.filter(
       (d) =>
         d.request.at >= since &&
         d.request.at < window.until &&
@@ -270,6 +270,7 @@ export function requestReport(
       id,
       rows,
       details,
+      detail: analysis.detail,
       legacy,
       unstable: signals.unstable.map((entry) => ({ ...entry, sessionID: id })),
       fingerprints: analysis.fingerprints,
@@ -366,7 +367,8 @@ export function requestReport(
 
   if (input.id) {
     const index = details.findIndex((d) => d.request.id === input.id)
-    const detail = details[index]
+    const selected = details[index]
+    const detail = selected && analyses.find((analysis) => analysis.id === selected.request.sessionID)?.detail(input.id)
     if (detail) {
       const calls = ledger.db
         .query<

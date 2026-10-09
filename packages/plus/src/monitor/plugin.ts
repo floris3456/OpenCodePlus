@@ -372,7 +372,8 @@ export async function monitorStep(
   if (index < 0) return { status: "pending" }
   const row = fold.rows[index]!
   if (row.ended === undefined || row.status === "running") return { status: "pending" }
-  const detail = fold.analysis.details[index]
+  const summary = fold.analysis.summaries[index]
+  const detail = summary && fold.analysis.detail(summary.request.id)
   if (!detail) return { status: "pending" }
   const req = detail.request
   const changedPart =

@@ -326,7 +326,7 @@ function supportedFingerprint(fp: RequestFingerprintData): boolean {
   return supported
 }
 
-export function prefixDiff(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined) {
+export function prefixDiff(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined, detail = true) {
   if (!before || !after || !supportedFingerprint(before) || !supportedFingerprint(after)) {
     return { known: false, append: false, reusable: false, common: 0, changes: [] as MonitorRequestDetail["segments"] }
   }
@@ -338,7 +338,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
   if (before.previousResponseId && !after.previousResponseId) {
     return { known: true, append: false, reusable: false, common: 0, changes: [{
       name: "previous_response_id", kind: "marker" as const, change: "removed" as const,
-      before: { hash: before.previousResponseId, chars: 0, tokens: 0 },
+      ...(detail ? { before: { hash: before.previousResponseId, chars: 0, tokens: 0 } } : {}),
     }] }
   }
 
@@ -349,8 +349,8 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
     } else {
       return { known: true, append: false, reusable: false, common: 0, changes: [{
         name: "previous_response_id", kind: "marker" as const, change: "changed" as const,
-        ...(before.previousResponseId ? { before: { hash: before.previousResponseId, chars: 0, tokens: 0 } } : {}),
-        after: { hash: after.previousResponseId, chars: 0, tokens: 0 },
+        ...(detail && before.previousResponseId ? { before: { hash: before.previousResponseId, chars: 0, tokens: 0 } } : {}),
+        ...(detail ? { after: { hash: after.previousResponseId, chars: 0, tokens: 0 } } : {}),
       }] }
     }
   }
@@ -378,7 +378,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
             name: p.name,
             kind: p.kind,
             change: "added",
-            after: { hash: p.hash, chars: p.chars, tokens: p.tokens },
+            ...(detail ? { after: { hash: p.hash, chars: p.chars, tokens: p.tokens } } : {}),
           })
         }
       }
@@ -410,11 +410,11 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
       name: p.name,
       kind: p.kind,
       change: next?.name === p.name ? "changed" : "removed",
-      before: value(p),
-      ...(next?.name === p.name ? { after: value(next) } : {}),
+      ...(detail ? { before: value(p) } : {}),
+      ...(detail && next?.name === p.name ? { after: value(next) } : {}),
     })
     if (next && next.name !== p.name) {
-      changes.push({ name: next.name, kind: next.kind, change: "added", after: value(next) })
+      changes.push({ name: next.name, kind: next.kind, change: "added", ...(detail ? { after: value(next) } : {}) })
     }
   }
 
@@ -425,7 +425,7 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
         name: p.name,
         kind: p.kind,
         change: "added",
-        after: { hash: p.hash, chars: p.chars, tokens: p.tokens },
+        ...(detail ? { after: { hash: p.hash, chars: p.chars, tokens: p.tokens } } : {}),
       })
     }
   }
@@ -500,7 +500,8 @@ function reusablePrefixChanged(
 
 type Diff = ReturnType<typeof prefixDiff>
 
-// One diff per pair of fingerprint objects. An analysis compares a request with
+// One lean diff per pair of fingerprint objects. Full before/after values are
+// expanded only by detail lookup. An analysis compares a request with
 // its previous, last real and refreshing requests and every write with its
 // later reads; a session's unchanged fingerprints keep their objects across
 // incremental analyses, so their diffs are reused too.
@@ -509,12 +510,12 @@ const diffCache = new WeakMap<RequestFingerprintData, WeakMap<RequestFingerprint
 const reuseCache = new WeakMap<RequestFingerprintData, WeakMap<RequestFingerprintData, boolean>>()
 
 function diffOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): Diff {
-  if (!before || !after) return prefixDiff(before, after)
+  if (!before || !after) return prefixDiff(before, after, false)
   const known = diffCache.get(before) ?? new WeakMap<RequestFingerprintData, Diff>()
   diffCache.set(before, known)
   const cached = known.get(after)
   if (cached) return cached
-  const diff = prefixDiff(before, after)
+  const diff = prefixDiff(before, after, false)
   known.set(after, diff)
   return diff
 }
@@ -801,11 +802,20 @@ export interface UnstableStreak {
 }
 
 export interface SessionAnalysis {
+  readonly summaries: readonly RequestSummary[]
+  /** Explicit full-analysis compatibility view; polling must use summaries. */
   readonly details: MonitorRequestDetail[]
+  readonly detail: (id: string) => MonitorRequestDetail | undefined
+  readonly work: { details: number }
   readonly unstable: readonly UnstableStreak[]
   readonly fingerprints: Map<string, RequestFingerprintData | undefined>
   readonly writes: readonly UnreadWrite[]
   readonly reads: readonly UnreadRead[]
+}
+
+export interface RequestSummary {
+  readonly request: MonitorRequest
+  readonly previous?: MonitorRequestDetail["previous"]
 }
 
 export interface CompatibleRead {
@@ -907,7 +917,7 @@ export function foldSession(
 ): SessionFold {
   const from = resume === undefined ? 0 : Math.max(0, Math.min(resume.from, rows.length, resume.previous.rows.length))
   const point = from > 0 ? resume?.previous.resume[from - 1] : undefined
-  const details: MonitorRequestDetail[] = point ? resume!.previous.analysis.details.slice(0, from) : []
+  const summaries: RequestSummary[] = point ? resume!.previous.analysis.summaries.slice(0, from) : []
   const unstable: UnstableStreak[] = point ? resume!.previous.analysis.unstable.slice(0, point.unstable) : []
   const points: ResumePoint[] = point ? resume!.previous.resume.slice(0, from) : []
   // Each name keeps the number it got when it first changed, which orders the
@@ -951,9 +961,6 @@ export function foldSession(
       ? measured.input === undefined ? anchor : Math.min(anchor, measured.input)
       : undefined
 
-    // 2. Timing: compute gap, cache lifetime, pings and warming status
-    const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, ordered, previous)
-
     // 3. Cause: determine cache verdict, root cause, confidence and evidence
     const cause = causeStep(r, previous, last, between, diff, changed, expected)
 
@@ -991,20 +998,7 @@ export function foldSession(
       ...(cost.missCost === undefined ? {} : { missCost: cost.missCost }),
     }
 
-    const lines = [
-      ...(measured.scope ? [`Observation scope: ${measured.scope}; invocation ${measured.invocationID}; operation ${measured.operationID}; outcome ${r.status}`] : []),
-      request.evidence ?? cause.evidence,
-      `Reusable-token estimate: ${expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
-      `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
-      `Gap ${timing.gap ?? "unknown"}ms; requested/nominal retention ${timing.lifetime ?? "unknown"}ms (not proof of expiry); warming configured ${timing.warming ?? "not recorded"}`,
-      measured.state !== "reported" || measured.input === undefined || (expected === undefined && measured.share !== 1)
-        ? "Local shortfall and cost scenario unavailable without a comparable measurement"
-        : cost.missCost === undefined
-        ? "Miss cost unavailable: per-token pricing was not recorded"
-        : `Local shortfall estimate ${cost.missing}; processing-cost scenario USD ${cost.missCost} (not billed loss or net savings)`,
-    ]
-
-    details.push({
+    summaries.push({
       request,
       ...(previous
         ? {
@@ -1015,26 +1009,6 @@ export function foldSession(
             },
           }
         : {}),
-      lines,
-      segments: diff.changes,
-      ...(diff.changes[0] ? { firstDivergence: diff.changes[0].name } : {}),
-      timing: {
-        ...(timing.gap === undefined ? {} : { gapMs: timing.gap }),
-        ...(timing.lifetime === undefined ? {} : { lifetimeMs: timing.lifetime }),
-        ...(timing.pings.at(-1) ? { lastPingAt: timing.pings.at(-1)!.started } : {}),
-        ...(timing.warming === undefined ? {} : { warming: timing.warming }),
-      },
-      pings: timing.pings.map((p) => ({
-        at: p.started,
-        cacheRead: p.cacheReadTokens,
-        cost: p.cost,
-        ...(p.error ? { error: p.error } : {}),
-      })),
-      accounts: cause.accounts,
-      instructions: cause.instructions,
-      reverts: cause.reverts,
-      ...(expected === undefined ? {} : { expectedTokens: expected }),
-      actualCacheRead: r.cacheReadTokens,
     })
 
     // A segment changed on this real request extends its streak; every other
@@ -1123,12 +1097,77 @@ export function foldSession(
     })
   }
 
+  const positions = new Map(rows.map((row, index) => [row.id, index]))
+  const work = { details: 0 }
+  const detail = (id: string) => {
+    const index = positions.get(id)
+    if (index === undefined) return
+    work.details++
+    return requestDetail(rows, ordered, fingerprints, summaries[index]!, index)
+  }
   return {
-    analysis: { details, unstable, fingerprints, writes, reads },
+    analysis: {
+      summaries,
+      detail,
+      work,
+      get details() { return summaries.map((entry) => detail(entry.request.id)!) },
+      unstable, fingerprints, writes, reads,
+    },
     rows,
     facts,
     resume: points,
     names,
+  }
+}
+
+function requestDetail(
+  rows: readonly RequestRow[],
+  facts: Facts,
+  fingerprints: Map<string, RequestFingerprintData | undefined>,
+  summary: RequestSummary,
+  index: number,
+): MonitorRequestDetail {
+  const r = rows[index]!
+  const request = summary.request
+  const measured = measurement(r)
+  const earlier = rows.slice(0, index)
+  const previous = summary.previous ? earlier.find((row) => row.id === summary.previous!.id) : undefined
+  const lastRealIndex = earlier.findLastIndex((row) => row.kind !== "ping" && !row.isTitle)
+  const lastReal = earlier[lastRealIndex]
+  const last = r.kind === "ping" || r.isTitle ? earlier.at(-1) : lastReal
+  const fp = fingerprints.get(r.id)
+  const before = previous ? fingerprints.get(previous.id) : undefined
+  const diff = prefixDiff(before, fp)
+  const timing = timingStep(r, earlier, lastReal, lastRealIndex, fingerprints, fp, facts, previous)
+  const cause = causeStep(r, previous, last, factsBetween(facts, last?.started ?? 0, r.started), diff, reusablePrefixChanged(diff.changes, before, fp), request.expected)
+  return {
+    ...summary,
+    lines: [
+      ...(measured.scope ? [`Observation scope: ${measured.scope}; invocation ${measured.invocationID}; operation ${measured.operationID}; outcome ${r.status}`] : []),
+      request.evidence ?? cause.evidence,
+      `Reusable-token estimate: ${request.expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
+      `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
+      `Gap ${timing.gap ?? "unknown"}ms; requested/nominal retention ${timing.lifetime ?? "unknown"}ms (not proof of expiry); warming configured ${timing.warming ?? "not recorded"}`,
+      measured.state !== "reported" || measured.input === undefined || (request.expected === undefined && measured.share !== 1)
+        ? "Local shortfall and cost scenario unavailable without a comparable measurement"
+        : request.missCost === undefined
+          ? "Miss cost unavailable: per-token pricing was not recorded"
+          : `Local shortfall estimate ${request.missTokens}; processing-cost scenario USD ${request.missCost} (not billed loss or net savings)`,
+    ],
+    segments: diff.changes,
+    ...(diff.changes[0] ? { firstDivergence: diff.changes[0].name } : {}),
+    timing: {
+      ...(timing.gap === undefined ? {} : { gapMs: timing.gap }),
+      ...(timing.lifetime === undefined ? {} : { lifetimeMs: timing.lifetime }),
+      ...(timing.pings.at(-1) ? { lastPingAt: timing.pings.at(-1)!.started } : {}),
+      ...(timing.warming === undefined ? {} : { warming: timing.warming }),
+    },
+    pings: timing.pings.map((p) => ({ at: p.started, cacheRead: p.cacheReadTokens, cost: p.cost, ...(p.error ? { error: p.error } : {}) })),
+    accounts: cause.accounts,
+    instructions: cause.instructions,
+    reverts: cause.reverts,
+    ...(request.expected === undefined ? {} : { expectedTokens: request.expected }),
+    actualCacheRead: r.cacheReadTokens,
   }
 }
 
@@ -1176,7 +1215,7 @@ export function windowedSessionSignals(
     unread += Math.max(0, write.tokens - maxRead)
   }
 
-  const inWindow = analysis.details.filter(
+  const inWindow = analysis.summaries.filter(
     (d) =>
       d.request.at >= window.since &&
       d.request.at < window.until &&
