@@ -72,10 +72,28 @@ function changeTriggers(): string {
   const mark = (row: "new" | "old") => `insert into fingerprint_change (request_id, session_id, rev)
     values (${row}.request_id, ${row}.session_id, (select rev from session_change where session_id = ${row}.session_id))
     on conflict (request_id) do update set session_id = excluded.session_id, rev = excluded.rev;`
-  const plain = (table: string) => `
-create trigger if not exists ${table}_change_insert after insert on ${table} begin ${bump("new.session_id")} end;
-create trigger if not exists ${table}_change_update after update on ${table} begin ${bump("old.session_id")} ${bump("new.session_id")} end;
-create trigger if not exists ${table}_change_delete after delete on ${table} begin ${bump("old.session_id")} end;`
+  const plain = (table: string) => {
+    const live = `insert into analysis_change (entity, id, session_id, rev)
+      values ('${table}', new.id, new.session_id, (select rev from session_change where session_id = new.session_id))
+      on conflict(entity, id) do update set session_id = excluded.session_id, rev = excluded.rev;`
+    const reset = `insert into analysis_reset (session_id, entity, rev)
+      values (old.session_id, '${table}', (select rev from session_change where session_id = old.session_id))
+      on conflict(session_id, entity) do update set rev = excluded.rev;`
+    return `
+create trigger if not exists ${table}_change_insert after insert on ${table} begin ${bump("new.session_id")} ${live} end;
+create trigger if not exists ${table}_change_update after update on ${table} begin
+  ${bump("old.session_id")} ${bump("new.session_id")}
+  insert into analysis_reset (session_id, entity, rev)
+    select old.session_id, '${table}', rev from session_change where session_id = old.session_id and (old.session_id != new.session_id or old.id != new.id)
+    on conflict(session_id, entity) do update set rev = excluded.rev;
+  delete from analysis_change where entity = '${table}' and id = old.id;
+  ${live}
+end;
+create trigger if not exists ${table}_change_delete after delete on ${table} begin
+  ${bump("old.session_id")} ${reset}
+  delete from analysis_change where entity = '${table}' and id = old.id;
+end;`
+  }
   return `${plain("request")}
 ${plain("context_fact")}
 create trigger if not exists request_fingerprint_change_insert after insert on request_fingerprint begin
@@ -83,6 +101,9 @@ create trigger if not exists request_fingerprint_change_insert after insert on r
 end;
 create trigger if not exists request_fingerprint_change_update after update on request_fingerprint begin
   ${bump("old.session_id")} ${bump("new.session_id")} ${mark("new")}
+  insert into analysis_reset (session_id, entity, rev)
+    select old.session_id, 'fingerprint', rev from session_change where session_id = old.session_id and old.session_id != new.session_id
+    on conflict(session_id, entity) do update set rev = excluded.rev;
 end;
 create trigger if not exists request_fingerprint_change_delete after delete on request_fingerprint begin
   ${bump("old.session_id")} ${mark("old")}
@@ -141,6 +162,7 @@ create table if not exists step (
   primary key (session_id, message_id)
 );
 create index if not exists step_ended on step(ended);
+create index if not exists step_started on step(started);
 create index if not exists step_session on step(session_id, epoch, idx);
 
 create table if not exists call (
@@ -284,6 +306,7 @@ create table if not exists context_fact (
 );
 create index if not exists context_fact_session on context_fact(session_id, at);
 create index if not exists context_fact_kind on context_fact(kind, at);
+create index if not exists context_fact_at on context_fact(at);
 
 create table if not exists session_change (
   session_id text primary key,
@@ -295,7 +318,17 @@ create table if not exists fingerprint_change (
   rev integer not null
 ) without rowid;
 create index if not exists fingerprint_change_session on fingerprint_change(session_id, rev);
-${changeTriggers()}
+-- Bounded materialized indexes: one mark per live payload, one reset per
+-- session/entity. No append log or per-deletion tombstone.
+create table if not exists analysis_change (
+  entity text not null, id text not null, session_id text not null, rev integer not null,
+  primary key (entity, id)
+) without rowid;
+create index if not exists analysis_change_session on analysis_change(session_id, entity, rev);
+create table if not exists analysis_reset (
+  session_id text not null, entity text not null, rev integer not null,
+  primary key (session_id, entity)
+) without rowid;
 `
 
 export interface SessionFacts {
@@ -393,6 +426,8 @@ export interface RequestEnd {
 }
 
 export interface RequestRow {
+  /** SQLite ordering metadata; non-enumerable, not part of report payloads. */
+  readonly ledgerOrder?: number
   readonly id: string
   readonly sessionID: string
   readonly kind: string
@@ -477,6 +512,8 @@ export function endRequestWindow(ledger: Ledger, start: RequestStart, end: Reque
 
 export interface ContextFactRow extends ContextFact {
   readonly id: number
+  /** Raw SQLite text for the existing unique-index tie order. */
+  readonly ledgerDetail?: string
 }
 
 export interface Ledger {
@@ -505,6 +542,9 @@ export interface Ledger {
   sessionRevision(sessionID: string): number
   /** Request ids whose fingerprint in this session was written or deleted after its revision `since`. */
   changedFingerprints(sessionID: string, since: number): readonly string[]
+  /** Undefined means a deletion/move requires a full session payload reload. */
+  changedRequests(sessionID: string, since: number): readonly RequestRow[] | undefined
+  changedContextFacts(sessionID: string, since: number): readonly ContextFactRow[] | undefined
   requestStarted(req: RequestStart): void
   requestEnded(id: string, end: RequestEnd): void
   /** Exact-ID terminal measurement, written after requestEnded. Never inferred from Session aggregates. */
@@ -553,6 +593,17 @@ export function createLedger(file: string): Ledger {
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")
   db.exec(schema)
+  // Explicit additive migration replaces the old plain triggers, which
+  // CREATE IF NOT EXISTS alone would silently keep on an existing database.
+  db.transaction(() => {
+    if (db.query("select value from meta where key = 'analysis_delta'").get()) return
+    for (const table of ["request", "context_fact"]) {
+      for (const operation of ["insert", "update", "delete"]) db.exec(`drop trigger if exists ${table}_change_${operation}`)
+    }
+    db.exec("drop trigger if exists request_fingerprint_change_update")
+    db.exec(changeTriggers())
+    db.exec("insert into meta (key, value) values ('analysis_delta', '1')")
+  })()
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "observation")) db.exec("alter table request add column observation text")
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "finish")) db.exec("alter table request add column finish text")
   const fingerprintColumns = db.query<{ name: string }, []>("pragma table_info(request_fingerprint)").all()
@@ -565,6 +616,7 @@ export function createLedger(file: string): Ledger {
   for (const [name, type] of [["prefix_base", "text"], ["prefix_shared", "integer"], ["prefix_depth", "integer"]] as const) {
     if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} ${type}`)
   }
+  db.exec("create index if not exists request_fingerprint_base on request_fingerprint(prefix_base)")
   if (
     !db
       .query<{ name: string }, []>("pragma table_info(session)")
@@ -689,7 +741,7 @@ export function createLedger(file: string): Ledger {
   )
   const findRequest = db.query<Record<string, unknown>, [string]>("select * from request where id = ?")
   const findSessionRequests = db.query<Record<string, unknown>, [string]>(
-    "select * from request where session_id = ? order by started asc, rowid asc",
+    "select *, rowid as ledger_order from request where session_id = ? order by started asc, rowid asc",
   )
   const findFingerprint = db.query<Record<string, unknown>, [string]>(
     "select * from request_fingerprint where request_id = ?",
@@ -732,7 +784,7 @@ export function createLedger(file: string): Ledger {
   )
   const deleteFingerprintChange = db.query("delete from fingerprint_change where request_id = ?")
   const findContextFacts = db.query<Record<string, unknown>, [string]>(
-    "select * from context_fact where session_id = ? order by at asc",
+    "select * from context_fact where session_id = ? order by at asc, kind asc, detail asc",
   )
   // SQLite's own change counter for this connection advances on every write
   // this handle makes (including the rollup triggers and the few direct writes
@@ -743,8 +795,22 @@ export function createLedger(file: string): Ledger {
   const totalChanges = db.query<{ n: number }, []>("select total_changes() as n")
   const dataVersion = db.query<{ data_version: number }, []>("pragma data_version")
   const sessionRevision = db.query<{ rev: number }, [string]>("select rev from session_change where session_id = ?")
-  const changedFingerprints = db.query<{ request_id: string }, [string, number]>(
-    "select request_id from fingerprint_change where session_id = ? and rev > ?",
+  const changedFingerprints = db.query<{ request_id: string }, [string, number, string, number]>(
+    `with recursive changed(request_id) as (
+      select request_id from fingerprint_change where session_id = ? and rev > ?
+      union select request.id from request join analysis_reset on analysis_reset.session_id = request.session_id
+        where request.session_id = ? and analysis_reset.entity = 'fingerprint' and analysis_reset.rev > ?
+      union select request_fingerprint.request_id from request_fingerprint join changed on request_fingerprint.prefix_base = changed.request_id
+    ) select request_id from changed`,
+  )
+  const analysisReset = db.query<{ rev: number }, [string, string]>(
+    "select rev from analysis_reset where session_id = ? and entity = ?",
+  )
+  const changedRequests = db.query<Record<string, unknown>, [string, number]>(
+    "select request.*, request.rowid as ledger_order from analysis_change join request on request.id = analysis_change.id where analysis_change.session_id = ? and analysis_change.entity = 'request' and analysis_change.rev > ? order by request.started, request.rowid",
+  )
+  const changedContextFacts = db.query<Record<string, unknown>, [string, number]>(
+    "select context_fact.* from analysis_change join context_fact on context_fact.id = analysis_change.id where analysis_change.session_id = ? and analysis_change.entity = 'context_fact' and analysis_change.rev > ? order by context_fact.at, context_fact.id",
   )
 
   const writeCallTokens = db.transaction((updates: readonly CallTokens[]) => {
@@ -1156,7 +1222,11 @@ export function createLedger(file: string): Ledger {
     getContextFacts: (sessionID) => findContextFacts.all(sessionID).map(toContextFactRow),
     revision: () => `${totalChanges.get()?.n ?? 0}:${dataVersion.get()?.data_version ?? 0}`,
     sessionRevision: (sessionID) => sessionRevision.get(sessionID)?.rev ?? 0,
-    changedFingerprints: (sessionID, since) => changedFingerprints.all(sessionID, since).map((row) => row.request_id),
+    changedFingerprints: (sessionID, since) => changedFingerprints.all(sessionID, since, sessionID, since).map((row) => row.request_id),
+    changedRequests: (sessionID, since) => (analysisReset.get(sessionID, "request")?.rev ?? 0) > since
+      ? undefined : changedRequests.all(sessionID, since).map(toRequestRow),
+    changedContextFacts: (sessionID, since) => (analysisReset.get(sessionID, "context_fact")?.rev ?? 0) > since
+      ? undefined : changedContextFacts.all(sessionID, since).map(toContextFactRow),
     close: () => {
       open.delete(file)
       db.close()
@@ -1165,7 +1235,7 @@ export function createLedger(file: string): Ledger {
 }
 
 function toRequestRow(row: Record<string, unknown>): RequestRow {
-  return {
+  return Object.defineProperty({
     id: String(row.id),
     sessionID: String(row.session_id),
     kind: String(row.kind),
@@ -1189,7 +1259,7 @@ function toRequestRow(row: Record<string, unknown>): RequestRow {
     messageID: typeof row.message_id === "string" ? row.message_id : undefined,
     created: Number(row.created ?? row.started),
     observation: typeof row.observation === "string" ? readObservation(row.observation) : undefined,
-  }
+  }, "ledgerOrder", { value: Number(row.ledger_order ?? 0) })
 }
 
 function toFingerprintData(row: Record<string, unknown>, messagePrefixes: readonly MessagePrefixFingerprint[]): RequestFingerprintData {
@@ -1215,11 +1285,11 @@ function toFingerprintData(row: Record<string, unknown>, messagePrefixes: readon
 }
 
 function toContextFactRow(row: Record<string, unknown>): ContextFactRow {
-  return {
+  return Object.defineProperty({
     id: Number(row.id),
     sessionID: String(row.session_id),
     at: Number(row.at),
     kind: String(row.kind),
     detail: row.detail ? JSON.parse(String(row.detail)) : {},
-  }
+  }, "ledgerDetail", { value: String(row.detail ?? "{}") })
 }

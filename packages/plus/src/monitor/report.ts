@@ -53,7 +53,7 @@ const sessionCache = new WeakMap<Ledger, AnalysisCache>()
 // it is keyed on change marks, never on row ids. An unchanged ledger revision
 // (which also covers other connections and processes) answers at once; an
 // unchanged session mark answers with one lookup however busy other chats are.
-// Otherwise only this session is read again, only changed fingerprints are
+// Otherwise only changed request/fact payloads and fingerprints are read,
 // loaded, and the fold resumes at the first request a change can affect. The
 // analysis never depends on the query window, so it stays reusable across
 // window changes and polling.
@@ -70,8 +70,17 @@ function sessionData(ledger: Ledger, id: string): SessionData {
     return dataOf(cached.fold)
   }
   const changed = cached ? ledger.changedFingerprints(id, cached.mark) : []
-  const rows = ledger.getRequests(id)
-  const facts = ledger.getContextFacts(id)
+  const requestDelta = cached ? ledger.changedRequests(id, cached.mark) : undefined
+  const factDelta = cached ? ledger.changedContextFacts(id, cached.mark) : undefined
+  // Arrays still copy/sort in memory; the SQLite payload read is delta-only.
+  const rows = cached && requestDelta !== undefined
+    ? mergeChanged(cached.fold.rows, requestDelta, (a, b) => a.started - b.started || (a.ledgerOrder ?? 0) - (b.ledgerOrder ?? 0))
+    : ledger.getRequests(id)
+  const facts = cached && factDelta !== undefined
+    ? mergeChanged(cached.fold.facts, factDelta, (a, b) => a.at - b.at
+      || Buffer.compare(Buffer.from(a.kind), Buffer.from(b.kind))
+      || Buffer.compare(Buffer.from(a.ledgerDetail ?? "{}"), Buffer.from(b.ledgerDetail ?? "{}")))
+    : ledger.getContextFacts(id)
   const updated = cached && !cached.perRequest ? updatedFingerprints(ledger, id, rows, cached.fold, changed) : undefined
   if (cached && !cached.perRequest && updated && updated.size > 0) {
     const from = firstChange(cached.fold, rows, facts, changed)
@@ -110,6 +119,12 @@ export function sessionCacheStats(ledger: Ledger) {
 
 function dataOf(fold: SessionFold): SessionData {
   return { rows: fold.rows, facts: fold.facts, analysis: fold.analysis, fold }
+}
+
+function mergeChanged<T extends { readonly id: string | number }>(previous: readonly T[], changed: readonly T[], order: (a: T, b: T) => number): readonly T[] {
+  if (changed.length === 0) return previous
+  const replacements = new Map(changed.map((row) => [row.id, row]))
+  return [...previous.filter((row) => !replacements.has(row.id)), ...changed].sort(order)
 }
 
 // The cached fingerprints with the changed ones reloaded (or dropped when deleted).
