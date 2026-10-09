@@ -10,7 +10,7 @@ import { guidanceContent } from "../src/instructions/guidance.js"
 import { resolve, fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
 import { guidanceItemId } from "../src/instructions/paths.js"
 import { chainContext } from "../src/instructions/presets.js"
-import type { RowlinkRecord } from "../src/instructions/rowlinks.js"
+import { gateAnswer, type RowlinkRecord } from "../src/instructions/rowlinks.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -130,4 +130,45 @@ test("a gate refuses a section as its primary row rather than using the whole it
   // The gate names tool:question as its target, not system:role: the whole role
   // row is not gated by it.
   expect(answer.requires).toBeUndefined()
+})
+
+test("a team-owned gate resolves for the member address through its team node", () => {
+  const team = { level: "project" as Level, team: "crew" }
+  const teamGate = gate({ item: "tool:question", target: "system:role", targetSection: "role/checks", link: "shownWhenOn", team })
+  const memberScopes = chainContext({
+    agents: [{ id: "alpha", scope: "project", origin: "user", team: "crew" }],
+    items,
+    links,
+    rowlinks: [teamGate],
+    teams: [{ team: "crew", agents: ["alpha"] }],
+  })
+  const answer = gateAnswer(
+    [teamGate],
+    memberScopes,
+    { level: "project", agent: "alpha", item: "system:role", section: "role/checks", team, catalogue: "teams" },
+  )
+  expect(answer?.ids).toEqual(["tool:question"])
+  // A plain agent address (no team) does not see the team-owned gate.
+  expect(gateAnswer([teamGate], scopes([]), { level: "project", agent: "alpha", item: "system:role", section: "role/checks" })).toBeUndefined()
+})
+
+test("gates act for every text kind, not only system rows", () => {
+  // A tool description with a section, gated on a row the agent has off.
+  const toolText = `Read things.\n\n## Details\nMore.\n`
+  const tool: Item = { id: "tool:reader", kind: "tool", group: "native", title: "reader", text: toolText, enabled: true, fingerprint: fingerprint(toolText) }
+  const gateOnQuestion = gate({ item: "tool:question", target: "tool:reader", targetSection: "details", link: "shownWhenOn" })
+  const input = {
+    items: [...items, tool],
+    records: [off("alpha", "tool:question")],
+    splits: [],
+    agents: agents.map((id) => ({ id, level: "project" as Level })),
+    scopes: scopes([gateOnQuestion]),
+  } satisfies ApplyInput
+  const agent = { id: "alpha", level: "project" as Level }
+  const resolved = resolvedFor(tool, agent, input, rowGate(input, agent))
+  expect(resolved.assembled).not.toContain("## Details")
+  expect(resolved.assembled).not.toContain("<!--")
+  // beta has question on: it keeps the section.
+  const beta = { id: "beta", level: "project" as Level }
+  expect(resolvedFor(tool, beta, input, rowGate(input, beta)).assembled).toContain("## Details")
 })
