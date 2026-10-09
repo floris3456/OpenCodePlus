@@ -644,6 +644,7 @@ export type OpResult = OpSuccess | OpFailure
 
 export interface ModelOpSuccess {
   readonly models: ModelRecord[]
+  readonly records?: CustomizationRecord[]
   readonly status: string
   readonly retryHint: string
 }
@@ -1100,7 +1101,7 @@ function boundariesEqual(
 // A connected row owned by a protected agent refuses the whole write before
 // any record changes (`isProtected`, supplied by the tool actor only).
 
-type SwitchResult = { readonly records: CustomizationRecord[]; readonly disabled: readonly string[] } | { readonly refusal: string }
+type SwitchResult = { readonly records: CustomizationRecord[]; readonly models?: ModelRecord[]; readonly disabled: readonly string[] } | { readonly refusal: string }
 
 function applySwitches(
   memo: Memo,
@@ -1108,6 +1109,7 @@ function applySwitches(
   records: CustomizationRecord[],
   on: boolean,
   isProtected?: (owner: string | null) => boolean,
+  models: readonly ModelRecord[] = memo.ctx.models,
 ): SwitchResult {
   if (!on) return { records, disabled: [] }
   const targets = switchedOff(
@@ -1120,9 +1122,20 @@ function applySwitches(
   if (isProtected?.(chain.address.agent) === true)
     return { refusal: `agent.protected: row belongs to protected agent "${chain.address.agent}"; turning this on would disable a linked row` }
   let out = records
+  let modelOut = models
   const disabled: string[] = []
   for (const endpoint of targets) {
     const address = { ...chain.address, item: endpoint.item, section: endpoint.section }
+    const model = modelTargetOf(address)
+    if (model !== undefined && endpoint.section === null) {
+      const active = effectiveModelAt(memo, address, modelOut)
+      if (active === undefined || !sameModelCandidate(active, model)) continue
+      // Clearing active would reveal the same inherited candidate again. The
+      // existing candidate tombstone is the model algebra's durable off mask.
+      modelOut = tombstoneModelRecord(modelOut, modelScopeOf(address), model, now())
+      disabled.push(endpoint.item)
+      continue
+    }
     const upstream = upstreamFor(memo.ctx.items, address)
     if (upstream === undefined) return { refusal: `Linked row "${endpoint.item}" cannot be switched` }
     // Already off (by inheritance or an earlier row): writing an off record
@@ -1131,7 +1144,7 @@ function applySwitches(
     out = merge(out, address, { state: "off" }, upstream, memo.ctx.scopes)
     disabled.push(endpoint.item)
   }
-  return { records: out, disabled }
+  return { records: out, ...(modelOut === models ? {} : { models: [...modelOut] }), disabled }
 }
 
 export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): OpResult {
@@ -1167,6 +1180,7 @@ export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo, isPro
   const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
   return {
     records: switched.records,
+    ...(switched.models === undefined ? {} : { models: switched.models }),
     splits: chain.splits,
     status: `${resolved.enabled ? `Disabled "${node.label}"` : `Enabled "${node.label}"`}${suffix}`,
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
@@ -1221,6 +1235,7 @@ export function setEnabled(
     records: switched.records,
     splits: chain.splits,
     status: `${value ? `Enabled "${node.label}"` : `Disabled "${node.label}"`}${suffix}`,
+    ...(switched.models === undefined ? {} : { models: switched.models }),
     retryHint: `toggled "${node.label}" against a stale revision; retry to apply`,
   }
 }
@@ -2338,7 +2353,7 @@ function modelScopeOf(address: Address): RecordScope & { readonly memberOf?: Tea
 // Space on a model row activates it exclusively at that level, creating the
 // local row when the candidate is inherited. Activating the already-active
 // row is a no-op that still reports success without writing.
-export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
+export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
@@ -2361,9 +2376,13 @@ export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: M
     scopes: found.memo.ctx.scopes,
     ...(upstream === undefined ? {} : { upstream }),
   })
-  if (JSON.stringify(next) === JSON.stringify(models))
-    return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
-  return { models: next, status: `Activated "${node.label}"`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
+  const active = effectiveModelAt(found.memo, address, models)
+  const records = customizationsOfInput(input)
+  const switched = applySwitches(found.memo, { address, customizations: records }, records,
+    active === undefined || !sameModelCandidate(active, target), isProtected, next)
+  if ("refusal" in switched) return switched
+  const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
+  return { models: switched.models ?? next, records: switched.records, status: `Activated "${node.label}"${suffix}`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
 }
 
 /** The target a completed `/models`, variant-dialog or cycle-effort pick names. */

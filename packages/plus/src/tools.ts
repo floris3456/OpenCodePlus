@@ -1212,10 +1212,10 @@ function setModel(
     }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
-    if (input.state !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be toggled by state; use active:true to activate` }))
-    const op = activateModelRow(memo, id)
+    if (input.state === "off") return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be toggled off by state; remove the candidate to mask it` }))
+    const op = activateModelRow(memo, id, undefined, (owner) => owner !== null && snapshot.protectedAgents.includes(owner))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
+    const applied = yield* mutateOp(api, memo, { records: op.records ?? memo.records.filter((record): record is CustomizationRecord => record.type === "customization"), splits: memo.records.filter((record): record is SplitRecord => record.type === "split"), models: op.models, status: op.status }, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }

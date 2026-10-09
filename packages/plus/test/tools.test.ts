@@ -17,6 +17,7 @@ import { userBaseFile } from "../src/agents/base.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import {
   addSection,
+  activateModelRow,
   removalPlan,
   reset,
   resolveReview,
@@ -3651,6 +3652,46 @@ async function customizationState(project: string, item: string): Promise<"on" |
       entry.type === "customization" && entry.item === item && entry.section === null,
   )
   return record?.state
+}
+
+for (const type of ["either", "oneway"] as const) {
+  test(`model rowlinks ${type}: activation and state:on persist physical records in one save`, async () => {
+    const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2"), modelInfo("acme", "nova-3")], classifications: { "nova-2": "general", "nova-3": "general" } })
+    const set = need(tools, "instructions_set")
+    await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })
+    await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-3", level: "defaults", agent: "alpha" })
+    const model = "item:defaults:alpha:model:acme/nova-2"
+    const reader = "item:defaults:alpha:tool:reader"
+    await runOk(set, { id: reader, state: "on" })
+    await runOk(need(tools, "instructions_link"), { id: model, target: reader, type })
+    const before = await load(project)
+    // The exact operation used by TUI Space, not an alternate switch algebra.
+    const equivalent = activateModelRow(memoFromSnapshot(await snapshotOf(api)), model)
+    if ("refusal" in equivalent) throw new Error(equivalent.refusal)
+    expect(equivalent.records?.find((record) => record.item === "tool:reader")?.state).toBe("off")
+    await runOk(set, { id: model, active: true })
+    const activated = await load(project)
+    expect(activated.projectRevision + activated.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
+    expect(activated.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
+    expect(await customizationState(project, "tool:reader")).toBe("off")
+    // Explicitly turning the target back on is the only resurrection. Either
+    // masks the active model; oneway deliberately leaves it active.
+    await runOk(set, { id: reader, state: "on" })
+    const reversed = await load(project)
+    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject(type === "either" ? { removed: true } : { active: true })
+    if (type === "either") {
+      // A tombstone hides the row; create re-adds it via the existing model
+      // algebra, then state:on uses precisely the activation save boundary.
+      await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })
+      await runOk(set, { id: "item:defaults:alpha:model:acme/nova-3", active: true })
+      const prior = await load(project)
+      await runOk(set, { id: model, state: "on" })
+      const after = await load(project)
+      expect(after.projectRevision + after.globalRevision).toBe(prior.projectRevision + prior.globalRevision + 1)
+      expect(await customizationState(project, "tool:reader")).toBe("off")
+      expect(after.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
+    }
+  })
 }
 
 test("set state:on persists its either partner off in one save, and it stays off after reload", async () => {

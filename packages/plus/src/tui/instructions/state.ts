@@ -706,7 +706,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         setStatus(result.refusal)
         return false
       }
-      return persistModels(result.models, result.status, result.retryHint)
+      return result.records === undefined
+        ? persistModels(result.models, result.status, result.retryHint)
+        : persist(result.records, recordsForTree().filter((record): record is SplitRecord => record.type === "split"), result.status, result.retryHint, result.models)
     }
     const result = toggle(memoInput(), node.enabledRow ?? node.id, treeMemo())
     if ("refusal" in result) {
