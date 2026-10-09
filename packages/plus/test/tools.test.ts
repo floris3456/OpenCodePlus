@@ -3662,6 +3662,8 @@ for (const type of ["either", "oneway"] as const) {
     await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-3", level: "defaults", agent: "alpha" })
     const model = "item:defaults:alpha:model:acme/nova-2"
     const reader = "item:defaults:alpha:tool:reader"
+    await runOk(set, { id: model, warming: "on", interval: "15m", prompt: "keep alive" })
+    await runOk(set, { id: model, compactWarm: "on", compactionInstructions: "retain C1" })
     await runOk(set, { id: reader, state: "on" })
     await runOk(need(tools, "instructions_link"), { id: model, target: reader, type })
     const before = await load(project)
@@ -3680,15 +3682,18 @@ for (const type of ["either", "oneway"] as const) {
     // masks the active model; oneway deliberately leaves it active.
     const reverseEquivalent = toggle(memoInputOf(await snapshotOf(api)), reader)
     if ("refusal" in reverseEquivalent) throw new Error(reverseEquivalent.refusal)
-    if (type === "either") expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ removed: true })
+    if (type === "either") expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
     await runOk(set, { id: reader, state: "on" })
     const reversed = await load(project)
-    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject(type === "either" ? { removed: true } : { active: true })
+    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject(type === "either" ? { active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" } : { active: true })
     if (type === "either") {
-      // A tombstone hides the row; create re-adds it via the existing model
-      // algebra, then state:on uses precisely the activation save boundary.
-      await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })
-      await runOk(set, { id: "item:defaults:alpha:model:acme/nova-3", active: true })
+      const snapshot = await snapshotOf(api)
+      const retained = expandedTree(memoInputOf(snapshot)).find((node) => node.id === model)
+      expect(retained).toBeDefined()
+      expect(retained?.badges.active).not.toBe(true)
+      const space = activateModelRow(memoInputOf(snapshot), model)
+      if ("refusal" in space) throw new Error(space.refusal)
+      expect(space.models.find((record) => record.modelID === "nova-2")).toMatchObject({ active: true, prompt: "keep alive", compactionInstructions: "retain C1" })
       const prior = await load(project)
       await runOk(set, { id: model, state: "on" })
       const after = await load(project)
@@ -3719,8 +3724,8 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   await runOk(set, { id: reader, state: "off" })
   // The inherited either switches alt off when reader turns on at Project.
   await runOk(set, { id: reader, state: "on" })
-  expect((await load(project)).records.find((record) => record.type === "model" && record.level === "project" && record.modelID === "alt")).toMatchObject({ removed: true })
-  await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "project", agent: "build" })
+  expect((await load(project)).records.find((record) => record.type === "model" && record.level === "project" && record.modelID === "alt")).toMatchObject({ active: false })
+  expect(expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id === model)?.badges.active).not.toBe(true)
   await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
   await runOk(set, { id: extra, state: "on" })
   await runOk(set, { id: model, state: "on" })
@@ -3746,6 +3751,51 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   const before = await load(project)
   expect((await runFail(set, { id: model, state: "on" })).message).toContain("agent.protected")
   expect(await load(project)).toEqual(before)
+})
+
+test("model rowlinks create and chat pick compose switches; linked replacement refuses atomically", async () => {
+  const { api, tools, project } = await freshFixture({
+    agents: [agentInfo("build", "role", modelRef("acme", "base"))],
+    models: [modelInfo("acme", "base"), modelInfo("acme", "alt")],
+    classifications: { base: "general", alt: "general" },
+  })
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "global", agent: "build" })
+  const model = "item:project:build:model:acme/alt"
+  const reader = "item:project:build:tool:reader"
+  await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "oneway" })
+  await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
+  await runOk(set, { id: reader, state: "on" })
+  const before = await load(project)
+  await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "project", agent: "build" })
+  const added = await load(project)
+  expect(added.projectRevision + added.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+  await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
+  await runOk(set, { id: reader, state: "on" })
+  const beforePick = await load(project)
+  expect(await api.pickModel({ agent: "build", providerID: "acme", modelID: "alt" })).toMatchObject({ ok: true, value: { changed: true } })
+  const picked = await load(project)
+  expect(picked.projectRevision + picked.globalRevision).toBe(beforePick.projectRevision + beforePick.globalRevision + 1)
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+  expect((await runFail(set, { id: model, text: "acme/base" })).message).toContain("remove its links before replacing")
+  expect(await load(project)).toEqual(picked)
+  await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
+  await runOk(set, { id: reader, state: "on" })
+  // An unlinked active row may become an already-linked target candidate:
+  // replacement composes the new endpoint's switches before its one save.
+  const beforeReplace = await load(project)
+  await runOk(set, { id: "item:project:build:model:acme/base", text: "acme/alt" })
+  const replaced = await load(project)
+  expect(replaced.projectRevision + replaced.globalRevision).toBe(beforeReplace.projectRevision + beforeReplace.globalRevision + 1)
+  expect(await customizationState(project, "tool:reader")).toBe("off")
+  expect(await api.pickModel({ agent: "build", providerID: "acme", modelID: "base" })).toMatchObject({ ok: true })
+  await runOk(set, { id: reader, state: "on" })
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["build"] }))
+  const protectedBefore = await load(project)
+  expect(await api.pickModel({ agent: "build", providerID: "acme", modelID: "alt" })).toMatchObject({ ok: false })
+  expect(await load(project)).toEqual(protectedBefore)
 })
 
 test("set state:on persists its either partner off in one save, and it stays off after reload", async () => {

@@ -28,6 +28,7 @@ import {
   catalogueMatches,
   catalogueOf,
   clearModelActive,
+  deactivateModel,
   ensureActivateModel,
   fingerprint,
   formatDuration,
@@ -100,7 +101,7 @@ import {
   type OrderRecord,
 } from "./folders.js"
 import { presetOfAddress } from "./presets.js"
-import { switchedOff } from "./rowlinks.js"
+import { linksTouching, switchedOff } from "./rowlinks.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
@@ -1132,9 +1133,7 @@ function applySwitches(
     if (model !== undefined && endpoint.section === null) {
       const active = effectiveModelAt(memo, address, modelOut)
       if (active === undefined || !sameModelCandidate(active, model)) continue
-      // Clearing active would reveal the same inherited candidate again. The
-      // existing candidate tombstone is the model algebra's durable off mask.
-      modelOut = tombstoneModelRecord(modelOut, modelScopeOf(address), model, now())
+      modelOut = deactivateModel(modelOut, modelScopeOf(address), model, now(), memo.ctx.scopes)
       disabled.push(endpoint.item)
       continue
     }
@@ -1147,6 +1146,17 @@ function applySwitches(
     disabled.push(endpoint.item)
   }
   return { records: out, ...(modelOut === models ? {} : { models: [...modelOut] }), disabled }
+}
+
+// Shared completion boundary for Space, picks and automatic creation. Compute
+// against the pre-activation memo, then persist both record kinds together.
+export function switchModelActivation(input: MemoInput, address: Address, target: ModelCandidate | { providerID: string; modelID: string; variant?: string }, models: ModelRecord[], isProtected?: (owner: string | null) => boolean, sharedMemo?: Memo): SwitchResult {
+  const memo = sharedMemo ?? memoOfInput(input)
+  const active = effectiveModelAt(memo, address, modelsOfInput(input))
+  const selected = effectiveModelAt(memo, address, models)
+  const records = customizationsOfInput(input)
+  return applySwitches(memo, { address, customizations: records }, records,
+    selected !== undefined && sameModelCandidate(selected, target) && (active === undefined || !sameModelCandidate(active, target)), isProtected, models)
 }
 
 export function toggle(input: MemoInput, rowId: string, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): OpResult {
@@ -2381,10 +2391,7 @@ export function activateModelRow(input: MemoInput, rowId: string, sharedMemo?: M
     scopes: found.memo.ctx.scopes,
     ...(upstream === undefined ? {} : { upstream }),
   })
-  const active = effectiveModelAt(found.memo, address, models)
-  const records = customizationsOfInput(input)
-  const switched = applySwitches(found.memo, { address, customizations: records }, records,
-    active === undefined || !sameModelCandidate(active, target), isProtected, next)
+  const switched = switchModelActivation(input, address, target, next, isProtected, found.memo)
   if ("refusal" in switched) return switched
   const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
   return { models: switched.models ?? next, records: switched.records, status: `Activated "${node.label}"${suffix}`, retryHint: `activated "${node.label}" against a stale revision; retry to apply` }
@@ -2400,6 +2407,7 @@ export interface ModelPick {
 
 export interface ModelPickSuccess {
   readonly models: readonly ModelRecord[]
+  readonly records?: readonly CustomizationRecord[]
   readonly status: string
   readonly retryHint: string
   /** The tree row id the pick addresses or wrote. */
@@ -2446,7 +2454,7 @@ function pickOwnerOf(
  * the agent's model rows at that level. The caller saves the returned `models`
  * with a revision-checked write and logs once; a no-op returns the input list.
  */
-export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Memo): ModelPickResult {
+export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): ModelPickResult {
   const memo = sharedMemo ?? memoOfInput(input)
   const ctx = memo.ctx
   const target = { providerID: pick.providerID, modelID: pick.modelID, ...(pick.variant === undefined ? {} : { variant: pick.variant }) }
@@ -2503,8 +2511,9 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     ...(upstream === undefined ? {} : { upstream }),
   })
   const label = `${pick.providerID}/${pick.modelID}${pick.variant === undefined ? "" : `@${pick.variant}`}`
-  const success = (models: readonly ModelRecord[], changed: boolean, status: string): ModelPickSuccess => ({
+  const success = (models: readonly ModelRecord[], changed: boolean, status: string, records?: readonly CustomizationRecord[]): ModelPickSuccess => ({
     models,
+    ...(records === undefined ? {} : { records }),
     status,
     retryHint: `activated "${label}" against a stale revision; retry to apply`,
     rowId,
@@ -2516,9 +2525,9 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     return success(ctx.models, false, `Activated "${label}"`)
   // (b) the exact candidate is present: activate it.
   if (candidates.some((candidate) => sameModelCandidate(candidate, target))) {
-    const activated = activateModelRow(input, rowId, memo)
+    const activated = activateModelRow(input, rowId, memo, isProtected)
     if ("refusal" in activated) return activated
-    return success(activated.models, true, activated.status)
+    return success(activated.models, true, activated.status, activated.records)
   }
   // (c) the same provider/model is present with another effort: change it in
   // place, preferring the active row, then make it active.
@@ -2533,17 +2542,17 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     sameModel.find((candidate) => effective !== undefined && sameModelCandidate(candidate, effective)) ?? sameModel[0]
   if (match !== undefined) {
     const matchRowId = `item:${writeLevel}:${ownerPath}:${modelItemId(match)}`
-    const edited = editModelRow(input, matchRowId, { ...target, editedField: "effort" }, memo)
+    const edited = editModelRow(input, matchRowId, { ...target, editedField: "effort" }, memo, isProtected)
     if ("refusal" in edited) return edited
     // Editing in place keeps the row active; when the match was an inactive
     // candidate, activate it on the edited state in one more row operation.
     const editedInput: MemoInput = {
       ...input,
-      records: [...input.records.filter((record) => record.type !== "model"), ...edited.models],
+      records: [...input.records.filter((record) => record.type !== "model" && (edited.records === undefined || record.type !== "customization")), ...(edited.records ?? []), ...edited.models],
     }
-    const activated = activateModelRow(editedInput, rowId)
-    if ("refusal" in activated) return success(edited.models, true, edited.status)
-    return success(activated.models, true, activated.status)
+    const activated = activateModelRow(editedInput, rowId, undefined, isProtected)
+    if ("refusal" in activated) return activated
+    return success(activated.models, true, activated.status, activated.records)
   }
   // (d) no row for the candidate: add and activate one, with the same context
   // activation uses. The new row carries no per-row warming/interval/prompt, so
@@ -2558,7 +2567,10 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     scopes: ctx.scopes,
     ...(upstream === undefined ? {} : { upstream }),
   })
-  return success(next, true, `Activated "${label}"`)
+  const switched = switchModelActivation(input, { ...scope, item: modelItemId(target), section: null }, target, next, isProtected, memo)
+  if ("refusal" in switched) return switched
+  const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
+  return success(switched.models ?? next, true, `Activated "${label}"${suffix}`, switched.records)
 }
 
 // w on a model row sets cache warming for this agent and model at this level:
@@ -2653,7 +2665,7 @@ export interface ModelEditFields {
 // effective model keeps it effective, and a local record's active flag moves
 // with the replaced record. Warming is validated like the warming tool/prompt
 // (off, on, a total time, or empty to inherit).
-export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditFields, sharedMemo?: Memo): ModelOpResult {
+export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditFields, sharedMemo?: Memo, isProtected?: (owner: string | null) => boolean): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
@@ -2672,6 +2684,11 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   // effective: editing the row that is in force must not silently drop it.
   const staysActive = local?.active === true || (effective !== undefined && sameModelCandidate(effective, from))
   const targetChanged = !sameModelCandidate(from, to)
+  // Replacement changes endpoint identity. Until that operation has a safe
+  // shared migration, refuse rather than leaving a saved relationship orphaned.
+  if (targetChanged && linksTouching(found.memo.ctx.scopes.rowlinks ?? [], found.memo.ctx.scopes, address,
+    { item: address.item, section: null }).length > 0)
+    return { refusal: `"${node.label}" is linked: remove its links before replacing the candidate` }
   const upstream = modelUpstreamOf(found.memo, address)
   const context = { scopes: found.memo.ctx.scopes, ...(upstream === undefined ? {} : { upstream }) }
   // A replaced candidate carries its record's keep-alive fields to the new one,
@@ -2766,7 +2783,9 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   const status = onlySettings
     ? `Cache warming for "${node.label}": ${warmingSummaryOf(settings)}`
     : `Updated "${node.label}"`
-  return { models: next, status, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
+  const switched = switchModelActivation(input, { ...address, item: modelItemId(to) }, to, next, isProtected, found.memo)
+  if ("refusal" in switched) return switched
+  return { models: switched.models ?? next, records: switched.records, status, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
 }
 
 // One field row under an agent/member/preset model row. `setModelFieldRow`

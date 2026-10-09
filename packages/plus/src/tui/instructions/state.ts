@@ -685,7 +685,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // context; a new snapshot is a new memo.
   const treeMemo = createMemo<Memo | undefined>(() => (snapshot() === undefined ? undefined : buildTreeMemo(memoInput())))
 
-  async function persistModels(models: readonly ModelRecord[], successStatus: string, retryHint: string): Promise<boolean> {
+  async function persistModels(models: readonly ModelRecord[], successStatus: string, retryHint: string, switched?: readonly CustomizationRecord[]): Promise<boolean> {
     const current = snapshot()
     if (!current) {
       setStatus("No snapshot loaded")
@@ -694,7 +694,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const converted = recordsOf(current.records)
     const customizations = converted.filter((record): record is CustomizationRecord => record.type === "customization")
     const splits = converted.filter((record): record is SplitRecord => record.type === "split")
-    return persist(customizations, splits, successStatus, retryHint, models)
+    return persist(switched === undefined ? customizations : [...switched], splits, successStatus, retryHint, models)
   }
 
   async function toggleRow(node: TreeNode): Promise<boolean> {
@@ -1226,7 +1226,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(result.refusal)
       return false
     }
-    return persistModels(result.models, result.status, result.retryHint)
+    return persistModels(result.models, result.status, result.retryHint, result.records)
   }
 
   // One compaction field on an agent/member/preset model row: set at this

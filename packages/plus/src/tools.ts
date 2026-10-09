@@ -1111,9 +1111,10 @@ function mutateModels(
   models: readonly ModelRecord[],
   status: string,
   actor: Plus.Actor,
+  records?: readonly CustomizationRecord[],
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
-  const rest = memo.records.filter((record) => record.type !== "model")
-  return mutateDelta(api, memo, [...rest, ...models], actor, status)
+  const rest = memo.records.filter((record) => record.type !== "model" && (records === undefined || record.type !== "customization"))
+  return mutateDelta(api, memo, [...rest, ...(records ?? []), ...models], actor, status)
 }
 
 // The candidate a model row addresses: `model:<provider>/<model>[@variant]`.
@@ -1169,7 +1170,7 @@ function setModel(
         : undefined
       if (edit !== undefined && "refusal" in edit) return yield* Effect.fail(new Tool.Error({ message: edit.refusal }))
       const models = setModelCompaction(edit?.models ?? modelsOfMemo(memo), node.address, target, compaction.fields, new Date().toISOString())
-      const applied = yield* mutateModels(api, memo, models, `Updated "${label}"`, actor)
+      const applied = yield* mutateModels(api, memo, models, `Updated "${label}"`, actor, edit?.records)
       return { output: { id, ...applied } }
     }
     // Cache warming for this agent on this model at this level; "" inherits.
@@ -1200,9 +1201,9 @@ function setModel(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
       }
-      const op = editModelRow(memo, id, fields)
+      const op = editModelRow(memo, id, fields, undefined, (owner) => owner !== null && snapshot.protectedAgents.includes(owner))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-      const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
+      const applied = yield* mutateModels(api, memo, op.models, op.status, actor, op.records)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
     }
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
@@ -1251,7 +1252,7 @@ function setModelField(
     const text = input.text
     const op = setModelFieldRow(memo, id, text)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-    const applied = yield* mutateModels(api, memo, op.models, op.status, actor)
+    const applied = yield* mutateModels(api, memo, op.models, op.status, actor, op.records)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
   })
 }

@@ -447,16 +447,26 @@ export function modelCandidates(input: ModelInput): ModelCandidate[] {
 // which is nothing for Plus to install.
 export function resolveActiveModel(input: ModelInput): ModelCandidate | undefined {
   const hidden = hiddenKeys(input)
+  // Unlike an omitted flag (ordinary exclusive deactivation), explicit false
+  // masks this candidate's active selection above without hiding its row.
+  const flags = new Map<string, boolean>()
+  for (const node of modelChain(input)) {
+    if (node.shipped !== undefined) continue
+    for (const record of input.models) {
+      if (!scopedTo(record, node) || record.active === undefined || flags.has(modelKey(record))) continue
+      flags.set(modelKey(record), record.active)
+    }
+  }
   const chain = modelChain(input)
   for (const node of chain) {
     const winner = activeAt(input, node)
-    if (winner === undefined || hidden.has(modelKey(winner))) continue
+    if (winner === undefined || hidden.has(modelKey(winner)) || flags.get(modelKey(winner)) === false) continue
     const own = node.shipped === undefined && scopedTo(node, ownModelScope(input))
     const review = own && winner.basedOn !== undefined && winner.basedOn !== aboveActiveModelKey(input)
     return { ...candidateOf(winner, node.level, node.from), ...(review ? { review: true as const } : {}) }
   }
   const upstream = upstreamCandidate(input)
-  if (upstream !== undefined && hidden.has(modelKey(upstream))) return undefined
+  if (upstream !== undefined && (hidden.has(modelKey(upstream)) || flags.get(modelKey(upstream)) === false)) return undefined
   return upstream
 }
 
@@ -688,9 +698,23 @@ export function clearModelActive(models: readonly ModelRecord[], address: Record
   if (!scoped) return [...models]
   return models.map((record) => {
     if (!scopedTo(record, address)) return record
-    if (record.active === undefined) return record
+    if (record.active !== true) return record
     return cleared(record)
   })
+}
+
+/** Durable switch-off: retain candidate and nearest saved settings, mask only
+ * its active selection. A later activation of this same row clears the mask. */
+export function deactivateModel(models: readonly ModelRecord[], address: RecordScope & { readonly memberOf?: TeamRef }, target: ModelRefLike, updated: string, scopes: Scopes): ModelRecord[] {
+  const source = modelChain({ models, scopes, ...address }).flatMap((node) =>
+    models.filter((record) => record.removed !== true && scopedTo(record, node) && sameModelCandidate(record, target)),
+  )[0]
+  const retained = source === undefined ? addModelRecord(models, address, target, updated) : [
+    ...removeModelRecord(models, address, target),
+    { ...source, level: address.level, agent: address.agent, team: address.team, catalogue: address.catalogue, updated },
+  ]
+  return retained.map((record) => scopedTo(record, address) && sameModelCandidate(record, target)
+    ? { ...record, active: false, updated } : record)
 }
 
 export function removeModelRecord(
@@ -907,22 +931,10 @@ export function activateModel(
 
 function cleared(record: ModelRecord): ModelRecord {
   if (record.active === undefined) return record
-  return {
-    type: "model",
-    level: record.level,
-    agent: record.agent,
-    ...(record.team !== undefined ? { team: record.team } : {}),
-    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
-    providerID: record.providerID,
-    modelID: record.modelID,
-    ...(record.variant === undefined ? {} : { variant: record.variant }),
-    ...(record.warming === undefined ? {} : { warming: record.warming }),
-    ...(record.interval === undefined ? {} : { interval: record.interval }),
-    ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
-    ...(record.removed === undefined ? {} : { removed: record.removed }),
-    ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
-    updated: record.updated,
-  }
+  const retained = { ...record }
+  delete retained.active
+  delete retained.basedOn
+  return retained
 }
 
 export interface CustomizationRecord {
@@ -987,7 +999,9 @@ export interface ModelRecord {
   readonly providerID: string
   readonly modelID: string
   readonly variant?: string
-  readonly active?: true
+  /** True selects exclusively; false masks this candidate's active inheritance
+   * without hiding it; omitted preserves ordinary fall-through semantics. */
+  readonly active?: boolean
   /** Active records only: the key of the active model above when this one was activated ("" = none); absent = never reviewed. */
   readonly basedOn?: string
   /** Cache warming for this agent on this model: "off", "on", or a total time such as "45m" or "2h"; absent inherits. */
