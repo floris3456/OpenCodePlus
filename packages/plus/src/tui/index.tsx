@@ -11,6 +11,7 @@ import { createMonitor } from "./monitor/index.js"
 import { openProjectChecks } from "./project-checks.js"
 import { createChatRefresh } from "./refresh.js"
 import { createMissToast } from "./miss-toast.js"
+import { editCompactionTriggers } from "./compaction-triggers.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -106,6 +107,15 @@ export default Plugin.define({
               bind: "<leader>j",
               slash: { name: "compact-warm" },
               run: () => warming.toggleCompact(),
+            },
+            {
+              id: "plus.compact.triggers",
+              title: "Compaction triggers for this chat",
+              description: "Set early input/output token thresholds without sending the agent a message",
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "compact-triggers" },
+              run: () => void editCompactionTriggers(context),
             },
             {
               id: "plus.compact.cold-now",
