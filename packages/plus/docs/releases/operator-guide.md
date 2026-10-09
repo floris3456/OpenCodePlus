@@ -193,10 +193,12 @@ A measured probe (`run/evidence/plus-1.2.0/rollback-store/REPORT.md`, in the
 workspace repository) tested an already-migrated 1.2.0 store under an earlier
 Plus release (1.1.18). Merely opening the store did not erase anything, and a
 load plus a no-op save wrote nothing (the file stayed byte-identical). But the
-older release has no record types for 1.2.0's `folder`/`order` records and no
+older release has no record types for 1.2.0's `folder`/`order`/`rowlink` records and no
 fields for its per-model compaction settings, so its **next real write to the
 global store** rewrote the file from the records it understood and silently
-dropped both. A project-only write left the global file unchanged, which does
+dropped those records and fields. The rowlink downgrade probe likewise retained
+the tested migrated rowlink on read/no-op save but erased it on a real global
+write. A project-only write left the global file unchanged, which does
 not prove that every new project field survives. An older release whose own
 migration flag is true can also trigger that write on read, so opening a newer
 store is not automatically harmless.
@@ -209,8 +211,7 @@ over newer work automatically; reconcile by hand. This is an operator backup,
 not a new rollback mechanism: keep using the existing release authority and
 activation contract, and do not add a rollback script or installer change.
 
-**Limit.** Link/rowlink downgrade compatibility was not measured, and this is
-not a general claim that opening every newer store on an older release is
+**Limit.** These tested records are not a general claim that opening every newer store on an older release is
 harmless. The session-database backup does not cover the Instructions JSONL.
 
 ### Production Transition Requirements

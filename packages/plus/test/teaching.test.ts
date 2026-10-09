@@ -212,11 +212,11 @@ test("documented per-model compaction ids are the ones the real parsers produce"
   expect(every).toBe("item:defaults:/models:modelsetting:compactWarm:*")
   expect(parseModelSettingItemId(every.replace("item:defaults:/models:", ""))).toEqual({ key: {}, field: "compactWarm" })
 
-  const one = modelSettingRowId({ providerID: "openai", modelID: "gpt-5" }, "coldModels")
-  expect(one).toBe("item:defaults:/models:modelsetting:coldModels:openai/gpt-5")
+  const one = modelSettingRowId({ providerID: "openai", modelID: "gpt-5" }, "compactionStrategy")
+  expect(one).toBe("item:defaults:/models:modelsetting:compactionStrategy:openai/gpt-5")
   expect(parseModelSettingItemId(one.replace("item:defaults:/models:", ""))).toEqual({
     key: { providerID: "openai", modelID: "gpt-5" },
-    field: "coldModels",
+    field: "compactionStrategy",
   })
   // The stable shape the skill quotes for a Defaults field row.
   expect(teachingSkillContent).toContain("item:defaults:/models:modelsetting:<field>:<* or provider/model>")

@@ -14,7 +14,7 @@ export const teachingTitle = "OpenCodePlus"
 // row id its follow-ups take, the skill that carries the rest, and the
 // permission pattern grammar. teaching.test.ts pins the character bound.
 export const teachingContent =
-  "`tools.instructions.*` edits agents/tools/base/skills/system/MCP/models/teams/perms/categories. " +
+  "`tools.instructions.*` edits agents/tools/base/skills/system/MCP/models/teams/perms/folders. " +
   "Ids: `item:<level>:<agent|''>:<itemId>`, `section:…:<sectionId>`, `agent:<level>:<id>`, `team:<level>:<name>[:<member>]`. " +
   "`create` returns `{id,item}`; `show`/`set`/`delete` take that `id`. " +
   "`list({where:\"review:true\"})`→`show({id,view:\"diff\"})`→`set({id,resolve:\"keep\"})`. " +
@@ -29,7 +29,7 @@ Read and write the Instructions tree through \`tools.instructions.*\` (namespace
 
 ## Row ids
 
-- \`item:<level>:<owner>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`. Defaults › Models rows (the keep-alive and compaction defaults every agent falls back to) use \`modeldefault:*\` for Every model and \`modeldefault:<provider>/<model>\`, e.g. \`item:defaults:/models:modeldefault:cliproxyapi/claude-opus-5-5\`; each holds one field row per field, \`modelsetting:<field>:<* or provider/model>\`, where \`<field>\` is \`warming|interval|prompt|effort|compactWarm|coldCompact|coldModels|compactionStrategy|compactionModel|compactionInstructions\`, e.g. \`item:defaults:/models:modelsetting:interval:*\`.
+- \`item:<level>:<owner>:<itemId>\` — a whole row, e.g. \`item:project:alpha:tool:reader\`. Model rows use \`model:<provider>/<model>[@variant]\`, e.g. \`item:project:alpha:model:openai/gpt-5@high\`. Permission rows use \`perm:<tool>:<rule>\`, e.g. \`item:project:alpha:perm:shell:git-push\`. Defaults › Models rows use \`modeldefault:*\` for Every model and \`modeldefault:<provider>/<model>\`, e.g. \`item:defaults:/models:modeldefault:cliproxyapi/claude-opus-5-5\`. Scalar fields use \`modelsetting:<field>:<* or provider/model>\`, where \`<field>\` is \`warming|interval|prompt|effort|compactWarm|compactionStrategy|compactionModel|compactionInstructions\`, e.g. \`item:defaults:/models:modelsetting:interval:*\`.
 - \`section:…:<sectionId>\` — one section inside a row; list exact ids with \`show({ id, view: "sections" })\`.
 - \`agent:<level>:<id>\` — one agent's subtree. Only project/global/defaults agent ids accept \`view: "assembled"\`.
 - \`team:<level>:<name>\` — one team; \`team:<level>:<team>:<member>\` — one member of it.
@@ -60,11 +60,13 @@ Structural keys: \`kind\` (root|group|agent|team|item|section), \`item\` (tool|b
 
 Text-dependent keys (resolve row text; slower): \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`text\`, \`upstream\`.
 
-## Categories
+## Folders and moves
 
 \`create({ kind: "folder", name, id: "<tab or folder row id>" })\` adds a folder in that tab (or inside that folder); \`set({ id: "<folder row id>", rename: "<name>" })\` renames it; \`delete({ id: "<folder row id>", confirm: true })\` deletes it and its rows return in place. \`move({ id, into?, before?, after? })\` moves a row or folder into a folder or a tab's top level, or before or after a sibling in the same list; rows move only inside their own tab. Folders and order are display only: toggling, editing, inheritance and enforcement never change.
 
 Permission rows hang directly off each OpenCode/Plus tool row (after its sections). Filter them with \`item:perm\` and \`tool:<id>\`, e.g. \`list({ where: "item:perm tool:shell" })\`. \`server:<name>\` matches a server's own \`mcp:<name>\` row as well as the rows under it, e.g. \`list({ where: "server:search" })\`.
+
+Section moves reorder effective text within the same item and parent; cross-item/cross-parent moves refuse atomically. They are not generic nesting. Consumed same-level child text is folded into the rewritten parent and cleared there; switches, other fields, more-specific overrides and stable section ids remain.
 
 ## show
 
@@ -90,13 +92,11 @@ Compaction rows are \`compaction:strategy\`, \`compaction:model\`, and \`compact
 
 Compaction, warming and the cold-cache list are model settings: editing them does not itself rewrite an existing chat's prompt prefix — the next actual compaction does. A model can set them at any level, and a store without the fields behaves and sends exactly as before.
 
-- A **Defaults › Models field row** \`item:defaults:/models:modelsetting:<field>:<* or provider/model>\` sets one field for Every model (\`*\`) or one model. \`set({ id, text })\` writes it; empty text clears it so the level below decides:
-  - \`compactWarm\`, \`coldCompact\`: \`on\` or \`off\`.
-  - \`coldModels\`: the try order as a comma list, e.g. \`a/one#high, b/two\`; each is \`provider/model[#variant]\`, listed once.
+- Model and Defaults › Models rows accept six typed \`set\` fields: \`compactWarm\`, \`coldCompact\` (\`on\` or \`off\`), \`coldModels\` (ordered array, e.g. \`["a/one#high", "b/two"]\`, or comma list), and the three fields below. Null inherits; \`coldModels: []\` explicitly disables the list. Use the model row's listed id, not a guessed cold-list field id.
   - \`compactionStrategy\`: \`auto\`, \`local\` or \`remote\`.
   - \`compactionModel\`: \`provider/model[#variant]\`.
   - \`compactionInstructions\`: the summary prompt; \`""\` is an explicit empty summary prompt, unlike the other fields where \`""\` just clears the override. \`reset\` resumes inheritance.
-- An **agent/member/preset model row** exposes the same fields as \`modelfield:<field>:<provider>/<model>[@variant]\` field rows under its \`item:<level>:<owner>:model:…\` row: \`compactWarm\`, the \`coldCompact\` cold-cache group (whose list rows are \`item:<level>:<owner>:coldmodel:<model>:cold:<index>\`, in try order) and the Compaction group's \`compactionStrategy\`, \`compactionModel\` and \`compactionInstructions\`. The TUI edits them (Warming ▸ "Compact before cold" and the cold-cache list, Compaction ▸ Strategy/Model/Instructions); each field row shows its effective value and, when inherited, its source.
+- Emitted scalar field rows use \`modelfield:<field>:<provider>/<model>[@variant]\` or \`item:defaults:/models:modelsetting:<field>:<* or provider/model>\`: compactWarm, compactionStrategy, compactionModel and compactionInstructions take \`text\` and reset. \`coldCompact\` is a group, not a scalar field row; no \`modelsetting:coldModels\` field row is emitted. The TUI cold-cache list supports add/delete/reorder; the API sets the ordered array on the model row. Always list actual ids. Each field shows its effective value and inherited source.
 
 Resolution, field by field:
 
@@ -127,6 +127,16 @@ A system row (an instruction file, Tools and rules; not Role/persona as a whole)
 
 \`split({ id, boundaries?, add? })\` — \`boundaries\` is \`[{ id, name, start }]\` with character offsets into the row text; \`add: { name, text }\` appends a new trailing section. Perm rows cannot be split.
 
+Sections reach MCP tool/parameter and agent/member descriptions, not MCP server configuration. Keep-alive and per-model compaction prompts stay whole; the agent-wide compaction instructions can be sectioned. Heading-derived parent edits store the full span, including child headings: assembly re-derives it without duplication. Same/more-specific child edits replace children still present; less-specific children lose. Saving a parent absorbs and drops same-level child text overrides, preserving more-specific ones. Manual-split parent text replaces its span. A hidden write returns the shadowing row's id, label and level.
+
+## Row links
+
+\`link({ id, target?, type?, enabled? })\` inspects outgoing/incoming links without target; with target it upserts the directed pair (default \`either\`). Both endpoints must share owner and level view. TUI \`L\` manages these links. Four public types: \`either\` switches the partner off when either end turns on; \`oneway\` only switches the target off when the primary turns on; \`shownWhenOn\` and \`shownWhenOff\` gate the target on the primary's state. Switches act one hop, never cascade. Gates are ANDed and do not change stored switches. \`enabled:false\` masks only that pair, including an upstream link; inspection shows inherited/marker provenance. Markers never reach request text. Legacy \`set({ requires })\` replaces the target's condition list; \`[]\` means always and null inherits. There is no public fifth link type.
+
+## CLI mirror
+
+\`opencodeplus instructions <op> [<id>] [--<param> value …]\` mirrors list/show/set/reset/split/create/delete/log/link/move through the same dispatcher. Help derives flags from each registered schema; use \`--json '<object>'\` for arrays/structured inputs, \`--text-file F\` or \`--text -\` for file/stdin text. Explicit flags override JSON fields. Example: \`opencodeplus instructions set <listed-model-id> --json '{"coldModels":["a/one#high","b/two"]}'\`. Deletes still require \`--confirm true\`; protected-agent refusals also apply to CLI writes, logged as actor \`cli\`.
+
 ## create and delete
 
 \`create({ kind, ...fields })\` — one row per call. Every enabled kind returns \`{ id, item, … }\`: \`id\` is the tree row id — the id \`show\`, \`set\`, and \`delete\` accept for that row — and \`item\` is the stored item id. Pass the returned \`id\` to follow-up calls rather than rebuilding it.
@@ -145,7 +155,7 @@ A system row (an instruction file, Tools and rules; not Role/persona as a whole)
 | presetMember | \`team\` (a User team preset), \`id\` (+ optional \`from\`) |
 | model | \`providerID\`, \`modelID\` (+ optional \`variant\`, \`level\` project\|global\|defaults\|preset, \`agent\`; \`level\` defaults to \`project\`, and project/global/preset rows need \`agent\`) |
 | rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ optional \`keywords\`, \`message\`, \`level\` project\|global\|defaults, \`agent\`; \`level\` defaults to \`project\`) |
-| category | \`name\` (a user category tab after the built-in categories) |
+| folder | \`name\`, \`id\` (the containing tab or folder row id) |
 
 Skill \`scope\` picks where the \`SKILL.md\` is written: \`project\` is the checkout's own \`.opencode/skill\`; \`global\`, \`defaults\` and \`preset\` are subdirectories of the global skills folder core scans. The TUI's Add on a Skills row uses that row's level (and the preset under Presets) as the scope, so nothing is typed.
 

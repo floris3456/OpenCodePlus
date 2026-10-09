@@ -55,6 +55,37 @@ Implementation status:
   conflict markers are produced or edited, and a merge equal to upstream is
   recorded as a take. The final newline is not part of the comparison (B41).
 
+### 1.2.0 structure and automation
+
+Folders live **inside** an existing tab, not as new category tabs. Row/folder
+moves and sidebar ordering are display-only. Section moves instead reorder the
+effective text within the same item and parent, never generic nesting; invalid
+cross-item/parent moves refuse atomically. Same-level child text consumed by a
+parent rewrite is folded in and cleared, preserving switches, other fields,
+more-specific overrides and stable section ids.
+
+Heading-derived parent edits are full spans, child headings included. Assembly
+re-derives them without duplicates; same/more-specific child edits replace only
+children still present. Saving a parent absorbs same-level child text; manual
+splits retain span-replacement behavior. Add appends a trailing section. Sections
+reach MCP tool/parameter and agent/member descriptions, not MCP server config;
+keep-alive and per-model compaction prompts remain whole.
+
+`L` manages row links: `either` (mutual exclusion), `oneway` (primary switches
+target off), `shownWhenOn` and `shownWhenOff` (ANDed request gates). Switches act
+one hop. Both ends share owner/level view; pair-local masks suppress inherited
+links without masking unrelated pairs. Inspection includes upstream marker
+provenance; marker text is stripped from requests. No public fifth link type.
+
+The `instructions-tools` skill documents `link({id,target?,type?,enabled?})`,
+`move({id,into?,before?,after?})`, and the CLI mirror:
+`opencodeplus instructions <list|show|set|reset|split|create|delete|log|link|move>`.
+Flags come from registered schemas; structured inputs use `--json`, long text
+uses `--text-file` or `--text -`. Protected-row and delete-confirmation refusals
+remain. Always list ids: six typed compaction fields belong on model/Defaults
+model rows; `coldCompact` is a group, and there is no scalar `coldModels` row.
+Set its ordered array on the model row, or edit the TUI cold-cache list.
+
 Priorities, from the owner of the screen:
 
 1. **Intuitive** — every capability of today's screen survives, and so does
