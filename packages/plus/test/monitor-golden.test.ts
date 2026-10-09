@@ -36,7 +36,7 @@ afterAll(async () => {
 
 // Counts the ledger reads one session's analysis makes.
 function counted(ledger: Ledger) {
-  const reads = { requests: 0, fingerprints: 0, fingerprint: 0 }
+  const reads = { requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 }
   const wrapped: Ledger = {
     ...ledger,
     getRequests: (id) => {
@@ -51,8 +51,18 @@ function counted(ledger: Ledger) {
       reads.fingerprint++
       return ledger.getFingerprint(id)
     },
+    changedRequests: (id, since) => {
+      const rows = ledger.changedRequests(id, since)
+      reads.requestRows += rows?.length ?? 0
+      return rows
+    },
+    changedContextFacts: (id, since) => {
+      const rows = ledger.changedContextFacts(id, since)
+      reads.factRows += rows?.length ?? 0
+      return rows
+    },
   }
-  return { ledger: wrapped, reads, reset: () => Object.assign(reads, { requests: 0, fingerprints: 0, fingerprint: 0 }) }
+  return { ledger: wrapped, reads, reset: () => Object.assign(reads, { requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 }) }
 }
 
 // The same query through a second handle, whose analysis cache is cold.
@@ -126,14 +136,14 @@ test("a long legacy Anthropic chat keeps accounting, unknown diagnoses and loads
 test("a repeat costs nothing, other chats' writes are ignored, and a change folds incrementally", () => {
   const probe = counted(db)
   const first = queryMonitor(probe.ledger, cache, { now: NOW })
-  expect(probe.reads).toEqual({ requests: 1, fingerprints: 1, fingerprint: 0 })
+  expect(probe.reads).toEqual({ requests: 1, fingerprints: 1, fingerprint: 0, requestRows: 0, factRows: 0 })
 
   // Nothing changed: nothing is read again.
   probe.reset()
   const started = performance.now()
   expect(plain(queryMonitor(probe.ledger, cache, { now: NOW }))).toEqual(plain(first))
   expect(performance.now() - started).toBeLessThan(1_000)
-  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 0 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 })
 
   // Another chat writes: this chat's analysis stands.
   db.requestStarted({ id: "other-1", sessionID: "ses_other", kind: "step", started: NOW - 10_000 })
@@ -141,7 +151,7 @@ test("a repeat costs nothing, other chats' writes are ignored, and a change fold
   db.contextFact({ sessionID: "ses_other", at: NOW - 10_000, kind: "warming", detail: { state: "on" } })
   probe.reset()
   expect(plain(queryMonitor(probe.ledger, cache, { now: NOW }))).toEqual(plain(first))
-  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 0 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 })
 
   // The running step completes and a new one starts: only its fingerprint is loaded.
   const rows = db.getRequests(GOLDEN_SESSION)
@@ -156,7 +166,7 @@ test("a repeat costs nothing, other chats' writes are ignored, and a change fold
   db.requestFingerprint({ ...db.getFingerprint(running.id)!, requestID: next, created: running.started + 10_000 })
   probe.reset()
   const appended = plain(queryMonitor(probe.ledger, cache, { now: NOW }))
-  expect(probe.reads).toEqual({ requests: 1, fingerprints: 0, fingerprint: 1 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 1, requestRows: 2, factRows: 0 })
   expect(appended.requests.at(-2)).toMatchObject({ cacheRead: 400_000, cacheWrite: 2_000, verdict: "none", measurement: { state: "legacy-unknown" } })
   expect(appended).toEqual(cold(cache))
 
@@ -169,7 +179,7 @@ test("a repeat costs nothing, other chats' writes are ignored, and a change fold
   for (const view of ["cache", "overview"] as const) {
     expect(plain(queryMonitor(probe.ledger, { ...cache, view }, { now: NOW }))).toEqual(cold({ ...cache, view }))
   }
-  expect(probe.reads).toEqual({ requests: 1, fingerprints: 0, fingerprint: 1 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 1, requestRows: 0, factRows: 1 })
 
   // Another process (here a second connection) completes a request of this chat.
   const other = createLedger(file)

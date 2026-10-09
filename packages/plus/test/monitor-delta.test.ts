@@ -126,6 +126,30 @@ test("additive migration explicitly replaces legacy plain triggers on a syntheti
     migrated.requestStarted({ id: "new", sessionID: "s", started: 1, kind: "step" })
     expect(migrated.changedRequests("s", mark)?.map((row) => row.id)).toEqual(["new"])
     expect(sessionFold(migrated, "s").rows.map((row) => row.id)).toEqual(["legacy", "new"])
-    expect(migrated.db.query("select value from meta where key = 'analysis_delta'").get()).toEqual({ value: "1" })
+    expect(migrated.db.query("select value from meta where key = 'analysis_delta'").get()).toEqual({ value: "2" })
   } finally { migrated.close() }
+})
+
+test("unknown analysis-index version refuses opening without rewriting the fixture", async () => {
+  const db = await ledger()
+  db.db.exec("update meta set value = '999' where key = 'analysis_delta'")
+  const copy = `${db.path}.future`
+  db.db.exec(`vacuum into '${copy}'`)
+  const before = await Bun.file(copy).arrayBuffer()
+  expect(() => createLedger(copy)).toThrow("Unsupported monitor analysis index version")
+  expect(await Bun.file(copy).arrayBuffer()).toEqual(before)
+})
+
+test("only prefix edits invalidate compressed descendants; later metadata edits retain that invalidation", async () => {
+  const db = await ledger()
+  for (const [i, id] of ["a", "b", "c"].entries()) {
+    db.requestStarted({ id, sessionID: "s", kind: "step", started: i })
+    db.requestFingerprint({ requestID: id, sessionID: "s", created: i, ...fingerprintWireBody({ input: [{ role: "user", content: "same" }] }) })
+  }
+  const mark = db.sessionRevision("s")
+  db.db.exec("update request_fingerprint set options_hash = 'synthetic-change' where request_id = 'a'")
+  expect(db.changedFingerprints("s", mark)).toEqual(["a"])
+  db.db.exec("update request_fingerprint set message_prefixes = '[]' where request_id = 'a'")
+  db.db.exec("update request_fingerprint set options_hash = 'synthetic-change-again' where request_id = 'a'")
+  expect([...db.changedFingerprints("s", mark)].sort()).toEqual(["a", "b", "c"])
 })
