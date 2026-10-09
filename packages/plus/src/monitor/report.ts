@@ -56,7 +56,9 @@ interface SessionData {
 }
 
 const sessionCache = new WeakMap<Ledger, Map<string, CachedSession>>()
-export const ANALYSIS_CACHE_LIMIT = { sessions: 128, rows: 50_000 } as const
+// Keep the qualification workload's 200 Sessions resident without allowing
+// either the Session map or its retained request population to grow forever.
+export const ANALYSIS_CACHE_LIMIT = { sessions: 256, rows: 50_000 } as const
 
 function remember(cache: Map<string, CachedSession>, id: string, entry: CachedSession) {
   cache.delete(id)
