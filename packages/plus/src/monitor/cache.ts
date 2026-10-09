@@ -957,10 +957,14 @@ export interface SessionFold {
  * when it has none, each request's own (`perRequest`).
  */
 export function sessionFingerprints(ledger: Ledger, rows: readonly RequestRow[]) {
-  const sessionFps = rows[0] ? ledger.getFingerprints(rows[0].sessionID) : []
+  const ids = new Set(rows.map((row) => row.id))
+  const sessionFps = rows[0] ? ledger.getFingerprints(rows[0].sessionID).filter((fp) => ids.has(fp.requestID)) : []
   return sessionFps.length
     ? { perRequest: false, fingerprints: new Map<string, RequestFingerprintData | undefined>(sessionFps.map((fp) => [fp.requestID, fp])) }
-    : { perRequest: true, fingerprints: new Map(rows.map((r) => [r.id, ledger.getFingerprint(r.id)])) }
+    : { perRequest: true, fingerprints: new Map(rows.map((r) => {
+      const fp = ledger.getFingerprint(r.id)
+      return [r.id, fp?.sessionID === r.sessionID ? fp : undefined]
+    })) }
 }
 
 // The analysis is a pure fold of the session's rows and facts; it never depends

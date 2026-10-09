@@ -19,8 +19,8 @@ opening the monitor never enables diagnostic options or makes provider probes.
 | Ledger schema 1/2 | Additive migration; historical numeric accounting remains legacy/unknown presence. No reconstructed sparse usage. |
 | Ledger schema 3 | Current request observation storage. |
 | Unknown ledger schema | Refuse opening before migration or metadata writes. |
-| `analysis_delta` absent/1 | Upgrade the materialized change indexes/triggers to version 2. No request/fact payload rewrite. |
-| `analysis_delta` 2 | Current request/fact deltas plus prefix-dependency invalidation. |
+| `analysis_delta` absent/1/2 | Upgrade the materialized change indexes/triggers to version 3. No request/fact payload rewrite. |
+| `analysis_delta` 3 | Current request/fact deltas, prefix-dependency invalidation and SQL REPLACE preimages. |
 | Unknown `analysis_delta` | Refuse opening without rewriting the database. |
 | Observation 1 | Decode the allow-listed measurement fields. Invalid/incomplete fields cannot establish usable coverage. |
 | Unknown/malformed observation | Preserve original storage; expose unavailable measurement, never reinterpret it as current. |
@@ -39,6 +39,9 @@ Session/entity. Append and in-place updates load only changed payloads. Deletion
 identity movement and pruning may reload the affected Session. Compressed
 fingerprint descendants reload after a prefix/base edit, not an unrelated
 metadata edit. SQLite triggers cover direct SQL and other connections.
+Replacement preimages use the primary/unique indexes, including connections
+with recursive triggers off. An ignored duplicate may conservatively invalidate
+its Session, without changing the returned facts.
 
 The ledger-local report cache retains at most 32 entries and 8 MiB of accounted
 serialized content; this is **not a JavaScript heap bound**. Oversize answers

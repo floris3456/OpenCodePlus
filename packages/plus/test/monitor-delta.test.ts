@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { createLedger } from "../src/monitor/ledger.js"
 import { sessionFold } from "../src/monitor/report.js"
+import { queryMonitor } from "../src/monitor/query.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
@@ -103,7 +104,7 @@ test("raw fingerprint base correction and session move invalidate decoded descen
   verify()
 })
 
-test("additive migration explicitly replaces legacy plain triggers on a synthetic copy", async () => {
+test.each([undefined, "1", "2"])("additive migration replaces legacy triggers from index %s on a synthetic copy", async (version) => {
   const db = await ledger()
   db.requestStarted({ id: "legacy", sessionID: "s", started: 0, kind: "step" })
   db.contextFact({ sessionID: "s", at: 0, kind: "fixture" })
@@ -112,6 +113,7 @@ test("additive migration explicitly replaces legacy plain triggers on a syntheti
   db.db.exec(`vacuum into '${copy}'`)
   const sql = new Database(copy)
   sql.exec("delete from meta where key = 'analysis_delta'; delete from analysis_change")
+  if (version !== undefined) sql.query("insert into meta(key, value) values ('analysis_delta', ?)").run(version)
   for (const table of ["request", "context_fact"]) {
     for (const operation of ["insert", "update", "delete"]) sql.exec(`drop trigger ${table}_change_${operation}`)
     sql.exec(`create trigger ${table}_change_insert after insert on ${table} begin
@@ -126,7 +128,7 @@ test("additive migration explicitly replaces legacy plain triggers on a syntheti
     migrated.requestStarted({ id: "new", sessionID: "s", started: 1, kind: "step" })
     expect(migrated.changedRequests("s", mark)?.map((row) => row.id)).toEqual(["new"])
     expect(sessionFold(migrated, "s").rows.map((row) => row.id)).toEqual(["legacy", "new"])
-    expect(migrated.db.query("select value from meta where key = 'analysis_delta'").get()).toEqual({ value: "2" })
+    expect(migrated.db.query("select value from meta where key = 'analysis_delta'").get()).toEqual({ value: "3" })
   } finally { migrated.close() }
 })
 
@@ -152,4 +154,44 @@ test("only prefix edits invalidate compressed descendants; later metadata edits 
   db.db.exec("update request_fingerprint set message_prefixes = '[]' where request_id = 'a'")
   db.db.exec("update request_fingerprint set options_hash = 'synthetic-change-again' where request_id = 'a'")
   expect([...db.changedFingerprints("s", mark)].sort()).toEqual(["a", "b", "c"])
+})
+
+test("independent SQL REPLACE removes conflicting facts and invalidates moved request/fingerprint preimages", async () => {
+  const db = await ledger()
+  const sql = new Database(db.path)
+  const input = { scope: "all" as const, view: "cache" as const, until: 100, id: "b" }
+  const verify = () => {
+    const actual = queryMonitor(db, input, { now: 100 })
+    const reader = createLedger(db.path)
+    try {
+      expect(actual).toEqual(queryMonitor(reader, input, { now: 100 }))
+      for (const session of ["s", "destination"]) {
+        expect(sessionFold(db, session).rows).toEqual(sessionFold(reader, session).rows)
+        expect(sessionFold(db, session).facts).toEqual(sessionFold(reader, session).facts)
+        expect([...sessionFold(db, session).analysis.fingerprints]).toEqual([...sessionFold(reader, session).analysis.fingerprints])
+      }
+    } finally { reader.close() }
+  }
+  try {
+    expect(sql.query("pragma recursive_triggers").get()).toEqual({ recursive_triggers: 0 })
+    for (const [index, id] of ["a", "b"].entries()) {
+      db.requestStarted({ id, sessionID: "s", kind: "step", started: 1 + index * 10 })
+      db.requestFingerprint({ requestID: id, sessionID: "s", ...fingerprintWireBody({ messages: [{ role: "user", content: "synthetic" }] }) })
+    }
+    db.contextFact({ sessionID: "s", at: 5, kind: "instruction_update", detail: { keys: ["fixture"] } })
+    verify()
+    sql.exec(`update context_fact set detail = '{"keys":["corrected"]}' where id = 1`)
+    verify()
+    sql.exec(`insert or replace into context_fact(session_id, at, kind, detail) values ('s', 5, 'instruction_update', '{"keys":["corrected"]}')`)
+    verify()
+    expect(sessionFold(db, "s").facts).toHaveLength(1)
+    expect(db.db.query("select count(*) as n from analysis_change where entity = 'context_fact'").get()).toEqual({ n: 1 })
+    sql.exec(`insert or replace into request(id, session_id, kind, started, created) values ('a', 'destination', 'step', 2, 2)`)
+    verify()
+    sql.exec(`insert or replace into request_fingerprint(request_id, session_id, protocol, body_hash, prefix_depth, created) values ('b', 'destination', 'openai-chat', 'synthetic', 0, 3)`)
+    verify()
+    // An ignored duplicate changes no facts, even if its preimage invalidates a cache.
+    db.contextFact({ sessionID: "s", at: 5, kind: "instruction_update", detail: { keys: ["corrected"] } })
+    verify()
+  } finally { sql.close() }
 })

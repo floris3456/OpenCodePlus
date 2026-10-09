@@ -74,6 +74,23 @@ function changeTriggers(): string {
     from session_change where session_id = ${row}.session_id
     on conflict (request_id) do update set session_id = excluded.session_id, rev = excluded.rev,
       prefix_rev = case when excluded.prefix_rev > 0 then excluded.prefix_rev else fingerprint_change.prefix_rev end;`
+  // REPLACE can delete a conflicting row without firing DELETE triggers on
+  // another connection (recursive_triggers defaults off). Capture its indexed
+  // preimage before insertion. An ignored duplicate may conservatively reset
+  // the fold too; never scan a Session's history on the normal append path.
+  const replacement = (table: string, key: string, conflict: string) => {
+    const entity = table === "request_fingerprint" ? "fingerprint" : table
+    const replaced = `select ${key} as id, session_id from ${table} where (${conflict}) and (${key} != new.${key} or session_id != new.session_id)`
+    return `create trigger if not exists ${table}_change_replace before insert on ${table} begin
+      insert into session_change(session_id, rev) select session_id, 1 from (${replaced}) where 1
+        on conflict(session_id) do update set rev = rev + 1;
+      insert into analysis_reset(session_id, entity, rev)
+        select preimage.session_id, '${entity}', session_change.rev from (${replaced}) preimage
+        join session_change on session_change.session_id = preimage.session_id where 1
+        on conflict(session_id, entity) do update set rev = excluded.rev;
+      ${table === "request_fingerprint" ? "" : `delete from analysis_change where entity = '${entity}' and id in (select id from (${replaced}));`}
+    end;`
+  }
   const plain = (table: string) => {
     const live = `insert into analysis_change (entity, id, session_id, rev)
       values ('${table}', new.id, new.session_id, (select rev from session_change where session_id = new.session_id))
@@ -96,7 +113,10 @@ create trigger if not exists ${table}_change_delete after delete on ${table} beg
   delete from analysis_change where entity = '${table}' and id = old.id;
 end;`
   }
-  return `${plain("request")}
+  return `${replacement("request", "id", "id = new.id")}
+${replacement("context_fact", "id", "id = new.id or (session_id = new.session_id and at = new.at and kind = new.kind and detail = new.detail)")}
+${replacement("request_fingerprint", "request_id", "request_id = new.request_id")}
+${plain("request")}
 ${plain("context_fact")}
 create trigger if not exists request_fingerprint_change_insert after insert on request_fingerprint begin
   ${bump("new.session_id")} ${mark("new")}
@@ -593,7 +613,7 @@ export function createLedger(file: string): Ledger {
     throw new Error("Unsupported monitor ledger schema")
   }
   const delta = hasMeta ? db.query<{ value: string }, []>("select value from meta where key = 'analysis_delta'").get()?.value : undefined
-  if (delta !== undefined && !["1", "2"].includes(delta)) {
+  if (delta !== undefined && !["1", "2", "3"].includes(delta)) {
     db.close()
     throw new Error("Unsupported monitor analysis index version")
   }
@@ -604,16 +624,15 @@ export function createLedger(file: string): Ledger {
   // Explicit additive migration replaces the old plain triggers, which
   // CREATE IF NOT EXISTS alone would silently keep on an existing database.
   db.transaction(() => {
-    if (delta === "2") return
+    if (delta === "3") return
     if (!db.query<{ name: string }, []>("pragma table_info(fingerprint_change)").all().some((column) => column.name === "prefix_rev")) {
       db.exec("alter table fingerprint_change add column prefix_rev integer not null default 0")
     }
-    for (const table of ["request", "context_fact"]) {
-      for (const operation of ["insert", "update", "delete"]) db.exec(`drop trigger if exists ${table}_change_${operation}`)
+    for (const table of ["request", "context_fact", "request_fingerprint"]) {
+      for (const operation of ["insert", "update", "delete", "replace"]) db.exec(`drop trigger if exists ${table}_change_${operation}`)
     }
-    for (const operation of ["insert", "update", "delete"]) db.exec(`drop trigger if exists request_fingerprint_change_${operation}`)
     db.exec(changeTriggers())
-    db.exec("insert into meta (key, value) values ('analysis_delta', '2') on conflict(key) do update set value = excluded.value")
+    db.exec("insert into meta (key, value) values ('analysis_delta', '3') on conflict(key) do update set value = excluded.value")
   })()
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "observation")) db.exec("alter table request add column observation text")
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "finish")) db.exec("alter table request add column finish text")

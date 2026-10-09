@@ -90,9 +90,14 @@ function sessionData(ledger: Ledger, id: string): SessionData {
   }
   if (cached && cached.perRequest) {
     const fingerprints = new Map(rows.map((row) => [row.id, cached.fold.analysis.fingerprints.get(row.id)]))
-    for (const requestID of changed) fingerprints.set(requestID, ledger.getFingerprint(requestID))
+    for (const requestID of changed) {
+      if (!fingerprints.has(requestID)) continue
+      const fp = ledger.getFingerprint(requestID)
+      fingerprints.set(requestID, fp?.sessionID === id ? fp : undefined)
+    }
     for (const r of rows.filter((row) => !cached.fold.analysis.fingerprints.has(row.id))) {
-      fingerprints.set(r.id, ledger.getFingerprint(r.id))
+      const fp = ledger.getFingerprint(r.id)
+      fingerprints.set(r.id, fp?.sessionID === id ? fp : undefined)
     }
     const from = firstChange(cached.fold, rows, facts, changed)
     const fold = foldSession(rows, facts, fingerprints, { previous: cached.fold, from })
