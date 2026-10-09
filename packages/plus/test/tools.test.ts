@@ -43,6 +43,31 @@ const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 const priorDataHome = process.env.XDG_DATA_HOME
 
+for (const combined of [true, false]) {
+  test(`repeat whole-row headed set retains authored text (${combined ? "combined state:on" : "text-only control"})`, async () => {
+    const { api, tools, project } = await freshFixture()
+    const set = need(tools, "instructions_set")
+    const show = need(tools, "instructions_show")
+    await runOk(need(tools, "instructions_create"), { kind: "agent", id: "repeatprobe", scope: "project" })
+    await linkToBuild(project, "project", ["repeatprobe"])
+    const id = "item:project:repeatprobe:tool:reader"
+    const plain = "REPEAT_PLAIN_CANARY. Read safely."
+    const headed = "Read a file safely.\n\n## Gate Canary\nREPEAT_HEADED_CANARY.\n"
+    const write = (text: string) => runOk(set, { id, text, ...(combined ? { state: "on" } : {}) })
+    await write(plain)
+    await write(plain)
+    expect(JSON.stringify(await runOk(show, { id }))).toContain("REPEAT_PLAIN_CANARY")
+    await write(headed)
+    const first = await runOk(show, { id })
+    expect(JSON.stringify(first)).toContain("REPEAT_HEADED_CANARY")
+    const before = await snapshotOf(api)
+    expect(before.records.some((record) => record.type === "customization" && record.item === "tool:reader" && record.text?.includes("REPEAT_HEADED_CANARY"))).toBe(true)
+    await write(headed)
+    const second = await runOk(show, { id })
+    expect(JSON.stringify(second)).toContain("REPEAT_HEADED_CANARY")
+  })
+}
+
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
