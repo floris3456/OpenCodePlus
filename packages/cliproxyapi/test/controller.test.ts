@@ -588,12 +588,12 @@ test("the compaction start notice names the models the final decision armed, not
   await f.controller.decide(switched)
   expect(switched.metadata).toMatchObject({ "quota.switch": true })
   // Plus replaces CPA's models with the chat model's cold list (empty fallbacks dropped).
-  switched.compactionModel = Model.Ref.parse("proxy/plus-one#high")
-  switched.compactionFallbacks = [Model.Ref.parse("proxy/plus-two")]
+  switched.compactionModel = Model.Ref.parse("uncoordinated/plus-one#high")
+  switched.compactionFallbacks = [Model.Ref.parse("uncoordinated/plus-two")]
   delete switched.compactionFallback
-  await f.controller.compacting("ses_test", "proxy", "model")
+  await f.controller.compacting("ses_test")
   expect((await f.controller.status("ses_test"))[0]?.text).toBe(
-    "Small is used up; this chat compacts before it continues on Large. Compacting with proxy/plus-one#high (fallback proxy/plus-two) first.",
+    "Small is used up; this chat compacts before it continues on Large. Compacting with uncoordinated/plus-one#high (fallback uncoordinated/plus-two) first.",
   )
 })
 
@@ -607,7 +607,7 @@ test("with an empty chat-model list the start notice keeps CPA's own models", as
   const switched = f.event()
   await f.controller.decide(switched)
   // Plus had no list: it left CPA's models in place. The notice names them.
-  await f.controller.compacting("ses_test", "proxy", "model")
+  await f.controller.compacting("ses_test")
   expect((await f.controller.status("ses_test"))[0]?.text).toContain(
     "Compacting with proxy/cpa-model (fallback proxy/cpa-fallback) first.",
   )

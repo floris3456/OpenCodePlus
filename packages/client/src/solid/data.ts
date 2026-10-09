@@ -1140,6 +1140,7 @@ export function createData(config: CreateDataInput) {
             type: "compaction",
             status: "failed",
             reason: event.data.reason ?? "manual",
+            model: event.data.model,
             error: event.data.error ?? {
               type: "compaction.failed",
               message: "Compaction failed before recording an error",
