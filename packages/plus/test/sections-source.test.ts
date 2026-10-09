@@ -79,6 +79,47 @@ test("naming: the whole-body entry of an unsplit row is labelled 'Full text'", (
   expect(split.sections[0]?.name).toBe("Full text")
 })
 
+for (const baseline of ["", "Plain role", "# Previous\nPrevious body."]) {
+  test(`Role whole-span heading transition preserves nontext and more-specific records: ${JSON.stringify(baseline)}`, () => {
+    const item = makeItem({ text: baseline })
+    const old: CustomizationRecord = {
+      type: "customization",
+      level: "global",
+      agent: "orchestrator",
+      item: item.id,
+      section: "whole",
+      text: "old child",
+      state: "on",
+      basedOn: fingerprint(baseline),
+      updated: "2026-01-01T00:00:00Z",
+    }
+    const specific: CustomizationRecord = {
+      ...old,
+      level: "project",
+      section: "role",
+      text: "# Role\nProject-specific role.",
+    }
+    const input = baseInput({ items: [item], records: [old, specific], agents: [{ id: "orchestrator", scope: "project" }, { id: "orchestrator", scope: "global" }] })
+    const text = "# Role\nNew whole role."
+    const saved = saveText(input, "item:global:orchestrator:system:role", text)
+    if ("refusal" in saved) throw new Error(saved.refusal)
+    expect(saved.records.find((record) => record.level === "global" && record.section === "whole")).toMatchObject({
+      state: "on",
+    })
+    expect(saved.records.find((record) => record.level === "global" && record.section === "whole")?.text).toBeUndefined()
+    expect(saved.records.find((record) => record.level === "project")).toEqual(specific)
+    const resolved = resolve({
+      upstream: item,
+      records: saved.records,
+      splits: saved.splits,
+      scopes: { global: new Set(), defaults: new Set() },
+      address: { level: "global", agent: "orchestrator", item: item.id, section: null },
+    })
+    expect(resolved.fullText).toBe(text)
+    expect(resolved.assembled).toBe(text)
+  })
+}
+
 test("edit a section, then the row: its view and the assembled prompt are equal", () => {
   const input = baseInput()
   const item = input.items.find((i) => i.id === "system:role")!

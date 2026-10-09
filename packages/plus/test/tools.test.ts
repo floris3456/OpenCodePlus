@@ -27,6 +27,7 @@ import {
   toggle,
   unknownRowRefusal,
 } from "../src/instructions/ops.js"
+import { resolve } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
@@ -303,6 +304,43 @@ test("edit text through set matches saveText", async () => {
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "customization" && record.text === "custom description")).toBe(true)
 })
+
+for (const baseline of ["", "Unheaded baseline", "# Previous\nPrevious body."]) {
+  test(`whole-item set survives durable reload across heading transition: ${JSON.stringify(baseline)}`, async () => {
+    const { api, tools, project, ctx } = await freshFixture({
+      tools: [{ id: "reader", description: baseline, options: { codemode: false } }],
+    })
+    await linkToBuild(project, "defaults", ["alpha"])
+    const id = await readerRowId(api)
+    const text = "# Role\nBUILD_CHANGED_CANARY. Follow safety instructions."
+    await runOk(need(tools, "instructions_set"), { id, text })
+    expect((await load(project)).records.some((record) => record.type === "customization" && record.text === text)).toBe(true)
+    const reloaded = createPlusApi(ctx, createState())
+    await registerInstructionTools(ctx, reloaded)
+    const registered = await readTools(ctx)
+    const shown = await runOk(need(registered, "instructions_show"), { id, view: "resolved" })
+    expect(shown).toMatchObject({ text })
+    const snapshot = await snapshotOf(reloaded)
+    const memo = memoFromSnapshot(snapshot)
+    const node = expandedTree(memo).find((candidate) => candidate.id === id)
+    const item = memo.items.find((candidate) => candidate.id === "tool:reader")
+    if (node?.address === undefined || item === undefined) throw new Error("missing reader")
+    expect(
+      resolve({
+        upstream: item,
+        records: (await load(project)).records.filter((record) => record.type === "customization"),
+        splits: [],
+        scopes: { global: new Set(), defaults: new Set(["alpha"]) },
+        address: node.address,
+      }).assembled,
+    ).toBe(text)
+    await runOk(need(registered, "instructions_reset"), { id })
+    expect(await runOk(need(registered, "instructions_show"), { id, view: "resolved" })).toMatchObject({
+      text: baseline,
+    })
+    expect((await load(project)).records.some((record) => record.type === "customization" && record.text === text)).toBe(false)
+  })
+}
 
 test("reset through the tool clears the override like ops reset", async () => {
   const { api, tools } = await freshFixture()
@@ -828,10 +866,14 @@ test("protectedAgents refusal on a write", async () => {
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const id = await readerRowId(api)
-  const error = await runFail(need(tools, "instructions_set"), { id, text: "blocked" })
+  const before = await load(project)
+  const error = await runFail(need(tools, "instructions_set"), { id, text: "# Role\nBlocked heading transition." })
   expect(error.message).toContain("agent.protected")
   const after = await snapshotOf(api)
   expect(after.records).toEqual([])
+  expect(await load(project)).toEqual(before)
+  expect((await runFail(need(tools, "instructions_set"), { id: "item:project:alpha:missing", text: "# Role\nInvalid." })).message).toContain("row.unknown")
+  expect(await load(project)).toEqual(before)
 })
 
 test("delete without confirm refuses and deletes nothing", async () => {
