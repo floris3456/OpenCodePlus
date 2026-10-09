@@ -203,6 +203,13 @@ not prove that every new project field survives. An older release whose own
 migration flag is true can also trigger that write on read, so opening a newer
 store is not automatically harmless.
 
+A separate synthetic probe of durable model-off masks (`active:false`) found
+that 1.1.18 rejects the **whole model record** on load, including its warming
+and compaction settings. Read/no-op save retained its disk bytes; a real global
+write erased that record. An `active:true` control survived with its warming
+settings but lost its new compaction fields; an ordinary customization survived.
+This measures global records only, not project-mask survival.
+
 **Requirement.** Before rolling a host back from 1.2.0 to an earlier Plus
 release, privately copy the global config `instructions/` directory (at least
 `records.jsonl`, and `log.jsonl` beside it) **and** each active project's
