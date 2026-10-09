@@ -107,6 +107,9 @@ for arg in "$@"; do
 done
 
 if [ "$first_nonflag" = "instructions" ]; then
+  # This lane uses the Plus CLI product guard and storage identity. Keep the
+  # default source TUI lane's existing identity untouched.
+  export OPENCODE_PRODUCT=opencodeplus
   export OPENCODEPLUS_CALLER_CWD="$CALLER_DIR"
   exec bun --preload "$PRELOAD" --cwd "$REPO/packages/cli" "$REPO/packages/cli/src/plus.ts" "$@"
 fi
