@@ -168,6 +168,7 @@ create table if not exists call (
 );
 create index if not exists call_started on call(started);
 create index if not exists call_session on call(session_id, epoch, idx);
+create index if not exists call_message on call(session_id, message_id);
 create index if not exists call_tool on call(tool, started);
 create index if not exists call_agent on call(agent, started);
 

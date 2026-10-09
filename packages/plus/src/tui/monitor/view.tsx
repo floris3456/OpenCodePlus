@@ -131,6 +131,12 @@ export function MonitorView(props: MonitorViewProps) {
   const [report, setReport] = createSignal<Plus.MonitorReport | undefined>()
   const [failure, setFailure] = createSignal<string | undefined>()
   const [selected, setSelected] = createSignal(0)
+  const [requestPage, setRequestPage] = createSignal<Plus.MonitorQueryInput["requestPage"]>()
+  const pageScope = createMemo(() => JSON.stringify([tab(), sessionID(), settings().scope, settings().team, settings().window, settings().agent, settings().model, settings().tool, settings().errors, settings().missesOnly]))
+  createEffect(() => {
+    pageScope()
+    setRequestPage(undefined)
+  })
   const scrolls: Partial<Record<TabName, ScrollBoxRenderable>> = {}
 
   const [rows, setRows] = createStore<{
@@ -165,7 +171,7 @@ export function MonitorView(props: MonitorViewProps) {
       feed: feed(),
       id: activeDrill()?.requestID,
     })
-    void plus["monitor.query"](query, { location: location() })
+    void plus["monitor.query"]({ ...query, requestPage: requestPage() }, { location: location() })
       .then(
         (next) => {
           if (generation !== flight.generation) return
@@ -187,14 +193,14 @@ export function MonitorView(props: MonitorViewProps) {
           // top and shifts every row down. Remember the selected request's id
           // so the selection follows the same request instead of its old row.
           const previousID =
-            props.full && tab() === "cache"
-              ? cacheRequests(shown(), settings().missesOnly)[selected()]?.id
+            props.full && (tab() === "cache" || tab() === "steps")
+              ? (tab() === "cache" ? cacheRequests(shown(), settings().missesOnly) : shown()?.requests ?? [])[selected()]?.id
               : undefined
           setReport(next)
           setFailure(undefined)
           setSelected((index) => {
             if (previousID !== undefined) {
-              const at = cacheRequests(filtered, settings().missesOnly).findIndex(
+              const at = (tab() === "cache" ? cacheRequests(filtered, settings().missesOnly) : filtered.requests ?? []).findIndex(
                 (request) => request.id === previousID,
               )
               if (at !== -1) return at
@@ -218,6 +224,8 @@ export function MonitorView(props: MonitorViewProps) {
     top()
     feed()
     activeDrill()
+    requestPage()
+    flight.generation++
     if (props.active()) refresh()
   })
 
@@ -381,7 +389,7 @@ export function MonitorView(props: MonitorViewProps) {
 
   const filterTextPrompt = async () => {
     const text = await props.context.ui.dialog.prompt({
-      title: "Filter by text",
+      title: tab() === "cache" || tab() === "steps" ? "Filter this request page by text" : "Filter by text",
       placeholder: "e.g. read, shell, error…",
     })
     props.context.ui.dialog.clear()
@@ -443,6 +451,22 @@ export function MonitorView(props: MonitorViewProps) {
     enabled: () => props.active(),
     priority: 1,
     commands: [
+      ...(["older", "newer"] as const).map((direction) => ({
+        bind: direction === "older" ? "[" : "]",
+        title: `${direction} request page`, group: "Monitor",
+        run: () => {
+          if (tab() !== "cache" && tab() !== "steps" || activeDrill()?.requestID) return
+          const cursor = report()?.requestPage?.[direction]
+          if (!cursor) return
+          setSelected(0)
+          setRequestPage({ cursor, direction })
+        },
+      })),
+      { bind: "l", title: "Latest request page", group: "Monitor", run: () => {
+        if (tab() !== "cache" && tab() !== "steps") return
+        setSelected(0)
+        setRequestPage(undefined)
+      } },
       {
         bind: "up,k",
         title: "Previous row",
@@ -769,6 +793,11 @@ export function MonitorView(props: MonitorViewProps) {
       </Show>
 
       {/* Totals: every metric, labelled, wrapped at this width */}
+      <Show when={(tab() === "cache" || tab() === "steps") && report()?.requestPage}>
+        {(page) => <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
+          {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
+        </text>}
+      </Show>
       <Show when={report()}>
         {(current) => (
           <box flexDirection="column" flexShrink={0} marginTop={0}>

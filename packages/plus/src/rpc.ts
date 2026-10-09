@@ -1306,6 +1306,12 @@ export const MonitorWindow = Schema.Struct({
   until: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.MonitorWindow" })
 
+export const MonitorRequestCursor = Schema.Struct({ at: Schema.Number, id: Schema.String })
+export const MonitorRequestPageInput = Schema.Struct({
+  limit: Schema.optionalKey(Schema.Number),
+  cursor: Schema.optionalKey(MonitorRequestCursor),
+  direction: Schema.optionalKey(Schema.Literals(["older", "newer"])),
+})
 export interface MonitorQueryInput extends Schema.Schema.Type<typeof MonitorQueryInput> {}
 export const MonitorQueryInput = Schema.Struct({
   scope: MonitorScope,
@@ -1318,6 +1324,7 @@ export const MonitorQueryInput = Schema.Struct({
   view: Schema.optionalKey(MonitorView),
   id: Schema.optionalKey(Schema.String),
   missesOnly: Schema.optionalKey(Schema.Boolean),
+  requestPage: Schema.optionalKey(MonitorRequestPageInput),
   titles: Schema.optionalKey(Schema.Boolean),
   agents: Schema.optionalKey(Schema.Array(Schema.String)),
   tools: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -1648,6 +1655,14 @@ export const MonitorReport = Schema.Struct({
   }),
   marks: Schema.Array(MonitorMark),
   requests: Schema.optionalKey(Schema.Array(MonitorRequest)),
+  requestPage: Schema.optionalKey(Schema.Struct({
+    total: Schema.Number,
+    returned: Schema.Number,
+    limit: Schema.Number,
+    complete: Schema.Boolean,
+    older: Schema.optionalKey(MonitorRequestCursor),
+    newer: Schema.optionalKey(MonitorRequestCursor),
+  })),
   detail: Schema.optionalKey(MonitorRequestDetail),
   agents: Schema.optionalKey(Schema.Array(MonitorAgentRow)),
   topMisses: Schema.optionalKey(Schema.Array(MonitorRequest)),

@@ -353,7 +353,26 @@ export function requestReport(
 
   const view = input.view ?? "overview"
   if (view === "cache" || view === "steps" || input.view === undefined) {
-    sections.requests = requests.filter((r) => !input.missesOnly || isMiss(r))
+    const eligible = requests.filter((r) => !input.missesOnly || isMiss(r))
+    const limit = Number.isFinite(input.requestPage?.limit)
+      ? Math.max(1, Math.min(500, Math.floor(input.requestPage!.limit!)))
+      : 100
+    const cursor = input.requestPage?.cursor
+    const compare = (r: MonitorRequest) => cursor === undefined ? 0 : r.at - cursor.at || r.id.localeCompare(cursor.id)
+    const candidates = cursor === undefined ? eligible : eligible.filter((r) => input.requestPage?.direction === "newer" ? compare(r) > 0 : compare(r) < 0)
+    const page = input.requestPage?.direction === "newer" && cursor !== undefined ? candidates.slice(0, limit) : candidates.slice(-limit)
+    sections.requests = page
+    const first = page[0]
+    const last = page.at(-1)
+    const before = first && eligible.some((r) => r.at < first.at || r.at === first.at && r.id.localeCompare(first.id) < 0)
+    const after = last && eligible.some((r) => r.at > last.at || r.at === last.at && r.id.localeCompare(last.id) > 0)
+    sections.requestPage = {
+      total: eligible.length, returned: page.length, limit, complete: page.length === eligible.length,
+      ...(before ? { older: { at: first.at, id: first.id } } : {}),
+      ...(after ? { newer: { at: last.at, id: last.id } } : {}),
+      // Keep an empty cursor page navigable after deletions or filter changes.
+      ...(!page.length && cursor && eligible.length ? input.requestPage?.direction === "newer" ? { older: cursor } : { newer: cursor } : {}),
+    }
   }
 
   if (input.id) {
@@ -412,54 +431,19 @@ export function requestReport(
   }
 
   if (view === "steps" || view === "cache") {
-    const hasSteps = ledger.db.query<{ c: number }, []>("select count(*) as c from step").get()?.c ?? 0
-    const hasCalls = ledger.db.query<{ c: number }, []>("select count(*) as c from call").get()?.c ?? 0
-
-    if (hasSteps > 0 || hasCalls > 0) {
-      const finishByMessage = new Map<string, string>()
-      const toolsByMessage = new Map<string, string[]>()
-
-      if (hasSteps > 0) {
-        const stepRows = ledger.db
-          .query<
-            { session_id: string; message_id: string; finish: string | null },
-            [typeof scope.bindings]
-          >(`${scope.cte} select session_id, message_id, finish from step where message_id is not null ${scope.cte ? "and session_id in (select id from scope)" : ""}`)
-          .all(scope.bindings)
-        for (let i = 0; i < stepRows.length; i++) {
-          const s = stepRows[i]!
-          if (s.finish) finishByMessage.set(`${s.session_id}:${s.message_id}`, s.finish)
-        }
-      }
-
-      if (hasCalls > 0) {
-        const callRows = ledger.db
-          .query<
-            { session_id: string; message_id: string; tool: string },
-            [typeof scope.bindings]
-          >(`${scope.cte} select distinct session_id, message_id, tool from call where message_id is not null ${scope.cte ? "and session_id in (select id from scope)" : ""}`)
-          .all(scope.bindings)
-        for (let i = 0; i < callRows.length; i++) {
-          const c = callRows[i]!
-          const key = `${c.session_id}:${c.message_id}`
-          const list = toolsByMessage.get(key)
-          if (list) list.push(c.tool)
-          else toolsByMessage.set(key, [c.tool])
-        }
-      }
-
-      for (let i = 0; i < requests.length; i++) {
-        const r = requests[i]!
-        const key = `${r.sessionID}:${r.messageID ?? ""}`
-        const tools = toolsByMessage.get(key) ?? []
-        const finish = finishByMessage.get(key)
-        Object.assign(r, { tools, ...(finish ? { finish } : {}) })
-      }
-    } else {
-      for (let i = 0; i < requests.length; i++) {
-        Object.assign(requests[i]!, { tools: [] })
-      }
-    }
+    // Only enrich returned rows (and the explicit detail), not the population
+    // used for totals. Both lookups use Session/message indexes.
+    const finish = ledger.db.query<{ finish: string | null }, [string, string]>(
+      "select finish from step where session_id = ? and message_id = ?",
+    )
+    const tools = ledger.db.query<{ tool: string }, [string, string]>(
+      "select distinct tool from call where session_id = ? and message_id = ?",
+    )
+    const returned = [...(sections.requests ?? []), ...(sections.detail ? [sections.detail.request] : [])]
+    returned.forEach((r) => {
+      const ended = finish.get(r.sessionID, r.messageID ?? "")?.finish
+      Object.assign(r, { tools: tools.all(r.sessionID, r.messageID ?? "").map((c) => c.tool), ...(ended ? { finish: ended } : {}) })
+    })
   }
 
   if (view === "overview" || view === "cache") {

@@ -76,8 +76,19 @@ test("a long legacy Anthropic chat keeps accounting, unknown diagnoses and loads
   // truth. Independently require unknown diagnoses and exact stored accounting.
   const rows = db.getRequests(GOLDEN_SESSION)
   expect(rows).toHaveLength(1500)
-  expect(report.requests).toHaveLength(1499)
-  expect(report.requests?.map((request) => request.id)).toEqual(rows.filter((row) => !row.isTitle).map((row) => row.id))
+  expect(report.requests).toHaveLength(100)
+  expect(report.requestPage?.total).toBe(1499)
+  const all = [...report.requests!]
+  let cursor = report.requestPage?.older
+  while (cursor) {
+    const page = queryMonitor(db, { ...cache, requestPage: { cursor, direction: "older" } }, { now: NOW })
+    expect(page.totals).toEqual(report.totals)
+    all.push(...page.requests!)
+    cursor = page.requestPage?.older
+  }
+  expect(all).toHaveLength(1499)
+  expect(new Set(all.map((request) => request.id)).size).toBe(1499)
+  expect(all.map((request) => request.id).sort()).toEqual(rows.filter((row) => !row.isTitle).map((row) => row.id).sort())
   expect(report.totals).toMatchObject({ misses: 0, missTokens: 0, pricingCoverage: { complete: false } })
   expect(report.totals.missCost).toBeUndefined()
   expect(report.totals.hitRate).toBeUndefined()

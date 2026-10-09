@@ -382,8 +382,17 @@ function agentsFor(requests: readonly Plus.MonitorRequest[], now: number): Plus.
   return all.filter((row) => seen.has(row.agent)).sort((a, b) => b.lastActive - a.lastActive)
 }
 
-function createFixtureReport(input: Plus.MonitorQueryInput, variant: MissVariant, now: number): Plus.MonitorReport {
-  const requests = scopedRequests(input, variant, now)
+function createFixtureReport(input: Plus.MonitorQueryInput, variant: MissVariant, now: number, paged = false): Plus.MonitorReport {
+  const scoped = scopedRequests(input, variant, now)
+  const requests = paged && scoped.length ? Array.from({ length: 205 }, (_, i) => ({
+    ...scoped[i % scoped.length]!, id: `fixture-${String(i).padStart(3, "0")}`, at: now - 205000 + i * 1000,
+  })) : scoped
+  // Contract response fixture for exercising the real consumer; server keyset
+  // correctness is tested separately against the production ledger/report.
+  const eligible = requests.filter((request) => !input.missesOnly || request.verdict === "miss" || request.verdict === "partial")
+  const cursor = input.requestPage?.cursor
+  const candidates = eligible.filter((r) => !cursor || (input.requestPage?.direction === "newer" ? r.at > cursor.at : r.at < cursor.at))
+  const page = input.requestPage?.direction === "newer" ? candidates.slice(0, 100) : candidates.slice(-100)
   const sessions = scopedSessions(input, now)
   const view = input.view ?? "overview"
   const miss = requests.find((request) => request.id === "req_miss") ?? requests.at(-1)!
@@ -416,7 +425,12 @@ function createFixtureReport(input: Plus.MonitorQueryInput, variant: MissVariant
     marks: [{ id: 1, at: now - 300_000, label: "before prompt change" }],
     ...(view === "overview" || view === "cache" || view === "steps"
       ? {
-          requests: requests.filter((request) => !input.missesOnly || request.verdict === "miss" || request.verdict === "partial"),
+          requests: paged ? page : eligible,
+          ...(paged ? { requestPage: {
+            total: eligible.length, returned: page.length, limit: 100, complete: page.length === eligible.length,
+            ...(page[0] && eligible[0]?.id !== page[0].id ? { older: { at: page[0].at, id: page[0].id } } : {}),
+            ...(page.at(-1) && eligible.at(-1)?.id !== page.at(-1)!.id ? { newer: { at: page.at(-1)!.at, id: page.at(-1)!.id } } : {}),
+          } } : {}),
         }
       : {}),
     ...(detailRequest === undefined
@@ -464,7 +478,7 @@ function createFixtureReport(input: Plus.MonitorQueryInput, variant: MissVariant
   }
 }
 
-export function MonitorStory(props: { context: Plugin.Context }) {
+export function MonitorStory(props: { context: Plugin.Context; paged?: boolean }) {
   const [missVariant, setMissVariant] = createSignal<MissVariant>("prefix")
   const dimensions = useTerminalDimensions()
   const now = Date.now()
@@ -476,7 +490,7 @@ export function MonitorStory(props: { context: Plugin.Context }) {
   const rpc: typeof props.context.client.rpc = ((definition: unknown) =>
     definition === Definition
       ? {
-          "monitor.query": async (input: Plus.MonitorQueryInput) => createFixtureReport(input, missVariant(), now),
+          "monitor.query": async (input: Plus.MonitorQueryInput) => createFixtureReport(input, missVariant(), now, props.paged),
           "monitor.mark": async (input: Plus.MonitorMarkInput) => ({
             id: 99,
             at: Date.now(),
@@ -529,6 +543,7 @@ export function MonitorStory(props: { context: Plugin.Context }) {
         title="storybook / monitor"
         details={[`miss: ${missVariant() === "prefix" ? "prefix-changed" : "cache-expired"}`]}
         controls={[
+          ...(props.paged ? [{ shortcut: "[/]", label: "older/newer page" }, { shortcut: "l", label: "reset latest" }] : []),
           { shortcut: "ctrl+m", label: "toggle miss cause" },
           { shortcut: "esc", label: "back" },
         ]}
@@ -541,4 +556,10 @@ export const monitorStory: Story = {
   id: "monitor",
   title: "Monitor: tokens, cache and tools",
   render: (context) => <MonitorStory context={context} />,
+}
+
+export const monitorPagesStory: Story = {
+  id: "monitor-pages",
+  title: "Monitor: request pages (205-row fixture)",
+  render: (context) => <MonitorStory context={context} paged />,
 }

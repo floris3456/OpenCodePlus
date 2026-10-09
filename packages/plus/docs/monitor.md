@@ -73,3 +73,26 @@ pruned once per process.
 - The TUI polls every second while calls are running or the newest is under a
   minute old, every five seconds otherwise, and only while the tab or route is
   visible.
+# Request pages
+
+`monitor.query` request arrays are bounded: the default is the latest 100 rows,
+and `requestPage.limit` is clamped to 1–500. Rows within a page are chronological;
+Cache displays them newest first. Follow `requestPage.older` or
+`requestPage.newer` with `{ requestPage: { cursor, direction: "older" | "newer" } }`.
+Cursors contain the request timestamp and ID, so equal timestamps and deletion
+of the cursor row do not require offset-based navigation. This is a live keyset
+view, not a snapshot across concurrent inserts/deletes.
+
+Response `requestPage` reports `total` eligible rows, `returned`, `limit`, and
+`complete`. Totals, coverage and facets describe the full scoped/windowed
+population, independent of the request page. Explicit `id` detail lookup also
+works outside the current page, subject to the scope, time and request filters.
+An old consumer must not treat the bounded `requests` array as complete unless
+`requestPage.complete` says so. Other sections, including sessions, context and
+agents, are **not** paginated by this contract.
+
+In Cache and Steps, `[` opens older rows, `]` opens newer rows, and `l` returns to
+the latest page. Polling refreshes only the chosen page, never automatically
+fetches every page, and follows the selected request ID while it remains present.
+Text filtering is explicitly **page-local**; agent/model/time/scope selections
+are server-side population filters.

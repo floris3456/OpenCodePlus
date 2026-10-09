@@ -26,6 +26,35 @@ afterEach(cleanupLedgers)
 
 const NOW = 1_800_000_000_000
 
+test("request page keys fetch only explicit pages, polling preserves cursor and filter scope resets it", async () => {
+  const db = await ledger()
+  db.session({ id: "ses_chat" }, NOW - 1000)
+  for (let i = 0; i < 205; i++) {
+    db.requestStarted({ id: `page-${String(i).padStart(3, "0")}`, sessionID: "ses_chat", kind: "step", started: NOW - 500 + i })
+    db.requestEnded(`page-${String(i).padStart(3, "0")}`, { status: "completed", ended: NOW - 200 })
+  }
+  const { fixture, queries } = await render(db, { width: 80, height: 24, settings: { ...defaultSettings, tab: "cache" } })
+  try {
+    await fixture.waitForFrame((text) => text.includes("100/205 requests"))
+    expect(queries.at(-1)?.requestPage).toBeUndefined()
+    await dispatch(fixture, "[")
+    await fixture.waitForFrame(() => queries.at(-1)?.requestPage?.direction === "older")
+    const cursor = queries.at(-1)?.requestPage?.cursor
+    expect(cursor).toBeDefined()
+    await sleep(1200)
+    expect(queries.at(-1)?.requestPage?.cursor).toEqual(cursor)
+    expect(queries.filter((q) => q.requestPage?.cursor && q.requestPage.cursor.id !== cursor!.id)).toEqual([])
+    await dispatch(fixture, "]")
+    await fixture.waitForFrame(() => queries.at(-1)?.requestPage?.direction === "newer")
+    await dispatch(fixture, "l")
+    await fixture.waitForFrame(() => queries.at(-1)?.requestPage === undefined)
+    await dispatch(fixture, "[")
+    await fixture.waitForFrame(() => queries.at(-1)?.requestPage?.direction === "older")
+    await dispatch(fixture, "x")
+    await fixture.waitForFrame(() => queries.at(-1)?.missesOnly === true && queries.at(-1)?.requestPage === undefined)
+  } finally { fixture.destroy() }
+})
+
 // A chat that read a file and ran tests, then delegated to an explorer that grepped and failed an edit.
 async function seeded(): Promise<Ledger> {
   const db = await ledger()
