@@ -164,15 +164,17 @@ test("the monitor tools answer for the calling chat and record marks", async () 
   for (const [id, offset, read] of [["cache-a", 100, 4000], ["cache-b", 50, 0]] as const) {
     ledgerAt().requestStarted({ id, sessionID: "ses_live", kind: "step", started: Date.now() - offset, provider: "openai", model: "gpt-4o", agent: "build", messageID: id })
     ledgerAt().requestFingerprint({ requestID: id, sessionID: "ses_live", ...fp })
-    ledgerAt().requestEnded(id, { ended: Date.now() - offset + 1, status: "completed", usage: { input: 100, output: 10, reasoning: 0, cacheRead: read, cacheWrite: 0, cost: 0 } })
+    ledgerAt().requestEnded(id, { ended: Date.now() - offset + 1, status: "completed", usage: { input: 4100 - read, output: 10, reasoning: 0, cacheRead: read, cacheWrite: 0, cost: 0 } })
+    // Explicit synthetic provider presence, not inferred from Session accounting.
+    ledgerAt().requestObserved(id, { version: 1, completeness: "final", inputTokens: 4100, cacheReadInputTokens: read, cacheWriteInputTokens: 0 })
   }
   const own = (await call("monitor_query", {})) as MonitorReport
   expect(own.totals.calls).toBe(1)
   expect(own.requests?.find((r) => r.id === "cache-b")).toMatchObject({ verdict: "miss", cause: "unknown", confidence: "unknown" })
-  expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("provider-side eviction or routing")
+  expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("Provider cause unavailable")
   const detail = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
   expect(detail.detail?.previous?.id).toBe("cache-a")
-  expect(detail.detail?.expectedTokens).toBe(4100)
+  expect(detail.detail?.expectedTokens).toBe(4000)
   expect((await call("monitor_query", { view: "cache", id: "cache-b" }, "ses_other") as MonitorReport).detail).toBeUndefined()
   ledgerAt().contextFact({ sessionID: "ses_live", kind: "compaction", at: ledgerAt().getRequest("cache-b")!.started - 1 })
   expect((await call("monitor_query", { since: "compaction", view: "cache" }) as MonitorReport).requests?.map((r) => r.id)).toEqual(["cache-b"])

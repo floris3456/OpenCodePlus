@@ -11,7 +11,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect, Exit, Schema, Scope, Stream } from "effect"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
-import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
+import { canonicalJson, fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { monitorFact, watchMonitor } from "../src/monitor/plugin.js"
 import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixture.js"
 import { context, fullContext } from "./harness.js"
@@ -26,7 +26,7 @@ const opened: string[] = []
 const modelRef = (p: string, m: string) =>
   Model.Ref.make({ providerID: Provider.ID.make(p), id: Model.ID.make(m) })
 
-test("joined Responses instructions and chat content arrays retain AGENTS.md as the changed source", () => {
+test("joined Responses instructions and chat arrays retain source annotations but compare system wire", () => {
   for (const protocol of ["openai-responses", "openai-chat"] as const) {
     const make = (rules: string) => {
       const parts = [{ name: "base template", text: "Base instructions" }, { name: "AGENTS.md", text: rules }]
@@ -36,7 +36,8 @@ test("joined Responses instructions and chat content arrays retain AGENTS.md as 
       { protocol, namedSystemParts: parts }) }
     }
     const diff = prefixDiff(make("old rules"), make("new rules"))
-    expect(diff.changes.map((part) => part.name)).toEqual(["system part AGENTS.md"])
+    expect(make("new rules").systemParts.some((part) => part.source === "AGENTS.md")).toBe(true)
+    expect(diff.changes.map((part) => part.name)).toEqual(["system wire"])
     expect(diff.append).toBe(false)
   }
 })
@@ -47,12 +48,12 @@ test("cache-affecting tool choices, context management, chat cache markers and m
     const a = fingerprintWireBody(original, { protocol })
     const b = fingerprintWireBody({ ...original, tool_choice: "none" }, { protocol })
     expect(a.optionsKeys.tool_choice).not.toBe(b.optionsKeys.tool_choice)
-    if (protocol === "openai-chat") expect(a.cacheControl).toContainEqual({ target: "messages[0].content[0]", type: "ephemeral", ttl: "5m" })
+    if (protocol === "openai-chat") expect(a.cacheControl).toContainEqual({ target: "messages[0].content[0]", type: "ephemeral", ttl: "5m", wireHash: sha256(canonicalJson({ type: "ephemeral", ttl: "5m" })) })
     if (protocol === "anthropic-messages") {
       expect(a.optionsKeys.context_management).toBeDefined()
       const c = fingerprintWireBody({ ...original, cache_control: { type: "ephemeral", ttl: "1h" } }, { protocol })
-      expect(c.cacheControl).toContainEqual({ target: "top", type: "ephemeral", ttl: "1h" })
-      expect(c.cacheControl).toContainEqual({ target: "messages[0].content[0]", type: "ephemeral", ttl: "5m" })
+      expect(c.cacheControl).toContainEqual({ target: "top", type: "ephemeral", ttl: "1h", wireHash: sha256(canonicalJson({ type: "ephemeral", ttl: "1h" })) })
+      expect(c.cacheControl).toContainEqual({ target: "messages[0].content[0]", type: "ephemeral", ttl: "5m", wireHash: sha256(canonicalJson({ type: "ephemeral", ttl: "5m" })) })
     }
   }
 })

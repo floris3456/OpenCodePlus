@@ -290,9 +290,15 @@ test("missesOnly narrows the request list to the miss without changing totals", 
   request(db, "ses_m", "req_hit", 100, { input: 400, read: 6_000 })
   request(db, "ses_m", "req_miss", 200, { input: 4_000, read: 0 })
   const now = 300
+  expect(queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache", missesOnly: true }, { now }).requests).toEqual([])
+  // Synthetic measured usage is admitted explicitly; legacy accounting alone
+  // must not make this positive selection control pass.
+  for (const [id, input, read] of [["req_seed", 2000, 0], ["req_hit", 6400, 6000], ["req_miss", 4000, 0]] as const) {
+    db.requestObserved(id, { version: 1, completeness: "final", inputTokens: input, cacheReadInputTokens: read, cacheWriteInputTokens: 0 })
+  }
   const all = queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache" }, { now })
   expect(all.requests?.map((entry) => entry.id)).toEqual(["req_seed", "req_hit", "req_miss"])
-  expect(all.requests?.map((entry) => entry.verdict)).toEqual(["cold", "hit", "miss"])
+  expect(all.requests?.map((entry) => entry.verdict)).toEqual(["none", "hit", "miss"])
   const missesOnly = queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache", missesOnly: true }, { now })
   expect(missesOnly.totals).toEqual(all.totals)
   expect(missesOnly.requests?.map((entry) => entry.id)).toEqual(["req_miss"])
