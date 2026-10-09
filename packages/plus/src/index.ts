@@ -37,7 +37,7 @@ import { enforcementState, type EnforcementState, type PermissionTable } from ".
 import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
-import { pickModelRow, type ModelPick } from "./instructions/ops.js"
+import { pickModelRow, switchModelActivation, type ModelPick } from "./instructions/ops.js"
 import {
   compactionFieldsOf,
   effectiveCompaction,
@@ -52,7 +52,7 @@ import {
   type ModelSettingsRecord,
 } from "./instructions/model-settings.js"
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
-import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
+import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, modelItemId, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
@@ -2156,7 +2156,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // revision, one log line.
       const models = modelsOf(loaded.records)
       const activated = activateModel(addModelRecord(models, address, target, new Date().toISOString()), address, target)
-      const records = [...loaded.records.filter((record) => record.type !== "model"), ...activated]
+      const viewLoaded = { ...loaded, protectedAgents: config.protectedAgents }
+      const teams = await snapshotTeams(directory, loaded.records, builtins)
+      const discovered = await discoverAll(ctx, viewLoaded, state, builtins, directory)
+      const switched = switchModelActivation(memoInputOf(toSnapshot(discovered, viewLoaded, teams, undefined, [])),
+        { ...address, item: modelItemId(target), section: null }, target, activated,
+        (owner) => owner !== null && config.protectedAgents.includes(owner))
+      if ("refusal" in switched) return {
+        ok: false as const,
+        error: { code: "model.invalid" as const, message: switched.refusal, data: { providerID: target.providerID, modelID: target.modelID, reason: switched.refusal } },
+      }
+      const records = [...loaded.records.filter((record) => record.type !== "model" && record.type !== "customization"), ...switched.records, ...(switched.models ?? activated)]
       const saved = await saveModelRecords(directory, loaded, records)
       if (!saved.ok) {
         const reason = `Model ${validated.providerID}/${validated.modelID} changed concurrently; retry`
@@ -2310,11 +2320,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
         const snapshot = toSnapshot(discovered, loaded, teams, undefined, [])
         const memo = memoInputOf(snapshot)
-        const result = pickModelRow(memo, pick)
+        const result = pickModelRow(memo, pick, undefined, (owner) => owner !== null && config.protectedAgents.includes(owner))
         if ("refusal" in result) return { ok: false, refusal: result.refusal }
         if (!result.changed)
           return { ok: true, changed: false, revision: stored.projectRevision, level: result.level, rowId: result.rowId, status: result.status }
-        const next = [...loaded.records.filter((record) => record.type !== "model"), ...result.models]
+        const next = [...loaded.records.filter((record) => record.type !== "model" && (result.records === undefined || record.type !== "customization")), ...(result.records ?? []), ...result.models]
         const saved = await save(directory, {
           expectedProjectRevision: stored.projectRevision,
           expectedGlobalRevision: stored.globalRevision,

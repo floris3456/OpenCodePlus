@@ -215,10 +215,10 @@ const CompactionFields = {
   compactionInstructions: Schema.optional(Schema.String),
 }
 
-// Per-agent model selection. `active` is `true` or omitted, never `false`:
-// records cross the RPC boundary as JSON, where a present-but-undefined key
-// fails validation. `removed: true` is a tombstone hiding an inherited or
-// upstream candidate at that level.
+// Per-agent model selection. Omitted active retains ordinary inheritance;
+// explicit false is a durable switch-off mask that keeps the candidate and
+// its settings. Existing true/omitted stores need no migration. `removed: true`
+// remains the separate tombstone hiding a candidate at that level.
 const V2Model = Schema.Struct({
   type: Schema.Literal("model"),
   level: LevelSchema,
@@ -228,7 +228,7 @@ const V2Model = Schema.Struct({
   providerID: Schema.String,
   modelID: Schema.String,
   variant: Schema.optional(Schema.String),
-  active: Schema.optional(Schema.Literal(true)),
+  active: Schema.optional(Schema.Boolean),
   basedOn: Schema.optional(Schema.String),
   warming: Schema.optional(Schema.String),
   interval: Schema.optional(Schema.String),
