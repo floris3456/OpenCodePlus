@@ -1353,6 +1353,25 @@ export const MonitorStepResult = Schema.Union([
   }),
 ]).annotate({ identifier: "Plus.MonitorStepResult" })
 
+export interface MonitorPricing extends Schema.Schema.Type<typeof MonitorPricing> {}
+export const MonitorPricing = Schema.Struct({
+  state: Schema.Literals(["unknown-shortfall", "zero-shortfall", "unpriced", "priced"]),
+  reason: Schema.optionalKey(Schema.String),
+  shortfall: Schema.optionalKey(Schema.Number),
+  source: Schema.optionalKey(Schema.Literal("recorded-model-rates")),
+  factAt: Schema.optionalKey(Schema.Number),
+  provider: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  inputBasis: Schema.optionalKey(Schema.Literal("inclusive-measured")),
+  tierAbove: Schema.optionalKey(Schema.Number),
+  rates: Schema.optionalKey(Schema.Struct({ input: Schema.Number, read: Schema.Number, write: Schema.Number })),
+  scenario: Schema.optionalKey(Schema.Literal("shortfall-vs-cache-read")),
+  /** Scenario allocation: up to the observed writes are assigned to the shortfall, not a measured prefix split. */
+  assumedWriteTokens: Schema.optionalKey(Schema.Number),
+  assumedNoncachedTokens: Schema.optionalKey(Schema.Number),
+  writeBasis: Schema.optionalKey(Schema.Literal("single-recorded-rate-no-duration-attribution")),
+}).annotate({ identifier: "Plus.MonitorPricing" })
+
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
   requests: Schema.optionalKey(Schema.Number),
@@ -1361,7 +1380,18 @@ export const MonitorTotals = Schema.Struct({
   pingCost: Schema.optionalKey(Schema.Number),
   misses: Schema.optionalKey(Schema.Number),
   missTokens: Schema.optionalKey(Schema.Number),
+  /** Complete explanatory shortfall-vs-read differential, not recorded accounting or billed loss. */
   missCost: Schema.optionalKey(Schema.Number),
+  pricingCoverage: Schema.optionalKey(Schema.Struct({
+    requests: Schema.Number,
+    priced: Schema.Number,
+    zeroShortfall: Schema.Number,
+    unpriced: Schema.Number,
+    unknownShortfall: Schema.Number,
+    complete: Schema.Boolean,
+    subsetScenarioCost: Schema.optionalKey(Schema.Number),
+    scenario: Schema.Literal("shortfall-vs-cache-read"),
+  })),
   hitRate: Schema.optionalKey(Schema.Number),
   measuredRequests: Schema.optionalKey(Schema.Number),
   unknownRequests: Schema.optionalKey(Schema.Number),
@@ -1479,7 +1509,9 @@ export const MonitorRequest = Schema.Struct({
   evidence: Schema.optionalKey(Schema.String),
   expected: Schema.optionalKey(Schema.Number),
   missTokens: Schema.optionalKey(Schema.Number),
+  /** Explanatory input/write minus cache-read differential; output/accounting cost is unchanged. */
   missCost: Schema.optionalKey(Schema.Number),
+  pricing: Schema.optionalKey(MonitorPricing),
   tools: Schema.optionalKey(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Plus.MonitorRequest" })
 

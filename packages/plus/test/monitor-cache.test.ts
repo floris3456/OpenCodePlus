@@ -318,8 +318,9 @@ test("legacy pricing cannot manufacture losses; failed pings and account facts r
     { scope: "session", sessionID: "priced", view: "cache", id: "priced-b" },
     { now: 3000 },
   )
-  expect(priced.detail?.request).toMatchObject({ missTokens: 0, missCost: 0, measurement: { state: "legacy-unknown" } })
-  expect(priced.totals.missCost).toBe(0)
+  expect(priced.detail?.request).toMatchObject({ missTokens: 0, pricing: { state: "unknown-shortfall" }, measurement: { state: "legacy-unknown" } })
+  expect(priced.detail?.request.missCost).toBeUndefined()
+  expect(priced.totals.missCost).toBeUndefined()
   request(db, "failed", "failed-a", 1000)
   request(db, "failed", "failed-ping", 390_000, { kind: "ping", error: "failed", input: 0, read: 0, write: 0 })
   db.contextFact({ sessionID: "failed", at: 390_001, kind: "account_switch" })

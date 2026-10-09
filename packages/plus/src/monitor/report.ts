@@ -312,14 +312,29 @@ export function requestReport(
   const legacy = analyses.flatMap((a) => a.legacy)
   const legacyTotal = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
     legacy.reduce((n, s) => n + s[key], 0)
+  const priced = invocations.filter((r) => r.pricing?.state === "priced")
+  const zeroShortfall = invocations.filter((r) => r.pricing?.state === "zero-shortfall").length
+  const unpriced = invocations.filter((r) => r.pricing?.state === "unpriced").length
+  const unknownShortfall = invocations.length - priced.length - zeroShortfall - unpriced + legacy.length
+  const pricingComplete = unpriced === 0 && unknownShortfall === 0 && invocations.length > 0
   const totals: Partial<MonitorTotals> = {
     ...(invocations.length ? totalsFor(invocations) : { requests: 0, misses: 0 }),
     exchangeRows: requests.length - invocations.length,
     pings: pingRows.length,
     pingCost: sum(pingRows, "cost"),
     missTokens: sum(misses, "missTokens"),
-    // Unknown pricing is omitted, not represented as a free miss.
-    ...(misses.every((r) => r.missCost !== undefined) ? { missCost: sum(misses, "missCost") } : {}),
+    // A priced subset is explanatory, never a complete total or recorded accounting.
+    ...(pricingComplete ? { missCost: sum(priced, "missCost") } : {}),
+    pricingCoverage: {
+      requests: invocations.length + legacy.length,
+      priced: priced.length,
+      zeroShortfall,
+      unpriced,
+      unknownShortfall,
+      complete: pricingComplete,
+      ...(priced.length ? { subsetScenarioCost: sum(priced, "missCost") } : {}),
+      scenario: "shortfall-vs-cache-read",
+    },
     input: sum(requests, "input") + legacyTotal("input"),
     output: sum(requests, "output") + legacyTotal("output"),
     reasoning: sum(requests, "reasoning") + legacyTotal("reasoning"),

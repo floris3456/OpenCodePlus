@@ -761,6 +761,7 @@ function causeStep(
 interface CostStep {
   readonly missing: number
   readonly missCost: number | undefined
+  readonly pricing: NonNullable<MonitorRequest["pricing"]>
 }
 
 function costStep(
@@ -769,11 +770,17 @@ function costStep(
   facts: Facts,
 ): CostStep {
   const measured = measurement(r)
-  const missing = measured.state === "reported" && measured.input !== undefined && measured.read !== undefined && expected !== undefined
-    ? Math.max(0, Math.min(expected, measured.input) - measured.read)
-    : 0
-  // Nothing missed costs nothing; the recorded pricing is read only for a miss.
-  if (missing === 0) return { missing, missCost: 0 }
+  const shortfall =
+    measured.state === "reported" && measured.input !== undefined && measured.read !== undefined
+      ? measured.read === measured.input
+        ? 0
+        : expected === undefined
+          ? undefined
+          : Math.max(0, Math.min(expected, measured.input) - measured.read)
+      : undefined
+  // Keep the legacy numeric counter, but never present its unknown zero as a priced scenario.
+  if (shortfall === undefined) return { missing: 0, missCost: undefined, pricing: { state: "unknown-shortfall", reason: "No complete comparable shortfall measurement" } }
+  if (shortfall === 0) return { missing: 0, missCost: 0, pricing: { state: "zero-shortfall", shortfall } }
   const pricing = lastFact(
     facts,
     r.started,
@@ -781,14 +788,40 @@ function costStep(
       f.kind === "pricing" && f.at <= r.started && f.detail?.provider === r.provider && f.detail?.model === r.model,
   )
   const rates = Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Array(Model.Cost))(pricing?.detail?.rates))
+  const provenance = {
+    shortfall,
+    ...(pricing ? { source: "recorded-model-rates" as const, factAt: pricing.at } : {}),
+    ...(r.provider ? { provider: r.provider } : {}),
+    ...(r.model ? { model: r.model } : {}),
+    inputBasis: "inclusive-measured" as const,
+  }
+  const refuse = (reason: string): CostStep => ({ missing: shortfall, missCost: undefined, pricing: { ...provenance, state: "unpriced", reason } })
+  if (!rates?.length) return refuse("Applicable rates were not recorded")
+  if (r.variant !== pricing?.detail?.variant) return refuse("Recorded rates do not identify the request variant")
+  // Model.Cost records one write rate, not duration buckets. Full mixed-TTL pricing is deferred.
+  if (pricing?.detail?.writeDurationBuckets !== undefined || pricing?.detail?.mixedTTL === true) return refuse("Write-duration pricing is unsupported")
+  if (measured.write === undefined) return refuse("Complete cache-write measurement unavailable")
   const rate = rates
-    ?.filter((c) => !c.tier || promptTokens(r) > c.tier.size)
+    .filter((c) => !c.tier || measured.input! > c.tier.size)
     .toSorted((a, b) => (b.tier?.size ?? 0) - (a.tier?.size ?? 0))[0]
-  const written = Math.min(missing, r.cacheWriteTokens)
-  const missCost =
-    missing === 0 ? 0 : rate ? (written * rate.cache.write + (missing - written) * rate.input) / 1_000_000 : undefined
-
-  return { missing, missCost }
+  if (!rate) return refuse("No recorded input tier applies")
+  if ([rate.input, rate.cache.read, rate.cache.write].some((n) => !Number.isFinite(n) || n < 0)) return refuse("Invalid recorded rates")
+  const written = Math.min(shortfall, measured.write)
+  const missCost = (written * (rate.cache.write - rate.cache.read) + (shortfall - written) * (rate.input - rate.cache.read)) / 1_000_000
+  return {
+    missing: shortfall,
+    missCost,
+    pricing: {
+      ...provenance,
+      state: "priced",
+      scenario: "shortfall-vs-cache-read",
+      rates: { input: rate.input, read: rate.cache.read, write: rate.cache.write },
+      ...(rate.tier ? { tierAbove: rate.tier.size } : {}),
+      assumedWriteTokens: written,
+      assumedNoncachedTokens: shortfall - written,
+      writeBasis: "single-recorded-rate-no-duration-attribution",
+    },
+  }
 }
 
 export interface UnstableStreak {
@@ -997,6 +1030,7 @@ export function foldSession(
       ...(expected === undefined ? {} : { expected }),
       missTokens: cost.missing,
       ...(cost.missCost === undefined ? {} : { missCost: cost.missCost }),
+      pricing: cost.pricing,
     }
 
     summaries.push({
@@ -1152,11 +1186,13 @@ function requestDetail(
       `Reusable-token estimate: ${request.expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
       `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,
       `Gap ${timing.gap ?? "unknown"}ms; requested/nominal retention ${timing.lifetime ?? "unknown"}ms (not proof of expiry); warming configured ${timing.warming ?? "not recorded"}`,
-      measured.state !== "reported" || measured.input === undefined || (request.expected === undefined && measured.share !== 1)
+      request.pricing?.state === "unknown-shortfall"
         ? "Local shortfall and cost scenario unavailable without a comparable measurement"
         : request.missCost === undefined
-          ? "Miss cost unavailable: per-token pricing was not recorded"
-          : `Local shortfall estimate ${request.missTokens}; processing-cost scenario USD ${request.missCost} (not billed loss or net savings)`,
+           ? `Cost scenario unavailable: ${request.pricing?.reason ?? "applicable pricing unknown"}`
+           : `Local shortfall estimate ${request.pricing?.shortfall}; differential vs cache-read scenario USD ${request.missCost} (not billed loss or net savings)`,
+      ...(request.pricing?.source ? [`Pricing source: ${request.pricing.source}; ${request.pricing.provider}/${request.pricing.model}; fact at ${request.pricing.factAt}; inclusive measured input tier above ${request.pricing.tierAbove ?? "base"}; input/read/write USD per million ${request.pricing.rates?.input ?? "unknown"}/${request.pricing.rates?.read ?? "unknown"}/${request.pricing.rates?.write ?? "unknown"}; ${request.pricing.writeBasis ?? "duration attribution unavailable"}`] : []),
+      ...(request.pricing?.state === "priced" ? [`Scenario assumes ${request.pricing.assumedWriteTokens} write and ${request.pricing.assumedNoncachedTokens} noncached shortfall tokens versus the same tokens at the cache-read rate; this is not a measured prefix allocation. Output cost unchanged; full mixed-TTL pricing deferred.`] : []),
     ],
     segments: diff.changes,
     ...(diff.changes[0] ? { firstDivergence: diff.changes[0].name } : {}),

@@ -78,7 +78,8 @@ test("a long legacy Anthropic chat keeps accounting, unknown diagnoses and loads
   expect(rows).toHaveLength(1500)
   expect(report.requests).toHaveLength(1499)
   expect(report.requests?.map((request) => request.id)).toEqual(rows.filter((row) => !row.isTitle).map((row) => row.id))
-  expect(report.totals).toMatchObject({ misses: 0, missTokens: 0, missCost: 0 })
+  expect(report.totals).toMatchObject({ misses: 0, missTokens: 0, pricingCoverage: { complete: false } })
+  expect(report.totals.missCost).toBeUndefined()
   expect(report.totals.hitRate).toBeUndefined()
   for (const [key, column] of [
     ["input", "inputTokens"], ["output", "outputTokens"],

@@ -170,7 +170,7 @@ test("#8: adding pricing cannot convert legacy accounting into a supported miss"
   const known = queryMonitor(db, { scope: "session", sessionID: "priced", view: "cache" }, { now: 3000 })
   const knownRequest = known.requests?.find((r) => r.id === "priced-b")
   expect(knownRequest).toEqual(unknownRequest)
-  expect(known.totals.missCost).toBe(0)
+  expect(known.totals.missCost).toBeUndefined() // Legacy shortfalls are unknown, not a free priced population.
   expect(known.totals.cost).toBe(unknown.totals.cost)
 })
 

@@ -338,7 +338,7 @@ test("pricing cannot turn a legacy write-only baseline into an expiry loss", asy
   legacy(late.request)
   expect(late.request.cause).toBe("unknown")
   expect(late.request.cacheWrite).toBe(21000)
-  expect(late.request.missCost).toBe(0)
+  expect(late.request.missCost).toBeUndefined() // Legacy usage cannot establish a zero-priced shortfall.
 })
 
 test("a legacy write does not mask an observed model switch or fabricate a miss", async () => {
