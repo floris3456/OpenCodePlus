@@ -857,10 +857,10 @@ function applySwitches(
   for (const endpoint of targets) {
     const address = { ...chain.address, item: endpoint.item, section: endpoint.section }
     const upstream = upstreamFor(memo.ctx.items, address)
-    if (upstream === undefined) continue
+    if (upstream === undefined) return { refusal: `Linked row "${endpoint.item}" cannot be switched` }
     // Already off (by inheritance or an earlier row): writing an off record
     // would be noise, and an off toggle never writes a linked row at all.
-    if (!resolveEnabled({ upstream, records: out, splits: [], scopes: memo.ctx.scopes, address })) continue
+    if (!resolve({ upstream, records: out, splits: memo.ctx.splits, scopes: memo.ctx.scopes, address }).enabled) continue
     out = merge(out, address, { state: "off" }, upstream, memo.ctx.scopes)
     disabled.push(endpoint.item)
   }
@@ -926,13 +926,13 @@ export function setEnabled(
   const next = merge(chain.customizations, chain.address, { state: value ? "on" : "off" }, chain.upstream, memo.ctx.scopes)
   // Switches fire only on an actual off→on transition, exactly as `toggle`
   // does: an explicit `state:"on"` on an already-on row writes nothing new.
-  const wasOn = resolveEnabled({
+  const wasOn = resolve({
     upstream: chain.upstream,
     records: chain.customizations,
     splits: chain.splits,
     scopes: memo.ctx.scopes,
     address: chain.address,
-  })
+  }).enabled
   const switched = applySwitches(memo, chain, next, value && !wasOn, isProtected)
   if ("refusal" in switched) return switched
   const suffix = switched.disabled.length === 0 ? "" : `; disabled ${switched.disabled.join(", ")}`
@@ -1022,7 +1022,12 @@ export function toggleGroup(
     }
     // The chain context makes merge record what the chain above resolves,
     // exactly as `toggle` does for one row.
-    records = merge(records, address, { state: want ? "on" : "off" }, upstream, memo.ctx.scopes)
+    const wasOn = resolve({ upstream, records, splits, scopes: memo.ctx.scopes, address }).enabled
+    const next = merge(records, address, { state: want ? "on" : "off" }, upstream, memo.ctx.scopes)
+    const switched = applySwitches(memo, { address, customizations: records }, next, want && !wasOn,
+      (owner) => owner !== null && isProtected?.(owner) === true)
+    if ("refusal" in switched) return switched
+    records = switched.records
     applied += 1
   }
   if (applied === 0) return { refusal: skipped[0] ?? `"${label}" has no toggleable rows` }

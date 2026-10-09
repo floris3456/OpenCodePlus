@@ -22,9 +22,11 @@ import {
   setPin,
   teamPlan,
   toggle,
+  toggleGroup,
   unknownRowRefusal,
 } from "../src/instructions/ops.js"
 import type { RowlinkRecord } from "../src/instructions/rowlinks.js"
+import { controlItems } from "../src/instructions/agent-controls.js"
 
 function baseInput(overrides?: Partial<MemoInput>): MemoInput {
   return {
@@ -258,8 +260,8 @@ test("an off toggle writes no linked row, and an already-off partner is not rewr
   expect(on.records.filter((record) => record.item === "tool:coder")).toHaveLength(1)
 })
 
-test("a tombstone masks an inherited switch, so the toggle fires nothing", () => {
-  const masked = baseInput({ rowlinks: switchLink("tool:bash", "tool:coder", "either", false) })
+test("a same-level mask prevents a switch on an off-to-on transition", () => {
+  const masked = baseInput({ rowlinks: switchLink("tool:bash", "tool:coder", "either", false), records: [offRecord("tool:bash")] })
   const result = setEnabled(masked, findId(masked, "tool:bash"), true)
   if ("refusal" in result) throw new Error(`expected success, got ${result.refusal}`)
   expect(result.records.some((record) => record.item === "tool:coder")).toBe(false)
@@ -310,6 +312,60 @@ test("an inherited switch fires for the level below, a mixed owner's never does"
   const isolated = setEnabled(otherOwner, findId(otherOwner, "tool:bash"), true)
   if ("refusal" in isolated) throw new Error(`expected success, got ${isolated.refusal}`)
   expect(isolated.records.some((record) => record.item === "tool:coder")).toBe(false)
+})
+
+test("switches resolve section states rather than their whole-row state", () => {
+  const base = baseInput()
+  const sections = expandedTree(base).filter((node) => node.kind === "section" && node.address?.item === "tool:coder")
+  const primary = sections[0]!
+  const partner = sections[1]!
+  const primaryAddress = primary.address!
+  const partnerAddress = partner.address!
+  const off = { ...offRecord("tool:coder"), section: primaryAddress.section }
+  const links: RowlinkRecord[] = [{ ...switchLink("tool:coder", "tool:coder")[0]!, section: primaryAddress.section, targetSection: partnerAddress.section }]
+  const input = baseInput({ records: [off], rowlinks: links })
+  const result = setEnabled(input, primary.id, true)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.find((record) => record.section === partnerAddress.section)?.state).toBe("off")
+  expect(result.records.some((record) => record.item === "tool:coder" && record.section === null)).toBe(false)
+  const alreadyOff = { ...off, section: partnerAddress.section }
+  const repeat = setEnabled(baseInput({ records: [off, alreadyOff], rowlinks: links }), primary.id, true)
+  if ("refusal" in repeat) throw new Error(repeat.refusal)
+  expect(repeat.records.find((record) => record.section === partnerAddress.section)).toEqual(alreadyOff)
+})
+
+test("nearest inherited mask wins and group enabling applies one-hop switches", () => {
+  const links = switchLink("tool:bash", "mcp:sample")
+  const masked = baseInput({
+    agents: [{ id: "alpha", scope: "project" }, { id: "alpha", scope: "global" }],
+    rowlinks: [{ ...links[0]!, level: "global" }, { ...links[0]!, enabled: false }],
+    records: [offRecord("tool:bash")],
+  })
+  const result = setEnabled(masked, findId(masked, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.some((record) => record.item === "mcp:sample")).toBe(false)
+  const input = baseInput({ rowlinks: links, records: [offRecord("tool:bash")] })
+  const group = expandedTree(input).find((node) => node.id === "group:project:alpha:tools:native")!
+  expect(group).toBeDefined()
+  const enabled = toggleGroup(input, group.id, undefined, true)
+  if ("refusal" in enabled) throw new Error(enabled.refusal)
+  expect(enabled.records.find((record) => record.item === "mcp:sample")?.state).toBe("off")
+})
+
+test("switches handle boolean agent controls and refuse unsupported synthetic endpoints atomically", () => {
+  const base = baseInput()
+  const input = baseInput({
+    items: [...base.items, ...controlItems("alpha", { hidden: true })],
+    records: [offRecord("tool:bash")],
+    rowlinks: switchLink("tool:bash", "setting:hidden"),
+  })
+  const result = setEnabled(input, findId(input, "tool:bash"), true)
+  if ("refusal" in result) throw new Error(result.refusal)
+  expect(result.records.find((record) => record.item === "setting:hidden")?.state).toBe("off")
+  const unsupported = { ...input, rowlinks: switchLink("tool:bash", "model:missing") }
+  const refused = setEnabled(unsupported, findId(unsupported, "tool:bash"), true)
+  expect(refused).toEqual({ refusal: 'Linked row "model:missing" cannot be switched' })
+  expect(input.records).toEqual([offRecord("tool:bash")])
 })
 
 test("toggle success disables a shared mcp row", () => {

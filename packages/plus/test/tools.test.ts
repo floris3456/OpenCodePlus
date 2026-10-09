@@ -3538,7 +3538,8 @@ test("set state:on persists its either partner off in one save, and it stays off
   // Rows start off in this fixture; turn question on so the switch has a live
   // target to save off.
   await runOk(set, { id: question, state: "on" })
-  const on = (await runOk(set, { id: reader, state: "on" })) as { status: string }
+  const before = await load(project)
+  const on = (await runOk(set, { id: reader, text: "updated reader", state: "on" })) as { status: string }
   expect(on.status).toBe(`Enabled "reader"; disabled tool:question`)
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "customization" && record.item === "tool:question" && record.state === "off")).toBe(
@@ -3546,6 +3547,10 @@ test("set state:on persists its either partner off in one save, and it stays off
   )
   // Durable: reload the store and the off row is still there.
   expect(await customizationState(project, "tool:question")).toBe("off")
+  const saved = await load(project)
+  expect(saved.projectRevision + saved.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
+  expect(saved.records.filter((record) => record.type === "rowlink")).toEqual(before.records.filter((record) => record.type === "rowlink"))
+  expect(saved.records.find((record) => record.type === "customization" && record.item === "tool:reader")).toMatchObject({ text: "updated reader", state: "on" })
   // Turning reader back off leaves question off (no cascade, no resurrect).
   await runOk(set, { id: reader, state: "off" })
   expect(await customizationState(project, "tool:question")).toBe("off")
@@ -3571,7 +3576,6 @@ test("set state:on is symmetric for either and primary-only for oneway", async (
   expect(await customizationState(project, "tool:question")).toBe("off")
   // Either is symmetric: turn the target on and the primary goes off.
   await runOk(link, { id: reader, target: question, type: "either" })
-  await runOk(set, { id: reader, state: "off" })
   await runOk(set, { id: question, state: "on" })
   expect(await customizationState(project, "tool:reader")).toBe("off")
 })
@@ -3596,12 +3600,12 @@ test("a bare-id toggle writes the partner off in one hop and never cascades", as
   await runOk(link, { id: question, target: extra })
   await runOk(set, { id: question, state: "on" })
   await runOk(set, { id: reader, state: "off" })
-  await runOk(set, { id: reader, state: "on" })
+  await runOk(set, { id: reader })
   expect(await customizationState(project, "tool:question")).toBe("off")
   expect(await customizationState(project, "tool:extra")).toBeUndefined()
 })
 
-test("a tombstone at this level masks an inherited switch through the tool", async () => {
+test("a same-level disabled link masks a switch through the tool", async () => {
   const { api, tools, project } = await freshFixture({
     tools: [
       { id: "reader", description: "read things", options: { codemode: false } },
@@ -3667,6 +3671,7 @@ test("turning a protected owner's row on with a linked partner refuses atomicall
   expect(error.message).toContain("agent.protected")
   // No records and no log line changed.
   expect((await snapshotOf(api)).records).toEqual(before.records)
+  expect((await load(project)).projectRevision).toBe(saved.projectRevision)
   expect(await Bun.file(projectLogPath(project)).exists()).toBe(beforeLog)
   expect(await customizationState(project, "tool:question")).toBeUndefined()
 })

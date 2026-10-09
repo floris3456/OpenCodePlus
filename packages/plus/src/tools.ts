@@ -961,7 +961,7 @@ function computeSet(
   const preservedRules = rulesOfMemo(memo)
   const withModels = (records: readonly CustomizationRecord[], splits: readonly SplitRecord[]): MemoInput => ({
     ...memo,
-    records: [...records, ...splits, ...preserved, ...preservedRules],
+    records: [...records, ...splits, ...preserved, ...preservedRules, ...rowlinksOf(memo)],
   })
   // The condition is its own field: set it, then whatever else came with it.
   if (input.requires !== undefined) {
