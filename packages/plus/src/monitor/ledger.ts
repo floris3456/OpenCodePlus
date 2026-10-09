@@ -455,7 +455,15 @@ export function endRequestWindow(ledger: Ledger, start: RequestStart, end: Reque
     // Exact invocation observations cannot be reconciled by a publication-time guess or
     // overwritten with compaction/Step aggregate accounting. Keep that on `step` only.
     const observed = candidates.filter((row) => row.observation !== undefined)
-    if (observed.length > 0) return observed.at(-1)
+    if (observed.length > 0) {
+      const representative = observed.findLast((row) => row.observation?.scope !== "exchange") ?? observed.at(-1)!
+      // Core serializes compactions in one Session. Link this logical
+      // accounting row to its observed operation so the legacy fallback does
+      // not add the aggregate again. Never assign aggregate usage or outcome
+      // to an invocation (which can succeed even if compaction is unusable).
+      ledger.requestStarted({ ...representative, messageID: start.messageID })
+      return ledger.getRequest(representative.id)
+    }
     const chosen = oldest ? candidates.find((row) => row.ended === undefined) ?? candidates.at(-1) : candidates.at(-1)
     if (!chosen) ledger.requestStarted(start)
     // Compaction Ended.tokens is the aggregate of its attempts, not per-attempt usage.
