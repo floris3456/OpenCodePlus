@@ -3,7 +3,8 @@ import { Schema } from "effect"
 /** Resolved at execution, never inferred from a later configuration read. No free-form metadata. */
 export const CompactionObservation = Schema.Struct({
   version: Schema.Literal(1),
-  trigger: Schema.Literals(["manual", "context-threshold", "overflow", "cold", "handoff", "armed", "hook-request"]),
+  trigger: Schema.Literals(["manual", "context-threshold", "overflow", "cold", "handoff", "armed", "hook-request", "input-threshold", "output-threshold"]),
+  threshold: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   configuredStrategy: Schema.Literals(["auto", "local", "remote"]),
   /** Resolved active-model policy; absence means no native policy was configured. */
   modelPolicy: Schema.optional(Schema.Literals(["native", "summary"])),

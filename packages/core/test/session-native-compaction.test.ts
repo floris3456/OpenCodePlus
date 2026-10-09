@@ -32,6 +32,7 @@ import type { SessionModelObserved } from "@opencode/plugin/effect/session"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
 import { decideCompaction } from "../../plus/src/compaction/decide.js"
+import { decideCompactionTriggers } from "../../plus/src/compaction/triggers.js"
 
 const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
 class NativeModels extends Context.Service<NativeModels, Map<string, SessionRunnerModel.Resolved>>()(
@@ -489,6 +490,34 @@ it.live("an explanation hint alone cannot arm compaction or override auto:false"
   expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "skipped" })
   expect(fixture.state.calls).toBe(0)
   expect(fixture.observations).toHaveLength(0)
+}))
+
+it.live("a low input threshold selects normal native Auto once, then waits for primary history after the checkpoint", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true })
+  yield* fixture.prompt("Synthetic native threshold fixture")
+  const thresholds: { input?: number; output?: number } = { input: 1 }
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
+    decideCompactionTriggers(event, { sessionID: event.sessionID, ...thresholds })
+  }))
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "completed" })
+  expect(fixture.observations[0]?.compaction).toMatchObject({ trigger: "input-threshold", threshold: 1, configuredStrategy: "auto", selectedStrategy: "native" })
+  expect(SessionCompaction.thresholdMetrics(yield* fixture.load)).toMatchObject({ output: 0, advanced: false })
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "skipped" })
+  yield* fixture.prompt("Additional user input is not primary assistant advancement")
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "skipped" })
+  expect(fixture.observations).toHaveLength(1)
+  const loaded = yield* fixture.load
+  const primary = Schema.decodeUnknownSync(SessionMessage.Assistant)({
+    id: "msg_native_primary", type: "assistant", agent: Agent.defaultID, model: fixture.model.ref,
+    content: [{ type: "text", text: "New primary response" }],
+    tokens: { input: 100, output: 8, reasoning: 2, cache: { read: 0, write: 0 } }, time: { created: 0, completed: 1 },
+  })
+  expect(SessionCompaction.thresholdMetrics({ ...loaded, messages: [...loaded.messages, primary] })).toMatchObject({ output: 10, advanced: true })
+  delete thresholds.input
+  thresholds.output = 10
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: { ...loaded, messages: [...loaded.messages, primary] } })).toEqual({ status: "completed" })
+  expect(fixture.observations).toHaveLength(2)
+  expect(fixture.observations[1]?.compaction).toMatchObject({ trigger: "output-threshold", threshold: 10, configuredStrategy: "auto", selectedStrategy: "native" })
 }))
 
 it.live("the executed summary fallback records its model source without fabricating a failed invocation", () => Effect.gen(function* () {

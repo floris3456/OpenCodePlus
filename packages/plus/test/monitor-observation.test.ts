@@ -9,6 +9,21 @@ import { Observation } from "../src/monitor/observation.js"
 
 afterEach(cleanupLedgers)
 
+test("early compaction attribution keeps the executed threshold snapshot through reopen", async () => {
+  const db = await ledger()
+  for (const trigger of ["input-threshold", "output-threshold"] as const) {
+    db.requestStarted({ id: trigger, sessionID: "s", kind: "compaction", started: 100 })
+    db.requestEnded(trigger, { ended: 200, status: "completed" })
+    const compaction = { version: 1 as const, trigger, threshold: 1234, configuredStrategy: "auto" as const, strategySource: "built-in" as const, selectedStrategy: "native" as const, selectionReason: "auto-native" as const }
+    db.requestObserved(trigger, { version: 1, completeness: "final", compaction })
+    expect(db.getRequest(trigger)?.observation?.compaction).toEqual(compaction)
+    expect(() => Schema.decodeUnknownSync(CompactionObservation)({ ...compaction, threshold: 0 })).toThrow()
+    const reopened = createLedger(db.path)
+    expect(reopened.getRequest(trigger)?.observation?.compaction).toEqual(compaction)
+    reopened.close()
+  }
+})
+
 test("native diagnostic boundary refuses unsupported versions, reasons and fabricated verdicts", async () => {
   const db = await ledger()
   db.requestStarted({ id: "native", sessionID: "s", kind: "step", started: 100 })

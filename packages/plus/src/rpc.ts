@@ -4,6 +4,24 @@ import { Schema } from "effect"
 import { Rpc } from "@opencode/schema/rpc"
 import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import { PromptCacheDiagnostic } from "@opencode/plugin/prompt-cache-diagnostic"
+import { PositiveInt } from "@opencode/schema/schema"
+
+export interface CompactionTriggers extends Schema.Schema.Type<typeof CompactionTriggers> {}
+export const CompactionTriggers = Schema.Struct({
+  sessionID: Schema.String,
+  input: Schema.optionalKey(PositiveInt),
+  output: Schema.optionalKey(PositiveInt),
+}).annotate({ identifier: "Plus.CompactionTriggers" })
+
+export const CompactionTriggersSetInput = Schema.Struct({
+  sessionID: Schema.String,
+  input: Schema.optionalKey(Schema.NullOr(PositiveInt)),
+  output: Schema.optionalKey(Schema.NullOr(PositiveInt)),
+}).annotate({ identifier: "Plus.CompactionTriggersSetInput" })
+
+const PortableCompactionTriggers = Schema.toStandardSchemaV1(CompactionTriggers)
+const PortableCompactionTriggersSetInput = Schema.toStandardSchemaV1(CompactionTriggersSetInput)
+const PortableCompactionTriggersFailure = Schema.toStandardSchemaV1(Schema.Struct({ sessionID: Schema.String }))
 
 export type Level = typeof Level.Type
 export const Level = Schema.Union([
@@ -2707,6 +2725,16 @@ export const Definition = Rpc.define({
       input: PortableCompactColdInput,
       output: PortableCompactColdResult,
       errors: {},
+    },
+    "compaction.triggers": {
+      input: PortableWarmingSessionInput,
+      output: PortableCompactionTriggers,
+      errors: { "compaction.triggers.failed": PortableCompactionTriggersFailure },
+    },
+    "compaction.triggers.set": {
+      input: PortableCompactionTriggersSetInput,
+      output: PortableCompactionTriggers,
+      errors: { "compaction.triggers.failed": PortableCompactionTriggersFailure },
     },
     "monitor.query": {
       input: PortableMonitorQueryInput,

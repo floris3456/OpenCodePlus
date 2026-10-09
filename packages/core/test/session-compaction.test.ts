@@ -3,6 +3,7 @@ import { GenerationOptions, LLMClient, LLMEvent, LanguageModel, ToolDefinition, 
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Database } from "@opencode/core/database/database"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
+import { LayerNodePlatform } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
 import { EventTable } from "@opencode/core/event/sql"
@@ -27,9 +28,14 @@ import { Money } from "@opencode/schema/money"
 import { Model } from "@opencode/core/model"
 import { Skill } from "@opencode/schema/skill"
 import { Shell } from "@opencode/schema/shell"
-import { DateTime, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { DateTime, Effect, Fiber, FileSystem, Layer, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
+import { KV } from "@opencode/core/kv"
+import { PluginHost } from "@opencode/core/plugin/host"
+import { createHandlers, createState, decideCompactionFor } from "../../plus/src/index.js"
+import { getCompactionTriggers, setCompactionTriggers } from "../../plus/src/compaction/triggers.js"
+import { fullContext } from "../../plus/test/harness.js"
 
 let requests: LLMRequest[] = []
 const model = LanguageModel.make({
@@ -90,6 +96,8 @@ const it = testEffect(
   LayerNode.compile(
     LayerNode.group([
       Database.node,
+      KV.node,
+      LayerNodePlatform.filesystem,
       Bus.node,
       SessionProjector.node,
       SessionStore.node,
@@ -118,6 +126,134 @@ test("compaction prompt preserves detailed work state and relevant files", () =>
   expect(prompt).toContain("### Blocked")
   expect(prompt).toContain("## Relevant Files")
 })
+
+it.effect("hot triggers persist in plugin storage and change the same production boundary without changing history or instructions", () =>
+  Effect.gen(function* () {
+    const kv = yield* KV.Service
+    const store = yield* SessionStore.Service
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const session = yield* insertSession(Session.ID.make("ses_hot_triggers"))
+    const other = yield* insertSession(Session.ID.make("ses_hot_other"))
+    const ctx = { ...fullContext({
+      directory: "/project",
+      session: { get: ({ sessionID }) => store.get(sessionID).pipe(Effect.flatMap((value) => value ? Effect.succeed(value) : Effect.die("Unknown Session"))) },
+    }), storage: PluginHost.storage(kv, "opencode.plus") }
+    const state = createState()
+    const handlers = createHandlers(ctx, state)
+    const rpc = { error: (type: string, message: string, data?: unknown): never => { throw new Error(`${type}: ${message} ${JSON.stringify(data)}`) } }
+    const history = [SessionMessage.User.make({ id: SessionMessage.ID.create(), type: "user", text: "Synthetic history", time: { created: DateTime.makeUnsafe(0) } })]
+    const context = loaded(session, history)
+    const before = JSON.stringify(context)
+    const storedBefore = yield* store.messages({ sessionID: session.id, order: "asc" })
+    const db = (yield* Database.Service).db
+    const eventsBefore = yield* db.select({ id: EventTable.id }).from(EventTable).all().pipe(Effect.orDie)
+    const instructions = JSON.stringify(state.cachedModelSettings)
+    const estimate = SessionCompaction.estimateContext(context)
+    yield* hooks.register("session", "compaction.decide", (event) => decideCompactionFor(ctx, state, event))
+    requests = []
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    expect(yield* handlers["compaction.triggers.set"]({ sessionID: session.id, input: estimate + 1, output: 30 }, rpc)).toEqual({ sessionID: session.id, input: estimate + 1, output: 30 })
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    // Inclusive threshold; exactly the same Session/context between the two decisions.
+    expect(yield* handlers["compaction.triggers.set"]({ sessionID: session.id, input: estimate }, rpc)).toEqual({ sessionID: session.id, input: estimate, output: 30 })
+    expect(JSON.stringify(context)).toBe(before)
+    expect(JSON.stringify(state.cachedModelSettings)).toBe(instructions)
+    expect(yield* store.messages({ sessionID: session.id, order: "asc" })).toEqual(storedBefore)
+    expect(yield* db.select({ id: EventTable.id }).from(EventTable).all().pipe(Effect.orDie)).toEqual(eventsBefore)
+    expect(yield* handlers["compaction.triggers"]({ sessionID: other.id }, rpc)).toEqual({ sessionID: other.id })
+    const reopened = { ...fullContext({ directory: "/project" }), storage: PluginHost.storage(kv, "opencode.plus") }
+    expect(yield* getCompactionTriggers(reopened, session.id)).toEqual({ sessionID: session.id, input: estimate, output: 30 })
+    expect(yield* getCompactionTriggers({ ...reopened, storage: PluginHost.storage(kv, "other.plugin") }, session.id)).toEqual({ sessionID: session.id })
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "completed" })
+    expect(requests).toHaveLength(1)
+    const checkpoints = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+    const checkpoint = checkpoints.at(-1)
+    if (!checkpoint) return yield* Effect.die("Missing completed checkpoint")
+    const reset = loaded(session, [...history, checkpoint])
+    expect(SessionCompaction.thresholdMetrics(reset)).toMatchObject({ output: 0, advanced: false })
+    expect(yield* compaction.compact({ reason: "auto", context: reset })).toEqual({ status: "skipped" })
+    const user = SessionMessage.User.make({ id: SessionMessage.ID.create(), type: "user", text: "New user input", time: { created: DateTime.makeUnsafe(1) } })
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, [...reset.messages, user]) })).toEqual({ status: "skipped" })
+    expect(yield* handlers["compaction.triggers.set"]({ sessionID: session.id, input: null }, rpc)).toEqual({ sessionID: session.id, output: 30 })
+    expect(yield* handlers["compaction.triggers.set"]({ sessionID: session.id, output: null }, rpc)).toEqual({ sessionID: session.id })
+    expect(yield* handlers["compaction.triggers.set"]({ sessionID: session.id }, rpc)).toEqual({ sessionID: session.id })
+    const failing = createHandlers({ ...ctx, storage: { ...ctx.storage, set: () => Effect.die("Synthetic storage failure") } }, state)
+    expect((yield* Effect.exit(failing["compaction.triggers.set"]({ sessionID: session.id, input: 1 }, rpc)))._tag).toBe("Failure")
+    expect(yield* handlers["compaction.triggers"]({ sessionID: session.id }, rpc)).toEqual({ sessionID: session.id })
+    const absent = Session.ID.make("ses_hot_absent")
+    expect((yield* Effect.exit(handlers["compaction.triggers"]({ sessionID: absent }, rpc)))._tag).toBe("Failure")
+    expect((yield* Effect.exit(handlers["compaction.triggers.set"]({ sessionID: absent, input: 1 }, rpc)))._tag).toBe("Failure")
+    expect(yield* getCompactionTriggers(ctx, absent)).toEqual({ sessionID: absent })
+  }),
+)
+
+it.live("compaction trigger preferences survive closing and reopening the production database and plugin storage", () =>
+  Effect.gen(function* () {
+    const files = yield* FileSystem.FileSystem
+    const directory = yield* files.makeTempDirectoryScoped()
+    const fresh = LayerNode.compile(LayerNode.group([Database.node, KV.node, SessionStore.node]), {
+      replacements: [Database.node.replace(Database.configured({ path: `${directory}/triggers.sqlite` }))],
+    })
+    const sessionID = Session.ID.make("ses_hot_reopen")
+    yield* Effect.gen(function* () {
+      const session = yield* insertSession(sessionID)
+      const kv = yield* KV.Service
+      const ctx = { ...fullContext({ directory: "/project", session: { get: () => Effect.succeed(session) } }), storage: PluginHost.storage(kv, "opencode.plus") }
+      expect(yield* setCompactionTriggers(ctx, { sessionID, input: 500, output: 250 })).toEqual({ sessionID, input: 500, output: 250 })
+    }).pipe(Effect.provide(Layer.fresh(fresh)), Effect.scoped)
+    // The first layer's SQLite connection and plugin context have now been released.
+    yield* Effect.gen(function* () {
+      const kv = yield* KV.Service
+      const store = yield* SessionStore.Service
+      expect(yield* store.get(sessionID)).toBeDefined()
+      const reopened = { ...fullContext({ directory: "/project" }), storage: PluginHost.storage(kv, "opencode.plus") }
+      expect(yield* getCompactionTriggers(reopened, sessionID)).toEqual({ sessionID, input: 500, output: 250 })
+      expect(yield* getCompactionTriggers(reopened, "ses_other_reopen")).toEqual({ sessionID: "ses_other_reopen" })
+    }).pipe(Effect.provide(Layer.fresh(fresh)), Effect.scoped)
+  }),
+)
+
+it.effect("output triggers count primary output including reasoning, reset only on completed compaction, and respect auto:false", () =>
+  Effect.gen(function* () {
+    const kv = yield* KV.Service
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const session = yield* insertSession(Session.ID.make("ses_hot_output"))
+    const store = yield* SessionStore.Service
+    const ctx = { ...fullContext({ directory: "/project", session: { get: () => Effect.succeed(session) } }), storage: PluginHost.storage(kv, "opencode.plus") }
+    const state = createState()
+    yield* hooks.register("session", "compaction.decide", (event) => decideCompactionFor(ctx, state, event))
+    const assistant = Schema.decodeUnknownSync(SessionMessage.Assistant)({
+      id: "msg_hot_output", type: "assistant", agent: Agent.defaultID,
+      model: { id: "summary-model", providerID: "test" }, content: [{ type: "text", text: "Primary output" }],
+      tokens: { input: 100, output: 10, reasoning: 20, cache: { read: 0, write: 0 } }, time: { created: 0, completed: 1 },
+    })
+    const failed = Schema.decodeUnknownSync(SessionMessage.CompactionFailed)({
+      id: "msg_failed_summary", type: "compaction", status: "failed", reason: "auto", error: { type: "compaction.unavailable", message: "failed" },
+      tokens: { input: 100, output: 1000, reasoning: 1000, cache: { read: 0, write: 0 } }, time: { created: 0 },
+    })
+    const context = loaded(session, [assistant, failed])
+    expect(SessionCompaction.thresholdMetrics(context)).toMatchObject({ output: 30, advanced: true })
+    const second = Schema.decodeUnknownSync(SessionMessage.Assistant)({
+      ...Schema.encodeSync(SessionMessage.Assistant)(assistant), id: "msg_hot_second",
+      tokens: { input: 200, output: 6, reasoning: 9, cache: { read: 0, write: 0 } },
+    })
+    expect(SessionCompaction.thresholdMetrics(loaded(session, [assistant, failed, second]))).toMatchObject({ output: 45, advanced: true })
+    yield* setCompactionTriggers(ctx, { sessionID: session.id, output: 31 })
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    yield* setCompactionTriggers(ctx, { sessionID: session.id, output: 30 })
+    yield* compaction.transform((editor) => editor.configure({ auto: false }))
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    expect(yield* compaction.compact({ reason: "overflow", context })).toEqual({ status: "skipped" })
+    // Manual admission is still the same production path even while automatic compaction is off.
+    expect(yield* compactContext(context)).toEqual({ status: "completed" })
+    yield* compaction.transform((editor) => editor.configure({ auto: true }))
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "completed" })
+    const checkpoints = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+    expect(SessionCompaction.thresholdMetrics(loaded(session, [...context.messages, ...checkpoints]))).toMatchObject({ output: 0, advanced: false })
+  }),
+)
 
 it.effect("compaction describes tool media without embedding base64", () =>
   Effect.gen(function* () {

@@ -12,6 +12,14 @@ export interface SessionCompactionDecision {
   readonly reason: "auto" | "overflow" | "manual"
   readonly auto: boolean
   readonly due: boolean
+  /** Core's committed primary history, sampled at this safe boundary. */
+  readonly metrics?: {
+    readonly input: number
+    /** Assistant output plus reasoning since the newest completed checkpoint, not billed retries. */
+    readonly output: number
+    /** False until primary assistant history advances past a completed checkpoint, including native. */
+    readonly advanced: boolean
+  }
   readonly boundary: {
     readonly fresh: boolean
     readonly portable: boolean
@@ -29,7 +37,8 @@ export interface SessionCompactionDecision {
   strategy?: "auto" | "local" | "remote"
   /** Read-only attribution hints for monitoring; these never select or request compaction. */
   explanation?: {
-    readonly trigger?: "cold" | "handoff" | "armed"
+    readonly trigger?: "cold" | "handoff" | "armed" | "input-threshold" | "output-threshold"
+    readonly threshold?: number
     readonly strategy?: {
       readonly value: "auto" | "local" | "remote"
       readonly source: CompactionObservation["strategySource"]

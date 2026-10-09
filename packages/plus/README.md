@@ -674,6 +674,19 @@ Anthropic refreshes a 5-minute cache on read, which is why the round trips here 
 
 Keep-alive requests are real provider requests and cost tokens (cache reads are cheap, cache writes are not).
 
+## Per-chat early compaction triggers
+
+Use `/compact-triggers` in the current chat to set optional **input** and **output** token thresholds. Each is an absolute positive whole number, not a percentage. Leave a field blank to clear that trigger and return to normal automatic compaction; both are unset by default. Cancelling either prompt saves nothing.
+
+- **Input** compares against Core's estimated size of the next prompt, including its existing measured-context estimate, instructions, tools and newer history.
+- **Output** compares against cumulative primary assistant output **plus reasoning** since the latest completed compaction. This is not lifetime output or a billing total: summary/title requests, warming pings and rebilled attempts do not add to it. A failed compaction does not reset it.
+- Either threshold can request compaction **earlier** at the next safe step boundary. Saving applies live to the same Session, but does not interrupt an in-flight request or rewrite a dispatched request.
+- The normal context-safety threshold remains in place. `compaction.auto: false` still disables automatic compaction, including these triggers; manual and overflow behavior is unchanged.
+- After a completed text or native checkpoint, early triggers wait for new primary assistant history before firing again. A low input threshold cannot repeatedly compact the fresh checkpoint before the model resumes; new user input alone does not rearm it.
+- These are persistent, isolated per-Session plugin preferences. Setting or clearing them sends no agent message, changes no instructions or model settings, and resets no output counter. Only actual completed compaction changes the checkpoint/history epoch. Strategy, model routing, maximum output, quota handling and warming defaults are unchanged.
+
+Plugin RPC: `compaction.triggers` takes `{ sessionID }`; `compaction.triggers.set` takes `{ sessionID, input?, output? }`. Both return `{ sessionID, input?, output? }`. In the setter an absent field preserves its value and `null` clears it. Unknown Sessions, invalid counts and storage failures are refused rather than reported as applied.
+
 ## Monitor
 
 One page for chat metrics: reasoning, cache reads and writes, uncached input, output, cost, steps and tools with their token attribution, with heavy emphasis on cache misses.

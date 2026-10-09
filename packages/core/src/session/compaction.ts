@@ -239,6 +239,7 @@ export const layer = Layer.effect(
           auto: settings.auto,
           due: due(context, ceiling),
           boundary: compactionBoundary(context.messages),
+          metrics: thresholdMetrics(context),
         })
         .pipe(Effect.timeoutOption(decideTimeout))
       if (Option.isNone(decided)) {
@@ -311,6 +312,7 @@ export const layer = Layer.effect(
                   ? "context-threshold"
                   : "hook-request",
         configuredStrategy,
+        ...(decision.explanation?.threshold === undefined ? {} : { threshold: decision.explanation.threshold }),
         modelPolicy: context.model.compaction?.type,
         strategySource:
           decision.strategy !== undefined
@@ -1300,6 +1302,18 @@ export const recentUserMessages = (
 export const estimateContext = (context: SessionContext.Loaded) => {
   const prompt = estimatePrompt(context)
   return prompt.measured + prompt.estimated
+}
+
+/** Only projected assistant usage counts: maintenance and rebilled physical attempts are not history. */
+export const thresholdMetrics = (context: SessionContext.Loaded) => {
+  const checkpoint = context.messages.findLastIndex((message) => message.type === "compaction" && message.status === "completed")
+  const primary = context.messages.slice(checkpoint + 1).filter((message) => message.type === "assistant")
+  return {
+    input: estimateContext(context),
+    output: primary.reduce((sum, message) => sum + (message.tokens?.output ?? 0) + (message.tokens?.reasoning ?? 0), 0),
+    // Native checkpoints may keep a replayable tail, but that tail precedes the checkpoint, not new output.
+    advanced: checkpoint < 0 || primary.some((message) => !message.error || message.content.length > 0),
+  }
 }
 
 /** The prompt size: `measured` is what the provider reported at the latest response, `estimated` is the text since. */
