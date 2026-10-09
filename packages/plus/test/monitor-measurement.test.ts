@@ -1,6 +1,6 @@
 // Synthetic observations, exercising production measurement/fold boundaries.
 import { expect, test } from "bun:test"
-import { foldSession, isMiss } from "../src/monitor/cache.js"
+import { foldSession, isMiss, windowedSessionSignals } from "../src/monitor/cache.js"
 import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import type { RequestFingerprintData, RequestRow } from "../src/monitor/ledger.js"
 import { measurement, reuseRate, type UsageObservation } from "../src/monitor/measurement.js"
@@ -93,4 +93,18 @@ test("warming is excluded from useful-work ratio; final usage on a failed reques
   expect(reuseRate(requests)).toEqual({ hitRate: 0.05, measuredRequests: 2, unknownRequests: 0, measuredInput: 2000 })
   expect(requests[2]?.verdict).toBe("error")
   expect(isMiss(requests[2]!)).toBe(false)
+})
+
+test("failed and incompatible pings receive no followed-by-hit credit", () => {
+  for (const variant of ["failed", "model", "prefix", "compatible"]) {
+    const ping = {
+      ...row("ping", 10, usage(10000, 10000)), kind: "ping",
+      ...(variant === "failed" ? { status: "error" } : {}),
+      ...(variant === "model" ? { model: "different" } : {}),
+    }
+    const analyzed = foldSession([ping, row("next", 20, usage(10000, 10000))], [], new Map([
+      ["ping", fp("ping")], ["next", fp("next", variant === "prefix" ? "different prefix" : "synthetic unchanged prompt")],
+    ])).analysis
+    expect(windowedSessionSignals(analyzed, { since: 0, until: 30 }).pings.followedByHit).toBe(variant === "compatible" ? 1 : 0)
+  }
 })
