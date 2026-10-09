@@ -127,7 +127,8 @@ function windowOf(
   const mark = marks[0]
   // Compare against a mark: after it is the main window, before it the comparison.
   if (settings.compare === "mark" && mark !== undefined) {
-    const span = settings.window === "all" ? undefined : SPAN[settings.window as Exclude<WindowName, "all" | "compaction">]
+    const span =
+      settings.window === "all" ? undefined : SPAN[settings.window as Exclude<WindowName, "all" | "compaction">]
     return { since: mark.at, compare: { ...(span === undefined ? {} : { since: mark.at - span }), until: mark.at } }
   }
   if (settings.window === "all") return {}
@@ -254,6 +255,21 @@ export function formatTokens(value: number): string {
   return `${trim(n / 1_000_000_000)}B`
 }
 
+export function formatReusePercent(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "—"
+  const rounded = Math.round(value * 1000) / 10
+  return value < 1 && rounded >= 100 ? "<100%" : `${rounded}%`
+}
+
+export function formatReportedRead(request: Plus.MonitorRequest): string {
+  return request.measurement?.read === undefined ? "—" : formatTokens(request.measurement.read)
+}
+
+export function formatReportedWriteByTTL(request: Plus.MonitorRequest): string {
+  const buckets = request.measurement?.writeByTTL
+  return `Reported write 5m: ${buckets?.["5m"] === undefined ? "—" : formatTokens(buckets["5m"])} · Reported write 1h: ${buckets?.["1h"] === undefined ? "—" : formatTokens(buckets["1h"])}`
+}
+
 function trim(value: number): string {
   return Math.abs(value) >= 100 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "")
 }
@@ -332,7 +348,7 @@ export const windowLabels: Readonly<Record<WindowName, string>> = {
  * unknown miss cost is `—`, never a substituted or invented number.
  */
 export function totalsLines(totals: Plus.MonitorTotals, width = 120): string[] {
-  const hr = totals.hitRate === undefined ? "—" : `${Math.round(totals.hitRate * 100)}%`
+  const hr = formatReusePercent(totals.hitRate)
   const cost = formatCostLabel(totals.cost)
   const missCost = formatCostLabel(totals.missCost)
   // steps is required; requests, misses and pings are optional and must show
@@ -374,7 +390,7 @@ function wrapLabels(metrics: readonly string[], width: number): string[] {
 
 /** The compact composer totals: one line, never a horizontal overflow. */
 export function totalsLine(totals: Plus.MonitorTotals, width = 120): string {
-  const hr = totals.hitRate === undefined ? "—" : `${Math.round(totals.hitRate * 100)}%`
+  const hr = formatReusePercent(totals.hitRate)
   const cost = formatCostLabel(totals.cost)
   if (width < 90) {
     return [

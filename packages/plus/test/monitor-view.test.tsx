@@ -7,6 +7,9 @@ import {
   drillInto,
   formatDelta,
   formatTokens,
+  formatReusePercent,
+  formatReportedRead,
+  formatReportedWriteByTTL,
   queryOf,
   type MonitorSettings,
 } from "../src/tui/monitor/format.js"
@@ -26,14 +29,163 @@ afterEach(cleanupLedgers)
 
 const NOW = 1_800_000_000_000
 
+test("Cache read cells distinguish stored legacy/absent/running from reported zero, and incomplete reuse never rounds to 100%", async () => {
+  const db = await ledger()
+  db.session({ id: "ses_chat" }, NOW - 10000)
+  for (const [id, started] of [
+    ["legacy", NOW - 5000],
+    ["zero", NOW - 4000],
+    ["absent", NOW - 3000],
+    ["running", NOW - 2000],
+  ] as const) {
+    db.requestStarted({ id, sessionID: "ses_chat", kind: "step", started })
+    if (id === "running") continue
+    db.requestEnded(id, {
+      status: "completed",
+      ended: started + 1,
+      usage: { input: 1000, output: 0, reasoning: 0, cacheRead: id === "legacy" ? 1000 : 0, cacheWrite: 0, cost: 0 },
+    })
+  }
+  db.requestObserved("zero", { version: 1, completeness: "final", inputTokens: 1000, cacheReadInputTokens: 0 })
+  db.requestObserved("absent", { version: 1, completeness: "final", inputTokens: 1000 })
+  const report = queryMonitor(db, { scope: "session", sessionID: "ses_chat", view: "cache" }, { now: NOW })
+  expect(report.requests!.map(formatReportedRead)).toEqual(["—", "0", "—", "—"])
+  const overview = queryMonitor(db, { scope: "session", sessionID: "ses_chat", view: "overview" }, { now: NOW })
+  expect(overview.context?.[0]).toMatchObject({ now: 0, inputState: "pending" })
+  expect(
+    queryMonitor(db, { scope: "session", sessionID: "ses_chat", view: "overview", since: NOW - 500 }, { now: NOW })
+      .context?.[0]?.inputState,
+  ).toBe("pending")
+  expect(formatReusePercent(202000 / 203000)).toBe("99.5%")
+  expect(formatReusePercent(999999 / 1000000)).toBe("<100%")
+  expect(formatReusePercent(1)).toBe("100%")
+  expect(formatReusePercent(undefined)).toBe("—")
+  const request = report.requests![0]!
+  expect(formatReportedWriteByTTL(request)).toBe("Reported write 5m: — · Reported write 1h: —")
+  expect(
+    formatReportedWriteByTTL({
+      ...request,
+      measurement: { state: "reported", write: 900, writeByTTL: { "5m": 700, "1h": 200 } },
+    }),
+  ).toBe("Reported write 5m: 700 · Reported write 1h: 200")
+  expect(
+    formatReportedWriteByTTL({ ...request, measurement: { state: "reported", write: 900, writeByTTL: { "5m": 0 } } }),
+  ).toBe("Reported write 5m: 0 · Reported write 1h: —")
+  const { fixture } = await render(db, { width: 80, height: 24, settings: { ...defaultSettings, tab: "cache" } })
+  try {
+    const frame = await fixture.waitForFrame((text) => text.includes("row 1 of 4"))
+    const lines = frame.split("\n")
+    const column = lines.find((line) => line.includes("Verdict") && line.includes("Read"))!.indexOf("Read")
+    expect(
+      lines
+        .filter((line) => line.includes("step") && line.includes("[NONE]"))
+        .map((line) => line.slice(column, column + 9).trim()),
+    ).toEqual(["—", "—", "0", "—"])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("detail collection pages update the real consumer, preserve polling cursor, expose full text and never fetch every page", async () => {
+  const db = await ledger()
+  db.session({ id: "ses_chat" }, NOW - 10000)
+  db.requestStarted({ id: "detail", sessionID: "ses_chat", messageID: "detail", kind: "step", started: NOW - 5000 })
+  db.requestEnded("detail", { status: "completed", ended: NOW - 4000 })
+  for (let i = 0; i < 205; i++)
+    db.callStarted({
+      sessionID: "ses_chat",
+      messageID: "detail",
+      callID: `call-${String(i).padStart(3, "0")}`,
+      tool: `tool-${i}`,
+      idx: i,
+      epoch: 0,
+      status: "completed",
+      started: NOW - 4000,
+      inputChars: 1,
+      target: i === 0 ? "α".repeat(2000) : `target-${i}`,
+    })
+  const { fixture, queries } = await render(db, {
+    width: 80,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    dialogs: { selects: ["detail.calls"] },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("1/1 requests"))
+    await dispatch(fixture, "return")
+    await fixture.waitForFrame((text) => text.includes("Request Detail: detail"))
+    await dispatch(fixture, "p")
+    await fixture.waitForFrame((text) => text.includes("detail.calls 1-50/205"))
+    await dispatch(fixture, "]")
+    await fixture.waitForFrame((text) => text.includes("detail.calls 51-100/205") && text.includes("call-050"))
+    const cursor = queries.at(-1)?.pages?.["detail.calls"]?.cursor
+    const count = queries.length
+    await sleep(1200)
+    expect(queries.at(-1)?.pages?.["detail.calls"]?.cursor).toEqual(cursor)
+    expect(queries.length - count).toBeLessThanOrEqual(2)
+    expect(queries.some((query) => (query.pages?.["detail.calls"]?.cursor?.offset ?? 0) > 50)).toBe(false)
+    await dispatch(fixture, "v")
+    await fixture.waitForFrame(() => queries.at(-1)?.fullText === true)
+    await dispatch(fixture, "l")
+    await fixture.waitForFrame((text) => text.includes("detail.calls 1-50/205"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("Sessions and session/facet pickers request further pages only on explicit navigation", async () => {
+  const db = await ledger()
+  for (let i = 0; i < 125; i++) {
+    const id = `session-${String(i).padStart(3, "0")}`
+    db.session({ id, directory: "/work/project", title: `Session ${i}` }, NOW - 10000)
+    db.callStarted({
+      sessionID: id,
+      messageID: "fixture",
+      callID: id,
+      agent: `agent-${i}`,
+      tool: "read",
+      idx: 0,
+      epoch: 0,
+      status: "completed",
+      started: NOW - 1000,
+      inputChars: 1,
+    })
+  }
+  const { fixture, queries } = await render(db, {
+    settings: { ...defaultSettings, scope: "all", tab: "sessions" },
+    dialogs: { selects: ["\0next", "session-124", "\0next", "agent-99"] },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("sessions 1-100/125"))
+    await dispatch(fixture, "]")
+    await fixture.waitForFrame((text) => text.includes("sessions 101-125/125"))
+    await dispatch(fixture, "shift+s")
+    await fixture.waitForFrame(() => queries.some((q) => q.scope === "session" && q.sessionID === "session-124"))
+    await dispatch(fixture, "escape")
+    await dispatch(fixture, "a")
+    await fixture.waitForFrame(() => queries.some((q) => q.pages?.["facets.agents"]?.cursor?.offset === 100))
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("request page keys fetch only explicit pages, polling preserves cursor and filter scope resets it", async () => {
   const db = await ledger()
   db.session({ id: "ses_chat" }, NOW - 1000)
   for (let i = 0; i < 205; i++) {
-    db.requestStarted({ id: `page-${String(i).padStart(3, "0")}`, sessionID: "ses_chat", kind: "step", started: NOW - 500 + i })
+    db.requestStarted({
+      id: `page-${String(i).padStart(3, "0")}`,
+      sessionID: "ses_chat",
+      kind: "step",
+      started: NOW - 500 + i,
+    })
     db.requestEnded(`page-${String(i).padStart(3, "0")}`, { status: "completed", ended: NOW - 200 })
   }
-  const { fixture, queries } = await render(db, { width: 80, height: 24, settings: { ...defaultSettings, tab: "cache" } })
+  const { fixture, queries } = await render(db, {
+    width: 80,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+  })
   try {
     await fixture.waitForFrame((text) => text.includes("100/205 requests"))
     expect(queries.at(-1)?.requestPage).toBeUndefined()
@@ -52,7 +204,9 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     await fixture.waitForFrame(() => queries.at(-1)?.requestPage?.direction === "older")
     await dispatch(fixture, "x")
     await fixture.waitForFrame(() => queries.at(-1)?.missesOnly === true && queries.at(-1)?.requestPage === undefined)
-  } finally { fixture.destroy() }
+  } finally {
+    fixture.destroy()
+  }
 })
 
 // A chat that read a file and ran tests, then delegated to an explorer that grepped and failed an edit.
@@ -131,7 +285,10 @@ async function render(
       ? {}
       : {
           storage: new Map<string, unknown>([
-            [options.settingsKey ?? (options.full ?? true ? "monitor" : "monitor-composer"), { settings: options.settings }],
+            [
+              options.settingsKey ?? ((options.full ?? true) ? "monitor" : "monitor-composer"),
+              { settings: options.settings },
+            ],
           ]),
         }),
     rpc: {
@@ -431,9 +588,7 @@ test("Sessions Enter and space are temporary drills that restore scope and filte
     settings: saved,
     settingsKey: "monitor",
     customReport: (input) =>
-      input.view === "sessions"
-        ? { ...base, sessions }
-        : { ...base, scope: input.scope, sessions },
+      input.view === "sessions" ? { ...base, sessions } : { ...base, scope: input.scope, sessions },
   })
   try {
     await fixture.waitForFrame((text) => text.includes("Session / Role"))
@@ -642,7 +797,9 @@ test("full and compact keep separate persisted settings", async () => {
     // Changing a compact setting writes only the composer's own key.
     dispatch(compact.fixture, "s")
     await compact.fixture.waitForFrame((text) => text.includes("scope team"))
-    expect((compact.fixture.storeValue("monitor-composer") as { settings: MonitorSettings }).settings.scope).toBe("team")
+    expect((compact.fixture.storeValue("monitor-composer") as { settings: MonitorSettings }).settings.scope).toBe(
+      "team",
+    )
     expect(compact.fixture.storeValue("monitor")).toBeUndefined()
   } finally {
     compact.fixture.destroy()
@@ -734,7 +891,9 @@ test("every total metric stays visible and labelled at 80, 100 and 160 columns",
       const frame = await fixture.waitForFrame((text) => text.includes("reqs: 5"))
       const totalsBlock = frame
         .split("\n")
-        .filter((line) => /^(reqs|steps|in|read|write|out|reason|hit rate|misses|miss cost|pings|cost):/.test(line.trim()))
+        .filter((line) =>
+          /^(reqs|steps|in|read|write|out|reason|hit rate|misses|miss cost|pings|cost):/.test(line.trim()),
+        )
         .join("\n")
       labels.forEach((label) => expect(totalsBlock).toContain(label))
       frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
@@ -839,8 +998,16 @@ test("Cache detail labels omitted timings — and keeps a real zero as 0ms", asy
   const base = contractFixtureReport(NOW)
   const cases: { timing: Plus.MonitorRequestDetail["timing"]; gap: string; lifetime: string }[] = [
     { timing: { warming: "on" }, gap: "Gap since last request: —", lifetime: "Cache lifetime: —" },
-    { timing: { gapMs: 0, lifetimeMs: 0, warming: "off" }, gap: "Gap since last request: 0ms", lifetime: "Cache lifetime: 0ms" },
-    { timing: { gapMs: 420_000, lifetimeMs: 300_000, warming: "off" }, gap: "Gap since last request: 7m", lifetime: "Cache lifetime: 5m" },
+    {
+      timing: { gapMs: 0, lifetimeMs: 0, warming: "off" },
+      gap: "Gap since last request: 0ms",
+      lifetime: "Cache lifetime: 0ms",
+    },
+    {
+      timing: { gapMs: 420_000, lifetimeMs: 300_000, warming: "off" },
+      gap: "Gap since last request: 7m",
+      lifetime: "Cache lifetime: 5m",
+    },
   ]
   for (const width of [80, 160]) {
     for (const item of cases) {
@@ -883,7 +1050,17 @@ test("Steps detail is honest about duration and a missing/empty fingerprint diff
     {
       name: "missing duration and no earlier request",
       request: { ...step, durationMs: undefined } as unknown as Plus.MonitorRequest,
-      detail: { request: step, lines: [], segments: [], timing: { warming: "off" }, pings: [], accounts: [], instructions: [], reverts: [], actualCacheRead: 0 },
+      detail: {
+        request: step,
+        lines: [],
+        segments: [],
+        timing: { warming: "off" },
+        pings: [],
+        accounts: [],
+        instructions: [],
+        reverts: [],
+        actualCacheRead: 0,
+      },
       list: "—",
       expect: ["No earlier request to compare."],
       absent: ["Prefix is identical to previous request."],
@@ -922,7 +1099,14 @@ test("Steps detail is honest about duration and a missing/empty fingerprint diff
       })
       try {
         // The list row shows the duration cell (— omitted, 0ms real zero).
-        const list = await fixture.waitForFrame((text) => /^(Time|Kind)\b/.test(text.split("\n").map((l) => l.trim()).find((l) => /^Time\b/.test(l)) ?? ""))
+        const list = await fixture.waitForFrame((text) =>
+          /^(Time|Kind)\b/.test(
+            text
+              .split("\n")
+              .map((l) => l.trim())
+              .find((l) => /^Time\b/.test(l)) ?? "",
+          ),
+        )
         expect(list).toContain(item.list)
         dispatch(fixture, "return")
         const frame = await fixture.waitForFrame((text) => text.includes("Step Detail:"))

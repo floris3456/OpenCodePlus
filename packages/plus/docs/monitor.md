@@ -10,17 +10,17 @@ One assistant message is one step (one LLM call). Core publishes every fact
 the monitor needs as durable session events, which the Plus server plugin
 receives through `ctx.event.subscribe()`:
 
-| event | used for |
-| --- | --- |
-| `session.created`, `session.renamed` | session row: parent (subagents), agent, title, directory |
-| `session.step.started` | step: agent, model, index, compaction epoch, instructions revision |
-| `session.text.ended` | the step's visible text size (output split) |
-| `session.tool.input.started` | the tool name of a call id |
-| `session.tool.called` | call row: input size, target, running |
-| `session.tool.success` / `.failed` | status, error, result size; Code Mode inner calls from `metadata.toolCalls` |
-| `session.step.ended` / `.failed` | token usage and cost; attribution |
-| `session.compaction.ended` | a compaction step and a new epoch (carried stops here) |
-| `session.inbox.delivered`, `session.synthetic`, `session.instructions.updated` | the next step's prompt grew for other reasons: keep the estimate |
+| event                                                                          | used for                                                                    |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `session.created`, `session.renamed`                                           | session row: parent (subagents), agent, title, directory                    |
+| `session.step.started`                                                         | step: agent, model, index, compaction epoch, instructions revision          |
+| `session.text.ended`                                                           | the step's visible text size (output split)                                 |
+| `session.tool.input.started`                                                   | the tool name of a call id                                                  |
+| `session.tool.called`                                                          | call row: input size, target, running                                       |
+| `session.tool.success` / `.failed`                                             | status, error, result size; Code Mode inner calls from `metadata.toolCalls` |
+| `session.step.ended` / `.failed`                                               | token usage and cost; attribution                                           |
+| `session.compaction.ended`                                                     | a compaction step and a new epoch (carried stops here)                      |
+| `session.inbox.delivered`, `session.synthetic`, `session.instructions.updated` | the next step's prompt grew for other reasons: keep the estimate            |
 
 Core retains no event history here (the `event` table is empty on this
 machine) and deleting a session deletes its messages, so the monitor keeps its
@@ -73,7 +73,17 @@ pruned once per process.
 - The TUI polls every second while calls are running or the newest is under a
   minute old, every five seconds otherwise, and only while the tab or route is
   visible.
+
 # Request pages
+
+Request Read cells use reported measurement presence: absent/running/legacy is
+`—`, and explicit reported zero is `0`. Detail labels expose optional reported
+write buckets independently as `Reported write 5m` and `Reported write 1h`;
+missing buckets stay `—`, with no subtraction or TTL-price inference. The RPC
+field is `measurement.writeByTTL?: { "5m"?: number; "1h"?: number }`.
+Reuse percentages below one never round up to `100%`. Context retains legacy
+`now` accounting, with `inputState` and optional `measuredNow` identifying
+pending, unavailable, stored accounting, or measured input in the TUI.
 
 `monitor.query` request arrays are bounded: the default is the latest 100 rows,
 and `requestPage.limit` is clamped to 1–500. Rows within a page are chronological;
@@ -88,11 +98,39 @@ Response `requestPage` reports `total` eligible rows, `returned`, `limit`, and
 population, independent of the request page. Explicit `id` detail lookup also
 works outside the current page, subject to the scope, time and request filters.
 An old consumer must not treat the bounded `requests` array as complete unless
-`requestPage.complete` says so. Other sections, including sessions, context and
-agents, are **not** paginated by this contract.
+`requestPage.complete` says so.
+
+Other collections use `pages: { section: { limit?, cursor? } }`: `sessions`,
+`context`, `agents`, `teams`, `unstable`, and `detail.lines`, `detail.segments`,
+`detail.calls`, `detail.pings`, `detail.accounts`, `detail.instructions`,
+`detail.reverts`. Defaults are 100 rows (50 for detail); limits clamp to 1–500.
+Metadata in `report.pages[section]` gives `total`, `returned`, `offset`, `limit`,
+`revision`, `complete`, `reset`, `next`, and `previous`. A stale content-revision
+cursor resets visibly to the first page rather than applying an obsolete offset.
+Instruction updates with multiple keys are represented as one key fact per row;
+updates with no keys remain visible. All selected facts remain reachable.
+
+Facet selections also paginate: `facets.agents`, `facets.tools`, `facets.models`
+inputs use `pages`; continuation metadata is in `report.facets.pages`. Picker
+searches apply only to the displayed page, and Previous/Next actions fetch more
+only when explicitly selected. Top groups/feed and marks retain their existing
+explicit top/feed/50-most-recent contracts, not an implied whole-history export.
+
+Presentation text previews are limited to 512 characters and recorded in
+`presentation.truncated`. `fullText: true` restores the original strings on the
+selected bounded page; IDs/hashes and facet/team filter identities stay intact.
+This is **not a hard response-byte bound**. Explicit full text and opaque identity
+strings can be large. Request tool-name lists preview at most 20 unique names,
+with `toolsTotal`/`toolsComplete`; the full attributed calls are independently
+reachable via `detail.calls`. Tokens/coverage refer to full populations, never
+the shortened presentation.
 
 In Cache and Steps, `[` opens older rows, `]` opens newer rows, and `l` returns to
 the latest page. Polling refreshes only the chosen page, never automatically
 fetches every page, and follows the selected request ID while it remains present.
-Text filtering is explicitly **page-local**; agent/model/time/scope selections
+For Sessions/Overview and request evidence, `p` chooses the visible collection;
+`[`/`]` fetch its previous/next page and `l` resets it. `v` toggles unabridged
+selected-page facts. Overview scrolls all returned context/agent/unstable rows;
+detail can inspect every named evidence collection. Text filtering is explicitly
+**page-local**; agent/model/time/scope selections
 are server-side population filters.

@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { Definition, type Plus } from "../../rpc.js"
 import {
@@ -51,10 +51,7 @@ export function refreshInterval(report: Plus.MonitorReport | undefined): number 
   // the last (newest) request, or the newest ping. `requests` is oldest-first,
   // so its newest row is the last one. Reading only the first request would
   // treat a live ping or a fresh request as idle whenever an older feed exists.
-  const latest = Math.max(
-    report.feed[0]?.started ?? 0,
-    report.requests?.at(-1)?.at ?? 0,
-  )
+  const latest = Math.max(report.feed[0]?.started ?? 0, report.requests?.at(-1)?.at ?? 0)
   return report.totals.running > 0 || report.now - latest < LIVE_FOR_MS ? REFRESH_MS : IDLE_REFRESH_MS
 }
 
@@ -132,10 +129,47 @@ export function MonitorView(props: MonitorViewProps) {
   const [failure, setFailure] = createSignal<string | undefined>()
   const [selected, setSelected] = createSignal(0)
   const [requestPage, setRequestPage] = createSignal<Plus.MonitorQueryInput["requestPage"]>()
-  const pageScope = createMemo(() => JSON.stringify([tab(), sessionID(), settings().scope, settings().team, settings().window, settings().agent, settings().model, settings().tool, settings().errors, settings().missesOnly]))
+  const [pages, setPages] = createSignal<Plus.MonitorQueryInput["pages"]>()
+  const [collection, setCollection] = createSignal<Plus.MonitorPageSection>()
+  const [fullText, setFullText] = createSignal(false)
+  const pageTarget = () =>
+    collection() ??
+    (activeDrill()?.requestID
+      ? "detail.segments"
+      : tab() === "sessions"
+        ? "sessions"
+        : tab() === "overview"
+          ? "agents"
+          : undefined)
+  const metadata = () => {
+    const target = pageTarget()
+    return target ? (report()?.pages?.[target] ?? report()?.facets.pages?.[target]) : undefined
+  }
+  const pageScope = createMemo(() =>
+    JSON.stringify([
+      tab(),
+      sessionID(),
+      settings().scope,
+      settings().team,
+      settings().window,
+      settings().agent,
+      settings().model,
+      settings().tool,
+      settings().errors,
+      settings().missesOnly,
+    ]),
+  )
   createEffect(() => {
     pageScope()
     setRequestPage(undefined)
+    setPages(undefined)
+    setCollection(undefined)
+    setFullText(false)
+  })
+  createEffect(() => {
+    activeDrill()?.requestID
+    setPages(undefined)
+    setCollection(undefined)
   })
   const scrolls: Partial<Record<TabName, ScrollBoxRenderable>> = {}
 
@@ -144,8 +178,7 @@ export function MonitorView(props: MonitorViewProps) {
     feed: readonly Plus.MonitorCall[]
   }>({ groups: [], feed: [] })
 
-  const top = () =>
-    props.full ? Math.max(5, Math.floor((dimensions().height - 12) * 0.55)) : COMPOSER_GROUP_FETCH
+  const top = () => (props.full ? Math.max(5, Math.floor((dimensions().height - 12) * 0.55)) : COMPOSER_GROUP_FETCH)
   const feed = () => (props.full ? Math.max(3, dimensions().height - 12 - top()) : 0)
 
   const location = () => {
@@ -163,15 +196,21 @@ export function MonitorView(props: MonitorViewProps) {
     }
     flight.busy = true
     const generation = ++flight.generation
-    const query = queryOf({ ...settings(), tab: tab() }, {
-      sessionID: sessionID(),
-      now: Date.now(),
-      marks: report()?.marks ?? [],
-      top: top(),
-      feed: feed(),
-      id: activeDrill()?.requestID,
-    })
-    void plus["monitor.query"]({ ...query, requestPage: requestPage() }, { location: location() })
+    const query = queryOf(
+      { ...settings(), tab: tab() },
+      {
+        sessionID: sessionID(),
+        now: Date.now(),
+        marks: report()?.marks ?? [],
+        top: top(),
+        feed: feed(),
+        id: activeDrill()?.requestID,
+      },
+    )
+    void plus["monitor.query"](
+      { ...query, requestPage: requestPage(), pages: pages(), fullText: fullText() },
+      { location: location() },
+    )
       .then(
         (next) => {
           if (generation !== flight.generation) return
@@ -193,16 +232,24 @@ export function MonitorView(props: MonitorViewProps) {
           // top and shifts every row down. Remember the selected request's id
           // so the selection follows the same request instead of its old row.
           const previousID =
-            props.full && (tab() === "cache" || tab() === "steps")
-              ? (tab() === "cache" ? cacheRequests(shown(), settings().missesOnly) : shown()?.requests ?? [])[selected()]?.id
+            props.full && (tab() === "cache" || tab() === "steps" || tab() === "sessions")
+              ? tab() === "sessions"
+                ? shown()?.sessions?.[selected()]?.sessionID
+                : (tab() === "cache" ? cacheRequests(shown(), settings().missesOnly) : (shown()?.requests ?? []))[
+                    selected()
+                  ]?.id
               : undefined
           setReport(next)
           setFailure(undefined)
           setSelected((index) => {
             if (previousID !== undefined) {
-              const at = (tab() === "cache" ? cacheRequests(filtered, settings().missesOnly) : filtered.requests ?? []).findIndex(
-                (request) => request.id === previousID,
-              )
+              const at =
+                tab() === "sessions"
+                  ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
+                  : (tab() === "cache"
+                      ? cacheRequests(filtered, settings().missesOnly)
+                      : (filtered.requests ?? [])
+                    ).findIndex((request) => request.id === previousID)
               if (at !== -1) return at
             }
             return Math.min(index, maxIdx)
@@ -225,8 +272,10 @@ export function MonitorView(props: MonitorViewProps) {
     feed()
     activeDrill()
     requestPage()
+    pages()
+    fullText()
     flight.generation++
-    if (props.active()) refresh()
+    if (props.active()) untrack(refresh)
   })
 
   const pace = createMemo(() => refreshInterval(report()))
@@ -309,39 +358,78 @@ export function MonitorView(props: MonitorViewProps) {
   })
 
   const pickFilter = async (dimension: "agent" | "tool" | "model") => {
-    const facets = report()?.facets
-    const values = dimension === "agent" ? facets?.agents : dimension === "tool" ? facets?.tools : facets?.models
-    const choice = await props.context.ui.dialog.select<string>({
-      title: `Show one ${dimension}`,
-      placeholder: `Filter by ${dimension}`,
-      current: settings()[dimension] ?? "",
-      options: [
-        { title: `Every ${dimension}`, value: "" },
-        ...(values ?? []).map((value) => ({ title: value, value })),
-      ],
-    })
-    props.context.ui.dialog.clear()
-    if (choice === undefined) return
-    const next = { ...settings() }
-    change(choice === "" ? withoutKey(next, dimension) : { ...next, [dimension]: choice })
+    const target = dimension === "agent" ? "facets.agents" : dimension === "tool" ? "facets.tools" : "facets.models"
+    const query = {
+      ...queryOf(settings(), {
+        sessionID: sessionID(),
+        now: Date.now(),
+        marks: report()?.marks ?? [],
+        top: 0,
+        feed: 0,
+      }),
+      until: Date.now(),
+    }
+    let current = report()
+    while (true) {
+      const facets = current?.facets
+      const values = dimension === "agent" ? facets?.agents : dimension === "tool" ? facets?.tools : facets?.models
+      const page = facets?.pages?.[target]
+      const choice = await props.context.ui.dialog.select<string>({
+        title: `Show one ${dimension}`,
+        placeholder: `Filter by ${dimension} (search this page)`,
+        current: settings()[dimension] ?? "",
+        options: [
+          { title: `Every ${dimension}`, value: "" },
+          ...(values ?? []).map((value) => ({ title: value, value })),
+          ...(page?.previous ? [{ title: "Previous page", value: "\0previous" }] : []),
+          ...(page?.next ? [{ title: "Next page", value: "\0next" }] : []),
+        ],
+      })
+      props.context.ui.dialog.clear()
+      if (choice === undefined) return
+      if (choice === "\0next" || choice === "\0previous") {
+        const cursor = choice === "\0next" ? page?.next : page?.previous
+        if (!cursor) return
+        current = await plus["monitor.query"]({ ...query, pages: { [target]: { cursor } } }, { location: location() })
+        continue
+      }
+      const next = { ...settings() }
+      change(choice === "" ? withoutKey(next, dimension) : { ...next, [dimension]: choice })
+      return
+    }
   }
 
   const pickTeam = async () => {
-    const teams = report()?.teams ?? []
-    const choice = await props.context.ui.dialog.select<string>({
-      title: "Choose team",
-      placeholder: "Select team to scope…",
-      options: [
-        { title: "No team filter", value: "" },
-        ...teams.map((t) => ({ title: t, value: t })),
-      ],
-    })
-    props.context.ui.dialog.clear()
-    if (choice === undefined) return
-    if (choice === "") {
-      change({ ...settings(), scope: "project", team: undefined })
-    } else {
-      change({ ...settings(), scope: "team", team: choice })
+    let current = report()
+    while (true) {
+      const page = current?.pages?.teams
+      const choice = await props.context.ui.dialog.select<string>({
+        title: "Choose team",
+        placeholder: "Select team to scope (search this page)…",
+        options: [
+          { title: "No team filter", value: "" },
+          ...(current?.teams ?? []).map((t) => ({ title: t, value: t })),
+          ...(page?.previous ? [{ title: "Previous page", value: "\0previous" }] : []),
+          ...(page?.next ? [{ title: "Next page", value: "\0next" }] : []),
+        ],
+      })
+      props.context.ui.dialog.clear()
+      if (choice === undefined) return
+      if (choice === "\0next" || choice === "\0previous") {
+        const cursor = choice === "\0next" ? page?.next : page?.previous
+        if (!cursor) return
+        current = await plus["monitor.query"](
+          { scope: "all", view: "sessions", pages: { teams: { cursor } }, fullText: true },
+          { location: location() },
+        )
+        continue
+      }
+      change(
+        choice === ""
+          ? { ...settings(), scope: "project", team: undefined }
+          : { ...settings(), scope: "team", team: choice },
+      )
+      return
     }
   }
 
@@ -350,11 +438,25 @@ export function MonitorView(props: MonitorViewProps) {
   const openPicker = () => {
     void plus["monitor.query"]({ scope: "all", view: "sessions" }, { location: location() }).then(
       (all) =>
-        openSessionPicker(props.context, all.sessions, (picked) => {
-          // The picked session is a temporary drill; the stored scope stays.
-          setSelected(0)
-          setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: picked }])
-        }),
+        openSessionPicker(
+          props.context,
+          all.sessions,
+          (picked) => {
+            // The picked session is a temporary drill; the stored scope stays.
+            setSelected(0)
+            setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: picked }])
+          },
+          {
+            page: all.pages?.sessions,
+            load: async (cursor) => {
+              const next = await plus["monitor.query"](
+                { scope: "all", view: "sessions", pages: { sessions: { cursor } }, fullText: true },
+                { location: location() },
+              )
+              return { sessions: next.sessions ?? [], page: next.pages?.sessions }
+            },
+          },
+        ),
       (error: unknown) =>
         props.context.ui.toast.show({
           variant: "error",
@@ -389,7 +491,7 @@ export function MonitorView(props: MonitorViewProps) {
 
   const filterTextPrompt = async () => {
     const text = await props.context.ui.dialog.prompt({
-      title: tab() === "cache" || tab() === "steps" ? "Filter this request page by text" : "Filter by text",
+      title: "Filter this report page by text (page-local)",
       placeholder: "e.g. read, shell, error…",
     })
     props.context.ui.dialog.clear()
@@ -451,22 +553,80 @@ export function MonitorView(props: MonitorViewProps) {
     enabled: () => props.active(),
     priority: 1,
     commands: [
+      {
+        bind: "p",
+        title: "Choose report collection to page",
+        group: "Monitor",
+        run: () => {
+          const names = Object.keys(report()?.pages ?? {}).filter((name) =>
+            activeDrill()?.requestID
+              ? name.startsWith("detail.")
+              : tab() === "sessions"
+                ? name === "sessions"
+                : tab() === "overview"
+                  ? ["agents", "context", "unstable"].includes(name)
+                  : false,
+          )
+          void props.context.ui.dialog
+            .select<Plus.MonitorPageSection | "requests">({
+              title: "Page report collection (text search is page-local)",
+              options: [
+                ...(tab() === "cache" || tab() === "steps" ? [{ title: "requests", value: "requests" as const }] : []),
+                ...names.map((name) => ({
+                  title: `${name}: ${(report()?.pages?.[name] ?? report()?.facets.pages?.[name])?.total ?? 0} rows`,
+                  value: name as Plus.MonitorPageSection,
+                })),
+              ],
+            })
+            .then((picked) => {
+              props.context.ui.dialog.clear()
+              if (picked === undefined) return
+              setCollection(picked === "requests" ? undefined : picked)
+            })
+        },
+      },
+      {
+        bind: "v",
+        title: "Toggle unabridged selected-page text",
+        group: "Monitor",
+        run: () => setFullText((value) => !value),
+      },
       ...(["older", "newer"] as const).map((direction) => ({
         bind: direction === "older" ? "[" : "]",
-        title: `${direction} request page`, group: "Monitor",
+        title: `${direction} request page`,
+        group: "Monitor",
         run: () => {
-          if (tab() !== "cache" && tab() !== "steps" || activeDrill()?.requestID) return
+          const target = pageTarget()
+          if (target) {
+            const cursor = direction === "older" ? metadata()?.previous : metadata()?.next
+            if (!cursor) return
+            setSelected(0)
+            setPages((current) => ({ ...current, [target]: { cursor } }))
+            return
+          }
+          if ((tab() !== "cache" && tab() !== "steps") || activeDrill()?.requestID) return
           const cursor = report()?.requestPage?.[direction]
           if (!cursor) return
           setSelected(0)
           setRequestPage({ cursor, direction })
         },
       })),
-      { bind: "l", title: "Latest request page", group: "Monitor", run: () => {
-        if (tab() !== "cache" && tab() !== "steps") return
-        setSelected(0)
-        setRequestPage(undefined)
-      } },
+      {
+        bind: "l",
+        title: "Reset selected page",
+        group: "Monitor",
+        run: () => {
+          if (pageTarget()) {
+            const target = pageTarget()!
+            setSelected(0)
+            setPages((current) => ({ ...current, [target]: undefined }))
+            return
+          }
+          if (tab() !== "cache" && tab() !== "steps") return
+          setSelected(0)
+          setRequestPage(undefined)
+        },
+      },
       {
         bind: "up,k",
         title: "Previous row",
@@ -703,20 +863,17 @@ export function MonitorView(props: MonitorViewProps) {
       ].join(" · ")
 
     return (
-      <box
-        flexDirection="column"
-        height={TOOLS_BODY_ROWS}
-        paddingLeft={1}
-        paddingRight={1}
-        minWidth={0}
-      >
+      <box flexDirection="column" height={TOOLS_BODY_ROWS} paddingLeft={1} paddingRight={1} minWidth={0}>
         <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
           {composerFilters()}
         </text>
         <Show when={failure()}>
           {(message) => <text fg={theme().text.feedback.error.base}>{`tools unavailable: ${message()}`}</text>}
         </Show>
-        <Show when={report()} fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading…" : ""}</text>}>
+        <Show
+          when={report()}
+          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading…" : ""}</text>}
+        >
           {(current) => (
             <box flexDirection="column" flexShrink={0}>
               <text fg={theme().text.base} wrapMode="none" truncate>
@@ -767,7 +924,7 @@ export function MonitorView(props: MonitorViewProps) {
         <text fg={theme().text.action.primary.focused} attributes={TextAttributes.BOLD}>
           {scopeLabel()}
         </text>
-        <text fg={theme().text.muted}>   [s] step · [S] session · [T] team</text>
+        <text fg={theme().text.muted}> [s] step · [S] session · [T] team</text>
       </box>
 
       {/* When Line */}
@@ -778,7 +935,7 @@ export function MonitorView(props: MonitorViewProps) {
         <text fg={theme().text.action.primary.focused} attributes={TextAttributes.BOLD}>
           {windowLabelText()}
         </text>
-        <text fg={theme().text.muted}>   [t] step window</text>
+        <text fg={theme().text.muted}> [t] step window</text>
       </box>
 
       {/* Active filters / compare / order line */}
@@ -793,10 +950,26 @@ export function MonitorView(props: MonitorViewProps) {
       </Show>
 
       {/* Totals: every metric, labelled, wrapped at this width */}
+      <Show when={metadata()}>
+        {(page) => (
+          <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
+            {`${page().reset ? "[changed: reset] " : ""}${pageTarget()} ${page().total === 0 ? 0 : page().offset + 1}-${page().offset + page().returned}/${page().total} · text:page-local · [/] page · p select · l first`}
+          </text>
+        )}
+      </Show>
+      <Show when={(report()?.presentation?.truncated.length ?? 0) > 0 || fullText()}>
+        <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
+          {fullText()
+            ? "Unabridged selected-page text · v preview"
+            : "Text preview truncated · v unabridged selected-page facts"}
+        </text>
+      </Show>
       <Show when={(tab() === "cache" || tab() === "steps") && report()?.requestPage}>
-        {(page) => <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
-          {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
-        </text>}
+        {(page) => (
+          <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
+            {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
+          </text>
+        )}
       </Show>
       <Show when={report()}>
         {(current) => (
@@ -836,9 +1009,7 @@ export function MonitorView(props: MonitorViewProps) {
         </For>
         <box flexGrow={1} />
         <Show when={drills().length > 0}>
-          <text fg={theme().text.feedback.info.base}>
-            {`drilled ${drills().length} (⌫ back)`}
-          </text>
+          <text fg={theme().text.feedback.info.base}>{`drilled ${drills().length} (⌫ back)`}</text>
         </Show>
       </box>
 
@@ -852,10 +1023,7 @@ export function MonitorView(props: MonitorViewProps) {
       </Show>
 
       {/* Tab Contents or Help */}
-      <Show
-        when={!helpOpen()}
-        fallback={<MonitorHelp context={props.context} onClose={() => setHelpOpen(false)} />}
-      >
+      <Show when={!helpOpen()} fallback={<MonitorHelp context={props.context} onClose={() => setHelpOpen(false)} />}>
         <Show
           when={report()}
           fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading monitor data…" : ""}</text>}
@@ -864,7 +1032,7 @@ export function MonitorView(props: MonitorViewProps) {
             <box flexDirection="column" flexGrow={1} minWidth={0}>
               <Show when={tab() === "overview"}>
                 <scrollbox flexGrow={1} minWidth={0}>
-                  <OverviewTab context={props.context} report={shown()} full={true} />
+                  <OverviewTab context={props.context} report={shown()} full={true} collection={collection()} />
                 </scrollbox>
               </Show>
               <Show when={tab() === "cache"}>
@@ -874,6 +1042,7 @@ export function MonitorView(props: MonitorViewProps) {
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   detailID={activeDrill()?.requestID}
+                  collection={pageTarget()}
                   missesOnly={settings().missesOnly}
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.cache = ref)}
@@ -918,6 +1087,7 @@ export function MonitorView(props: MonitorViewProps) {
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   detailID={activeDrill()?.requestID}
+                  collection={pageTarget()}
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.steps = ref)}
                 />

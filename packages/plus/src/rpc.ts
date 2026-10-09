@@ -1258,7 +1258,9 @@ export const ChecksSaveInput = Schema.Struct({
   setup: Schema.optionalKey(ProjectCheckEntry),
 }).annotate({ identifier: "Plus.ChecksSaveInput" })
 
-export const ChecksSaved = Schema.Struct({ path: Schema.String, checks: Schema.Array(Schema.String) }).annotate({ identifier: "Plus.ChecksSaved" })
+export const ChecksSaved = Schema.Struct({ path: Schema.String, checks: Schema.Array(Schema.String) }).annotate({
+  identifier: "Plus.ChecksSaved",
+})
 
 export const ChecksInvalid = Schema.Struct({ reason: Schema.String }).annotate({ identifier: "Plus.ChecksInvalid" })
 
@@ -1292,7 +1294,9 @@ export const WarmingChanged = Schema.Struct({
 
 // The tool and token monitor (monitor/): what a query asks and what it answers.
 export type MonitorScope = typeof MonitorScope.Type
-export const MonitorScope = Schema.Literals(["session", "tree", "team", "project", "all"]).annotate({ identifier: "Plus.MonitorScope" })
+export const MonitorScope = Schema.Literals(["session", "tree", "team", "project", "all"]).annotate({
+  identifier: "Plus.MonitorScope",
+})
 
 export const MonitorView = Schema.Literals(["overview", "cache", "tools", "sessions", "steps"])
 
@@ -1313,6 +1317,41 @@ export const MonitorRequestPageInput = Schema.Struct({
   cursor: Schema.optionalKey(MonitorRequestCursor),
   direction: Schema.optionalKey(Schema.Literals(["older", "newer"])),
 })
+export const MonitorPageCursor = Schema.Struct({ offset: Schema.Number, revision: Schema.String })
+export const MonitorPageInput = Schema.Struct({
+  limit: Schema.optionalKey(Schema.Number),
+  cursor: Schema.optionalKey(MonitorPageCursor),
+})
+export const MonitorPagesInput = Schema.Struct({
+  sessions: Schema.optionalKey(MonitorPageInput),
+  context: Schema.optionalKey(MonitorPageInput),
+  agents: Schema.optionalKey(MonitorPageInput),
+  teams: Schema.optionalKey(MonitorPageInput),
+  unstable: Schema.optionalKey(MonitorPageInput),
+  "facets.agents": Schema.optionalKey(MonitorPageInput),
+  "facets.tools": Schema.optionalKey(MonitorPageInput),
+  "facets.models": Schema.optionalKey(MonitorPageInput),
+  "detail.lines": Schema.optionalKey(MonitorPageInput),
+  "detail.segments": Schema.optionalKey(MonitorPageInput),
+  "detail.calls": Schema.optionalKey(MonitorPageInput),
+  "detail.pings": Schema.optionalKey(MonitorPageInput),
+  "detail.accounts": Schema.optionalKey(MonitorPageInput),
+  "detail.instructions": Schema.optionalKey(MonitorPageInput),
+  "detail.reverts": Schema.optionalKey(MonitorPageInput),
+})
+export const MonitorPage = Schema.Struct({
+  total: Schema.Number,
+  returned: Schema.Number,
+  limit: Schema.Number,
+  offset: Schema.Number,
+  revision: Schema.String,
+  complete: Schema.Boolean,
+  reset: Schema.Boolean,
+  next: Schema.optionalKey(MonitorPageCursor),
+  previous: Schema.optionalKey(MonitorPageCursor),
+})
+export type MonitorPage = Schema.Schema.Type<typeof MonitorPage>
+export type MonitorPageSection = keyof Schema.Schema.Type<typeof MonitorPagesInput>
 export interface MonitorQueryInput extends Schema.Schema.Type<typeof MonitorQueryInput> {}
 export const MonitorQueryInput = Schema.Struct({
   scope: MonitorScope,
@@ -1326,6 +1365,9 @@ export const MonitorQueryInput = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   missesOnly: Schema.optionalKey(Schema.Boolean),
   requestPage: Schema.optionalKey(MonitorRequestPageInput),
+  pages: Schema.optionalKey(MonitorPagesInput),
+  /** Explicitly request unabridged text on the selected bounded pages/detail. */
+  fullText: Schema.optionalKey(Schema.Boolean),
   titles: Schema.optionalKey(Schema.Boolean),
   agents: Schema.optionalKey(Schema.Array(Schema.String)),
   tools: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -1390,16 +1432,18 @@ export const MonitorTotals = Schema.Struct({
   missTokens: Schema.optionalKey(Schema.Number),
   /** Complete explanatory shortfall-vs-read differential, not recorded accounting or billed loss. */
   missCost: Schema.optionalKey(Schema.Number),
-  pricingCoverage: Schema.optionalKey(Schema.Struct({
-    requests: Schema.Number,
-    priced: Schema.Number,
-    zeroShortfall: Schema.Number,
-    unpriced: Schema.Number,
-    unknownShortfall: Schema.Number,
-    complete: Schema.Boolean,
-    subsetScenarioCost: Schema.optionalKey(Schema.Number),
-    scenario: Schema.Literal("shortfall-vs-cache-read"),
-  })),
+  pricingCoverage: Schema.optionalKey(
+    Schema.Struct({
+      requests: Schema.Number,
+      priced: Schema.Number,
+      zeroShortfall: Schema.Number,
+      unpriced: Schema.Number,
+      unknownShortfall: Schema.Number,
+      complete: Schema.Boolean,
+      subsetScenarioCost: Schema.optionalKey(Schema.Number),
+      scenario: Schema.Literal("shortfall-vs-cache-read"),
+    }),
+  ),
   hitRate: Schema.optionalKey(Schema.Number),
   measuredRequests: Schema.optionalKey(Schema.Number),
   unknownRequests: Schema.optionalKey(Schema.Number),
@@ -1490,17 +1534,33 @@ export const MonitorRequest = Schema.Struct({
   outcome: Schema.optionalKey(Schema.String),
   compaction: Schema.optionalKey(CompactionObservation),
   promptCacheDiagnostic: Schema.optionalKey(PromptCacheDiagnostic),
-  measurement: Schema.optionalKey(Schema.Struct({
-    state: Schema.Literals(["running", "legacy-unknown", "unknown-version", "inconsistent", "unavailable", "not-reported", "reported"]),
-    scope: Schema.optionalKey(Schema.Literals(["invocation", "exchange"])),
-    invocationID: Schema.optionalKey(Schema.String),
-    operationID: Schema.optionalKey(Schema.String),
-    exchangeCount: Schema.optionalKey(Schema.Number),
-    input: Schema.optionalKey(Schema.Number),
-    read: Schema.optionalKey(Schema.Number),
-    write: Schema.optionalKey(Schema.Number),
-    share: Schema.optionalKey(Schema.Number),
-  })),
+  measurement: Schema.optionalKey(
+    Schema.Struct({
+      state: Schema.Literals([
+        "running",
+        "legacy-unknown",
+        "unknown-version",
+        "inconsistent",
+        "unavailable",
+        "not-reported",
+        "reported",
+      ]),
+      scope: Schema.optionalKey(Schema.Literals(["invocation", "exchange"])),
+      invocationID: Schema.optionalKey(Schema.String),
+      operationID: Schema.optionalKey(Schema.String),
+      exchangeCount: Schema.optionalKey(Schema.Number),
+      input: Schema.optionalKey(Schema.Number),
+      read: Schema.optionalKey(Schema.Number),
+      write: Schema.optionalKey(Schema.Number),
+      writeByTTL: Schema.optionalKey(
+        Schema.Struct({
+          "5m": Schema.optionalKey(Schema.Number),
+          "1h": Schema.optionalKey(Schema.Number),
+        }),
+      ),
+      share: Schema.optionalKey(Schema.Number),
+    }),
+  ),
   cause: Schema.optionalKey(
     Schema.Literals([
       "compacted",
@@ -1522,6 +1582,8 @@ export const MonitorRequest = Schema.Struct({
   missCost: Schema.optionalKey(Schema.Number),
   pricing: Schema.optionalKey(MonitorPricing),
   tools: Schema.optionalKey(Schema.Array(Schema.String)),
+  toolsTotal: Schema.optionalKey(Schema.Number),
+  toolsComplete: Schema.optionalKey(Schema.Boolean),
 }).annotate({ identifier: "Plus.MonitorRequest" })
 
 export interface MonitorRequestDetail extends Schema.Schema.Type<typeof MonitorRequestDetail> {}
@@ -1654,17 +1716,29 @@ export const MonitorReport = Schema.Struct({
     agents: Schema.Array(Schema.String),
     tools: Schema.Array(Schema.String),
     models: Schema.Array(Schema.String),
+    pages: Schema.optionalKey(Schema.Record(Schema.String, MonitorPage)),
   }),
   marks: Schema.Array(MonitorMark),
   requests: Schema.optionalKey(Schema.Array(MonitorRequest)),
-  requestPage: Schema.optionalKey(Schema.Struct({
-    total: Schema.Number,
-    returned: Schema.Number,
-    limit: Schema.Number,
-    complete: Schema.Boolean,
-    older: Schema.optionalKey(MonitorRequestCursor),
-    newer: Schema.optionalKey(MonitorRequestCursor),
-  })),
+  requestPage: Schema.optionalKey(
+    Schema.Struct({
+      total: Schema.Number,
+      returned: Schema.Number,
+      limit: Schema.Number,
+      complete: Schema.Boolean,
+      older: Schema.optionalKey(MonitorRequestCursor),
+      newer: Schema.optionalKey(MonitorRequestCursor),
+    }),
+  ),
+  pages: Schema.optionalKey(Schema.Record(Schema.String, MonitorPage)),
+  presentation: Schema.optionalKey(
+    Schema.Struct({
+      textLimit: Schema.Number,
+      truncated: Schema.Array(
+        Schema.Struct({ section: Schema.String, row: Schema.Number, field: Schema.String, chars: Schema.Number }),
+      ),
+    }),
+  ),
   detail: Schema.optionalKey(MonitorRequestDetail),
   agents: Schema.optionalKey(Schema.Array(MonitorAgentRow)),
   topMisses: Schema.optionalKey(Schema.Array(MonitorRequest)),
@@ -1684,6 +1758,8 @@ export const MonitorReport = Schema.Struct({
       Schema.Struct({
         sessionID: Schema.String,
         now: Schema.Number,
+        inputState: Schema.optionalKey(Schema.Literals(["pending", "unavailable", "stored", "measured"])),
+        measuredNow: Schema.optionalKey(Schema.Number),
         atCompaction: Schema.optionalKey(Schema.Number),
       }),
     ),
@@ -1848,7 +1924,9 @@ export const PresetInUse = Schema.Struct({
   /** Every owner row still linked to the preset; another project's rows read `<directory> › <row id>`. */
   users: Schema.Array(Schema.String),
   /** The users in other projects, per project; `confirm` deletes over them. */
-  elsewhere: Schema.optionalKey(Schema.Array(Schema.Struct({ directory: Schema.String, users: Schema.Array(Schema.String) }))),
+  elsewhere: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ directory: Schema.String, users: Schema.Array(Schema.String) })),
+  ),
 }).annotate({ identifier: "Plus.PresetInUse" })
 
 export interface EntryInvalid extends Schema.Schema.Type<typeof EntryInvalid> {}
@@ -2092,9 +2170,7 @@ const PortableChatRefreshResult = Schema.toStandardSchemaV1(
 const PortableSnapshot = Schema.toStandardSchemaV1(Snapshot.annotate({ identifier: "Plus.Snapshot" }))
 const PortableMutateInput = Schema.toStandardSchemaV1(MutateInput.annotate({ identifier: "Plus.MutateInput" }))
 const PortableMutateResult = Schema.toStandardSchemaV1(MutateResult.annotate({ identifier: "Plus.MutateResult" }))
-const PortableAssembledInput = Schema.toStandardSchemaV1(
-  AssembledInput.annotate({ identifier: "Plus.AssembledInput" }),
-)
+const PortableAssembledInput = Schema.toStandardSchemaV1(AssembledInput.annotate({ identifier: "Plus.AssembledInput" }))
 const PortableAssembled = Schema.toStandardSchemaV1(Assembled.annotate({ identifier: "Plus.Assembled" }))
 const PortableInstructionsChanged = Schema.toStandardSchemaV1(
   InstructionsChanged.annotate({ identifier: "Plus.InstructionsChanged" }),
@@ -2135,9 +2211,7 @@ const PortableCreateInstructionInput = Schema.toStandardSchemaV1(
 const PortableDeleteInstructionInput = Schema.toStandardSchemaV1(
   DeleteInstructionInput.annotate({ identifier: "Plus.DeleteInstructionInput" }),
 )
-const PortableInstructionRef = Schema.toStandardSchemaV1(
-  InstructionRef.annotate({ identifier: "Plus.InstructionRef" }),
-)
+const PortableInstructionRef = Schema.toStandardSchemaV1(InstructionRef.annotate({ identifier: "Plus.InstructionRef" }))
 const PortableAddMcpInput = Schema.toStandardSchemaV1(AddMcpInput.annotate({ identifier: "Plus.AddMcpInput" }))
 const PortableMcpRef = Schema.toStandardSchemaV1(McpRef.annotate({ identifier: "Plus.McpRef" }))
 const PortableSetTeamEnabledInput = Schema.toStandardSchemaV1(
@@ -2166,9 +2240,7 @@ const PortableRenameTeamInput = Schema.toStandardSchemaV1(
 const PortableRenameTeamResult = Schema.toStandardSchemaV1(
   RenameTeamResult.annotate({ identifier: "Plus.RenameTeamResult" }),
 )
-const PortableTeamListOutput = Schema.toStandardSchemaV1(
-  TeamListOutput.annotate({ identifier: "Plus.TeamListOutput" }),
-)
+const PortableTeamListOutput = Schema.toStandardSchemaV1(TeamListOutput.annotate({ identifier: "Plus.TeamListOutput" }))
 const PortableTeamRunsListInput = Schema.toStandardSchemaV1(
   TeamRunsListInput.annotate({ identifier: "Plus.TeamRunsListInput" }),
 )
@@ -2181,15 +2253,9 @@ const PortableTeamRunsStopInput = Schema.toStandardSchemaV1(
 const PortableTeamRunsStopOutput = Schema.toStandardSchemaV1(
   TeamRunsStopOutput.annotate({ identifier: "Plus.TeamRunsStopOutput" }),
 )
-const PortableRunBusy = Schema.toStandardSchemaV1(
-  RunBusy.annotate({ identifier: "Plus.RunBusy" }),
-)
-const PortableRunUnknown = Schema.toStandardSchemaV1(
-  RunUnknown.annotate({ identifier: "Plus.RunUnknown" }),
-)
-const PortableTeamsChanged = Schema.toStandardSchemaV1(
-  TeamsChanged.annotate({ identifier: "Plus.TeamsChanged" }),
-)
+const PortableRunBusy = Schema.toStandardSchemaV1(RunBusy.annotate({ identifier: "Plus.RunBusy" }))
+const PortableRunUnknown = Schema.toStandardSchemaV1(RunUnknown.annotate({ identifier: "Plus.RunUnknown" }))
+const PortableTeamsChanged = Schema.toStandardSchemaV1(TeamsChanged.annotate({ identifier: "Plus.TeamsChanged" }))
 const PortableChecksSuggestion = Schema.toStandardSchemaV1(ChecksSuggestion)
 const PortableChecksSaveInput = Schema.toStandardSchemaV1(ChecksSaveInput)
 const PortableChecksSaved = Schema.toStandardSchemaV1(ChecksSaved)
@@ -2197,7 +2263,9 @@ const PortableChecksInvalid = Schema.toStandardSchemaV1(ChecksInvalid)
 const PortableWarmingSessionInput = Schema.toStandardSchemaV1(
   WarmingSessionInput.annotate({ identifier: "Plus.WarmingSessionInput" }),
 )
-const PortableWarmingSetInput = Schema.toStandardSchemaV1(WarmingSetInput.annotate({ identifier: "Plus.WarmingSetInput" }))
+const PortableWarmingSetInput = Schema.toStandardSchemaV1(
+  WarmingSetInput.annotate({ identifier: "Plus.WarmingSetInput" }),
+)
 const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
   WarmingCompactInput.annotate({ identifier: "Plus.WarmingCompactInput" }),
 )
@@ -2205,11 +2273,19 @@ const PortableCompactColdInput = Schema.toStandardSchemaV1(CompactColdInput)
 const PortableCompactColdResult = Schema.toStandardSchemaV1(CompactColdResult)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
-const PortableMonitorQueryInput = Schema.toStandardSchemaV1(MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }))
-const PortableMonitorStepInput = Schema.toStandardSchemaV1(MonitorStepInput.annotate({ identifier: "Plus.MonitorStepInput" }))
-const PortableMonitorStepResult = Schema.toStandardSchemaV1(MonitorStepResult.annotate({ identifier: "Plus.MonitorStepResult" }))
+const PortableMonitorQueryInput = Schema.toStandardSchemaV1(
+  MonitorQueryInput.annotate({ identifier: "Plus.MonitorQueryInput" }),
+)
+const PortableMonitorStepInput = Schema.toStandardSchemaV1(
+  MonitorStepInput.annotate({ identifier: "Plus.MonitorStepInput" }),
+)
+const PortableMonitorStepResult = Schema.toStandardSchemaV1(
+  MonitorStepResult.annotate({ identifier: "Plus.MonitorStepResult" }),
+)
 const PortableMonitorReport = Schema.toStandardSchemaV1(MonitorReport.annotate({ identifier: "Plus.MonitorReport" }))
-const PortableMonitorMarkInput = Schema.toStandardSchemaV1(MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }))
+const PortableMonitorMarkInput = Schema.toStandardSchemaV1(
+  MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }),
+)
 const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
@@ -2229,9 +2305,7 @@ const PortableAgentExists = Schema.toStandardSchemaV1(AgentExists.annotate({ ide
 const PortableAgentMissing = Schema.toStandardSchemaV1(AgentMissing.annotate({ identifier: "Plus.AgentMissing" }))
 const PortableAgentInvalid = Schema.toStandardSchemaV1(AgentInvalid.annotate({ identifier: "Plus.AgentInvalid" }))
 const PortableAgentUnknown = Schema.toStandardSchemaV1(AgentUnknown.annotate({ identifier: "Plus.AgentUnknown" }))
-const PortableAgentProtected = Schema.toStandardSchemaV1(
-  AgentProtected.annotate({ identifier: "Plus.AgentProtected" }),
-)
+const PortableAgentProtected = Schema.toStandardSchemaV1(AgentProtected.annotate({ identifier: "Plus.AgentProtected" }))
 const PortableSkillExists = Schema.toStandardSchemaV1(SkillExists.annotate({ identifier: "Plus.SkillExists" }))
 const PortableSkillMissing = Schema.toStandardSchemaV1(SkillMissing.annotate({ identifier: "Plus.SkillMissing" }))
 const PortableSkillInvalid = Schema.toStandardSchemaV1(SkillInvalid.annotate({ identifier: "Plus.SkillInvalid" }))
@@ -2265,9 +2339,7 @@ const PortableLayoutWriteInput = Schema.toStandardSchemaV1(
 const PortableLayoutWriteOutput = Schema.toStandardSchemaV1(
   LayoutWriteOutput.annotate({ identifier: "Plus.LayoutWriteOutput" }),
 )
-const PortableLayoutInvalid = Schema.toStandardSchemaV1(
-  LayoutInvalid.annotate({ identifier: "Plus.LayoutInvalid" }),
-)
+const PortableLayoutInvalid = Schema.toStandardSchemaV1(LayoutInvalid.annotate({ identifier: "Plus.LayoutInvalid" }))
 const PortableTeamInvalid = Schema.toStandardSchemaV1(TeamInvalid.annotate({ identifier: "Plus.TeamInvalid" }))
 const PortableTeamUnknown = Schema.toStandardSchemaV1(TeamUnknown.annotate({ identifier: "Plus.TeamUnknown" }))
 const PortableTeamExists = Schema.toStandardSchemaV1(TeamExists.annotate({ identifier: "Plus.TeamExists" }))
@@ -2315,7 +2387,9 @@ const PortableModelExists = Schema.toStandardSchemaV1(ModelExists.annotate({ ide
 const PortableModelMissing = Schema.toStandardSchemaV1(ModelMissing.annotate({ identifier: "Plus.ModelMissing" }))
 const PortableModelInvalid = Schema.toStandardSchemaV1(ModelInvalid.annotate({ identifier: "Plus.ModelInvalid" }))
 const PortableModelPickInput = Schema.toStandardSchemaV1(ModelPickInput.annotate({ identifier: "Plus.ModelPickInput" }))
-const PortableModelPickOutput = Schema.toStandardSchemaV1(ModelPickOutput.annotate({ identifier: "Plus.ModelPickOutput" }))
+const PortableModelPickOutput = Schema.toStandardSchemaV1(
+  ModelPickOutput.annotate({ identifier: "Plus.ModelPickOutput" }),
+)
 const PortableRuleAddInput = Schema.toStandardSchemaV1(RuleAddInput.annotate({ identifier: "Plus.RuleAddInput" }))
 const PortableRuleRemoveInput = Schema.toStandardSchemaV1(
   RuleRemoveInput.annotate({ identifier: "Plus.RuleRemoveInput" }),
@@ -2568,7 +2642,7 @@ export const Definition = Rpc.define({
       input: PortableTeamRunsStopInput,
       output: PortableTeamRunsStopOutput,
       errors: {
-        "E_BUSY": PortableRunBusy,
+        E_BUSY: PortableRunBusy,
         "run.unknown": PortableRunUnknown,
       },
     },

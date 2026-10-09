@@ -10,8 +10,9 @@ import {
 } from "./cache.js"
 import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
-import { reuseRate } from "./measurement.js"
+import { reuseRate, measurement } from "./measurement.js"
 import { AnalysisCache } from "./analysis-cache.js"
+import { reportPage, reportPageBounds, requestDetail } from "./report-page.js"
 export { ANALYSIS_CACHE_LIMIT } from "./analysis-cache.js"
 
 interface SessionRow {
@@ -133,7 +134,13 @@ function mergeChanged<T extends { readonly id: string | number }>(previous: read
 }
 
 // The cached fingerprints with the changed ones reloaded (or dropped when deleted).
-function updatedFingerprints(ledger: Ledger, id: string, rows: readonly RequestRow[], fold: SessionFold, changed: readonly string[]) {
+function updatedFingerprints(
+  ledger: Ledger,
+  id: string,
+  rows: readonly RequestRow[],
+  fold: SessionFold,
+  changed: readonly string[],
+) {
   const surviving = new Set(rows.map((row) => row.id))
   const fingerprints = new Map([...fold.analysis.fingerprints].filter(([key]) => surviving.has(key)))
   for (const requestID of changed) {
@@ -158,7 +165,10 @@ function firstChange(
   const factAt =
     factChange < 0
       ? Infinity
-      : [...facts.slice(factChange), ...fold.facts.slice(factChange)].reduce((min, fact) => Math.min(min, fact.at), Infinity)
+      : [...facts.slice(factChange), ...fold.facts.slice(factChange)].reduce(
+          (min, fact) => Math.min(min, fact.at),
+          Infinity,
+        )
   const ids = new Set(changed)
   const affected = rows.findIndex((row) => row.started >= factAt || ids.has(row.id))
   return Math.min(rowChange < 0 ? rows.length : rowChange, affected < 0 ? rows.length : affected)
@@ -174,13 +184,24 @@ function firstDifference<T>(next: readonly T[], previous: readonly T[], same: (a
 // Ledger rows carry every field, undefined ones included.
 function sameRow(a: RequestRow, b: RequestRow): boolean {
   const keys = Object.keys(a) as (keyof RequestRow)[]
-  return keys.length === Object.keys(b).length && keys.every((key) => key === "observation"
-    ? JSON.stringify(a.observation) === JSON.stringify(b.observation)
-    : Object.is(a[key], b[key]))
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) =>
+      key === "observation"
+        ? JSON.stringify(a.observation) === JSON.stringify(b.observation)
+        : Object.is(a[key], b[key]),
+    )
+  )
 }
 
 function sameFact(a: ContextFactRow, b: ContextFactRow): boolean {
-  return a.id === b.id && a.at === b.at && a.kind === b.kind && a.sessionID === b.sessionID && JSON.stringify(a.detail) === JSON.stringify(b.detail)
+  return (
+    a.id === b.id &&
+    a.at === b.at &&
+    a.kind === b.kind &&
+    a.sessionID === b.sessionID &&
+    JSON.stringify(a.detail) === JSON.stringify(b.detail)
+  )
 }
 
 export function requestReport(
@@ -258,15 +279,31 @@ export function requestReport(
         (!input.models?.length || input.models.includes(`${d.request.provider}/${d.request.model}`)),
     )
     const current = rows.findLast((r) => r.started < window.until && r.kind !== "ping" && !r.isTitle)
+    const currentMeasurement = current ? measurement(current) : undefined
+    const inputState: NonNullable<MonitorReport["context"]>[number]["inputState"] =
+      current?.status === "running"
+        ? "pending"
+        : currentMeasurement?.input !== undefined
+          ? "measured"
+          : currentMeasurement?.state === "legacy-unknown"
+            ? "stored"
+            : "unavailable"
     const after =
       compact === undefined
         ? undefined
-        : rows.find((r) => r.started >= compact && r.started < window.until && r.kind !== "compaction" && r.kind !== "ping" && !r.isTitle)
+        : rows.find(
+            (r) =>
+              r.started >= compact &&
+              r.started < window.until &&
+              r.kind !== "compaction" &&
+              r.kind !== "ping" &&
+              !r.isTitle,
+          )
     return {
       id,
       rows,
       details,
-      detail: analysis.detail,
+      detail: (id: string) => requestDetail(analysis, id),
       legacy,
       unstable: signals.unstable.map((entry) => ({ ...entry, sessionID: id })),
       fingerprints: analysis.fingerprints,
@@ -279,6 +316,8 @@ export function requestReport(
       context: {
         sessionID: id,
         now: current ? promptTokens(current) : 0,
+        inputState,
+        ...(currentMeasurement?.input === undefined ? {} : { measuredNow: currentMeasurement.input }),
         ...(after ? { atCompaction: promptTokens(after) } : {}),
       },
     }
@@ -382,28 +421,60 @@ export function requestReport(
       ? Math.max(1, Math.min(500, Math.floor(input.requestPage!.limit!)))
       : 100
     const cursor = input.requestPage?.cursor
-    const compare = (r: MonitorRequest) => cursor === undefined ? 0 : r.at - cursor.at || r.id.localeCompare(cursor.id)
-    const candidates = cursor === undefined ? eligible : eligible.filter((r) => input.requestPage?.direction === "newer" ? compare(r) > 0 : compare(r) < 0)
-    const page = input.requestPage?.direction === "newer" && cursor !== undefined ? candidates.slice(0, limit) : candidates.slice(-limit)
+    const compare = (r: MonitorRequest) =>
+      cursor === undefined ? 0 : r.at - cursor.at || r.id.localeCompare(cursor.id)
+    const candidates =
+      cursor === undefined
+        ? eligible
+        : eligible.filter((r) => (input.requestPage?.direction === "newer" ? compare(r) > 0 : compare(r) < 0))
+    const page =
+      input.requestPage?.direction === "newer" && cursor !== undefined
+        ? candidates.slice(0, limit)
+        : candidates.slice(-limit)
     sections.requests = page
     const first = page[0]
     const last = page.at(-1)
-    const before = first && eligible.some((r) => r.at < first.at || r.at === first.at && r.id.localeCompare(first.id) < 0)
-    const after = last && eligible.some((r) => r.at > last.at || r.at === last.at && r.id.localeCompare(last.id) > 0)
+    const before =
+      first && eligible.some((r) => r.at < first.at || (r.at === first.at && r.id.localeCompare(first.id) < 0))
+    const after = last && eligible.some((r) => r.at > last.at || (r.at === last.at && r.id.localeCompare(last.id) > 0))
     sections.requestPage = {
-      total: eligible.length, returned: page.length, limit, complete: page.length === eligible.length,
+      total: eligible.length,
+      returned: page.length,
+      limit,
+      complete: page.length === eligible.length,
       ...(before ? { older: { at: first.at, id: first.id } } : {}),
       ...(after ? { newer: { at: last.at, id: last.id } } : {}),
       // Keep an empty cursor page navigable after deletions or filter changes.
-      ...(!page.length && cursor && eligible.length ? input.requestPage?.direction === "newer" ? { older: cursor } : { newer: cursor } : {}),
+      ...(!page.length && cursor && eligible.length
+        ? input.requestPage?.direction === "newer"
+          ? { older: cursor }
+          : { newer: cursor }
+        : {}),
     }
   }
 
+  const pages: Record<string, NonNullable<MonitorReport["pages"]>[string]> = {}
   if (input.id) {
     const index = details.findIndex((d) => d.request.id === input.id)
     const selected = details[index]
     const detail = selected && analyses.find((analysis) => analysis.id === selected.request.sessionID)?.detail(input.id)
     if (detail) {
+      const callCount = ledger.db
+        .query<{ total: number; revision: string }, [string, string]>(
+          `select count(*) as total, coalesce(group_concat(value), '') as revision from (
+          select json_array(c.session_id,c.call_id,c.tool,c.status,c.agent,c.model,c.target,c.error,c.started,c.ended,c.call_tokens,c.result_tokens,c.measured,c.result_tokens * max(0,coalesce(e.last_idx,c.idx)-c.idx)) as value
+          from call c left join epoch e on e.session_id=c.session_id and e.epoch=c.epoch
+          where c.session_id=? and c.message_id=? order by c.started,c.call_id
+        )`,
+        )
+        .get(detail.request.sessionID, detail.request.messageID ?? "")!
+      const callPage = reportPageBounds(
+        callCount.total,
+        new Bun.CryptoHasher("sha256").update(callCount.revision).digest("hex"),
+        input.pages?.["detail.calls"],
+        50,
+      )
+      pages["detail.calls"] = callPage
       const calls = ledger.db
         .query<
           {
@@ -421,15 +492,15 @@ export function requestReport(
             measured: number
             carried: number
           },
-          [string, string]
+          [string, string, number, number]
         >(
           `select c.*, c.result_tokens * max(0, coalesce(e.last_idx, c.idx) - c.idx) as carried
           from call c
           left join epoch e on e.session_id = c.session_id and e.epoch = c.epoch
           where c.session_id = ? and c.message_id = ?
-          order by c.started`,
+           order by c.started, c.call_id limit ? offset ?`,
         )
-        .all(detail.request.sessionID, detail.request.messageID ?? "")
+        .all(detail.request.sessionID, detail.request.messageID ?? "", callPage.limit, callPage.offset)
 
       sections.detail = {
         ...detail,
@@ -454,20 +525,62 @@ export function requestReport(
     }
   }
 
+  const enrichment = { statements: 0, messages: 0, finishRows: 0, toolRows: 0 }
   if (view === "steps" || view === "cache") {
     // Only enrich returned rows (and the explicit detail), not the population
     // used for totals. Both lookups use Session/message indexes.
-    const finish = ledger.db.query<{ finish: string | null }, [string, string]>(
-      "select finish from step where session_id = ? and message_id = ?",
-    )
-    const tools = ledger.db.query<{ tool: string }, [string, string]>(
-      "select distinct tool from call where session_id = ? and message_id = ?",
-    )
     const returned = [...(sections.requests ?? []), ...(sections.detail ? [sections.detail.request] : [])]
-    returned.forEach((r) => {
-      const ended = finish.get(r.sessionID, r.messageID ?? "")?.finish
-      Object.assign(r, { tools: tools.all(r.sessionID, r.messageID ?? "").map((c) => c.tool), ...(ended ? { finish: ended } : {}) })
-    })
+    if (returned.length) {
+      const keys = [
+        ...new Map(
+          returned
+            .filter((r) => r.messageID)
+            .map((r) => [JSON.stringify([r.sessionID, r.messageID]), [r.sessionID, r.messageID]]),
+        ).values(),
+      ]
+      const selectedMessages =
+        "with selected(session_id,message_id) as (select json_extract(value,'$[0]'),json_extract(value,'$[1]') from json_each(?))"
+      const finishes = ledger.db
+        .query<
+          { session_id: string; message_id: string; finish: string | null },
+          [string]
+        >(`${selectedMessages} select s.session_id,s.message_id,s.finish from selected k join step s on s.session_id=k.session_id and s.message_id=k.message_id`)
+        .all(JSON.stringify(keys))
+      const calls = ledger.db
+        .query<
+          { session_id: string; message_id: string; tool: string; total: number },
+          [string]
+        >(`${selectedMessages}, names as (select distinct c.session_id,c.message_id,c.tool from selected k join call c indexed by call_message on c.session_id=k.session_id and c.message_id=k.message_id), ranked as (select *,row_number() over (partition by session_id,message_id order by tool) as ordinal,count(*) over (partition by session_id,message_id) as total from names) select session_id,message_id,tool,total from ranked where ordinal <= 20`)
+        .all(JSON.stringify(keys))
+      Object.assign(enrichment, {
+        statements: 2,
+        messages: keys.length,
+        finishRows: finishes.length,
+        toolRows: calls.length,
+      })
+      const finishMap = new Map(finishes.map((s) => [JSON.stringify([s.session_id, s.message_id]), s.finish]))
+      const toolMap = new Map<string, string[]>()
+      const toolTotals = new Map<string, number>()
+      calls.forEach((c) => {
+        const key = JSON.stringify([c.session_id, c.message_id])
+        const list = toolMap.get(key) ?? []
+        list.push(c.tool)
+        toolMap.set(key, list)
+        toolTotals.set(key, c.total)
+      })
+      returned.forEach((r) => {
+        const key = JSON.stringify([r.sessionID, r.messageID])
+        const ended = finishMap.get(key)
+        const tools = toolMap.get(key) ?? []
+        const total = toolTotals.get(key) ?? 0
+        Object.assign(r, {
+          tools,
+          toolsTotal: total,
+          toolsComplete: tools.length === total,
+          ...(ended ? { finish: ended } : {}),
+        })
+      })
+    }
   }
 
   if (view === "overview" || view === "cache") {
@@ -486,19 +599,39 @@ export function requestReport(
     // Activity selection bounds expensive folds, not the requested as-of
     // context population. Quiet Sessions need only indexed predecessor reads.
     const quiet = sessions.filter((session) => !active.has(session.id))
-    const snapshot = quiet.length ? ledger.db.query<{ now: number; atCompaction: number | null }, [{ $session: string; $until: number }]>(`
+    const snapshot = quiet.length
+      ? ledger.db.query<
+          { now: number; atCompaction: number | null; status: string | null },
+          [{ $session: string; $until: number }]
+        >(`
       select coalesce((select input_tokens + cache_read_tokens + cache_write_tokens from request
         where session_id = $session and started < $until and kind != 'ping' and is_title = 0
         order by started desc, id desc limit 1), 0) as now,
       (select input_tokens + cache_read_tokens + cache_write_tokens from request
         where session_id = $session and started < $until and kind not in ('ping', 'compaction') and is_title = 0
         and started >= (select max(at) from context_fact where session_id = $session and kind = 'compaction' and at < $until)
-        order by started, id limit 1) as atCompaction
-    `) : undefined
-    sections.context = [...analyses.map((a) => a.context), ...quiet.map((session) => {
-      const state = snapshot!.get({ $session: session.id, $until: window.until })!
-      return { sessionID: session.id, now: state.now, ...(state.atCompaction === null ? {} : { atCompaction: state.atCompaction }) }
-    })]
+         order by started, id limit 1) as atCompaction,
+       (select status from request where session_id=$session and started < $until and kind != 'ping' and is_title=0
+         order by started desc,id desc limit 1) as status
+    `)
+      : undefined
+    sections.context = [
+      ...analyses.map((a) => a.context),
+      ...quiet.map((session) => {
+        const state = snapshot!.get({ $session: session.id, $until: window.until })!
+        return {
+          sessionID: session.id,
+          now: state.now,
+          inputState:
+            state.status === "running"
+              ? ("pending" as const)
+              : state.status === null
+                ? ("unavailable" as const)
+                : ("stored" as const),
+          ...(state.atCompaction === null ? {} : { atCompaction: state.atCompaction }),
+        }
+      }),
+    ]
     sections.topMisses = [...misses]
       .sort((a, b) => (b.missCost ?? 0) - (a.missCost ?? 0) || (b.missTokens ?? 0) - (a.missTokens ?? 0))
       .slice(0, 3)
@@ -589,13 +722,34 @@ export function requestReport(
   if (view === "sessions") {
     const all = ledger.db.query<SessionRow, []>("select * from session").all()
     const byID = new Map(all.map((s) => [s.id, s]))
-    const rows: MonitorSessionRow[] = sessions.map((s) => {
-      const chain = [s.id]
-      for (let parent = s.parent_id; parent && !chain.includes(parent); parent = byID.get(parent)?.parent_id ?? null) {
+    const placements = new Map<string, { rootID: string; depth: number }>()
+    const placement = (id: string) => {
+      const chain: string[] = []
+      const seen = new Set<string>()
+      let parent: string | undefined = id
+      while (parent && !placements.has(parent) && !seen.has(parent)) {
+        seen.add(parent)
         chain.push(parent)
+        parent = byID.get(parent)?.parent_id ?? undefined
       }
-      const rs = invocations.filter((r) => r.sessionID === s.id)
-      const sessionLegacy = analyses.find((a) => a.id === s.id)?.legacy ?? []
+      const known = parent ? placements.get(parent) : undefined
+      const rootID = known?.rootID ?? parent ?? chain.at(-1)!
+      chain
+        .toReversed()
+        .forEach((key, index) => placements.set(key, { rootID, depth: (known?.depth ?? -1) + index + 1 }))
+      return placements.get(id)!
+    }
+    const requestsBySession = new Map<string, MonitorRequest[]>()
+    invocations.forEach((r) => {
+      const list = requestsBySession.get(r.sessionID) ?? []
+      list.push(r)
+      requestsBySession.set(r.sessionID, list)
+    })
+    const analysisBySession = new Map(analyses.map((a) => [a.id, a]))
+    const rows: MonitorSessionRow[] = sessions.map((s) => {
+      const place = placement(s.id)
+      const rs = requestsBySession.get(s.id) ?? []
+      const sessionLegacy = analysisBySession.get(s.id)?.legacy ?? []
       const base = totalsFor(rs)
       const legacySum = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
         sessionLegacy.reduce((n, step) => n + step[key], 0)
@@ -606,8 +760,8 @@ export function requestReport(
       const agent = context.agents?.get(s.id) ?? s.agent
       return {
         sessionID: s.id,
-        rootID: chain.at(-1)!,
-        depth: chain.length - 1,
+        rootID: place.rootID,
+        depth: place.depth,
         ...(s.parent_id ? { parentID: s.parent_id } : {}),
         ...(s.title ? { title: s.title } : {}),
         ...(agent ? { agent } : {}),
@@ -630,25 +784,156 @@ export function requestReport(
     })
 
     const ordered: MonitorSessionRow[] = []
+    const rowByID = new Map(rows.map((r) => [r.sessionID, r]))
+    const children = new Map<string, MonitorSessionRow[]>()
+    const latestByRoot = new Map<string, number>()
+    rows.forEach((row) => {
+      latestByRoot.set(row.rootID, Math.max(latestByRoot.get(row.rootID) ?? 0, row.lastActive))
+      if (!row.parentID) return
+      const list = children.get(row.parentID) ?? []
+      list.push(row)
+      children.set(row.parentID, list)
+    })
+    children.forEach((list) =>
+      list.sort((a, b) => b.lastActive - a.lastActive || a.sessionID.localeCompare(b.sessionID)),
+    )
+    const visited = new Set<string>()
     const visit = (row: MonitorSessionRow) => {
+      if (visited.has(row.sessionID)) return
+      visited.add(row.sessionID)
       ordered.push(row)
-      rows
-        .filter((s) => s.parentID === row.sessionID)
-        .sort((a, b) => b.lastActive - a.lastActive)
-        .forEach(visit)
+      children.get(row.sessionID)?.forEach(visit)
     }
 
     rows
-      .filter((r) => !rows.some((p) => p.sessionID === r.parentID))
+      .filter((r) => !r.parentID || !rowByID.has(r.parentID))
       .sort(
         (a, b) =>
-          Math.max(...rows.filter((r) => r.rootID === b.rootID).map((r) => r.lastActive)) -
-          Math.max(...rows.filter((r) => r.rootID === a.rootID).map((r) => r.lastActive)),
+          (latestByRoot.get(b.rootID) ?? 0) - (latestByRoot.get(a.rootID) ?? 0) ||
+          a.sessionID.localeCompare(b.sessionID),
       )
+      .forEach(visit)
+    // Cyclic or orphaned historical placement must remain reachable too.
+    rows
+      .filter((r) => !visited.has(r.sessionID))
+      .sort((a, b) => a.sessionID.localeCompare(b.sessionID))
       .forEach(visit)
 
     sections.sessions = ordered
   }
 
-  return { totals, sections, nextExpiry: analyses.reduce((next, analysis) => Math.min(next, analysis.nextExpiry), Infinity) }
+  if (sections.sessions) {
+    const page = reportPage(sections.sessions, input.pages?.sessions)
+    sections.sessions = page.rows
+    pages.sessions = page.metadata
+  }
+  if (sections.context) {
+    const page = reportPage(sections.context, input.pages?.context)
+    sections.context = page.rows
+    pages.context = page.metadata
+  }
+  if (sections.agents) {
+    const page = reportPage(sections.agents, input.pages?.agents)
+    sections.agents = page.rows
+    pages.agents = page.metadata
+  }
+  if (sections.teams) {
+    const page = reportPage(sections.teams, input.pages?.teams)
+    sections.teams = page.rows
+    pages.teams = page.metadata
+  }
+  if (sections.unstable) {
+    const page = reportPage(sections.unstable, input.pages?.unstable)
+    sections.unstable = page.rows
+    pages.unstable = page.metadata
+  }
+  if (sections.detail) {
+    const detail = sections.detail
+    const lines = reportPage(detail.lines, input.pages?.["detail.lines"], 50)
+    const segments = reportPage(detail.segments, input.pages?.["detail.segments"], 50)
+    const pings = reportPage(detail.pings, input.pages?.["detail.pings"], 50)
+    const accounts = reportPage(detail.accounts, input.pages?.["detail.accounts"], 50)
+    const instructions = reportPage(
+      detail.instructions.flatMap((entry) =>
+        entry.keys.length > 1 ? entry.keys.map((key) => ({ ...entry, keys: [key] })) : [entry],
+      ),
+      input.pages?.["detail.instructions"],
+      50,
+    )
+    const reverts = reportPage(detail.reverts, input.pages?.["detail.reverts"], 50)
+    sections.detail = {
+      ...detail,
+      lines: lines.rows,
+      segments: segments.rows,
+      pings: pings.rows,
+      accounts: accounts.rows,
+      instructions: instructions.rows,
+      reverts: reverts.rows,
+    }
+    Object.assign(pages, {
+      "detail.lines": lines.metadata,
+      "detail.segments": segments.metadata,
+      "detail.pings": pings.metadata,
+      "detail.accounts": accounts.metadata,
+      "detail.instructions": instructions.metadata,
+      "detail.reverts": reverts.metadata,
+    })
+  }
+  sections.pages = pages
+  // Text limits are presentation limits, not a hard response-byte guarantee.
+  // IDs/opaque hashes stay intact; fullText exposes unabridged selected facts.
+  const truncated: NonNullable<MonitorReport["presentation"]>["truncated"][number][] = []
+  const textLimit = 512
+  const present = <T extends object>(row: T, section: string, at: number): T => {
+    const clip = (value: unknown, field: string): unknown => {
+      if (typeof value === "string") {
+        const key = field.split(".").at(-1)!
+        if (
+          value.length <= textLimit ||
+          input.fullText ||
+          key === "id" ||
+          key === "hash" ||
+          key.endsWith("ID") ||
+          key.endsWith("Id") ||
+          key.endsWith("Hash")
+        )
+          return value
+        truncated.push({ section, row: at, field, chars: value.length })
+        return `${value.slice(0, textLimit)}…`
+      }
+      if (Array.isArray(value)) return value.map((entry, i) => clip(entry, `${field}.${i}`))
+      if (value !== null && typeof value === "object")
+        return Object.fromEntries(
+          Object.entries(value).map(([key, entry]) => [key, clip(entry, field ? `${field}.${key}` : key)]),
+        )
+      return value
+    }
+    return clip(row, "") as T
+  }
+  if (sections.requests) sections.requests = sections.requests.map((r, i) => present(r, "requests", i))
+  if (sections.sessions) sections.sessions = sections.sessions.map((r, i) => present(r, "sessions", i))
+  if (sections.agents) sections.agents = sections.agents.map((r, i) => present(r, "agents", i))
+  if (sections.unstable) sections.unstable = sections.unstable.map((r, i) => present(r, "unstable", i))
+  if (sections.topMisses) sections.topMisses = sections.topMisses.map((r, i) => present(r, "topMisses", i))
+  if (sections.detail) {
+    const detail = sections.detail
+    sections.detail = {
+      ...detail,
+      request: present(detail.request, "detail.request", 0),
+      lines: detail.lines.map((line, i) => present({ line }, "detail.lines", i).line),
+      segments: detail.segments.map((r, i) => present(r, "detail.segments", i)),
+      calls: detail.calls?.map((r, i) => present(r, "detail.calls", i)),
+      accounts: detail.accounts.map((r, i) => present(r, "detail.accounts", i)),
+      instructions: detail.instructions.map((entry, i) => ({
+        ...entry,
+        keys: entry.keys.map((key) => present({ key }, "detail.instructions", i).key),
+      })),
+      ...(detail.firstDivergence
+        ? { firstDivergence: present({ firstDivergence: detail.firstDivergence }, "detail", 0).firstDivergence }
+        : {}),
+    }
+  }
+  sections.presentation = { textLimit, truncated }
+  const nextExpiry = analyses.reduce((next, analysis) => Math.min(next, analysis.nextExpiry), Infinity)
+  return { totals, sections, nextExpiry, enrichment }
 }

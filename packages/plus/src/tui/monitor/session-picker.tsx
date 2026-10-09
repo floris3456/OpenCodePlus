@@ -6,6 +6,12 @@ export async function openSessionPicker(
   context: Plugin.Context,
   sessions: readonly Plus.MonitorSessionRow[] | undefined,
   onPick: (sessionID: string) => void,
+  paging?: {
+    page: Plus.MonitorPage | undefined
+    load: (
+      cursor: NonNullable<Plus.MonitorPage["next"]>,
+    ) => Promise<{ sessions: readonly Plus.MonitorSessionRow[]; page: Plus.MonitorPage | undefined }>
+  },
 ): Promise<void> {
   if (sessions === undefined || sessions.length === 0) {
     context.ui.toast.show({ variant: "info", message: "No sessions found in ledger" })
@@ -33,11 +39,21 @@ export async function openSessionPicker(
 
   const picked = await context.ui.dialog.select<string>({
     title: "Pick session to scope",
-    placeholder: "Search sessions…",
-    options,
+    placeholder: paging ? "Search sessions on this page…" : "Search sessions…",
+    options: [
+      ...options,
+      ...(paging?.page?.previous ? [{ title: "Previous page", value: "\0previous" }] : []),
+      ...(paging?.page?.next ? [{ title: "Next page", value: "\0next" }] : []),
+    ],
   })
 
   context.ui.dialog.clear()
+  if (paging && (picked === "\0next" || picked === "\0previous")) {
+    const cursor = picked === "\0next" ? paging.page?.next : paging.page?.previous
+    if (!cursor) return
+    const next = await paging.load(cursor)
+    return openSessionPicker(context, next.sessions, onPick, { ...paging, page: next.page })
+  }
   if (picked !== undefined && picked !== "") {
     onPick(picked)
   }

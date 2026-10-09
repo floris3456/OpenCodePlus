@@ -469,7 +469,7 @@ function optional<K extends string>(key: K, value: string | number | null | unde
 // What the filters can choose from in this scope and window (unfiltered), from
 // the rollup's hours around the window: a value seen only in an edge hour just
 // outside it is offered too, which filters to nothing and costs nothing.
-function facetsOf(
+export function facetsOf(
   db: Database,
   input: MonitorQueryInput,
   context: QueryContext,
@@ -483,6 +483,26 @@ function facetsOf(
     )
     .all({ ...scope.bindings, $firstHour: Math.floor(window.since / HOUR), $lastHour: Math.floor(window.until / HOUR) })
   const values = (pick: (row: { agent: string; tool: string; model: string }) => string) =>
-    [...new Set(rows.map(pick).filter((value) => value !== ""))].sort().slice(0, 200)
-  return { agents: values((row) => row.agent), tools: values((row) => row.tool), models: values((row) => row.model) }
+    [...new Set(rows.map(pick).filter((value) => value !== ""))].sort()
+  const agents = reportPage(
+    values((row) => row.agent),
+    input.pages?.["facets.agents"],
+  )
+  const tools = reportPage(
+    values((row) => row.tool),
+    input.pages?.["facets.tools"],
+  )
+  const models = reportPage(
+    values((row) => row.model),
+    input.pages?.["facets.models"],
+  )
+  return {
+    agents: agents.rows,
+    tools: tools.rows,
+    models: models.rows,
+    pages: { "facets.agents": agents.metadata, "facets.tools": tools.metadata, "facets.models": models.metadata },
+  }
 }
+
+// Kept next to facetsOf so the cache-wrapper owner can integrate independently.
+import { reportPage } from "./report-page.js"
