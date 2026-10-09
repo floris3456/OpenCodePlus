@@ -38,7 +38,7 @@ test.each([
   expect(fixture.fake.snapshotCalls).toBe(0)
 })
 
-test.each([[undefined], ["50000", undefined], ["-1"], ["50000", "1.5"]])("cancel/invalid input never partially saves: %j", async (...prompts) => {
+test.each([{ prompts: [undefined] }, { prompts: ["50000", undefined] }, { prompts: ["-1"] }, { prompts: ["50000", "1.5"] }])("cancel/invalid input never partially saves: %j", async ({ prompts }) => {
   const calls: unknown[] = []
   const action: { run?: () => Promise<void> } = {}
   await using fixture = await renderPlusFixture({
