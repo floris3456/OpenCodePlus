@@ -329,5 +329,3 @@ test("r on a member-preset entity resets all nine scoped controls while retainin
   expect(fixture.fake.mutateInputs[0].records).toEqual(retained)
   expect(dispatch(fixture, "r")).toBe(false)
 })
-
-
