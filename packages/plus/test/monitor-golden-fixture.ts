@@ -8,8 +8,9 @@
 // drop, an errored step, a title request and a step still running.
 //
 // Hashes and sizes come from a seeded generator, so every run writes the same
-// ledger rows. The expected verdicts in fixtures/monitor-golden-anthropic.json
-// were recorded from the Monitor before its 1.1.18 speed-up.
+// ledger rows. These requestEnded rows deliberately remain legacy accounting,
+// without provider field-presence observations. The old verdict snapshot in
+// fixtures/monitor-golden-anthropic.json is historical evidence, not truth.
 import { canonicalJson, sha256, type MessagePrefixFingerprint } from "../src/monitor/fingerprint.js"
 import type { Ledger, RequestFingerprintData } from "../src/monitor/ledger.js"
 

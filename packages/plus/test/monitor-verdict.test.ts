@@ -1,13 +1,14 @@
 // The verdict the Monitor puts on a request is what the user reads first, so
-// these cases drive the real classification pipeline (ledger -> analyzeSession
+// these legacy accounting cases drive the real classification pipeline (ledger -> analyzeSession
 // -> queryMonitor) with the exact Anthropic rolling-marker wire shape from
 // session ses_eef806cfaffeVCcKl4cQ9YgF4u (provider cliproxyapi, model
-// claude-opus-5-5, 5-minute prompt-cache TTL) and the expected-cold controls.
+// claude-opus-5-5, requested ephemeral retention) and the first-request controls.
 import { afterEach, expect, test } from "bun:test"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { isMiss } from "../src/monitor/cache.js"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
+import type { Plus } from "../src/rpc.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(() => cleanupLedgers())
@@ -111,16 +112,27 @@ const last = (db: Ledger, session: string, id: string) => {
   return report.detail!
 }
 
-test("a rolling-marker step that reused its prefix is a hit, not a prefix change", async () => {
+// requestEnded preserves accounting, not sparse provider field presence. Neither
+// positive historical reads nor stored zeros establish a measured shortfall.
+function legacy(request: Plus.MonitorRequest) {
+  expect(request).toMatchObject({ verdict: "none", confidence: "unknown", missTokens: 0, measurement: { state: "legacy-unknown" } })
+  expect(request.expected).toBeUndefined()
+  expect(request.measurement?.share).toBeUndefined()
+  expect(request.evidence).toContain("field presence unknown")
+  expect(isMiss(request)).toBe(false)
+}
+
+test("legacy rolling-marker reads retain accounting without asserting a hit or prefix change", async () => {
   const db = await ledger()
   record(db, "rolling", { id: "a", at: 1000, count: 36, read: 83471, write: 1456 })
   record(db, "rolling", { id: "b", at: 2000, count: 37, read: 83500, write: 1400 })
   const detail = last(db, "rolling", "b")
-  expect(detail.request.verdict).toBe("hit")
-  expect(detail.request.expected).toBe(83471)
+  legacy(detail.request)
+  expect(detail.request).toMatchObject({ cacheRead: 83500, cacheWrite: 1400 })
+  expect(detail.request.cause).toBe("unknown")
 })
 
-test("a large read drop with a changed reusable segment is a partial miss", async () => {
+test("a legacy read drop retains the system edit but cannot quantify a partial miss", async () => {
   const db = await ledger()
   // 12:02:24 step read 83471 write 1456, then 12:02:32 step read 38697 write
   // 32650 after the build agent's system prompt was edited in config.
@@ -134,13 +146,13 @@ test("a large read drop with a changed reusable segment is a partial miss", asyn
     write: 32650,
   })
   const detail = last(db, "partial", "bust")
-  expect(detail.request.verdict).toBe("partial")
+  legacy(detail.request)
   expect(detail.request.cause).toBe("prefix-changed")
-  expect(detail.request.missTokens).toBe(44774)
+  expect(detail.request).toMatchObject({ cacheRead: 38697, cacheWrite: 32650 })
   expect(detail.request.evidence).toContain("system part base template changed")
 })
 
-test("a full bust after an expired TTL names the gap and the failed keep-alive pings", async () => {
+test("legacy zero after a long gap retains failed pings without asserting expiry", async () => {
   const db = await ledger()
   const base = 1_000_000
   // 12:14:38 step read 143713; two errored keep-alive pings at 12:18:38 and
@@ -180,12 +192,13 @@ test("a full bust after an expired TTL names the gap and the failed keep-alive p
     write: 147223,
   })
   const detail = last(db, "expired", "full")
-  expect(detail.request.verdict).toBe("miss")
-  expect(detail.request.cause).toBe("cache-expired")
-  expect(detail.request.confidence).toBe("likely")
-  expect(detail.request.missTokens).toBe(143713)
-  expect(detail.request.evidence).toContain("gap 506943ms")
-  expect(detail.request.evidence).toContain("2/2 failed")
+  legacy(detail.request)
+  expect(detail.request.cacheWrite).toBe(147223)
+  expect(detail.request.cause).not.toBe("cache-expired")
+  expect(detail.timing.lastPingAt).toBe(base + 483_139)
+  expect(detail.timing.warming).toBe("failed")
+  expect(detail.pings).toHaveLength(2)
+  expect(detail.pings.every((ping) => ping.error !== undefined)).toBe(true)
 })
 
 test("an errored usage-less ping is its own non-hit outcome, not a cache verdict", async () => {
@@ -206,32 +219,32 @@ test("an errored usage-less ping is its own non-hit outcome, not a cache verdict
   expect(detail.request.cause).toBeUndefined()
   expect(detail.request.verdict).not.toBe("hit")
   expect(isMiss(detail.request)).toBe(false)
-  expect(detail.request.evidence).toContain("no cache usage")
+  expect(detail.request.evidence).toContain("measurement is independent")
 })
 
-test("expected-cold cases stay cold with their own cause", async () => {
+test("legacy first, compacted and switched requests retain facts without asserting cold", async () => {
   const db = await ledger()
   // First request of a session.
   record(db, "first", { id: "one", at: 1000, read: 0, write: 1000 })
   const first = last(db, "first", "one")
-  expect(first.request.verdict).toBe("cold")
+  legacy(first.request)
   expect(first.request.cause).toBe("unknown")
-  expect(first.request.evidence).toContain("First recorded request")
+  expect(first.previous).toBeUndefined()
 
   // First request after compaction.
   record(db, "compacted", { id: "warm", at: 1000, count: 4, read: 4000, write: 0 })
   db.contextFact({ sessionID: "compacted", at: 1500, kind: "compaction" })
   record(db, "compacted", { id: "after", at: 2000, count: 6, read: 0, write: 5000 })
   const after = last(db, "compacted", "after")
-  expect(after.request.verdict).toBe("cold")
+  legacy(after.request)
   expect(after.request.cause).toBe("compacted")
-  expect(after.request.evidence).toContain("cold start expected")
+  expect(after.request.evidence).toContain("Compaction occurred")
 
   // First request after a model/variant switch.
   record(db, "switch", { id: "warm", at: 1000, count: 4, read: 4000, write: 0 })
   record(db, "switch", { id: "after", at: 2000, count: 6, read: 0, write: 5000, model: "claude-sonnet-5" })
   const switched = last(db, "switch", "after")
-  expect(switched.request.verdict).toBe("cold")
+  legacy(switched.request)
   expect(switched.request.cause).toBe("model-switch")
 })
 
@@ -262,15 +275,16 @@ test("an errored step is a failed request, not a cache miss or hit", async () =>
   expect(isMiss(detail.request)).toBe(false)
 })
 
-test("an expired gap that still reused its prefix is a hit, not a miss", async () => {
+test("legacy positive reads after a long gap cannot be overwritten by an expiry verdict", async () => {
   const db = await ledger()
-  // The provider sometimes keeps a prefix longer than its nominal TTL: the
-  // observed read is what decides, not the clock alone.
+  // A nominal retention window is not proof of expiry, and positive stored
+  // reads are accounting evidence even when sparse observation is unavailable.
   record(db, "kept", { id: "warm", at: 1000, count: 36, read: 10000, write: 0 })
   record(db, "kept", { id: "late", at: 400_000, count: 37, read: 10100, write: 200 })
   const detail = last(db, "kept", "late")
-  expect(detail.request.verdict).toBe("hit")
-  expect(detail.request.cause).toBeUndefined()
+  legacy(detail.request)
+  expect(detail.request.cacheRead).toBe(10100)
+  expect(detail.request.cause).toBe("unknown")
 })
 
 test("rotating endpoints and quota hand-offs still name their cause", async () => {
@@ -279,40 +293,37 @@ test("rotating endpoints and quota hand-offs still name their cause", async () =
   db.contextFact({ sessionID: "acct", at: 1500, kind: "account_switch", detail: { previous: "a", alias: "b" } })
   record(db, "acct", { id: "after", at: 2000, count: 38, read: 0, write: 9000 })
   const detail = last(db, "acct", "after")
-  expect(detail.request.verdict).toBe("miss")
+  legacy(detail.request)
   expect(detail.request.cause).toBe("account-changed")
   expect(detail.accounts[0]).toMatchObject({ from: "a", to: "b" })
 })
 
-test("a cold write creates the prefix; a following full rewrite is a miss", async () => {
+test("legacy writes retain sizes but cannot establish an eligible warmed prefix", async () => {
   const db = await ledger()
   // First request of the session writes the whole prefix (read=0, write>=4096).
   record(db, "coldwrite", { id: "first", at: 1000, count: 40, read: 0, write: 20000 })
   const created = last(db, "coldwrite", "first")
-  expect(created.request.verdict).toBe("cold")
+  legacy(created.request)
 
-  // The very next rolling-marker request reads 0 and rewrites the whole
-  // prefix: the cold write proves a prefix existed and was not reused. No
-  // model switch or compaction applies, so this is a provider-side bust.
+  // Stored write counts do not locate an eligible boundary or prove a bust.
   record(db, "coldwrite", { id: "rewrite", at: 2000, count: 42, read: 0, write: 21000 })
   const rewrite = last(db, "coldwrite", "rewrite")
-  expect(rewrite.request.verdict).toBe("miss")
+  legacy(rewrite.request)
   expect(rewrite.request.cause).toBe("unknown")
-  expect(rewrite.request.expected).toBe(20000)
-  expect(rewrite.request.missTokens).toBe(20000)
-  expect(rewrite.request.evidence).toContain("read 0 times")
+  expect(rewrite.request.cacheWrite).toBe(21000)
 })
 
-test("a cold write followed by a successful read is a hit", async () => {
+test("legacy write followed by positive reads retains both counters without a measured hit", async () => {
   const db = await ledger()
   record(db, "coldread", { id: "first", at: 1000, count: 40, read: 0, write: 20000 })
   record(db, "coldread", { id: "second", at: 2000, count: 42, read: 20500, write: 300 })
   const second = last(db, "coldread", "second")
-  expect(second.request.verdict).toBe("hit")
-  expect(second.request.cause).toBeUndefined()
+  legacy(second.request)
+  expect(second.request).toMatchObject({ cacheRead: 20500, cacheWrite: 300 })
+  expect(second.request.cause).toBe("unknown")
 })
 
-test("a write-only baseline past the TTL names expiry and counts its cost", async () => {
+test("pricing cannot turn a legacy write-only baseline into an expiry loss", async () => {
   const db = await ledger()
   const base = 1_000_000
   record(db, "coldexpired", { id: "first", at: base, count: 40, read: 0, write: 20000 })
@@ -324,28 +335,26 @@ test("a write-only baseline past the TTL names expiry and counts its cost", asyn
   })
   record(db, "coldexpired", { id: "late", at: base + 400_000, count: 42, read: 0, write: 21000 })
   const late = last(db, "coldexpired", "late")
-  expect(late.request.verdict).toBe("miss")
-  expect(late.request.cause).toBe("cache-expired")
-  expect(late.request.missTokens).toBe(20000)
-  // 20000 written at the cache-write rate 3/Mtok = 0.06.
-  expect(late.request.missCost).toBeCloseTo(0.06)
+  legacy(late.request)
+  expect(late.request.cause).toBe("unknown")
+  expect(late.request.cacheWrite).toBe(21000)
+  expect(late.request.missCost).toBe(0)
 })
 
-test("a cold write does not mask a real model switch as a miss", async () => {
+test("a legacy write does not mask an observed model switch or fabricate a miss", async () => {
   const db = await ledger()
   record(db, "coldswitch", { id: "first", at: 1000, count: 40, read: 0, write: 20000 })
   record(db, "coldswitch", { id: "switch", at: 2000, count: 42, read: 0, write: 21000, model: "claude-sonnet-5" })
   const switched = last(db, "coldswitch", "switch")
-  expect(switched.request.verdict).toBe("cold")
+  legacy(switched.request)
   expect(switched.request.cause).toBe("model-switch")
 })
 
-test("an errored request's tokens never move the hit rate but stay in totals", async () => {
+test("legacy and errored accounting stays in totals but never enters a measured ratio", async () => {
   const db = await ledger()
   record(db, "erated", { id: "warm", at: 1000, count: 36, read: 8000, write: 0 })
-  // The error row carries a large real input count, which must not be added to
-  // the rate denominator. Old behavior: 8000 / (8000 + 2 + 8000) ≈ 0.5;
-  // correct: 8000 / (8000 + 2) ≈ 0.99975.
+  // Neither legacy row has a usable measurement denominator. The failed row's
+  // accounting still contributes to totals, not to a guessed reuse ratio.
   record(db, "erated", {
     id: "failed",
     at: 2000,
@@ -368,13 +377,14 @@ test("an errored request's tokens never move the hit rate but stay in totals", a
     { now: 3000 },
   ).detail?.request
   expect(failed).toMatchObject({ verdict: "error", error: expect.any(String) })
-  expect(report.totals.hitRate).toBeCloseTo(8000 / 8002, 6)
+  expect(report.totals.hitRate).toBeUndefined()
   // Tokens and requests are unchanged: input 2 + 8000, requests 2.
   expect(report.totals.input).toBe(8002)
   expect(report.totals.requests).toBe(2)
-  expect(report.agents?.find((a) => a.agent === "build")?.hitRate).toBeCloseTo(8000 / 8002, 6)
+  expect(report.totals.cacheRead).toBe(8000)
+  expect(report.agents?.find((a) => a.agent === "build")?.hitRate).toBeUndefined()
   const sessions = queryMonitor(db, { scope: "session", sessionID: "erated", view: "sessions" }, { now: 3000 })
-  expect(sessions.sessions?.find((s) => s.sessionID === "erated")?.hitRate).toBeCloseTo(8000 / 8002, 6)
+  expect(sessions.sessions?.find((s) => s.sessionID === "erated")?.hitRate).toBeUndefined()
   expect(sessions.sessions?.find((s) => s.sessionID === "erated")?.input).toBe(8002)
 })
 
@@ -385,14 +395,14 @@ test("historical-message edits are a real prefix change; tail growth and rolling
   record(db, "hist", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
   record(db, "hist", { id: "edit", at: 2000, count: 6, read: 0, write: 9000, edits: { 1: "EDITED" } })
   const edited = last(db, "hist", "edit")
-  expect(edited.request.verdict).toBe("miss")
+  legacy(edited.request)
   expect(edited.request.cause).toBe("prefix-changed")
   expect(edited.request.evidence).toContain("message 2 (text) changed")
 
   record(db, "penultimate", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
   record(db, "penultimate", { id: "edit", at: 2000, count: 6, read: 0, write: 9000, edits: { 4: "EDITED" } })
   const penultimate = last(db, "penultimate", "edit")
-  expect(penultimate.request.verdict).toBe("miss")
+  legacy(penultimate.request)
   expect(penultimate.request.cause).toBe("prefix-changed")
   expect(penultimate.request.evidence).toContain("message 5 (text) changed")
 
@@ -402,7 +412,7 @@ test("historical-message edits are a real prefix change; tail growth and rolling
   record(db, "afterping", { id: "ping", at: 1500, kind: "ping", count: 6, marker: 4, read: 8000, write: 0 })
   record(db, "afterping", { id: "edit", at: 2000, count: 6, read: 0, write: 9000, edits: { 3: "EDITED" } })
   const afterPing = last(db, "afterping", "edit")
-  expect(afterPing.request.verdict).toBe("miss")
+  legacy(afterPing.request)
   expect(afterPing.request.cause).toBe("prefix-changed")
   expect(afterPing.request.evidence).toContain("message 4 (text) changed")
 
@@ -411,14 +421,14 @@ test("historical-message edits are a real prefix change; tail growth and rolling
   record(db, "tail", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
   record(db, "tail", { id: "grow", at: 2000, count: 8, read: 8100, write: 100 })
   const grown = last(db, "tail", "grow")
-  expect(grown.request.verdict).toBe("hit")
-  expect(grown.request.cause).toBeUndefined()
+  legacy(grown.request)
+  expect(grown.request.cause).toBe("unknown")
 
   // Control: replacing the last (tail) message is conversation growth, not a
   // prefix edit.
   record(db, "lastedit", { id: "warm", at: 1000, count: 6, read: 8000, write: 0 })
   record(db, "lastedit", { id: "replace", at: 2000, count: 6, read: 8100, write: 100, lastText: "new tail" })
   const replaced = last(db, "lastedit", "replace")
-  expect(replaced.request.verdict).toBe("hit")
-  expect(replaced.request.cause).toBeUndefined()
+  legacy(replaced.request)
+  expect(replaced.request.cause).toBe("unknown")
 })

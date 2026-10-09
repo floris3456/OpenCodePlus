@@ -31,7 +31,9 @@ test("Responses linked continuation reuses full predecessor prompt; unknown and 
   const b = make("b", 200, { previous_response_id: "response-a", input: [{ role: "user", content: "next" }] }, "response-b")
   expect(prefixDiff(a, b).append).toBe(true)
   const report = queryMonitor(db, { scope: "session", sessionID: "continuation", view: "cache", id: "b" }, { now: 1000 })
-  expect(report.detail?.request.expected).toBe(4000)
+  // Continuation identity is observable; legacy accounting is not a measured anchor.
+  expect(report.detail?.request.expected).toBeUndefined()
+  expect(report.detail?.request.measurement?.state).toBe("legacy-unknown")
   expect(report.detail?.previous?.id).toBe("a")
   const c = make("c", 300, { previous_response_id: "response-b", input: [{ role: "user", content: "last" }] }, "response-c")
   expect(prefixDiff(b, c).append).toBe(true)
@@ -148,53 +150,47 @@ function request(
   })
 }
 
-test("each named cause is derived from real fingerprints, usage and facts, with ordered confidence", async () => {
+test("local changes remain observable independently of unknown legacy cache diagnoses", async () => {
   const db = await ledger()
   const cases = [
     {
       session: "model",
       options: { model: "gpt-5" },
-      verdict: "cold",
       cause: "model-switch",
       evidence: "Model / variant",
     },
     {
       session: "agent",
       options: { agent: "review" },
-      verdict: "cold",
       cause: "agent-switch",
       evidence: "Agent switched",
     },
     {
       session: "system",
       options: { wire: body({ system: "new rules" }) },
-      verdict: "miss",
       cause: "prefix-changed",
       evidence: "system part AGENTS.md changed",
     },
     {
       session: "tool",
       options: { wire: body({ tool: "different tool description" }) },
-      verdict: "miss",
       cause: "prefix-changed",
       evidence: "tool shell description changed",
     },
-    { session: "expired", options: {}, verdict: "miss", cause: "cache-expired", evidence: "warming off" },
+    { session: "expired", options: {}, cause: "unknown", evidence: "Provider cause unavailable" },
     {
       session: "account",
       options: {},
-      verdict: "miss",
       cause: "account-changed",
       evidence: "Provider account changed",
     },
     {
       session: "unknown",
       options: {},
-      verdict: "miss",
       cause: "unknown",
-      evidence: "provider-side eviction or routing",
+      evidence: "Provider cause unavailable",
     },
-    { session: "compacted", options: {}, verdict: "cold", cause: "compacted", evidence: "cold start expected" },
+    { session: "compacted", options: {}, cause: "compacted", evidence: "Compaction occurred" },
   ] as const
   for (const c of cases) {
     request(db, c.session, `${c.session}-1`, 1000)
@@ -218,16 +214,11 @@ test("each named cause is derived from real fingerprints, usage and facts, with 
       { scope: "session", sessionID: c.session, view: "cache", id: `${c.session}-2` },
       { now: 500_000 },
     )
-    expect(report.detail?.request.verdict).toBe(c.verdict)
+    expect(report.detail?.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
+    expect(report.detail?.request.expected).toBeUndefined()
     expect(report.detail?.request.cause).toBe(c.cause)
     expect(report.detail?.request.evidence).toContain(c.evidence)
-    expect(report.detail?.request.confidence).toBe(
-      c.cause === "unknown"
-        ? "unknown"
-        : c.cause === "cache-expired" || c.cause === "account-changed"
-          ? "likely"
-          : "certain",
-    )
+    expect(report.detail?.request.confidence).toBe("unknown")
     expect(report.detail?.request.messageID).toBe(`${c.session}-2`)
     expect(report.detail?.lines.join(" ")).toContain(c.session)
     expect(Schema.decodeUnknownSync(MonitorReport)(report)).toEqual(report)
@@ -241,26 +232,31 @@ test("each named cause is derived from real fingerprints, usage and facts, with 
   }
 })
 
-test("append uses measured prompt tokens; changed prefixes estimate segments; thresholds are exact", async () => {
+test("legacy append and changed prefixes never invent token estimates from stored accounting", async () => {
   const db = await ledger()
-  for (const [name, read, verdict] of [
-    ["miss", 1999, "miss"],
-    ["partial", 2000, "partial"],
-    ["hit", 3600, "hit"],
+  for (const [name, read] of [
+    ["below-old-threshold", 1999],
+    ["at-old-threshold", 2000],
+    ["above-old-threshold", 3600],
   ] as const) {
     request(db, name, `${name}-a`, 1000)
     request(db, name, `${name}-b`, 2000, { wire: body({ append: true }), read })
     const report = queryMonitor(db, { scope: "session", sessionID: name, view: "cache" }, { now: 3000 })
     expect(report.requests?.[1]).toMatchObject({
-      expected: 4000,
-      verdict,
-      missTokens: verdict === "hit" ? 0 : 4000 - read,
+      cacheRead: read,
+      cacheWrite: 1000,
+      verdict: "none",
+      measurement: { state: "legacy-unknown" },
+      missTokens: 0,
     })
+    expect(report.requests?.[1]?.expected).toBeUndefined()
+    expect(report.totals.hitRate).toBeUndefined()
   }
   request(db, "changed", "changed-a", 1000)
   request(db, "changed", "changed-b", 2000, { wire: body({ system: "changed" }) })
   const changed = queryMonitor(db, { scope: "session", sessionID: "changed", view: "cache" }, { now: 3000 })
-  expect(changed.requests?.[1]?.expected).toBe(2560)
+  expect(changed.requests?.[1]?.expected).toBeUndefined()
+  expect(changed.requests?.[1]?.cause).toBe("prefix-changed")
   request(db, "none", "none-a", 1000, { read: 0, write: 0 })
   request(db, "none", "none-b", 2000, { read: 0, write: 0 })
   expect(
@@ -268,7 +264,7 @@ test("append uses measured prompt tokens; changed prefixes estimate segments; th
   ).toBe("none")
 })
 
-test("signals: three consecutive named changes, pings and next hit, unread writes, context at compaction", async () => {
+test("signals: named changes, legacy pings without hit claims, marked unread writes and compaction context", async () => {
   const db = await ledger()
   for (let i = 0; i < 4; i++)
     request(db, "unstable", `unstable-${i}`, 1000 + i * 1000, { wire: body({ system: `time-${i}` }) })
@@ -277,7 +273,16 @@ test("signals: three consecutive named changes, pings and next hit, unread write
   request(db, "ping", "real-b", 3000, { read: 4010, write: 0 })
   db.contextFact({ sessionID: "ping", at: 2500, kind: "compaction" })
   request(db, "ping", "real-c", 4000, { read: 7000, write: 0 })
-  request(db, "unread", "unread-a", 1000)
+  request(db, "unread", "unread-a", 1000, { provider: "anthropic", model: "claude-3-7" })
+  // This control has a requested retention marker; ordinary OpenAI-compatible
+  // fixtures intentionally do not establish a lifetime from the model name.
+  db.requestFingerprint({
+    requestID: "unread-a", sessionID: "unread", created: 1000,
+    ...fingerprintWireBody({
+      system: [{ type: "text", text: "base", cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: "Hello" }],
+    }, { protocol: "anthropic-messages" }),
+  })
   request(db, "effective", "effective-a", 1000)
   request(db, "effective", "effective-ping", 2000, { kind: "ping", read: 4000, write: 0, input: 10 })
   request(db, "effective", "effective-b", 3000, { read: 4010, write: 0 })
@@ -286,19 +291,19 @@ test("signals: three consecutive named changes, pings and next hit, unread write
   request(db, "ineffective", "ineffective-b", 3000)
   const report = queryMonitor(db, { scope: "all", view: "overview" }, { now: 400_000 })
   expect(report.unstable).toContainEqual({ sessionID: "unstable", segment: "system part AGENTS.md", streak: 3 })
-  expect(report.pings).toMatchObject({ sent: 3, cost: 0.03, followedByHit: 1, followedByMiss: 1 })
+  expect(report.pings).toMatchObject({ sent: 3, cost: 0.03, followedByHit: 0, followedByMiss: 0 })
   expect(report.unread).toBeGreaterThanOrEqual(1000)
   expect(report.context?.find((c) => c.sessionID === "ping")).toEqual({
     sessionID: "ping",
     now: 10000,
     atCompaction: 7010,
   })
-  expect(report.totals.missTokens).toBeGreaterThan(0)
-  expect(report.topMisses?.length).toBe(3)
+  expect(report.totals.missTokens).toBe(0)
+  expect(report.topMisses).toEqual([])
   expect(report.agents?.[0]?.lastActive).toBe(4000)
 })
 
-test("miss cost uses recorded pricing, failed pings cannot renew cache lifetime, and cause priority is stable", async () => {
+test("legacy pricing cannot manufacture losses; failed pings and account facts remain visible", async () => {
   const db = await ledger()
   request(db, "priced", "priced-a", 1000)
   db.contextFact({
@@ -313,8 +318,8 @@ test("miss cost uses recorded pricing, failed pings cannot renew cache lifetime,
     { scope: "session", sessionID: "priced", view: "cache", id: "priced-b" },
     { now: 3000 },
   )
-  expect(priced.detail?.request.missCost).toBe(0.009)
-  expect(priced.totals.missCost).toBe(0.009)
+  expect(priced.detail?.request).toMatchObject({ missTokens: 0, missCost: 0, measurement: { state: "legacy-unknown" } })
+  expect(priced.totals.missCost).toBe(0)
   request(db, "failed", "failed-a", 1000)
   request(db, "failed", "failed-ping", 390_000, { kind: "ping", error: "failed", input: 0, read: 0, write: 0 })
   db.contextFact({ sessionID: "failed", at: 390_001, kind: "account_switch" })
@@ -324,8 +329,8 @@ test("miss cost uses recorded pricing, failed pings cannot renew cache lifetime,
     { scope: "session", sessionID: "failed", view: "cache", id: "failed-b" },
     { now: 500_000 },
   )
-  expect(failed.detail?.request.cause).toBe("cache-expired")
-  expect(failed.detail?.timing).toMatchObject({ gapMs: 399_000, warming: "failed", lastPingAt: 390_000 })
+  expect(failed.detail?.request.cause).toBe("account-changed")
+  expect(failed.detail?.timing).toMatchObject({ gapMs: 398_999, warming: "failed", lastPingAt: 390_000 })
   expect(failed.detail?.accounts.length).toBe(1)
   expect(JSON.parse(failed.detail!.pings[0]!.error!)).toEqual({ type: "Error", hash: sha256("failed"), chars: 6 })
 })
@@ -470,7 +475,8 @@ test("a completion written by a second handle invalidates the first handle's cac
   })
 
   const done = read()
-  expect(done.requests?.find((r) => r.id === "open")).toMatchObject({ input: 400, cacheRead: 3600, verdict: "hit" })
+  expect(done.requests?.find((r) => r.id === "open")).toMatchObject({ input: 400, cacheRead: 3600, verdict: "none", measurement: { state: "legacy-unknown" } })
+  expect(done.requests?.find((r) => r.id === "open")).not.toEqual(openRow)
   expect(done.requests?.length).toBe(2)
   expect(db.getContextFacts("two").length).toBe(0)
   other.close()
@@ -538,7 +544,8 @@ test("in-place request completion invalidates the cached query-time analysis", a
   })
 
   const done = read()
-  expect(done.requests?.find((r) => r.id === "open")).toMatchObject({ input: 400, cacheRead: 3600, verdict: "hit" })
+  expect(done.requests?.find((r) => r.id === "open")).toMatchObject({ input: 400, cacheRead: 3600, verdict: "none", measurement: { state: "legacy-unknown" } })
+  expect(done.requests?.find((r) => r.id === "open")).not.toEqual(openRow)
   expect(done.totals).toMatchObject({ requests: 2, input: 3400, cacheRead: 3600 })
 })
 
@@ -590,7 +597,8 @@ test("a corrected final wire fingerprint changes evidence without changing the r
   expect(db.getContextFacts("final").length).toBe(0)
   expect(afterRow?.cause).not.toBe("prefix-changed")
   expect(afterRow?.evidence).not.toBe(before?.evidence)
-  expect(afterRow?.verdict).toBe("partial")
+  expect(afterRow).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
+  expect(afterRow?.expected).toBeUndefined()
 })
 
 test("relabelling a generate request to ping invalidates its kind and the ping counts", async () => {
@@ -652,7 +660,9 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
     "insert into request (id, session_id, message_id, kind, is_title, agent, provider, model, started, ended, duration, status, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   )
   const insertFp = rawDb.prepare(
-    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    // Keep the expiry/count gates on explicitly requested retention, not the
+    // former undocumented universal five-minute lifetime.
+    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created, cache_control) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[{\"target\":\"system[0]\",\"type\":\"ephemeral\"}]')",
   )
   const insertFact = rawDb.prepare("insert into context_fact (session_id, at, kind, detail) values (?, ?, ?, ?)")
 
@@ -688,8 +698,8 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
         kind,
         0,
         "build",
-        "openai",
-        "gpt-4o",
+        "anthropic",
+        "claude-3-7",
         started,
         started + 500,
         500,
@@ -706,7 +716,7 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
       insertFp.run(
         reqId,
         sess.id,
-        "openai-chat",
+        "anthropic-messages",
         systemPartsJson,
         "[]",
         "",

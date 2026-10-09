@@ -150,17 +150,16 @@ const anthropicBody = (tail: string, system = "sys".repeat(4000), markerTtl?: st
 
 const WINDOW = { since: 0, until: 1_000_000 }
 
-test("#8: an unknown-priced miss omits missCost everywhere; known pricing sums it", async () => {
+test("#8: adding pricing cannot convert legacy accounting into a supported miss", async () => {
   const db = await ledger()
   step(db, { session: "priced", id: "priced-a", at: 1000, wire: openaiBody(), read: 4000, write: 0 })
   step(db, { session: "priced", id: "priced-b", at: 2000, wire: openaiBody({ system: "changed" }), read: 0, write: 0 })
   const unknown = queryMonitor(db, { scope: "session", sessionID: "priced", view: "cache" }, { now: 3000 })
   const unknownRequest = unknown.requests?.find((r) => r.id === "priced-b")
-  expect(unknownRequest?.verdict).toBe("miss")
-  expect(unknownRequest?.missCost).toBeUndefined()
-  // The baseline zero must never resurface as a free miss.
-  expect(unknown.totals.missCost).toBeUndefined()
-  expect(unknown.totals.missTokens).toBeGreaterThan(0)
+  expect(unknownRequest).toMatchObject({ verdict: "none", cause: "prefix-changed", confidence: "unknown", missTokens: 0, measurement: { state: "legacy-unknown" } })
+  expect(unknownRequest?.expected).toBeUndefined()
+  expect(unknown.totals.misses).toBe(0)
+  expect(unknown.totals.missTokens).toBe(0)
 
   db.contextFact({
     sessionID: "priced",
@@ -170,8 +169,9 @@ test("#8: an unknown-priced miss omits missCost everywhere; known pricing sums i
   })
   const known = queryMonitor(db, { scope: "session", sessionID: "priced", view: "cache" }, { now: 3000 })
   const knownRequest = known.requests?.find((r) => r.id === "priced-b")
-  expect(knownRequest?.missCost).toBeGreaterThan(0)
-  expect(known.totals.missCost).toBe(knownRequest!.missCost)
+  expect(knownRequest).toEqual(unknownRequest)
+  expect(known.totals.missCost).toBe(0)
+  expect(known.totals.cost).toBe(unknown.totals.cost)
 })
 
 test("#8: legacy v1 steps and recorded requests both surface in agents and sessions without double counting", async () => {
@@ -339,7 +339,8 @@ test("#8: windowed pings and their next-request signal exclude out-of-window nex
   expect(windowed.totals.pings).toBe(1)
 
   const whole = queryMonitor(db, { scope: "session", sessionID: "win", view: "cache" }, { now: 9000 })
-  expect(whole.pings).toMatchObject({ sent: 1, followedByHit: 1, followedByMiss: 0 })
+  expect(whole.pings).toMatchObject({ sent: 1, followedByHit: 0, followedByMiss: 0 })
+  expect(whole.totals.cacheRead).toBeGreaterThan(windowed.totals.cacheRead)
 
   // A ping before the selection is not counted at all.
   const later = queryMonitor(db, { scope: "session", sessionID: "win", view: "cache", since: 3000 }, { now: 9000 })
@@ -376,6 +377,13 @@ test("#8: unstable and unread honor the selection and the as-of cutoff, and expi
   // of the analysis key.
   const w = await ledger()
   step(w, { session: "unread", id: "w1", at: 1000, provider: "anthropic", model: "claude-3-7", write: 1000, read: 0 })
+  // Failure control: provider/model identity alone cannot supply a lifetime.
+  const unknownRetention = queryMonitor(w, { scope: "session", sessionID: "unread", view: "cache", id: "w1", until: 400_000 }, { now: 2_000_000 })
+  expect(unknownRetention.unread).toBe(0)
+  expect(unknownRetention.totals.cacheWrite).toBe(1000)
+  expect(unknownRetention.detail?.timing.lifetimeMs).toBeUndefined()
+  // Explicit requested retention enables the existing expiry/count control.
+  w.requestFingerprint({ requestID: "w1", sessionID: "unread", created: 1000, ...fingerprintWireBody(anthropicBody("x"), { protocol: "anthropic-messages" }) })
   // Before the write's 300s expiry: not yet countable.
   const beforeExpiry = queryMonitor(w, { scope: "session", sessionID: "unread", view: "cache", until: 200_000 }, { now: 2_000_000 })
   expect(beforeExpiry.unread).toBe(0)
@@ -554,7 +562,9 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
     "insert into request (id, session_id, message_id, kind, is_title, agent, provider, model, started, ended, duration, status, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, cost, created) values (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)",
   )
   const insertFp = raw.prepare(
-    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created) values (?, ?, 'openai-chat', ?, '[]', '', '{}', ?, ?, ?)",
+    // Explicit ephemeral markers retain the advancing-expiry work gate without
+    // guessing retention from an OpenAI-compatible model name.
+    "insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, body_hash, created, cache_control) values (?, ?, 'anthropic-messages', ?, '[]', '', '{}', ?, ?, ?, '[{\"target\":\"system[0]\",\"type\":\"ephemeral\"}]')",
   )
   const base = 1_000_000
   for (let s = 0; s < SESSIONS; s++) {
@@ -562,7 +572,7 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
     insertSession.run(id, "/project", id, "build", base, base + REQUESTS * 1000)
     for (let r = 0; r < REQUESTS; r++) {
       const at = base + r * 1000
-      insertRequest.run(`req_${s}_${r}`, id, `m_${s}_${r}`, "step", "build", "openai", "gpt-4o", at, at + 500, 500, 500, 150, 20, r === 0 ? 0 : 2500, 500, 0.01, at)
+      insertRequest.run(`req_${s}_${r}`, id, `m_${s}_${r}`, "step", "build", "anthropic", "claude-3-7", at, at + 500, 500, 500, 150, 20, r === 0 ? 0 : 2500, 500, 0.01, at)
       insertFp.run(`req_${s}_${r}`, id, systemParts, prefixes, `b_${s}_${r}`, at)
     }
   }
@@ -665,13 +675,13 @@ test("#13: a reusable marked prefix survives the ping's private tail replacement
   expect(detail.segments).toEqual([])
   expect(detail.firstDivergence).toBeUndefined()
   expect(detail.previous?.id).toBe("ping")
-  expect(detail.request.expected).toBe(9193)
-  expect(detail.request.verdict).toBe("miss")
+  expect(detail.request.expected).toBeUndefined()
+  expect(detail.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
   expect(detail.request.cause).toBe("unknown")
   expect(detail.request.confidence).toBe("unknown")
-  expect(detail.request.evidence).toContain("provider-side eviction or routing")
-  // Healthy compatible ping refreshed the lifetime: the gap is 10s, under 300s.
-  expect(detail.timing).toMatchObject({ gapMs: 10_000, lifetimeMs: 300_000 })
+  expect(detail.request.evidence).toContain("Provider cause unavailable")
+  // Timing is measured from completion; it is not proof of renewed cache warmth.
+  expect(detail.timing).toMatchObject({ gapMs: 9_999, lifetimeMs: 300_000 })
   // The wire hashes stay honest: the ping and primary bodies really differ, and
   // the fingerprint keeps the exact final-wire hash.
   expect(fingerprintWireBody(pingBody, { protocol: "anthropic-messages" }).bodyHash).toBe(
@@ -703,13 +713,14 @@ test("#13: a genuinely changed marked part is a prefix change; a changed tail be
     { now: 3000 },
   ).detail!
   expect(detail.request.cause).toBe("prefix-changed")
-  expect(detail.request.confidence).toBe("certain")
+  expect(detail.request.confidence).toBe("unknown")
+  expect(detail.request.measurement?.state).toBe("legacy-unknown")
   // The changed part sits inside the marked reusable prefix, so it is named.
   expect(detail.segments.map((s) => s.name)).toContain("system part base template")
   expect(detail.firstDivergence).toBe("system part base template")
 })
 
-test("#13: failed, different-model and different-variant pings cannot refresh the reusable prefix", async () => {
+test("#13: failed and incompatible legacy pings cannot supply a reusable-token estimate", async () => {
   const provider = "anthropic"
   const model = "claude-3-7-sonnet"
   const cases = [
@@ -795,8 +806,13 @@ test("#13: failed, different-model and different-variant pings cannot refresh th
       { scope: "session", sessionID: "p", view: "cache", id: "primary" },
       { now: 500_000 },
     ).detail!
-    expect(`${c.name}: ${detail.request.cause}`).toBe(`${c.name}: cache-expired`)
-    expect(detail.timing.gapMs).toBe(399_000)
+    expect(detail.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
+    expect(detail.request.cause).not.toBe("cache-expired")
+    // Failed / different-model pings cannot become the comparable predecessor.
+    // Variant incompatibility is checked for size even when chronology selects it.
+    expect(detail.previous?.id).toBe(c.name === "different-variant" ? "ping" : "real-a")
+    expect(detail.request.expected).toBeUndefined()
+    expect(detail.timing.gapMs).toBe(c.name === "different-variant" ? 9_999 : 398_999)
   }
 })
 
@@ -832,22 +848,22 @@ test("#13: a changed reusable cache marker is a prefix change even with a replac
   expect(control.request.cause).toBe("unknown")
 })
 
-test("#13: an unfinished or failed same-identity ping cannot suppress expiry; a completed one can", async () => {
+test("#13: only a completed same-identity ping becomes the timing predecessor, without proving warmth", async () => {
   const provider = "anthropic"
   const model = "claude-3-7-sonnet"
-  // An unfinished (no ended) same-identity ping after the primary expires must
-  // not be treated as refreshing the prefix.
+  // An unfinished (no ended) same-identity ping cannot become the completed
+  // comparison or timing predecessor.
   const unfinished = await ledger()
   step(unfinished, { session: "u", id: "real", at: 1000, provider, model, wire: anthropicBody("real"), protocol: "anthropic-messages", read: 4000 })
   unfinished.requestStarted({ id: "ping-open", sessionID: "u", messageID: "ping-open", kind: "ping", started: 390_000, provider, model, agent: "build" })
   unfinished.requestFingerprint({ requestID: "ping-open", sessionID: "u", created: 390_000, ...fingerprintWireBody(anthropicBody("ping"), { protocol: "anthropic-messages" }) })
   step(unfinished, { session: "u", id: "primary", at: 400_000, provider, model, wire: anthropicBody("next"), protocol: "anthropic-messages", read: 0, write: 0, input: 9193 })
   const openDetail = queryMonitor(unfinished, { scope: "session", sessionID: "u", view: "cache", id: "primary" }, { now: 500_000 }).detail!
-  expect(openDetail.request.cause).toBe("cache-expired")
-  expect(openDetail.timing.gapMs).toBe(399_000)
+  expect(openDetail.request).toMatchObject({ verdict: "none", cause: "unknown", measurement: { state: "legacy-unknown" } })
+  expect(openDetail.previous?.id).toBe("real")
+  expect(openDetail.timing.gapMs).toBe(398_999)
 
-  // The same ledger once the ping completes successfully: it refreshes, so the
-  // primary is within the lifetime and the cause is not expiry.
+  // Completion changes the observed predecessor and gap, not proof of warmth.
   unfinished.requestEnded("ping-open", {
     ended: 390_100,
     status: "completed",
@@ -855,15 +871,17 @@ test("#13: an unfinished or failed same-identity ping cannot suppress expiry; a 
   })
   const doneDetail = queryMonitor(unfinished, { scope: "session", sessionID: "u", view: "cache", id: "primary" }, { now: 500_000 }).detail!
   expect(doneDetail.request.cause).toBe("unknown")
-  expect(doneDetail.timing.gapMs).toBe(10_000)
+  expect(doneDetail.previous?.id).toBe("ping-open")
+  expect(doneDetail.timing.gapMs).toBe(9_900)
+  expect(doneDetail.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
 })
 
 test("#8: agent/model selection filters pings, follow stats, unread and instability", async () => {
   const db = await ledger()
   const provider = "anthropic"
   const model = "claude-3-7-sonnet"
-  // Agent A: 4 system changes (unstable streak 3), a ping followed by a hit;
-  // Agent B: a ping followed by a miss and an unread write.
+  // Agent A: 4 system changes (unstable streak 3), a ping then positive reads;
+  // Agent B: a ping then legacy zero and an unread marked write.
   for (let i = 0; i < 4; i++)
     step(db, {
       session: "f",
@@ -883,17 +901,21 @@ test("#8: agent/model selection filters pings, follow stats, unread and instabil
   step(db, { session: "f", id: "b-next", at: 6_000_000, provider, model, agent: "B", wire: anthropicBody("bn"), protocol: "anthropic-messages", read: 0, write: 0, input: 10 })
 
   const a = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache", agents: ["A"] }, { now: 7_000_000 })
-  expect(a.pings).toMatchObject({ sent: 1, cost: 0.01, followedByHit: 1, followedByMiss: 0 })
+  expect(a.pings).toMatchObject({ sent: 1, cost: 0.01, followedByHit: 0, followedByMiss: 0 })
+  expect(a.requests?.every((request) => request.agent === "A")).toBe(true)
+  expect(a.totals.cacheRead).toBe(8000)
   // Agent B's write is outside A's selection; Agent A's instability is in A.
   expect(a.unread).toBe(0)
   expect(a.unstable).toContainEqual({ sessionID: "f", segment: "system part system:1", streak: 3 })
   const b = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache", agents: ["B"] }, { now: 7_000_000 })
-  // B's ping is followed inside the window by a real miss; A's ping and instability are not in B.
-  expect(b.pings).toMatchObject({ sent: 1, cost: 0.02, followedByHit: 0, followedByMiss: 1 })
+  // Neither legacy follow-up is measurable; A's ping and instability are not in B.
+  expect(b.pings).toMatchObject({ sent: 1, cost: 0.02, followedByHit: 0, followedByMiss: 0 })
+  expect(b.requests?.every((request) => request.agent === "B")).toBe(true)
+  expect(b.totals.cacheRead).toBe(0)
   expect(b.unread).toBe(1000)
   expect(b.unstable).toEqual([])
   const none = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache" }, { now: 7_000_000 })
-  expect(none.pings).toMatchObject({ sent: 2, cost: 0.03, followedByHit: 1, followedByMiss: 1 })
+  expect(none.pings).toMatchObject({ sent: 2, cost: 0.03, followedByHit: 0, followedByMiss: 0 })
   expect(none.unread).toBe(1000)
   expect(none.unstable).toContainEqual({ sessionID: "f", segment: "system part system:1", streak: 3 })
   // The model filter narrows the same way.

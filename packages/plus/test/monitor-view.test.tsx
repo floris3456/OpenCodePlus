@@ -172,7 +172,7 @@ test("the monitor opens on the session, shows totals line, and s reaches the tre
     expect(frame).toContain("When: All")
     expect(frame).toContain("reqs: 2")
     expect(frame).toContain("steps: 2")
-    expect(frame).toContain("hit rate: 91%")
+    expect(frame).toContain("hit rate: —")
     expect(frame).toContain("[1 Overview]")
     expect(frame).toContain("[2 Cache]")
     expect(frame).toContain("[3 Tools]")
@@ -187,26 +187,46 @@ test("the monitor opens on the session, shows totals line, and s reaches the tre
   }
 })
 
-test("the Cache tab shows a fixture miss with its cause, and detail opens and closes", async () => {
+test("the Cache tab shows legacy changes without a confident miss, and detail opens and closes", async () => {
   const db = await seeded()
+  const base = contractFixtureReport(NOW)
+  const requests = base.requests!.map((request) => ({
+    ...request,
+    verdict: "none" as const,
+    measurement: { state: "legacy-unknown" as const },
+    confidence: "unknown" as const,
+    causeText: `observed: ${request.cause ?? "unknown"}`,
+    expected: undefined,
+    missTokens: 0,
+    missCost: 0,
+  }))
   const { fixture } = await render(db, {
-    customReport: contractFixtureReport(NOW),
+    customReport: {
+      ...base,
+      requests,
+      totals: { ...base.totals, hitRate: undefined, misses: 0, missTokens: 0, missCost: 0 },
+      detail: { ...base.detail!, request: requests.find((request) => request.id === base.detail!.request.id)! },
+    },
   })
   try {
     await fixture.waitForFrame((text) => text.includes("Scope: This session"))
     dispatch(fixture, "2")
-    const cacheFrame = await fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("[MISS]"))
-    expect(cacheFrame).toContain("[MISS]")
-    expect(cacheFrame).toContain("prefix-changed")
+    const cacheFrame = await fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("[NONE]"))
+    expect(cacheFrame).not.toContain("[MISS]")
+    expect(cacheFrame).toContain("observe")
     expect(cacheFrame).toContain("system part AGENTS.md changed")
-    expect(cacheFrame).toContain("[HIT]")
-    expect(cacheFrame).toContain("[COLD]")
+    expect(cacheFrame).not.toContain("[HIT]")
+    expect(cacheFrame).not.toContain("[COLD]")
 
-    // The miss request is the newest, so it is the first row: open its
+    // The changed request is the newest, so it is the first row: open its
     // detail with return, without moving the selection.
     dispatch(fixture, "return")
     const detailFrame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
-    expect(detailFrame).toContain("Cause: prefix-changed (certain)")
+    expect(detailFrame).toContain("Observation: legacy-unknown")
+    expect(detailFrame).toContain("observed: prefix-changed")
+    expect(detailFrame).toContain("Reported read: —")
+    expect(detailFrame).toContain("Shortfall estimate: 0")
+    expect(detailFrame).not.toContain("Expected prefix:")
     expect(detailFrame).toContain("system: AGENTS.md")
     expect(detailFrame).toContain("Fingerprint Segments:")
     expect(detailFrame).toContain("chars 2500 → 2900")
@@ -214,7 +234,7 @@ test("the Cache tab shows a fixture miss with its cause, and detail opens and cl
     // Close detail with backspace
     dispatch(fixture, "backspace")
     const closedFrame = await fixture.waitForFrame((text) => !text.includes("Request Detail:"))
-    expect(closedFrame).toContain("[MISS]")
+    expect(closedFrame).toContain("[NONE]")
   } finally {
     fixture.destroy()
   }
@@ -228,7 +248,7 @@ test("narrow and wide layouts format totals line without horizontal scroll", asy
     wideFrame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(140))
     expect(wideFrame).toContain("reqs: 2")
     expect(wideFrame).toContain("read: 19.8k")
-    expect(wideFrame).toContain("hit rate: 91%")
+    expect(wideFrame).toContain("hit rate: —")
     expect(wideFrame).toContain("cost: $0.00")
   } finally {
     wide.fixture.destroy()
@@ -240,7 +260,7 @@ test("narrow and wide layouts format totals line without horizontal scroll", asy
     narrowFrame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
     expect(narrowFrame).toContain("reqs: 2")
     expect(narrowFrame).toContain("steps: 2")
-    expect(narrowFrame).toContain("hit rate: 91%")
+    expect(narrowFrame).toContain("hit rate: —")
     expect(narrowFrame).toContain("cost: $0.00")
   } finally {
     narrow.fixture.destroy()
@@ -578,7 +598,7 @@ test("full and compact keep separate persisted settings", async () => {
     settingsKey: "monitor",
   })
   try {
-    await full.fixture.waitForFrame((text) => text.includes("[MISS]") || text.includes("[COLD]"))
+    await full.fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("[NONE]"))
     expect(full.queries[0]?.view).toBe("cache")
     expect((full.fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.tab).toBe("cache")
     expect(full.fixture.storeValue("monitor-composer")).toBeUndefined()

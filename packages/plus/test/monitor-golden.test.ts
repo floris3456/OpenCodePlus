@@ -1,7 +1,7 @@
 // The Monitor on a long chat: a generated Anthropic session of about 1,500
-// requests and 1,500 messages (monitor-golden-fixture.ts). Its verdicts were
-// recorded from the Monitor before the 1.1.18 speed-up, which took about 70 s
-// for this chat; they must not change, and the chat must load in seconds.
+// requests and 1,500 messages (monitor-golden-fixture.ts). Old confident verdicts
+// were not provider truth: this legacy fixture cannot establish sparse field
+// presence. Accounting, deterministic folding and the speed gates still stand.
 // The analysis cache must answer a repeat at no cost, ignore other chats'
 // writes, and fold a change in this chat incrementally to the same result a
 // cold analysis gives.
@@ -65,27 +65,44 @@ function cold(input: MonitorQueryInput) {
 
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value))
 
-test("a long Anthropic chat keeps the verdicts recorded before the speed-up and loads in seconds", () => {
+test("a long legacy Anthropic chat keeps accounting, unknown diagnoses and loads in seconds", () => {
   const fresh = createLedger(file)
   const started = performance.now()
   const report = queryMonitor(fresh, cache, { now: NOW })
   const coldMs = performance.now() - started
   fresh.close()
 
-  // The query leaves out the title request (row 0), as when it was recorded.
-  expect(report.requests?.map((r): unknown[] => [r.verdict, r.cause ?? null, r.expected ?? null, r.missTokens])).toEqual(
-    golden.rows.slice(1).map((row) => row.slice(0, 4)),
-  )
-  expect({
-    misses: report.totals.misses,
-    missTokens: report.totals.missTokens,
-    missCost: report.totals.missCost ?? null,
-    hitRate: report.totals.hitRate,
-  }).toEqual(golden.totals)
+  // The old snapshot is retained as historical evidence, not regenerated as
+  // truth. Independently require unknown diagnoses and exact stored accounting.
+  const rows = db.getRequests(GOLDEN_SESSION)
+  expect(rows).toHaveLength(1500)
+  expect(report.requests).toHaveLength(1499)
+  expect(report.requests?.map((request) => request.id)).toEqual(rows.filter((row) => !row.isTitle).map((row) => row.id))
+  expect(report.totals).toMatchObject({ misses: 0, missTokens: 0, missCost: 0 })
+  expect(report.totals.hitRate).toBeUndefined()
+  for (const [key, column] of [
+    ["input", "inputTokens"], ["output", "outputTokens"],
+    ["cacheRead", "cacheReadTokens"], ["cacheWrite", "cacheWriteTokens"], ["cost", "cost"],
+  ] as const) {
+    expect(report.totals[key]).toBeCloseTo(rows.filter((row) => !row.isTitle).reduce((sum, row) => sum + row[column], 0), 8)
+  }
   const details = analyzeSession(db, db.getRequests(GOLDEN_SESSION), db.getContextFacts(GOLDEN_SESSION)).details
-  expect(
-    details.map((d): unknown[] => [d.request.verdict, d.request.cause ?? null, d.request.expected ?? null, d.request.missTokens, d.timing.gapMs ?? null]),
-  ).toEqual(golden.rows)
+  expect(details).toHaveLength(1500)
+  details.forEach((detail, index) => {
+    const row = rows[index]!
+    expect(detail.request).toMatchObject({
+      id: row.id,
+      verdict: row.status === "error" ? "error" : "none",
+      confidence: "unknown",
+      missTokens: 0,
+      measurement: { state: row.status === "running" ? "running" : "legacy-unknown" },
+      input: row.inputTokens, cacheRead: row.cacheReadTokens, cacheWrite: row.cacheWriteTokens,
+    })
+    expect(detail.request.expected).toBeUndefined()
+  })
+  expect(details[300]?.request.cause).toBe("prefix-changed")
+  expect(details[900]?.accounts).toMatchObject([{ from: "Small", to: "Large" }])
+  expect(plain(report)).toEqual(cold(cache))
   // Recorded at about 70 s before the speed-up; about 0.4 s after it. The bound leaves room for a slow machine.
   expect(golden.recorded.queryMs).toBeGreaterThan(30_000)
   expect(coldMs).toBeLessThan(10_000)
@@ -125,7 +142,7 @@ test("a repeat costs nothing, other chats' writes are ignored, and a change fold
   probe.reset()
   const appended = plain(queryMonitor(probe.ledger, cache, { now: NOW }))
   expect(probe.reads).toEqual({ requests: 1, fingerprints: 0, fingerprint: 1 })
-  expect(appended.requests.at(-2).verdict).not.toBe("none")
+  expect(appended.requests.at(-2)).toMatchObject({ cacheRead: 400_000, cacheWrite: 2_000, verdict: "none", measurement: { state: "legacy-unknown" } })
   expect(appended).toEqual(cold(cache))
 
   // Changes deep in the history: a corrected early fingerprint and a fact back
@@ -148,6 +165,6 @@ test("a repeat costs nothing, other chats' writes are ignored, and a change fold
   })
   other.close()
   const completed = plain(queryMonitor(probe.ledger, cache, { now: NOW }))
-  expect(completed.requests.at(-1).verdict).toBe("miss")
+  expect(completed.requests.at(-1)).toMatchObject({ verdict: "none", cacheWrite: 402_000, measurement: { state: "legacy-unknown" }, missTokens: 0 })
   expect(completed).toEqual(cold(cache))
 }, 120_000)

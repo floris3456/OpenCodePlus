@@ -88,7 +88,7 @@ afterEach(async () => {
   await cleanupLedgers()
 })
 
-test("a session whose last step hit -> miss:false", async () => {
+test("a session whose legacy last step has positive reads -> miss:false without quantifying reuse", async () => {
   const db = await ledger()
   const ctx = context()
   record(db, "ses_hit", { id: "1", at: 1000, count: 2, read: 0, write: 5000 })
@@ -104,7 +104,7 @@ test("a session whose last step hit -> miss:false", async () => {
   }
 })
 
-test("a prefix change -> miss:true, causeText prompt changed · <part>", async () => {
+test("a legacy prefix change remains an observed fact, not a supported miss", async () => {
   const db = await ledger()
   const ctx = context()
   record(db, "ses_prefix", { id: "1", at: 1000, count: 2, system: "alpha".repeat(1000), read: 0, write: 5000 })
@@ -113,11 +113,11 @@ test("a prefix change -> miss:true, causeText prompt changed · <part>", async (
   const result = await monitorStep(ctx, { sessionID: "ses_prefix" }, db)
   expect(result.status).toBe("ready")
   if (result.status === "ready") {
-    expect(result.miss).toBe(true)
+    expect(result.miss).toBe(false)
     expect(result.cause).toBe("prefix-changed")
     expect(result.changedPart).toBeDefined()
-    expect(result.causeText).toBe(`prompt changed · ${result.changedPart}`)
-    expect(result.notReused).toBeGreaterThan(0)
+    expect(result.causeText).toBe("observed: prompt changed")
+    expect(result.notReused).toBe(0)
   }
 })
 
@@ -182,7 +182,9 @@ test("quota.switch compaction -> account changed · compacted first and /monitor
   expect(result.status).toBe("ready")
   if (result.status === "ready") {
     expect(result.cause).toBe("account-changed-compacted-first")
-    expect(result.causeText).toBe("account changed · compacted first")
+    expect(result.causeText).toBe("observed: account changed · compacted first")
+    expect(result.miss).toBe(false)
+    expect(result.notReused).toBe(0)
   }
 
   // /monitor's report shows the same
@@ -192,5 +194,6 @@ test("quota.switch compaction -> account changed · compacted first and /monitor
     { now: 3000 },
   )
   expect(report.detail?.request.cause).toBe("account-changed-compacted-first")
-  expect(report.detail?.request.causeText).toBe("account changed · compacted first")
+  expect(report.detail?.request.causeText).toBe("observed: account changed · compacted first")
+  expect(report.detail?.request.measurement?.state).toBe("legacy-unknown")
 })
