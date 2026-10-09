@@ -14,6 +14,7 @@ import {
   migrateRequires,
   rowlinkKey,
   rowlinkView,
+  requiresGateRecords,
   sameOwnerView,
   switchedOff,
   switchPartners,
@@ -22,6 +23,35 @@ import {
 } from "../src/instructions/rowlinks.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
+
+test("requires adapter upserts a local switch pair and retains unrelated pairs", () => {
+  const target = address({ item: "tool:s" })
+  const existing = [
+    link({ item: "tool:a", target: "tool:s", link: "oneway" }),
+    link({ item: "tool:b", target: "tool:s", link: "oneway" }),
+    link({ level: "global", item: "tool:a", target: "tool:s", link: "either" }),
+  ]
+  const next = requiresGateRecords(existing, target, target, ["tool:a"], UPDATED)
+  expect(next.filter((record) => record.level === "project" && record.item === "tool:a")).toEqual([
+    link({ item: "tool:a", target: "tool:s", link: "shownWhenOn" }),
+  ])
+  expect(next).toContainEqual(existing[1])
+  expect(next).toContainEqual(existing[2])
+  expect(gateAnswer(next, scopes(), target)?.ids).toEqual(["tool:a"])
+  expect(requiresGateRecords(next, target, target, null, UPDATED)).toEqual([existing[1], existing[2]])
+  const always = requiresGateRecords(existing, target, target, [], UPDATED)
+  expect(always).toContainEqual(existing[0])
+  expect(always).toContainEqual(existing[1])
+  expect(gateAnswer(always, scopes(), target)?.ids).toEqual([])
+})
+
+test("a stored switch replacing a marker retains stored provenance", () => {
+  const target = address({ item: "tool:s" })
+  const answer = gateAnswer([link({ item: "tool:a", target: "tool:s", link: "oneway" })], scopes(), target, ["tool:a"])
+  expect(answer?.ids).toEqual([])
+  expect(answer?.from).toEqual({ kind: "level", level: "project" })
+  expect(answer?.here).toBe(true)
+})
 
 for (const scenario of [
   { name: "nearer switch replaces inherited gate", links: [

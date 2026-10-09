@@ -369,20 +369,19 @@ export function gateAnswer(
     .filter((link) => !barrierOf(link, item, section) && sameGateTarget(link, item, section))
     .map((link) => ({ link, depth: chain.findIndex((node) => scopedTo(link, node)) }))
   const live = entries.filter((entry) => entry.link.enabled !== false && isGate(entry.link))
-  const masked = entries.filter((entry) => entry.link.enabled === false)
   const coveredKeys = new Set(entries.map((entry) => rowlinkKey(entry.link)))
   const shipped = marker.filter((pair) => !coveredKeys.has(pair.key))
   if (entries.length === 0 && shipped.length === 0) return undefined
-  const nearest = live.reduce<{ readonly link: RowlinkRecord; readonly depth: number } | undefined>(
+  const nearest = entries.reduce<{ readonly link: RowlinkRecord; readonly depth: number } | undefined>(
     (best, entry) => (best === undefined || entry.depth < best.depth ? entry : best),
     undefined,
   )
   const from: ChainNode["from"] | "text" =
-    nearest === undefined ? (masked.length > 0 ? chain[masked[0]!.depth]!.from : "text") : chain[nearest.depth]!.from
+    nearest === undefined ? "text" : chain[nearest.depth]!.from
   return {
     ids: conditionIds(live.map((entry) => entry.link)).concat(shipped.map((pair) => pair.id)),
     from,
-    here: live.some((entry) => scopedTo(entry.link, address)),
+    here: entries.some((entry) => scopedTo(entry.link, address)),
     barrier: false,
     pairs: [...live.map((entry) => pairOfStored(entry.link)), ...shipped.map((pair) => pair.pair)],
   }
@@ -417,31 +416,14 @@ export function requiresGateRecords(
     scopedTo(link, address) && isGate(link) && sameGateTarget(link, target.item, target.section)
   const rest = links.filter((link) => !local(link))
   if (ids === null) return rest
-  const barrier: RowlinkRecord = {
-    type: "rowlink",
-    level: address.level,
-    agent: address.agent,
-    ...(address.team === undefined ? {} : { team: address.team }),
-    ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    item: target.item,
-    section: target.section,
-    target: target.item,
-    targetSection: target.section,
-    link: "shownAlways",
-    updated,
-  }
-  return [
-    ...rest,
-    barrier,
-    ...ids.map(
-      (token): RowlinkRecord => ({
-        ...barrier,
-        item: token.startsWith("!") ? token.slice(1) : token,
-        section: null,
-        link: token.startsWith("!") ? "shownWhenOff" : "shownWhenOn",
-      }),
-    ),
-  ]
+  // The pair identity does not include its type: replace an existing switch
+  // for a requested condition rather than emitting two same-scope records.
+  return ids.reduce(
+    (next, token) => writeRowlink(next, address,
+      { item: token.startsWith("!") ? token.slice(1) : token, section: null },
+      target, token.startsWith("!") ? "shownWhenOff" : "shownWhenOn", undefined, updated),
+    writeRowlink(rest, address, target, target, "shownAlways", undefined, updated),
+  )
 }
 
 /**

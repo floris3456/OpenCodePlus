@@ -24,6 +24,7 @@ import {
   saveSplit,
   saveText,
   setPin,
+  setRequires,
   teamPlan,
   toggle,
   unknownRowRefusal,
@@ -4124,4 +4125,36 @@ test("durable section gates and inspection agree across pair replacements and ba
     if (!assembled.ok) throw new Error(assembled.error.message)
     expect(assembled.value.system.join("\n").includes("## Questions")).toBe(scenario.kept)
   }
+})
+
+test("legacy requires durably replaces a same-scope switch pair without duplicate identity", async () => {
+  const { api, tools, project } = await freshFixture({ tools: [
+    { id: "reader", description: "Read", options: { codemode: false } },
+    { id: "question", description: "Ask", options: { codemode: false } },
+    { id: "extra", description: "Extra", options: { codemode: false } },
+  ] })
+  await runOk(need(tools, "instructions_create"), { kind: "agent", id: "gateprobe", scope: "project" })
+  await linkToBuild(project, "project", ["gateprobe"])
+  const reader = "item:project:gateprobe:tool:reader"
+  const section = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id.startsWith("section:project:gateprobe:system:tools-and-rules:") && node.label === "Questions")
+  if (section === undefined) throw new Error("Missing Questions section")
+  const question = section.id
+  const extra = "item:project:gateprobe:tool:extra"
+  const set = need(tools, "instructions_set")
+  const link = need(tools, "instructions_link")
+  await runOk(link, { id: reader, target: question, type: "oneway" })
+  await runOk(link, { id: extra, target: question, type: "oneway" })
+  const operation = setRequires(memoInputOf(await snapshotOf(api)), question, ["tool:reader"])
+  if ("refusal" in operation) throw new Error(operation.refusal)
+  expect(operation.rowlinks?.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
+  await runOk(set, { id: question, requires: ["tool:reader"] })
+  const stored = await linksOf(project)
+  expect(stored.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
+  expect(stored.filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["oneway"])
+  const shown = await runOk(need(tools, "instructions_show"), { id: question }) as { requires?: { id: string }[] }
+  expect(shown.requires?.map((entry) => entry.id)).toEqual(["tool:reader"])
+  await runOk(set, { id: question, requires: [] })
+  expect((await linksOf(project)).filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["oneway"])
+  await runOk(set, { id: question, requires: null })
+  expect((await linksOf(project)).map((record) => [record.item, record.link])).toEqual([["tool:extra", "oneway"]])
 })
