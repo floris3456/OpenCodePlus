@@ -272,6 +272,37 @@ async function freshFixture(overrides?: Partial<Parameters<typeof fullContext>[0
   return { ctx, api, tools: await readTools(ctx), project }
 }
 
+test("section move tool dispatch persists effective order and refuses invalid and protected requests without writes", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencode", "agent", "alpha.md"), formatMarkdown({}, "# One\nFirst.\n\n# Two\nSecond.\n"))
+  await Bun.write(path.join(project, ".opencode", "agent", "beta.md"), formatMarkdown({}, "# One\nOther.\n\n# Two\nOther second.\n"))
+  await linkToBuild(project, "project", ["alpha", "beta"])
+  const ctx = fixtureContext(project, { agents: [agentInfo("alpha"), agentInfo("beta")], tools: [{ id: "reader", description: "# One\nFirst.\n\n# Two\nSecond.\n", options: { codemode: false } }] })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const snapshot = await snapshotOf(api)
+  const nodes = expandedTree(memoInputOf(snapshot))
+  const section = (id: string, agent = "alpha") => {
+    const node = nodes.find((node) => node.address?.item === "tool:reader" && node.address.section === id && node.address.level === "project" && node.address.agent === agent)
+    if (!node) throw new Error(`missing ${agent} ${id}`)
+    return node.id
+  }
+  const tool = need(tools, "instructions_move")
+  const before = await load(project)
+  expect((await runFail(tool, { id: section("two"), before: section("one", "beta") })).message).toContain("different items")
+  expect(await load(project)).toEqual(before)
+  await runOk(tool, { id: section("two"), before: section("one") })
+  const saved = await load(project)
+  const written = saved.records.find((record): record is Extract<typeof record, { type: "customization" }> => record.type === "customization" && record.agent === "alpha" && record.item === "tool:reader" && record.section === null)
+  expect(written?.text?.trim()).toBe("# Two\nSecond.\n# One\nFirst.")
+  const reload = await snapshotOf(api)
+  expect(expandedTree(memoInputOf(reload)).filter((node) => node.address?.item === "tool:reader" && node.address.level === "project" && node.address.agent === "alpha" && node.address.section !== null).map((node) => node.address?.section)).toEqual(["two", "one"])
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  expect((await runFail(tool, { id: section("one"), before: section("two") })).message).toContain("agent.protected")
+  expect(await load(project)).toEqual(saved)
+})
+
 async function readerRowId(api: PlusApi): Promise<string> {
   const snapshot = await snapshotOf(api)
   const memo = memoFromSnapshot(snapshot)

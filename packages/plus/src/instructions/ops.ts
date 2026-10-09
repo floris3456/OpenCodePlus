@@ -317,10 +317,9 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
 }
 
 // A section move (plus-1.2.0 B42). It reorders one section before or after a
-// sibling under the same parent, inside the same item: a heading-derived move
-// rewrites the parent's effective span (the B39 parent-save, folding the
-// consumed same-level child texts into it), a manual split moves the raw block
-// in the base text and shifts the boundaries that follow. State, pin and
+// sibling under the same parent, inside the same item. A heading-derived move
+// rewrites the parent's effective span (the B39 parent-save); a manual split
+// rewrites effective text and remaps its stable boundaries. State, pin and
 // condition records are never touched; only consumed text fields go.
 // Cross-item and cross-parent (nesting) moves refuse atomically.
 export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarget, updated: string): OpResult {
@@ -358,13 +357,11 @@ export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarge
     scopes: memberMemo.ctx.scopes,
     address: itemAddress,
   })
-  const hasManual = chain.splits.some((record) => record.item === itemAddress.item && scopedTo(record, itemAddress))
-  const hasSectionOverrides = chain.customizations.some(
-    (record) => record.item === itemAddress.item && record.section !== null && record.text !== undefined && scopedTo(record, itemAddress),
-  )
-  // Heading-derived reorder folds child edits, so it moves the effective text;
-  // a manual split moves raw base text and shifts the boundaries to match.
-  const baseText = !hasManual && hasSectionOverrides ? (whole.fullText ?? whole.assembled ?? whole.text) : whole.text
+  const hasManual = winningSplit(chain.splits, itemAddress, memberMemo.ctx.scopes) !== undefined
+  // Assembly trims its final newline. Restore a separator before relocating a
+  // final heading span, or its body would run into the next heading.
+  const effectiveText = whole.fullText ?? whole.assembled
+  const baseText = !hasManual ? `${effectiveText}\n` : whole.text
   const split = resolveSplit({
     text: baseText,
     title: chain.upstream.title,
@@ -416,21 +413,31 @@ export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarge
     return { records, splits: chain.splits, status, retryHint: `moved "${node.label}" against a stale revision; retry to apply` }
   }
 
-  // Manual split: move the raw block and shift every boundary by the same
+  // Manual split: move the effective block and shift every boundary by the same
   // offset map, so stable ids keep their content at their new positions.
   const winner = winningSplit(chain.splits, itemAddress, memberMemo.ctx.scopes)
   if (winner === undefined) return { refusal: `Section not found for "${node.label}"` }
-  const length = moved.end - moved.start
-  const rawInsert = before ? anchor.start : anchor.end
-  const insert = rawInsert <= moved.start ? rawInsert : rawInsert - length
-  const text = moveRawBlock(baseText, moved, anchor, before)
+  // Manual ids do not derive from headings. Use the rendered spans to fold
+  // child edits without measuring boundaries against text of a different size.
+  // A parent override can hide a manual child entirely: no safe span exists.
+  const rendered = `${effectiveText}\n`
+  const movedSpan = whole.spans?.get(moved.id)
+  const anchorSpan = whole.spans?.get(anchor.id)
+  if (movedSpan === undefined || anchorSpan === undefined || winner.boundaries.some((boundary) => !whole.spans?.has(boundary.id)))
+    return { refusal: `"${node.label}" is hidden by a manual parent override; reset or edit that parent before moving its sections` }
+  const movedBlock = { start: movedSpan.start, end: movedSpan.end === effectiveText.length ? rendered.length : movedSpan.end }
+  const anchorBlock = { start: anchorSpan.start, end: anchorSpan.end === effectiveText.length ? rendered.length : anchorSpan.end }
+  const length = movedBlock.end - movedBlock.start
+  const rawInsert = before ? anchorBlock.start : anchorBlock.end
+  const insert = rawInsert <= movedBlock.start ? rawInsert : rawInsert - length
+  const text = moveRawBlock(rendered, movedBlock, anchorBlock, before)
   const boundaries = winner.boundaries.map((boundary) => ({
     id: boundary.id,
     name: boundary.name,
-    start: mapMovedOffset(boundary.start, moved.start, moved.end, insert),
+    start: mapMovedOffset(whole.spans!.get(boundary.id)!.start, movedBlock.start, movedBlock.end, insert),
     ...(boundary.depth === undefined ? {} : { depth: boundary.depth }),
   }))
-  const records = merge(chain.customizations, itemAddress, { text }, chain.upstream, memberMemo.ctx.scopes, chain.splits)
+  const records = merge(dropSectionText(chain.customizations, itemAddress), itemAddress, { text }, chain.upstream, memberMemo.ctx.scopes, chain.splits)
   const rest = chain.splits.filter((record) => !(record.item === itemAddress.item && scopedTo(record, address)))
   const splits: SplitRecord[] = [
     ...rest,
