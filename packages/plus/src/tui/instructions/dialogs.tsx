@@ -21,8 +21,6 @@ import {
   type ModelSettingsField,
 } from "../../instructions/model-settings.js"
 import { skillScopeOfNode, type AddKind, type RowOwner, type TreeNode } from "../../instructions/tree.js"
-import { folderIdOfRef, tabOfItem } from "../../instructions/folders.js"
-import { rowToken } from "../../instructions/ops.js"
 import { parseModelText } from "../../instructions/ops.js"
 import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
@@ -1353,37 +1351,6 @@ export function createInstructionsDialogs(
     await state.createFolder(node, name)
   }
 
-  // m on an item row or a folder: move it into a folder of its tab, or to the
-  // tab's top level. Display only; every owner lists it there.
-  async function move(node: TreeNode | undefined): Promise<void> {
-    if (disposed || node === undefined) return
-    const token = rowToken(node)
-    if (token === undefined || token.startsWith("tab:")) {
-      state.setStatus(`"${node.label}" is not a row that can be moved`)
-      return
-    }
-    const current = await currentSnapshot()
-    if (disposed || current === undefined) return
-    const movedFolder = folderIdOfRef(token)
-    const tab = movedFolder === undefined ? tabOfItem(token) : current.folders?.find((folder) => folder.id === movedFolder)?.tab
-    if (tab === undefined) {
-      state.setStatus(`"${node.label}" is not a row that can be moved`)
-      return
-    }
-    const picked = await context.ui.dialog.select<string>({
-      title: `Move "${node.label}"`,
-      placeholder: "Pick a folder, or the top level",
-      options: [
-        { title: `Top level of ${tab}`, value: `tab:${tab}` },
-        ...(current.folders ?? [])
-          .filter((folder) => folder.tab === tab && folder.id !== movedFolder)
-          .map((folder) => ({ title: folder.name, value: `folder:${folder.id}` })),
-      ],
-    })
-    if (disposed || picked === undefined) return
-    await state.moveRow(node, { into: picked })
-  }
-
   // R on a folder: rename it (its rows and its place stay).
   async function renameFolder(node: TreeNode | undefined): Promise<void> {
     if (disposed || node === undefined) return
@@ -1460,7 +1427,7 @@ export function createInstructionsDialogs(
     await state.deleteFolder(node)
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, move, renameFolder, renameRow, deleteFolder, dispose }
+  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, renameFolder, renameRow, deleteFolder, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

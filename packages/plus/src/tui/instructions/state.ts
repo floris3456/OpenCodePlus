@@ -77,6 +77,7 @@ import {
 } from "../../instructions/ops.js"
 import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
+import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js"
 import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 
@@ -205,6 +206,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   const [filter, setFilter] = createSignal<string>("")
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
+  // The S1b pick-up move draft: while set, the tree renders this layout instead
+  // of the snapshot's. One write on drop, none on cancel.
+  const [move, setMove] = createSignal<MoveState | undefined>(undefined)
   let disposed = false
   let generation = 0
 
@@ -654,6 +658,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   function memoInput(): MemoInput {
+    const draft = move()?.layout
     return {
       items: itemsForTree(),
       records: recordsForTree(),
@@ -661,8 +666,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       teams: teamsForTree(),
       modelSettings: modelSettingsForTree(),
       hostModels: hostModelsForTree(),
-      folders: snapshot()?.folders ?? [],
-      orders: snapshot()?.orders ?? [],
+      folders: draft?.folders ?? snapshot()?.folders ?? [],
+      orders: draft?.orders ?? snapshot()?.orders ?? [],
       ...presetStateForTree(),
     }
   }
@@ -904,6 +909,48 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   function moveRow(node: TreeNode, target: RowTarget): Promise<boolean> {
     return layoutAction(planRowMove(memoInput(), layoutNow(), node.id, target, new Date().toISOString()))
+  }
+
+  // ---- pick-up move mode (S1b) ----
+
+  function beginMove(node: TreeNode): boolean {
+    if (move() !== undefined) return false
+    const started = startMove(node, layoutNow())
+    if ("refusal" in started) {
+      setStatus(started.refusal)
+      return false
+    }
+    setMove(started.state)
+    return true
+  }
+
+  // One arrow press. Returns the tree ids to open (the folder entered), so the
+  // moved row stays visible.
+  function stepMove(step: MoveStep): readonly string[] {
+    const current = move()
+    if (current === undefined) return []
+    const advanced = advanceMove(memoInput(), current, step)
+    if ("refusal" in advanced) {
+      setStatus(advanced.refusal)
+      return []
+    }
+    setMove(advanced.state)
+    return advanced.expand
+  }
+
+  async function commitMove(): Promise<boolean> {
+    const current = move()
+    if (current === undefined) return false
+    const ok = await layoutAction({ target: current.target, status: current.status, layout: current.layout })
+    // On failure the store still holds the old order, so the preview goes too.
+    if (move() === current) setMove(undefined)
+    return ok
+  }
+
+  function cancelMove(): boolean {
+    const had = move() !== undefined
+    setMove(undefined)
+    return had
   }
 
   function renameFolder(node: TreeNode, to: string): Promise<boolean> {
@@ -1593,6 +1640,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   return {
     snapshot,
+    move,
+    beginMove,
+    stepMove,
+    commitMove,
+    cancelMove,
     coldMove,
     toggleModelSwitch,
     modelCompactionView,
