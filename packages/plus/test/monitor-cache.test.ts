@@ -297,6 +297,7 @@ test("signals: named changes, legacy pings without hit claims, marked unread wri
     sessionID: "ping",
     now: 10000,
     atCompaction: 7010,
+    inputState: "stored",
   })
   expect(report.totals.missTokens).toBe(0)
   expect(report.topMisses).toEqual([])
