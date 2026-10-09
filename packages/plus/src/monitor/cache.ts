@@ -980,6 +980,7 @@ export function foldSession(
       cacheWrite: r.cacheWriteTokens,
       cost: r.cost,
       verdict: cause.verdict,
+      outcome: r.status,
       measurement: measured,
       ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
@@ -991,6 +992,7 @@ export function foldSession(
     }
 
     const lines = [
+      ...(measured.scope ? [`Observation scope: ${measured.scope}; invocation ${measured.invocationID}; operation ${measured.operationID}; outcome ${r.status}`] : []),
       request.evidence ?? cause.evidence,
       `Reusable-token estimate: ${expected ?? "unknown"}; common content estimate: ${diff.common} tokens (characters, not a lower bound)`,
       `Session ${r.sessionID}; message ${r.messageID ?? "unrecorded"}; request ${r.id}`,

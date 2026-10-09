@@ -1355,6 +1355,7 @@ export const MonitorStepResult = Schema.Union([
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
   requests: Schema.optionalKey(Schema.Number),
+  exchangeRows: Schema.optionalKey(Schema.Number),
   pings: Schema.optionalKey(Schema.Number),
   pingCost: Schema.optionalKey(Schema.Number),
   misses: Schema.optionalKey(Schema.Number),
@@ -1447,8 +1448,13 @@ export const MonitorRequest = Schema.Struct({
   cacheWrite: Schema.Number,
   cost: Schema.Number,
   verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none", "error"]),
+  outcome: Schema.optionalKey(Schema.String),
   measurement: Schema.optionalKey(Schema.Struct({
     state: Schema.Literals(["running", "legacy-unknown", "unknown-version", "inconsistent", "unavailable", "not-reported", "reported"]),
+    scope: Schema.optionalKey(Schema.Literals(["invocation", "exchange"])),
+    invocationID: Schema.optionalKey(Schema.String),
+    operationID: Schema.optionalKey(Schema.String),
+    exchangeCount: Schema.optionalKey(Schema.Number),
     input: Schema.optionalKey(Schema.Number),
     read: Schema.optionalKey(Schema.Number),
     write: Schema.optionalKey(Schema.Number),

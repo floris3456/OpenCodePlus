@@ -17,6 +17,10 @@ export function measurement(row: RequestRow): NonNullable<MonitorRequest["measur
   if (usage.inconsistent || values.some((n) => n !== undefined && (!Number.isFinite(n) || n < 0)) ||
     (input !== undefined && (read ?? 0) + (write ?? 0) > input)) return { state: "inconsistent" }
   return {
+    ...(usage.scope === undefined ? {} : { scope: usage.scope }),
+    ...(usage.invocationID === undefined ? {} : { invocationID: usage.invocationID }),
+    ...(usage.operationID === undefined ? {} : { operationID: usage.operationID }),
+    ...(usage.exchangeCount === undefined ? {} : { exchangeCount: usage.exchangeCount }),
     state: usage.completeness !== "final" || usage.provenance?.cacheReadInputTokens?.completeness === "partial"
       ? "unavailable" : read === undefined ? "not-reported" : "reported",
     ...(input === undefined ? {} : { input }),
@@ -28,7 +32,7 @@ export function measurement(row: RequestRow): NonNullable<MonitorRequest["measur
 
 /** Same measured population in both sums; warming is not useful-work reuse. */
 export function reuseRate(rows: readonly MonitorRequest[], legacy = 0) {
-  const useful = rows.filter((row) => row.kind !== "ping")
+  const useful = rows.filter((row) => row.kind !== "ping" && row.measurement?.scope !== "exchange")
   const measured = useful.filter((row) => row.measurement?.state === "reported" && row.measurement.input !== undefined)
   const input = measured.reduce((sum, row) => sum + row.measurement!.input!, 0)
   const read = measured.reduce((sum, row) => sum + row.measurement!.read!, 0)

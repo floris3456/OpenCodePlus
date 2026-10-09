@@ -288,6 +288,9 @@ export function requestReport(
     .sort((a, b) => a.request.at - b.request.at || a.request.id.localeCompare(b.request.id))
   // Copies: the steps view adds per-query fields, and the analysis is cached.
   const requests = details.map((d) => ({ ...d.request }))
+  // Transport-only children remain inspectable, but are not extra model calls
+  // or unknown-usage invocations in aggregate measurement coverage.
+  const invocations = requests.filter((r) => r.measurement?.scope !== "exchange")
 
   const sum = (
     rows: readonly MonitorRequest[],
@@ -327,13 +330,14 @@ export function requestReport(
     }
   }
 
-  const pingRows = requests.filter((r) => r.kind === "ping")
+  const pingRows = invocations.filter((r) => r.kind === "ping")
   const misses = requests.filter(isMiss)
   const legacy = analyses.flatMap((a) => a.legacy)
   const legacyTotal = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
     legacy.reduce((n, s) => n + s[key], 0)
   const totals: Partial<MonitorTotals> = {
-    ...(requests.length ? totalsFor(requests) : { requests: 0, misses: 0 }),
+    ...(invocations.length ? totalsFor(invocations) : { requests: 0, misses: 0 }),
+    exchangeRows: requests.length - invocations.length,
     pings: pingRows.length,
     pingCost: sum(pingRows, "cost"),
     missTokens: sum(misses, "missTokens"),
@@ -539,8 +543,8 @@ export function requestReport(
       }
       return entry
     }
-    for (let i = 0; i < requests.length; i++) {
-      const r = requests[i]!
+    for (let i = 0; i < invocations.length; i++) {
+      const r = invocations[i]!
       const entry = agentEntry(r.agent ?? "?", r.provider ?? "", r.model ?? "")
       if (r.kind === "step") entry.steps++
       if (isMiss(r)) entry.misses++
@@ -589,7 +593,7 @@ export function requestReport(
       for (let parent = s.parent_id; parent && !chain.includes(parent); parent = byID.get(parent)?.parent_id ?? null) {
         chain.push(parent)
       }
-      const rs = requests.filter((r) => r.sessionID === s.id)
+      const rs = invocations.filter((r) => r.sessionID === s.id)
       const sessionLegacy = analyses.find((a) => a.id === s.id)?.legacy ?? []
       const base = totalsFor(rs)
       const legacySum = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
