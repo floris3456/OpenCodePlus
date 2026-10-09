@@ -2,7 +2,7 @@
 import type { MonitorRequest, MonitorRequestDetail } from "../rpc.js"
 import { Model } from "@opencode/schema/model"
 import { Option, Schema } from "effect"
-import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION, type CacheControlMarker, type WireFingerprint } from "./fingerprint.js"
+import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION, type CacheControlMarker } from "./fingerprint.js"
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
 import { measurement } from "./measurement.js"
 import { estimateTokens } from "./attribution.js"
@@ -75,12 +75,11 @@ function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
 }
 
 function segments(fp: RequestFingerprintData): Segment[] {
-  const wire = fp as RequestFingerprintData & WireFingerprint
   const systemChars = fp.systemParts.reduce((sum, p) => sum + p.chars, 0)
   const system = [{
     name: "system wire",
     kind: "system" as const,
-    hash: wire.systemHash ?? "",
+    hash: fp.systemHash ?? "",
     chars: systemChars,
     tokens: estimateTokens(systemChars),
     index: undefined,
@@ -319,10 +318,9 @@ const supportedCache = new WeakMap<RequestFingerprintData, boolean>()
 function supportedFingerprint(fp: RequestFingerprintData): boolean {
   const cached = supportedCache.get(fp)
   if (cached !== undefined) return cached
-  const wire = fp as RequestFingerprintData & WireFingerprint
-  const supported = wire.fingerprintVersion === FINGERPRINT_VERSION && wire.policyVersion === FINGERPRINT_POLICY_VERSION &&
+  const supported = fp.fingerprintVersion === FINGERPRINT_VERSION && fp.policyVersion === FINGERPRINT_POLICY_VERSION &&
     ["openai-chat", "openai-responses", "anthropic-messages"].includes(fp.protocol) &&
-    typeof wire.systemHash === "string" && fp.tools.every((p) => typeof p.wireHash === "string") &&
+    typeof fp.systemHash === "string" && fp.tools.every((p) => typeof p.wireHash === "string") &&
     fp.messagePrefixes.every((p) => typeof p.contentHash === "string")
   supportedCache.set(fp, supported)
   return supported

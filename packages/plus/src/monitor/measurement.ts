@@ -1,20 +1,11 @@
 import type { MonitorRequest } from "../rpc.js"
 import type { RequestRow } from "./ledger.js"
+import type { RequestObservation } from "./observation.js"
 
 /** Sparse invocation usage, separate from the zero-filled Session accounting view. */
-export interface UsageObservation {
-  readonly version: number
-  readonly completeness: "final" | "partial" | "unavailable"
-  /** Present only for a complete inclusive total, never a partial component sum. */
-  readonly inputTokens?: number
-  readonly cacheReadInputTokens?: number
-  readonly cacheWriteInputTokens?: number
-  readonly nonCachedInputTokens?: number
-  readonly outputTokens?: number
-  readonly reasoningTokens?: number
-}
+export type UsageObservation = RequestObservation
 
-export function measurement(row: RequestRow & { readonly observation?: UsageObservation }): NonNullable<MonitorRequest["measurement"]> {
+export function measurement(row: RequestRow): NonNullable<MonitorRequest["measurement"]> {
   if (row.status === "running") return { state: "running" }
   const usage = row.observation
   if (!usage) return { state: "legacy-unknown" }
@@ -23,7 +14,7 @@ export function measurement(row: RequestRow & { readonly observation?: UsageObse
   const read = usage.cacheReadInputTokens
   const write = usage.cacheWriteInputTokens
   const values = [input, read, write, usage.nonCachedInputTokens, usage.outputTokens, usage.reasoningTokens]
-  if (values.some((n) => n !== undefined && (!Number.isFinite(n) || n < 0)) ||
+  if (usage.inconsistent || values.some((n) => n !== undefined && (!Number.isFinite(n) || n < 0)) ||
     (input !== undefined && (read ?? 0) + (write ?? 0) > input)) return { state: "inconsistent" }
   return {
     state: usage.completeness !== "final" ? "unavailable" : read === undefined ? "not-reported" : "reported",

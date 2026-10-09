@@ -421,6 +421,9 @@ export interface RequestRow {
 export interface RequestFingerprintData {
   readonly requestID: string
   readonly sessionID: string
+  readonly fingerprintVersion?: number
+  readonly policyVersion?: number
+  readonly systemHash?: string
   readonly protocol: string
   readonly systemParts: readonly SystemPartFingerprint[]
   readonly tools: readonly ToolFingerprint[]
@@ -544,6 +547,9 @@ export function createLedger(file: string): Ledger {
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "observation")) db.exec("alter table request add column observation text")
   if (!db.query<{ name: string }, []>("pragma table_info(request)").all().some((column) => column.name === "finish")) db.exec("alter table request add column finish text")
   const fingerprintColumns = db.query<{ name: string }, []>("pragma table_info(request_fingerprint)").all()
+  for (const [name, type] of [["fingerprint_version", "integer"], ["policy_version", "integer"], ["system_hash", "text"]]) {
+    if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} ${type}`)
+  }
   for (const name of ["previous_response_id", "response_id"]) {
     if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} text`)
   }
@@ -645,9 +651,12 @@ export function createLedger(file: string): Ledger {
       message_id = coalesce($message, message_id)
     where id = $id and observation is null`)
   const upsertFingerprint = db.query(`
-    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, prefix_base, prefix_shared, prefix_depth, cache_key, cache_control, body_hash, created, previous_response_id, response_id)
-    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $prefixBase, $prefixShared, $prefixDepth, $cacheKey, $cacheControl, $bodyHash, $created, $previousResponse, $response)
+    insert into request_fingerprint (request_id, session_id, protocol, system_parts, tools, options_hash, options_keys, message_prefixes, prefix_base, prefix_shared, prefix_depth, cache_key, cache_control, body_hash, created, previous_response_id, response_id, fingerprint_version, policy_version, system_hash)
+    values ($requestId, $session, $protocol, $systemParts, $tools, $optionsHash, $optionsKeys, $messagePrefixes, $prefixBase, $prefixShared, $prefixDepth, $cacheKey, $cacheControl, $bodyHash, $created, $previousResponse, $response, $fingerprintVersion, $policyVersion, $systemHash)
     on conflict(request_id) do update set
+      fingerprint_version = excluded.fingerprint_version,
+      policy_version = excluded.policy_version,
+      system_hash = excluded.system_hash,
       protocol = excluded.protocol,
       system_parts = excluded.system_parts,
       tools = excluded.tools,
@@ -871,6 +880,9 @@ export function createLedger(file: string): Ledger {
       $requestId: fp.requestID,
       $session: fp.sessionID,
       $protocol: fp.protocol,
+      $fingerprintVersion: fp.fingerprintVersion ?? null,
+      $policyVersion: fp.policyVersion ?? null,
+      $systemHash: fp.systemHash ?? null,
       $systemParts: JSON.stringify(fp.systemParts),
       $tools: JSON.stringify(fp.tools),
       $optionsHash: fp.optionsHash,
@@ -1173,6 +1185,9 @@ function toRequestRow(row: Record<string, unknown>): RequestRow {
 
 function toFingerprintData(row: Record<string, unknown>, messagePrefixes: readonly MessagePrefixFingerprint[]): RequestFingerprintData {
   return {
+    ...(typeof row.fingerprint_version === "number" ? { fingerprintVersion: row.fingerprint_version } : {}),
+    ...(typeof row.policy_version === "number" ? { policyVersion: row.policy_version } : {}),
+    ...(typeof row.system_hash === "string" ? { systemHash: row.system_hash } : {}),
     requestID: String(row.request_id),
     sessionID: String(row.session_id),
     protocol: String(row.protocol),

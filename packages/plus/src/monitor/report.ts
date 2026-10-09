@@ -175,7 +175,9 @@ function firstDifference<T>(next: readonly T[], previous: readonly T[], same: (a
 // Ledger rows carry every field, undefined ones included.
 function sameRow(a: RequestRow, b: RequestRow): boolean {
   const keys = Object.keys(a) as (keyof RequestRow)[]
-  return keys.length === Object.keys(b).length && keys.every((key) => Object.is(a[key], b[key]))
+  return keys.length === Object.keys(b).length && keys.every((key) => key === "observation"
+    ? JSON.stringify(a.observation) === JSON.stringify(b.observation)
+    : Object.is(a[key], b[key]))
 }
 
 function sameFact(a: ContextFactRow, b: ContextFactRow): boolean {
