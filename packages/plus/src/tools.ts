@@ -80,6 +80,8 @@ import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
 import type { StoredRecord } from "./instructions/store.js"
 import {
   everySettings,
+  compactionFieldsOf,
+  setModelCompaction,
   hostModelOf,
   isModelDefaultRowId,
   isModelFieldRowId,
@@ -255,6 +257,12 @@ const SetInput = Schema.Struct({
   interval: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
+  compactWarm: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldCompact: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldModels: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Array(Schema.String)]))),
+  compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
   rename: Schema.optionalKey(Schema.String).annotate({
     description:
       "Rename this agent, on-disk team member or Project/Global team row to this new name/id, or a folder row to a new name. " +
@@ -418,6 +426,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
+          if (input.compactWarm !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined)
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; compaction fields are set on model or Defaults › Models rows` }))
           if (input.warming !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
           if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
@@ -1007,11 +1017,35 @@ function setModel(
     interval?: string
     prompt?: string
     effort?: string
+    compactWarm?: string | null
+    coldCompact?: string | null
+    coldModels?: string | readonly string[] | null
+    compactionStrategy?: string | null
+    compactionModel?: string | null
+    compactionInstructions?: string | null
   },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const node = findRow(memo, id)
     const label = node?.label ?? id
+    const compaction = compactionFieldsOf(input)
+    if ("error" in compaction) return yield* Effect.fail(new Tool.Error({ message: compaction.error }))
+    // Compose candidate/warming and C1 changes in memory, then persist once.
+    // A bad warming edit must not leave an otherwise valid C1 update behind.
+    if (Object.keys(compaction.fields).length > 0) {
+      if (input.active !== undefined || input.state !== undefined || input.pin !== undefined || input.resolve !== undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}": set compaction separately from activation, state, pin or review` }))
+      const target = input.text === undefined ? modelTargetOfAddress(node) : parseModelText(input.text)
+      if (target === undefined || node?.address === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes provider/model or provider/model#variant` }))
+      const edit = input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.prompt !== undefined
+        ? editModelRow(memo, id, { ...target, ...(input.warming === undefined ? {} : { warming: input.warming }), ...(input.interval === undefined ? {} : { interval: input.interval }), ...(input.prompt === undefined ? {} : { prompt: input.prompt }) })
+        : undefined
+      if (edit !== undefined && "refusal" in edit) return yield* Effect.fail(new Tool.Error({ message: edit.refusal }))
+      const models = setModelCompaction(edit?.models ?? modelsOfMemo(memo), node.address, target, compaction.fields, new Date().toISOString())
+      const applied = yield* mutateModels(api, memo, models, `Updated "${label}"`, actor)
+      return { output: { id, ...applied } }
+    }
     // Cache warming for this agent on this model at this level; "" inherits.
     if (input.warming !== undefined && input.text === undefined && input.interval === undefined && input.prompt === undefined) {
       const warming = input.warming
@@ -1129,12 +1163,12 @@ function setModelDefaults(
     interval?: string
     prompt?: string
     effort?: string
-    compactWarm?: string
-    coldCompact?: string
-    coldModels?: readonly string[]
-    compactionStrategy?: string
-    compactionModel?: string
-    compactionInstructions?: string
+    compactWarm?: string | null
+    coldCompact?: string | null
+    coldModels?: string | readonly string[] | null
+    compactionStrategy?: string | null
+    compactionModel?: string | null
+    compactionInstructions?: string | null
     text?: string
     pin?: boolean
     active?: boolean
@@ -1164,6 +1198,8 @@ function setModelDefaults(
       return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
     const key = defaultsKeyOf(node)
     if (key === undefined) return yield* Effect.fail(unknownError(node.id))
+    const compaction = compactionFieldsOf(input)
+    if ("error" in compaction) return yield* Effect.fail(new Tool.Error({ message: compaction.error }))
     const result = yield* Effect.promise(() =>
       api.setModelSettings({
         ...key,
@@ -1172,12 +1208,7 @@ function setModelDefaults(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
-        ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
-        ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
-        ...(input.coldModels === undefined ? {} : { coldModels: [...input.coldModels] }),
-        ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
-        ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
-        ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+        ...compaction.fields,
         actor,
       }),
     )

@@ -3,14 +3,14 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect, Exit } from "effect"
+import { Deferred, Effect, Exit, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { activate, createPlusApi, createState, createHandlers, deactivate } from "../src/index.js"
 import type { PlusApi } from "../src/index.js"
 import { Plus } from "../src/rpc.js"
-import { globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
+import { globalLogPath, globalRecordsPath, globalTeamsPath, projectLogPath, projectRecordsPath, projectTeamsPath, teachingFilePath, teachingSkillId, teamsDataDir } from "../src/instructions/paths.js"
 import { saveRun } from "../src/teams/run.js"
 import { load, save } from "../src/instructions/store.js"
 import { userBaseFile } from "../src/agents/base.js"
@@ -256,6 +256,78 @@ async function runFail(tool: Tool.Info & { readonly id: string }, input: unknown
   if (outcome.ok) throw new Error(`expected tool failure, got success: ${JSON.stringify(outcome.result)}`)
   return outcome.error
 }
+
+// Exercise the host boundary as well as execute: unknown keys would otherwise
+// bypass the registered schema and conceal missing callable API fields.
+function decoded(tool: Tool.Info, input: unknown) {
+  if (!Schema.isSchema(tool.input)) throw new Error("expected registered Effect schema")
+  return Schema.decodeUnknownSync(tool.input)(input)
+}
+
+test("C1 registered model set and emitted field reset persist atomically without changing identity or warming prompt", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const set = need(tools, "instructions_set")
+  const resetTool = need(tools, "instructions_reset")
+  const created = await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" }) as { id: string }
+  await runOk(set, decoded(set, { id: created.id, prompt: "keep alive" }))
+  const values = { compactWarm: "on", coldCompact: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "" }
+  const input = decoded(set, { id: created.id, ...values })
+  expect(input).toMatchObject(values)
+  await runOk(set, input)
+  const own = () => load(project).then((store) => store.records.find((record) => record.type === "model" && record.agent === "alpha"))
+  expect(await own()).toMatchObject({ ...values, providerID: "acme", modelID: "nova-2", prompt: "keep alive", active: true })
+  const before = await load(project)
+  const log = await Bun.file(globalLogPath()).text()
+  expect((await runFail(set, decoded(set, { id: created.id, prompt: "changed", compactWarm: "off", compactionModel: "invalid" }))).message).toContain("compaction model")
+  expect(await load(project)).toEqual(before)
+  expect(await Bun.file(globalLogPath()).text()).toBe(log)
+  expect((await runFail(set, decoded(set, { id: created.id, interval: "invalid", compactionStrategy: "local" }))).message).toContain("interval")
+  expect(await load(project)).toEqual(before)
+  const rows = expandedTree(memoInputOf(await snapshotOf(api)))
+  for (const field of ["compactWarm", "compactionStrategy", "compactionModel", "compactionInstructions"]) {
+    const row = rows.find((node) => node.id.startsWith("item:defaults:alpha:") && node.address?.item.startsWith(`modelfield:${field}:`))
+    if (row === undefined) throw new Error(`missing emitted ${field} row`)
+    await runOk(set, decoded(set, { id: row.id, text: field === "compactWarm" ? "off" : field === "compactionStrategy" ? "local" : field === "compactionModel" ? "acme/other" : "summarize" }))
+    expect(await own()).toMatchObject({ prompt: "keep alive", active: true })
+    await runOk(resetTool, decoded(resetTool, { id: row.id }))
+    expect(await own()).not.toHaveProperty(field)
+  }
+  await runOk(set, decoded(set, { id: created.id, coldModels: [], compactionInstructions: "" }))
+  expect(await own()).toMatchObject({ coldModels: [], compactionInstructions: "" })
+  await runOk(set, decoded(set, { id: created.id, coldModels: null, coldCompact: "", compactionInstructions: null }))
+  expect(await own()).not.toHaveProperty("coldModels")
+  expect(await own()).not.toHaveProperty("coldCompact")
+  expect(await own()).not.toHaveProperty("compactionInstructions")
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const protectedBefore = await load(project)
+  const protectedLog = await Bun.file(globalLogPath()).text()
+  expect((await runFail(set, decoded(set, { id: created.id, compactWarm: "on" }))).message).toContain("agent.protected")
+  expect((await runFail(resetTool, decoded(resetTool, { id: created.id }))).message).toContain("agent.protected")
+  expect(await load(project)).toEqual(protectedBefore)
+  expect(await Bun.file(globalLogPath()).text()).toBe(protectedLog)
+})
+
+test("C1 registered Defaults dispatcher accepts comma coldModels and truthful emitted field rows", async () => {
+  const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
+  const set = need(tools, "instructions_set")
+  const rows = expandedTree(memoInputOf(await snapshotOf(api)))
+  const row = rows.find((node) => node.address?.item.startsWith("modeldefault:"))
+  if (row === undefined) throw new Error("missing Defaults model row")
+  await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", coldCompact: "off", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
+  const stored = (await load(project)).records.find((record) => record.type === "modelSettings")
+  expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", coldCompact: "off", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
+  const before = await load(project)
+  expect((await runFail(set, decoded(set, { id: row.id, prompt: "changed", coldModels: "acme/first,acme/first" }))).message).toContain("twice")
+  expect(await load(project)).toEqual(before)
+  const emitted = expandedTree(memoInputOf(await snapshotOf(api)))
+  expect(emitted.some((node) => node.address?.item.startsWith("modelsetting:coldModels:"))).toBe(false)
+  const instructions = emitted.find((node) => node.address?.item === `modelsetting:compactionInstructions:${row.address!.item.slice("modeldefault:".length)}`)
+  if (instructions === undefined) throw new Error("missing emitted Defaults instructions row")
+  await runOk(set, decoded(set, { id: instructions.id, text: "new summary" }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ compactionInstructions: "new summary", prompt: "keep alive" })
+  await runOk(need(tools, "instructions_reset"), { id: instructions.id })
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty("compactionInstructions")
+})
 
 function need(tools: Map<string, Tool.Info & { readonly id: string }>, id: string): Tool.Info & { readonly id: string } {
   const tool = tools.get(id)
