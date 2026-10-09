@@ -1535,44 +1535,56 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
     if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
 
-    const sectionsInSpan = targetSection !== undefined
-      ? preview.sections.filter((s) => s.start >= targetSection.start && s.end <= targetSection.end)
-      : preview.sections
-    const lastLeaf = sectionsInSpan[sectionsInSpan.length - 1] ?? targetSection ?? preview.sections[preview.sections.length - 1]
-    if (lastLeaf === undefined) return { refusal: `Could not add "${name}" to "${node.label}"` }
-
-    const hashCount = targetSection !== undefined
-      ? Math.max(2, targetSection.depth + 2)
+    // B39: a heading-derived section's customization is its full span, so an add
+    // appends to the end of the selected parent's EFFECTIVE span and writes that
+    // parent. Writing a deeper leaf instead buries the new heading inside the
+    // leaf's override (the live a36 defect: "Added" showed up in Child's own
+    // editor). For an item row the new heading is a top-level sibling, so it is
+    // appended to the last section that encloses its own depth.
+    const appendDepth = targetSection !== undefined
+      ? targetSection.depth + 1
       : (() => {
           const wrapper = wrappingSection(preview)
           const nonPreamble = preview.sections.filter((s) => s.id !== "preamble")
-          const topDepth = wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 1)
-          return Math.max(2, topDepth + 1)
+          return wrapper !== undefined ? wrapper.depth + 1 : (nonPreamble.length > 0 ? Math.min(...nonPreamble.map((s) => s.depth)) : 0)
         })()
+    const anchor =
+      targetSection ?? preview.sections.filter((s) => s.id !== "preamble" && s.depth <= appendDepth).at(-1)
+    if (anchor === undefined) return { refusal: `Could not add "${name}" to "${node.label}"` }
 
-    const hashes = "#".repeat(hashCount)
+    const hashes = "#".repeat(Math.max(2, appendDepth + 1))
     const headingLine = `${hashes} ${name}`
     const body = text.trim()
     const sectionBlock = body.length > 0 ? `${headingLine}\n\n${body}` : headingLine
 
-    const leafAddress: Address = { ...itemAddress, section: lastLeaf.id }
-    const currentLeafText = resolve({
+    // The anchor's resolved text is its effective full span, with the child
+    // overrides that win over it (B39 rule 2) already applied. Writing that span
+    // back and folding the consumed same-level child texts keeps their content
+    // once and cannot lose it on a reload; more specific children stay.
+    const anchorAddress: Address = { ...itemAddress, section: anchor.id }
+    const anchorText = resolve({
       upstream: chain.upstream,
       records: chain.customizations,
       splits: chain.splits,
       scopes: memo.ctx.scopes,
-      address: leafAddress,
+      address: anchorAddress,
     }).text
-    const trimmedLeaf = currentLeafText.trimEnd()
-    const newLeafText = trimmedLeaf.length > 0 ? `${trimmedLeaf}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
+    const trimmedAnchor = anchorText.trimEnd()
+    const newAnchorText = trimmedAnchor.length > 0 ? `${trimmedAnchor}\n\n${sectionBlock}\n` : `${sectionBlock}\n`
 
-    const nextCustomizations = merge(
+    const written = merge(
       chain.customizations,
-      leafAddress,
-      { text: newLeafText },
+      anchorAddress,
+      { text: newAnchorText },
       chain.upstream,
       memo.ctx.scopes,
       chain.splits,
+    )
+    const nextCustomizations = withoutInnerChildren(
+      memo,
+      { ...chain, address: anchorAddress },
+      written,
+      newAnchorText,
     )
 
     return {
