@@ -1517,13 +1517,15 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         address: chain.address,
       })
 
-      // Section patches can replace existing spans, not create a new heading
-      // skeleton. A structural whole-item edit must supply that skeleton as
-      // one span; otherwise the old Full text stub can hide every new heading.
+      // Section patches cannot replace a local whole-span baseline: clearing
+      // it before comparing unchanged sections loses their authored text.
+      // Keep that span (folding local section text into the submitted whole
+      // text), as we do when creating a new heading skeleton.
       // Manual boundaries retain their existing section-edit contract.
       if (
         currentSplit.kind !== "manual" &&
-        (currentSplit.sections.length !== newSplit.sections.length ||
+        (chain.customizations.some((record) => record.text !== undefined && sameAddress(record, chain.address)) ||
+          currentSplit.sections.length !== newSplit.sections.length ||
           currentSplit.sections.some((section, index) => section.id !== newSplit.sections[index]?.id))
       ) {
         const records = chain.customizations.reduce(
