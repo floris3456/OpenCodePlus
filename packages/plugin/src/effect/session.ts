@@ -11,6 +11,8 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import type { Effect, JsonSchema, Types } from "effect"
 import type { ModelHooks } from "./registration.js"
+import type { SessionModelObserved } from "../model-observation.js"
+export type { SessionModelObserved } from "../model-observation.js"
 
 export interface SessionPrompt {
   readonly sessionID: Session.ID
@@ -60,6 +62,8 @@ export interface SessionCompaction extends SessionContext {
 export interface SessionGenerate extends SessionContext {}
 
 export interface SessionGenerated {
+  /** Dedicated model.observed owns this invocation's measurement; this remains an auxiliary notification. */
+  readonly invocationID?: string
   readonly kind?: "generate" | "title"
   /** Epoch-ms request window, independent of when a subscriber observes the outcome. */
   readonly started?: number
@@ -93,6 +97,7 @@ export interface SessionModelRequest {
 }
 
 export interface SessionHttpRequest {
+  readonly invocationID?: string
   /** Identity and start time of this physical transport attempt, shared by all hook observers. */
   readonly requestID?: string
   readonly started?: number
@@ -133,6 +138,7 @@ export interface SessionWebSocketHandshake {
  * provider's replies, so a rewrite that changes protocol meaning is on the plugin. Experimental.
  */
 export interface SessionWebSocketSend {
+  readonly invocationID?: string
   /** Identity and start time of this physical transport attempt, shared by all hook observers. */
   readonly requestID?: string
   readonly started?: number
@@ -209,6 +215,7 @@ export interface SessionCatalog {
 }
 
 export interface SessionHooks {
+  readonly "model.observed": SessionModelObserved
   readonly prompt: SessionPrompt
   readonly context: SessionContext
   readonly "compaction.decide": SessionCompactionDecision

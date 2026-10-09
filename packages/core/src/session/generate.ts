@@ -11,6 +11,7 @@ import { SessionContext } from "./context.js"
 import { AgentNotFoundError } from "./error.js"
 import { SessionCompaction } from "./compaction.js"
 import { SessionModelRequest } from "./model-request.js"
+import { SessionModelObservation } from "./model-observation.js"
 import { SessionUsage } from "./usage.js"
 import type { SessionRunnerModel } from "./runner/model.js"
 import type { SessionSchema } from "./schema.js"
@@ -76,12 +77,14 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       providerID: loaded.model.ref.providerID,
       modelID: loaded.model.ref.id,
     })
+    const notification: { invocationID?: string } = {}
     const notifySuccess = (res: { usage?: Usage }) => {
       const usage = res.usage ? SessionUsage.tokens(res.usage) : undefined
       const cost = usage && loaded.model.cost ? SessionUsage.calculateCost(loaded.model.cost, usage) : undefined
       return context.hooks
         .trigger("session", "generated", {
           kind: "generate",
+          invocationID: notification.invocationID,
           started,
           ended: Date.now(),
           sessionID: selection.session.id,
@@ -97,6 +100,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       return context.hooks
         .trigger("session", "generated", {
           kind: "generate",
+          invocationID: notification.invocationID,
           started,
           ended: Date.now(),
           sessionID: selection.session.id,
@@ -106,10 +110,17 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
         })
         .pipe(Effect.catchCause((cause) => Effect.logWarning("session generated hook error failed", { cause })))
     }
-    const response = yield* llm.generate(request, prepared.options).pipe(
-      Effect.tap(notifySuccess),
-      Effect.tapError(notifyFailure),
-    )
+    const response = yield* SessionModelObservation.run(
+      prepared.observer,
+      llm
+        .generate(request, prepared.options)
+        .pipe(Effect.tap((response) => SessionModelObservation.captureUsage(response.usage))),
+      {
+        onStart: (id) => {
+          notification.invocationID = id
+        },
+      },
+    ).pipe(Effect.tap(notifySuccess), Effect.tapError(notifyFailure))
     yield* Effect.logInfo("session generation usage diagnostic", { usage: response.usage })
     return response.text
   }).pipe(instances.provide(input.session))

@@ -113,8 +113,23 @@ const layer = Layer.effect(
     )
 
     const trigger: Interface["trigger"] = Effect.fnUntraced(function* (domain, name, event) {
+      let observationWarning = false
       for (const entry of callbacks.get(key(domain, name)) ?? []) {
         if (entry.options?.providerID !== undefined && entry.options.providerID !== eventProviderID(event)) continue
+        if (domain === "session" && name === "model.observed") {
+          yield* Effect.suspend(() => {
+            const result: Effect.Effect<void, Failures[typeof domain][typeof name]> = entry.callback(event)
+            return result
+          }).pipe(
+            Effect.timeout("1 second"),
+            Effect.catchCause(() => {
+              if (observationWarning) return Effect.void
+              observationWarning = true
+              return Effect.logWarning("session model observer failed", { code: "observer-failed" })
+            }),
+          )
+          continue
+        }
         // Save and restore so a surrounding named stage survives a completed hook. A hung hook never
         // reaches the restore, so the preparation bound still names it.
         const previous = yield* Ref.get(stage)

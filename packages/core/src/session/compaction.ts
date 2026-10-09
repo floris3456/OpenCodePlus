@@ -14,7 +14,6 @@ import {
   UnknownProviderError,
   type Usage,
 } from "@opencode/ai"
-import type { StreamOptions } from "@opencode/ai/route"
 import { AnthropicMessages } from "@opencode/ai/protocols/anthropic-messages"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
@@ -36,6 +35,7 @@ import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
 import type { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
+import { SessionModelObservation } from "./model-observation.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionRunnerRetry } from "./runner/retry.js"
@@ -570,11 +570,11 @@ export const layer = Layer.effect(
       const send = (request: LLMRequest) =>
         Effect.gen(function* () {
           const prompted = LLMRequest.update(request, { messages: [...request.messages, Message.user(prompt)] })
-          const reply = yield* stream(context, prompted, prepared.options)
+          const reply = yield* stream(context, prompted, prepared)
           if (filled(reply.text)) return { ...reply, recent: split.recent }
 
           const nudged = LLMRequest.update(prompted, { messages: [...prompted.messages, Message.user(NUDGE)] })
-          const retry = yield* stream(context, nudged, prepared.options)
+          const retry = yield* stream(context, nudged, prepared)
           if (filled(retry.text)) return { ...retry, recent: split.recent }
           return yield* Effect.fail<Failure>({
             error: {
@@ -677,7 +677,10 @@ export const layer = Layer.effect(
           return Effect.gen(function* () {
             const history = yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
             const retained = recentUserMessages(history, context.model, keep)
-            const response = yield* llm.compact(request, { ...prepared.options, mechanism: "trigger" }).pipe(
+            const response = yield* SessionModelObservation.run(prepared.observer, llm.compact(request, { ...prepared.options, mechanism: "trigger" }).pipe(
+              Effect.tap((response) => SessionModelObservation.captureUsage(response.usage)),
+              Effect.tapError((cause) => { const usage = compactionUsage(cause); return usage ? SessionModelObservation.captureUsage(usage) : Effect.void }),
+            )).pipe(
               // A completed compaction call is billed even when its response cannot be used, so record the
               // usage it reported before the failure settles.
               Effect.tapError((cause) => {
@@ -696,8 +699,11 @@ export const layer = Layer.effect(
           })
         }
         if (LLMClient.canCompact(request)) {
-          return llm
-            .compact(request, { mechanism: "endpoint", http: prepared.options.http })
+          return SessionModelObservation.run(prepared.observer, llm
+            .compact(request, { mechanism: "endpoint", http: prepared.options.http }).pipe(
+              Effect.tap((response) => SessionModelObservation.captureUsage(response.usage)),
+              Effect.tapError((cause) => { const usage = compactionUsage(cause); return usage ? SessionModelObservation.captureUsage(usage) : Effect.void }),
+            ))
             .pipe(Effect.flatMap((response) => toResult(response.replacement, response.usage)))
         }
         return unsupported(`Native compaction is not supported for ${request.model.provider}/${request.model.route.id}`)
@@ -838,12 +844,13 @@ export const layer = Layer.effect(
       })
     }
 
-    const stream = (context: SessionContext.Loaded, request: LLMRequest, options: StreamOptions) => {
+    const stream = (context: SessionContext.Loaded, request: LLMRequest, prepared: Prepared) => {
       const sessionID = context.session.id
       const metadataKey = context.model.model.route.providerMetadataKey ?? context.model.model.provider
       const unusable = (error: SessionError.Error) => Effect.fail<Failure>({ error })
 
-      return llm.stream(request, options).pipe(
+      return SessionModelObservation.run(prepared.observer, llm.stream(request, prepared.options).pipe(
+        Stream.tap(SessionModelObservation.capture),
         Stream.runFoldEffect(
           (): Streamed => ({ text: "" }),
           (streamed, event): Effect.Effect<Streamed, AIError | Failure> => {
@@ -899,7 +906,7 @@ export const layer = Layer.effect(
             }
           },
         ),
-      )
+      ))
     }
 
     /**
@@ -1002,7 +1009,7 @@ export const layer = Layer.effect(
       transform: state.transform,
       reload: state.reload,
       handoff: (trigger) =>
-        handoff(trigger).pipe(
+        SessionModelObservation.operation(handoff(trigger), trigger.reason === "manual" ? trigger.inputID : undefined).pipe(
           Effect.onInterrupt(() =>
             trigger.reason === "manual"
               ? Effect.void
@@ -1015,7 +1022,7 @@ export const layer = Layer.effect(
         ),
       // A manual compaction settles through its `/compact` inbox item, which the runner owns.
       compact: (trigger) =>
-        compact(trigger).pipe(
+        SessionModelObservation.operation(compact(trigger), trigger.reason === "manual" ? trigger.inputID : undefined).pipe(
           Effect.onInterrupt(() =>
             trigger.reason === "manual"
               ? Effect.void

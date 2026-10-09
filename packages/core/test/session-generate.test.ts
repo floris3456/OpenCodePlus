@@ -53,6 +53,7 @@ import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SkillInstructions } from "@opencode/core/skill/instructions"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
+import { SessionModelObservation } from "@opencode/core/session/model-observation"
 import { PluginSupervisor } from "@opencode/core/plugin/supervisor"
 import { Tool } from "@opencode/core/tool"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
@@ -60,6 +61,9 @@ import { asc, eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { testEffect } from "./lib/effect"
+import { createLedger } from "../../plus/src/monitor/ledger.js"
+import { watchMonitor } from "../../plus/src/monitor/plugin.js"
+import { context } from "../../plus/test/harness.js"
 
 const requests: LLMRequest[] = []
 const options: Array<StreamOptions | undefined> = []
@@ -74,7 +78,7 @@ const client = Layer.mock(LLMClient.Service)({
   stream: () => failGenerate ? Stream.fail(failGenerate) : Stream.fromIterable([
     LLMEvent.stepStart({ index: 0 }),
     LLMEvent.textDelta({ id: "title", text: "A generated title" }),
-    LLMEvent.stepFinish({ index: 0, reason: { normalized: "stop" }, usage: { inputTokens: 100, nonCachedInputTokens: 40, cacheReadInputTokens: 60, outputTokens: 10 } }),
+    LLMEvent.stepFinish({ index: 0, reason: { normalized: "stop" }, usage: { inputTokens: 100, nonCachedInputTokens: 40, cacheReadInputTokens: 60, outputTokens: 10, provenance: { inputTokens: { source: "reported", completeness: "complete" }, cacheReadInputTokens: { source: "reported", completeness: "complete" } } } }),
     LLMEvent.finish({ reason: { normalized: "stop" } }),
   ]),
   generate: (request, requestOptions) =>
@@ -90,7 +94,7 @@ const client = Layer.mock(LLMClient.Service)({
         LLMEvent.stepFinish({
           index: 0,
           reason: { normalized: "stop" },
-          usage: { inputTokens: 100, nonCachedInputTokens: 100, outputTokens: 10 },
+            usage: { inputTokens: 100, nonCachedInputTokens: 100, outputTokens: 10, provenance: { inputTokens: { source: "reported", completeness: "complete" } } },
         }),
         LLMEvent.finish({ reason: { normalized: "stop" } }),
       ])
@@ -544,6 +548,10 @@ it.effect(
       const hooks = yield* PluginHooks.Service
 
       const events: Array<SessionHooks["generated"]> = []
+      const observed: SessionHooks["model.observed"][] = []
+      yield* hooks.register("session", "model.observed", (event) => Effect.sync(() => { observed.push(event) }))
+      const ledger = yield* Effect.acquireRelease(Effect.sync(() => createLedger(":memory:")), (ledger) => Effect.sync(() => ledger.close()))
+      yield* watchMonitor(context({ session: { hook: (name, callback, options) => hooks.register("session", name, callback, options) } }), () => undefined, () => ledger)
       yield* hooks.register("session", "generated", (event) =>
         Effect.sync(() => {
           events.push({ ...event })
@@ -552,10 +560,15 @@ it.effect(
 
       // 1. Success case: fires generated hook with usage
       const result = yield* SessionGenerate.generate({ session, prompt: "Ping prompt" }).pipe(
+        Effect.provideService(SessionModelObservation.Purpose, "warming"),
         Effect.provideService(Instance.Service, instances),
       )
       expect(result).toBe("Transient answer")
       expect(events).toHaveLength(1)
+      expect(observed).toHaveLength(1)
+      expect(observed[0]).toMatchObject({ kind: "generate", purpose: "warming", usage: { inputTokens: 100, completeness: "final" } })
+      expect(ledger.getRequests(sessionID)).toHaveLength(1)
+      expect(ledger.getRequests(sessionID)[0]?.kind).toBe("ping")
       expect(events[0]?.sessionID).toBe(sessionID)
       expect(events[0]?.agent).toBe(Agent.ID.make("build"))
       expect(events[0]?.model).toEqual(
@@ -584,6 +597,9 @@ it.effect(
       )
       expect(error).toEqual(failGenerate)
       expect(events).toHaveLength(2)
+      expect(observed).toHaveLength(2)
+      expect(observed[1]).toMatchObject({ outcome: "failed", usage: { completeness: "unavailable" } })
+      expect(ledger.getRequests(sessionID)).toHaveLength(2)
       expect(events[1]?.sessionID).toBe(sessionID)
       expect(events[1]?.agent).toBe(Agent.ID.make("build"))
       expect(events[1]?.model).toEqual(
@@ -606,17 +622,23 @@ it.effect("title generation reports usage and failure through generated with kin
   const agents = yield* Agent.Service
   yield* agents.transform((editor) => editor.update(Agent.ID.make("title"), (agent) => { agent.mode = "primary" }))
   const events: SessionHooks["generated"][] = []
+  const observed: SessionHooks["model.observed"][] = []
+  yield* hooks.register("session", "model.observed", (event) => Effect.sync(() => { observed.push(event) }))
   yield* hooks.register("session", "generated", (event) => Effect.sync(() => { events.push(event) }))
   const id = SessionMessage.ID.create()
   yield* fixture.bus.publish(SessionEvent.InboxEnqueued, { sessionID, inboxID: id, item: { type: "user", payload: { text: "Please name this session" }, delivery: "steer" } })
   yield* fixture.bus.publish(SessionEvent.InboxDelivered, { sessionID, inboxID: id })
   yield* title.generate(sessionID)
   expect(events).toHaveLength(1)
+  expect(observed).toHaveLength(1)
+  expect(observed[0]).toMatchObject({ kind: "title", outcome: "completed", usage: { inputTokens: 100, cacheReadInputTokens: 60, completeness: "final" } })
   expect(events[0]).toMatchObject({ kind: "title", sessionID, usage: { input: 40, output: 10, cache: { read: 60, write: 0 } }, cost: 0 })
   expect(events[0]?.ended).toBeGreaterThanOrEqual(events[0]!.started!)
   failGenerate = new AIError({ reason: new InvalidRequestError({ message: "private title failure" }) })
   yield* title.generate(sessionID)
   expect(events).toHaveLength(2)
+  expect(observed).toHaveLength(2)
+  expect(observed[1]).toMatchObject({ kind: "title", outcome: "failed", usage: { completeness: "unavailable" } })
   expect(events[1]).toMatchObject({ kind: "title", error: "private title failure" })
   failGenerate = undefined
 }), { timeout: 15_000 })

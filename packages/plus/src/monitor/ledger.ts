@@ -384,7 +384,7 @@ export interface RequestStart {
 export interface RequestEnd {
   readonly ended: number
   readonly duration?: number
-  readonly status: "completed" | "error"
+  readonly status: "completed" | "error" | "cancelled" | "unknown"
   readonly finish?: string
   readonly error?: unknown
   readonly usage?: Usage

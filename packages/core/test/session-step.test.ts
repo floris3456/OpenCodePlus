@@ -18,15 +18,21 @@ import { SessionStep } from "@opencode/core/session/runner/step"
 import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
 import { Snapshot } from "@opencode/core/snapshot"
 import { ToolOutput } from "@opencode/core/tool-output"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
+import { SessionModelObservation } from "@opencode/core/session/model-observation"
+import type { SessionModelObserved } from "@opencode/plugin/effect/session"
 import { Money } from "@opencode/schema/money"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Exit, Layer } from "effect"
 import { testEffect } from "./lib/effect"
+import { createLedger } from "../../plus/src/monitor/ledger.js"
+import { watchMonitor } from "../../plus/src/monitor/plugin.js"
+import { context } from "../../plus/test/harness.js"
 
 const it = testEffect(
   Layer.merge(
-    AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node]), [
+    AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, SessionProjector.node, ToolOutput.node, PluginHooks.node]), [
       Bus.node.replace(Bus.configured({ persist: true })),
     ]),
     TestLLM.testLayer(),
@@ -82,6 +88,12 @@ for (const fixture of [
           ],
         },
       )
+      const hooks = yield* PluginHooks.Service
+      const observed: SessionModelObserved[] = []
+      yield* hooks.register("session", "model.observed", () => Effect.die("PRIVATE OBSERVER FAILURE"))
+      yield* hooks.register("session", "model.observed", (event) => Effect.sync(() => { observed.push(event) }))
+      const ledger = yield* Effect.acquireRelease(Effect.sync(() => createLedger(":memory:")), (ledger) => Effect.sync(() => ledger.close()))
+      yield* watchMonitor(context({ session: { hook: (name, callback, options) => hooks.register("session", name, callback, options) } }), () => undefined, () => ledger)
       yield* llm.push(
         TestLLM.complete(
           {
@@ -93,6 +105,7 @@ for (const fixture of [
               cacheReadInputTokens: 3,
               cacheWriteInputTokens: 2,
               reasoningTokens: 2,
+              provenance: { inputTokens: { source: "reported", completeness: "complete" }, cacheReadInputTokens: { source: "reported", completeness: "complete" } },
             },
           },
           LLMEvent.toolCall({ id: "call-test", name: "test", input: {} }),
@@ -106,6 +119,7 @@ for (const fixture of [
           agent: Agent.defaultID,
           model,
           prepared: {
+            observer: SessionModelObservation.make(hooks, { sessionID, agent: Agent.defaultID, model: model.ref, kind: "primary" }, model.cost),
             retry: () => Effect.void,
             request: LLM.request({ model: model.model, prompt: "Run one tool", toolChoice: fixture.toolChoice }),
             options: {},
@@ -128,6 +142,12 @@ for (const fixture of [
           SessionStep.Outcome.Completed({ needsContinuation: fixture.toolChoice !== "none" }),
         )
       expect(yield* llm.requests()).toHaveLength(1)
+      expect(observed).toHaveLength(1)
+      expect(observed[0]).toMatchObject({ operationID: assistantMessageID, messageID: assistantMessageID, usage: { inputTokens: 15, cacheReadInputTokens: 3, completeness: "final" } })
+      expect(Object.isFrozen(observed[0])).toBe(true)
+      expect(ledger.getRequests(sessionID)).toHaveLength(1)
+      expect(ledger.getRequests(sessionID)[0]?.observation).toMatchObject({ scope: "invocation", inputTokens: 15, cacheReadInputTokens: 3 })
+      expect(ledger.getRequests(sessionID)[0]).toMatchObject({ inputTokens: 10, outputTokens: 4, reasoningTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 2 })
       expect(captures).toBe(2)
       const message = yield* db
         .select()

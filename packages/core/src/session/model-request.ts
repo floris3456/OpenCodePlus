@@ -33,6 +33,7 @@ import { PluginHooks } from "../plugin/hooks.js"
 import { QuestionTool } from "../tool/plugin/question.js"
 import { Tool } from "../tool.js"
 import { SessionModelTransport } from "./model-transport.js"
+import { SessionModelObservation } from "./model-observation.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
@@ -67,6 +68,7 @@ const HTTP_IDLE_TIMEOUT: Duration.Input = "10 minutes"
 export type ExecuteError = Tool.Error | Permission.DeclinedError | QuestionTool.CancelledError
 
 export interface Prepared<Event = SessionRequest> {
+  readonly observer?: SessionModelObservation.Observer
   readonly event: Event
   readonly request: LLMRequest
   readonly options: StreamOptions
@@ -417,17 +419,22 @@ export const layer = Layer.effect(
 
       const hasHttpHooks =
         (yield* hooks.has("session", "http.request", model.ref.providerID)) ||
-        (yield* hooks.has("session", "http.response", model.ref.providerID))
+        (yield* hooks.has("session", "http.response", model.ref.providerID)) ||
+        (yield* hooks.has("session", "model.observed", model.ref.providerID))
       const http: StreamOptions["http"] = hasHttpHooks
         ? (req, handler) =>
             Effect.gen(function* () {
+              const requestID = crypto.randomUUID()
+              const started = Date.now()
+              const observed = yield* SessionModelObservation.exchange("http", requestID, started)
               const before = yield* hooks.trigger("session", "http.request", {
                 ...scope,
-                requestID: crypto.randomUUID(),
-                started: Date.now(),
+                requestID,
+                started,
+                invocationID: observed?.invocationID,
                 request: yield* HttpClientRequest.toWeb(req),
               })
-              yield* Effect.forEach(before.observers ?? [], (observe) => observe(before.request))
+              yield* SessionModelObservation.finalObservers(before.observers ?? [], before.request)
               let sent = HttpClientRequest.fromWeb(before.request)
               if (before.request.body)
                 sent = HttpClientRequest.bodyUint8Array(
@@ -435,7 +442,18 @@ export const layer = Layer.effect(
                   new Uint8Array(yield* Effect.promise(() => before.request.clone().arrayBuffer())),
                   before.request.headers.get("content-type") ?? undefined,
                 )
-              const res = yield* handler(sent)
+              const res = yield* handler(sent).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    if (observed) observed.exchange.outcome = "response"
+                  }),
+                ),
+                Effect.tapError(() =>
+                  Effect.sync(() => {
+                    if (observed) observed.exchange.outcome = "failed"
+                  }),
+                ),
+              )
               const after = yield* hooks.trigger("session", "http.response", {
                 ...scope,
                 request: before.request,
@@ -463,12 +481,25 @@ export const layer = Layer.effect(
                     })
                     .pipe(Effect.map((event) => ({ url: event.url, headers: event.headers }))),
                 send: (frame) =>
-                  hooks
-                    .trigger("session", "experimental.ws.send", { ...scope, frame, requestID: crypto.randomUUID(), started: Date.now() })
-                    .pipe(
-                      Effect.tap((event) => Effect.forEach(event.observers ?? [], (observe) => observe(event.frame))),
-                      Effect.map((event) => event.frame),
-                    ),
+                  Effect.gen(function* () {
+                    const requestID = crypto.randomUUID()
+                    const started = Date.now()
+                    const observed = yield* SessionModelObservation.exchange("websocket", requestID, started)
+                    return yield* hooks
+                      .trigger("session", "experimental.ws.send", {
+                        ...scope,
+                        frame,
+                        requestID,
+                        started,
+                        invocationID: observed?.invocationID,
+                      })
+                      .pipe(
+                        Effect.tap((event) =>
+                          SessionModelObservation.finalObservers(event.observers ?? [], event.frame),
+                        ),
+                        Effect.map((event) => event.frame),
+                      )
+                  }),
                 receive: (frame) =>
                   hooks
                     .trigger("session", "experimental.ws.receive", { ...scope, frame })
@@ -479,6 +510,7 @@ export const layer = Layer.effect(
           : undefined
 
       return {
+        observer: SessionModelObservation.make(hooks, scope, model.cost),
         event: { ...shaped, messages: checked.messages },
         request,
         options: {

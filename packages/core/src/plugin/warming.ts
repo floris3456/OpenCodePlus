@@ -2,6 +2,7 @@ export * as WarmingPlugin from "./warming.js"
 
 import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@opencode/plugin/effect/session"
+import { SessionModelObservation } from "../session/model-observation.js"
 import type { Agent } from "@opencode/schema/agent"
 import type { Session } from "@opencode/schema/session"
 import { Cause, Clock, Duration, Effect, Fiber, Option, Scope } from "effect"
@@ -137,6 +138,7 @@ export const Plugin = define({
         yield* ctx.session
           .generate(ping)
           .pipe(
+            Effect.provideService(SessionModelObservation.Purpose, "warming"),
             Effect.catchCause((cause) => {
               pingError = Cause.pretty(cause).slice(0, 160)
               if (Option.getOrUndefined(Cause.findErrorOption(cause)) instanceof AgentNotFoundError)

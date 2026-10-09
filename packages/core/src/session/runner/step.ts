@@ -22,6 +22,7 @@ import { StepFailedError } from "../error.js"
 import { SessionEvent } from "../event.js"
 import { SessionMessage } from "../message.js"
 import { SessionModelRequest } from "../model-request.js"
+import { SessionModelObservation } from "../model-observation.js"
 import { SessionSchema } from "../schema.js"
 import { toSessionError } from "../to-session-error.js"
 import { SessionUsage } from "../usage.js"
@@ -101,35 +102,40 @@ export const make = Effect.gen(function* () {
     // A local execution starts only after its Tool.Called publication completes.
     let overflowFailure: ProviderErrorEvent | undefined
     // Read to the end, not just the finish event, so the next request can reuse this response.
-    const providerStream = llm.stream(input.prepared.request, input.prepared.options).pipe(
-      Stream.runForEach((event) =>
-        Effect.gen(function* () {
-          if (overflowFailure || publisher.hasProviderError()) return
-          if (
-            LLMEvent.is.providerError(event) &&
-            isContextOverflowFailure(event) &&
-            !publisher.record().outputStarted
-          ) {
-            overflowFailure = event
-            return
-          }
-          yield* publisher.publish(event)
-          if (event.type !== "tool-call" || event.providerExecuted) return
-          toolRuns.push({
-            call: event,
-            fiber: yield* Effect.uninterruptibleMask((restore) =>
-              restore(executeTool(event)).pipe(
-                Effect.flatMap(toolOutput.truncate),
-                Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
-                Effect.catchTag("Tool.Error", (error) =>
-                  publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
+    const providerStream = SessionModelObservation.run(
+      input.prepared.observer,
+      llm.stream(input.prepared.request, input.prepared.options).pipe(
+        Stream.tap(SessionModelObservation.capture),
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            if (overflowFailure || publisher.hasProviderError()) return
+            if (
+              LLMEvent.is.providerError(event) &&
+              isContextOverflowFailure(event) &&
+              !publisher.record().outputStarted
+            ) {
+              overflowFailure = event
+              return
+            }
+            yield* publisher.publish(event)
+            if (event.type !== "tool-call" || event.providerExecuted) return
+            toolRuns.push({
+              call: event,
+              fiber: yield* Effect.uninterruptibleMask((restore) =>
+                restore(executeTool(event)).pipe(
+                  Effect.flatMap(toolOutput.truncate),
+                  Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
+                  Effect.catchTag("Tool.Error", (error) =>
+                    publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
+                  ),
                 ),
-              ),
-            ).pipe(Effect.forkScoped),
-          })
-        }),
+              ).pipe(Effect.forkScoped),
+            })
+          }),
+        ),
+        Effect.ensuring(publisher.flush()),
       ),
-      Effect.ensuring(publisher.flush()),
+      { operationID: input.assistantMessageID, messageID: input.assistantMessageID },
     )
 
     // Keep the final tool and Step events uninterruptible, even when the work itself is cancelled.

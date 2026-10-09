@@ -10,6 +10,7 @@ import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { isExactRootFallback } from "@opencode/util/session-title-fallback"
 import { llmClient } from "../effect/app-node-platform.js"
 import { SessionContext } from "./context.js"
+import { SessionModelObservation } from "./model-observation.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
 import type { SessionRunnerModel } from "./runner/model.js"
@@ -55,6 +56,7 @@ export const layer = Layer.effect(
       const started = Date.now()
       let error: string | undefined
       let usage: SessionUsage.Recorded | undefined
+      let invocationID: string | undefined
       const recordUsage = Effect.suspend(() =>
         usage
           ? bus.publish(SessionEvent.UsageRecorded, {
@@ -77,12 +79,14 @@ export const layer = Layer.effect(
         agent: input.agent.id,
         model: input.model.ref,
         kind: "title",
+        invocationID,
         started,
         ended: Date.now(),
         ...(usage ? { usage: usage.tokens, cost: usage.cost } : {}),
         ...(error ? { error } : {}),
       }).pipe(Effect.asVoid, Effect.catchCause(() => Effect.logWarning("session title generated hook failed")))
-      yield* llm.stream(prepared.request, prepared.options).pipe(
+      yield* SessionModelObservation.run(prepared.observer, llm.stream(prepared.request, prepared.options).pipe(
+        Stream.tap(SessionModelObservation.capture),
         Stream.runForEach((event) => {
           if (LLMEvent.is.providerError(event)) error = event.message
           if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
@@ -92,6 +96,7 @@ export const layer = Layer.effect(
           }
           return Effect.void
         }),
+      ), { onStart: (id) => { invocationID = id } }).pipe(
         Effect.catchTag("AI.Error", (cause) =>
           Effect.sync(() => {
             error = cause.message
@@ -162,7 +167,7 @@ export const layer = Layer.effect(
         )
         .pipe(Effect.catchDefect((defect) => (defect === titleChanged ? Effect.void : Effect.die(defect))))
     })
-    return Service.of({ generate })
+    return Service.of({ generate: (sessionID) => SessionModelObservation.operation(generate(sessionID)) })
   }),
 )
 

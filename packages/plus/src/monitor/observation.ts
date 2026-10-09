@@ -10,6 +10,10 @@ const token = Schema.Number.check(Schema.isFinite())
 export const Observation = Schema.Struct({
   version: Schema.Literal(1),
   completeness: Schema.Literals(["final", "partial", "unavailable"]),
+  scope: Schema.optional(Schema.Literals(["invocation", "exchange"])),
+  invocationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+  operationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+  exchangeCount: Schema.optional(Schema.Number),
   inputTokens: Schema.optional(token),
   cacheReadInputTokens: Schema.optional(token),
   cacheWriteInputTokens: Schema.optional(token),

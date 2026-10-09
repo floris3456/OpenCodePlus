@@ -14,6 +14,7 @@ import { fingerprintWireBody, sha256, type NamedSystemPart } from "./fingerprint
 import { endRequestWindow, ledgerAt, RETENTION_DAYS, type ContextFact, type Ledger, type SessionFacts } from "./ledger.js"
 import { queryMonitor } from "./query.js"
 import { sessionFold } from "./report.js"
+import { recordModelObservation } from "./model-observation.js"
 
 const DAY = 86_400_000
 
@@ -81,13 +82,27 @@ export function watchMonitor(
   }
   // Hooks run inside the provider request. Monitoring must never fail it,
   // including synchronous defects (e.g. SQLite could not open).
+  const warnedHooks = new Set<keyof SessionHooks>()
+  const failedHook = (name: keyof SessionHooks) => {
+    if (warnedHooks.has(name)) return Effect.void
+    warnedHooks.add(name)
+    return Effect.logWarning("plus monitor hook failed", { hook: name, code: "storage-or-observer-failed" })
+  }
   const hook = <K extends keyof SessionHooks>(name: K, body: (event: SessionHooks[K]) => Effect.Effect<void>) =>
     ctx.session.hook(name, (event) => Effect.suspend(() => body(event)).pipe(
-      Effect.catchCause(() => Effect.logWarning("plus monitor hook failed", { hook: name })),
+      Effect.catchCause(() => failedHook(name)),
     ))
 
   const registerHooks = Effect.gen(function* () {
     if (typeof ctx.session?.hook !== "function") return
+    const warning = { emitted: false }
+    yield* ctx.session.hook("model.observed", (event) => Effect.sync(() => recordModelObservation(open(), event, ctx.location.directory)).pipe(
+      Effect.catchCause(() => {
+        if (warning.emitted) return Effect.void
+        warning.emitted = true
+        return Effect.logWarning("plus model observation unavailable", { code: "storage-failed" })
+      }),
+    ))
 
     yield* hook("context", (event) =>
       Effect.sync(() => {
@@ -161,7 +176,7 @@ export function watchMonitor(
         event.observers.push((request) => Effect.promise(async () => {
           httpRequests.set(request, requestID)
           l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(await request.clone().text(), { url: request.url, namedSystemParts: parts }) })
-        }).pipe(Effect.catchCause(() => Effect.logWarning("plus monitor final HTTP fingerprint failed"))))
+        }).pipe(Effect.catchCause(() => failedHook("http.request"))))
         await pricing(l, sessionID, provider, model, started)
       }),
     )
@@ -208,7 +223,7 @@ export function watchMonitor(
         event.observers ??= []
         event.observers.push((frame) => Effect.sync(() => {
           l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(frame, { namedSystemParts: parts }) })
-        }).pipe(Effect.catchCause(() => Effect.logWarning("plus monitor final WebSocket fingerprint failed"))))
+        }).pipe(Effect.catchCause(() => failedHook("experimental.ws.send"))))
         await pricing(l, sessionID, provider, model, started)
       }),
     )
@@ -260,6 +275,7 @@ export function watchMonitor(
 
     yield* hook("generated", (event) =>
       Effect.promise(async () => {
+        if (event.invocationID !== undefined) return
         const sessionID = String(event.sessionID)
         const l = open()
         const kind = event.kind ?? "generate"

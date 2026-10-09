@@ -6,6 +6,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { WarmingPlugin } from "@opencode/core/plugin/warming"
+import { SessionModelObservation } from "@opencode/core/session/model-observation"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
@@ -64,7 +65,10 @@ describe("warming ping usage seam", () => {
           Session.Service,
           Session.Service.of({
             ...sessions,
-            generate: () => Effect.succeed(""),
+            generate: () => SessionModelObservation.Purpose.pipe(Effect.map((purpose) => {
+              expect(purpose).toBe("warming")
+              return ""
+            })),
           }),
         ),
       )

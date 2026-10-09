@@ -28,6 +28,9 @@ import { Cause, Context, DateTime, Deferred, Effect, Fiber, Layer, Schema, Scope
 import { testEffect } from "./lib/effect"
 import { registerQuota } from "../../cliproxyapi/src/quota/register.js"
 import { context } from "../../plus/test/harness.js"
+import type { SessionModelObserved } from "@opencode/plugin/effect/session"
+import { createLedger } from "../../plus/src/monitor/ledger.js"
+import { watchMonitor } from "../../plus/src/monitor/plugin.js"
 
 const agents = Layer.mock(Agent.Service, { get: () => Effect.succeed(undefined) })
 class NativeModels extends Context.Service<NativeModels, Map<string, SessionRunnerModel.Resolved>>()(
@@ -94,6 +97,8 @@ const setup = Effect.fnUntraced(function* (options: {
   const compaction = yield* SessionCompaction.Service
   const requests = yield* SessionModelRequest.Service
   const hooks = yield* PluginHooks.Service
+  const observations: SessionModelObserved[] = []
+  yield* hooks.register("session", "model.observed", (event) => Effect.sync(() => { observations.push(event) }))
   const blocked = Deferred.makeUnsafe<void>()
   const hanging = Promise.withResolvers<Response>()
   const state = {
@@ -367,6 +372,7 @@ agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), co
     return last.providerContext
   })
   return {
+    observations,
     compact,
     // An automatic compaction that skips the "is it due" check, which a context this small never passes.
     overflow: Effect.gen(function* () {
@@ -388,6 +394,30 @@ agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), co
     available,
   }
 })
+
+for (const mode of ["endpoint", "trigger", "summary", "retry", "nudge"] as const) {
+  it.live(`compaction observations capture each ${mode} invocation before aggregate settlement`, () => Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: mode === "endpoint", config: mode === "summary" || mode === "nudge" ? { strategy: "local" } : undefined })
+    const ledger = yield* Effect.acquireRelease(Effect.sync(() => createLedger(":memory:")), (ledger) => Effect.sync(() => ledger.close()))
+    yield* watchMonitor(context({ session: { hook: (name, callback, options) => fixture.hooks.register("session", name, callback, options) } }), () => undefined, () => ledger)
+    fixture.state.summary = mode === "summary"
+    fixture.state.flaky = mode === "retry"
+    yield* fixture.prompt("Conversation to compact")
+    const outcome = yield* fixture.compact
+    expect(outcome.status).toBe(mode === "nudge" ? "failed" : "completed")
+    expect(fixture.observations).toHaveLength(mode === "retry" || mode === "nudge" ? 2 : 1)
+    expect(new Set(fixture.observations.map((event) => event.operationID)).size).toBe(1)
+    expect(new Set(fixture.observations.map((event) => event.invocationID)).size).toBe(fixture.observations.length)
+    const measured = fixture.observations.filter((event) => event.usage.inputTokens !== undefined)
+    expect(measured.map((event) => event.usage.inputTokens)).toEqual(mode === "nudge" ? [20, 20] : [20])
+    expect(ledger.getRequests(fixture.sessionID).filter((row) => row.observation?.inputTokens !== undefined).map((row) => row.observation?.inputTokens)).toEqual(mode === "nudge" ? [20, 20] : [20])
+    if (mode === "nudge") {
+      expect(fixture.observations[0]?.outcome).toBe("completed")
+      const last = (yield* fixture.load).messages.at(-1)
+      expect(last).toMatchObject({ status: "failed", tokens: { input: 40, output: 8 } })
+    }
+  }))
+}
 
 for (const anthropic of ["direct", "compatible"] as const) {
   it.live(`Anthropic ${anthropic}: Auto persists a native checkpoint and compaction iteration usage`, () =>
@@ -443,6 +473,9 @@ it.live("Anthropic records a completed but unusable compaction's usage on the fa
       error: { type: "provider.invalid-output", message: expect.stringContaining("no usable summary checkpoint") },
     })
     expect(fixture.state.calls).toBe(1)
+    expect(fixture.observations).toHaveLength(1)
+    expect(fixture.observations[0]).toMatchObject({ outcome: "failed", usage: { completeness: "final", cacheReadInputTokens: 2000, outputTokens: 400 } })
+    expect(fixture.observations[0]?.usage.inputTokens).toBeUndefined()
     expect((yield* fixture.load).messages.at(-1)).toMatchObject({
       type: "compaction",
       status: "failed",
@@ -459,6 +492,9 @@ it.live("Anthropic Auto falls back to a local summary when it does not trigger c
     expect(yield* fixture.compact).toEqual({ status: "completed" })
     // The native attempt is billed, then the local fallback summarizes in a second, non-trigger request.
     expect(fixture.state.calls).toBe(2)
+    expect(fixture.observations).toHaveLength(2)
+    expect(new Set(fixture.observations.map((event) => event.operationID)).size).toBe(1)
+    expect(fixture.observations.map((event) => event.usage.outputTokens)).toEqual([40, 40])
     expect(fixture.bodies[0]).toHaveProperty("context_management")
     expect(fixture.bodies[1]).not.toHaveProperty("context_management")
     const last = (yield* fixture.load).messages.at(-1)

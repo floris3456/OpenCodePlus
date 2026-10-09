@@ -11,6 +11,8 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import type { JsonSchema, Types } from "effect"
 import type { ModelHooks } from "./registration.js"
+import type { SessionModelObserved } from "../model-observation.js"
+export type { SessionModelObserved } from "../model-observation.js"
 
 export interface SessionPrompt {
   readonly sessionID: Session.ID
@@ -73,6 +75,9 @@ export interface SessionModelRequest {
 }
 
 export interface SessionHttpRequest {
+  readonly invocationID?: string
+  readonly requestID?: string
+  readonly started?: number
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
@@ -108,6 +113,9 @@ export interface SessionWebSocketHandshake {
  * provider's replies, so a rewrite that changes protocol meaning is on the plugin. Experimental.
  */
 export interface SessionWebSocketSend {
+  readonly invocationID?: string
+  readonly requestID?: string
+  readonly started?: number
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
@@ -139,6 +147,7 @@ export interface SessionRetry {
 }
 
 export interface SessionHooks {
+  readonly "model.observed": SessionModelObserved
   readonly prompt: SessionPrompt
   readonly context: SessionContext
   readonly "compaction.decide": SessionCompactionDecision

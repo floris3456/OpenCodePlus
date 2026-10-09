@@ -6198,6 +6198,9 @@ describe("SessionRunnerLLM", () => {
   })
 
   scenario("retries a model call without consuming the logical agent step", function* (s) {
+    const hooks = yield* PluginHooks.Service
+    const observations: PluginHooks.Domains["session"]["model.observed"][] = []
+    yield* hooks.register("session", "model.observed", (event) => Effect.sync(() => { observations.push(event) }))
     const agents = yield* Agent.Service
     yield* agents.transform((editor) =>
       editor.update(Agent.ID.make("build"), (agent) => {
@@ -6216,6 +6219,11 @@ describe("SessionRunnerLLM", () => {
     yield* Fiber.join(run)
 
     expect(s.requests).toHaveLength(3)
+    expect(observations).toHaveLength(3)
+    expect(observations.map((event) => event.outcome)).toEqual(["failed", "completed", "completed"])
+    expect(new Set(observations.map((event) => event.invocationID)).size).toBe(3)
+    expect(observations[0]?.operationID).toBe(observations[1]?.operationID ?? "missing")
+    expect(observations[2]?.operationID).not.toBe(observations[1]?.operationID)
     expect(s.requests[0]?.toolChoice).toBeUndefined()
     expect(s.requests[0]?.tools.map((tool) => tool.name)).toContain("echo")
     expect(s.requests[1]?.toolChoice).toBeUndefined()
