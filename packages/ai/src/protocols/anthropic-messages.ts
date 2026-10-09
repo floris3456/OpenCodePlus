@@ -405,11 +405,16 @@ const AnthropicBodyFields = {
 export const AnthropicMessagesBody = Schema.Struct(AnthropicBodyFields)
 export type AnthropicMessagesBody = Schema.Schema.Type<typeof AnthropicMessagesBody>
 
+const AnthropicCacheCreation = Schema.Struct({
+  ephemeral_5m_input_tokens: Schema.optional(Schema.Unknown),
+  ephemeral_1h_input_tokens: Schema.optional(Schema.Unknown),
+})
 const AnthropicIterationUsage = Schema.StructWithRest(
   Schema.Struct({
     input_tokens: optionalNull(Schema.Number),
     output_tokens: Schema.optional(Schema.Number),
     cache_creation_input_tokens: optionalNull(Schema.Number),
+    cache_creation: Schema.optional(Schema.Unknown),
     cache_read_input_tokens: optionalNull(Schema.Number),
     server_tool_use: optionalNull(
       Schema.StructWithRest(Schema.Struct({ web_search_requests: Schema.optional(Schema.Number) }), [
@@ -1161,6 +1166,20 @@ const mapUsage = (usage: AnthropicUsage | undefined, providerMetadataKey: string
   )
   const inputTokens = ProviderShared.sumTokens(nonCached, cacheRead, cacheWrite)
   const outputTokens = ProviderShared.sumTokens(...iterations.map((item) => item.output_tokens))
+  // Validate the optional measurement detail independently: a malformed bucket
+  // must not fail model work or become a fabricated complete zero.
+  const decodeBucket = Schema.decodeUnknownOption(
+    Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+  )
+  const decodeCreation = Schema.decodeUnknownOption(AnthropicCacheCreation)
+  const buckets = iterations.map((item) => {
+    const creation = Option.getOrUndefined(decodeCreation(item.cache_creation))
+    return {
+      "5m": Option.getOrUndefined(decodeBucket(creation?.ephemeral_5m_input_tokens)),
+      "1h": Option.getOrUndefined(decodeBucket(creation?.ephemeral_1h_input_tokens)),
+    }
+  })
+  const hasBuckets = iterations.some((item) => item.cache_creation != null)
   return new Usage({
     inputTokens,
     outputTokens,
@@ -1175,6 +1194,14 @@ const mapUsage = (usage: AnthropicUsage | undefined, providerMetadataKey: string
     nonCachedInputTokens: nonCached,
     cacheReadInputTokens: cacheRead,
     cacheWriteInputTokens: cacheWrite,
+    ...(hasBuckets
+      ? {
+          cacheWriteInputTokensByTTL: {
+            "5m": ProviderShared.sumTokens(...buckets.map((item) => item["5m"])),
+            "1h": ProviderShared.sumTokens(...buckets.map((item) => item["1h"])),
+          },
+        }
+      : {}),
     reasoningTokens: ProviderShared.sumTokens(...iterations.map((item) => item.output_tokens_details?.thinking_tokens)),
     totalTokens: ProviderShared.totalTokens(inputTokens, outputTokens, undefined),
     provenance: {
@@ -1201,6 +1228,24 @@ const mapUsage = (usage: AnthropicUsage | undefined, providerMetadataKey: string
         source: "reported",
         completeness: iterations.every((item) => item.cache_creation_input_tokens != null) ? "complete" : "partial",
       },
+      ...(hasBuckets
+        ? {
+            cacheWriteInputTokensByTTL: {
+              "5m": {
+                source: "reported" as const,
+                completeness: buckets.every((item) => item["5m"] !== undefined)
+                  ? ("complete" as const)
+                  : ("partial" as const),
+              },
+              "1h": {
+                source: "reported" as const,
+                completeness: buckets.every((item) => item["1h"] !== undefined)
+                  ? ("complete" as const)
+                  : ("partial" as const),
+              },
+            },
+          }
+        : {}),
       outputTokens: {
         source: "reported",
         completeness: iterations.every((item) => item.output_tokens != null) ? "complete" : "partial",
@@ -1230,6 +1275,11 @@ const mergeUsage = (left: Usage | undefined, right: Usage | undefined, providerM
   const inputTokens = ProviderShared.sumTokens(nonCachedInputTokens, cacheReadInputTokens, cacheWriteInputTokens)
   const outputTokens = right.outputTokens ?? left.outputTokens
   const reasoningTokens = right.reasoningTokens ?? left.reasoningTokens
+  // Each cache_creation object is cumulative, not a delta. If only the total
+  // changes, previous TTL detail is stale and cannot label the new total.
+  const staleBuckets =
+    right.cacheWriteInputTokens !== undefined && right.cacheWriteInputTokens !== left.cacheWriteInputTokens
+  const buckets = right.cacheWriteInputTokensByTTL ?? (staleBuckets ? undefined : left.cacheWriteInputTokensByTTL)
   return new Usage({
     inputTokens,
     outputTokens,
@@ -1237,11 +1287,18 @@ const mergeUsage = (left: Usage | undefined, right: Usage | undefined, providerM
     nonCachedInputTokens,
     cacheReadInputTokens,
     cacheWriteInputTokens,
+    cacheWriteInputTokensByTTL: buckets,
     reasoningTokens,
     totalTokens: ProviderShared.totalTokens(inputTokens, outputTokens, undefined),
     provenance: {
       ...left.provenance,
       ...right.provenance,
+      cacheWriteInputTokensByTTL:
+        right.cacheWriteInputTokensByTTL !== undefined
+          ? right.provenance?.cacheWriteInputTokensByTTL
+          : staleBuckets
+            ? undefined
+            : left.provenance?.cacheWriteInputTokensByTTL,
       // A delta may contain output only. Recompute completeness from the merged components,
       // not from the partial sum on either cumulative frame.
       inputTokens: {

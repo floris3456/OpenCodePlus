@@ -7,6 +7,7 @@ const field = Schema.Struct({
   completeness: Schema.Literals(["complete", "partial"]),
 })
 const token = Schema.Number.check(Schema.isFinite())
+const bucket = token.check(Schema.isGreaterThanOrEqualTo(0))
 
 /** Allow-listed measurement payload. No metadata, response body, headers or error text. */
 export const Observation = Schema.Struct({
@@ -21,6 +22,12 @@ export const Observation = Schema.Struct({
   inputTokens: Schema.optional(token),
   cacheReadInputTokens: Schema.optional(token),
   cacheWriteInputTokens: Schema.optional(token),
+  cacheWriteInputTokensByTTL: Schema.optional(
+    Schema.Struct({
+      "5m": Schema.optional(bucket),
+      "1h": Schema.optional(bucket),
+    }),
+  ),
   nonCachedInputTokens: Schema.optional(token),
   outputTokens: Schema.optional(token),
   reasoningTokens: Schema.optional(token),
@@ -29,6 +36,12 @@ export const Observation = Schema.Struct({
       inputTokens: Schema.optional(field),
       cacheReadInputTokens: Schema.optional(field),
       cacheWriteInputTokens: Schema.optional(field),
+      cacheWriteInputTokensByTTL: Schema.optional(
+        Schema.Struct({
+          "5m": Schema.optional(field),
+          "1h": Schema.optional(field),
+        }),
+      ),
       nonCachedInputTokens: Schema.optional(field),
       outputTokens: Schema.optional(field),
       reasoningTokens: Schema.optional(field),
@@ -41,8 +54,19 @@ export type Observation = typeof Observation.Type
 export type RequestObservation = Omit<Observation, "version"> & { readonly version: number }
 
 export function inconsistentObservation(value: Observation) {
+  const sum = (value.cacheWriteInputTokensByTTL?.["5m"] ?? 0) + (value.cacheWriteInputTokensByTTL?.["1h"] ?? 0)
   return (
     value.inconsistent === true ||
+    (value.cacheWriteInputTokens !== undefined &&
+      (sum > value.cacheWriteInputTokens ||
+        (value.cacheWriteInputTokensByTTL?.["5m"] !== undefined &&
+          value.cacheWriteInputTokensByTTL?.["1h"] !== undefined &&
+          sum !== value.cacheWriteInputTokens))) ||
+    (["5m", "1h"] as const).some(
+      (ttl) =>
+        value.cacheWriteInputTokensByTTL?.[ttl] !== undefined &&
+        value.provenance?.cacheWriteInputTokensByTTL?.[ttl]?.completeness === "partial",
+    ) ||
     [
       value.inputTokens,
       value.cacheReadInputTokens,

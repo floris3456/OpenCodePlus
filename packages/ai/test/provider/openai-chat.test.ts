@@ -977,6 +977,14 @@ describe("OpenAI Chat route", () => {
         cacheWriteInputTokens: 2,
         reasoningTokens: 0,
         totalTokens: 7,
+        provenance: {
+          inputTokens: { source: "reported", completeness: "complete" },
+          outputTokens: { source: "reported", completeness: "complete" },
+          cacheReadInputTokens: { source: "reported", completeness: "complete" },
+          cacheWriteInputTokens: { source: "reported", completeness: "complete" },
+          reasoningTokens: { source: "reported", completeness: "complete" },
+          nonCachedInputTokens: { source: "derived", completeness: "complete" },
+        },
         providerMetadata: {
           openai: {
             prompt_tokens: 5,

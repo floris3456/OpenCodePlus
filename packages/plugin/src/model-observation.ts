@@ -19,6 +19,7 @@ export interface SessionModelObserved {
   readonly started: number
   readonly ended: number
   readonly outcome: "completed" | "failed" | "cancelled"
+  /** Sparse allow-listed measurements, including reported TTL write buckets when available. */
   readonly usage: Readonly<ReturnType<Usage["observation"]>>
   /** Compatibility accounting for this invocation only; never evidence of sparse field presence. */
   readonly accounting?: { readonly tokens: TokenUsage.Info; readonly cost?: number }

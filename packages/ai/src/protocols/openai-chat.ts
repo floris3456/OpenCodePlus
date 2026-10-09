@@ -98,7 +98,11 @@ const OpenRouterDetailFields = {
 }
 const ReasoningDetail = Schema.Union([
   Schema.StructWithRest(
-    Schema.Struct({ type: Schema.Literal("reasoning.text"), text: Schema.optional(Schema.String), ...OpenRouterDetailFields }),
+    Schema.Struct({
+      type: Schema.Literal("reasoning.text"),
+      text: Schema.optional(Schema.String),
+      ...OpenRouterDetailFields,
+    }),
     [Schema.Record(Schema.String, Schema.Unknown)],
   ),
   Schema.StructWithRest(
@@ -916,6 +920,16 @@ const mapUsage = (usage: OpenAIChatEvent["usage"], providerMetadataKey: string):
     cacheWriteInputTokens: cacheWrite,
     reasoningTokens: reasoning,
     totalTokens: ProviderShared.totalTokens(input, output, usage.total_tokens ?? undefined),
+    provenance: {
+      ...(input == null ? {} : { inputTokens: { source: "reported", completeness: "complete" } }),
+      ...(output == null ? {} : { outputTokens: { source: "reported", completeness: "complete" } }),
+      ...(cached == null ? {} : { cacheReadInputTokens: { source: "reported", completeness: "complete" } }),
+      ...(cacheWrite == null ? {} : { cacheWriteInputTokens: { source: "reported", completeness: "complete" } }),
+      ...(reasoning == null ? {} : { reasoningTokens: { source: "reported", completeness: "complete" } }),
+      ...(input != null && cached != null && cacheWrite != null
+        ? { nonCachedInputTokens: { source: "derived", completeness: "complete" } }
+        : {}),
+    },
     providerMetadata: { [providerMetadataKey]: usage },
   })
 }

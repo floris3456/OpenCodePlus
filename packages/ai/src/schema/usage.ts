@@ -60,6 +60,13 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
   nonCachedInputTokens: Schema.optional(Schema.Number),
   cacheReadInputTokens: Schema.optional(Schema.Number),
   cacheWriteInputTokens: Schema.optional(Schema.Number),
+  /** Reported cache creation counts by TTL, never inferred from request markers. */
+  cacheWriteInputTokensByTTL: Schema.optional(
+    Schema.Struct({
+      "5m": Schema.optional(Schema.Number),
+      "1h": Schema.optional(Schema.Number),
+    }),
+  ),
   reasoningTokens: Schema.optional(Schema.Number),
   totalTokens: Schema.optional(Schema.Number),
   /** Best-effort comparison estimates, separate from all actual token counters. */
@@ -72,6 +79,12 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
       inputTokens: Schema.optional(fieldProvenance),
       cacheReadInputTokens: Schema.optional(fieldProvenance),
       cacheWriteInputTokens: Schema.optional(fieldProvenance),
+      cacheWriteInputTokensByTTL: Schema.optional(
+        Schema.Struct({
+          "5m": Schema.optional(fieldProvenance),
+          "1h": Schema.optional(fieldProvenance),
+        }),
+      ),
       nonCachedInputTokens: Schema.optional(fieldProvenance),
       outputTokens: Schema.optional(fieldProvenance),
       reasoningTokens: Schema.optional(fieldProvenance),
@@ -97,6 +110,19 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
    * Protocols without provenance deliberately have no usable measurement coverage yet.
    */
   observation(completeness: "final" | "partial" | "unavailable") {
+    const bucketOf = (ttl: "5m" | "1h") => {
+      const value = this.cacheWriteInputTokensByTTL?.[ttl]
+      return completeness !== "unavailable" &&
+        value !== undefined &&
+        Number.isFinite(value) &&
+        value >= 0 &&
+        this.provenance?.cacheWriteInputTokensByTTL?.[ttl]?.completeness === "complete"
+        ? value
+        : undefined
+    }
+    const buckets = { "5m": bucketOf("5m"), "1h": bucketOf("1h") }
+    const bucketValues = [this.cacheWriteInputTokensByTTL?.["5m"], this.cacheWriteInputTokensByTTL?.["1h"]]
+    const bucketSum = bucketValues.reduce<number>((sum, value) => sum + (value ?? 0), 0)
     const fields = [
       "inputTokens",
       "cacheReadInputTokens",
@@ -121,12 +147,34 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
       inputTokens: valueOf("inputTokens"),
       cacheReadInputTokens: valueOf("cacheReadInputTokens"),
       cacheWriteInputTokens: valueOf("cacheWriteInputTokens"),
+      ...(buckets["5m"] !== undefined || buckets["1h"] !== undefined
+        ? { cacheWriteInputTokensByTTL: Object.freeze(buckets) }
+        : {}),
       nonCachedInputTokens: valueOf("nonCachedInputTokens"),
       outputTokens: valueOf("outputTokens"),
       reasoningTokens: valueOf("reasoningTokens"),
-      provenance: this.provenance,
+      provenance: this.provenance?.cacheWriteInputTokensByTTL
+        ? {
+            ...this.provenance,
+            cacheWriteInputTokensByTTL: Object.freeze({
+              "5m": this.provenance.cacheWriteInputTokensByTTL["5m"]
+                ? Object.freeze({ ...this.provenance.cacheWriteInputTokensByTTL["5m"] })
+                : undefined,
+              "1h": this.provenance.cacheWriteInputTokensByTTL["1h"]
+                ? Object.freeze({ ...this.provenance.cacheWriteInputTokensByTTL["1h"] })
+                : undefined,
+            }),
+          }
+        : this.provenance,
       inconsistent:
         fields.some((field) => this[field] !== undefined && (!Number.isFinite(this[field]) || this[field] < 0)) ||
+        bucketValues.some((value) => value !== undefined && (!Number.isFinite(value) || value < 0)) ||
+        (this.cacheWriteInputTokens !== undefined &&
+          (bucketSum > this.cacheWriteInputTokens ||
+            ((["5m", "1h"] as const).every(
+              (ttl) => this.provenance?.cacheWriteInputTokensByTTL?.[ttl]?.completeness === "complete",
+            ) &&
+              bucketSum !== this.cacheWriteInputTokens))) ||
         (this.inputTokens !== undefined &&
           this.cacheReadInputTokens !== undefined &&
           this.cacheWriteInputTokens !== undefined &&
