@@ -1440,6 +1440,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   function escape() {
+    if (state.linkPrimary() !== undefined) { state.cancelRowlink(); state.setStatus("Row link cancelled"); return }
     if (filtering()) {
       closeFilter()
       return
@@ -1512,7 +1513,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (canPin(node)) hints.push(["p", "pin"])
     if (node?.actions?.requires === true) hints.push(["w", "shown when"])
     hints.push(["a", "add"])
-    if (isLinkable(node?.owner)) hints.push(["l", "link"])
+    if (node?.address !== undefined) hints.push(["L", state.linkPrimary() === undefined ? "row links" : "finish link"])
+    if (isLinkable(node?.owner)) hints.push(["l", "preset link"])
     if (moveCandidate(node)) hints.push(["m", "move"])
     if (renameCandidateOf(node, state.snapshot())?.target !== undefined || folderName(node) !== undefined) hints.push(["shift+r", "rename"])
     if (node?.actions?.remove === true || folderName(node) !== undefined) hints.push(["d", "delete"])
@@ -1621,6 +1623,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(canPin(node) ? [{ bind: "p", title: "Pin Code Mode tool", group: "Instructions", run: pin }] : []),
         ...(node?.actions?.requires === true ? [{ bind: "w", title: "Shown when (send only while rows are on)", group: "Instructions", run: () => void dialogs.when(current()) }] : []),
         { bind: "a", title: "Add", group: "Instructions", run: add },
+        ...(node?.address !== undefined ? [{ bind: "shift+l", title: "Row links", group: "Instructions", run: () => void dialogs.rowlink(current()) }] : []),
         ...(isLinkable(node?.owner) ? [{ bind: "l", title: "Link to preset", group: "Instructions", run: () => void dialogs.relink(current()) }] : []),
         { bind: "d", title: "Delete", group: "Instructions", run: remove },
         ...(moveCandidate(node)

@@ -26,6 +26,7 @@ import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import type { InstructionsState } from "./state.js"
+import { sameOwnerView, sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../instructions/rowlinks.js"
 
 export interface InstructionsDialogsOptions {
   /** The row a node hangs under; defaults to the flat tree's nearest shallower row. */
@@ -1427,7 +1428,57 @@ export function createInstructionsDialogs(
     await state.deleteFolder(node)
   }
 
-  return { addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, renameFolder, renameRow, deleteFolder, dispose }
+  async function editRowlink(primary: TreeNode, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
+    const type = await context.ui.dialog.select<Exclude<RowlinkType, "shownAlways">>({
+      title: `Link · ${primary.label} → ${target.item}${target.section === null ? "" : ` / ${target.section}`}`,
+      placeholder: `Type (now ${current})`,
+      options: [
+        { title: "either · turning either on turns the other off", value: "either" },
+        { title: "oneway · primary on turns linked row off", value: "oneway" },
+        { title: "shownWhenOn · linked row sent while primary is on", value: "shownWhenOn" },
+        { title: "shownWhenOff · linked row sent while primary is off", value: "shownWhenOff" },
+      ],
+    })
+    if (disposed || type === undefined) return
+    const live = await context.ui.dialog.select<boolean>({
+      title: "Link enabled / mask",
+      placeholder: enabled ? "Currently enabled" : "Currently masked",
+      options: [{ title: "Enabled", value: true }, { title: "Mask at this level", value: false }],
+    })
+    if (disposed || live === undefined) return
+    await state.saveRowlink(primary, target, type, live)
+  }
+
+  async function rowlink(node: TreeNode | undefined) {
+    if (disposed || node?.address === undefined) return
+    const primary = state.linkPrimary()
+    if (primary !== undefined) {
+      if (!state.rowlinkTarget(node)) return
+      state.cancelRowlink()
+      await editRowlink(primary, node.address)
+      return
+    }
+    const links = state.linksFor(node)
+    if (links.length === 0) { state.beginRowlink(node); return }
+    const picked = await context.ui.dialog.select<number>({
+      title: `Row links · ${node.label}`,
+      placeholder: "Primary → linked row (incoming / outgoing)",
+      options: [
+        ...links.map((link, value) => ({ title: `${link.direction}: ${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} · ${link.enabled ? "enabled" : "masked"} (${link.level})`, value })),
+        { title: "Link another row", value: -1 },
+      ],
+    })
+    if (disposed || picked === undefined) return
+    if (picked === -1) { state.beginRowlink(node); return }
+    const link = links[picked]
+    if (link === undefined) return
+    // An incoming link edits its named primary, never reverses the pair.
+    const owner = state.nodes().find((candidate) => candidate.address !== undefined && sameOwnerView(node.address!, candidate.address) && sameEndpoint(candidate.address, link.item, link.section))
+    if (owner === undefined) { state.setStatus(`Primary ${link.item} is not available in this view`); return }
+    await editRowlink(owner, { item: link.target, section: link.targetSection }, link.type, link.enabled)
+  }
+
+  return { rowlink, addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, renameFolder, renameRow, deleteFolder, dispose }
 }
 
 export type InstructionsDialogs = ReturnType<typeof createInstructionsDialogs>

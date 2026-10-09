@@ -5,7 +5,8 @@ import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LABELS, MODEL_SETTINGS_FIELDS, MODELS_GROUP_ID, parseModelFieldItemId, parseModelSettingItemId, type ModelSettingsField } from "../../instructions/model-settings.js"
 import { formatDuration } from "../../instructions/model.js"
-import { modelDefaultsViewOf } from "../../instructions/snapshot.js"
+import { contextOfSnapshot, modelDefaultsViewOf, rowlinkOf } from "../../instructions/snapshot.js"
+import { rowlinkView } from "../../instructions/rowlinks.js"
 import type { Snapshot } from "../../rpc.js"
 import {
   addressLine,
@@ -76,6 +77,11 @@ export function kindWord(node: TreeNode): string {
 
 export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly Row[], memo?: Memo): Fact[] {
   const facts: Fact[] = []
+  if (node.address !== undefined) {
+    const scopes = memo?.ctx.scopes ?? contextOfSnapshot(snapshot)
+    const links = rowlinkView(snapshot.records.filter((record) => record.type === "rowlink").map(rowlinkOf), scopes, node.address, node.address)
+    links.forEach((link) => facts.push([`${link.direction} link`, `${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} · ${link.enabled ? "enabled" : "masked"} (${link.level})`]))
+  }
   const modelField = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
   if (modelField !== undefined) {
     facts.push(["field", MODEL_FIELD_LABELS[modelField.field].toLowerCase(), "value"] as Fact)

@@ -46,6 +46,7 @@ export const HELP: readonly HelpGroup[] = [
     [
       ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section, category"],
       ["l", "link an agent, member, team, entry or User preset to a preset (or unlink)"],
+      ["L", "row links: select primary, navigate to another row, L finishes; Esc cancels"],
       ["d", "delete (asks first; a user category's rows go home)"],
     ],
   ],
