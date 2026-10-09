@@ -3,8 +3,7 @@ import { advanceMove, startMove } from "../src/tui/instructions/move.js"
 import type { AgentSource, Item } from "../src/instructions/model.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
-import type { FolderRecord, OrderRecord } from "../src/instructions/folders.js"
-import { folderRef } from "../src/instructions/folders.js"
+import { planFolderCreate } from "../src/instructions/ops.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const item = (o: Partial<Item> & Pick<Item, "id" | "kind" | "title">): Item => {
@@ -17,13 +16,15 @@ test("ordinary origin-group tools can enter a tab-root folder and return home", 
     item({ id: "tool:reader", kind: "tool", title: "reader" }),
   ]
   const agents: AgentSource[] = [{ id: "Implementer", scope: "project", origin: "user" }]
-  const folder: FolderRecord = { type: "folder", level: "global", tab: "tools", id: "tools:mine", name: "Mine", items: [], updated: UPDATED }
-  const orders: OrderRecord[] = [
-    { type: "order", level: "global", scope: "tab:tools", items: [folderRef("tools:mine")], updated: UPDATED },
-  ]
-  const input: MemoInput = { items, records: [], agents, folders: [folder], orders }
+  const empty: MemoInput = { items, records: [], agents, folders: [], orders: [] }
+  const created = planFolderCreate(empty, { folders: [], orders: [] }, "group:project:Implementer:tools:native", "Mine", UPDATED)
+  expect("layout" in created).toBe(true)
+  if (!("layout" in created)) return
+  const folder = created.layout.folders[0]!
+  expect(folder.tab).toBe("tools")
+  const input: MemoInput = { ...empty, ...created.layout }
   const node = expandedTree(input).find((n) => n.address?.item === "tool:bash" && n.address.section === null)!
-  const layout = { folders: input.folders!, orders }
+  const layout = created.layout
   const picked = startMove(node, layout)
   expect("state" in picked).toBe(true)
   if (!("state" in picked)) return

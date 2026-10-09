@@ -408,7 +408,10 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   const at = nodes.findIndex((node) => node.id === rowId)
   const node = nodes[at]
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
-  const token = rowToken(node)
+  // Origin subgroups are presentation headings; Add Folder belongs to their tab.
+  const tabIndex = tabGroupIndex(nodes, at)
+  const container = node.kind === "group" && rowToken(node) === undefined && tabIndex !== undefined ? nodes[tabIndex]! : node
+  const token = rowToken(container)
   const folderId = token === undefined ? undefined : folderIdOfRef(token)
   const parent = folderId === undefined ? undefined : folderOf(layout.folders, folderId)
   const tab = token?.startsWith("tab:") === true ? token.slice("tab:".length) : parent?.tab
@@ -419,7 +422,7 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   const folder = created.folders.at(-1)
   if (folder === undefined) return { refusal: "the folder was not created" }
   const orders =
-    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, at), folderRef(folder.id)], updated) : created.orders
+    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, container === node ? at : tabIndex!), folderRef(folder.id)], updated) : created.orders
   return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: { folders: created.folders, orders } }
 }
 
