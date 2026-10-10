@@ -16,6 +16,7 @@
   ],
   "exports": {
     "./server": "./src/index.ts",
+    "./pacer": "./src/server.ts",
     "./tui": "./src/tui.tsx"
   },
   "scripts": {
@@ -23,6 +24,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "opencode-pacer": "github:floris3456/opencode-pacer#836c23ab06aa381e8d272600df716dd47bbed9cb",
     "@opencode/plugin": "workspace:*",
     "@opencode/schema": "workspace:*",
     "@opencode/util": "workspace:*",

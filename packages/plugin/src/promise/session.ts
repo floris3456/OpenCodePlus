@@ -1,4 +1,6 @@
 import type { SessionCompactionDecision } from "../compaction-decision.js"
+import type { SessionWarming } from "../effect/session.js"
+export type { SessionWarming, SessionWarmingSettings } from "../effect/session.js"
 import type { SessionApi } from "@opencode/client/promise/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai"
 import type { Agent } from "@opencode/schema/agent"
@@ -161,6 +163,7 @@ export interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly warming: SessionWarming
 }
 
 export type SessionDomain = Pick<

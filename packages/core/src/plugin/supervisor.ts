@@ -27,6 +27,7 @@ const resolve = Effect.fn("PluginSupervisor.resolve")(function* (
     selector === "*" || (selector.endsWith(".*") ? target.startsWith(selector.slice(0, -1)) : selector === target)
   const definitions = [...pre, ...post]
   const enabled = new Set(definitions.map((plugin) => plugin.id))
+  const configured = new Map<string, Record<string, unknown>>()
   const packages = new Map<string, Plugin.Generation>()
   const pending = new Set<string>()
   const failures = new Map<
@@ -51,7 +52,10 @@ const resolve = Effect.fn("PluginSupervisor.resolve")(function* (
       operation.target.endsWith(".*") ||
       operation.target.startsWith("opencode.")
     if (selectsPlugins) {
-      matched.forEach((plugin) => enabled.add(plugin.id))
+      matched.forEach((plugin) => {
+        enabled.add(plugin.id)
+        configured.set(plugin.id, operation.options)
+      })
       continue
     }
 
@@ -98,7 +102,17 @@ const resolve = Effect.fn("PluginSupervisor.resolve")(function* (
   const duplicate = (plugin: Plugin.Generation, index: number) =>
     ordered.findIndex((other) => other.id === plugin.id) !== index
   return {
-    plugins: ordered.filter((plugin, index) => !duplicate(plugin, index)),
+    plugins: ordered
+      .filter((plugin, index) => !duplicate(plugin, index))
+      .map((plugin) => {
+        const options = configured.get(plugin.id)
+        if (!options) return plugin
+        return {
+          ...plugin,
+          revision: JSON.stringify([plugin.revision, options]),
+          effect: (host) => plugin.effect({ ...host, options }),
+        } satisfies Plugin.Generation
+      }),
     packages: new Map([...packages].filter(([, plugin]) => enabled.has(plugin.id))),
     failures: [
       ...failures.values(),

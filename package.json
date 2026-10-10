@@ -154,6 +154,7 @@
     "electron"
   ],
   "overrides": {
+    "@opencode/plugin": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
@@ -182,6 +183,7 @@
     "ghostty-web@github:anomalyco/ghostty-web#83c0a07": "patches/ghostty-web@0.3.0.patch",
     "vite@8.2.2": "patches/vite@8.2.2.patch",
     "@modelcontextprotocol/client@2.0.0": "patches/@modelcontextprotocol%2Fclient@2.0.0.patch",
-    "@opentui/core@0.5.10": "patches/@opentui%2Fcore@0.5.10.patch"
+    "@opentui/core@0.5.10": "patches/@opentui%2Fcore@0.5.10.patch",
+    "opencode-pacer@github:floris3456/opencode-pacer#836c23a": "patches/opencode-pacer@github%3Afloris3456%2Fopencode-pacer#836c23a.patch"
   }
 }

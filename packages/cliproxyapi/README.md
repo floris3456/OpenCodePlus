@@ -1,4 +1,47 @@
-# opencode.plus.cliproxyapi
+# Pacer in OpenCodePlus
+
+The release loads **`opencode-pacer`**, pinned to the upstream commit in
+`package.json`, with the Plus adapter in `src/server.ts`. Its server and TUI
+halves share that ID. Turn it off independently with
+`"plugins": ["-opencode-pacer"]`; re-enable it with `"plugins": ["opencode-pacer"]`.
+The bundled code stays in the executable when removed from the enabled plugins.
+
+- Connect through `/connect` → CLIProxyAPI. No `cliproxyapi.json` is read.
+- Pacer owns model discovery, Claude relay, pricing and quota observations.
+- Replies update the meter; Pacer's usage view refreshes every minute. The old
+  per-step/per-second quota-events polling is not enabled.
+- `/usage --all` retains Plus's all-provider credentials, quota-window bars and
+  reset countdowns, including the narrow-terminal panel. It reads the cached
+  Pacer meter rather than making another proxy request.
+- Plus's dedicated compaction decision hook replaces the stock plugin's
+  context-overflow workaround. Summary selection stays per chat, supports a
+  fallback, preserves portable checkpoint conversion and bounds switch retries.
+- The explicit warming hook suppresses pings while a switch is pending.
+- Instructions UI, instructions storage and its compaction controls are unchanged.
+
+Summary preferences now live in the ordinary global `opencode.json`:
+
+```json
+{
+  "plugins": [{
+    "package": "opencode-pacer",
+    "options": {
+      "compactionModel": "cliproxyapi/deepseek-v4.1-flash-cheap",
+      "compactionFallback": "cliproxyapi/gemini-3.8-flash-high"
+    }
+  }]
+}
+```
+
+`accountSwitch: false` disables the handoff integration without disabling the
+meter. Existing provider-specific model settings remain ordinary OpenCode
+configuration. New Fast aliases and the legacy CPA image tool are not registered
+by the standalone Pacer plugin.
+
+## Historical implementation (through Plus 1.3.1)
+
+The remaining documentation describes `src/index.ts`, retained for legacy
+regression coverage but no longer loaded by the release:
 
 Every OpenCodePlus feature for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 (CPA) lives in this one built-in plugin (server half `index.ts`, TUI half `tui.tsx`).

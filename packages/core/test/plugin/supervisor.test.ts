@@ -77,6 +77,45 @@ const it = testEffect(
 )
 
 describe("PluginSupervisor", () => {
+  it.live("applies options to bundled/host plugins and removes Pacer independently", () =>
+    Effect.gen(function* () {
+      source.operations = [
+        { type: "add", target: "configured-plugin", options: { command: "configured-command" } },
+        { type: "remove", target: "opencode-pacer" },
+      ]
+      const sdk = yield* SdkPlugins.Service
+      yield* sdk.register(
+        define({
+          id: "configured-plugin",
+          effect: (ctx) =>
+            ctx.command.transform((editor) => {
+              editor.add({ name: String(ctx.options.command), execute: () => Effect.void })
+            }),
+        }),
+      )
+      const directory = yield* tmpdirScoped()
+      const locations = yield* LocationServiceMap.Service
+      yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        const commands = yield* Command.Service
+        expect(yield* commands.get("configured-command")).toBeDefined()
+        const inventory = yield* plugins.list()
+        expect(inventory.some((item) => item.id === "opencode-pacer")).toBe(false)
+        expect(inventory.some((item) => item.id === "opencode.plus" && item.state.status === "active")).toBe(true)
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
+      )
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          source.operations = []
+        }),
+      ),
+    ),
+  )
+
   it.live("reports a duplicate plugin ID as a failure without dropping the generation", () =>
     Effect.gen(function* () {
       const sdk = yield* SdkPlugins.Service

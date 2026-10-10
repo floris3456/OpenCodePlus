@@ -54,7 +54,7 @@ export function registerPacer(ctx: Context, config: () => Config) {
 }
 
 /** Adapts the shared meter into the existing Usage RPC; no TUI-owned protocol parsing. */
-export function pacerSnapshot(meter: Meter, input: UsageInput, now: number): UsageSnapshot {
+export function pacerSnapshot(meter: Pick<Meter, "lastServed" | "rows">, input: UsageInput, now: number): UsageSnapshot {
   const served = input.sessionID ? meter.lastServed(input.sessionID) : undefined
   const rows = meter.rows()
   return {

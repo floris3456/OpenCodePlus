@@ -7,12 +7,12 @@ import { createUsage } from "./quota/usage-view.js"
 export const REPROBE = 30_000
 
 /**
- * TUI half of opencode.plus.cliproxyapi: quota notices and the credential usage
+ * TUI half of opencode-pacer: quota notices and the credential usage
  * views. Nothing is shown unless the server half is running and quota is on for
  * a provider, so hosts without CPA (or with the plugin removed) see no Usage UI.
  */
 export default Plugin.define({
-  id: "opencode.plus.cliproxyapi",
+  id: "opencode-pacer",
   setup(context) {
     const disposers: (() => void)[] = []
     const state = { disposed: false }

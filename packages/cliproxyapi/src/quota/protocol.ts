@@ -44,6 +44,8 @@ export const Stored = Schema.Struct({
 export type Stored = typeof Stored.Type
 export const Config = Schema.Struct({
   routes: Schema.Record(Schema.String, Schema.String),
+  /** Pacer coordinates through request/reply headers, never legacy event polling. */
+  reactive: Schema.optional(Schema.Boolean),
   /** Provider IDs whose CPA advertises Pacer's client protocol. */
   pacer: Schema.optional(Schema.Array(Schema.String)),
   /** `provider/model[#variant]` that writes the summary when CPA moves a chat to another account. */

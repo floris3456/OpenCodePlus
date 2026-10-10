@@ -12,7 +12,7 @@ const servers: ReturnType<typeof Bun.serve>[] = []
 afterEach(() => {
   servers.splice(0).forEach((server) => server.stop(true))
 })
-function fixture(compactionModel?: string, compactionFallback?: string) {
+function fixture(compactionModel?: string, compactionFallback?: string, reactive = false) {
   const state = {
     known: false,
     status: 200,
@@ -59,6 +59,7 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
   const controller = new QuotaController(
     () => ({
       routes: live.routes,
+      reactive,
       ...(compactionModel ? { compactionModel } : {}),
       ...(compactionFallback ? { compactionFallback } : {}),
     }),
@@ -86,6 +87,60 @@ function fixture(compactionModel?: string, compactionFallback?: string) {
   })
   return { state, controller, event, server, store, notices, live }
 }
+
+test("Pacer switches use per-chat summaries and warming gates without a coordination fetch", async () => {
+  const f = fixture("proxy/summary", "other/fallback", true)
+  await f.controller.decide(f.event())
+  const headers = await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)
+  expect(JSON.parse(Buffer.from(headers["X-Quota-Handoff"], "base64url").toString()).compact_on_switch).toBe(true)
+  const refusal = () => Response.json({ error: { code: "quota_compact_required" } }, { status: 409 })
+  await f.controller.response("ses_test", "proxy", "model", refusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(false)
+  const switching = f.event()
+  await f.controller.decide(switching)
+  expect(switching).toMatchObject({
+    compact: true,
+    portable: true,
+    compactionModel: { id: "summary" },
+    compactionFallback: { id: "fallback" },
+  })
+  const other = { ...f.event(), sessionID: Session.ID.make("ses_other") }
+  await f.controller.decide(other)
+  expect(other.compactionModel).toBeUndefined()
+  expect(other.compact).toBeUndefined()
+  const disabled = f.event(false)
+  await f.controller.decide(disabled)
+  expect(disabled.refusal?.type).toBe("quota.context-unavailable")
+  await f.controller.decide({ ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "summary-new" } })
+  await f.controller.response("ses_test", "proxy", "model", refusal())
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(false)
+  await f.controller.tick()
+  expect(f.state.reads).toBe(0)
+})
+
+test("Pacer keeps opaque checkpoints local and a warming refusal blocks further pings", async () => {
+  const f = fixture(undefined, undefined, true)
+  const event = { ...f.event(), boundary: { fresh: false, portable: false } }
+  await f.controller.decide(event)
+  expect(event).toMatchObject({ compact: true, portable: true })
+  await f.controller.response(
+    "ses_test",
+    "proxy",
+    "model",
+    Response.json({ error: { code: "quota_compact_required" } }, { status: 409 }),
+    "generate",
+  )
+  expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(false)
+  await f.controller.response(
+    "ses_test",
+    "proxy",
+    "model",
+    new Response(null, { headers: { "X-Quota-Protocol": "1", "X-Quota-Auxiliary": "ack" } }),
+    "compaction",
+  )
+  expect(f.state.reads).toBe(0)
+})
 test("shadow enrollment and reminders never request compaction or a checkpoint", async () => {
   const f = fixture()
   f.state.snapshot = { ...f.state.snapshot, mode: "shadow", primary_used: false, available: false }
@@ -393,7 +448,13 @@ test("checkpoint handoff checks the source even when the stale target chose it a
   expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction")).toBe(true)
   expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(false)
   const claim = claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href))
-  expect(claim).toMatchObject({ route: "proxy/source", kind: "compaction", portable: false, fresh: false, checkpoint: "" })
+  expect(claim).toMatchObject({
+    route: "proxy/source",
+    kind: "compaction",
+    portable: false,
+    fresh: false,
+    checkpoint: "",
+  })
 
   const notices = await f.controller.status("ses_test")
   target.compactionModel = Model.Ref.parse("proxy/changed-summary")
@@ -405,7 +466,9 @@ test("checkpoint handoff checks the source even when the stale target chose it a
 
   // Marking one conversion neither consumes the target decision nor marks later ordinary compactions.
   expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction")).toBe(true)
-  expect(claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href)).portable).toBe(true)
+  expect(
+    claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href)).portable,
+  ).toBe(true)
 })
 
 test.each(["intent", "switch", "replay", "unenrolled", "unavailable"])(
@@ -459,12 +522,16 @@ test("checkpoint handoff does not claim a stale source checkpoint or alter prima
   })
   await f.controller.decide(f.event())
   expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(false)
-  expect(claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href))).toMatchObject({
+  expect(
+    claimOf(await f.controller.headers("ses_test", "proxy", "source", "compaction", f.server.url.href)),
+  ).toMatchObject({
     portable: false,
     fresh: false,
     checkpoint: "",
   })
-  expect(claimOf(await f.controller.headers("ses_test", "proxy", "source", "primary", f.server.url.href))).toMatchObject({
+  expect(
+    claimOf(await f.controller.headers("ses_test", "proxy", "source", "primary", f.server.url.href)),
+  ).toMatchObject({
     portable: true,
     fresh: true,
     checkpoint: "stale-source-checkpoint",

@@ -179,6 +179,7 @@ export class QuotaController {
     route.retryDelay = undefined
   }
   private poll(route: Route): Promise<void> {
+    if (this.config().reactive) return Promise.resolve()
     if (route.reading) return route.reading
     const reading = this.read(route).finally(() => {
       route.reading = undefined
@@ -262,6 +263,13 @@ export class QuotaController {
     }
     const switching = route.stored.switching
     if (switching !== undefined && event.reason !== "overflow") {
+      if (!event.auto && event.reason !== "manual") {
+        event.refusal = {
+          type: "quota.context-unavailable",
+          message: "This account switch needs a summary. Run /compact or enable automatic compaction before retrying.",
+        }
+        return
+      }
       // CPA moves this chat to another account only with a checkpoint newer than the one its refused
       // request carried. The summary uses the configured model: the old account is used up, and the new
       // one should not receive the full history. The session keeps its own model for the next step.
@@ -384,11 +392,17 @@ export class QuotaController {
       const code = detail?.code?.startsWith("quota_") ? detail.code : detail?.message?.match(/^(quota_[a-z_]+): /)?.[1]
       route.retryCode = code?.startsWith("quota_") ? code : undefined
       if (route.retryCode === "quota_compact_required") route.switchText = detail?.message
+      // A refused warming ping arms the same switch gate, but never starts a summary itself.
+      if (this.config().reactive && kind === "generate" && route.retryCode === "quota_compact_required") {
+        route.stored = { ...route.stored, switching: route.decision?.boundary.checkpoint ?? "" }
+        await this.save(route)
+      }
       return
     }
     route.retryCode = undefined
     route.budgetWaits = 0
     const header = response.headers.get("X-Quota-Binding")
+    if (this.config().reactive && kind !== "primary" && response.headers.has("X-Quota-Auxiliary")) return
     if (response.headers.get("X-Quota-Protocol") !== "1" || !header) {
       route.refusal = "Quota plugin did not acknowledge this request. Generation is paused."
       throw new Error(route.refusal)
@@ -399,6 +413,20 @@ export class QuotaController {
     const previousAlias = route.alias
     route.stored = { ...route.stored, generation: binding.generation }
     route.alias = binding.alias
+    if (this.config().reactive) {
+      route.snapshot = {
+        protocol: 1,
+        primary_used: kind === "primary" || route.snapshot?.primary_used === true,
+        consumed: kind === "primary" ? (route.decision?.boundary.checkpoint ?? "") : (route.snapshot?.consumed ?? ""),
+        generation: binding.generation,
+        alias: binding.alias,
+        cursor: 0,
+        intent: "",
+        available: true,
+        windows: [],
+        events: [],
+      }
+    }
     // CPA acknowledged a binding, so background ticks may poll this route again.
     route.unenrolledUntil = undefined
     if (kind === "primary" && route.stored.switching !== undefined) {
