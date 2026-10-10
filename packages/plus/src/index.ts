@@ -299,7 +299,10 @@ export default Plugin.define({
       // request runs, so no request uses stale instructions.
       yield* ctx.session.hook("prompt", (event) =>
         Effect.gen(function* () {
-          if (event && event.sessionID) yield* refreshFolderForNewChat(ctx, state, String(event.sessionID))
+          // The new-chat folder re-read runs beside the first request, not before it:
+          // reloading config, instructions, agents, commands and skills costs seconds.
+          if (event && event.sessionID)
+            yield* Effect.forkDetach(refreshFolderForNewChat(ctx, state, String(event.sessionID)))
           yield* useLocation(ctx, state)
           if (event && event.sessionID) {
             yield* handlePromptBoundary(ctx, state, String(event.sessionID))
@@ -6652,8 +6655,8 @@ export async function parentChatOf(ctx: Context, sessionID: string): Promise<str
 const refreshProcessSemaphore = Effect.runSync(Semaphore.make(1))
 
 // A folder's own files (its opencode.json, skills, agent and command files)
-// are not watched (item 4): a new chat re-reads them once, before its first
-// request, so a change applies in the next chat. A folder that loaded moments
+// are not watched (item 4): a new chat re-reads them once, alongside its first
+// request, so a change applies from that chat's next request. A folder that loaded moments
 // ago has just read them (a team worker's first prompt), and later prompts of
 // the same chat keep what it started with; `/refresh` reloads everything now.
 export function refreshFolderForNewChat(ctx: Context, state: PlusState, sessionID: string): Effect.Effect<void> {

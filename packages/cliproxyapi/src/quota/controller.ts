@@ -250,7 +250,12 @@ export class QuotaController {
     const route = await this.route(event.sessionID, event.model.providerID, event.model.id)
     route.decision = event
     route.touched = this.io.now()
-    await this.poll(route).catch((error: unknown) => this.refuse(route, error))
+    // CPA has not bound a route it never answered (generation 0, no snapshot), so its events read can only
+    // report "unenrolled", and a fresh portable boundary decides the same either way. Skip that round trip
+    // on a new chat's first step; tick() polls the touched route in the background.
+    const unbound = route.snapshot === undefined && route.stored.generation === 0 && route.refusal === undefined
+    if (!(unbound && event.reason === "auto" && event.boundary.fresh && event.boundary.portable))
+      await this.poll(route).catch((error: unknown) => this.refuse(route, error))
     if (route.refusal) {
       event.refusal = { type: "quota.unavailable", message: route.refusal }
       return
@@ -394,6 +399,8 @@ export class QuotaController {
     const previousAlias = route.alias
     route.stored = { ...route.stored, generation: binding.generation }
     route.alias = binding.alias
+    // CPA acknowledged a binding, so background ticks may poll this route again.
+    route.unenrolledUntil = undefined
     if (kind === "primary" && route.stored.switching !== undefined) {
       // CPA admitted the compacted chat: on the new account, or on the old one if it recovered meanwhile.
       route.stored = { ...route.stored, switching: undefined }
@@ -416,7 +423,11 @@ export class QuotaController {
       })
     }
     await this.save(route)
-    await this.poll(route)
+    // The stream must not wait on a coordination round trip: the next boundary's decide() polls
+    // again, and a failure here pauses the route the same way a failed tick does.
+    void this.poll(route).catch((error: unknown) => {
+      route.notices = [{ sessionID: route.session, kind: "paused", text: this.refuse(route, error) }]
+    })
   }
   async retry(session: string, provider: string, model: string) {
     const route = await this.route(session, provider, model)

@@ -44,7 +44,14 @@ export function watchMonitor(
     const ledger = open()
     if (!pruned.has(ledger.path)) {
       pruned.add(ledger.path)
-      ledger.prune(Date.now() - RETENTION_DAYS * DAY)
+      // Retention is a synchronous scan; keep it off the first monitored prompt.
+      setTimeout(() => {
+        try {
+          ledger.prune(Date.now() - RETENTION_DAYS * DAY)
+        } catch (cause) {
+          Effect.runFork(Effect.logWarning("plus monitor prune failed", { cause }))
+        }
+      }, 120_000).unref()
     }
     lazy.collector = createCollector({
       ledger,

@@ -5,7 +5,7 @@ import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@open
 import { SessionModelObservation } from "../session/model-observation.js"
 import type { Agent } from "@opencode/schema/agent"
 import type { Session } from "@opencode/schema/session"
-import { Cause, Clock, Duration, Effect, Fiber, Option, Scope } from "effect"
+import { Cause, Clock, Duration, Effect, Fiber, Option, Scope, Semaphore } from "effect"
 import { Config } from "../config.js"
 import { ConfigWarming } from "../config/warming.js"
 import { Model } from "../model.js"
@@ -203,18 +203,33 @@ export const Plugin = define({
       if (active.epoch === epoch) active.fiber = fiber
     })
 
+    // Scheduling only reads the request, so it runs beside it instead of before it:
+    // the plugin `warming` decisions read files and stores. One at a time, so two
+    // quick requests of a session cannot both create a window.
+    const scheduling = Semaphore.makeUnsafe(1)
     const hook = (event: SessionHooks["context"], kind: "primary" | "compaction" | "generate") =>
       Effect.gen(function* () {
-        const session = yield* ctx.session.get({ sessionID: event.sessionID }).pipe(Effect.orDie)
-        if (session.parentID) return
-
-        const active = sessions.get(event.sessionID)
         // The warming request itself runs this hook from the session's loop; never
         // interrupt or reschedule that loop from inside its own generate call. The
         // request is also marked non-durable, which is the primary guard if the fiber
         // identity ever stops matching.
         if (event.durable === false) return
-        if (active?.fiber?.id === (yield* Effect.fiberId)) return
+        if (sessions.get(event.sessionID)?.fiber?.id === (yield* Effect.fiberId)) return
+        yield* schedule({ sessionID: event.sessionID, agent: event.agent, model: event.model }, kind).pipe(
+          scheduling.withPermit,
+          Effect.catchCause((cause) => Effect.logError("session warming schedule failed", { cause })),
+          Effect.forkIn(scope),
+        )
+      })
+    const schedule = (
+      event: Pick<SessionHooks["context"], "sessionID" | "agent" | "model">,
+      kind: "primary" | "compaction" | "generate",
+    ) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session.get({ sessionID: event.sessionID }).pipe(Effect.orDie)
+        if (session.parentID) return
+
+        const active = sessions.get(event.sessionID)
         const configured = yield* loadSettings(event.model)
 
         const now = yield* Clock.currentTimeMillis

@@ -317,6 +317,7 @@ create table if not exists request_fingerprint (
   created integer not null
 );
 create index if not exists request_fingerprint_session on request_fingerprint(session_id, created);
+create index if not exists request_fingerprint_created on request_fingerprint(created);
 
 create table if not exists context_fact (
   id integer primary key autoincrement,

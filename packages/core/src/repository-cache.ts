@@ -20,6 +20,9 @@ const Refresh = Schema.Struct({
   attemptedAt: Schema.Number,
 })
 const refreshInterval = Duration.toMillis(Duration.days(1))
+// Every Location refreshes its references at boot, on each reload, and hourly. A checkout
+// verified this recently answers a not-yet-due daily refresh without spawning Git again.
+const verifiedWindow = Duration.toMillis(Duration.minutes(10))
 
 export type Result = {
   readonly repository: string
@@ -120,6 +123,10 @@ const layer = Layer.effect(
     const flock = yield* EffectFlock.Service
     const global = yield* Global.Service
     const kv = yield* KV.Service
+    const verified = new Map<
+      string,
+      { readonly result: Result; readonly at: number; readonly attemptedAt: number; readonly config: number }
+    >()
 
     return Service.of({
       ensure: Effect.fn("RepositoryCache.ensure")(function* (input) {
@@ -129,6 +136,19 @@ const layer = Layer.effect(
         const localPath = Repository.cachePath(global.repos, input.reference, input.branch)
         const key = `repository-cache:${localPath}`
         const cloneTarget = Repository.parse(input.reference.remote) ?? input.reference
+
+        const memo = input.refresh === "daily" ? verified.get(key) : undefined
+        if (memo) {
+          const now = yield* Clock.currentTimeMillis
+          const previous = Option.getOrUndefined(Schema.decodeUnknownOption(Refresh)(yield* kv.get(key)))
+          if (
+            now - memo.at < verifiedWindow &&
+            previous?.attemptedAt === memo.attemptedAt &&
+            now - memo.attemptedAt < refreshInterval &&
+            (yield* configStamp(localPath)) === memo.config
+          )
+            return { ...memo.result, status: "cached" as const }
+        }
 
         return yield* flock
           .withLock(
@@ -208,7 +228,7 @@ const layer = Layer.effect(
 
               const checkout = yield* git.repo.discover(AbsolutePath.make(localPath))
 
-              return {
+              const result = {
                 repository,
                 host: input.reference.host,
                 remote: input.reference.remote,
@@ -217,6 +237,15 @@ const layer = Layer.effect(
                 head: checkout ? yield* git.history.head(checkout) : undefined,
                 branch: checkout ? yield* git.history.branch(checkout) : undefined,
               } satisfies Result
+              const config = yield* configStamp(localPath)
+              if (checkout && config !== undefined)
+                verified.set(key, {
+                  result,
+                  at: now,
+                  attemptedAt: status === "cached" && previous ? previous.attemptedAt : now,
+                  config,
+                })
+              return result
             }),
             key,
           )
@@ -238,6 +267,19 @@ export const node = makeGlobalNode({
 
 function errorMessage(error: unknown) {
   return error instanceof globalThis.Error ? error.message : String(error)
+}
+
+// A checkout's `.git/config` changes when its origin does; its mtime tells a remembered
+// verification apart from an edited or replaced checkout.
+function configStamp(localPath: string) {
+  return Effect.promise(() =>
+    Bun.file(path.join(localPath, ".git", "config"))
+      .stat()
+      .then(
+        (info) => info.mtimeMs,
+        () => undefined,
+      ),
+  )
 }
 
 function cacheOperation<A, E, R>(effect: Effect.Effect<A, E, R>, operation: string, target: string) {

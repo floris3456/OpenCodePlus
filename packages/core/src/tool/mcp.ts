@@ -2,6 +2,7 @@ export * as McpTool from "./mcp.js"
 
 import { ToolFailure } from "@opencode/ai"
 import { McpEvent } from "@opencode/schema/mcp-event"
+import { SessionEvent } from "@opencode/schema/session-event"
 import { Context, Effect, Fiber, type JsonSchema, Layer, PubSub, Semaphore, Stream } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Bus } from "../bus.js"
@@ -180,6 +181,12 @@ export const layer = Layer.effect(
     yield* Stream.fromSubscription(updates).pipe(
       Stream.debounce("100 millis"),
       Stream.runForEach(() => reconcile),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    // A new Session here is about to send its first prompt: start this Location's
+    // servers now, so that prompt's `ensure` finds them connected or connecting.
+    yield* bus.subscribe(SessionEvent.Created).pipe(
+      Stream.runForEach(() => ensure),
       Effect.forkScoped({ startImmediately: true }),
     )
     return Service.of({ flush: Effect.asVoid(Fiber.await(initial)), ensure })

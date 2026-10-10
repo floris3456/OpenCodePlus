@@ -524,17 +524,17 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
   // Object.keys tracks the store's keys node only: refcount changes on an
   // already-mounted path (a second tab's composer) skip re-resolution.
   const resolved = createMemo(() => resolveSlots({ paths: new Set(Object.keys(mounted)), claims: claims() }))
+  // Memoized so server inventory refreshes with identical content (every
+  // plugin.updated across all locations) do not trigger a full reconcile.
+  const reconcileKey = createMemo(() => JSON.stringify([serverTuiPlugins(), config.data.plugins ?? []]))
   createEffect(
-    on(
-      () => JSON.stringify([serverTuiPlugins(), config.data.plugins ?? []]),
-      () => {
-        npmFailures.clear()
-        void enqueue(reconcile).then(
-          () => setStore("ready", true),
-          () => setStore("ready", true),
-        )
-      },
-    ),
+    on(reconcileKey, () => {
+      npmFailures.clear()
+      void enqueue(reconcile).then(
+        () => setStore("ready", true),
+        () => setStore("ready", true),
+      )
+    }),
   )
   const syncServerPlugins = () =>
     client.api.plugin
@@ -548,7 +548,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
                 serverPluginName(previous) === serverPluginName(plugin) && isDeepEqual(previous.state, plugin.state),
             ),
         )
-        setServerPlugins(response.data)
+        if (!isDeepEqual(serverPlugins(), response.data)) setServerPlugins(response.data)
         const first = failed[0]
         if (!first) return
         host.toast.show({
@@ -566,7 +566,12 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
       () => void syncServerPlugins(),
     ),
   )
-  onCleanup(client.event.on("plugin.updated", syncServerPlugins))
+  onCleanup(
+    client.event.on("plugin.updated", (event) => {
+      if (event.location && event.location.directory !== data.location.default().directory) return
+      void syncServerPlugins()
+    }),
+  )
   onCleanup(client.event.on("server.connected", syncServerPlugins))
   onMount(() => {
     let disposing: Promise<void> | undefined

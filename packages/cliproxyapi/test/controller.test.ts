@@ -529,6 +529,8 @@ test("an unenrolled chat recovers from a transient bridge failure and backs off 
   // Once bound, every tick polls again.
   f.state.known = true
   await controller.response("ses_test", "proxy", "model", ackResponse())
+  // response() polls in the background; this tick joins that read.
+  await controller.tick()
   const bound = f.state.reads
   await controller.tick()
   expect(f.state.reads).toBeGreaterThan(bound)

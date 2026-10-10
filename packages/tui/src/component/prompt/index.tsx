@@ -1327,8 +1327,10 @@ export function Prompt(props: PromptProps) {
           gate: newSession?.gate,
           // Commit the captured selection after earlier admissions, including
           // compaction setup. Cached state may still precede their SSE echoes;
-          // the server makes an unchanged selection a no-op.
-          prepare: commitModel,
+          // the server makes an unchanged selection a no-op. A session created
+          // by this submit already carries the same selection, so it skips the
+          // extra round trip before its first prompt.
+          prepare: newSession ? undefined : commitModel,
         })
         .catch((error) => (newSession ? newSession.recover(error) : fail("Failed to send prompt", error)))
       if (pendingEditorSelection) editor.markSelectionSent()

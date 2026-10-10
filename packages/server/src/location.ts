@@ -46,6 +46,15 @@ export function requestRef(request: HttpServerRequest.HttpServerRequest): Locati
   })
 }
 
+// Names the request that booted a Location (or anything it forked) in the log, so a
+// client that wakes idle Locations can be traced from "location services booted".
+export function annotateRoute(request: HttpServerRequest.HttpServerRequest) {
+  return Effect.annotateLogs({
+    "http.route": `${request.method} ${new URL(request.url, "http://localhost").pathname}`,
+    "http.client": request.headers["user-agent"] ?? "unknown",
+  })
+}
+
 function decode(input: string) {
   try {
     return decodeURIComponent(input)
@@ -61,7 +70,7 @@ export const layer = Layer.effect(
     return LocationMiddleware.of((effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        return yield* effect.pipe(Effect.provide(locations.get(requestRef(request))))
+        return yield* effect.pipe(Effect.provide(locations.get(requestRef(request))), annotateRoute(request))
       }),
     )
   }),

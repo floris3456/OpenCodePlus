@@ -168,7 +168,15 @@ export const DigitalOceanPlugin = define({
         })
       }
     })
-    const refresh = () => loading.withPermit(load().pipe(Effect.andThen(ctx.provider.reload())))
+    // Reloading providers fans out to every Location; only do it when the inventory changed.
+    const refresh = () =>
+      loading.withPermit(
+        Effect.gen(function* () {
+          const before = JSON.stringify(loaded.routers)
+          yield* load()
+          if (JSON.stringify(loaded.routers) !== before) yield* ctx.provider.reload()
+        }),
+      )
     yield* bus.subscribe(Credential.Event.Switched).pipe(
       Stream.filter((event) => event.data.integrationID === integrationID),
       Stream.runForEach(refresh),
