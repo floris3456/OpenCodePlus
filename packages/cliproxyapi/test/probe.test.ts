@@ -36,7 +36,10 @@ test("a CPA running quota-handoff turns quota on, and the probe sends no key", a
   current = "present"
   seen.length = 0
   expect(await probeQuota(origin(), { fetch })).toBe(true)
-  expect(seen).toEqual([{ path: EVENTS, authorization: null }])
+  expect(seen).toEqual([
+    { path: "/v0/resource/plugins/pacer/events", authorization: null },
+    { path: EVENTS, authorization: null },
+  ])
 })
 
 test.each(["login", "missing", "html", "future"])("a CPA answering %s leaves quota off", async (answer) => {
@@ -66,5 +69,8 @@ test("an origin quota refuses is never contacted", async () => {
   expect(contacted).toEqual([])
   // Control: the same recording fetch is used for an origin quota accepts.
   expect(await probeQuota("https://cpa.example.com", { fetch: recording })).toBe(true)
-  expect(contacted).toEqual([`https://cpa.example.com${EVENTS}`])
+  expect(contacted).toEqual([
+    `https://cpa.example.com/v0/resource/plugins/pacer/events`,
+    `https://cpa.example.com${EVENTS}`,
+  ])
 })

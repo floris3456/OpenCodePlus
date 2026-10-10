@@ -1,5 +1,7 @@
 import type { ProviderEditor } from "@opencode/plugin/effect/provider"
 import type { Model } from "@opencode/schema/model"
+import { Money } from "@opencode/schema/money"
+import type { Price } from "./pacer/protocol.js"
 import { Schema, type Types } from "effect"
 
 /**
@@ -21,6 +23,7 @@ export const DETAILS_SCHEMA = "cliproxyapi.model-details/1"
 export const CODEX_CLIENT_VERSION = "0.300.0"
 
 export interface CatalogModel {
+  readonly price?: Price
   readonly id: string
   readonly name: string
   readonly kind: "chat" | "image"
@@ -199,6 +202,35 @@ export function isClaude(model: {
 
 type Variants = { id: string; settings?: Record<string, unknown> }[]
 
+/** Prices participate in the sync hash, so price-only changes reload model costs. */
+export function withCataloguePrices(catalogue: Catalogue, prices: Record<string, Price> | undefined): Catalogue {
+  if (!prices) return catalogue
+  return {
+    ...catalogue,
+    hash: new Bun.CryptoHasher("sha256").update(catalogue.hash + JSON.stringify(prices)).digest("hex"),
+    models: catalogue.models.map((model) => (prices[model.id] ? { ...model, price: prices[model.id] } : model)),
+  }
+}
+
+/** V2 costs are an array of USD/million-token tiers, not the V1 flat cost object. */
+export function pacerCosts(price: Price, fast: boolean): Model.Cost[] {
+  const body = fast && price.fast ? price.fast : price
+  const cost = (value: Pick<Price, "input" | "output" | "cache_read" | "cache_write">): Model.Cost => ({
+    input: Money.USDPerMillionTokens.make(value.input),
+    output: Money.USDPerMillionTokens.make(value.output),
+    cache: {
+      read: Money.USDPerMillionTokens.make(Math.max(0, value.cache_read ?? 0)),
+      write: Money.USDPerMillionTokens.make(Math.max(0, value.cache_write ?? 0)),
+    },
+  })
+  return [
+    cost(body),
+    ...(fast && price.fast ? [] : (price.context_tiers ?? []))
+      .filter((tier) => Number.isSafeInteger(tier.above_tokens) && tier.above_tokens > 0)
+      .map((tier) => ({ ...cost(tier.price), tier: { type: "context" as const, size: tier.above_tokens } })),
+  ]
+}
+
 /**
  * Spell effort variants the way Core spells them for the provider's protocol
  * package (packages/core/src/variant.ts). Unknown packages get no variants.
@@ -332,6 +364,7 @@ export function applyCatalogue(
     const define = (id: string, name: string, fast: boolean) =>
       providers.models.update(providerID, id, (model) => {
         model.name = name
+        if (item.price) model.cost = pacerCosts(item.price, fast)
         model.modelID = item.id as never
         const userPackage = model.package !== undefined && model.package !== ANTHROPIC_COMPATIBLE
         const relayed = relay && !userPackage
@@ -349,7 +382,9 @@ export function applyCatalogue(
         if (!userPackage)
           model.variants =
             item.reasoning.mode === "levels"
-              ? (structuredClone(variantsFor(model, relayed ? ANTHROPIC_COMPATIBLE : pkg, item.reasoning.levels)) as never)
+              ? (structuredClone(
+                  variantsFor(model, relayed ? ANTHROPIC_COMPATIBLE : pkg, item.reasoning.levels),
+                ) as never)
               : ([] as never)
         if (fast) model.body = { ...(model.body ?? {}), service_tier: FAST_TIER } as never
       })

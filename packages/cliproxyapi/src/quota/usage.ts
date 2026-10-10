@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { Rpc } from "@opencode/schema/rpc"
 import { endpoint, Stored, type Config } from "./protocol.js"
+import { readPacerUsage } from "./pacer.js"
 
 export const UsageWindow = Schema.Struct({
   scope: Schema.String,
@@ -85,6 +86,7 @@ export async function readUsage(
       message:
         'Credential usage needs the quota-handoff plugin on this provider\'s CLIProxyAPI (and no "quota": false in ~/.config/opencodeplus/cliproxyapi.json).',
     }
+  if (config?.pacer?.includes(input.providerID)) return readPacerUsage(origin, io, input)
   const raw = input.sessionID
     ? await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`)
     : undefined

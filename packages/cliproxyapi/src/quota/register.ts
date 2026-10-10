@@ -5,6 +5,7 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import { createHash } from "node:crypto"
 import { Effect, Schema, Stream } from "effect"
 import { registerUsage } from "./usage-register.js"
+import { registerPacer } from "./pacer.js"
 import type { Config } from "./protocol.js"
 import { QuotaController } from "./controller.js"
 import { Definition } from "./rpc.js"
@@ -19,6 +20,7 @@ import { emitQuotaFact } from "../facts.js"
 export function registerQuota(ctx: Context, config: () => Config) {
   return Effect.gen(function* () {
     yield* registerUsage(ctx, config)
+    yield* registerPacer(ctx, config)
     // Not awaited: the identity may come from migrated storage that becomes
     // readable only after later plugins start.
     const installation = installationIdentity(ctx)

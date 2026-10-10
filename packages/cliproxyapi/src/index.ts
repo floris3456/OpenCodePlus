@@ -3,7 +3,8 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { Form } from "@opencode/schema/form"
 import { Provider } from "@opencode/schema/provider"
 import { Effect, Queue, Ref, Schema, Stream } from "effect"
-import { probeQuota } from "./quota/probe.js"
+import { probeCPA } from "./quota/probe.js"
+import { discover, prices } from "./pacer/cpa.js"
 import { quotaEndpoint } from "./quota/protocol.js"
 import { registerQuota } from "./quota/register.js"
 import {
@@ -15,6 +16,7 @@ import {
   parseDetails,
   parsePlainList,
   type Catalogue,
+  withCataloguePrices,
 } from "./catalog.js"
 import { cliproxyapiConfig } from "./config.js"
 import { imageToolRegistration, type ImageTarget } from "./image.js"
@@ -107,10 +109,13 @@ export default Plugin.define({
       // answers, unless cliproxyapi.json forces it on or off for every route.
       // Forced routes apply at once; probed ones after the first probe.
       const quotaOn = (origin: string) => {
-        if (config?.quota === false) return Promise.resolve(false)
-        if (config?.quota === true) return Promise.resolve(quotaEndpoint(origin) !== undefined)
-        return probeQuota(origin, { fetch })
+        if (config?.quota === false) return Promise.resolve({ quota: false, pacer: false })
+        return probeCPA(origin, { fetch }).then((result) => ({
+          ...result,
+          quota: config?.quota === true ? quotaEndpoint(origin) !== undefined : result.quota,
+        }))
       }
+      const pacerProviders: { current: string[] } = { current: [] }
       const quotaRoutes: { current: Readonly<Record<string, string>> } = {
         current:
           config?.quota === true
@@ -124,14 +129,16 @@ export default Plugin.define({
           { concurrency: "unbounded" },
         )
         const next = Object.fromEntries(
-          checked.filter((route) => route.on).map((route) => [route.providerID, route.origin]),
+          checked.filter((route) => route.on.quota).map((route) => [route.providerID, route.origin]),
         )
         if (JSON.stringify(next) !== JSON.stringify(quotaRoutes.current))
           yield* Effect.logInfo("CPA quota coordination", { routes: Object.keys(next) })
         quotaRoutes.current = next
+        pacerProviders.current = checked.filter((route) => route.on.pacer).map((route) => route.providerID)
       })
       yield* registerQuota(scoped, () => ({
         routes: quotaRoutes.current,
+        pacer: pacerProviders.current,
         ...(config?.compactionModel ? { compactionModel: config.compactionModel } : {}),
         ...(config?.compactionFallback ? { compactionFallback: config.compactionFallback } : {}),
       }))
@@ -411,13 +418,26 @@ function fetchCatalogue(ctx: Context, providerID: string, origin: string) {
       return { json: JSON.parse(text) as unknown, hash: new Bun.CryptoHasher("sha256").update(text).digest("hex") }
     }
     const first = yield* Effect.promise(() => get("details=true"))
+    const pricing = yield* Effect.promise(async () => {
+      const pacer = quotaEndpoint(origin) ? await discover(fetch, origin) : undefined
+      return pacer?.pacer && pacer.views.includes("prices") ? prices(fetch, target).catch(() => undefined) : undefined
+    })
     const details = parseDetails(first.json)
-    if (details) return { catalogue: details, pkg: target.pkg } satisfies Omit<Loaded, "connectionKey">
+    if (details)
+      return { catalogue: withCataloguePrices(details, pricing), pkg: target.pkg } satisfies Omit<
+        Loaded,
+        "connectionKey"
+      >
     // A failed Codex request fails the refresh, which keeps the last catalogue.
     const codex = yield* Effect.promise(() => get(`client_version=${CODEX_CLIENT_VERSION}`))
     // A CPA without either catalogue ignores both parameters and answers with
     // its plain model list: the last resort, so a connected CPA never shows none.
     const catalogue = parseCodexCatalogue(codex.json, codex.hash) ?? parsePlainList(first.json, first.hash)
-    return catalogue ? ({ catalogue, pkg: target.pkg } satisfies Omit<Loaded, "connectionKey">) : undefined
+    return catalogue
+      ? ({ catalogue: withCataloguePrices(catalogue, pricing), pkg: target.pkg } satisfies Omit<
+          Loaded,
+          "connectionKey"
+        >)
+      : undefined
   })
 }
