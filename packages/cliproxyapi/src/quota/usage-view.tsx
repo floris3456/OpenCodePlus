@@ -30,7 +30,7 @@ const INLINE_MAX_WIDTH = 64
  * Registers the sidebar section, the inline fallback (narrow sessions, hidden
  * sidebar, home screen) and the OpenCodePlus palette/slash commands.
  */
-export function createUsage(context: Plugin.Context, options: { interval?: number } = {}) {
+export function createUsage(context: Plugin.Context, options: { interval?: number; enabled?: () => boolean } = {}) {
   const store = createUsageStore(context, options)
   const [inline, setInline] = createSignal({ open: false, collapsed: false })
   const [focus, setFocus] = createSignal<{ sessionID: string; at: number }>()
@@ -53,7 +53,11 @@ export function createUsage(context: Plugin.Context, options: { interval?: numbe
   const releases = [
     context.ui.slot({
       append: "sidebar.content",
-      render: (input) => <SidebarUsage context={context} store={store} sessionID={input.sessionID} focus={focus()} />,
+      render: (input) => (
+        <Show when={options.enabled?.() ?? true}>
+          <SidebarUsage context={context} store={store} sessionID={input.sessionID} focus={focus()} />
+        </Show>
+      ),
     }),
     context.ui.slot({
       append: "session.composer.top",

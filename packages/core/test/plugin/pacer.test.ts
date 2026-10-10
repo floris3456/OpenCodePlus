@@ -93,15 +93,13 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
           answer: { baseURL: `${server.url.origin}/v1` },
         })
         const models = yield* Model.Service
-        const model = yield* models
-          .get(Provider.ID.make("cliproxyapi"), Model.ID.make("claude-sonnet-4-6"))
-          .pipe(
-            Effect.repeat({
-              while: (value) => value === undefined,
-              times: 100,
-              schedule: Schedule.spaced("20 millis"),
-            }),
-          )
+        const model = yield* models.get(Provider.ID.make("cliproxyapi"), Model.ID.make("claude-sonnet-4-6")).pipe(
+          Effect.repeat({
+            while: (value) => value === undefined,
+            times: 100,
+            schedule: Schedule.spaced("20 millis"),
+          }),
+        )
         expect(model?.package).toBe("@opencode/ai/providers/anthropic-compatible")
         const usage = yield* host
           .rpc(UsageDefinition)
@@ -149,6 +147,16 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
           headers: {},
         })
         expect(request.headers["X-Quota-Handoff"]).toBeDefined()
+        const otherRequest = yield* hooks.trigger("session", "model.request", {
+          sessionID,
+          agent,
+          model: { ...ref, id: Model.ID.make("deepseek-flash") },
+          kind: "primary",
+          baseURL: `${server.url.origin}/v1`,
+          headers: {},
+        })
+        expect(otherRequest.headers["X-Pacer-Client"]).toBeDefined()
+        expect(otherRequest.headers["X-Quota-Handoff"]).toBeUndefined()
         yield* hooks.trigger("session", "http.response", {
           sessionID,
           agent,

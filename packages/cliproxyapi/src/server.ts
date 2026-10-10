@@ -52,13 +52,19 @@ export default Plugin.define({
       fetch,
       now: Date.now,
     })
+    // Match upstream Pacer's switch contract: only the Claude Messages relay.
+    // Other CPA providers expose quota but may not acknowledge handoff claims.
+    const coordinated = (model: Model.Ref) =>
+      controller.enabled(model.providerID) && model.id.toLowerCase().startsWith("claude-")
     await ctx.rpc.register(Definition, { status: (input) => controller.status(input.sessionID) })
     await ctx.session.hook("compaction.decide", async (event) => {
       await refresh()
+      controller.observe(event)
+      if (!coordinated(event.model)) return
       await controller.decide(event)
     })
     await ctx.session.hook("model.request", async (event) => {
-      if (!controller.enabled(event.model.providerID) || !event.headers["X-Pacer-Client"]) return
+      if (!coordinated(event.model) || !event.headers["X-Pacer-Client"]) return
       Object.assign(
         event.headers,
         await controller.headers(event.sessionID, event.model.providerID, event.model.id, event.kind, event.baseURL),
@@ -69,7 +75,7 @@ export default Plugin.define({
       await controller.response(event.sessionID, event.model.providerID, event.model.id, event.response, event.kind)
     })
     await ctx.session.hook("retry", async (event) => {
-      if (!controller.enabled(event.model.providerID)) return
+      if (!coordinated(event.model)) return
       const decision = await controller.retry(event.sessionID, event.model.providerID, event.model.id)
       if (decision !== undefined)
         event.decision =
@@ -81,17 +87,17 @@ export default Plugin.define({
     })
     await ctx.session.hook("warming", async (event) => {
       if (
-        controller.enabled(event.model.providerID) &&
+        coordinated(event.model) &&
         !(await controller.warming(event.sessionID, event.model.providerID, event.model.id))
       )
         event.settings = undefined
     })
     await ctx.session.hook("experimental.ws.handshake", (event) => {
-      if (controller.enabled(event.model.providerID)) throw new Error("Pacer account switching requires transport:http")
+      if (coordinated(event.model)) throw new Error("Pacer account switching requires transport:http")
     })
     for (const kind of ["context", "compaction", "generate", "title"] as const) {
       await ctx.session.hook(kind, async (event) => {
-        if (!controller.enabled(event.model.providerID)) return
+        if (kind !== "compaction" && !controller.enabled(event.model.providerID)) return
         const handoff = "checkpointHandoff" in event ? event.checkpointHandoff : undefined
         if (await controller.requiresPortable(event.sessionID, event.model.providerID, event.model.id, kind, handoff)) {
           event.messages = portableMessages(event.messages)
@@ -108,6 +114,12 @@ export default Plugin.define({
         return { enabled: state.pacer }
       },
       read: async (input) => {
+        await refresh()
+        if (!state.pacer)
+          return {
+            status: "disabled" as const,
+            message: "Connect CLIProxyAPI with Pacer through /connect to inspect credential usage.",
+          }
         meter.restore((await ctx.rpc(PacerRpc).snapshot({})) as MeterSnapshot)
         return { status: "ready" as const, snapshot: pacerSnapshot(meter, input, Date.now()) }
       },

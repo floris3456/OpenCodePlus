@@ -243,10 +243,13 @@ export class QuotaController {
     this.recover(route)
     await this.save(route)
   }
-  async decide(event: SessionCompactionDecision) {
+  observe(event: SessionCompactionDecision) {
     // The compaction hook names the summary model, which can differ from the chat's route.
     // Remember only this boundary's decision, including moves off coordinated providers.
     this.decisions.set(event.sessionID, event)
+  }
+  async decide(event: SessionCompactionDecision) {
+    this.observe(event)
     if (!this.enabled(event.model.providerID)) return
     const route = await this.route(event.sessionID, event.model.providerID, event.model.id)
     route.decision = event
@@ -513,6 +516,9 @@ export class QuotaController {
     return true
   }
   async requiresPortable(session: string, provider: string, model: string, kind: string, checkpointHandoff?: true) {
+    // A handoff summary can run on an entirely different, uncoordinated provider.
+    if (!this.enabled(provider))
+      return kind === "compaction" && !checkpointHandoff && this.decisions.get(session)?.portable === true
     const route = await this.route(session, provider, model)
     if (kind === "compaction") {
       route.checkpointHandoff = checkpointHandoff

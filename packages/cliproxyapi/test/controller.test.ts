@@ -109,6 +109,8 @@ test("Pacer switches use per-chat summaries and warming gates without a coordina
   await f.controller.decide(other)
   expect(other.compactionModel).toBeUndefined()
   expect(other.compact).toBeUndefined()
+  expect(await f.controller.requiresPortable("ses_test", "external", "summary", "compaction")).toBe(true)
+  expect(await f.controller.requiresPortable("ses_other", "external", "summary", "compaction")).toBe(false)
   const disabled = f.event(false)
   await f.controller.decide(disabled)
   expect(disabled.refusal?.type).toBe("quota.context-unavailable")

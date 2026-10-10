@@ -16,6 +16,8 @@ The bundled code stays in the executable when removed from the enabled plugins.
 - Plus's dedicated compaction decision hook replaces the stock plugin's
   context-overflow workaround. Summary selection stays per chat, supports a
   fallback, preserves portable checkpoint conversion and bounds switch retries.
+  As in upstream Pacer, handoff claims apply to Claude relay models; other
+  providers still contribute quota readings without receiving unsupported claims.
 - The explicit warming hook suppresses pings while a switch is pending.
 - Instructions UI, instructions storage and its compaction controls are unchanged.
 

@@ -1,4 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
+import { createSignal } from "solid-js"
 import { createQuota } from "./quota/tui.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { createUsage } from "./quota/usage-view.js"
@@ -14,7 +15,9 @@ export const REPROBE = 30_000
 export default Plugin.define({
   id: "opencode-pacer",
   setup(context) {
-    const disposers: (() => void)[] = []
+    const [enabled, setEnabled] = createSignal(false)
+    // Register /usage immediately, before discovery, so it is never submitted as a model prompt.
+    const disposers = [createUsage(context, { enabled })]
     const state = { disposed: false }
     const rpc = context.client.rpc(UsageDefinition)
     const probe = async (attempt: number): Promise<void> => {
@@ -31,7 +34,8 @@ export default Plugin.define({
         setTimeout(() => void probe(0), REPROBE).unref?.()
         return
       }
-      disposers.push(createQuota(context), createUsage(context))
+      setEnabled(true)
+      disposers.push(createQuota(context))
     }
     void probe(0)
     return () => {
