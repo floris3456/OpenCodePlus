@@ -9,6 +9,9 @@ export const UsageWindow = Schema.Struct({
   remaining: Schema.Number,
   reset: Schema.Number,
   observed: Schema.Number,
+  /** Pacer evaluates provider observation freshness; updated is the last meter confirmation. */
+  state: Schema.optional(Schema.String),
+  updated: Schema.optional(Schema.Number),
   held: Schema.Boolean,
   dormant: Schema.optional(Schema.Boolean),
   not_applicable: Schema.optional(Schema.Boolean),

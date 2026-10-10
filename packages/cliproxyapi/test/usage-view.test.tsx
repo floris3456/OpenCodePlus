@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Plugin } from "@opencode/plugin/tui"
+import { PacerRpc, type PacerMeterEvent } from "opencode-pacer/rpc"
 import { RGBA } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
@@ -58,6 +59,7 @@ function fixture(options: { manual?: boolean; interval?: number } = {}) {
     reads: [] as Read[],
     toasts: [] as string[],
     dialogs: 0,
+    listeners: new Set<(event: { data: PacerMeterEvent }) => void>(),
     result: { status: "ready", snapshot: snapshot() } as UsageResult,
   }
   const color = (hex: string) => RGBA.fromHex(hex)
@@ -82,6 +84,15 @@ function fixture(options: { manual?: boolean; interval?: number } = {}) {
     },
     client: {
       rpc: (definition: unknown) => {
+        if (definition === PacerRpc)
+          return {
+            events: {
+              on: (_name: string, listener: (event: { data: PacerMeterEvent }) => void) => {
+                state.listeners.add(listener)
+                return () => state.listeners.delete(listener)
+              },
+            },
+          }
         expect(definition).toBe(UsageDefinition)
         return {
           read: (input: UsageInput, request?: { signal?: AbortSignal }) =>
@@ -170,6 +181,50 @@ test("sidebar section shows exact identity, shared quota and aligned bars inside
     { sessionID: "ses_a", providerID: "proxy", modelID: "claude-sonnet", all: false },
   ])
   expect(f.state.dialogs).toBe(0)
+})
+
+test("pushed Pacer percentages render immediately without another RPC and survive an older pending read", async () => {
+  const f = fixture({ manual: true })
+  const output = await mount(
+    () => <box width={37}>{f.claim("sidebar.content").render({ sessionID: "ses_a" })}</box>,
+    60,
+  )
+  await frame(output)
+  const now = Date.now()
+  const data: PacerMeterEvent = {
+    snapshot: {
+      v: 1,
+      served: { ses_a: { auth: "account", at_ms: now } },
+      credentials: [
+        {
+          id: "account",
+          alias: "Live account",
+          provider: "claude",
+          shared_with: [],
+          at_ms: now,
+          windows: [
+            {
+              scope: "all",
+              seconds: 18000,
+              left: 37,
+              reset_ms: now + 3600000,
+              read_ms: now - 1800000,
+              state: "current",
+              applies: true,
+            },
+          ],
+        },
+      ],
+    },
+  }
+  f.state.listeners.forEach((listener) => listener({ data }))
+  expect(await frame(output)).toContain("37%")
+  expect(await frame(output)).not.toContain("STALE")
+  f.state.reads[0]!.resolve(f.state.result)
+  expect(await frame(output)).toContain("37%")
+  expect(f.state.reads).toHaveLength(1)
+  output.renderer.destroy()
+  expect(f.state.listeners.size).toBe(0)
 })
 
 test("open view refreshes by itself with one shared loop, and disposal stops it", async () => {

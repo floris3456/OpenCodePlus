@@ -9,7 +9,7 @@ import { QuotaController } from "./quota/controller.js"
 import { portableMessages } from "./quota/portable.js"
 import { Definition } from "./quota/rpc.js"
 import { UsageDefinition } from "./quota/usage.js"
-import { pacerSnapshot } from "./quota/pacer.js"
+import { pacerSnapshot } from "./quota/pacer-snapshot.js"
 
 export const ID = "opencode-pacer"
 

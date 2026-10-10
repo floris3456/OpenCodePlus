@@ -77,8 +77,14 @@ export type WindowState = "normal" | "low" | "critical" | "stale" | "reset" | "d
 export function windowState(window: UsageWindow, snapshot: UsageSnapshot, now: number): WindowState {
   if (window.not_applicable) return "unlimited"
   if (window.dormant) return "dormant"
+  if (window.state === "awaiting-confirmation") return "reset"
   if (window.reset <= now) return "reset"
-  if (now - window.observed > snapshot.max_age_seconds) return "stale"
+  if (window.state !== undefined) {
+    if (!["current", "estimated", "partial"].includes(window.state)) return "stale"
+    // An old provider reading can still be current according to Pacer. Age the
+    // meter confirmation separately so a disconnected Pacer cannot stay fresh forever.
+    if (window.updated === undefined || now - window.updated > snapshot.max_age_seconds) return "stale"
+  } else if (now - window.observed > snapshot.max_age_seconds) return "stale"
   if (window.remaining <= 10) return "critical"
   if (window.remaining <= 20) return "low"
   return "normal"

@@ -1,6 +1,9 @@
 import type { Plugin } from "@opencode/plugin/tui"
+import { Meter } from "opencode-pacer/core"
+import { PacerRpc, type PacerMeterEvent } from "opencode-pacer/rpc"
 import { batch, createEffect, createMemo, createRoot, createSignal, onCleanup, untrack } from "solid-js"
 import { UsageDefinition, type UsageInput, type UsageResult, type UsageSnapshot } from "./usage.js"
+import { pacerSnapshot } from "./pacer-snapshot.js"
 
 export type UsageScope = "model" | "all"
 
@@ -17,8 +20,8 @@ export interface UsageReading {
 }
 
 /**
- * One polling loop shared by every visible usage view (sidebar section and inline
- * fallback). It runs only while at least one view is mounted, follows the current
+ * Pacer pushes response readings directly into visible views. One cached-RPC
+ * polling loop seeds/reconciles the sidebar and inline fallback. It follows the current
  * route/model/scope and discards responses that belong to an older selection.
  */
 export function createUsageStore(context: Plugin.Context, options: { interval?: number } = {}) {
@@ -57,6 +60,23 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
       })
       const controller = new AbortController()
       const state = { request: 0, pending: false }
+      const meter = new Meter()
+      const off = context.client.rpc(PacerRpc).events.on("meter", (event) => {
+        const snapshot = (event.data as unknown as PacerMeterEvent).snapshot
+        meter.restore(snapshot)
+        // A pending cached read must not overwrite a newer pushed response.
+        state.request++
+        const now = Date.now()
+        batch(() => {
+          setClock(now)
+          setReading({
+            key,
+            result: { status: "ready" },
+            snapshot: pacerSnapshot(meter, value, now),
+            received: now,
+          })
+        })
+      })
       const load = async () => {
         if (state.pending) return
         state.pending = true
@@ -79,6 +99,7 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
         void load()
       }, interval)
       onCleanup(() => {
+        off()
         clearInterval(tick)
         controller.abort()
       })

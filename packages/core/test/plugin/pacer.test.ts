@@ -157,6 +157,51 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         })
         expect(otherRequest.headers["X-Pacer-Client"]).toBeDefined()
         expect(otherRequest.headers["X-Quota-Handoff"]).toBeUndefined()
+        const now = Date.now() + 1
+        const quotaResponse = new Response("unread stream", {
+          headers: {
+            "X-Pacer-Quota": Buffer.from(
+              JSON.stringify({
+                v: 1,
+                provider: "claude",
+                auth: "claude",
+                alias: "claude",
+                at_ms: now,
+                windows: [
+                  {
+                    scope: "all",
+                    seconds: 18000,
+                    left: 37,
+                    reset_ms: now + 3600000,
+                    read_ms: now - 1800000,
+                    state: "current",
+                    applies: true,
+                  },
+                ],
+              }),
+            ).toString("base64url"),
+          },
+        })
+        const requestsBeforeQuota = paths.length
+        yield* hooks.trigger("session", "http.response", {
+          sessionID,
+          agent,
+          model: ref,
+          kind: "primary",
+          request: new Request(`${server.url.origin}/v1/messages`, { headers: otherRequest.headers }),
+          response: quotaResponse,
+        })
+        const live = yield* host.rpc(UsageDefinition).read({
+          sessionID,
+          providerID: "cliproxyapi",
+          modelID: ref.id,
+          all: false,
+        })
+        expect(live.snapshot?.current).toBe("claude")
+        expect(live.snapshot?.credentials[0]?.windows[0]?.remaining).toBe(37)
+        expect(live.snapshot?.credentials[0]?.windows[0]?.state).toBe("current")
+        expect(quotaResponse.bodyUsed).toBe(false)
+        expect(paths.length).toBe(requestsBeforeQuota)
         yield* hooks.trigger("session", "http.response", {
           sessionID,
           agent,

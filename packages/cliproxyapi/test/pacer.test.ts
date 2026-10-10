@@ -12,7 +12,9 @@ import type { ProviderEditor } from "@opencode/plugin/effect/provider"
 import { prices } from "../src/pacer/cpa.js"
 import { decodeQuota } from "../src/pacer/protocol.js"
 import { probeCPA } from "../src/quota/probe.js"
-import { pacerRequest, pacerResponse, registerPacer } from "../src/quota/pacer.js"
+import { pacerRequest, pacerResponse, registerPacer, pacerSnapshot } from "../src/quota/pacer.js"
+import { Meter } from "../src/pacer/meter.js"
+import { windowState, windowTail } from "../src/quota/usage-format.js"
 import { createUsageStore } from "../src/quota/usage-store.js"
 import { readUsage } from "../src/quota/usage.js"
 
@@ -36,6 +38,35 @@ const reply = {
   windows: [window],
 }
 const encoded = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
+
+test("Pacer current readings keep countdowns past 90 seconds; stale readings and disconnected meters do not", () => {
+  const meter = new Meter()
+  const now = 100000000
+  meter.applyView({
+    now_ms: now,
+    credentials: [
+      {
+        id: "account",
+        alias: "Account",
+        provider: "claude",
+        shared_with: [],
+        windows: [
+          { ...window, state: "current", read_ms: now - 1800000 },
+          { ...window, state: "stale", read_ms: now - 1800000 },
+          { ...window, state: "dormant", reset_ms: undefined },
+        ],
+      },
+    ],
+  })
+  const snapshot = pacerSnapshot(meter, { providerID: "cliproxyapi", modelID: "claude-test", all: true }, now)
+  const [current, stale, dormant] = snapshot.credentials[0]!.windows
+  expect(current!.observed).toBe((now - 1800000) / 1000)
+  expect(windowState(current!, snapshot, now / 1000)).toBe("normal")
+  expect(windowTail(current!, "normal", now / 1000)).not.toBe("STALE")
+  expect(windowState(stale!, snapshot, now / 1000)).toBe("stale")
+  expect(windowState(dormant!, snapshot, now / 1000)).toBe("dormant")
+  expect(windowState(current!, snapshot, now / 1000 + 91)).toBe("stale")
+})
 
 function fixture() {
   const seen: { url: string; auth: string | null; client: string | null }[] = []
@@ -184,7 +215,7 @@ test("registered HTTP hooks feed response quota through the Usage RPC into the s
   })
   const store = createUsageStore(
     {
-      client: { rpc: () => ({ read }) },
+      client: { rpc: () => ({ read, events: { on: () => () => {} } }) },
       ui: {
         model: { current: () => ({ providerID: "proxy", modelID: "sonnet" }) },
         router: { current: () => ({ type: "session", sessionID: "ses_pacer" }) },
