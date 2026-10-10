@@ -114,6 +114,8 @@ export async function readPacerUsage(
   if (reply) meter.applyReply(reply, input.sessionID)
   if (!view && !reply)
     return { status: "unavailable", message: "Pacer usage could not be retrieved. Retrying automatically." }
-  const snapshot = pacerSnapshot(meter, input, view?.now_ms ?? reply!.at_ms)
+  // A cached reply is an observation, not a clock: failed polls must not keep
+  // resetting the sidebar clock to the time that reply was produced.
+  const snapshot = pacerSnapshot(meter, input, Math.max(view?.now_ms ?? Date.now(), reply?.at_ms ?? 0))
   return { status: "ready", snapshot, ...(!reply ? { fallback: "fresh" as const } : {}) }
 }

@@ -231,6 +231,18 @@ test("origin, malformed header, old response and redirect controls leave usage s
   expect(JSON.stringify([...f.values])).toBe(before)
   expect(decodeQuota(encoded({ ...reply, windows: [{ ...window, left: 101 }] }))?.windows).toEqual([])
   f.state.redirect = true
+  const cached = await readUsage(
+    f.config,
+    { ...f.io, fetch, key: async () => "fixture-key" },
+    {
+      sessionID: "ses_pacer",
+      providerID: "proxy",
+      modelID: "sonnet",
+      all: false,
+    },
+  )
+  expect(cached.snapshot!.now).toBeGreaterThan(reply.at_ms / 1000)
+  expect(cached.snapshot!.credentials[0]!.windows[0]!.observed).toBe(reply.at_ms / 1000)
   expect(
     (
       await readUsage(
