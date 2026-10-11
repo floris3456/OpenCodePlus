@@ -121,18 +121,21 @@ test("right enters the folder below and left leaves it again", () => {
   const first = started(input, row("tool:special"))
   const inside = advanceMove(input, first, "in")
   if ("refusal" in inside) throw new Error(inside.refusal)
-  expect(inside.expand).toEqual([folderRow("tools:mine")])
-  expect(inside.state.layout.folders.find((record) => record.id === "tools:mine")?.items).toEqual(["tool:special"])
+  const owned = `${TOOLS}/tools:mine`
+  expect(inside.expand).toEqual([folderRow(owned)])
+  expect(inside.state.layout.folders.find((record) => record.id === owned)?.items).toEqual(["tool:special"])
+  expect(inside.state.layout.folders.find((record) => record.id === mine.id)).toEqual(mine)
 
   const preview = expandedTree({ ...input, orders: inside.state.layout.orders, folders: inside.state.layout.folders })
-  expect(childrenOf(preview, folderRow("tools:mine")).map((node) => node.id)).toEqual([row("tool:special")])
+  expect(childrenOf(preview, folderRow(owned)).map((node) => node.id)).toEqual([row("tool:special")])
 
   const left = moved(
     { ...input, orders: inside.state.layout.orders, folders: inside.state.layout.folders },
     inside.state,
     "out",
   )
-  expect(left.layout.folders.find((record) => record.id === "tools:mine")?.items).toEqual([])
+  expect(left.layout.folders.find((record) => record.id === owned)?.items).toEqual([])
+  expect(left.layout.folders.find((record) => record.id === mine.id)).toEqual(mine)
 })
 
 test("folders nest: moving into a sibling folder reparents it and out returns it", () => {
@@ -143,12 +146,16 @@ test("folders nest: moving into a sibling folder reparents it and out returns it
   // inner up, before outer; its new neighbour below is outer, so right nests it.
   const start = started(input, folderRow("tools:inner"))
   const up = moved(input, start, "up")
-  const nested = moved({ ...input, orders: up.layout.orders }, up, "in")
-  expect(nested.layout.folders.find((record) => record.id === "tools:inner")?.parent).toBe("tools:outer")
-  expect(nested.layout.folders.find((record) => record.id === "tools:outer")?.items).toEqual([folderRef("tools:inner")])
+  const nested = moved({ ...input, folders: up.layout.folders, orders: up.layout.orders }, up, "in")
+  const ownedInner = `${TOOLS}/tools:inner`
+  const ownedOuter = `${TOOLS}/tools:outer`
+  expect(nested.layout.folders.find((record) => record.id === ownedInner)?.parent).toBe(ownedOuter)
+  expect(nested.layout.folders.find((record) => record.id === ownedOuter)?.items).toEqual([folderRef(ownedInner)])
+  expect(nested.layout.folders.find((record) => record.id === outer.id)).toEqual(outer)
+  expect(nested.layout.folders.find((record) => record.id === inner.id)).toEqual(inner)
 
   const out = moved({ ...input, folders: nested.layout.folders, orders: nested.layout.orders }, nested, "out")
-  expect(out.layout.folders.find((record) => record.id === "tools:inner")?.parent).toBeUndefined()
+  expect(out.layout.folders.find((record) => record.id === ownedInner)?.parent).toBeUndefined()
 })
 
 test("built-in group headings refuse while sections enter their own move mode", () => {

@@ -42,6 +42,7 @@ import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo,
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 const priorDataHome = process.env.XDG_DATA_HOME
+const instructionToolIds = ["batch", "clipboard", "create", "delete", "link", "list", "log", "move", "reset", "set", "show", "split"].map((name) => `instructions_${name}`)
 
 for (const combined of [true, false]) {
   test(`repeat whole-row headed set retains authored text (${combined ? "combined state:on" : "text-only control"})`, async () => {
@@ -605,7 +606,7 @@ test("split with add on section adds child; on item adds top-level", async () =>
   if (itemNode === undefined) throw new Error("missing system:tools-and-rules row")
 
   // Find a section of this item
-  const sectionNode = nodes.find((n) => n.kind === "section" && n.address?.item === "system:tools-and-rules")
+  const sectionNode = nodes.find((n) => n.kind === "section" && n.address?.item === "system:tools-and-rules" && n.address.section !== null)
   if (sectionNode === undefined) throw new Error("missing section under system:tools-and-rules")
 
   // 1. split({ id: sectionNode.id, add }) on a section adds a child of that section
@@ -1102,7 +1103,7 @@ test("delete without confirm refuses and deletes nothing", async () => {
 test("every tool carries the plugin origin, no pinned, and namespace/codemode/permission set", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(10)
+  expect(registered.map((tool) => tool.id).toSorted()).toEqual(instructionToolIds)
   for (const tool of registered) {
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
     expect(tool.options?.namespace).toBe("instructions")
@@ -1115,7 +1116,7 @@ test("every tool carries the plugin origin, no pinned, and namespace/codemode/pe
 test("every tool first description line is within 120 characters", async () => {
   const { tools } = await freshFixture()
   const registered = [...tools.values()].filter((tool) => tool.id.startsWith("instructions_"))
-  expect(registered).toHaveLength(10)
+  expect(registered.map((tool) => tool.id).toSorted()).toEqual(instructionToolIds)
   for (const tool of registered) {
     const first = tool.description.split("\n", 1)[0] ?? ""
     expect(first.length).toBeLessThanOrEqual(120)
@@ -1135,7 +1136,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   const project = path.join(root, "project")
   const ctx = fixtureContext(project)
   const state = createState()
-  const toolIds = async () => [...(await readTools(ctx)).keys()].filter((id) => id.startsWith("instructions_"))
+  const toolIds = async () => [...(await readTools(ctx)).keys()].filter((id) => id.startsWith("instructions_")).toSorted()
   const skillIds = async (): Promise<string[]> => (await Effect.runPromise(ctx.skill.list())).data.map((skill) => skill.id)
   const serverNames = async () => {
     const names: string[] = []
@@ -1153,7 +1154,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)
   await Effect.runPromise(activate(ctx, state))
-  expect(await toolIds()).toHaveLength(10)
+  expect(await toolIds()).toEqual(instructionToolIds)
   expect(await skillIds()).toContain(teachingSkillId)
   // Only the install side: the harness instruction domain disposes to a no-op,
   // so the disposal proof below rests on the skill, tool and MCP domains.
@@ -1173,7 +1174,7 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   const installed = [...state.tooling]
   await Effect.runPromise(activate(ctx, state))
   expect(state.tooling).toEqual(installed)
-  expect(await toolIds()).toHaveLength(10)
+  expect(await toolIds()).toEqual(instructionToolIds)
   await Effect.runPromise(deactivate(state))
   expect(await toolIds()).toEqual([])
   expect(await skillIds()).not.toContain(teachingSkillId)

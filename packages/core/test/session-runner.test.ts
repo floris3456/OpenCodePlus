@@ -2762,7 +2762,7 @@ describe("SessionRunnerLLM", () => {
 
   for (const route of [OpenAIChat.route, OpenAIResponses.route, AnthropicMessages.route]) {
     for (const reason of ["manual", "auto"] as const) {
-      scenario(`preserves the session request prefix during ${reason} compaction (${route.id})`, function* (s) {
+      scenario(`preserves the session request prefix during ${reason} text compaction (${route.id})`, function* (s) {
         const agents = yield* Agent.Service
         const hooks = yield* PluginHooks.Service
         const agentID = Agent.ID.make("reviewer")
@@ -2771,6 +2771,8 @@ describe("SessionRunnerLLM", () => {
           id: route === AnthropicMessages.route ? "claude-sonnet-4-6" : "gpt-5",
           provider: route === AnthropicMessages.route ? "anthropic" : "openai",
           route,
+          // This fixture returns text; native route discovery has separate checkpoint tests.
+          compaction: { type: "summary" },
         })
         yield* agents.transform((editor) =>
           editor.update(agentID, (agent) => {

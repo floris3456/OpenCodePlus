@@ -76,7 +76,7 @@ import {
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
-import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
+import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
 import { buildTreeMemo, lazyPath } from "./instructions/tree.js"
 import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
@@ -384,7 +384,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
     editor.add({
       name: "clipboard",
-      description: "Copy or cut selected Instructions rows, then paste into a compatible row or category. Copy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.",
+      description: "Copy or cut selected Instructions rows, then paste into a compatible row or category.\nCopy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.",
       input: Schema.Struct({
         action: Schema.Literals(["copy", "cut", "paste", "clear"]),
         ids: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -428,7 +428,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
     })
     editor.add({
       name: "batch",
-      description: "Apply one row operation to the corresponding setting in every selected row. id is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
+      description: "Apply one row operation to the corresponding setting in every selected row.\nid is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
       input: Schema.Struct({
         op: Schema.Literals(["set", "reset", "split", "create", "delete", "move", "link"]),
         id: Schema.String,
