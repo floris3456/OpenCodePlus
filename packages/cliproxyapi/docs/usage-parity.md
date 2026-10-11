@@ -1,4 +1,16 @@
-# Plus 1.3.5 usage-marker integration
+# Plus 1.3.6 Pacer live-usage integration
+
+The delivery branch is `plus-1.3.6-pacer`, based on `plus-1.3.6` at `2baab88990`.
+It ports the three task commits from `usage-parity`, including the standalone
+dependency at `84d978d`. Conflict resolution retains 1.3.6's first-Enter `/usage`,
+selected-provider filtering and catalogue fallback, Antigravity window ordering,
+and the regression tests for selection changes and response completion.
+
+Verification on this branch: cliproxyapi typecheck; 21 focused usage-view,
+next-use, usage and pacer tests; and the real core plugin-host integration test
+(27 assertions). This is an integration branch, not a built or promoted release.
+
+## Original backport history
 
 The `usage-parity` branch is based on Plus 1.3.5 at `7c5bb3ed1d`.
 The marker backport is `d288050efa`; the following dependency update includes

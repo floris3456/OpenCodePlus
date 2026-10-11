@@ -154,7 +154,11 @@ export default Plugin.define({
           providers: string[]
         }
         meter.restore(cached.snapshot, true)
-        const providers = cached.providers.length ? cached.providers : input.providerID === "cliproxyapi" ? (state.providers.get(input.modelID) ?? []) : []
+        const providers = cached.providers.length
+          ? cached.providers
+          : input.providerID === "cliproxyapi"
+            ? (state.providers.get(input.modelID) ?? [])
+            : []
         const snapshot = pacerSnapshot(meter, input, Date.now(), providers)
         const next = await nextUse(state.routes[input.providerID], input)
         return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }

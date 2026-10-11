@@ -8,8 +8,9 @@ The bundled code stays in the executable when removed from the enabled plugins.
 
 - Connect through `/connect` → CLIProxyAPI. No `cliproxyapi.json` is read.
 - Pacer owns model discovery, Claude relay, pricing and quota observations.
-- Replies update the meter; Pacer's usage view refreshes every minute. The old
-  per-step/per-second quota-events polling is not enabled.
+- Replies update the meter immediately. A shared Pacer change subscription also
+  updates idle viewers when any caller uses the credential. Older servers fall
+  back to cached-view reads every five seconds; provider polling stays in Pacer.
 - `/usage` opens a compact popup on the first Enter; `/usage --all` inspects all providers there.
   Left/right pages fit the terminal without scrolling; `a` changes scope and `d`
   shows reset details. The sidebar displays the selected model's providers from
