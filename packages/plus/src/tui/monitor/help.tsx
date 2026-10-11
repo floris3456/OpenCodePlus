@@ -22,12 +22,12 @@ export function MonitorHelp(props: HelpProps) {
         { key: "1 – 5", desc: "Switch tab (Overview, Cache, Tools, Sessions, Steps)" },
         { key: "tab / shift+tab", desc: "Next / previous tab" },
         { key: "s", desc: "Step scope (This session · Team tree · Team · Project · Everything)" },
-        { key: "S", desc: "Open session picker (grouped by team tree, sorted by activity)" },
+        { key: "S", desc: "Add another session to the combined report (selected sessions are omitted)" },
         { key: "T", desc: "Pick team (scope to a chosen Plus team)" },
         { key: "t", desc: "Step window (All · Since last compaction · 15m · 1h · 24h · 7d · 30d)" },
         { key: "/", desc: "Filter rows by text" },
         { key: "?", desc: "Toggle this help view" },
-        { key: "esc", desc: "Back out of drill-down / close monitor" },
+        { key: "esc", desc: "Close monitor immediately" },
       ],
     },
     {
@@ -36,15 +36,15 @@ export function MonitorHelp(props: HelpProps) {
         { key: "↑ / ↓ (j / k)", desc: "Select request" },
         { key: "Enter", desc: "Open request detail (cause, evidence, segment diff, timing)" },
         { key: "x", desc: "Toggle misses only" },
-        { key: "⌫ / esc", desc: "Back out of detail" },
+        { key: "⌫", desc: "Back out of detail" },
       ],
     },
     {
       title: "Tools Tab",
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select row" },
-        { key: "Enter", desc: "Drill into row (e.g. tool → targets, agent → tools)" },
-        { key: "⌫ / esc", desc: "Back out of drill-down" },
+        { key: "Enter", desc: "Filter by row (e.g. tool → targets, agent → tools)" },
+        { key: "⌫", desc: "Undo last filter" },
         { key: "g", desc: "Group by (tool · agent · model · target · session · config)" },
         { key: "o", desc: "Sort by (tokens · carried · calls · errors · time)" },
         { key: "a", desc: "Filter by agent" },
@@ -59,8 +59,8 @@ export function MonitorHelp(props: HelpProps) {
       title: "Sessions Tab",
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select session in delegation tree" },
-        { key: "Enter", desc: "Scope monitor to this session (temporary; ⌫ restores)" },
-        { key: "space", desc: "Scope monitor to this session's tree (temporary; ⌫ restores)" },
+        { key: "Enter", desc: "Add this session to the report (no duplicates; ⌫ undoes)" },
+        { key: "space", desc: "Add this session's tree to the report (no duplicates; ⌫ undoes)" },
       ],
     },
     {
@@ -68,7 +68,7 @@ export function MonitorHelp(props: HelpProps) {
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select step" },
         { key: "Enter", desc: "View step calls with attributed tokens & fingerprint diff" },
-        { key: "⌫ / esc", desc: "Back out of step detail" },
+        { key: "⌫", desc: "Back out of step detail" },
       ],
     },
   ]
@@ -87,7 +87,7 @@ export function MonitorHelp(props: HelpProps) {
         <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
           Monitor Keys &amp; Help
         </text>
-        <text fg={theme().text.muted}>Press ? or esc to return</text>
+        <text fg={theme().text.muted}>Press ? to return · esc closes monitor</text>
       </box>
       <scrollbox flexGrow={1}>
         <For each={sections}>

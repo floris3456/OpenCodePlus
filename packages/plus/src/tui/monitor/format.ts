@@ -36,6 +36,7 @@ const SPAN: Readonly<Record<Exclude<WindowName, "all" | "compaction">, number>> 
 export interface MonitorSettings {
   readonly tab: TabName
   readonly scope: Plus.MonitorScope
+  readonly sessionIDs?: readonly string[]
   readonly window: WindowName
   readonly group: Plus.MonitorGroupBy
   readonly sort: SortName
@@ -90,14 +91,20 @@ export function queryOf(
   },
 ): Plus.MonitorQueryInput {
   const scope =
-    (settings.scope === "session" || settings.scope === "tree") && context.sessionID === undefined
+    (settings.scope === "session" || settings.scope === "tree") &&
+    settings.sessionIDs === undefined &&
+    context.sessionID === undefined
       ? "project"
       : settings.scope
   const window = windowOf(settings, context.now, context.marks)
   return {
     scope,
-    ...((scope === "session" || scope === "tree") && context.sessionID !== undefined
-      ? { sessionID: context.sessionID }
+    ...(scope === "session" || scope === "tree"
+      ? settings.sessionIDs !== undefined
+        ? { sessionIDs: settings.sessionIDs }
+        : context.sessionID !== undefined
+          ? { sessionID: context.sessionID }
+          : {}
       : {}),
     ...(settings.team !== undefined ? { team: settings.team } : {}),
     ...(settings.window === "compaction" ? { sinceCompaction: true } : {}),
@@ -150,13 +157,33 @@ export function compareLabel(settings: MonitorSettings, marks: readonly Plus.Mon
 }
 
 /** Enter on a group row: filter to it and look one level deeper. */
-export function drillInto(settings: MonitorSettings, group: Plus.MonitorGroup): Drill | undefined {
+export function drillInto(
+  settings: MonitorSettings,
+  group: Plus.MonitorGroup,
+  sessionID?: string,
+): Drill | undefined {
+  if (
+    (settings.group === "tool" || settings.group === "agent" || settings.group === "model") &&
+    settings[settings.group] === group.key
+  ) return undefined
   if (settings.group === "tool") return { settings: { ...settings, tool: group.key, group: "target" } }
   if (settings.group === "agent") return { settings: { ...settings, agent: group.key, group: "tool" } }
   if (settings.group === "model") return { settings: { ...settings, model: group.key, group: "tool" } }
   if (settings.group === "session")
-    return { settings: { ...settings, scope: "session", group: "tool" }, sessionID: group.key }
+    return sessionDrill({ ...settings, group: "tool" }, group.key, sessionID)
   return undefined
+}
+
+/** Add a distinct session to the combined selection, retaining one Back step per addition. */
+export function sessionDrill(
+  settings: MonitorSettings,
+  id: string,
+  sessionID?: string,
+  scope: "session" | "tree" = "session",
+): Drill | undefined {
+  const ids = settings.scope === scope ? settings.sessionIDs ?? (sessionID === undefined ? [] : [sessionID]) : []
+  if (ids.includes(id)) return undefined
+  return { settings: { ...settings, scope, sessionIDs: [...ids, id] }, sessionID: id }
 }
 
 /** True when the text filter is off or one of the values contains it. */

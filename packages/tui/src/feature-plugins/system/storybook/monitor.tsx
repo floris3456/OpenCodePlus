@@ -264,7 +264,7 @@ function allRequests(variant: MissVariant, now: number): Plus.MonitorRequest[] {
       cacheRead: 0,
       cacheWrite: 900,
       cost: 0.008,
-      verdict: "cold",
+      verdict: "compacted",
       cause: "compacted",
       confidence: "certain",
       tools: ["write"],
@@ -310,18 +310,22 @@ function allSessions(now: number): FixtureSession[] {
 
 function scopedRequests(input: Plus.MonitorQueryInput, variant: MissVariant, now: number): Plus.MonitorRequest[] {
   const all = allRequests(variant, now)
-  if (input.scope === "session" && input.sessionID !== undefined)
-    return all.filter((r) => r.sessionID === input.sessionID)
-  if (input.scope === "tree") return all.filter((r) => r.sessionID === "ses_lead" || r.sessionID === "ses_worker")
+  if (input.scope === "session" || input.scope === "tree") {
+    const ids = new Set(scopedSessions(input, now).map((s) => s.sessionID))
+    return all.filter((r) => ids.has(r.sessionID))
+  }
   if (input.scope === "team") return all.filter((r) => r.sessionID === "ses_lead" || r.sessionID === "ses_worker")
   return all
 }
 
 function scopedSessions(input: Plus.MonitorQueryInput, now: number): FixtureSession[] {
   const all = allSessions(now)
-  if (input.scope === "session" && input.sessionID !== undefined)
-    return all.filter((s) => s.sessionID === input.sessionID)
-  if (input.scope === "tree") return all.filter((s) => s.rootID === "ses_lead")
+  const ids = input.sessionIDs ?? (input.sessionID === undefined ? [] : [input.sessionID])
+  if (input.scope === "session") return all.filter((s) => ids.includes(s.sessionID))
+  if (input.scope === "tree") {
+    const roots = new Set(all.filter((s) => ids.includes(s.sessionID)).map((s) => s.rootID))
+    return all.filter((s) => roots.has(s.rootID))
+  }
   if (input.scope === "team") return all.filter((s) => s.sessionID === "ses_lead" || s.sessionID === "ses_worker")
   return all
 }
@@ -757,6 +761,7 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
           sessionID={() => "ses_lead"}
           active={() => true}
           full={true}
+          initialSession
           onClose={() => props.context.ui.router.navigate({ type: "plugin", name: "storybook" })}
         />
       </box>
@@ -778,7 +783,9 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
               ]
             : []),
           { shortcut: "ctrl+m", label: "toggle miss cause" },
-          { shortcut: "esc", label: "back" },
+          { shortcut: "S", label: "add session filter" },
+          { shortcut: "⌫", label: "undo filter" },
+          { shortcut: "esc", label: "close monitor" },
         ]}
       />
     </box>

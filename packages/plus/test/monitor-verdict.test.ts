@@ -236,7 +236,7 @@ test("legacy first, compacted and switched requests retain facts without asserti
   db.contextFact({ sessionID: "compacted", at: 1500, kind: "compaction" })
   record(db, "compacted", { id: "after", at: 2000, count: 6, read: 0, write: 5000 })
   const after = last(db, "compacted", "after")
-  legacy(after.request)
+  expect(after.request).toMatchObject({ verdict: "compacted", missTokens: 0, measurement: { state: "legacy-unknown" } })
   expect(after.request.cause).toBe("compacted")
   expect(after.request.evidence).toContain("Compaction occurred")
 

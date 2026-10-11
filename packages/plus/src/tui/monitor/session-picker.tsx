@@ -8,6 +8,7 @@ export async function openSessionPicker(
   onPick: (sessionID: string) => void,
   paging?: {
     page: Plus.MonitorPage | undefined
+    selected?: readonly string[]
     load: (
       cursor: NonNullable<Plus.MonitorPage["next"]>,
     ) => Promise<{ sessions: readonly Plus.MonitorSessionRow[]; page: Plus.MonitorPage | undefined }>
@@ -24,7 +25,7 @@ export async function openSessionPicker(
     rootCounts.set(s.rootID, (rootCounts.get(s.rootID) ?? 0) + 1)
   }
 
-  const options = sessions.map((s) => {
+  const options = sessions.filter((s) => !paging?.selected?.includes(s.sessionID)).map((s) => {
     const isTree = (rootCounts.get(s.rootID) ?? 0) > 1
     const prefix = s.depth > 0 ? "  ".repeat(s.depth) + "└─ " : isTree ? "▼ " : "• "
     const name = s.title ?? s.role ?? s.agent ?? s.sessionID.slice(0, 12)
@@ -38,7 +39,7 @@ export async function openSessionPicker(
   })
 
   const picked = await context.ui.dialog.select<string>({
-    title: "Pick session to scope",
+    title: "Add session to report",
     placeholder: paging ? "Search sessions on this page…" : "Search sessions…",
     options: [
       ...options,

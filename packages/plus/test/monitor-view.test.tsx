@@ -29,6 +29,75 @@ afterEach(cleanupLedgers)
 
 const NOW = 1_800_000_000_000
 
+test("chat opening selects one session, combines distinct sessions, rejects duplicates and undoes each selection", async () => {
+  const db = await seeded()
+  const { fixture, queries, closed } = await render(db, {
+    initialSession: true,
+    settings: { ...defaultSettings, scope: "all", tab: "sessions" },
+    dialogs: { selects: ["ses_child", "ses_chat"] },
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("filters 1"))
+    expect(queries[0]).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"] })
+    await dispatch(fixture, "return")
+    expect(await fixture.waitForFrame((text) => text.includes("filters 1"))).not.toContain("filters 2")
+    await dispatch(fixture, "shift+s")
+    await fixture.waitForFrame((text) => text.includes("2 sessions") && text.includes("filters 2"))
+    expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat", "ses_child"])
+    expect(fixture.fake.selectInputs.at(-1)?.options.map((option) => option.value)).toEqual(["ses_child"])
+    // Even a stale picker result cannot add an already-selected session.
+    await dispatch(fixture, "shift+s")
+    expect(fixture.fake.selectInputs.at(-1)?.options).toEqual([])
+    expect(await fixture.waitForFrame((text) => text.includes("filters 2"))).not.toContain("filters 3")
+    await dispatch(fixture, "escape")
+    expect(closed()).toBe(1)
+    expect(await fixture.waitForFrame((text) => text.includes("filters 2"))).toContain("2 sessions")
+    await dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => text.includes("filters 1") && !text.includes("2 sessions"))
+    expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat"])
+    await dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
+    expect(queries.at(-1)?.scope).toBe("all")
+    expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.scope).toBe("all")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("undoing the automatic chat filter exposes the project rather than implicitly selecting the same chat", async () => {
+  const { fixture, queries } = await render(await seeded(), { initialSession: true })
+  try {
+    await fixture.waitForFrame((text) => text.includes("filters 1"))
+    await dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => text.includes("Scope: Project"))
+    expect(queries.at(-1)).toMatchObject({ scope: "project" })
+    expect(queries.at(-1)?.sessionIDs).toBeUndefined()
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test.each(["cache", "steps"] as const)("%s repeated Enter opens a request detail only once", async (tab) => {
+  const { fixture } = await render(await seeded(), { settings: { ...defaultSettings, tab } })
+  try {
+    await fixture.waitForFrame((text) => text.includes("reqs: 2"))
+    await dispatch(fixture, "return")
+    await fixture.waitForFrame((text) => text.includes("filters 1"))
+    await dispatch(fixture, "return")
+    expect(await fixture.waitForFrame((text) => text.includes("filters 1"))).not.toContain("filters 2")
+    await dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test.each(["tool", "agent", "model"] as const)("%s group filtering cannot repeat a picker or row filter", (group) => {
+  const row = { key: "selected" } as Plus.MonitorGroup
+  expect(drillInto({ ...defaultSettings, group, [group]: row.key }, row)).toBeUndefined()
+  expect(drillInto({ ...defaultSettings, group, [group]: "another" }, row)?.settings[group]).toBe(row.key)
+})
+
 test("Cache read cells distinguish stored legacy/absent/running from reported zero, and incomplete reuse never rounds to 100%", async () => {
   const db = await ledger()
   db.session({ id: "ses_chat" }, NOW - 10000)
@@ -160,8 +229,8 @@ test("Sessions and session/facet pickers request further pages only on explicit 
     await dispatch(fixture, "]")
     await fixture.waitForFrame((text) => text.includes("sessions 101-125/125"))
     await dispatch(fixture, "shift+s")
-    await fixture.waitForFrame(() => queries.some((q) => q.scope === "session" && q.sessionID === "session-124"))
-    await dispatch(fixture, "escape")
+    await fixture.waitForFrame(() => queries.some((q) => q.scope === "session" && q.sessionIDs?.includes("session-124")))
+    await dispatch(fixture, "backspace")
     await dispatch(fixture, "a")
     await fixture.waitForFrame(() => queries.some((q) => q.pages?.["facets.agents"]?.cursor?.offset === 100))
   } finally {
@@ -261,6 +330,7 @@ async function render(
   db: Ledger,
   options: {
     full?: boolean
+    initialSession?: boolean
     width?: number
     height?: number
     dialogs?: DialogScript
@@ -313,6 +383,7 @@ async function render(
           sessionID={() => "ses_chat"}
           active={() => true}
           full={options.full ?? true}
+          initialSession={options.initialSession}
           onClose={() => {
             closes += 1
           }}
@@ -544,25 +615,24 @@ test("the Sessions tab shows a token total that includes cache and reasoning", a
 test("S opens a session picker over every session from any tab", async () => {
   const db = await seeded()
   const { fixture, queries } = await render(db, {
-    settings: { ...defaultSettings, tab: "overview" },
+    settings: { ...defaultSettings, scope: "project", tab: "overview" },
     customReport: () => contractFixtureReport(NOW),
     dialogs: { selects: ["ses_chat"] },
   })
   try {
-    await fixture.waitForFrame((text) => text.includes("Scope: This session"))
+    await fixture.waitForFrame((text) => text.includes("Scope: Project"))
     dispatch(fixture, "shift+s")
-    await fixture.waitForFrame((text) => text.includes("drilled 1"))
+    await fixture.waitForFrame((text) => text.includes("filters 1"))
     // The picker asks the ledger for every session, not just the current tab's.
     expect(queries.some((query) => query.scope === "all" && query.view === "sessions")).toBe(true)
     expect(fixture.fake.selectInputs.at(-1)?.options.map((option) => option.value)).toEqual(["ses_chat"])
-    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
-    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"] })
   } finally {
     fixture.destroy()
   }
 })
 
-test("Sessions Enter and space are temporary drills that restore scope and filters on Esc", async () => {
+test("Sessions Enter and space are temporary filters that restore scope and filters on Backspace", async () => {
   const db = await seeded()
   const base = contractFixtureReport(NOW)
   const sessions = [
@@ -596,23 +666,25 @@ test("Sessions Enter and space are temporary drills that restore scope and filte
 
     // Enter scopes to the selected session as a temporary drill.
     dispatch(fixture, "return")
-    await fixture.waitForFrame((text) => text.includes("drilled 1"))
-    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
+    await fixture.waitForFrame((text) => text.includes("filters 1"))
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"] })
     // The stored preference and filters are untouched.
     const storedAfterEnter = (fixture.storeValue("monitor") as { settings: MonitorSettings }).settings
     expect(storedAfterEnter).toMatchObject({ scope: "project", agent: "build", filterText: "chat" })
 
     // space scopes to that session's tree as another temporary drill.
     dispatch(fixture, "space")
-    await fixture.waitForFrame((text) => text.includes("drilled 2"))
-    expect(queries.at(-1)).toMatchObject({ scope: "tree", sessionID: "ses_chat" })
+    await fixture.waitForFrame((text) => text.includes("filters 2"))
+    expect(queries.at(-1)).toMatchObject({ scope: "tree", sessionIDs: ["ses_chat"] })
+    await dispatch(fixture, "space")
+    expect(await fixture.waitForFrame((text) => text.includes("filters 2"))).not.toContain("filters 3")
 
-    // Esc pops one level at a time; the original project scope and filters return.
-    dispatch(fixture, "escape")
-    await fixture.waitForFrame((text) => text.includes("drilled 1"))
-    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionID: "ses_chat" })
-    dispatch(fixture, "escape")
-    await fixture.waitForFrame((text) => !text.includes("drilled"))
+    // Backspace pops one level at a time; the original project scope and filters return.
+    dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => text.includes("filters 1"))
+    expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"] })
+    dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
     expect(queries.at(-1)).toMatchObject({ scope: "project" })
     expect(queries.at(-1)?.agents).toEqual(["build"])
     expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings).toMatchObject({
@@ -756,7 +828,7 @@ test("the composer defaults to the tree scope and drills Tools even when its sto
     const drilled = await fixture.waitForFrame((text) => text.includes("tool read"))
     expect(drilled).toContain("read src/a.ts")
     dispatch(fixture, "backspace")
-    await fixture.waitForFrame((text) => !text.includes("drilled"))
+    await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
   } finally {
     fixture.destroy()
   }
@@ -1158,11 +1230,11 @@ test("enter drills from a tool into its targets and backspace comes back", async
     const drilled = await fixture.waitForFrame((text) => text.includes("tool read"))
     expect(queries.at(-1)).toMatchObject({ tools: ["read"], group: "target" })
     expect(drilled).toContain("read src/a.ts")
-    expect(drilled).toContain("drilled 1")
+    expect(drilled).toContain("filters 1")
     // The drill-down never rewrites the stored settings.
     expect((fixture.storeValue("monitor") as { settings: MonitorSettings } | undefined)?.settings.tool).toBeUndefined()
     dispatch(fixture, "backspace")
-    await fixture.waitForFrame((text) => !text.includes("drilled"))
+    await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
     expect(queries.at(-1)?.tools).toBeUndefined()
     expect(closed()).toBe(0)
     dispatch(fixture, "escape")

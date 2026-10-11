@@ -17,6 +17,7 @@ import {
   queryOf,
   SCOPES,
   scopeWords,
+  sessionDrill,
   SORTS,
   TABS,
   totalsLine,
@@ -61,6 +62,8 @@ export interface MonitorViewProps {
   /** Visible and focused: only then does it poll and own its keys. */
   readonly active: () => boolean
   readonly full: boolean
+  /** Open a full-page chat monitor with a temporary session selection. */
+  readonly initialSession?: boolean
   /** The keymap mode its keys belong to ("composer" inside the composer). */
   readonly mode?: string
   readonly onClose: () => void
@@ -108,11 +111,23 @@ export function MonitorView(props: MonitorViewProps) {
   const dimensions = useTerminalDimensions()
   const defaultScope = props.full ? "session" : "tree"
   const store = createMonitorSettings(props.context, defaultScope, props.full ? "monitor" : "monitor-composer")
-  const [drills, setDrills] = createSignal<readonly Drill[]>([])
+  const initialSessionID = props.initialSession ? props.sessionID() : undefined
+  const [drills, setDrills] = createSignal<readonly Drill[]>(
+    initialSessionID === undefined
+      ? []
+      : [{
+          settings: { ...store.settings(), scope: "session", sessionIDs: [initialSessionID] },
+          sessionID: initialSessionID,
+        }],
+  )
   const [helpOpen, setHelpOpen] = createSignal(false)
 
   // Drill-downs are temporary and do not rewrite stored settings.
-  const settings = () => drills().at(-1)?.settings ?? store.settings()
+  const settings = () => drills().at(-1)?.settings ?? (
+    props.initialSession && (store.settings().scope === "session" || store.settings().scope === "tree")
+      ? { ...store.settings(), scope: "project" as const, sessionIDs: undefined }
+      : store.settings()
+  )
   const activeDrill = () => drills().at(-1)
 
   // The compact composer body always renders Tools, whatever tab the shared
@@ -149,6 +164,7 @@ export function MonitorView(props: MonitorViewProps) {
       tab(),
       sessionID(),
       settings().scope,
+      settings().sessionIDs,
       settings().team,
       settings().window,
       settings().agent,
@@ -379,7 +395,9 @@ export function MonitorView(props: MonitorViewProps) {
         current: settings()[dimension] ?? "",
         options: [
           { title: `Every ${dimension}`, value: "" },
-          ...(values ?? []).map((value) => ({ title: value, value })),
+          ...(values ?? [])
+            .filter((value) => value !== settings()[dimension])
+            .map((value) => ({ title: value, value })),
           ...(page?.previous ? [{ title: "Previous page", value: "\0previous" }] : []),
           ...(page?.next ? [{ title: "Next page", value: "\0next" }] : []),
         ],
@@ -393,6 +411,7 @@ export function MonitorView(props: MonitorViewProps) {
         continue
       }
       const next = { ...settings() }
+      if ((choice || undefined) === next[dimension]) return
       change(choice === "" ? withoutKey(next, dimension) : { ...next, [dimension]: choice })
       return
     }
@@ -407,7 +426,9 @@ export function MonitorView(props: MonitorViewProps) {
         placeholder: "Select team to scope (search this page)…",
         options: [
           { title: "No team filter", value: "" },
-          ...(current?.teams ?? []).map((t) => ({ title: t, value: t })),
+          ...(current?.teams ?? [])
+            .filter((t) => t !== settings().team)
+            .map((t) => ({ title: t, value: t })),
           ...(page?.previous ? [{ title: "Previous page", value: "\0previous" }] : []),
           ...(page?.next ? [{ title: "Next page", value: "\0next" }] : []),
         ],
@@ -423,6 +444,7 @@ export function MonitorView(props: MonitorViewProps) {
         )
         continue
       }
+      if (choice === settings().team && settings().scope === "team") return
       change(
         choice === ""
           ? { ...settings(), scope: "project", team: undefined }
@@ -441,12 +463,13 @@ export function MonitorView(props: MonitorViewProps) {
           props.context,
           all.sessions,
           (picked) => {
-            // The picked session is a temporary drill; the stored scope stays.
-            setSelected(0)
-            setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: picked }])
+            addSession(picked)
           },
           {
             page: all.pages?.sessions,
+            selected: settings().scope === "session"
+              ? settings().sessionIDs ?? (sessionID() ? [sessionID()!] : [])
+              : [],
             load: async (cursor) => {
               const next = await plus["monitor.query"](
                 { scope: "all", view: "sessions", pages: { sessions: { cursor } }, fullText: true },
@@ -462,6 +485,13 @@ export function MonitorView(props: MonitorViewProps) {
           message: error instanceof Error ? error.message : String(error),
         }),
     )
+  }
+
+  const addSession = (id: string, scope: "session" | "tree" = "session") => {
+    const next = sessionDrill(settings(), id, sessionID(), scope)
+    if (next === undefined) return
+    setSelected(0)
+    setDrills((stack) => [...stack, next])
   }
 
   const mark = async () => {
@@ -504,7 +534,7 @@ export function MonitorView(props: MonitorViewProps) {
     if (current === "tools") {
       const group = groups()[selected()]
       if (group === undefined) return
-      const next = drillInto(settings(), group)
+      const next = drillInto(settings(), group, sessionID())
       if (next === undefined) return
       setSelected(0)
       setDrills((stack) => [...stack, { ...next, kind: "tools" }])
@@ -512,14 +542,14 @@ export function MonitorView(props: MonitorViewProps) {
     }
     if (current === "cache") {
       const req = cacheRequests(shown(), settings().missesOnly)[selected()]
-      if (req === undefined) return
+      if (req === undefined || activeDrill()?.requestID === req.id) return
       setDrills((stack) => [...stack, { kind: "cache", settings: settings(), requestID: req.id }])
       return
     }
     if (current === "steps") {
       const requests = shown()?.requests ?? []
       const req = requests[selected()]
-      if (req === undefined) return
+      if (req === undefined || activeDrill()?.requestID === req.id) return
       setDrills((stack) => [...stack, { kind: "steps", settings: settings(), requestID: req.id }])
       return
     }
@@ -527,9 +557,8 @@ export function MonitorView(props: MonitorViewProps) {
       const s = shown()?.sessions?.[selected()]
       if (s === undefined) return
       // Scope to the session as a temporary drill: the stored preference and
-      // the original filters stay untouched, so Esc restores exactly.
-      setSelected(0)
-      setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: s.sessionID }])
+      // the original filters stay untouched, so Backspace restores exactly.
+      addSession(s.sessionID)
       return
     }
   }
@@ -653,9 +682,9 @@ export function MonitorView(props: MonitorViewProps) {
           setSelected((index) => Math.min(maxIdx, index + 1))
         },
       },
-      { bind: "return", title: "Drill into row", group: "Monitor", run: drill },
+      { bind: "return", title: "Filter by row / open detail", group: "Monitor", run: drill },
       { bind: "backspace", title: "Back", group: "Monitor", run: back },
-      { bind: "escape", title: "Back or close", group: "Monitor", run: back },
+      { bind: "escape", title: "Close monitor", group: "Monitor", run: () => props.onClose() },
       {
         bind: "1",
         title: "Overview tab",
@@ -706,7 +735,7 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "shift+s",
-        title: "Session picker",
+        title: "Add session filter",
         group: "Monitor",
         run: () => openPicker(),
       },
@@ -761,8 +790,7 @@ export function MonitorView(props: MonitorViewProps) {
             const s = shown()?.sessions?.[selected()]
             if (s !== undefined) {
               // Temporary tree drill: the stored scope/filters never change.
-              setSelected(0)
-              setDrills((stack) => [...stack, { settings: { ...settings(), scope: "tree" }, sessionID: s.sessionID }])
+              addSession(s.rootID, "tree")
             }
           }
         },
@@ -805,6 +833,10 @@ export function MonitorView(props: MonitorViewProps) {
     // A session or tree scope with no chat open reads the project, so say so.
     const effective = (s === "session" || s === "tree") && sessionID() === undefined ? "project" : s
     const name = scopeWords[effective] ?? effective
+    const ids = settings().sessionIDs
+    if ((effective === "session" || effective === "tree") && ids !== undefined && ids.length > 1) {
+      return `${ids.length} ${effective === "tree" ? "session trees" : "sessions"} (${ids.map((id) => id.slice(0, 10)).join(", ")})`
+    }
     if (effective === "session" && sessionID() !== undefined) {
       return `${name} (${sessionID()!.slice(0, 10)})`
     }
@@ -831,12 +863,12 @@ export function MonitorView(props: MonitorViewProps) {
           : "[↑↓] select · [⏎] detail · [x] misses only · [s] scope · [t] window · [?] help · [esc] close"
       case "tools":
         return narrow
-          ? "[↑↓] · [⏎] drill · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] [m] [?]"
-          : "[↑↓] select · [⏎] drill · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] compare · [m] mark · [?] help"
+          ? "[↑↓] · [⏎] filter · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] [m] [?]"
+          : "[↑↓] select · [⏎] filter · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] compare · [m] mark · [?] help"
       case "sessions":
         return narrow
           ? "[↑↓] · [⏎] session · [space] tree · [s] scope · [t] window · [?] help · [esc]"
-          : "[↑↓] select · [⏎] scope session · [space] scope tree · [s] scope · [t] window · [?] help · [esc] close"
+          : "[↑↓] select · [⏎] add session · [space] add tree · [S] add session · [s] scope · [?] help · [esc] close"
       case "steps":
         return narrow
           ? "[↑↓] · [⏎] calls & diff · [s] scope · [t] window · [?] help · [esc]"
@@ -858,7 +890,7 @@ export function MonitorView(props: MonitorViewProps) {
         ...(compareLabel(settings(), report()?.marks ?? []) === undefined
           ? []
           : [`compare ${compareLabel(settings(), report()?.marks ?? [])}`]),
-        ...(drills().length > 0 ? [`drilled ${drills().length} (⌫ back)`] : []),
+        ...(drills().length > 0 ? [`filters ${drills().length} (⌫ undo)`] : []),
       ].join(" · ")
 
     return (
@@ -923,7 +955,7 @@ export function MonitorView(props: MonitorViewProps) {
         <text fg={theme().text.action.primary.focused} attributes={TextAttributes.BOLD}>
           {scopeLabel()}
         </text>
-        <text fg={theme().text.muted}> [s] step · [S] session · [T] team</text>
+        <text fg={theme().text.muted}> [s] step · [S] add session · [T] team</text>
       </box>
 
       {/* When Line */}
@@ -1008,7 +1040,7 @@ export function MonitorView(props: MonitorViewProps) {
         </For>
         <box flexGrow={1} />
         <Show when={drills().length > 0}>
-          <text fg={theme().text.feedback.info.base}>{`drilled ${drills().length} (⌫ back)`}</text>
+          <text fg={theme().text.muted}>{`filters ${drills().length} (⌫ undo)`}</text>
         </Show>
       </box>
 
@@ -1067,14 +1099,10 @@ export function MonitorView(props: MonitorViewProps) {
                   report={shown()}
                   selectedIndex={selected()}
                   onSelect={setSelected}
-                  onScopeSession={(sid) => {
-                    setSelected(0)
-                    setDrills((stack) => [...stack, { settings: { ...settings(), scope: "session" }, sessionID: sid }])
-                  }}
-                  onScopeTree={(sid) => {
-                    setSelected(0)
-                    setDrills((stack) => [...stack, { settings: { ...settings(), scope: "tree" }, sessionID: sid }])
-                  }}
+                  onScopeSession={(sid) => addSession(sid)}
+                  onScopeTree={(sid) =>
+                    addSession(shown()?.sessions?.find((s) => s.sessionID === sid)?.rootID ?? sid, "tree")
+                  }
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.sessions = ref)}
                 />

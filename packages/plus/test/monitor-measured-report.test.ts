@@ -6,6 +6,27 @@ import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
+test("compaction labels only the first completed request, preserving subsequent cache verdicts", async () => {
+  const db = await ledger()
+  db.session({ id: "synthetic" }, 1)
+  for (const [id, at, input, read] of [
+    ["before", 10, 239004, 238592],
+    ["compacted", 30, 81720, 2176],
+    ["warm", 40, 81814, 81536],
+    ["miss", 50, 81814, 0],
+  ] as const) {
+    db.requestStarted({ id, sessionID: "synthetic", started: at, kind: "step", model: "fixture", provider: "fixture" })
+    db.requestEnded(id, { ended: at + 1, status: "completed" })
+    db.requestObserved(id, { version: 1, completeness: "final", inputTokens: input, cacheReadInputTokens: read })
+    db.requestFingerprint({ requestID: id, sessionID: "synthetic", ...fingerprintWireBody({ input: id === "before" ? "old context" : "compacted context" }, { protocol: "openai-responses" }) })
+  }
+  db.contextFact({ sessionID: "synthetic", at: 20, kind: "compaction" })
+  const report = queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache" }, { now: 100 })
+  expect(report.requests?.map((request) => request.verdict)).toEqual(["hit", "compacted", "hit", "miss"])
+  expect(report.requests?.[1]).toMatchObject({ cause: "compacted", missTokens: 0, measurement: { read: 2176 } })
+  expect(report.totals.misses).toBe(1)
+})
+
 test("persisted explicit, missing and legacy reads stay distinct through report/RPC population", async () => {
   const db = await ledger()
   db.session({ id: "synthetic" }, 1)
