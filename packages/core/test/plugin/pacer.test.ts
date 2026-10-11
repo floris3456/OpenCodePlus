@@ -56,6 +56,7 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
               data: [
                 {
                   id: "claude-sonnet-4-6",
+                  providers: ["claude"],
                   kind: "chat",
                   context_length: 200000,
                   max_completion_tokens: 64000,
@@ -114,6 +115,21 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         expect(usage.snapshot?.credentials.map((row) => row.provider)).toEqual(["claude", "codex"])
         expect(usage.snapshot?.credentials.every((row) => row.windows[0]?.remaining === 73)).toBe(true)
         const before = paths.length
+        const selected = yield* host.rpc(UsageDefinition).read({
+          providerID: "cliproxyapi",
+          modelID: "claude-sonnet-4-6",
+          all: false,
+        })
+        expect(selected.snapshot?.providers).toEqual(["claude"])
+        expect(selected.snapshot?.credentials.map((row) => row.provider)).toEqual(["claude"])
+        expect(selected.snapshot?.current).toBe("")
+        expect(selected.snapshot?.all).toBe(false)
+        const unknown = yield* host.rpc(UsageDefinition).read({
+          providerID: "cliproxyapi",
+          modelID: "unknown-model",
+          all: false,
+        })
+        expect(unknown.snapshot?.credentials).toEqual([])
         const result = yield* host
           .rpc(UsageDefinition)
           .read({ providerID: "cliproxyapi", modelID: "claude-sonnet-4-6", all: true })

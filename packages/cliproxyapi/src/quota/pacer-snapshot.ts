@@ -6,22 +6,30 @@ export function pacerSnapshot(
   meter: Pick<Meter, "lastServed" | "rows">,
   input: UsageInput,
   now: number,
+  providers?: readonly string[],
 ): UsageSnapshot {
   const served = input.sessionID ? meter.lastServed(input.sessionID) : undefined
   const rows = meter.rows()
+  const current = rows.find(
+    (row) => row.id === served?.auth && (providers === undefined || providers.includes(row.provider)),
+  )
   return {
     protocol: 1,
     view: "usage",
     now: now / 1000,
     max_age_seconds: 90,
-    all: input.all || !served,
-    provider: rows.find((c) => c.id === served?.auth)?.provider ?? "",
+    all: input.all || (providers === undefined && !served),
+    provider: providers?.[0] ?? current?.provider ?? "",
+    ...(providers === undefined ? {} : { providers }),
     model: input.modelID,
-    current: served?.auth ?? "",
+    current: current?.id ?? "",
     active: [],
     last_used: (served?.at_ms ?? 0) / 1000,
     credentials: rows
-      .filter((c) => input.all || !served || c.id === served.auth)
+      .filter(
+        (c) =>
+          input.all || (providers === undefined ? !served || c.id === served.auth : providers.includes(c.provider)),
+      )
       .map((c) => ({
         id: c.id,
         alias: c.alias,

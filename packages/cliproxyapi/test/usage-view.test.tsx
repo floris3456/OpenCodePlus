@@ -25,6 +25,7 @@ function snapshot(): UsageSnapshot {
     max_age_seconds: 90,
     all: true,
     provider: "claude",
+    providers: ["claude"],
     model: "claude-sonnet",
     current: "account-0",
     active: [],
@@ -148,7 +149,7 @@ async function frame(output: Awaited<ReturnType<typeof createTestRenderer>>) {
   return output.captureCharFrame()
 }
 
-test("sidebar only shows the serving credential, never the all-credentials fallback", async () => {
+test("sidebar only shows the selected model's providers, never unrelated credentials", async () => {
   const f = fixture()
   const output = await mount(f)
   const text = await frame(output)
@@ -159,9 +160,57 @@ test("sidebar only shows the serving credential, never the all-credentials fallb
   expect([...f.state.slots.keys()]).toEqual(["sidebar.content", "app"])
 })
 
-test("no serving credential leaves the sidebar empty", async () => {
+test("selecting a model populates the sidebar before any request", async () => {
   const f = fixture({ current: "" })
-  expect((await frame(await mount(f))).trim()).toBe("")
+  const text = await frame(await mount(f))
+  expect(text).toContain("Account 0")
+  expect(text).toContain("61%")
+  expect(text).not.toContain("Account 1")
+})
+
+test("provider credentials survive response completion and follow a model change", async () => {
+  const f = fixture({ current: "" })
+  const output = await mount(f)
+  expect(await frame(output)).toContain("Account 0")
+  const now = Date.now()
+  const data: PacerMeterEvent = {
+    snapshot: {
+      v: 1,
+      served: {},
+      credentials: [
+        {
+          id: "account-0",
+          alias: "Account 0",
+          provider: "claude",
+          shared_with: [],
+          at_ms: now,
+          windows: [
+            {
+              scope: "all",
+              seconds: 18000,
+              left: 37,
+              reset_ms: now + 3600000,
+              read_ms: now,
+              state: "current",
+              applies: true,
+            },
+          ],
+        },
+      ],
+    },
+  }
+  f.state.listeners.forEach((listener) => listener({ data }))
+  const completed = await frame(output)
+  expect(completed).toContain("Account 0")
+  expect(completed).toContain("37%")
+  f.state.result = {
+    status: "ready",
+    snapshot: { ...snapshot(), provider: "codex", providers: ["codex"], current: "" },
+  }
+  f.setModel({ providerID: "cliproxyapi", modelID: "gpt-5" })
+  const changed = await frame(output)
+  expect(changed).toContain("Account 1")
+  expect(changed).not.toContain("Account 0")
 })
 
 test("usage opens a bounded popup with pages, and closing it keeps the sidebar compact", async () => {
@@ -193,6 +242,43 @@ test("usage opens a popup on the home screen too", async () => {
   const output = await mount(f, 120, 42)
   await f.command("plus.usage.open").run("--all")
   expect(await frame(output)).toContain("Credential usage")
+})
+
+test.each([14, 24])("Antigravity quota windows stay paired by model in a %i-row popup", async (height) => {
+  const f = fixture({ current: "" })
+  const base = snapshot()
+  f.state.result = {
+    status: "ready",
+    snapshot: {
+      ...base,
+      current: "",
+      credentials: [
+        {
+          ...base.credentials[0]!,
+          provider: "antigravity",
+          windows: [
+            { ...base.credentials[0]!.windows[0]!, scope: "gemini", seconds: 604800 },
+            { ...base.credentials[0]!.windows[0]!, scope: "claude_gpt", seconds: 18000 },
+            { ...base.credentials[0]!.windows[0]!, scope: "gemini", seconds: 18000 },
+            { ...base.credentials[0]!.windows[0]!, scope: "claude_gpt", seconds: 604800 },
+          ],
+        },
+      ],
+    },
+  }
+  const output = await mount(f, 80, height)
+  await f.command("plus.usage.open").run("--all")
+  const first = await frame(output)
+  expect(first.indexOf("5h claude_gpt")).toBeGreaterThan(-1)
+  expect(first.indexOf("7d claude_gpt")).toBeGreaterThan(first.indexOf("5h claude_gpt"))
+  if (height === 14) {
+    expect(first).not.toContain("gemini")
+    await f.command("plus.usage.next").run()
+  }
+  const next = await frame(output)
+  expect(next.indexOf("5h gemini")).toBeGreaterThan(-1)
+  expect(next.indexOf("7d gemini")).toBeGreaterThan(next.indexOf("5h gemini"))
+  if (height === 24) expect(next.indexOf("5h gemini")).toBeGreaterThan(next.indexOf("7d claude_gpt"))
 })
 
 test("pushed percentages render without another RPC and survive an older pending read", async () => {

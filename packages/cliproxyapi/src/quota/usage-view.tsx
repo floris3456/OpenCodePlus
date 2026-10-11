@@ -15,7 +15,7 @@ import type { UsageSnapshot, UsageWindow } from "./usage.js"
 
 type Credential = UsageSnapshot["credentials"][number]
 
-/** The sidebar stays session-scoped; the dialog alone owns the inspection scope. */
+/** The sidebar stays selected-provider-scoped; the dialog alone owns the inspection scope. */
 export function createUsage(context: Plugin.Context, options: { interval?: number; enabled?: () => boolean } = {}) {
   const store = createUsageStore(context, options)
   const open = (input?: string) => {
@@ -46,7 +46,7 @@ export function createUsage(context: Plugin.Context, options: { interval?: numbe
               title: "Credential usage",
               group: "OpenCodePlus",
               palette: true,
-              slash: { name: "usage", arguments: true },
+              slash: { name: "usage", arguments: "optional" },
               run: open,
             },
           ],
@@ -61,17 +61,16 @@ export function createUsage(context: Plugin.Context, options: { interval?: numbe
   }
 }
 
-function active(snapshot: UsageSnapshot) {
-  return snapshot.credentials.filter(
-    (credential) => snapshot.active.includes(credential.id) || credential.id === snapshot.current,
-  )
+function selectedProviders(snapshot: UsageSnapshot) {
+  const providers = snapshot.providers ?? [snapshot.provider]
+  return snapshot.credentials.filter((credential) => providers.includes(credential.provider))
 }
 
 function SidebarUsage(props: { context: Plugin.Context; store: UsageStore }) {
   const [width, setWidth] = createSignal(37)
   onCleanup(props.store.view())
   const snapshot = () => props.store.reading()?.snapshot
-  const credentials = () => (snapshot() ? active(snapshot()!) : [])
+  const credentials = () => (snapshot() ? selectedProviders(snapshot()!) : [])
   return (
     <Show when={credentials().length}>
       <box
@@ -116,7 +115,7 @@ function UsageDialog(props: { context: Plugin.Context; store: UsageStore; all: b
     const budget = Math.max(3, dimensions().height - 10)
     return (snapshot()?.credentials ?? [])
       .flatMap((credential) => {
-        const windows = credential.windows.filter((window) => !window.not_applicable)
+        const windows = credentialWindows(credential)
         const header = 2 + (props.store.details() ? 1 + Number(credential.shared_with.length > 0) : 0)
         const count = Math.max(1, Math.floor((budget - header) / (props.store.details() ? 2 : 1)))
         return Array.from({ length: Math.max(1, Math.ceil(windows.length / count)) }, (_, index) => ({
@@ -183,7 +182,7 @@ function UsageDialog(props: { context: Plugin.Context; store: UsageStore; all: b
         </text>
       </box>
       <text fg={theme.text.muted}>
-        {props.store.scope() === "all" || snapshot()?.all ? "All credentials" : "Active model credential"}
+        {props.store.scope() === "all" || snapshot()?.all ? "All credentials" : "Selected model’s providers"}
         {props.store.reading()?.failure ? " · retrying" : ""}
       </text>
       <Show
@@ -247,7 +246,7 @@ function CredentialView(props: {
   details?: boolean
 }) {
   const theme = props.context.theme
-  const windows = () => props.credential.windows.filter((window) => !window.not_applicable)
+  const windows = createMemo(() => credentialWindows(props.credential))
   const labelWidth = () => Math.min(18, Math.max(2, ...windows().map((window) => label(window).length)))
   return (
     <box flexShrink={0}>
@@ -304,6 +303,12 @@ function CredentialView(props: {
       </Show>
     </box>
   )
+}
+
+function credentialWindows(credential: Credential) {
+  const windows = credential.windows.filter((window) => !window.not_applicable)
+  if (credential.provider !== "antigravity") return windows
+  return windows.sort((left, right) => left.scope.localeCompare(right.scope) || left.seconds - right.seconds)
 }
 
 function label(window: UsageWindow) {

@@ -24,6 +24,8 @@ export const UsageSnapshot = Schema.Struct({
   max_age_seconds: Schema.Number,
   all: Schema.Boolean,
   provider: Schema.String,
+  /** Providers serving the selected model, from Pacer's cached catalogue. */
+  providers: Schema.optional(Schema.Array(Schema.String)),
   model: Schema.String,
   current: Schema.String,
   active: Schema.Array(Schema.String),

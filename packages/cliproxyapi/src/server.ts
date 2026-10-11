@@ -29,13 +29,39 @@ export default Plugin.define({
     if (options.compactionModel) Model.Ref.parse(options.compactionModel)
     if (options.compactionFallback) Model.Ref.parse(options.compactionFallback)
     const stop = await Pacer.setup({ ...ctx, options: { ...ctx.options, accountSwitch: false } })
-    const state = { routes: {} as Record<string, string>, pacer: false }
+    const state = {
+      routes: {} as Record<string, string>,
+      pacer: false,
+      providers: new Map<string, readonly string[]>(),
+    }
     const refresh = async () => {
       const saved = await ctx.storage.get("catalogue")
-      const catalogue = Schema.decodeUnknownOption(Schema.Struct({ baseURL: Schema.String, pacer: Schema.Boolean }))(
-        saved,
-      )
+      const catalogue = Schema.decodeUnknownOption(
+        Schema.Struct({
+          baseURL: Schema.String,
+          pacer: Schema.Boolean,
+          catalogue: Schema.optional(
+            Schema.Struct({
+              models: Schema.Array(
+                Schema.Struct({
+                  id: Schema.String,
+                  providers: Schema.Array(Schema.String),
+                  ownedBy: Schema.optional(Schema.String),
+                }),
+              ),
+            }),
+          ),
+        }),
+      )(saved)
       state.pacer = catalogue._tag === "Some" && catalogue.value.pacer
+      state.providers = new Map(
+        catalogue._tag === "Some"
+          ? catalogue.value.catalogue?.models.map((model) => [
+              model.id,
+              model.providers.length ? model.providers : model.ownedBy ? [model.ownedBy] : [],
+            ])
+          : [],
+      )
       state.routes =
         options.accountSwitch !== false && catalogue._tag === "Some" && catalogue.value.pacer
           ? { cliproxyapi: catalogue.value.baseURL }
@@ -121,7 +147,8 @@ export default Plugin.define({
             message: "Connect CLIProxyAPI with Pacer through /connect to inspect credential usage.",
           }
         meter.restore((await ctx.rpc(PacerRpc).snapshot({})) as MeterSnapshot)
-        return { status: "ready" as const, snapshot: pacerSnapshot(meter, input, Date.now()) }
+        const providers = input.providerID === "cliproxyapi" ? (state.providers.get(input.modelID) ?? []) : []
+        return { status: "ready" as const, snapshot: pacerSnapshot(meter, input, Date.now(), providers) }
       },
     })
     return stop
