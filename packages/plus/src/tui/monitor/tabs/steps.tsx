@@ -239,7 +239,7 @@ export function StepsTab(props: StepsTabProps) {
                     <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
                       {`Step Detail: ${req.id} (${req.kind}) at ${formatClock(req.at)} · Finish: ${req.finish ?? "none"}`}
                     </text>
-                    <text fg={theme().text.muted}>Press ⌫ or esc to return to list</text>
+                    <text fg={theme().text.muted}>Press ⌫ to return to list · esc closes monitor</text>
                   </box>
 
                   {/* Calls with attributed tokens */}

@@ -558,7 +558,7 @@ export function MonitorView(props: MonitorViewProps) {
       const s = shown()?.sessions?.[selected()]
       if (s === undefined) return
       // Scope to the session as a temporary drill: the stored preference and
-      // the original filters stay untouched, so Esc restores exactly.
+      // the original filters stay untouched, so Backspace restores exactly.
       addSession(s.sessionID)
       return
     }
@@ -685,7 +685,7 @@ export function MonitorView(props: MonitorViewProps) {
       },
       { bind: "return", title: "Filter by row / open detail", group: "Monitor", run: drill },
       { bind: "backspace", title: "Back", group: "Monitor", run: back },
-      { bind: "escape", title: "Back or close", group: "Monitor", run: back },
+      { bind: "escape", title: "Close monitor", group: "Monitor", run: () => props.onClose() },
       {
         bind: "1",
         title: "Overview tab",
@@ -869,7 +869,7 @@ export function MonitorView(props: MonitorViewProps) {
       case "sessions":
         return narrow
           ? "[↑↓] · [⏎] session · [space] tree · [s] scope · [t] window · [?] help · [esc]"
-          : "[↑↓] select · [⏎] add session · [space] add tree · [S] add session · [s] scope · [?] help · [esc] back"
+          : "[↑↓] select · [⏎] add session · [space] add tree · [S] add session · [s] scope · [?] help · [esc] close"
       case "steps":
         return narrow
           ? "[↑↓] · [⏎] calls & diff · [s] scope · [t] window · [?] help · [esc]"

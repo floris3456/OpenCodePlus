@@ -785,7 +785,7 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
           { shortcut: "ctrl+m", label: "toggle miss cause" },
           { shortcut: "S", label: "add session filter" },
           { shortcut: "⌫", label: "undo filter" },
-          { shortcut: "esc", label: "back" },
+          { shortcut: "esc", label: "close monitor" },
         ]}
       />
     </box>

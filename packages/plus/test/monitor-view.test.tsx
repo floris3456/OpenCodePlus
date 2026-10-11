@@ -31,7 +31,7 @@ const NOW = 1_800_000_000_000
 
 test("chat opening selects one session, combines distinct sessions, rejects duplicates and undoes each selection", async () => {
   const db = await seeded()
-  const { fixture, queries } = await render(db, {
+  const { fixture, queries, closed } = await render(db, {
     initialSession: true,
     settings: { ...defaultSettings, scope: "all", tab: "sessions" },
     dialogs: { selects: ["ses_child", "ses_chat"] },
@@ -50,9 +50,12 @@ test("chat opening selects one session, combines distinct sessions, rejects dupl
     expect(fixture.fake.selectInputs.at(-1)?.options).toEqual([])
     expect(await fixture.waitForFrame((text) => text.includes("filters 2"))).not.toContain("filters 3")
     await dispatch(fixture, "escape")
+    expect(closed()).toBe(1)
+    expect(await fixture.waitForFrame((text) => text.includes("filters 2"))).toContain("2 sessions")
+    await dispatch(fixture, "backspace")
     await fixture.waitForFrame((text) => text.includes("filters 1") && !text.includes("2 sessions"))
     expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat"])
-    await dispatch(fixture, "escape")
+    await dispatch(fixture, "backspace")
     await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
     expect(queries.at(-1)?.scope).toBe("all")
     expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.scope).toBe("all")
@@ -227,7 +230,7 @@ test("Sessions and session/facet pickers request further pages only on explicit 
     await fixture.waitForFrame((text) => text.includes("sessions 101-125/125"))
     await dispatch(fixture, "shift+s")
     await fixture.waitForFrame(() => queries.some((q) => q.scope === "session" && q.sessionIDs?.includes("session-124")))
-    await dispatch(fixture, "escape")
+    await dispatch(fixture, "backspace")
     await dispatch(fixture, "a")
     await fixture.waitForFrame(() => queries.some((q) => q.pages?.["facets.agents"]?.cursor?.offset === 100))
   } finally {
@@ -629,7 +632,7 @@ test("S opens a session picker over every session from any tab", async () => {
   }
 })
 
-test("Sessions Enter and space are temporary drills that restore scope and filters on Esc", async () => {
+test("Sessions Enter and space are temporary filters that restore scope and filters on Backspace", async () => {
   const db = await seeded()
   const base = contractFixtureReport(NOW)
   const sessions = [
@@ -676,11 +679,11 @@ test("Sessions Enter and space are temporary drills that restore scope and filte
     await dispatch(fixture, "space")
     expect(await fixture.waitForFrame((text) => text.includes("filters 2"))).not.toContain("filters 3")
 
-    // Esc pops one level at a time; the original project scope and filters return.
-    dispatch(fixture, "escape")
+    // Backspace pops one level at a time; the original project scope and filters return.
+    dispatch(fixture, "backspace")
     await fixture.waitForFrame((text) => text.includes("filters 1"))
     expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"] })
-    dispatch(fixture, "escape")
+    dispatch(fixture, "backspace")
     await fixture.waitForFrame((text) => !text.includes("⌫ undo"))
     expect(queries.at(-1)).toMatchObject({ scope: "project" })
     expect(queries.at(-1)?.agents).toEqual(["build"])

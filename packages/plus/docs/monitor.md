@@ -10,7 +10,8 @@ Opening `/monitor` from a chat starts with that chat selected (`filters 1`),
 regardless of the saved scope. `S` adds another session to the combined report;
 already-selected sessions are omitted. Enter on a Sessions row adds that session,
 and Space selects its tree. Repeated selections do not add duplicate filters or
-count data twice. Backspace/Esc undoes the last filter change; saved preferences
+count data twice. Backspace undoes the last filter change; Esc closes the monitor
+immediately. Saved preferences
 are preserved. Tool, agent, model and request-detail selections also reject repeats.
 
 The RPC and tool accept `sessionIDs` for combined `session` or `tree` scopes.

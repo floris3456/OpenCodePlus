@@ -255,7 +255,7 @@ export function CacheTab(props: CacheTabProps) {
                       <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
                         {`Request Detail: ${req.id} · ${req.kind} at ${formatClock(req.at)}`}
                       </text>
-                      <text fg={theme().text.muted}>Press ⌫ or esc to return to list</text>
+                      <text fg={theme().text.muted}>Press ⌫ to return to list · esc closes monitor</text>
                     </box>
 
                     <Show when={req.measurement?.state === "legacy-unknown" || req.measurement === undefined}>
