@@ -1739,7 +1739,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const actor = normalizeActor(input.actor)
       const updated = new Date().toISOString()
       const current = await load(directory)
-      if (current.globalRevision !== input.expectedGlobalRevision)
+      if (current.globalRevision !== input.expectedGlobalRevision || current.projectRevision !== input.expectedProjectRevision)
         return invalidLayout("the folders changed since they were read; read them again and retry")
       const refusal = layoutRefusal(input.folders, input.orders)
       if (refusal !== undefined) return invalidLayout(refusal)
@@ -1753,21 +1753,22 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         records: [...current.records.filter((record) => record.type !== "folder" && record.type !== "order"), ...folders, ...orders],
       })
       if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
-      if (saved.changed.global) {
-        await append(globalLogPath(), {
+      for (const level of ["project", "global"] as const) {
+        if (!saved.changed[level]) continue
+        await appendForLevel(directory, level, {
           ts: updated,
           actor,
           op: "layout",
           target: input.target,
           summary: input.status,
-          revision: saved.globalRevision,
+          revision: level === "project" ? saved.projectRevision : saved.globalRevision,
         })
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return {
         ok: true as const,
         value: {
-          changed: saved.changed.global,
+          changed: saved.changed.global || saved.changed.project,
           revision: saved.projectRevision,
           globalRevision: saved.globalRevision,
           status: input.status,

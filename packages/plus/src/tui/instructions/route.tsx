@@ -517,11 +517,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return rows.find((row) => row.key === key) ?? rows[0]
   })
 
-  const listKey = () => `${workspace().owner?.key ?? ""}|${workspace().category?.id ?? ""}`
+  const activeCategory = () => workspace().subcategory ?? workspace().category
+  const listKey = () => `${workspace().owner?.key ?? ""}|${activeCategory()?.id ?? ""}`
   const listRows = (): readonly Row[] => (filtering() && state.filter().trim().length > 0 ? filterRows() : workspace().list)
   // A user category leads its own list with a category header row; that header
   // alone is not content, so the empty-category text still shows.
-  const listHasChildren = (): boolean => listRows().some((row) => row.node.id !== workspace().category?.id)
+  const listHasChildren = (): boolean => listRows().some((row) => row.node.id !== activeCategory()?.id)
   const listRow = createMemo(() => {
     const rows = listRows()
     const filtered = filtering() && state.filter().trim().length > 0
@@ -542,7 +543,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   })
 
   const currentRow = (): Row | undefined => (focus() === "nav" ? navRow() : listRow())
-  const current = (): TreeNode | undefined => currentRow()?.node ?? (focus() === "list" ? workspace().category : undefined)
+  const current = (): TreeNode | undefined => currentRow()?.node ?? (focus() === "list" ? activeCategory() : undefined)
 
   // ---- initial agent (after create) and the session's current agent ----
 
@@ -709,7 +710,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const remap = (ids: ReadonlySet<string>) => new Set([...ids].map((id) => across(id)!))
     const owner = workspace().owner
     const ownerThere = owner?.role === "owner" && owner.node.kind === "agent" ? across(owner.key) : undefined
-    const category = across(workspace().category?.id)
+    const category = across(activeCategory()?.id)
     const row = across(listRow()?.key)
     batch(() => {
       setLevel(next)
@@ -741,6 +742,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       return
     }
     setFocus("nav")
+  }
+
+  function switchSubcategory(delta: number) {
+    const view = workspace()
+    const list = view.subcategories ?? []
+    if (view.owner === undefined || list.length === 0) return
+    const index = list.findIndex((node) => node.id === view.subcategory?.id)
+    const next = list[(index + delta + list.length) % list.length]!
+    setCategories({ ...categories(), [view.owner.key]: next.id })
   }
 
   function setOpen(row: Row, open: boolean) {
@@ -934,7 +944,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       return
     }
     const owner = chain[ownerIndex]!
-    const category = chain[ownerIndex + 1]!
+    const outer = chain[ownerIndex + 1]!
+    const category = outer.id.endsWith(":system") && chain[ownerIndex + 2]?.kind === "group" ? chain[ownerIndex + 2]! : outer
     const ownerKey = owner.kind === "group" ? `${owner.id}#every` : owner.id
     const inside = chain.slice(ownerIndex + 2, -1).map((entry) => entry.id)
     batch(() => {
@@ -1021,7 +1032,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       void dialogs.addColdModel(node!)
       return
     }
-    const category = workspace().category
+    const category = activeCategory()
     const tool = node?.kind === "item" && node.address?.item.startsWith("tool:") === true && node.actions?.split === true
     if (focus() === "list" && node !== undefined && node.add === undefined && !tool && category?.add !== undefined) {
       void dialogs.addFor(category)
@@ -1530,6 +1541,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node?.actions?.split === true) hints.push(["s", "split"])
     if ((workspace().levels.find((entry) => entry.id === level())?.review ?? 0) > 0) hints.push(["n", "next review"])
     if (workspace().categories.length > 1) hints.push(["[ ]", "category"])
+    if (workspace().subcategories !== undefined) hints.push([".", "System tab"])
     hints.push(["tab", focus() === "nav" ? "list" : "sidebar"], ["/", "filter"], ["?", "help"])
     hints.push(["esc", focus() === "nav" ? "close" : "sidebar"])
     return hints
@@ -1612,6 +1624,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(wide() ? [{ bind: "shift+w,alt+w", title: "Resize panels", group: "Instructions", run: startResize }] : []),
         { bind: "[", title: "Previous category", group: "Instructions", run: () => switchCategory((index, count) => (index - 1 + count) % count) },
         { bind: "]", title: "Next category", group: "Instructions", run: () => switchCategory((index, count) => (index + 1) % count) },
+        ...(workspace().subcategories === undefined ? [] : [
+          { bind: ".", title: "Next System tab", group: "Instructions", run: () => switchSubcategory(1) },
+        ]),
         ...workspace().categories.map((category, index) => ({
           bind: String(index + 1),
           title: `Show ${category.label}`,
@@ -1789,6 +1804,21 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               )}
             </Show>
             <CategoryTabs />
+            <Show when={workspace().subcategories}>
+              {(tabs) => (
+                <box flexDirection="row" flexShrink={0} columnGap={2}>
+                  <For each={tabs()}>{(tab) => (
+                    <text fg={tab.id === workspace().subcategory?.id ? theme().text.base : theme().text.muted} onMouseUp={() => {
+                      const owner = workspace().owner
+                      if (owner !== undefined) setCategories({ ...categories(), [owner.key]: tab.id })
+                    }}>
+                      {tab.id === workspace().subcategory?.id ? <b><u>{tab.label}</u></b> : tab.label}
+                    </text>
+                  )}</For>
+                  <text fg={theme().text.muted}>. switch tab</text>
+                </box>
+              )}
+            </Show>
           </box>
         }
       >
@@ -1822,7 +1852,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               ? state.filter().trim().length === 0
                 ? "Type to filter"
                 : "No matches"
-              : workspace().category?.add === undefined
+              : activeCategory()?.add === undefined
                   ? "Nothing here"
                   : "Nothing here yet · a adds one"}
           </text>

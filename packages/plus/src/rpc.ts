@@ -401,7 +401,8 @@ export const SnapshotPresetRecord = Schema.Struct({
 export interface SnapshotFolderRecord extends Schema.Schema.Type<typeof SnapshotFolderRecord> {}
 export const SnapshotFolderRecord = Schema.Struct({
   type: Schema.Literal("folder"),
-  level: Schema.Literal("global"),
+  level: Schema.Literals(["global", "project"]),
+  owner: Schema.optionalKey(Schema.String),
   tab: Schema.String,
   id: Schema.String,
   name: Schema.String,
@@ -413,7 +414,7 @@ export const SnapshotFolderRecord = Schema.Struct({
 export interface SnapshotOrderRecord extends Schema.Schema.Type<typeof SnapshotOrderRecord> {}
 export const SnapshotOrderRecord = Schema.Struct({
   type: Schema.Literal("order"),
-  level: Schema.Literal("global"),
+  level: Schema.Literals(["global", "project"]),
   scope: Schema.String,
   items: Schema.Array(Schema.String),
   updated: Schema.String,
@@ -913,6 +914,7 @@ export const ModelSettingsInvalid = Schema.Struct({
 // the snapshot at `expectedGlobalRevision`; a newer store refuses the write.
 export interface LayoutWriteInput extends Schema.Schema.Type<typeof LayoutWriteInput> {}
 export const LayoutWriteInput = Schema.Struct({
+  expectedProjectRevision: Schema.Number,
   folders: Schema.Array(SnapshotFolderRecord),
   orders: Schema.Array(SnapshotOrderRecord),
   expectedGlobalRevision: Schema.Number,

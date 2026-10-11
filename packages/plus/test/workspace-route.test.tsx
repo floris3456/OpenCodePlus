@@ -38,6 +38,21 @@ function reviewSnapshot(): Snapshot {
   })
 }
 
+test("System sub-tabs support keyboard switching and Base filter reveal", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build], items: [{ ...tool("base:gpt", "GPT base", "base instructions"), kind: "base", group: "none" }] })],
+    width: 130, height: 40,
+  })
+  await reach(fixture, "item:project:build:base:gpt", "GPT base")
+  expect(fixture.captureCharFrame()).toContain("4 System")
+  expect(fixture.captureCharFrame()).not.toContain("4 Base")
+  expect(breadcrumb(fixture.captureCharFrame())).toContain("System › Base")
+  expect(dispatch(fixture, ".")).toBe(true)
+  await fixture.waitForFrame((frame) => !selectedRow(frame).includes("GPT base"))
+  expect(dispatch(fixture, ".")).toBe(true)
+  await fixture.waitForFrame((frame) => selectedRow(frame).includes("GPT base"))
+})
+
 test("creating a team selects it in the sidebar once the host shows it", async () => {
   const before = createSnapshot({ agents: [build] })
   const after = createSnapshot({ agents: [build], teams: [{ level: "project", team: "crew", enabled: false, agents: ["reviewer"] }] })

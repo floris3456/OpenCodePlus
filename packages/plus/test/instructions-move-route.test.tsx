@@ -152,7 +152,7 @@ test("Enter drops the previewed order as one layout write over an order record",
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.layoutWrites.length === 1)
     const write = fixture.fake.layoutWrites[0]
-    expect(write?.orders.find((record) => record.scope === "tab:models")?.items).toEqual([moved, other])
+    expect(write?.orders.find((record) => record.scope === "group:group:project:Implementer:models")?.items).toEqual([moved, other])
     expect(write?.folders).toEqual([])
     // Cursor stays on the moved row after the write.
     await fixture.waitForFrame((frame) => !footer(frame).includes("drop") && selectedRow(frame).includes(second))

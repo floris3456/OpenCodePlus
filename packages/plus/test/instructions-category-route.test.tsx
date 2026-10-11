@@ -137,7 +137,8 @@ test("m picks a model row up, right enters the folder below, Enter drops through
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.layoutWrites.length === 1)
     const write = fixture.fake.layoutWrites[0]
-    expect(write?.folders.find((folder) => folder.id === "models:work")?.items).toEqual(["model:openai/gpt-4o"])
+    expect(write?.folders.find((folder) => folder.owner === "group:project:Implementer:models")?.items).toEqual(["model:openai/gpt-4o"])
+    expect(write?.folders.find((folder) => folder.id === "models:work")?.items).toEqual([])
     expect(fixture.fake.selectInputs.length).toBe(0)
   } finally {
     fixture.destroy()

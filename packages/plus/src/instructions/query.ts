@@ -14,7 +14,7 @@ import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, ty
 import { lazyControl, materialize, skeletonOf, teamsOwnerSegment, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
-import { folderNameByItem } from "./folders.js"
+import { groupScope, orderOf, tabOfItem } from "./folders.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -90,7 +90,6 @@ interface QueryState {
   readonly agents: Map<string, AgentSource>
   readonly items: Map<string, Item[]>
   /** item id → the name of the folder that holds the row. */
-  readonly folders: ReadonlyMap<string, string>
 }
 
 /**
@@ -231,7 +230,7 @@ function queryState(memo: Memo): QueryState {
     list.push(item)
     items.set(item.id, list)
   }
-  return { memo, recs, splits, items, agents: new Map(memo.ctx.agents.map((agent) => [agent.id, agent])), folders: folderNameByItem(memo.ctx.folders) }
+  return { memo, recs, splits, items, agents: new Map(memo.ctx.agents.map((agent) => [agent.id, agent])) }
 }
 
 function recsAt(state: QueryState, item: string, section: string | null): readonly CustomizationRecord[] {
@@ -1259,7 +1258,10 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       return (candidate) => {
         const address = candidate.address
         if (address === undefined || address.section !== null) return false
-        const name = state.folders.get(address.item)
+        const tab = tabOfItem(address.item)
+        const owner = `group:${candidate.id.slice(candidate.id.indexOf(":") + 1, candidate.id.indexOf(`:${address.item}`))}:${tab === "system" ? "system:instructions" : tab}`
+        const own = orderOf(state.memo.ctx.orders, groupScope(owner)) !== undefined || state.memo.ctx.folders.some((folder) => folder.owner === owner)
+        const name = state.memo.ctx.folders.find((folder) => folder.owner === (own ? owner : undefined) && folder.items.includes(address.item))?.name
         return name !== undefined && alts.some((alt) => lower(name) === lower(alt))
       }
     }

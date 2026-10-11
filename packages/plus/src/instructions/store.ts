@@ -329,7 +329,8 @@ const V2Category = Schema.Struct({
 // Folders and display order (folders.ts): always global.
 const V2Folder = Schema.Struct({
   type: Schema.Literal("folder"),
-  level: Schema.Literal("global"),
+  level: Schema.Literals(["global", "project"]),
+  owner: Schema.optional(Schema.String),
   tab: Schema.String,
   id: Schema.String,
   name: Schema.String,
@@ -340,7 +341,7 @@ const V2Folder = Schema.Struct({
 
 const V2Order = Schema.Struct({
   type: Schema.Literal("order"),
-  level: Schema.Literal("global"),
+  level: Schema.Literals(["global", "project"]),
   scope: Schema.String,
   items: Schema.Array(Schema.String),
   updated: Schema.String,
@@ -1106,7 +1107,8 @@ function parseV2(lines: string[]) {
       return [
         {
           type: "folder",
-          level: "global",
+          level: record.level,
+          ...(record.owner === undefined ? {} : { owner: record.owner }),
           tab: record.tab,
           id: record.id,
           name: record.name,
@@ -1115,7 +1117,7 @@ function parseV2(lines: string[]) {
           updated: record.updated,
         },
       ]
-    if (record.type === "order") return [{ type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }]
+    if (record.type === "order") return [{ type: "order", level: record.level, scope: record.scope, items: [...record.items], updated: record.updated }]
     if (record.type === "rowlink") {
       // Retired one-way switches become reversible conditions. Keep the pair,
       // owner, enabled state and provenance; persist via the existing migration gate.
@@ -1430,7 +1432,8 @@ export function stable(record: StoredRecord): StoredRecord {
   if (record.type === "folder")
     return {
       type: "folder",
-      level: "global",
+      level: record.level,
+      ...(record.owner === undefined ? {} : { owner: record.owner }),
       tab: record.tab,
       id: record.id,
       name: record.name,
@@ -1439,7 +1442,7 @@ export function stable(record: StoredRecord): StoredRecord {
       updated: record.updated,
     }
   if (record.type === "order")
-    return { type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }
+    return { type: "order", level: record.level, scope: record.scope, items: [...record.items], updated: record.updated }
   if (record.type === "rowlink")
     return {
       type: "rowlink",

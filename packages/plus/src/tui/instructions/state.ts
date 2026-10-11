@@ -867,6 +867,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return false
     }
     const revision = snapshot()?.globalRevision ?? 0
+    const projectRevision = snapshot()?.revision ?? 0
     await awaitDrain()
     const requestGen = ++generation
     setLoading(true)
@@ -876,6 +877,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
           folders: [...change.layout.folders],
           orders: [...change.layout.orders],
           expectedGlobalRevision: revision,
+          expectedProjectRevision: projectRevision,
           target: change.target,
           status: change.status,
         },
@@ -961,7 +963,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(`"${node.label}" is not a folder`)
       return Promise.resolve(false)
     }
-    return layoutAction(planFolderRename(layoutNow(), id, to, new Date().toISOString()))
+    return layoutAction(planFolderRename(layoutNow(), id, to, new Date().toISOString(), node.id.split(":folder:")[0]))
   }
 
   function deleteFolder(node: TreeNode): Promise<boolean> {
@@ -970,7 +972,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(`"${node.label}" is not a folder`)
       return Promise.resolve(false)
     }
-    return layoutAction(planFolderDelete(layoutNow(), id, new Date().toISOString()))
+    return layoutAction(planFolderDelete(layoutNow(), id, new Date().toISOString(), node.id.split(":folder:")[0]))
   }
 
   // T6: rename a renamable row through the same RPC path the palette and the

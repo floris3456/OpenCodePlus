@@ -146,7 +146,7 @@ const MoveDescription =
   "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
   "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
   "A section moves before or after a sibling under the same parent inside its own item; the item's text is rewritten so the request order changes (a heading-derived move folds the consumed same-level child texts into the parent).\n" +
-  "Row and folder moves are display only: nothing there changes what the model sees."
+  "Category membership is saved for this owner and shared with the TUI. Ordinary category moves retain the row's execution settings."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -166,7 +166,7 @@ const CreateDescription =
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
   "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
-  "folder (name, id = the tab row or folder row to create it in; a folder groups rows inside one tab, display only),\n" +
+  "folder (name, id = the tab row or folder row to create it in; a saved category belonging to this owner and tab),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
@@ -434,7 +434,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const folderId = folderIdOfRef(rowToken(node) ?? "")
           if (folderId !== undefined) {
             if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
-            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString()), actor)
+            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString(), node.id.split(":folder:")[0]), actor)
             return { output: { id: input.id, ...applied } }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
@@ -576,7 +576,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const memo = memoFromSnapshot(snapshot)
           const folderId = folderIdOfInput(memo, input.id)
           if (folderId !== undefined) {
-            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString()), actor)
+            const owner = input.id.includes(":folder:") ? input.id.split(":folder:")[0] : snapshot.folders?.find((folder) => folder.id === folderId)?.owner
+            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner), actor)
             return { output: { id: input.id, ...applied } }
           }
           const node = findRow(memo, input.id)
@@ -735,6 +736,7 @@ function applyLayout(api: PlusApi, snapshot: Plus.Snapshot, change: LayoutChange
     if ("refusal" in change) return yield* Effect.fail(new Tool.Error({ message: change.refusal }))
     const written = yield* Effect.promise(() =>
       api.layoutWrite({
+        expectedProjectRevision: snapshot.revision,
         folders: [...change.layout.folders],
         orders: [...change.layout.orders],
         expectedGlobalRevision: snapshot.globalRevision,

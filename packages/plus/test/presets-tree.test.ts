@@ -142,7 +142,6 @@ test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode t
     "group:preset:build:settings",
     "group:preset:build:models",
     "group:preset:build:tools",
-    "group:preset:build:base",
     "group:preset:build:system",
   ])
 })
@@ -155,7 +154,6 @@ test("the Basic team preset lists its member presets with the agent groups and t
     "group:preset:basic/:planner:settings",
     "group:preset:basic/:planner:models",
     "group:preset:basic/:planner:tools",
-    "group:preset:basic/:planner:base",
     "group:preset:basic/:planner:system",
   ])
   const shell = row(nodes, "item:preset:basic/:planner:tool:shell")
@@ -309,6 +307,7 @@ test("rows say where their state comes from: preset, default entry, Defaults, Op
   // `list` projects it.
   expect(query(input(), { where: "id:item:project:bob:tool:shell", fields: ["id", "from"] }).rows).toEqual([
     { id: "item:project:bob:tool:shell", from: "off by default" },
+    { id: "item:project:bob:tool:shell:description", from: "off by default" },
   ])
 })
 
@@ -343,9 +342,11 @@ test("a preset's own rows never read from preset itself; a different preset stil
   // `list` projects the same words.
   expect(query(input(), { where: "id:item:preset:build:tool:shell", fields: ["from"] }).rows).toEqual([
     { id: "item:preset:build:tool:shell", from: "OpenCode" },
+    { id: "item:preset:build:tool:shell:description", from: "OpenCode" },
   ])
   expect(query(input(), { where: "id:item:preset:basic/:planner:tool:shell", fields: ["from"] }).rows).toEqual([
     { id: "item:preset:basic/:planner:tool:shell", from: "shipped" },
+    { id: "item:preset:basic/:planner:tool:shell:description", from: "shipped" },
   ])
 })
 

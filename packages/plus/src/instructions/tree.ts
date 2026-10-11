@@ -415,6 +415,7 @@ function descendLazy(nodes: readonly Lazy[], rowId: string): Lazy | undefined {
 }
 
 function canDescend(node: Lazy, rowId: string): boolean {
+  if (node.id.endsWith(":system") && rowId === node.id.replace(/:system$/, ":base")) return true
   if (rowId.startsWith(node.id + ":") || rowId.startsWith(node.id + "/")) return true
   if (node.kind === "section" && node.id.endsWith(":description")) {
     return rowId.startsWith(node.id.slice(0, -":description".length).replace(/^item:/, "section:") + ":")
@@ -1181,7 +1182,6 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
     lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
-    lazyBase(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySystem(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyMcpInventory(ctx, memo, catalogue, depth),
   ])
@@ -1223,10 +1223,13 @@ function arrangeList(memo: Memo, id: string, home: readonly Lazy[]): readonly La
 }
 
 function arrangeTab(memo: Memo, group: Lazy): Lazy {
+  if (group.id.endsWith(":system")) return group
   const tab = tabOfGroupId(group.id)
   if (tab === undefined) return group
-  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab)
-  const listed = orderOf(memo.ctx.orders, `tab:${tab}`)?.items ?? []
+  const own = orderOf(memo.ctx.orders, groupScope(group.id))
+  const scoped = own !== undefined || memo.ctx.folders.some((folder) => folder.owner === group.id)
+  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab && folder.owner === (scoped ? group.id : undefined))
+  const listed = (own ?? orderOf(memo.ctx.orders, `tab:${tab}`))?.items ?? []
   if (folders.length === 0 && listed.length === 0) return group
   const byItem = new Map(folders.flatMap((folder) => folder.items.filter((entry) => folderIdOfRef(entry) === undefined).map((item) => [item, folder.id] as const)))
   const referenced = new Set(folders.flatMap((folder) => folder.items.flatMap((entry) => folderIdOfRef(entry) ?? [])))
@@ -1424,7 +1427,6 @@ function lazyOwnerRow(
         lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
         lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-        lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       ]),
   }), row.level, row.id)
@@ -1744,7 +1746,6 @@ function lazyTeamMember(
         lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
         lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
-        lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
         lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
       ]),
   }), level, owner, teamRef, "teams", memberPath)
@@ -1785,7 +1786,6 @@ function lazyTeamSpecialAgent(
         lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
         lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
         lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
-        lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
         lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
       ]),
   }), level, owner, teamRef, "teams", specialPath)
@@ -1863,6 +1863,7 @@ function itemsForControls(memo: Memo): readonly Item[] {
 }
 
 export function controlValue(item: string, text: string, enabled: boolean): string {
+  if (item.startsWith("toolmode:") && text === "codemode") return "Code Mode"
   if (controlKind(item) === "toggle") return enabled ? "On" : "Off"
   if (controlChoices(item) !== undefined) return text.length === 0 ? "Inherited" : text[0].toUpperCase() + text.slice(1)
   if (text.length > 0) return text.replace(/\s+/g, " ").slice(0, 80)
@@ -2923,10 +2924,32 @@ function lazySystem(
   catalogue?: Catalogue,
   ownerPath?: string,
 ): Lazy {
+  const id = groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`
+  return branch(memo, {
+    kind: "group", id, label: "System", depth, actions: noActions(),
+    children: () => withFolders(memo, [
+      lazySystemInstructions(ctx, memo, level, owner, agent, depth + 1, `${id}:instructions`, teamRef, catalogue, ownerPath),
+      lazyBase(ctx, memo, level, owner, agent, depth + 1, id.replace(/:system$/, ":base"), teamRef, catalogue, ownerPath),
+    ]),
+  })
+}
+
+function lazySystemInstructions(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+  groupId?: string,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
   return branch(memo, {
     kind: "group",
     id: groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`,
-    label: "System",
+    label: "Instructions",
     depth,
     add: "instruction",
     actions: noActions(),

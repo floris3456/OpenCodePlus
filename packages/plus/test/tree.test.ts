@@ -143,7 +143,6 @@ test("Implementer subtree shape under the project root", () => {
     "Settings",
     "Models",
     "Tools",
-    "Base",
     "System",
   ])
   expect(childrenOf(nodes, "group:project:Implementer:tools").map((node) => node.label)).toEqual([
@@ -165,7 +164,8 @@ test("Implementer subtree shape under the project root", () => {
     "MCP",
     "Project",
   ])
-  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)[0]).toBe("Role/persona")
+  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)).toEqual(["Instructions", "Base"])
+  expect(childrenOf(nodes, "group:project:Implementer:system:instructions").map((node) => node.label)[0]).toBe("Role/persona")
 })
 
 test("identical subtree under each of the three roots", () => {
@@ -177,7 +177,8 @@ test("identical subtree under each of the three roots", () => {
   ] as const) {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
-    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Base", "System"])
+    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "System"])
+    expect(childrenOf(nodes, `group:${level}:${agent}:system`).map((node) => node.label)).toEqual(["Instructions", "Base"])
   }
 })
 
@@ -195,7 +196,6 @@ test("Defaults holds two catalogues with the Models section between them, each o
     "group:defaults::settings",
     "group:defaults::models",
     "group:defaults::tools",
-    "group:defaults::base",
     "group:defaults::system",
     "group:defaults::mcp",
   ])
@@ -203,7 +203,6 @@ test("Defaults holds two catalogues with the Models section between them, each o
     "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
     "group:defaults:/teams:tools",
-    "group:defaults:/teams:base",
     "group:defaults:/teams:system",
     "group:defaults:/teams:mcp",
   ])
@@ -354,7 +353,6 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
     "group:project:crew/:CrewMate:settings",
     "group:project:crew/:CrewMate:models",
     "group:project:crew/:CrewMate:tools",
-    "group:project:crew/:CrewMate:base",
     "group:project:crew/:CrewMate:system",
   ])
   // Member rows carry the member's own `<team>/:<member>` owner path so the
@@ -516,7 +514,7 @@ test("registered team member yields its Role/persona under System", () => {
   const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
   expect(systemGroup).toBeDefined()
   expect(
-    childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
+    childrenOf(nodes, "group:project:crew/:CrewMate:system:instructions").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
   ).toBe(true)
 })
 
@@ -562,7 +560,6 @@ test("team Special group row and special agent subtrees across all three levels"
         `group:${level}:crew/:special:${id}:settings`,
         `group:${level}:crew/:special:${id}:models`,
         `group:${level}:crew/:special:${id}:tools`,
-        `group:${level}:crew/:special:${id}:base`,
         `group:${level}:crew/:special:${id}:system`,
       ])
       for (const group of agentKids) {
@@ -651,7 +648,6 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
     "group:defaults:/teams:tools",
-    "group:defaults:/teams:base",
     "group:defaults:/teams:system",
     "group:defaults:/teams:mcp",
   ])
@@ -737,7 +733,7 @@ test("MCP tools group by item.server, never the tool name", () => {
 
 test("Role/persona is first under System", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
-  const labels = childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)
+  const labels = childrenOf(nodes, "group:project:Implementer:system:instructions").map((node) => node.label)
   expect(labels[0]).toBe("Role/persona")
   expect(labels).toContain("guide")
 })
@@ -768,7 +764,7 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
     { level: "project", agent: "Implementer", item: "system:role", section: "purpose" },
     { level: "project", agent: "Implementer", item: "system:role", section: "usage" },
   ])
-  expect(sections.map((node) => node.depth)).toEqual([7, 7])
+  expect(sections.map((node) => node.depth)).toEqual([8, 8])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
   expect(sections.every((node) => node.add === "section")).toBe(true)
@@ -972,8 +968,8 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:global")).toBe("skill")
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:defaults")).toBe("skill")
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:preset")).toBe("skill")
-  expect(adds.get("group:project:Implementer:system")).toBe("instruction")
-  expect(adds.get("group:defaults::system")).toBe("instruction")
+  expect(adds.get("group:project:Implementer:system:instructions")).toBe("instruction")
+  expect(adds.get("group:defaults::system:instructions")).toBe("instruction")
   expect(adds.get("group:defaults::mcp")).toBe("mcp")
   expect(adds.get("group:project:Implementer:tools")).toBeUndefined()
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills")).toBe("skill")
@@ -1039,7 +1035,6 @@ test("expansion emits only expanded children", () => {
     "group:project:Implementer:settings",
     "group:project:Implementer:models",
     "group:project:Implementer:tools",
-    "group:project:Implementer:base",
     "group:project:Implementer:system",
     "group:project:teams",
     "root:global",
@@ -1068,7 +1063,6 @@ test("expansion emits only expanded children", () => {
     "group:defaults::settings",
     "group:defaults::models",
     "group:defaults::tools",
-    "group:defaults::base",
     "group:defaults::system",
     "group:defaults::mcp",
     "group:defaults:/models",

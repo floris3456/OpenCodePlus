@@ -120,7 +120,14 @@ function planFor(input: MemoInput, layout: LayoutRecords, node: TreeNode, parent
 
 function apply(state: MoveState, change: LayoutChange, expand: readonly string[] = []): MoveAdvance {
   if ("refusal" in change) return { refusal: change.refusal }
-  return { state: { ...state, layout: change.layout, target: change.target, status: change.status }, expand }
+  const relocated = (id: string) => {
+    const at = id.indexOf(":folder:")
+    if (at < 0) return id
+    const owner = id.slice(0, at)
+    const copied = `${owner}/${id.slice(at + ":folder:".length)}`
+    return change.layout.folders.some((folder) => folder.owner === owner && folder.id === copied) ? `${owner}:folder:${copied}` : id
+  }
+  return { state: { ...state, rowId: relocated(state.rowId), layout: change.layout, target: change.target, status: change.status }, expand: expand.map(relocated) }
 }
 
 // The list that holds `token`: the folder whose `items` name it, else the tab
