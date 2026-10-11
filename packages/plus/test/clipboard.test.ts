@@ -6,6 +6,7 @@ import { catalogItems, parameterApprovals } from "../src/instructions/permission
 import { query } from "../src/instructions/query.js"
 import { toolModeItem } from "../src/instructions/tool-mode.js"
 import { buildTreeMemo, expandedTree, findLazy, type MemoInput } from "../src/instructions/tree.js"
+import { rowlinkView, writeRowlink } from "../src/instructions/rowlinks.js"
 
 const tool: Item = { id: "tool:read", kind: "tool", group: "native", title: "read", text: "Read a file", enabled: true, fingerprint: fingerprint("Read a file") }
 const source: MemoInput = {
@@ -98,6 +99,20 @@ test("Description text can be pasted across typed categories", () => {
   expect(query(pasted.memo, { where: "id:item:project:plan:system:note", fields: ["text"] }).rows[0]?.text).toBe(tool.text)
 })
 
+test("tool copies preserve numeric permission limits as well as their switch", () => {
+  const input = { ...source, items: [...source.items, ...catalogItems([tool], (id) => id)] }
+  const value = saveText(input, "item:project:build:perm:read:limits.lines", "17")
+  if ("refusal" in value) throw new Error(value.refusal)
+  const enabled = setEnabled({ ...input, records: value.records }, "item:project:build:perm:read:limits.lines", true)
+  if ("refusal" in enabled) throw new Error(enabled.refusal)
+  const current = { ...input, records: enabled.records }
+  const copy = captureRows(current, ["item:project:build:tool:read"], "copy")
+  if ("refusal" in copy) throw new Error(copy.refusal)
+  const pasted = pasteRows(current, copy, "group:project:plan:tools")
+  if ("refusal" in pasted) throw new Error(pasted.refusal)
+  expect(pasted.memo.records).toContainEqual(expect.objectContaining({ type: "customization", agent: "plan", item: "perm:read:limits.lines", text: "17", state: "on" }))
+})
+
 test("cutting configuration between parameters within one owner transfers its value", () => {
   const argument: Item = { ...source.items[2]!, id: "param:read:other", title: "other", text: "Destination argument" }
   const input = { ...source, items: [...source.items, argument] }
@@ -146,4 +161,50 @@ test("cutting a text section removes its source span and pastes one independent 
   expect(noteText).toContain("Move this")
   expect(noteText?.match(/Second/g)).toHaveLength(1)
   expect(findLazy(buildTreeMemo(pasted.memo), pasted.rows[0]!)?.partial().state).toBe("off")
+})
+
+test("pasting replaces destination-only switches before they can affect unrelated rows", () => {
+  const other: Item = { ...tool, id: "tool:other", title: "other" }
+  const input = { ...source, items: [...source.items, other, toolModeItem(other)] }
+  const disabled = setEnabled(input, "item:project:plan:tool:read", false)
+  if ("refusal" in disabled) throw new Error(disabled.refusal)
+  const current: MemoInput = { ...input, records: [...disabled.records, ...writeRowlink([], { level: "project", agent: "plan" }, { item: tool.id, section: null }, { item: other.id, section: null }, "either", true, "2026-10-11")] }
+  const copy = captureRows(current, ["item:project:build:tool:read"], "copy")
+  if ("refusal" in copy) throw new Error(copy.refusal)
+  const pasted = pasteRows(current, copy, "group:project:plan:tools")
+  if ("refusal" in pasted) throw new Error(pasted.refusal)
+  const memo = buildTreeMemo(pasted.memo)
+  expect(findLazy(memo, "item:project:plan:tool:read")?.partial().state).toBe("on")
+  expect(findLazy(memo, "item:project:plan:tool:other")?.partial().state).toBe("on")
+  expect(rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, { level: "project", agent: "plan", item: tool.id, section: null }, { item: tool.id, section: null })).toEqual([expect.objectContaining({ enabled: false })])
+})
+
+test("copy freezes inherited heading text even when destination initially matches", () => {
+  const read = { ...tool, text: "# First\nOriginal first\n\n# Second\nOriginal second\n" }
+  const input = { ...source, items: [read, toolModeItem(read)] }
+  const copy = captureRows(input, ["item:project:build:tool:read"], "copy")
+  if ("refusal" in copy) throw new Error(copy.refusal)
+  const pasted = pasteRows(input, copy, "group:project:plan:tools")
+  if ("refusal" in pasted) throw new Error(pasted.refusal)
+  const changed = { ...pasted.memo, items: pasted.memo.items.map((item) => item.id === tool.id ? { ...item, text: "# First\nChanged upstream\n\n# Second\nChanged second\n", fingerprint: fingerprint("changed") } : item) }
+  expect(query(changed, { where: "id:item:project:plan:tool:read", fields: ["text"] }).rows[0]?.text).toContain("Original first")
+  expect(query(changed, { where: "id:item:project:build:tool:read", fields: ["text"] }).rows[0]?.text).toContain("Changed upstream")
+})
+
+test("cutting a section remaps its links and masks the old endpoint", () => {
+  const read = { ...tool, text: "# First\nKeep\n\n# Second\nMove\n" }
+  const note: Item = { id: "system:note", kind: "system", group: "none", title: "Note", text: "# Existing\nA note\n", enabled: true, fingerprint: "note" }
+  const input = { ...source, items: [read, toolModeItem(read), note] }
+  const section = expandedTree(input).find((row) => row.address?.agent === "build" && row.address.level === "project" && row.kind === "section" && row.label === "Second")
+  if (section?.address === undefined) throw new Error("missing section")
+  const current = { ...input, records: writeRowlink([], section.address, { item: tool.id, section: null }, section.address, "shownWhenOff", true, "2026-10-11") }
+  const cut = captureRows(current, [section.id], "cut")
+  if ("refusal" in cut) throw new Error(cut.refusal)
+  const pasted = pasteRows(current, cut, "item:project:plan:system:note")
+  if ("refusal" in pasted) throw new Error(pasted.refusal)
+  const memo = buildTreeMemo(pasted.memo)
+  const inserted = findLazy(memo, pasted.rows[0] ?? "")
+  if (inserted?.address === undefined) throw new Error("missing pasted section")
+  expect(rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, inserted.address, inserted.address)).toContainEqual(expect.objectContaining({ item: tool.id, target: note.id, targetSection: inserted.address.section, type: "shownWhenOff", enabled: true }))
+  expect(rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, section.address, section.address)).toContainEqual(expect.objectContaining({ enabled: false }))
 })

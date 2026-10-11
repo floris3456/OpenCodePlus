@@ -257,6 +257,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       if (action === "paste") {
         if (decoded.value.consumed) { setClipboard(undefined); setSelection(new Set<string>()) }
         await refresh()
+        const row = decoded.value.rows.at(-1)
+        const memo = treeMemo()
+        if (row !== undefined && memo !== undefined) reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
       }
       if (decoded.value.clipboard !== undefined && decoded.value.mode !== undefined)
         setClipboard({ id: decoded.value.clipboard, mode: decoded.value.mode, rows: decoded.value.rows })

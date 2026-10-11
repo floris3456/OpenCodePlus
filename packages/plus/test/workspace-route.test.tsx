@@ -95,6 +95,18 @@ test("System sub-tabs support keyboard switching and Base filter reveal", async 
   await fixture.waitForFrame((frame) => selectedRow(frame).includes("GPT base"))
 })
 
+test("successful paste reveals its nested destination row instead of the paste target", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build], items: [tool("tool:read", "read", "Read files"), tool("tool:write", "write", "Write files"), { ...tool("param:read:path", "path", "Read path"), kind: "param", paramTool: "read" }] })],
+    width: 130, height: 40,
+    rpc: { "instructions.run": async () => ({ status: "Pasted one row", rows: ["item:project:build:param:read:path"], consumed: true }) },
+  })
+  await reach(fixture, "item:project:build:tool:write", "write")
+  expect(dispatch(fixture, "ctrl+v")).toBe(true)
+  await fixture.waitForFrame((frame) => selectedRow(frame).includes("path") && breadcrumb(frame).includes("read"))
+  expect(breadcrumb(fixture.captureCharFrame())).toContain("build › Tools › OpenCode › read › path")
+})
+
 test("creating a team selects it in the sidebar once the host shows it", async () => {
   const before = createSnapshot({ agents: [build] })
   const after = createSnapshot({ agents: [build], teams: [{ level: "project", team: "crew", enabled: false, agents: ["reviewer"] }] })

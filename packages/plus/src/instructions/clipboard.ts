@@ -1,13 +1,14 @@
 import { controlItemFor, isControl } from "./agent-controls.js"
 import { folderIdOfRef, folderRef, tabOfGroupId } from "./folders.js"
 import { rowlinkView, sameOwnerView, writeRowlink, type RowlinkEndpoint, type RowlinkRecord } from "./rowlinks.js"
-import { applies, parseModelItemId, parsePermItemId, resolveModelFields, sameModelCandidate, scopedTo, type ModelRecord, type RuleRecord } from "./model.js"
+import { applies, merge, parseModelItemId, parsePermItemId, resolveModelFields, sameModelCandidate, scopedTo, type ModelRecord, type RuleRecord } from "./model.js"
 import { ruleAt, ruleItem } from "./rules.js"
 import { resolveModelCompactionFields } from "./model-settings.js"
+import { isValueRow } from "./permission-catalog.js"
 import { activateModelRow, addSection, planFolderCreate, planFolderDelete, planRowMove, removeModelRow, reset, rowToken, saveSplit, saveText, setEnabled, setPin, setRequires, type LayoutRecords, type OpResult } from "./ops.js"
 import { correspondingRow } from "./reflection.js"
 import { rowTeamOf, sectionResolveOf, splitOf, wholeOf } from "./resolve-memo.js"
-import { buildTreeMemo, collectSkeleton, findLazy, lazyPath, materialize, type Lazy, type MemoInput } from "./tree.js"
+import { buildTreeMemo, collectSkeleton, findLazy, lazyPath, materialize, type Lazy, type Memo, type MemoInput } from "./tree.js"
 
 export interface Clipboard {
   readonly source: MemoInput
@@ -44,6 +45,43 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
   const layout = (next: LayoutRecords) => {
     draft.layout = next
     draft.memo = { ...draft.memo, ...next }
+  }
+  const maskLinks = (memo: Memo, root: Lazy) => {
+    const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink") }
+    for (const row of collectSkeleton([root])) {
+      if (row.address === undefined) continue
+      for (const link of rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, row.address, row.address)) {
+        links.rows = writeRowlink(links.rows, row.address, { item: link.item, section: link.section }, { item: link.target, section: link.targetSection }, link.type, false, new Date().toISOString())
+      }
+    }
+    draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
+  }
+  const copyLinks = (origin: Lazy, destination: Lazy): string | undefined => {
+    if (destination.address === undefined) return "The link destination has no owner"
+    const memo = buildTreeMemo(draft.memo)
+    const rows = collectSkeleton([origin])
+    const endpoint = (value: RowlinkEndpoint): RowlinkEndpoint | undefined => {
+      const row = rows.find((row) => row.address?.item === value.item && row.address.section === value.section)
+      if (row === undefined) return value
+      const next = correspondingRow(source, origin, row, memo, destination)?.address
+      return next === undefined ? undefined : { item: next.item, section: next.section }
+    }
+    const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink") }
+    const seen = new Set<string>()
+    for (const row of rows) {
+      if (row.address === undefined) continue
+      for (const link of rowlinkView(source.ctx.scopes.rowlinks ?? [], source.ctx.scopes, row.address, row.address)) {
+        const key = JSON.stringify([link.item, link.section, link.target, link.targetSection])
+        if (seen.has(key)) continue
+        seen.add(key)
+        const from = endpoint({ item: link.item, section: link.section })
+        const to = endpoint({ item: link.target, section: link.targetSection })
+        if (from === undefined || to === undefined) return "The destination lacks a linked setting"
+        links.rows = writeRowlink(links.rows, destination.address, from, to, link.type, link.enabled, new Date().toISOString())
+      }
+    }
+    draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
+    return undefined
   }
   const transfer = (id: string, into: string): string | undefined => {
     const origin = findLazy(source, id)
@@ -122,6 +160,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         }
       }
       if (clipboard.mode === "cut") {
+        maskLinks(source, origin)
         const current = buildTreeMemo(draft.memo)
         const root = lazyPath(current, id).find((row) => row.address?.item === origin.address!.item && row.address.section === null)
         if (root === undefined) return "The section's source document is unavailable"
@@ -142,6 +181,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
           if (refusal !== undefined) return refusal
         }
       }
+      const linked = copyLinks(origin, inserted)
+      if (linked !== undefined) return linked
       draft.rows.push(inserted.id)
       return undefined
     }
@@ -230,6 +271,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     const relocating = same && origin.address.item === destinationRow.address.item
     if (same && clipboard.mode === "copy" && origin.address.item.startsWith("tool:")) return `You already have this tool: ${origin.label}. Cut it to change its category.`
     if (!relocating || clipboard.mode === "copy") {
+      // Destination-only switches must not fire while the copied values are written.
+      maskLinks(memo, destinationRow)
       // Exposure must arrive before pin settings: a previously direct tool
       // exposes its pin action only after it has moved into Code Mode.
       const sourceRows = collectSkeleton([origin]).toSorted((left, right) => Number(right.address?.item.startsWith("toolmode:") === true) - Number(left.address?.item.startsWith("toolmode:") === true))
@@ -256,9 +299,18 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         const resolved = address.section === null
           ? wholeOf(source, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
           : sectionResolveOf(source, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address))
-        if (item.kind !== "perm" && row.actions.edit && next.actions.edit) {
-          const refusal = apply(saveText(draft.memo, next.id, resolved.text))
+        if ((item.kind !== "perm" || isValueRow(item)) && row.actions.edit && next.actions.edit) {
+          const refusal = apply(saveText(draft.memo, next.id, resolved.fullText ?? resolved.text))
           if (refusal !== undefined) return refusal
+          if (address.section === null && next.address !== undefined) {
+            const current = buildTreeMemo(draft.memo)
+            const upstream = isControl(next.address.item) ? controlItemFor(current.ctx.items, next.address) : current.ctx.items.find((entry) => entry.id === next.address!.item)
+            if (upstream === undefined) return `The destination lacks ${row.label}`
+            draft.memo = { ...draft.memo, records: [
+              ...draft.memo.records.filter((record) => record.type !== "customization"),
+              ...merge(current.ctx.customizations, next.address, { text: resolved.fullText ?? resolved.text }, upstream, current.ctx.scopes, current.ctx.splits),
+            ] }
+          }
         }
         if (address.section === null && row.actions.split && next.actions.split) {
           const split = splitOf(source, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
@@ -280,29 +332,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
           if (refusal !== undefined) return refusal
         }
       }
-      const destinationMemo = buildTreeMemo(draft.memo)
-      const destinationRoot = findLazy(destinationMemo, destinationRow.id)!
-      const endpoint = (value: RowlinkEndpoint): RowlinkEndpoint | undefined => {
-        const row = sourceRows.find((row) => row.address?.item === value.item && row.address.section === value.section)
-        if (row === undefined) return value
-        const next = correspondingRow(source, origin, row, destinationMemo, destinationRoot)?.address
-        return next === undefined ? undefined : { item: next.item, section: next.section }
-      }
-      const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink") }
-      const seenLinks = new Set<string>()
-      for (const row of sourceRows) {
-        if (row.address === undefined) continue
-        for (const link of rowlinkView(source.ctx.scopes.rowlinks ?? [], source.ctx.scopes, row.address, row.address)) {
-          const key = JSON.stringify([link.item, link.section, link.target, link.targetSection])
-          if (seenLinks.has(key)) continue
-          seenLinks.add(key)
-          const from = endpoint({ item: link.item, section: link.section })
-          const to = endpoint({ item: link.target, section: link.targetSection })
-          if (from === undefined || to === undefined) return "The destination lacks a linked setting"
-          links.rows = writeRowlink(links.rows, destinationRow.address, from, to, link.type, link.enabled, new Date().toISOString())
-        }
-      }
-      draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
+      const linked = copyLinks(origin, findLazy(buildTreeMemo(draft.memo), destinationRow.id)!)
+      if (linked !== undefined) return linked
     }
     if (origin.address.item.startsWith("tool:") && (target.id.includes(":codemode") || target.id.endsWith(":native"))) {
       const exposure = collectSkeleton([findLazy(buildTreeMemo(draft.memo), destinationRow.id)!]).find((row) => row.address?.item.startsWith("toolmode:"))

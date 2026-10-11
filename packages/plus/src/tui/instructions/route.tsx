@@ -5,7 +5,7 @@ import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, un
 import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
-import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { controlKind, lazyPath, materialize, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { isDefaultSwitchField, isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseColdDefaultItemId, parseColdModelItemId, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
@@ -627,13 +627,24 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   })
   createEffect(() => {
     const nav = workspace().nav
+    const memo = state.memo()
     // Track the reveal request itself, not only the nav it waits for: a rename
     // may reveal a row the current snapshot already carries.
     state.revealed()
     const wanted = wantedReveal
     if (wanted === undefined) return
     const row = nav.find((entry) => entry.key === wanted)
-    if (row === undefined) return
+    if (row === undefined) {
+      if (memo === undefined) return
+      const chain = lazyPath(memo, wanted)
+      if (chain.length === 0) return
+      wantedReveal = undefined
+      untrack(() => {
+        closeFilter()
+        revealChain(chain.map((entry) => materialize(entry)), wanted)
+      })
+      return
+    }
     wantedReveal = undefined
     untrack(() => {
       selectNav(row)
