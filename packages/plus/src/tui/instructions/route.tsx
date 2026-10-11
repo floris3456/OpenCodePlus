@@ -1167,7 +1167,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function permItem(node: TreeNode) {
     const item = node.address?.item
     if (item === undefined || !item.startsWith("perm:") || node.address?.section !== null) return undefined
-    return state.snapshot()?.items.find((entry) => entry.id === item)
+    return state.effectiveItem(node)
   }
 
   function openMode(next: Mode, node: TreeNode) {

@@ -1,7 +1,8 @@
 import { controlItemFor, isControl } from "./agent-controls.js"
 import { folderIdOfRef, folderRef, tabOfGroupId } from "./folders.js"
 import { rowlinkView, sameOwnerView, writeRowlink, type RowlinkEndpoint, type RowlinkRecord } from "./rowlinks.js"
-import { applies, parseModelItemId, resolveModelFields, sameModelCandidate, scopedTo, type ModelRecord } from "./model.js"
+import { applies, parseModelItemId, parsePermItemId, resolveModelFields, sameModelCandidate, scopedTo, type ModelRecord, type RuleRecord } from "./model.js"
+import { ruleAt, ruleItem } from "./rules.js"
 import { resolveModelCompactionFields } from "./model-settings.js"
 import { activateModelRow, addSection, planFolderCreate, planFolderDelete, planRowMove, removeModelRow, reset, rowToken, saveSplit, saveText, setEnabled, setPin, setRequires, type LayoutRecords, type OpResult } from "./ops.js"
 import { correspondingRow } from "./reflection.js"
@@ -156,6 +157,22 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       return undefined
     }
     if (destinationTab === undefined || sourceTab === undefined || tabOfGroupId(sourceTab.id) !== tabOfGroupId(destinationTab.id)) return `"${origin.label}" belongs in ${sourceTab?.label ?? "its own section"}`
+    const destinationOwner = target.address ?? path.findLast((row) => row.owner !== undefined)?.owner
+    if (destinationOwner !== undefined && !sameOwnerView(origin.address, { ...destinationOwner, item: origin.address.item, section: null })) {
+      const rules = collectSkeleton([origin]).flatMap((row): RuleRecord[] => {
+        if (row.address === undefined) return []
+        const record = ruleAt(source.ctx.rules, source.ctx.scopes, row.address)
+        if (record === undefined) return []
+        return [{ ...record, level: destinationOwner.level, agent: destinationOwner.agent,
+          team: destinationOwner.team, catalogue: destinationOwner.agent === null ? destinationOwner.catalogue : undefined,
+          updated: new Date().toISOString(),
+        }]
+      })
+      draft.memo = { ...draft.memo, records: [
+        ...draft.memo.records.filter((record) => record.type !== "rule" || !rules.some((next) => next.tool === record.tool && next.id === record.id && scopedTo(record, next))),
+        ...rules.filter((record, index) => rules.findIndex((other) => other.tool === record.tool && other.id === record.id) === index),
+      ] }
+    }
     const model = parseModelItemId(origin.address.item)
     if (model !== undefined) {
       const owner = path.findLast((row) => row.owner !== undefined)?.owner ?? target.address
@@ -203,7 +220,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     }
     const sourceItem = isControl(origin.address.item) ? controlItemFor(source.ctx.items, origin.address) : source.ctx.items.find((item) => item.id === origin.address!.item)
     const targetItem = target.address === undefined ? undefined : isControl(target.address.item) ? controlItemFor(memo.ctx.items, target.address) : memo.ctx.items.find((item) => item.id === target.address!.item)
-    const addressed = collectSkeleton([targetItem?.kind === "tool" && sourceItem?.kind !== "tool" ? target : destinationTab]).filter((row) => row.address?.section === null)
+    const updatedMemo = buildTreeMemo(draft.memo)
+    const addressed = collectSkeleton([findLazy(updatedMemo, targetItem?.kind === "tool" && sourceItem?.kind !== "tool" ? target.id : destinationTab.id)!]).filter((row) => row.address?.section === null)
     const destinationRow = target.address !== undefined && sourceItem !== undefined && sourceItem.kind !== "tool" && targetItem?.kind === sourceItem.kind
       ? target : addressed.find((row) => row.address?.item === origin.address!.item || sourceItem?.kind === "param" && targetItem?.kind === "tool" && memo.ctx.items.some((item) => item.id === row.address?.item && item.kind === "param" && item.title === sourceItem.title))
     if (destinationRow?.address === undefined) return `The destination does not have "${origin.label}"`
@@ -228,7 +246,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         const address = row.address
         if (address === undefined || seen.has(JSON.stringify(address))) continue
         seen.add(JSON.stringify(address))
-        const item = isControl(address.item) ? controlItemFor(source.ctx.items, address) : source.ctx.items.find((item) => item.id === address.item && (address.agent === null || applies(item, address.agent)))
+        const upstream = isControl(address.item) ? controlItemFor(source.ctx.items, address) : source.ctx.items.find((item) => item.id === address.item && (address.agent === null || applies(item, address.agent)))
+        const item = upstream === undefined ? undefined : ruleItem(upstream, source.ctx.rules, source.ctx.scopes, address)
         if (item === undefined) return `"${row.label}" needs a specialized configuration transfer`
         const nextMemo = buildTreeMemo(draft.memo)
         const root = findLazy(nextMemo, destinationRow.id)!
@@ -237,7 +256,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         const resolved = address.section === null
           ? wholeOf(source, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
           : sectionResolveOf(source, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address))
-        if (row.actions.edit && next.actions.edit) {
+        if (item.kind !== "perm" && row.actions.edit && next.actions.edit) {
           const refusal = apply(saveText(draft.memo, next.id, resolved.text))
           if (refusal !== undefined) return refusal
         }
@@ -299,6 +318,10 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     if (!relocating && clipboard.mode === "cut") {
       const refusal = apply(origin.actions.toggle ? setEnabled(draft.memo, origin.id, false) : reset(draft.memo, origin.id))
       if (refusal !== undefined) return refusal
+      const rule = parsePermItemId(origin.address.item)
+      if (rule !== undefined) draft.memo = { ...draft.memo, records: draft.memo.records.filter((record) =>
+        record.type !== "rule" || record.tool !== rule.tool || record.id !== rule.ruleId || !scopedTo(record, origin.address!),
+      ) }
     }
     draft.rows.push(destinationRow.id)
     return undefined

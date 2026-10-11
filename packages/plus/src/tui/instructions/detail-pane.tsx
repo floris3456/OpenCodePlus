@@ -2,7 +2,8 @@ import { TextAttributes } from "@opentui/core"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { fromLabel } from "../../instructions/from-label.js"
 import { applies, catalogueForAddress, matchesName, modelCandidates, modelRuntimeScope, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
-import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, SplitRecord } from "../../instructions/model.js"
+import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, RuleRecord, SplitRecord } from "../../instructions/model.js"
+import { ruleItem } from "../../instructions/rules.js"
 import { presetLabels, presetOfAddress } from "../../instructions/presets.js"
 import { rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo } from "../../instructions/resolve-memo.js"
 import { ownBody, wrappingSection } from "../../instructions/sections.js"
@@ -20,6 +21,7 @@ interface Derived {
   readonly customizations: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
   readonly models: readonly ModelRecord[]
+  readonly rules: readonly RuleRecord[]
   readonly agents: readonly AgentSource[]
   readonly scopes: ReturnType<typeof contextOfSnapshot>
   /** presetKey → label, for "from preset X". */
@@ -37,6 +39,7 @@ function derivedOf(snapshot: Snapshot): Derived {
     customizations: records.filter((record): record is CustomizationRecord => record.type === "customization"),
     splits: records.filter((record): record is SplitRecord => record.type === "split"),
     models: records.filter((record): record is ModelRecord => record.type === "model"),
+    rules: records.filter((record): record is RuleRecord => record.type === "rule"),
     agents: snapshot.agents.map(agentOf),
     scopes: contextOfSnapshot(snapshot),
     labels: presetLabels(listingOfSnapshot(snapshot)),
@@ -45,12 +48,13 @@ function derivedOf(snapshot: Snapshot): Derived {
   return value
 }
 
-function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
+function upstreamFor(derived: Derived, address: Address): Item | undefined {
+  const items = derived.items
   if (isControl(address.item)) return controlItemFor(items, address)
   const matches = items.filter((entry) => entry.id === address.item)
   const owner = address.agent
-  if (owner === null) return matches[0]
-  return matches.find((entry) => applies(entry, owner)) ?? matches[0]
+  const item = matches.find((entry) => owner === null || applies(entry, owner)) ?? matches[0]
+  return item === undefined ? undefined : ruleItem(item, derived.rules, derived.scopes, address)
 }
 
 // The row's resolved value: through the shared memo when the inspector has it,
@@ -123,7 +127,7 @@ export function resolveNode(node: TreeNode, snapshot: Snapshot, memo?: Memo): Re
   const address = node.address
   if (address === undefined) return undefined
   const derived = derivedOf(snapshot)
-  const upstream = upstreamFor(derived.items, address)
+  const upstream = upstreamFor(derived, address)
   if (upstream === undefined) return undefined
   return resolveAt(derived, address, upstream, memo)
 }
@@ -141,7 +145,7 @@ function introductionText(node: TreeNode, snapshot: Snapshot, memo: Memo | undef
   const address = node.address
   if (address === undefined || address.section === null || resolved.modified) return resolved.text
   const derived = derivedOf(snapshot)
-  const upstream = upstreamFor(derived.items, address)
+  const upstream = upstreamFor(derived, address)
   if (upstream === undefined) return resolved.text
   const whole = resolveAt(derived, { ...address, section: null }, upstream, memo)
   const split =
@@ -162,7 +166,7 @@ export function scrubInfo(
   if (address === undefined) return undefined
   const derived = derivedOf(snapshot)
   if (address.item.startsWith("perm:")) {
-    const upstream = upstreamFor(derived.items, address)
+    const upstream = upstreamFor(derived, address)
     if (upstream?.kind !== "perm") return undefined
     const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
     if (keywords.length === 0) return { hidden: 0, preview: [], keywords: [] }
@@ -207,7 +211,7 @@ export function permDetail(
   const address = node.address
   if (address === undefined) return undefined
   const derived = derivedOf(snapshot)
-  const upstream = upstreamFor(derived.items, address)
+  const upstream = upstreamFor(derived, address)
   if (upstream?.kind !== "perm") return undefined
   const parsed = parsePermItemId(address.item)
   if (parsed === undefined) return undefined
@@ -217,9 +221,7 @@ export function permDetail(
   // row has none and keeps core's generic refusal.
   const message =
     upstream.custom === true
-      ? snapshot.records.find(
-          (record): record is Plus.SnapshotRuleRecord => record.type === "rule" && record.tool === tool && record.id === rule,
-        )?.message ?? upstream.message
+      ? upstream.message
       : curatedRuleMessage(tool, rule) ?? upstream.message
   return {
     enforcement: enforcementLine(upstream),
@@ -388,7 +390,7 @@ export function sectionRows(node: TreeNode, snapshot: Snapshot, memo?: Memo): Se
   if (controlKind(address.item) !== undefined) return []
   if (isModelAddress(address)) return []
   const derived = derivedOf(snapshot)
-  const upstream = upstreamFor(derived.items, address)
+  const upstream = upstreamFor(derived, address)
   if (upstream === undefined) return []
   const whole = resolveAt(derived, address, upstream, memo)
   const split =
@@ -404,7 +406,7 @@ export function sectionRows(node: TreeNode, snapshot: Snapshot, memo?: Memo): Se
 export function parentItemTitle(node: TreeNode, snapshot: Snapshot): string | undefined {
   const address = node.address
   if (address === undefined || address.section === null) return undefined
-  return upstreamFor(derivedOf(snapshot).items, address)?.title
+  return upstreamFor(derivedOf(snapshot), address)?.title
 }
 
 export function sectionExcluded(node: TreeNode, snapshot: Snapshot, memo?: Memo): boolean {
@@ -429,7 +431,7 @@ export function excludedRanges(node: TreeNode, snapshot: Snapshot, memo?: Memo):
   if (address === undefined || address.section !== null) return []
   if (controlKind(address.item) !== undefined) return []
   const derived = derivedOf(snapshot)
-  const upstream = upstreamFor(derived.items, address)
+  const upstream = upstreamFor(derived, address)
   if (upstream === undefined) return []
   const whole = resolveAt(derived, address, upstream, memo)
   const split =
@@ -511,7 +513,7 @@ export function excludedAttributes(excluded: boolean) {
 export function wholeItemText(node: TreeNode, snapshot: Snapshot, memo?: Memo): { text: string; ranges: ExcludedRange[] } {
   const address = node.address
   const derived = derivedOf(snapshot)
-  const upstream = address === undefined ? undefined : upstreamFor(derived.items, address)
+  const upstream = address === undefined ? undefined : upstreamFor(derived, address)
   const whole = address === undefined || upstream === undefined ? undefined : resolveAt(derived, address, upstream, memo)
   const text = (node.address?.section === null ? whole?.fullText : undefined) ?? resolvedText(node, snapshot, memo)
   if (node.address?.section !== null) return { text, ranges: [] }

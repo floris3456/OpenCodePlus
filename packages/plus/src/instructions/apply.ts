@@ -1,4 +1,5 @@
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
+import { ruleItem } from "./rules.js"
 import type { MCPEditor } from "@opencode/plugin/effect/mcp"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration, Transform } from "@opencode/plugin/effect/registration"
@@ -582,11 +583,14 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
     const chain = resolutionChain(address, input.scopes)
     const chainKey = chainContentKey(chain)
 
-    const itemsForAgent = permRows.filter((item) => applies(item, agentId))
+    const itemsForAgent = permRows.flatMap((item) => {
+      const resolved = runtimeRule(item, agent ?? { id: agentId, level: "project" }, input)
+      return resolved === undefined || !applies(resolved, agentId) ? [] : [resolved]
+    })
     const itemsDigest = itemsForAgent
       .map((item) => {
         const recHash = recordsIndex.get(item.id)?.hash ?? ""
-        return `${item.id}:${item.fingerprint}:${item.enabled}:${recHash}`
+        return JSON.stringify([item.id, item.fingerprint, item.enabled, item.message, item.keywords, recHash])
       })
       .join(";")
 
@@ -599,6 +603,7 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
 
   return permissionTable({
     items: input.items,
+    item: (item, agentId) => runtimeRule(item, byId.get(agentId) ?? { id: agentId, level: "project" }, input),
     teamMembers: input.teamAgents ?? [],
     resolve: (item, agentId) => {
       const agent = byId.get(agentId)
@@ -737,6 +742,7 @@ async function runHook<Name extends "context" | "catalog" | "compaction" | "tool
 }
 
 interface ChainArgs {
+  readonly rules?: readonly RuleRecord[]
   readonly records: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
@@ -752,7 +758,7 @@ export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs, gate
   const runtime = runtimeScope(agent, args.scopes)
   return resolve({
     ...(gate === undefined ? {} : { gate }),
-    upstream: item,
+    upstream: runtimeRule(item, agent, args) ?? item,
     records: args.records,
     splits: args.splits,
     scopes: runtime.scopes,
@@ -763,6 +769,14 @@ export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs, gate
       section: null,
       ...(agent.team !== undefined ? { team: agent.team } : {}),
     },
+  })
+}
+
+function runtimeRule(item: Item, agent: ApplyAgent, args: ChainArgs): Item | undefined {
+  const runtime = runtimeScope(agent, args.scopes)
+  return ruleItem(item, args.rules ?? [], runtime.scopes, {
+    level: runtime.level, agent: agent.id, item: item.id, section: null,
+    ...(agent.team === undefined ? {} : { team: agent.team }),
   })
 }
 
@@ -994,8 +1008,9 @@ function pushRule(
 // closed. Rows of every other kind are enforced there too.
 function permDenials(input: ApplyInput): Rule[] {
   return input.agents.flatMap((agent) =>
-    input.items.flatMap((item): Rule[] => {
-      if (item.kind !== "perm") return []
+    input.items.flatMap((upstream): Rule[] => {
+      const item = runtimeRule(upstream, agent, input)
+      if (item === undefined || item.kind !== "perm") return []
       // Team policy rows carry both sides of their answer and install through
       // policyRules; installing their patterns here too would double them.
       if (item.policy !== undefined) return []
@@ -1006,7 +1021,7 @@ function permDenials(input: ApplyInput): Rule[] {
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
       const action = item.permAction ?? actionForToolId(tool)
-      const message = ruleDenialMessage(input, item, tool)
+      const message = item.custom === true ? item.message : curatedRuleMessage(tool, item.ruleId ?? "") ?? item.message
       return item.patterns.map((pattern) => ({
         agent: agent.id,
         action,
@@ -1032,8 +1047,11 @@ function shellAllowList(input: ApplyInput): Rule[] {
   const action = closing.permAction ?? actionForToolId("shell")
   return input.agents.flatMap((agent): Rule[] => {
     if (!applies(closing, agent.id) || resolvedFor(closing, agent, input).enabled) return []
-    const opened = rows.filter((item) => item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled)
-    const message = allowListMessage(closing.message ?? "this command is not allowed here", opened.map((item) => item.title))
+    const opened = rows.flatMap((row) => {
+      const item = runtimeRule(row, agent, input)
+      return item !== undefined && item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled ? [item] : []
+    })
+    const message = allowListMessage(runtimeRule(closing, agent, input)?.message ?? "this command is not allowed here", opened.map((item) => item.title))
     return [
       { agent: agent.id, action, resource: "*", effect: "deny", allowList: "closing", message },
       ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
@@ -1080,16 +1098,6 @@ export function orderRules<
     .map((rule, index) => ({ rule, index }))
     .toSorted((left, right) => rank(left.rule) - rank(right.rule) || left.index - right.index)
     .map((entry) => entry.rule)
-}
-
-// The refusal text a perm row installs. A user RuleRecord's own message wins
-// for the row it backs; a shipped curated rule carries one; a mined row has
-// none and keeps core's generic refusal.
-function ruleDenialMessage(input: ApplyInput, item: Item, tool: string): string | undefined {
-  const ruleId = item.ruleId
-  if (ruleId === undefined) return undefined
-  if (item.custom === true) return input.rules?.find((record) => record.tool === tool && record.id === ruleId)?.message
-  return curatedRuleMessage(tool, ruleId) ?? item.message
 }
 
 // Policy rows: every policy row resolved for the member it belongs to,
@@ -1152,8 +1160,9 @@ function teamToolDenials(candidates: readonly ToolCandidate[], members: readonly
 function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
   const out = new Map<string, string[]>()
   for (const agent of input.agents) {
-    const keywords = input.items.flatMap((item) => {
-      if (item.kind !== "perm") return []
+    const keywords = input.items.flatMap((upstream) => {
+      const item = runtimeRule(upstream, agent, input)
+      if (item === undefined || item.kind !== "perm") return []
       if (item.keywords === undefined || item.keywords.length === 0) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)

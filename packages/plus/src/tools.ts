@@ -77,7 +77,8 @@ import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
 import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
-import { buildTreeMemo } from "./instructions/tree.js"
+import { buildTreeMemo, lazyPath } from "./instructions/tree.js"
+import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
 import { rowlinksOf } from "./instructions/resolve-memo.js"
@@ -448,6 +449,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         if (operation === undefined || !Schema.isSchema(operation.input)) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
         const applied: string[] = []
         const failed: { id: string; reason: string }[] = []
+        const created = new Set<string>()
+        const skipped = [...reflected.skipped]
         for (const row of reflected.targets) {
           const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(input.input.target)) : undefined
           const target = peer === undefined ? undefined : reflectedPeer(memo, input.id, row.id, input.selected, peer)
@@ -455,17 +458,27 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             failed.push({ id: row.id, reason: "Does not have the corresponding link endpoint" })
             continue
           }
-          const decoded = Schema.decodeUnknownOption(operation.input)({ ...input.input, id: row.id, ...(target === undefined ? {} : { target: target.id }) })
+          const fields = input.op === "create" ? creationFields(memo, row, input.input) : { ...input.input, id: row.id, ...(target === undefined ? {} : { target: target.id }) }
+          if ("refusal" in fields) {
+            failed.push({ id: row.id, reason: String(fields.refusal) })
+            continue
+          }
+          const decoded = Schema.decodeUnknownOption(operation.input)(fields)
           if (Option.isNone(decoded)) {
             failed.push({ id: row.id, reason: `Invalid arguments for ${input.op}` })
             continue
           }
+          const identity = JSON.stringify(decoded.value)
+          if (input.op === "create" && created.has(identity)) {
+            skipped.push({ id: row.id, reason: "The same shared resource was already created for another selected row" })
+            continue
+          }
           yield* operation.execute(decoded.value, context).pipe(Effect.match({
-            onSuccess: () => { applied.push(row.id) },
+            onSuccess: () => { applied.push(row.id); created.add(identity) },
             onFailure: (error) => { failed.push({ id: row.id, reason: error.message }) },
           }))
         }
-        return { output: { applied, skipped: reflected.skipped, failed } }
+        return { output: { applied, skipped, failed } }
       }),
     })
     editor.add({
@@ -730,6 +743,33 @@ function snapshotOrFail(api: PlusApi): Effect.Effect<Plus.Snapshot, Tool.Error> 
     const result = yield* Effect.promise(() => api.snapshot())
     return result.value
   })
+}
+
+function creationFields(memo: Memo, row: TreeNode, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.kind === "folder") return { ...input, id: row.id }
+  const path = lazyPath(memo, row.id)
+  const owner = row.address ?? path.findLast((entry) => entry.owner !== undefined)?.owner
+  const level = owner?.level ?? path.find((entry) => entry.kind === "root")?.id.slice("root:".length)
+  if (input.kind === "model" || input.kind === "rule") {
+    if (owner === undefined) return { refusal: `"${row.label}" does not identify an owner` }
+    const fields = {
+      ...Object.fromEntries(Object.entries(input).filter(([key]) => !["level", "scope", "agent", "team", "catalogue"].includes(key))),
+      level: owner.level, agent: owner.agent ?? "_",
+      ...(owner.catalogue === undefined ? {} : { catalogue: owner.catalogue }),
+      ...(owner.team === undefined ? {} : { team: owner.team.team }),
+    }
+    if (input.kind === "model") return fields
+    const item = memo.ctx.items.find((item) => item.id === row.address?.item)
+    const tool = item?.paramTool ?? item?.permTool ?? (row.address?.item.startsWith("tool:") ? row.address.item.slice("tool:".length) : undefined)
+    return tool === undefined ? { refusal: `"${row.label}" does not identify a rule's tool` } : { ...fields, tool }
+  }
+  if (input.kind === "member" || input.kind === "presetMember") {
+    const team = path.findLast((entry) => entry.owner?.team !== undefined)?.owner?.team?.team
+    if (team === undefined) return { refusal: `"${row.label}" does not identify a team` }
+    return { ...input, level, team }
+  }
+  if (input.kind === "agent" || input.kind === "team" || input.kind === "skill") return { ...input, scope: level, level }
+  return input
 }
 
 function actorFrom(context: Tool.Context): Plus.Actor {
@@ -1597,23 +1637,12 @@ function deleteRuleRow(
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
     if (parsed === undefined) return yield* Effect.fail(unknownError(id))
-    const item = memo.items.find((entry) => entry.id === address.item)
-    if (item?.custom !== true) {
-      const label = found?.label ?? id
-      return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deleted: only user-created rules can be deleted` }))
-    }
-    // Custom rules display globally: the selected row's agent is whatever
-    // subtree the user happened to open, not the record's owner. Validate the
-    // owner of the record actually matched (by global tool+id identity) before
-    // deleting, or a rule owned by protected alpha is deletable through beta.
-    const existing = memo.records.find(
-      (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
-    )
-    if (existing === undefined) return yield* Effect.fail(unknownError(id))
+    const existing = ownRule(rulesOfMemo(memo), address)
+    if (existing === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${found?.label ?? id}" cannot be deleted: only user-created rules owned by this row can be deleted` }))
     if (existing.agent !== null && protectedForActor(snapshot, existing.agent))
       return yield* Effect.fail(protectedError(existing.agent))
     const result = yield* Effect.promise(() =>
-      api.removeRule({ level: existing.level, agent: existing.agent, tool: parsed.tool, id: parsed.ruleId, actor }),
+      api.removeRule({ level: existing.level, agent: existing.agent, ...catalogueField(existing), ...(existing.team === undefined ? {} : { team: existing.team }), tool: parsed.tool, id: parsed.ruleId, actor }),
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: `Removed "${id}"` } }
@@ -1634,16 +1663,9 @@ function updateRuleRow(
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
     if (parsed === undefined) return yield* Effect.fail(unknownError(id))
-    // Same global-identity protection as delete: the row's agent is whatever
-    // subtree is open, so check the matched record's owner before writing, or
-    // a protected owner's rule is editable through another agent's row. The
-    // PlusApi updateRule repeats this guard at the shared boundary, so direct
-    // RPC callers inherit it too.
-    const existing = memo.records.find(
-      (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
-    )
-    if (existing !== undefined && existing.agent !== null && protectedForActor(snapshot, existing.agent))
-      return yield* Effect.fail(protectedError(existing.agent))
+    const existing = ruleAt(rulesOfMemo(memo), contextOfSnapshot(snapshot), address)
+    if (address.agent !== null && protectedForActor(snapshot, address.agent))
+      return yield* Effect.fail(protectedError(address.agent))
     // A message-only edit derives label and patterns from the rule it edits
     // (the user record, else the upstream perm item it materialises), so
     // `set({ id, message })` works without restating the whole rule.
@@ -1661,12 +1683,13 @@ function updateRuleRow(
         // create a Teams rule, not an Agents one. A matched record keeps its
         // stored catalogue server-side, so this only matters for a new one.
         ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+        ...(address.team === undefined ? {} : { team: address.team }),
         tool: parsed.tool,
         id: parsed.ruleId,
         label,
         patterns: [...patterns],
-        ...(input.keywords === undefined ? {} : { keywords: [...input.keywords] }),
-        ...(input.message === undefined ? {} : { message: input.message }),
+        keywords: [...(input.keywords ?? existing?.keywords ?? upstream?.keywords ?? [])],
+        message: input.message ?? existing?.message ?? upstream?.message ?? "",
         actor,
       }),
     )
@@ -1866,7 +1889,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const provenance = upstream.provenance === undefined ? [] : [...upstream.provenance]
       const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
       const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
-      const message = ruleMessageOf(snapshot, upstream)
+      const message = upstream.custom === true ? upstream.message : curatedRuleMessage(upstream.permTool ?? "", upstream.ruleId ?? "") ?? upstream.message
       return {
         output: {
           id,
@@ -2029,25 +2052,13 @@ function mergeOp(memo: MemoInput, treeMemo: Memo, node: TreeNode, input: { id: s
   return resolveReview(memo, input.id, "merge", text, undefined, treeMemo)
 }
 
-function upstreamOf(memo: MemoInput, address: Pick<Address, "item" | "agent" | "team" | "memberOf">) {
+function upstreamOf(memo: MemoInput, address: Address) {
   if (isControl(address.item)) return controlItemFor(memo.items, address)
   const matches = memo.items.filter((item) => item.id === address.item)
-  if (address.agent === null) return matches[0]
-  return matches.find((item) => applies(item, address.agent as string)) ?? matches[0]
-}
-
-// The refusal text a perm row installs: a user rule's own stored message
-// wins, a curated row ships one, a mined row has none and keeps core's
-// generic refusal.
-function ruleMessageOf(snapshot: Plus.Snapshot, item: Item): string | undefined {
-  const tool = item.permTool
-  const rule = item.ruleId
-  if (tool === undefined || rule === undefined) return undefined
-  if (item.custom !== true) return curatedRuleMessage(tool, rule) ?? item.message
-  const record = snapshot.records.find(
-    (entry): entry is Plus.SnapshotRuleRecord => entry.type === "rule" && entry.tool === tool && entry.id === rule,
-  )
-  return record?.message
+  const item = matches.find((item) => address.agent === null || applies(item, address.agent)) ?? matches[0]
+  if (item === undefined || item.kind !== "perm") return item
+  const context = buildTreeMemo(memo).ctx
+  return ruleItem(item, context.rules, context.scopes, address)
 }
 
 function recordOfRow(
@@ -2074,7 +2085,7 @@ function recordOfRow(
   if (address.item.startsWith("perm:")) {
     const parsed = parsePermItemId(address.item)
     if (parsed !== undefined) {
-      const rule = rulesOfMemo(memo).find((record) => record.tool === parsed.tool && record.id === parsed.ruleId)
+      const rule = ownRule(rulesOfMemo(memo), address)
       if (rule !== undefined) return rule
     }
   }
@@ -2405,10 +2416,17 @@ function createRow(
       const snapshot = yield* snapshotOrFail(api)
       if (level !== "preset" && agent !== null && protectedForActor(snapshot, agent))
         return yield* Effect.fail(protectedError(agent))
+      const team = input.team?.trim()
+      const member = team === undefined ? undefined : findRow(memoFromSnapshot(snapshot), `team:${level}:${team}:${agent}`)
+      if (team !== undefined && member?.owner === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `rule.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
+      const owner = team === undefined ? {} : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
+        ? { team: { level, team } } : { memberOf: { level, team } }
       const created = yield* Effect.promise(() =>
         api.addRule({
           level,
           agent,
+          ...(owner.team === undefined ? {} : { team: owner.team }),
           ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
           tool: input.tool as string,
           id: input.id as string,
@@ -2430,6 +2448,7 @@ function createRow(
           createdItemRow(memo, {
             level: created.value.agent === null ? "defaults" : created.value.level,
             agent: created.value.agent,
+            ...owner,
             item: permItemId(created.value.tool, created.value.id),
             ...catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
           }),

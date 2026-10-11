@@ -1,5 +1,6 @@
 import { applies, canReset, catalogueForAddress, catalogueOf, sameTeam, upstreamForEdit } from "./model.js"
 import { controlItemFor, isControl } from "./agent-controls.js"
+import { ruleItem } from "./rules.js"
 import type {
   Address,
   AgentSource,
@@ -272,6 +273,7 @@ function lookupItem(state: QueryState, itemId: string, owner: string | null, con
   if (isControl(itemId)) return controlItemFor(state.memo.ctx.items, { item: itemId, agent: owner, ...context })
   const matches = state.items.get(itemId) ?? []
   const item = (owner === null ? undefined : matches.find((entry) => applies(entry, owner))) ?? matches[0]
+  if (item?.kind === "perm" && context !== undefined) return ruleItem(item, state.memo.ctx.rules, state.memo.ctx.scopes, { ...context, agent: owner, item: itemId, section: null })
   if (item?.kind !== "tool" || item.execute === true || context === undefined) return item
   const exposure = state.items.get(`toolmode:${item.id.slice("tool:".length)}`)?.[0]
   if (exposure === undefined) return item

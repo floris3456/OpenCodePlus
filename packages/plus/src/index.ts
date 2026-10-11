@@ -37,6 +37,7 @@ import { enforcementState, type EnforcementState, type PermissionTable } from ".
 import { dedupeAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
+import { ownRule, ruleAt } from "./instructions/rules.js"
 import { pickModelRow, switchModelActivation, type ModelPick } from "./instructions/ops.js"
 import {
   compactionFieldsOf,
@@ -2386,7 +2387,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       const existing = loaded.records.find(
-        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id && scopedTo(record, input),
       )
       if (existing !== undefined)
         return {
@@ -2402,6 +2403,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         level: input.level,
         agent: input.agent,
         ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
+        ...(input.team === undefined ? {} : { team: input.team }),
         tool: validated.tool,
         id: validated.id,
         label: validated.label,
@@ -2441,9 +2443,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const existing = loaded.records.find(
-        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
-      )
+      const existing = ownRule(rulesOf(loaded.records), { ...input, item: permItemId(validated.tool, validated.id), section: null })
       if (existing === undefined)
         return {
           ok: false as const,
@@ -2453,18 +2453,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
             data: { level: input.level, agent: input.agent, tool: validated.tool, id: validated.id },
           },
         }
-      const refusal = refuseProtectedForTool(input.actor, existing.agent, config)
+      const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
-      // The cascade below drops every customization and split at this item,
-      // not only the removed rule's own rows, so a protected agent holding one
-      // refuses the delete before the rule is saved.
-      const cascadeRefusal = refuseProtectedItemCascade(
-        input.actor,
-        loaded.records,
-        permItemId(validated.tool, validated.id),
-        config,
-      )
-      if (cascadeRefusal !== undefined) return { ok: false as const, error: cascadeRefusal }
       const next = loaded.records.filter((record) => record !== existing)
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
@@ -2474,9 +2464,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
         }
       }
-      const freshStored = await load(directory)
-      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
-      await removeItemRecords(directory, freshLoaded, permItemId(validated.tool, validated.id))
       if (saved.changed)
         await appendForLevel(directory, existing.level, {
           ts: new Date().toISOString(),
@@ -2500,19 +2487,19 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const existing = loaded.records.find(
-        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
-      )
-      // The written row keeps the matched record's owner on an update (the
-      // upsert only adopts the caller's address when no record matched), so
-      // protection follows that effective owner, not the caller's row address.
-      const owner = existing === undefined ? input.agent : existing.agent
+      const existing = ownRule(rulesOf(loaded.records), { ...input, item: permItemId(validated.tool, validated.id), section: null })
+      const inherited = existing ?? await (async () => {
+        const discovered = await discoverAll(ctx, loaded, state, builtins, directory)
+        const chain = await publishChain(discovered, loaded.records, directory, builtins, state.teamOutputIds)
+        return ruleAt(rulesOf(loaded.records), chain.publishScopes, { ...input, item: permItemId(input.tool, input.id), section: null })
+      })()
+      const owner = input.level === "preset" ? null : input.agent
       const refusal = refuseProtectedForTool(input.actor, owner, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
       // A message present in the update wins, including blank, which clears
       // the stored one. Absent leaves it alone, so a label/pattern edit
       // through `set` never drops a rule's message.
-      const message = input.message === undefined ? existing?.message : validated.message
+      const message = input.message === undefined ? inherited?.message : validated.message
       const next: RuleRecord = {
         type: "rule",
         level: existing === undefined ? input.level : existing.level,
@@ -2528,11 +2515,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
               ...(existing.catalogue === undefined ? {} : { catalogue: existing.catalogue }),
               ...(existing.team === undefined ? {} : { team: existing.team }),
             }),
+        ...(input.team === undefined ? {} : { team: input.team }),
         tool: validated.tool,
         id: validated.id,
         label: validated.label,
         patterns: validated.patterns,
-        keywords: validated.keywords,
+        keywords: input.keywords === undefined ? inherited?.keywords ?? validated.keywords : validated.keywords,
         ...(message === undefined ? {} : { message }),
         updated: new Date().toISOString(),
       }
@@ -4429,7 +4417,8 @@ function modelRecordTarget(record: ModelRecord): string {
 }
 
 function ruleRecordTarget(record: RuleRecord): string {
-  return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}`
+  const owner = record.catalogue === undefined && record.team === undefined ? "" : `:${JSON.stringify([record.catalogue ?? "agents", record.team ?? null])}`
+  return `rule:${record.level}:${record.agent ?? ""}:${record.tool}:${record.id}${owner}`
 }
 
 function validateRuleRef(
@@ -4705,16 +4694,6 @@ function mergeRuleInto(
     const concurrent = freshByTarget.get(target)
     if (intended === undefined || concurrent === undefined) continue
     if (JSON.stringify(stable(concurrent)) !== JSON.stringify(stable(intended))) return undefined
-  }
-  // Concurrent creation under a different level/agent still collides on the
-  // rule identity (tool + id), which addRule enforces across all levels.
-  const freshByRule = new Map(rulesOf(kept).map((record) => [`${record.tool}:${record.id}`, record] as const))
-  for (const target of addedTargets) {
-    const intended = nextRules.get(target)
-    if (intended === undefined) continue
-    const concurrent = freshByRule.get(`${intended.tool}:${intended.id}`)
-    if (concurrent === undefined) continue
-    if (ruleRecordTarget(concurrent) !== target) return undefined
   }
   const mergedKept = kept.map((record) => {
     if (record.type !== "rule") return record

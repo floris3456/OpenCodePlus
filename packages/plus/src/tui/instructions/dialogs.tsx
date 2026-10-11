@@ -459,6 +459,10 @@ export function createInstructionsDialogs(
     const preset = await pickAgentPreset(context, snapshot)
     if (disposed) return
     if (preset === undefined) return
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "agent", id, ...(preset === null ? {} : { preset }) })
+      return
+    }
     const scope = levelOfRow(node) ?? (await pickScope("Agent scope"))
     if (disposed) return
     if (scope === undefined) return
@@ -536,7 +540,7 @@ export function createInstructionsDialogs(
         ? await promptName("Member name or pattern", `A member entry of ${team}; ${wildcards} (e.g. *orchestrator*)`, "*orchestrator*")
         : await promptName("Member name", `A new member of team ${team}; use / for nesting. .. is not allowed.`, "my-agent")
     if (id === undefined) return
-    await addMember(level, team, id)
+    await addMember(level, team, id, node)
   }
 
   // Defaults → Teams: a team entry is a team pattern with at least one member
@@ -550,12 +554,16 @@ export function createInstructionsDialogs(
     await addMember("defaults", team, id)
   }
 
-  async function addMember(level: "project" | "global" | "defaults", team: string, id: string): Promise<void> {
+  async function addMember(level: "project" | "global" | "defaults", team: string, id: string, node?: TreeNode): Promise<void> {
     const snapshot = await currentSnapshot()
     if (snapshot === undefined) return
     const preset = await pickAgentPreset(context, snapshot)
     if (disposed) return
     if (preset === undefined) return
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "member", id, ...(preset === null ? {} : { preset }) })
+      return
+    }
     try {
       const ref = await plus["team.addAgent"](
         { level, team, id, ...(preset === null ? {} : { preset }) },
@@ -952,6 +960,10 @@ export function createInstructionsDialogs(
       if (picked === undefined) return
       variant = picked === "" ? undefined : picked
     }
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "model", providerID: provider, modelID, ...(variant === undefined ? {} : { variant }) })
+      return
+    }
     if (level === undefined) {
       const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
         title: "Model scope",
@@ -1023,20 +1035,18 @@ export function createInstructionsDialogs(
   // inherits its address catalogue so adding from a Teams row writes a Teams
   // rule; an agent-qualified row never gains one (catalogueField semantics),
   // so only the `agent === null` form forwards it.
-  function scopeFromToolOrPermRow(
-    node: TreeNode | undefined,
-  ): { level: "project" | "global" | "defaults"; agent: string | null; catalogue?: "agents" | "teams" } | undefined {
+  function scopeFromToolOrPermRow(node: TreeNode | undefined) {
     if (node === undefined || node.kind !== "item" || node.address === undefined) return undefined
-    if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:")) return undefined
-    // Rules are not added at preset level yet: the caller prompts for a scope.
-    if (node.address.level === "preset") return undefined
+    if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:") && !node.address.item.startsWith("param:")) return undefined
     const catalogue = node.address.agent === null ? node.address.catalogue : undefined
-    return { level: node.address.level, agent: node.address.agent, ...(catalogue === undefined ? {} : { catalogue }) }
+    return { level: node.address.level, agent: node.address.agent, ...(catalogue === undefined ? {} : { catalogue }), ...(node.address.team === undefined ? {} : { team: node.address.team }) }
   }
 
   function toolFromToolOrPermRow(node: TreeNode | undefined): string | undefined {
     if (node === undefined || node.address === undefined) return undefined
     const item = node.address.item
+    const parameter = state.snapshot()?.items.find((entry) => entry.id === item)?.paramTool
+    if (parameter !== undefined) return parameter
     if (item.startsWith("tool:")) {
       const tool = item.slice("tool:".length)
       return tool.length > 0 ? tool : undefined
@@ -1052,7 +1062,7 @@ export function createInstructionsDialogs(
   async function addRule(node?: TreeNode): Promise<void> {
     if (disposed) return
     const scoped = scopeFromToolOrPermRow(node)
-    let level: "project" | "global" | "defaults" | undefined = scoped?.level
+    let level: "project" | "global" | "defaults" | "preset" | undefined = scoped?.level
     let agent: string | null | undefined = scoped?.agent
     const catalogue = scoped?.catalogue
     let tool = toolFromToolOrPermRow(node)
@@ -1097,6 +1107,10 @@ export function createInstructionsDialogs(
     if (disposed) return
     if (rawMessage === undefined) return
     const message = rawMessage.trim()
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "rule", id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) })
+      return
+    }
     if (level === undefined) {
       const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
         title: "Rule scope",
@@ -1150,7 +1164,7 @@ export function createInstructionsDialogs(
     if (level === undefined || agent === undefined) return
     try {
       const ref = await plus["rule.add"](
-        { level, agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
+        { level, agent, ...(catalogue === undefined ? {} : { catalogue }), ...(scoped?.team === undefined ? {} : { team: scoped.team }), tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
         { location: context.location },
       )
       if (disposed) return
@@ -1183,8 +1197,7 @@ export function createInstructionsDialogs(
     // catalogue. A matched record keeps its stored identity server-side, and
     // an agent-qualified row never gains a catalogue.
     const catalogue = address.agent === null ? address.catalogue : undefined
-    const snapshot = state.snapshot()
-    const current = snapshot?.items.find((entry) => entry.id === address.item)
+    const current = state.effectiveItem(node)
     const tool = current?.permTool ?? parsed.tool
     const ruleId = current?.ruleId ?? parsed.ruleId
     const rawLabel = await context.ui.dialog.prompt({
@@ -1228,15 +1241,10 @@ export function createInstructionsDialogs(
             .split(",")
             .map((entry) => entry.trim())
             .filter((entry) => entry.length > 0)
-    // The stored message lives on the rule record, not the snapshot item, so
-    // a user rule can be edited back to the generic refusal by clearing it.
-    const storedRule = snapshot?.records.find(
-      (record): record is Plus.SnapshotRuleRecord => record.type === "rule" && record.tool === tool && record.id === ruleId,
-    )
     const rawMessage = await context.ui.dialog.prompt({
       title: "Message shown on refusal (optional)",
       placeholder: "force pushes are not allowed here",
-      value: storedRule?.message ?? "",
+      value: current?.message ?? "",
     })
     if (disposed) return
     if (rawMessage === undefined) return
@@ -1247,7 +1255,7 @@ export function createInstructionsDialogs(
     }
     try {
       const ref = await plus["rule.update"](
-        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
+        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), ...(address.team === undefined ? {} : { team: address.team }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
         { location: context.location },
       )
       if (disposed) return

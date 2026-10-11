@@ -1941,7 +1941,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   // returns that row id, not the project-level default the old code wrote.
   expect(created).toMatchObject({ tool: "shell", id: "item:defaults::perm:shell:no-push", item: "perm:shell:no-push" })
   const afterCreate = await snapshotOf(api)
-  const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.address?.item === "perm:shell:no-push")
+  const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.id === created.id)
   if (customRow === undefined) throw new Error("missing custom perm row")
   const customShownRecord = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
     id: string
@@ -2103,9 +2103,10 @@ test("deleting a protected agent's custom rule through another agent's row is re
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow === undefined) throw new Error("missing beta row for alpha-owned custom rule")
-  const error = await runFail(need(tools, "instructions_delete"), { id: betaRow.id, confirm: true })
-  expect(error.message).toContain("agent.protected")
+  expect(betaRow).toBeUndefined()
+  const error = await runFail(need(tools, "instructions_delete"), { id: "item:project:alpha:perm:shell:custom", confirm: true })
+  expect(error.message).toContain("row.unknown")
+  await runFail(need(tools, "instructions_delete"), { id: "item:project:beta:perm:shell:custom", confirm: true })
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
 })
@@ -2150,7 +2151,7 @@ test("removeRule refuses a protected owner's rule for a tool actor and lets the 
   expect((await logLines(project)).length).toBeGreaterThan(beforeLogs.length)
 })
 
-test("rule.remove RPC from another agent's row refuses a tool actor and lets the TUI remove it", async () => {
+test("rule.remove RPC respects owner identity and protected-owner permissions", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -2167,7 +2168,8 @@ test("rule.remove RPC from another agent's row refuses a tool actor and lets the
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  expect(betaRow).toBeUndefined()
+  expect((await api.removeRule({ level: "project", agent: "beta", tool: "shell", id: "custom" })).ok).toBe(false)
   const beforeLogs = await logLines(project)
   const handlers = createHandlers(ctx, state)
   const captured: { current?: { type: string; message: string } } = {}
@@ -2179,7 +2181,7 @@ test("rule.remove RPC from another agent's row refuses a tool actor and lets the
   }
   const exit = await Effect.runPromiseExit(
     handlers["rule.remove"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", actor: { type: "tool" } },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tool" } },
       throwing,
     ),
   )
@@ -2193,7 +2195,7 @@ test("rule.remove RPC from another agent's row refuses a tool actor and lets the
   // missing actor means the TUI, so the same call succeeds.
   const tui = await Effect.runPromise(
     handlers["rule.remove"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom" },
       throwing,
     ),
   )
@@ -2221,16 +2223,16 @@ test("updating a protected agent's custom rule through another agent's row is re
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow === undefined) throw new Error("missing beta row for alpha-owned custom rule")
-  const error = await runFail(need(tools, "instructions_set"), { id: betaRow.id, label: "Hacked", patterns: ["evil *"] })
-  expect(error.message).toContain("agent.protected")
+  expect(betaRow).toBeUndefined()
+  const error = await runFail(need(tools, "instructions_set"), { id: "item:project:alpha:perm:shell:custom", label: "Hacked", patterns: ["evil *"] })
+  expect(error.message).toContain("row.unknown")
   const after = await snapshotOf(api)
   const kept = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
   if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
   expect(kept.label).toBe("Custom")
 })
 
-test("rule.update RPC from another agent's row refuses a tool actor and lets the TUI write", async () => {
+test("rule.update RPC protects the addressed owner and lets the TUI write", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -2247,7 +2249,7 @@ test("rule.update RPC from another agent's row refuses a tool actor and lets the
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  expect(betaRow).toBeUndefined()
   const beforeLogs = await logLines(project)
   const handlers = createHandlers(ctx, state)
   const captured: { current?: { type: string; message: string } } = {}
@@ -2259,7 +2261,7 @@ test("rule.update RPC from another agent's row refuses a tool actor and lets the
   }
   const exit = await Effect.runPromiseExit(
     handlers["rule.update"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
       throwing,
     ),
   )
@@ -2281,7 +2283,7 @@ test("rule.update RPC from another agent's row refuses a tool actor and lets the
   // The TUI path (no actor) writes the same row through the same boundary.
   const tui = await Effect.runPromise(
     handlers["rule.update"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
       throwing,
     ),
   )
@@ -2414,7 +2416,7 @@ test("updateRule stale retry preserves the edit and the log agrees with what per
   expect(after.revision).toBe(3)
 })
 
-test("updateRule through a project row keeps a global rule in the global store", async () => {
+test("updateRule through a project row creates an independent override of a global rule", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -2444,31 +2446,43 @@ test("updateRule through a project row keeps a global rule in the global store",
     actor: { type: "tui" },
   })
   if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
-  expect(updated.value.level).toBe("global")
+  expect(updated.value.level).toBe("project")
   expect(updated.value.agent).toBe("alpha")
   expect(updated.value.label).toBe("Edited")
   const after = await snapshotOf(api)
-  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared")
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")
   if (persisted === undefined || persisted.type !== "rule") throw new Error("expected shared rule to persist")
-  expect(persisted.level).toBe("global")
+  expect(persisted.level).toBe("project")
   expect(persisted.agent).toBe("alpha")
   expect(persisted.label).toBe("Edited")
   expect(persisted.patterns).toEqual(["edited *"])
   const { load } = await import("../src/instructions/store.js")
   const stored = await load(project)
   expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "global")).toBe(true)
-  expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")).toBe(false)
+  expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")).toBe(true)
+  expect(stored.records.find((record) => record.type === "rule" && record.id === "shared" && record.level === "global")).toMatchObject({ label: "Original", patterns: ["orig *"] })
   const { globalRecordsPath, projectRecordsPath } = await import("../src/instructions/paths.js")
   const globalText = await Bun.file(globalRecordsPath()).text()
   expect(globalText).toContain(`"id":"shared"`)
   if (await Bun.file(projectRecordsPath(project)).exists()) {
     const projectText = await Bun.file(projectRecordsPath(project)).text()
-    expect(projectText).not.toContain(`"id":"shared"`)
+    expect(projectText).toContain(`"id":"shared"`)
   }
   const logged = await api.log({ where: "op:rule.update" })
   if (!logged.ok) throw new Error("log failed")
-  const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:global:alpha:shell:shared")
-  if (entry === undefined) throw new Error("missing global rule.update log entry")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:shared")
+  if (entry === undefined) throw new Error("missing project rule.update log entry")
+})
+
+test("concurrent same-id rule creation across owners persists independently and deletion preserves its peer", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({ directory: project, agents: [agentInfo("alpha", "role"), agentInfo("beta", "role")], tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }], session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
+  const api = createPlusApi(ctx, createState())
+  const created = await Promise.all(["alpha", "beta"].map((agent) => api.addRule({ level: "project", agent, tool: "shell", id: "independent", label: agent, patterns: [`${agent} *`], actor: { type: "tui" } })))
+  expect(created.every((result) => result.ok)).toBe(true)
+  expect((await snapshotOf(api)).records.filter((record) => record.type === "rule" && record.id === "independent")).toHaveLength(2)
+  expect((await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "independent" })).ok).toBe(true)
+  expect((await snapshotOf(api)).records.filter((record) => record.type === "rule" && record.id === "independent")).toEqual([expect.objectContaining({ agent: "beta", patterns: ["beta *"] })])
 })
 
 test("updateRule retry preserves an unrelated concurrent deletion", async () => {
@@ -2621,7 +2635,7 @@ test("concurrent updateRule creates for the same target never report false succe
   expect(entries[0]?.revision).toBe(after.revision)
 })
 
-test("updateRule preserves a shared agent:null owner instead of retargeting it", async () => {
+test("updateRule creates an owner override without changing the shared default", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -2641,8 +2655,7 @@ test("updateRule preserves a shared agent:null owner instead of retargeting it",
   })
   if (!seeded.ok) throw new Error(`seed failed: ${seeded.error.message}`)
   expect(seeded.value.agent).toBeNull()
-  // Update through another agent's row address: protection follows the
-  // matched record, and the owner (including legitimate null) follows it too.
+  // An agent edit materializes its own definition; shared defaults stay intact.
   const updated = await api.updateRule({
     level: "project",
     agent: "alpha",
@@ -2654,19 +2667,20 @@ test("updateRule preserves a shared agent:null owner instead of retargeting it",
     actor: { type: "tui" },
   })
   if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
-  expect(updated.value.level).toBe("defaults")
-  expect(updated.value.agent).toBeNull()
+  expect(updated.value.level).toBe("project")
+  expect(updated.value.agent).toBe("alpha")
   expect(updated.value.label).toBe("Shared edited")
   const after = await snapshotOf(api)
-  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared")
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.agent === "alpha")
   if (persisted === undefined || persisted.type !== "rule") throw new Error("expected shared rule to persist")
-  expect(persisted.level).toBe("defaults")
-  expect(persisted.agent).toBeNull()
+  expect(persisted.level).toBe("project")
+  expect(persisted.agent).toBe("alpha")
   expect(persisted.label).toBe("Shared edited")
+  expect(after.records.find((record) => record.type === "rule" && record.id === "shared" && record.agent === null)).toMatchObject({ label: "Shared", patterns: ["shared *"] })
   const logged = await api.log({ where: "op:rule.update" })
   if (!logged.ok) throw new Error("log failed")
   const updateEntry = logged.value.entries.find(
-    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:defaults::shell:shared",
+    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:shared",
   )
   if (updateEntry === undefined) throw new Error("missing shared rule.update log entry at the shared address")
 })

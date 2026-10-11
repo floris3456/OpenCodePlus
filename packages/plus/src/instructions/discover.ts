@@ -1114,41 +1114,31 @@ function permItems(input: {
   const catalogById = new Map([...catalog, ...parameterApprovals(catalog, input.paramRows)].map((item) => [item.id, item] as const))
   for (const record of input.ruleRecords) {
     const id = permItemId(record.tool, record.id)
-    const text = `${record.label}\n${record.patterns.join("\n")}`
     const action = permActionForTool(input.tools, record.tool)
     // A user's edit of a catalog row keeps what the row is (its category,
     // kind, input field, fallback or allow role) and replaces only its label,
     // patterns, keywords and refusal text.
     const shipped = catalogById.get(id)
     if (shipped !== undefined) {
-      byId.set(id, {
-        ...shipped,
-        title: record.label,
-        text,
-        fingerprint: fingerprint(text),
-        patterns: [...record.patterns],
-        keywords: [...record.keywords],
-        custom: true,
-        ...(record.message === undefined ? {} : { message: record.message }),
-      })
+      byId.set(id, shipped)
       continue
     }
+    if (byId.has(id)) continue
     byId.set(id, {
       id,
       kind: "perm",
       group: "none",
-      title: record.label,
-      text,
+      title: record.id,
+      text: "",
       enabled: upstreamEnabled(),
-      fingerprint: fingerprint(text),
+      fingerprint: fingerprint(""),
       permTool: record.tool,
       ruleId: record.id,
-      patterns: [...record.patterns],
-      keywords: [...record.keywords],
+      patterns: [],
+      keywords: [],
       provenance: [],
       custom: true,
       // The agent the rule was created for owns it (§3.3 fallback: upstream).
-      ...(record.agent === null ? {} : { ownedBy: record.agent }),
       category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }, false),
       ...(action === undefined ? {} : { permAction: action }),
     })

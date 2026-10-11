@@ -1,4 +1,5 @@
 import { builtinBaseIds } from "../agents/base.js"
+import { ownRule, ruleItem } from "./rules.js"
 import { booleanControl, controlIds, controlItemFor, controlItems, isControl } from "./agent-controls.js"
 import { mentions, met, requirementOf } from "./requires.js"
 import { guidanceItemId } from "./paths.js"
@@ -3434,9 +3435,14 @@ export function toolPermissionRows(
   owner: string | null,
   toolId: string,
   level?: Level,
+  team?: RowTeam,
+  catalogue?: Catalogue,
 ): { category: string; rows: ListedRow[] }[] {
   const listed = permIndex(ctx).get(toolId) ?? []
-  const rows = listed.filter(
+  const rows = listed.flatMap((row) => {
+    const item = ruleItem(row.item, ctx.rules, ctx.scopes, addressOf(level ?? "project", owner, row.item.id, null, team, catalogue))
+    return item === undefined ? [] : [{ ...row, item }]
+  }).filter(
     (row) =>
       (owner === null ? row.item.agents === undefined : applies(row.item, owner)) &&
       (level === undefined || listedAt(level, row.item)),
@@ -3474,7 +3480,7 @@ export function toolPermRows(
   ownerPath?: string,
 ): Lazy[] {
   if (item.kind !== "tool") return []
-  return toolPermissionRows(ctx, owner, item.id.slice("tool:".length), level).flatMap((entry) =>
+  return toolPermissionRows(ctx, owner, item.id.slice("tool:".length), level, teamRef, catalogue).flatMap((entry) =>
     entry.rows.map((row) => lazyPermRow(memo, level, owner, row.item, depth, teamRef, catalogue, ownerPath, row.alias)),
   )
 }
@@ -3512,7 +3518,7 @@ export function toolPermissions(
   parameter?: string,
 ): Lazy[] {
   const toolId = item.id.slice("tool:".length)
-  const categories = toolPermissionRows(ctx, owner, toolId, level)
+  const categories = toolPermissionRows(ctx, owner, toolId, level, teamRef, catalogue)
   const params = paramIndex(ctx).get(toolId) ?? []
   return [
     ...(toolId === "skill" && (parameter === "name" || (params.length === 0 && parameter === undefined))
@@ -3646,7 +3652,7 @@ function lazyPermRow(
       toggle: true,
       edit: true,
       reset: canReset(memo.ctx.customizations, address),
-      remove: item.custom === true,
+      remove: ownRule(memo.ctx.rules, address) !== undefined,
       split: false,
       pin: false,
     },

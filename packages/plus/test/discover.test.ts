@@ -1145,17 +1145,24 @@ test("discovery emits exactly one synthetic execute row with the exact shape", a
 })
 
 test("rediscovery keeps edited argument approvals as permissions rather than generic custom rules", async () => {
+  const { ruleItem } = await import("../src/instructions/rules.js")
   const directory = await tempDir("plus-discover-")
+  const rules = [{ type: "rule" as const, level: "project" as const, agent: "alpha", tool: "read", id: "approval.every@limit", label: "Confirm the limit", patterns: [], keywords: [], updated: "2026-10-11T00:00:00.000Z" }]
   const discovered = await discover({
     ctx: fullContext({ directory, tools: [{ ...tool("read", "Read files"), input: Schema.Struct({ path: Schema.String, limit: Schema.optionalKey(Schema.Number) }) }] }),
     records: [],
-    ruleRecords: [{ type: "rule", level: "project", agent: "alpha", tool: "read", id: "approval.every@limit", label: "Confirm the limit", patterns: [], keywords: [], updated: "2026-10-11T00:00:00.000Z" }],
+    ruleRecords: rules,
     baseTemplates: noTemplates,
     activeBase: noBase,
   })
   const rows = discovered.items.filter((item) => item.id === "perm:read:approval.every@limit")
   expect(rows).toHaveLength(1)
-  expect(rows[0]).toMatchObject({ title: "Confirm the limit", permKind: "approval", permissionParameter: "limit", permissionSource: "perm:read:approval.every" })
+  const scopes = { global: new Set<string>(), defaults: new Set<string>() }
+  const row = rows[0]
+  if (row === undefined) throw new Error("missing argument approval")
+  expect(row).toMatchObject({ title: "Ask before using limit", permKind: "approval", permissionParameter: "limit", permissionSource: "perm:read:approval.every" })
+  expect(ruleItem(row, rules, scopes, { level: "project", agent: "alpha", item: row.id, section: null })).toMatchObject({ title: "Confirm the limit", permKind: "approval", permissionParameter: "limit" })
+  expect(ruleItem(row, rules, scopes, { level: "project", agent: "beta", item: row.id, section: null })?.title).toBe("Ask before using limit")
   expect(discovered.items.find((item) => item.id === "perm:read:approval.every@path")?.title).toBe("Ask before using path")
 })
 

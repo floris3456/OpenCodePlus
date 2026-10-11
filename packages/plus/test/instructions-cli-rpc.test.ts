@@ -263,6 +263,26 @@ test("clipboard RPC copies frozen configuration and failed or cancelled cuts lea
   }
 })
 
+test("batch creation keeps the new resource id and rebases owner and tool fields", async () => {
+  const fixture = await activatedFixture()
+  try {
+    const rows = ["item:defaults:alpha:tool:reader", "item:project:build:tool:reader"]
+    const created = await invoke(fixture.handlers, "instructions.run", {
+      op: "batch", actor: { type: "tui" },
+      input: { op: "create", id: rows[0], selected: rows, input: { kind: "rule", id: "shared-name", label: "Selected rule", patterns: ["*.txt"] } },
+    })
+    expect(created).toEqual({ applied: rows, skipped: [], failed: [] })
+    const snapshot = (await fixture.api.snapshot()).value
+    expect(snapshot.records.filter((record) => record.type === "rule" && record.id === "shared-name")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent: "alpha", level: "defaults", tool: "reader" }),
+      expect.objectContaining({ agent: "build", level: "project", tool: "reader" }),
+    ]))
+    expect(snapshot.records.filter((record) => record.type === "rule" && record.id.includes("item:"))).toEqual([])
+  } finally {
+    await Effect.runPromise(deactivate(fixture.state))
+  }
+})
+
 test("a schema-invalid input is a usage refusal", async () => {
   const fixture = await activatedFixture()
   try {

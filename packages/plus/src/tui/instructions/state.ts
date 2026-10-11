@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
+import { ruleItem } from "../../instructions/rules.js"
 import { modelActivationRefusal, reflectedEndpoint, reflectedRows } from "../../instructions/reflection.js"
 import { createMemo, createSignal } from "solid-js"
 import { Option, Schema } from "effect"
@@ -551,8 +552,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     if (isControl(address.item)) return controlItemFor(items, address)
     const matches = items.filter((entry) => entry.id === address.item)
     const owner = address.agent
-    if (owner === null) return matches[0]
-    return matches.find((entry) => applies(entry, owner)) ?? matches[0]
+    const item = matches.find((entry) => owner === null || applies(entry, owner)) ?? matches[0]
+    const memo = treeMemo()
+    return item === undefined || memo === undefined ? item : ruleItem(item, memo.ctx.rules, memo.ctx.scopes, address)
   }
 
   function chainFor(node: TreeNode):
@@ -1495,7 +1497,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         return false
       }
       const current = snapshot()
-      const custom = current?.items.find((entry) => entry.id === address.item)?.custom === true
+      const custom = current?.records.some((record) => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId && scopedTo(record, address))
       if (!custom) {
         setStatus(`"${node.label}" cannot be deleted: only user-created rules can be deleted`)
         return false
@@ -1510,7 +1512,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       }
       try {
         await plus["rule.remove"](
-          { level: address.level, agent: address.agent, tool: parsed.tool, id: parsed.ruleId },
+           { level: address.level, agent: address.agent, ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }), ...(address.team === undefined ? {} : { team: address.team }), tool: parsed.tool, id: parsed.ruleId },
           { location: context.location },
         )
         if (disposed) return false
@@ -1846,6 +1848,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   return {
     selection,
+    effectiveItem: (node: TreeNode) => node.address === undefined ? undefined : upstreamFor(itemsForTree(), node.address),
     notices,
     clipboard,
     isCut: (node: TreeNode) => {
