@@ -244,6 +244,8 @@ export const SnapshotModelRecord = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.String),
   compactionModel: Schema.optionalKey(Schema.String),
   compactionInstructions: Schema.optionalKey(Schema.String),
+  compactionInput: Schema.optionalKey(Schema.String),
+  compactionOutput: Schema.optionalKey(Schema.String),
   removed: Schema.optionalKey(Schema.Literal(true)),
   originalCandidate: Schema.optionalKey(OriginalCandidate),
   updated: Schema.String,
@@ -269,6 +271,8 @@ export const SnapshotModelSettingsRecord = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.String),
   compactionModel: Schema.optionalKey(Schema.String),
   compactionInstructions: Schema.optionalKey(Schema.String),
+  compactionInput: Schema.optionalKey(Schema.String),
+  compactionOutput: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotModelSettingsRecord" })
 
@@ -892,6 +896,8 @@ export const SetModelSettingsInput = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionInput: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  compactionOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate({ identifier: "Plus.SetModelSettingsInput" })
 
 export interface SetModelSettingsOutput extends Schema.Schema.Type<typeof SetModelSettingsOutput> {}

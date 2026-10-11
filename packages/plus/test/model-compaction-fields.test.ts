@@ -63,6 +63,8 @@ test("compaction fields validate into canonical stored values", () => {
       compactionStrategy: "Local",
       compactionModel: " openai/gpt-5#low ",
       compactionInstructions: "Summarize briefly.",
+      compactionInput: " 0120000 ",
+      compactionOutput: "OFF",
     }),
   ).toEqual({
     fields: {
@@ -72,6 +74,8 @@ test("compaction fields validate into canonical stored values", () => {
       compactionStrategy: "local",
       compactionModel: "openai/gpt-5#low",
       compactionInstructions: "Summarize briefly.",
+      compactionInput: "120000",
+      compactionOutput: "off",
     },
   })
   // "" clears every field but the instructions, where it is an empty prompt; null always clears.
@@ -85,6 +89,7 @@ test("compaction fields validate into canonical stored values", () => {
   expect(compactionFieldsOf({ coldModels: ["a/b", "c/d#x"] })).toEqual({ fields: { coldModels: ["a/b", "c/d#x"] } })
   expect(compactionFieldsOf({ coldModels: [] })).toEqual({ fields: { coldModels: [] } })
   expect(compactionFieldsOf({})).toEqual({ fields: {} })
+  expect(compactionFieldsOf({ compactionInput: "", compactionOutput: null })).toEqual({ fields: { compactionInput: null, compactionOutput: null } })
 })
 
 test("bad compaction values refuse with the field named", () => {
@@ -96,6 +101,9 @@ test("bad compaction values refuse with the field named", () => {
   expect(error(compactionFieldsOf({ coldModels: "a/b, nope" }))).toContain('"nope"')
   expect(error(compactionFieldsOf({ coldModels: ["a/b", "a/b"] }))).toContain("listed twice")
   expect(error(compactionFieldsOf({ coldModels: "a/b#" }))).toContain("provider/model")
+  for (const value of ["0", "-1", "1.5", "1e5", "20k", "90%", "Infinity", "9007199254740992"])
+    for (const field of ["compactionInput", "compactionOutput"])
+      expect(error(compactionFieldsOf({ [field]: value }))).toContain("positive whole token count")
 })
 
 test("the fields round-trip through the store, and a store without them is unchanged", async () => {
@@ -112,7 +120,7 @@ test("the fields round-trip through the store, and a store without them is uncha
   expect(plainGlobal).not.toContain("compact")
 
   const withFields: StoredRecord[] = [
-    modelRow({ active: true, warming: "30m", compactWarm: "on", coldCompact: "on", coldModels: ["a/b", "c/d#x"], compactionStrategy: "local" }),
+    modelRow({ active: true, warming: "30m", compactWarm: "on", coldCompact: "on", coldModels: ["a/b", "c/d#x"], compactionStrategy: "local", compactionInput: "120000", compactionOutput: "off" }),
     settings({
       providerID: "anthropic",
       modelID: "claude",
@@ -120,6 +128,8 @@ test("the fields round-trip through the store, and a store without them is uncha
       coldModels: [],
       compactionModel: "a/b",
       compactionInstructions: "",
+      compactionInput: "off",
+      compactionOutput: "30000",
     }),
   ]
   const loaded = await load(project)
@@ -174,6 +184,8 @@ test("model rows resolve each compaction field down the agent's chain", () => {
 
 test("compact before cold and the cold-cache list resolve row, this model, Every model, built-in", () => {
   expect(effectiveCompaction({})).toEqual({
+    compactionInput: { value: undefined, from: "built-in" },
+    compactionOutput: { value: undefined, from: "built-in" },
     compactWarm: { value: false, from: "built-in" },
     coldCompact: { value: false, from: "built-in" },
     coldModels: { value: [], from: "built-in" },
@@ -229,6 +241,29 @@ test("strategy, model and instructions add the agent-wide, every-agent and confi
   expect(compactionFromWords("agent")).toContain("agent-wide")
   expect(compactionFromWords("agents")).toContain("every agent")
   expect(compactionFromWords("every")).toBe("Defaults › Models › Every model")
+})
+
+test("token thresholds inherit per field across scopes, variants and Defaults; off masks and reset restores", () => {
+  const models = [
+    modelRow({ level: "defaults", compactionInput: "90000", compactionOutput: "40000" }),
+    modelRow({ level: "global", compactionInput: "80000" }),
+    modelRow({ compactionOutput: "30000" }),
+    modelRow({ variant: "high", compactionInput: "off" }),
+  ]
+  const every = settings({ compactionInput: "120000", compactionOutput: "60000" })
+  const specific = settings({ ...claude, compactionInput: "100000" })
+  const resolve = (records: ModelRecord[], target = claude) => effectiveCompaction({
+    row: resolveModelCompactionFields({ models: records, scopes, level: "project", agent: "alpha" }, target),
+    model: specific,
+    every,
+  })
+  expect(resolve(models)).toMatchObject({ compactionInput: { value: 80000, from: "global" }, compactionOutput: { value: 30000, from: "project" } })
+  const variant = { ...claude, variant: "high" }
+  expect(resolve(models, variant).compactionInput).toEqual({ value: 0, from: "project" })
+  const reset = setModelCompaction(models, { level: "project", agent: "alpha" }, variant, { compactionInput: null }, UPDATED)
+  expect(resolve(reset, variant).compactionInput).toEqual({ value: 80000, from: "global" })
+  expect(resolve([])).toMatchObject({ compactionInput: { value: 100000, from: "model" }, compactionOutput: { value: 60000, from: "every" } })
+  expect(effectiveCompaction({ every }).compactionInput).toEqual({ value: 120000, from: "every" })
 })
 
 test("Defaults › Models saves keep the compaction fields they do not name", () => {

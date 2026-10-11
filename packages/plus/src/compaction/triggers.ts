@@ -47,9 +47,9 @@ export function decideCompactionTriggers(event: SessionCompactionDecision, trigg
   if (event.reason !== "auto" || !event.auto || event.due || event.compact || event.refusal || !event.metrics?.advanced)
     return
   const trigger =
-    triggers.input !== undefined && event.metrics.input >= triggers.input
+    triggers.input !== undefined && triggers.input > 0 && event.metrics.input >= triggers.input
       ? "input-threshold"
-      : triggers.output !== undefined && event.metrics.output >= triggers.output
+      : triggers.output !== undefined && triggers.output > 0 && event.metrics.output >= triggers.output
         ? "output-threshold"
         : undefined
   if (trigger === undefined) return

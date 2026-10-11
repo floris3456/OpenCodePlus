@@ -214,6 +214,45 @@ it.live("compaction trigger preferences survive closing and reopening the produc
   }),
 )
 
+it.effect("inherited model thresholds drive production compaction, update live, and yield to chat overrides", () =>
+  Effect.gen(function* () {
+    const kv = yield* KV.Service
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const session = yield* insertSession(Session.ID.make("ses_inherited_triggers"))
+    const ctx = { ...fullContext({ directory: "/project", session: { get: () => Effect.succeed(session) } }), storage: PluginHost.storage(kv, "opencode.plus") }
+    const state = createState()
+    const history = [SessionMessage.User.make({ id: SessionMessage.ID.create(), type: "user", text: "Synthetic history", time: { created: DateTime.makeUnsafe(0) } })]
+    const context = loaded(session, history)
+    const estimate = SessionCompaction.estimateContext(context)
+    const settings = { type: "modelSettings" as const, level: "defaults" as const, updated: "2026-10-11" }
+    state.cachedModelSettings = [{ ...settings, compactionInput: String(estimate) }]
+    yield* hooks.register("session", "compaction.decide", (event) => decideCompactionFor(ctx, state, event))
+    requests = []
+    // An explicit chat threshold postpones the early trigger, not the safety threshold.
+    yield* setCompactionTriggers(ctx, { sessionID: session.id, input: estimate + 1 })
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    yield* setCompactionTriggers(ctx, { sessionID: session.id, input: null })
+    // The specific model can suppress Every model, and another model cannot affect this one.
+    state.cachedModelSettings = [...state.cachedModelSettings, { ...settings, providerID: context.model.ref.providerID, modelID: context.model.ref.id, compactionInput: "off" }]
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    state.cachedModelSettings = [{ ...settings, providerID: "other", modelID: "other", compactionInput: "1" }]
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    // Updating the same live state is observed without changing the session or history.
+    state.cachedModelSettings = [{ ...settings, providerID: context.model.ref.providerID, modelID: context.model.ref.id, compactionInput: String(estimate) }]
+    yield* compaction.transform((editor) => editor.configure({ auto: false }))
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "skipped" })
+    expect(requests).toHaveLength(0)
+    yield* compaction.transform((editor) => editor.configure({ auto: true }))
+    expect(yield* compaction.compact({ reason: "auto", context })).toEqual({ status: "completed" })
+    expect(requests).toHaveLength(1)
+    const store = yield* SessionStore.Service
+    const checkpoints = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+    expect(checkpoints.at(-1)).toMatchObject({ type: "compaction", status: "completed" })
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, [...history, ...checkpoints]) })).toEqual({ status: "skipped" })
+  }),
+)
+
 it.effect("output triggers count primary output including reasoning, reset only on completed compaction, and respect auto:false", () =>
   Effect.gen(function* () {
     const kv = yield* KV.Service

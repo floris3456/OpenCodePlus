@@ -675,9 +675,13 @@ Anthropic refreshes a 5-minute cache on read, which is why the round trips here 
 
 Keep-alive requests are real provider requests and cost tokens (cache reads are cheap, cache writes are not).
 
-## Per-chat early compaction triggers
+## Inherited and per-chat early compaction triggers
 
-Use `/compact-triggers` in the current chat to set optional **input** and **output** token thresholds. Each is an absolute positive whole number, not a percentage. Leave a field blank to clear that trigger and return to normal automatic compaction; both are unset by default. Cancelling either prompt saves nothing.
+Every model's **Compaction** group has **Input token threshold** and **Output token threshold**, including agent/member/preset model rows and Defaults › Models › **Every model**. Enter a positive whole token count (not a percentage), `off` to suppress an inherited early trigger, or leave blank/reset to inherit. The fields resolve independently through the agent's existing Project/Global/Defaults/preset model chain, then Defaults › Models › this model, then Every model. Both are unset by default. These thresholds apply to the model currently executing the chat, and changes are read at the next safe boundary.
+
+Instructions tools expose `compactionInput` and `compactionOutput` on model rows and Defaults model rows as strings, for example `"120000"`, `"30000"`, or `"off"`; `null` clears an override. Each emitted field row also supports text editing and reset.
+
+Use `/compact-triggers` in the current chat to override either inherited **input** or **output** threshold. Each is an absolute positive whole number, not a percentage. Leave a field blank to restore model inheritance; both chat overrides are unset by default. Cancelling either prompt saves nothing.
 
 - **Input** compares against Core's estimated size of the next prompt, including its existing measured-context estimate, instructions, tools and newer history.
 - **Output** compares against cumulative primary assistant output **plus reasoning** since the latest completed compaction. This is not lifetime output or a billing total: summary/title requests, warming pings and rebilled attempts do not add to it. A failed compaction does not reset it.

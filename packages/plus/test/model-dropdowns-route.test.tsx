@@ -21,7 +21,7 @@ const titles = (options: readonly { readonly title: string }[]) => options.map((
 // Open a row, open its group, and leave the cursor on the group's first field
 // and then on `field` (a group named like its field starts on the group).
 async function reachField(fixture: TestFixture, row: string, group: string, field: string): Promise<void> {
-  await reach(fixture, row, row.split(":").at(-1))
+  await reach(fixture, row, row.endsWith(":*") ? "Every model" : row.split(":").at(-1))
   dispatch(fixture, "return")
   await sleep(80)
   await moveTo(fixture, group)
@@ -33,6 +33,35 @@ async function reachField(fixture: TestFixture, row: string, group: string, fiel
 
 const anthropic = "item:defaults:/models:modeldefault:anthropic/claude"
 const hostAnthropic = [{ providerID: "anthropic", modelID: "claude", variants: ["high", "low"] }]
+
+test.each([
+  { row: anthropic, name: "Input token threshold", field: "compactionInput", value: "120000" },
+  { row: "item:defaults:/models:modeldefault:*", name: "Output token threshold", field: "compactionOutput", value: "off" },
+])("Defaults Compaction edits $field on $row", async ({ row, name, field, value }) => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ hostModels: hostAnthropic })],
+    dialogs: { prompts: [value] },
+  })
+  await reachField(fixture, row, "Compaction", name)
+  dispatch(fixture, "return")
+  await fixture.waitForFrame(() => fixture.fake.modelSettingsSets.length === 1)
+  expect(fixture.fake.modelSettingsSets[0]).toMatchObject({ [field]: value })
+  expect(fixture.fake.promptInputs[0]?.description).toContain("Empty inherits")
+})
+
+test.each([
+  { field: "compactionInput", name: "Input token threshold", value: "120000" },
+  { field: "compactionOutput", name: "Output token threshold", value: "off" },
+])("agent Compaction edits $field through the production route", async ({ field, name, value }) => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: agent, items: controlItems(), records: [{ ...agentModel("acme", "nova"), prompt: "CANARY" }], revision: 1 })],
+    dialogs: { prompts: [value] },
+  })
+  await reachField(fixture, "item:project:build:model:acme/nova", "Compaction", name)
+  dispatch(fixture, "return")
+  await fixture.waitForFrame(() => fixture.fake.mutateInputs.length === 1)
+  expect(fixture.fake.mutateInputs[0]?.records).toContainEqual(expect.objectContaining({ type: "model", agent: "build", [field]: value, prompt: "CANARY" }))
+})
 
 test("Defaults › Ping every opens a dropdown of the model's lifetime list, Inherit naming the value below, and writes the pick", async () => {
   await using fixture = await renderInstructionsRoute({

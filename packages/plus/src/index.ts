@@ -89,7 +89,7 @@ import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } fro
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { compactColdNow } from "./compaction/cold-now.js"
-import { decideCompactionTriggers, getCompactionTriggers, setCompactionTriggers } from "./compaction/triggers.js"
+import { getCompactionTriggers, setCompactionTriggers } from "./compaction/triggers.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
@@ -1681,6 +1681,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
         ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
         ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+        ...(input.compactionInput === undefined ? {} : { compactionInput: input.compactionInput }),
+        ...(input.compactionOutput === undefined ? {} : { compactionOutput: input.compactionOutput }),
       })
       if ("error" in compact) return invalidModelSettings(compact.error)
       const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
@@ -3915,15 +3917,17 @@ export function decideCompactionFor(
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)
+    const triggers = event.reason === "auto" && event.auto && !event.due && !event.compact && !event.refusal && event.metrics?.advanced
+      ? await Effect.runPromise(getCompactionTriggers(ctx, event.sessionID))
+      : undefined
     decideCompaction(event, {
+      ...(triggers === undefined ? {} : { triggers }),
       rows: compactionRowsOf(state, event.agent, event.model),
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),
       ...(agentWide === undefined ? {} : { agent: agentWide }),
       ...(cold === undefined ? {} : { cold }),
     })
-    if (event.reason === "auto" && event.auto && !event.due && !event.compact && !event.refusal && event.metrics?.advanced)
-      decideCompactionTriggers(event, await Effect.runPromise(getCompactionTriggers(ctx, event.sessionID)))
   })
 }
 
@@ -4918,6 +4922,8 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
       ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
       ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+      ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+      ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}
@@ -6854,6 +6860,8 @@ function toSnapshot(
             ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
             ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
             ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+            ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+            ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
             ...(record.originalCandidate === undefined ? {} : { originalCandidate: { ...record.originalCandidate } }),
             updated: record.updated,

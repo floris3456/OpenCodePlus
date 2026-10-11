@@ -213,6 +213,8 @@ const CompactionFields = {
   compactionStrategy: Schema.optional(Schema.String),
   compactionModel: Schema.optional(Schema.String),
   compactionInstructions: Schema.optional(Schema.String),
+  compactionInput: Schema.optional(Schema.String),
+  compactionOutput: Schema.optional(Schema.String),
 }
 
 // Per-agent model selection. Omitted active retains ordinary inheritance;
@@ -1372,6 +1374,8 @@ function storedCompaction(record: ModelCompactionFields): ModelCompactionFields 
     ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
     ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
     ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+    ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+    ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
   }
 }
 

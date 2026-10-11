@@ -1407,7 +1407,7 @@ test("a model row opens into Model, Effort, Warming and Compaction groups with t
   expect(childrenOf(nodes, cold).map((node) => node.badges.value)).toEqual(["1 a/one", "2 b/two"])
   const compaction = "group:project:alpha:modelgroup:acme/nova:compaction"
   expect(nodes.find((node) => node.id === compaction)?.badges.value).toBe("Auto")
-  expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Model", "Instructions"])
+  expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions"])
   // The group rows carry no toggle: Space on them does nothing.
   for (const id of [warming, compaction]) expect(nodes.find((node) => node.id === id)?.actions?.toggle).toBe(false)
 })
@@ -1429,7 +1429,7 @@ test("a Defaults › Models row has the same groups minus Model", () => {
     "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Compact cold caches with another model",
   ])
   const compaction = "group:defaults:/models:modeldefault:acme/nova:compaction"
-  expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Model", "Instructions"])
+  expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions"])
 })
 
 test("model union shows chain candidates with source badges and one active winner", () => {

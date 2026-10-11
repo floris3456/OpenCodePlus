@@ -392,6 +392,9 @@ function promptField(text: string): string | null | { readonly error: string } {
 
 /** The compaction fields of a model row and of a Defaults › Models row. */
 export interface ModelCompactionFields {
+  /** Absolute early token thresholds; "off" suppresses inheritance, absent inherits. */
+  readonly compactionInput?: string
+  readonly compactionOutput?: string
   /** Compact before cold for chats on this model: "on" or "off". */
   readonly compactWarm?: string
   /** Compact cold caches with another model: "on" or "off". */
@@ -414,6 +417,8 @@ declare module "./model.js" {
 
 export type ModelCompactionField = keyof ModelCompactionFields
 export const MODEL_COMPACTION_FIELDS: readonly ModelCompactionField[] = [
+  "compactionInput",
+  "compactionOutput",
   "compactWarm",
   "coldCompact",
   "coldModels",
@@ -448,6 +453,8 @@ const MODEL_REF = /^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/
  * list is this level's own "no models", over any list inherited from below.
  */
 export function compactionFieldsOf(input: {
+  readonly compactionInput?: string | null
+  readonly compactionOutput?: string | null
   readonly compactWarm?: string | null
   readonly coldCompact?: string | null
   readonly coldModels?: string | readonly string[] | null
@@ -456,6 +463,8 @@ export function compactionFieldsOf(input: {
   readonly compactionInstructions?: string | null
 }): { readonly fields: ModelCompactionFieldValues } | { readonly error: string } {
   const checked = {
+    compactionInput: thresholdField(input.compactionInput),
+    compactionOutput: thresholdField(input.compactionOutput),
     compactWarm: switchField(input.compactWarm, "Compact before cold"),
     coldCompact: switchField(input.coldCompact, "Compact cold caches with another model"),
     coldModels: coldModelsField(input.coldModels),
@@ -466,6 +475,22 @@ export function compactionFieldsOf(input: {
   const error = Object.values(checked).find((value): value is { readonly error: string } => typeof value === "object" && value !== null && "error" in value)
   if (error !== undefined) return error
   return { fields: Object.fromEntries(Object.entries(checked).filter(([, value]) => value !== undefined)) as ModelCompactionFieldValues }
+}
+
+function thresholdField(text: string | null | undefined) {
+  if (text === undefined || text === null) return text
+  const value = text.trim().toLowerCase()
+  if (value.length === 0) return null
+  if (thresholdOf(value) !== undefined) return value === "off" ? value : String(Number(value))
+  return { error: "Compaction threshold must be a positive whole token count or off; empty inherits" }
+}
+
+/** Zero represents an explicit disabled early trigger, distinct from inheritance. */
+function thresholdOf(value: string | readonly string[]): number | undefined {
+  if (value === "off") return 0
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined
+  const count = Number(value)
+  return Number.isSafeInteger(count) && count > 0 ? count : undefined
 }
 
 function switchField(text: string | null | undefined, label: string): string | null | undefined | { readonly error: string } {
@@ -581,6 +606,8 @@ export interface CompactionEffective<T> {
 }
 
 export interface EffectiveCompaction {
+  readonly compactionInput: CompactionEffective<number | undefined>
+  readonly compactionOutput: CompactionEffective<number | undefined>
   readonly compactWarm: CompactionEffective<boolean>
   readonly coldCompact: CompactionEffective<boolean>
   /** The cold-cache models in try order; only used while coldCompact is on. */
@@ -603,9 +630,9 @@ export function compactionFromWords(from: CompactionFrom): string {
 /**
  * The compaction settings for one agent on one model, field by field.
  *
- *   compact before cold, cold-cache switch and list: the agent's model row
+ *   token thresholds, compact before cold, cold-cache switch and list: the agent's model row
  *   (down its chain) > Defaults › Models › this model > Every model > built-in
- *   (off, off, no models)
+ *   (no early thresholds, off, off, no models)
  *
  *   strategy, model, instructions: the agent's model row > the agent's
  *   agent-wide rows > Defaults › Models › this model > Every model > the
@@ -640,6 +667,8 @@ export function effectiveCompaction(input: {
     ]
   }
   return {
+    compactionInput: firstSet<number | undefined>(own("compactionInput"), thresholdOf, undefined),
+    compactionOutput: firstSet<number | undefined>(own("compactionOutput"), thresholdOf, undefined),
     compactWarm: firstSet(own("compactWarm"), switchOf, false),
     coldCompact: firstSet(own("coldCompact"), switchOf, false),
     coldModels: firstSet(own("coldModels"), (value) => (Array.isArray(value) ? value.filter((entry) => MODEL_REF.test(entry)) : undefined), []),
@@ -863,6 +892,8 @@ export function modelSettingParentRowId(rowId: string): string | undefined {
 export const COLD_COMPACT_LABEL = "Compact cold caches with another model"
 
 export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
+  compactionInput: "Input token threshold",
+  compactionOutput: "Output token threshold",
   warming: "Warming",
   interval: "Ping every",
   prompt: "Keep-alive prompt",
@@ -883,11 +914,13 @@ export function isDefaultSwitchField(field: ModelDefaultField): field is "compac
 // An agent/member/preset model row opens into the same field rows as a
 // Defaults › Models row, grouped: Model, Effort under the row, the Warming
 // group (Warming, Ping every, Keep-alive prompt, Compact before cold and the
-// cold-cache list) and the Compaction group (Strategy, Model, Instructions).
+// cold-cache list) and the Compaction group (Strategy, token thresholds, Model, Instructions).
 // The item id carries the field and the candidate, so
 // `item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`
 // never collides with a `model:` row or a Defaults `modelsetting:` row.
 export type ModelFieldName =
+  | "compactionInput"
+  | "compactionOutput"
   | "model"
   | "effort"
   | "warming"
@@ -899,6 +932,8 @@ export type ModelFieldName =
   | "compactionModel"
   | "compactionInstructions"
 export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
+  "compactionInput",
+  "compactionOutput",
   "model",
   "effort",
   "warming",
@@ -913,6 +948,8 @@ export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
 export const MODEL_FIELD_PREFIX = "modelfield:"
 
 export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
+  compactionInput: "Input token threshold",
+  compactionOutput: "Output token threshold",
   model: "Model",
   effort: "Effort",
   warming: "Warming",
