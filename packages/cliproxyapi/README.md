@@ -10,6 +10,9 @@ The bundled code stays in the executable when removed from the enabled plugins.
 - Pacer owns model discovery, Claude relay, pricing and quota observations.
 - Replies update the meter; Pacer's usage view refreshes every minute. The old
   per-step/per-second quota-events polling is not enabled.
+- `/usage` opens a compact popup; `/usage --all` inspects all providers there.
+  Left/right pages fit the terminal without scrolling; `a` changes scope and `d`
+  shows reset details. The sidebar only displays credentials serving the active chat.
 - `/usage --all` retains Plus's all-provider credentials, quota-window bars and
   reset countdowns, including the narrow-terminal panel. It reads the cached
   Pacer meter rather than making another proxy request.

@@ -21,7 +21,7 @@ export interface UsageReading {
 
 /**
  * Pacer pushes response readings directly into visible views. One cached-RPC
- * polling loop seeds/reconciles the sidebar and inline fallback. It follows the current
+ * polling loop seeds/reconciles the sidebar and popup. It follows the current
  * route/model/scope and discards responses that belong to an older selection.
  */
 export function createUsageStore(context: Plugin.Context, options: { interval?: number } = {}) {
@@ -31,7 +31,6 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
     const [scope, setScope] = createSignal<UsageScope>("model")
     const [details, setDetails] = createSignal(false)
     const [views, setViews] = createSignal(0)
-    const [sidebars, setSidebars] = createSignal<Readonly<Record<string, number>>>({})
     const [reading, setReading] = createSignal<UsageReading>()
     const [clock, setClock] = createSignal(Date.now())
     const input = createMemo<UsageInput | undefined>(
@@ -131,19 +130,6 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
         setViews((count) => count + 1)
         return () => setViews((count) => count - 1)
       },
-      /** Registers a mounted sidebar section for a session. */
-      sidebar(sessionID: string) {
-        setSidebars((all) => ({ ...all, [sessionID]: (all[sessionID] ?? 0) + 1 }))
-        return () =>
-          setSidebars((all) => {
-            const count = (all[sessionID] ?? 0) - 1
-            const next = { ...all }
-            if (count > 0) next[sessionID] = count
-            else delete next[sessionID]
-            return next
-          })
-      },
-      sidebarVisible: (sessionID: string | undefined) => sessionID !== undefined && (sidebars()[sessionID] ?? 0) > 0,
       polling: () => views() > 0 && input() !== undefined,
     }
   })
