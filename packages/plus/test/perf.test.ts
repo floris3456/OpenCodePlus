@@ -4,7 +4,8 @@ import { controlItems } from "../src/instructions/agent-controls.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
-import { buildTreeMemo, expandedTree, tree, treeOf, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
+import { buildTreeMemo, expandedTree, findLazy, lazyPath, materialize, tree, treeOf, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
+import { advanceMove, startMove } from "../src/tui/instructions/move.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
 import type { Snapshot } from "../src/rpc.js"
 import { resetToolCountLog, stopToolCountLog, toolCountLog } from "../src/tui/instructions/route.js"
@@ -86,6 +87,30 @@ test("synthetic dataset: removalPlan, teamPlan, toggle and tree() each complete 
   const durTree = performance.now() - t3
   expect(nodes.length).toBeGreaterThan(0)
   expect(durTree).toBeLessThan(50)
+})
+
+test("move arrows reuse the snapshot and avoid resolving unrelated owners", () => {
+  const input = makeSyntheticInput()
+  const memo = buildTreeMemo(input)
+  const id = "item:project:agent-0:tool:item-0"
+  const row = findLazy(memo, id)
+  if (row === undefined) throw new Error("missing source")
+  const started = startMove(materialize(row), { folders: [], orders: [] })
+  if ("refusal" in started) throw new Error(started.refusal)
+  resetMemoBuildCounter()
+  const before = performance.now()
+  for (let index = 0; index < 20; index++) {
+    const next = advanceMove(input, started.state, "down", memo)
+    if ("refusal" in next) throw new Error(next.refusal)
+    expect(next.state.layout.orders.length).toBeGreaterThan(0)
+  }
+  expect(performance.now() - before).toBeLessThan(100)
+  expect(memoBuildCounter.count).toBe(0)
+  expect(findLazy(memo, id)).toBe(row)
+  expect(lazyPath(memo, id)).toBe(lazyPath(memo, id))
+  const changed = buildTreeMemo({ ...input, items: input.items.map((item) => item.id === "tool:item-0" ? { ...item, title: "Updated" } : item) })
+  expect(findLazy(changed, id)?.label).toBe("Updated")
+  expect(findLazy(memo, id)?.label).toBe("Item 0")
 })
 
 test("initial state load builds exactly one resolution memo for the snapshot", async () => {

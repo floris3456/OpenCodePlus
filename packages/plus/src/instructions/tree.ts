@@ -327,12 +327,26 @@ export interface Lazy {
 // through materialize() for rows that survive the structural filters.
 // Roots in DESIGN §2 order; Presets last.
 export function skeletonOf(memo: Memo): Lazy[] {
-  return [
+  const cached = skeletonCache.get(memo)
+  if (cached !== undefined) return cached
+  const roots = [
     lazyRoot(memo.ctx, memo, "project"),
     lazyRoot(memo.ctx, memo, "global"),
     lazyRoot(memo.ctx, memo, "defaults"),
     lazyPresetRoot(memo.ctx, memo),
-  ]
+  ].map(cacheChildren)
+  skeletonCache.set(memo, roots)
+  return roots
+}
+
+// A memo represents one immutable snapshot/draft. Cache only visited branches;
+// selection, move planning and rendering can share them without expanding peers.
+const skeletonCache = new WeakMap<Memo, Lazy[]>()
+const pathCache = new WeakMap<Memo, Map<string, readonly Lazy[]>>()
+
+function cacheChildren(node: Lazy): Lazy {
+  let children: readonly Lazy[] | undefined
+  return { ...node, children: () => children ??= node.children().map(cacheChildren) }
 }
 
 export function collectSkeleton(roots: readonly Lazy[]): Lazy[] {
@@ -398,14 +412,18 @@ function cachedSelfReview(memo: Memo, id: string, compute: () => boolean): boole
 }
 
 export function findLazy(memo: Memo, rowId: string): Lazy | undefined {
-  const roots = skeletonOf(memo)
-  const found = descendLazy(roots, rowId)
-  if (found !== undefined) return found
-  return collectSkeleton(roots).find((node) => node.id === rowId)
+  return lazyPath(memo, rowId).at(-1)
 }
 
 /** The real ancestor path, including saved folders and semantic tool exposure. */
 export function lazyPath(memo: Memo, rowId: string): readonly Lazy[] {
+  let cache = pathCache.get(memo)
+  if (cache === undefined) {
+    cache = new Map<string, readonly Lazy[]>()
+    pathCache.set(memo, cache)
+  }
+  const cached = cache.get(rowId)
+  if (cached !== undefined) return cached
   const walk = (nodes: readonly Lazy[], targeted: boolean): readonly Lazy[] | undefined => {
     for (const node of nodes) {
       if (node.id === rowId) return [node]
@@ -415,18 +433,9 @@ export function lazyPath(memo: Memo, rowId: string): readonly Lazy[] {
     }
     return undefined
   }
-  return walk(skeletonOf(memo), true) ?? walk(skeletonOf(memo), false) ?? []
-}
-
-function descendLazy(nodes: readonly Lazy[], rowId: string): Lazy | undefined {
-  for (const node of nodes) {
-    if (node.id === rowId) return node
-    if (canDescend(node, rowId)) {
-      const found = descendLazy(node.children(), rowId)
-      if (found !== undefined) return found
-    }
-  }
-  return undefined
+  const path = walk(skeletonOf(memo), true) ?? walk(skeletonOf(memo), false) ?? []
+  cache.set(rowId, path)
+  return path
 }
 
 function canDescend(node: Lazy, rowId: string): boolean {

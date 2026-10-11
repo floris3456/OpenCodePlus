@@ -101,7 +101,7 @@ import { linksTouching, switchedOff } from "./rowlinks.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
-import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
+import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, parentIndexes, relocateHeadingSpan, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -219,7 +219,7 @@ const FOLDER_MARK = ":folder:"
 
 // The token a tree row stands for: a folder, a tab (`tab:<tab>`), or a whole item row. Sections, groups and
 // built-in structure have none.
-export function rowToken(node: TreeNode): string | undefined {
+export function rowToken(node: Pick<TreeNode, "id" | "kind" | "address">): string | undefined {
   if (node.kind === "section" && node.address?.section === null) return undefined
   if (node.kind === "group") {
     const at = node.id.indexOf(FOLDER_MARK)
@@ -268,17 +268,16 @@ export interface RowTarget {
 type Anchor = { readonly token: string; readonly label: string } | { readonly refusal: string }
 
 // Move a row or folder (by tree row id) within its tab. Sections cannot move yet.
-export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: string, target: RowTarget, updated: string): LayoutChange {
-  const nodes = expandedTree(memo)
-  const at = nodes.findIndex((node) => node.id === rowId)
-  const node = nodes[at]
+export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: string, target: RowTarget, updated: string, sharedMemo?: Memo): LayoutChange {
+  const active = sharedMemo ?? buildTreeMemo(memo)
+  const path = lazyPath(active, rowId)
+  const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
   const token = rowToken(node)
   if (token === undefined || token.startsWith("tab:")) return { refusal: `"${node.label}" is built-in structure and cannot move` }
-  const tabIndex = tabGroupIndex(nodes, at)
-  const tab = tabIndex === undefined ? undefined : nodes[tabIndex]
-  if (tabIndex === undefined || tab === undefined) return { refusal: `"${node.label}" is not in a tab` }
+  const tab = path.slice(0, -1).findLast((row) => rowToken(row)?.startsWith("tab:"))
+  if (tab === undefined) return { refusal: `"${node.label}" is not in a tab` }
   const local = ownerLayout(layout, tab.id)
   const anchorOf = (id: string | undefined): Anchor | undefined => {
     if (id === undefined) return undefined
@@ -286,12 +285,12 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
     if (folder !== undefined && (folder.tab !== tabOfGroupId(tab.id) || folder.owner !== undefined && folder.owner !== tab.id))
       return { refusal: `Rows move only within ${tabOfGroupId(tab.id)} of the same owner` }
     if (id.startsWith("folder:") || id.startsWith("tab:")) return { token: id, label: folderOf(layout.folders, folderIdOfRef(id) ?? "")?.name ?? id }
-    const index = nodes.findIndex((candidate) => candidate.id === id)
-    const anchor = nodes[index]
+    const anchorPath = lazyPath(active, id)
+    const anchor = anchorPath.at(-1)
     if (anchor === undefined) return { refusal: unknownRowRefusal(id) }
     const anchorToken = rowToken(anchor)
     if (anchorToken === undefined) return { refusal: `"${anchor.label}" cannot be a destination` }
-    if (index !== tabIndex && tabGroupIndex(nodes, index) !== tabIndex)
+    if (anchor.id !== tab.id && anchorPath.slice(0, -1).findLast((row) => rowToken(row)?.startsWith("tab:"))?.id !== tab.id)
       return { refusal: `"${anchor.label}" is not in ${tab.label}; rows move only inside their own tab` }
     return { token: anchorToken, label: anchor.label }
   }
@@ -305,7 +304,7 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
   const plan = planMove(
     local,
     local.token(token),
-    topLevelTokens(nodes, tabIndex).map(local.token),
+    tab.children().flatMap((row) => { const token = rowToken(row); return token === undefined ? [] : [local.token(token)] }),
     { into: tokenOf(into) === undefined ? undefined : local.token(tokenOf(into)!), before: tokenOf(before) === undefined ? undefined : local.token(tokenOf(before)!), after: tokenOf(after) === undefined ? undefined : local.token(tokenOf(after)!) },
     updated,
     inOriginGroup,
@@ -330,8 +329,8 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
 // rewrites effective text and remaps its stable boundaries. State, pin and
 // condition records are never touched; only consumed text fields go.
 // Cross-item and cross-parent (nesting) moves refuse atomically.
-export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarget, updated: string): OpResult {
-  const found = findNode(memo, rowId)
+export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarget, updated: string, sharedMemo?: Memo): OpResult {
+  const found = findNode(memo, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address
@@ -340,7 +339,7 @@ export function planSectionMove(memo: MemoInput, rowId: string, target: RowTarge
   const siblingId = target.before ?? target.after
   if (siblingId === undefined) return { refusal: `say where "${node.label}" goes: before or after a sibling section` }
   if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
-  const siblingFound = findNode(memo, siblingId)
+  const siblingFound = findNode(memo, siblingId, found.memo)
   if (siblingFound === undefined) return { refusal: unknownRowRefusal(siblingId) }
   const sibling = siblingFound.node
   const siblingAddress = sibling.address
@@ -506,33 +505,12 @@ function winningSplit(splits: readonly SplitRecord[], address: Address, scopes: 
 // The display token a row contributes to an ordered list: an item id, a
 // `folder:<id>` ref, or an owner row id (an agent, a team, a team member).
 // Built-in group headings and tab groups have none, so they cannot move.
-export function listToken(node: TreeNode): string | undefined {
+export function listToken(node: Pick<TreeNode, "id" | "kind" | "address">): string | undefined {
   if (node.kind === "section" && node.address?.section === null) return undefined
   if (node.address !== undefined) return node.address.section === null ? node.address.item : undefined
   const at = node.id.indexOf(FOLDER_MARK)
   if (at !== -1) return folderRef(node.id.slice(at + FOLDER_MARK.length))
   return node.kind === "agent" || node.kind === "team" ? node.id : undefined
-}
-
-// The nearest ancestor of `nodes[index]` (the row one indent shallower).
-function parentOf(nodes: readonly TreeNode[], index: number): TreeNode | undefined {
-  const depth = nodes[index]?.depth
-  if (depth === undefined || depth === 0) return undefined
-  for (let at = index - 1; at >= 0; at--) if ((nodes[at]?.depth ?? -1) < depth) return nodes[at]
-  return undefined
-}
-
-// The rows directly under `parent`, in display order.
-function directChildNodes(nodes: readonly TreeNode[], parent: TreeNode): TreeNode[] {
-  const index = nodes.findIndex((node) => node.id === parent.id)
-  if (index === -1) return []
-  const out: TreeNode[] = []
-  for (let at = index + 1; at < nodes.length; at++) {
-    const row = nodes[at]!
-    if (row.depth <= parent.depth) break
-    if (row.depth === parent.depth + 1) out.push(row)
-  }
-  return out
 }
 
 /**
@@ -547,10 +525,11 @@ export function planGroupMove(
   rowId: string,
   target: RowTarget,
   updated: string,
+  sharedMemo?: Memo,
 ): LayoutChange {
-  const nodes = expandedTree(memo)
-  const at = nodes.findIndex((node) => node.id === rowId)
-  const node = nodes[at]
+  const active = sharedMemo ?? buildTreeMemo(memo)
+  const path = lazyPath(active, rowId)
+  const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
   const token = listToken(node)
@@ -560,17 +539,17 @@ export function planGroupMove(
   const siblingId = target.before ?? target.after
   if (siblingId === undefined) return { refusal: "say where it goes: before or after a row" }
   if (siblingId === rowId) return { refusal: `"${node.label}" cannot go beside itself` }
-  const siblingAt = nodes.findIndex((candidate) => candidate.id === siblingId)
-  const sibling = nodes[siblingAt]
+  const siblingPath = lazyPath(active, siblingId)
+  const sibling = siblingPath.at(-1)
   if (sibling === undefined) return { refusal: unknownRowRefusal(siblingId) }
-  const parent = parentOf(nodes, at)
-  const siblingParent = parentOf(nodes, siblingAt)
+  const parent = path.at(-2)
+  const siblingParent = siblingPath.at(-2)
   if (parent === undefined || siblingParent === undefined || parent.id !== siblingParent.id)
     return { refusal: `"${sibling.label}" is not in the same list` }
   if (rowToken(parent) !== undefined) return { refusal: `"${node.label}" moves through its tab's folders` }
   const anchor = listToken(sibling)
   if (anchor === undefined) return { refusal: `"${sibling.label}" cannot be a destination` }
-  const siblings = directChildNodes(nodes, parent).flatMap((child) => {
+  const siblings = parent.children().flatMap((child) => {
     const entry = listToken(child)
     return entry === undefined ? [] : [entry]
   })
@@ -587,16 +566,15 @@ export function planGroupMove(
 }
 
 // A folder created in a tab's top level or inside a folder, listed last there.
-export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string): LayoutChange {
+export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string, sharedMemo?: Memo): LayoutChange {
   const trimmed = name.trim()
   if (trimmed === "") return { refusal: "a folder needs a name" }
-  const nodes = expandedTree(memo)
-  const at = nodes.findIndex((node) => node.id === (rowId.endsWith(":system") ? `${rowId}:instructions` : rowId))
-  const node = nodes[at]
+  const path = lazyPath(sharedMemo ?? buildTreeMemo(memo), rowId.endsWith(":system") ? `${rowId}:instructions` : rowId)
+  const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   // Origin subgroups are presentation headings; Add Folder belongs to their tab.
-  const tabIndex = tabGroupIndex(nodes, at)
-  const container = node.kind === "group" && rowToken(node) === undefined && tabIndex !== undefined ? nodes[tabIndex]! : node
+  const tabRow = path.slice(0, -1).findLast((row) => rowToken(row)?.startsWith("tab:"))
+  const container = node.kind === "group" && rowToken(node) === undefined && tabRow !== undefined ? tabRow : node
   const token = rowToken(container)
   const folderId = token === undefined ? undefined : folderIdOfRef(token)
   const parent = folderId === undefined ? undefined : folderOf(layout.folders, folderId)
@@ -610,7 +588,7 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   const folder = created.folders.at(-1)
   if (folder === undefined) return { refusal: "the folder was not created" }
   const orders =
-    parent === undefined ? setOrder(created.orders, tab, [...topLevelTokens(nodes, container === node ? at : tabIndex!).map(local.token), folderRef(folder.id)], updated) : created.orders
+    parent === undefined ? setOrder(created.orders, tab, [...container.children().flatMap((row) => { const token = rowToken(row); return token === undefined ? [] : [local.token(token)] }), folderRef(folder.id)], updated) : created.orders
   return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: local.finish({ folders: created.folders, orders }, updated) }
 }
 

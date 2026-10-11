@@ -1061,7 +1061,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   function stepMove(step: MoveStep): readonly string[] {
     const current = move()
     if (current === undefined) return []
-    const advanced = advanceMove(memoInput(), current, step)
+    const advanced = advanceMove(memoInput(), current, step, treeMemo())
     if ("refusal" in advanced) {
       setStatus(advanced.refusal)
       return []
