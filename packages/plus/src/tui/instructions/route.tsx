@@ -1263,7 +1263,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     const control = controlKind(node.address.item)
     if (control === "cycle") {
-      void state.cycle(node)
+      void state.cycle(node).then((saved) => {
+        if (saved && node.address?.item.startsWith("toolmode:")) revealChain(state.pathOf(node.id))
+      })
       return
     }
     if (isReview(node)) {

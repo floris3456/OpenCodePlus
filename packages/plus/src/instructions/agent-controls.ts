@@ -1,5 +1,6 @@
 import type { Agent } from "@opencode/schema/agent"
 import { fingerprint, sameTeam, type Address, type CustomizationRecord, type Item } from "./model.js"
+import { toolModeError } from "./tool-mode.js"
 
 // These are ordinary customization rows. Boolean settings use state; scalar
 // settings use text. Empty steps/color/model clear that optional field; empty
@@ -64,6 +65,7 @@ export function controlItems(agent?: string, fields: AgentControls = {}, inherit
 
 /** Validation at the shared mutation boundary (Tool and TUI both call it). */
 export function controlRecordError(record: Pick<CustomizationRecord, "item" | "section" | "text" | "state" | "pin">): string | undefined {
+  if (record.item.startsWith("toolmode:")) return toolModeError(record)
   if (!record.item.startsWith("setting:") && !record.item.startsWith("compaction:")) return undefined
   if (!isControl(record.item)) return `Unknown agent control ${record.item}`
   if (record.pin !== undefined) return `${record.item} does not support pins`

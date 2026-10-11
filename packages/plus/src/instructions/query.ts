@@ -11,7 +11,7 @@ import type {
   TeamRef,
 } from "./model.js"
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { materialize, skeletonOf, teamsOwnerSegment, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { lazyControl, materialize, skeletonOf, teamsOwnerSegment, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
 import { folderNameByItem } from "./folders.js"
@@ -269,11 +269,14 @@ function splitOfAddress(state: QueryState, address: Address): SplitRecord | unde
   return state.splits.get(JSON.stringify([address.level, address.agent, address.item, catalogueForAddress(address)]))?.[0]
 }
 
-function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "memberOf">): Item | undefined {
+function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "memberOf" | "level" | "catalogue">): Item | undefined {
   if (isControl(itemId)) return controlItemFor(state.memo.ctx.items, { item: itemId, agent: owner, ...context })
   const matches = state.items.get(itemId) ?? []
-  if (owner === null) return matches[0]
-  return matches.find((entry) => applies(entry, owner)) ?? matches[0]
+  const item = (owner === null ? undefined : matches.find((entry) => applies(entry, owner))) ?? matches[0]
+  if (item?.kind !== "tool" || item.execute === true || context === undefined) return item
+  const exposure = state.items.get(`toolmode:${item.id.slice("tool:".length)}`)?.[0]
+  if (exposure === undefined) return item
+  return { ...item, codemode: wholeOf(state.memo, context.level, owner, exposure, context.catalogue, rowTeamOf(context)).assembled === "codemode" }
 }
 
 // Candidates walk the lazy skeleton: branch children are cheap, item rows
@@ -331,6 +334,8 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
           : item?.kind === "param"
             ? toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id.replace(`param:${item.paramTool}:${item.title}`, tool.id), lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath, null, item.title)
           : [
+              ...state.memo.ctx.items.filter((entry) => entry.id === `toolmode:${tool.id.slice("tool:".length)}`)
+                .map((entry) => lazyControl(state.memo, address.level, address.agent, entry, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath)),
               ...toolParameters(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
               ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
             ]
@@ -1203,7 +1208,7 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
       const allowed = booleanOf(alts, term)
       return (candidate) => {
         const address = candidate.address
-        const value = address !== undefined && lookupItem(state, address.item, address.agent)?.codemode === true
+        const value = address !== undefined && lookupItem(state, address.item, address.agent, address)?.codemode === true
         return allowed.some((alt) => value === alt)
       }
     }

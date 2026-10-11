@@ -257,6 +257,35 @@ test("section text edit installs for that agent, including an inherited Defaults
   expect(probe.assembled).toContain("b edited")
 })
 
+test("saved exposure installs a request-local hook and routes description edits to the new catalog", async () => {
+  const callbacks: ((event: SessionHooks["tools"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "tools") callbacks.push(callback as (event: SessionHooks["tools"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discoverFor(ctx)
+  const applied = await apply(ctx, makeInput({
+    items: discovered.items,
+    agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }],
+    records: [makeRecord({ item: "toolmode:reader", text: "codemode" }), makeRecord({ item: "tool:reader", text: "custom read" })],
+  }))
+  expect(callbacks).toHaveLength(1)
+  const alpha: SessionHooks["tools"] = { sessionID: Session.ID.make("ses_exposure_alpha"), agent: Agent.ID.make("alpha"), modes: {} }
+  const beta: SessionHooks["tools"] = { ...alpha, agent: Agent.ID.make("beta"), modes: {} }
+  for (const callback of callbacks) {
+    await Effect.runPromise(callback(alpha))
+    await Effect.runPromise(callback(beta))
+  }
+  expect(alpha.modes).toEqual({ reader: "codemode" })
+  expect(beta.modes).toEqual({})
+  expect(applied.tools).toContainEqual(expect.objectContaining({ agent: "alpha", tool: "reader", text: "custom read", codemode: true }))
+})
+
 test("tool description reaches the target agent and disablement deletes the tool", async () => {
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
@@ -1556,6 +1585,7 @@ test("a Defaults entry `*` turning tool:shell off: build's Project row and what 
   // The tools' `list` answers from the same resolution.
   expect(query({ items, records: [...records, ...models], agents: sources, entries, teams: [] }, { where: "id:item:project:build:tool:shell state:off", fields: ["id", "from"] }).rows).toEqual([
     { id: "item:project:build:tool:shell", from: "from default *" },
+    { id: "item:project:build:tool:shell:description", from: "from default *" },
   ])
 
   const agents = agentHarness([agentInfo("build", "upstream")])

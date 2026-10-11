@@ -10,6 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { rowTeamOf, wholeOf } from "../../instructions/resolve-memo.js"
 import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
@@ -383,17 +384,21 @@ export function toolCountOf(memo: Memo, ownerKey: string, codemode: (item: strin
   if (group === undefined) return undefined
   const rows = toolRows(group)
   const on = rows.filter((row) => row.on)
-  return { on: on.length, codemode: on.filter((row) => codemode(row.item) && !row.pinned).length, total: rows.length }
+  return { on: on.length, codemode: on.filter((row) => {
+    if (row.pinned) return false
+    const exposure = memo.ctx.items.find((item) => item.id === `toolmode:${row.item.slice("tool:".length)}`)
+    return exposure === undefined ? codemode(row.item) : wholeOf(memo, row.address.level, row.address.agent, exposure, row.address.catalogue, rowTeamOf(row.address)).assembled === "codemode"
+  }).length, total: rows.length }
 }
 
 // The tool rows below a Tools group. Tool rows are leaves here: their sections
 // and permission rows are not tools and the old sweep never opened them.
-function toolRows(lazy: Lazy): { readonly item: string; readonly on: boolean; readonly pinned: boolean }[] {
+function toolRows(lazy: Lazy): { readonly item: string; readonly address: NonNullable<Lazy["address"]>; readonly on: boolean; readonly pinned: boolean }[] {
   if (lazy.kind === "item") {
     const address = lazy.address
     if (address === undefined || address.section !== null || !address.item.startsWith("tool:")) return []
     const badges = lazy.partial()
-    return [{ item: address.item, on: badges.state === "on", pinned: badges.pinned === true }]
+    return [{ item: address.item, address, on: badges.state === "on", pinned: badges.pinned === true }]
   }
   return lazy.children().flatMap(toolRows)
 }

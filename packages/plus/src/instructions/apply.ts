@@ -720,7 +720,7 @@ export async function runRegistration<Editor>(
   )
 }
 
-async function runHook<Name extends "context" | "catalog" | "compaction">(
+async function runHook<Name extends "context" | "catalog" | "compaction" | "tools">(
   hook: (name: Name, callback: (input: SessionHooks[Name]) => Effect.Effect<void>) => Effect.Effect<Registration, never, Scope.Scope>,
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
@@ -1290,6 +1290,7 @@ function basePlans(input: ApplyInput): BasePlan[] {
 }
 
 interface ToolCandidate {
+  readonly mode?: "direct" | "codemode"
   readonly agent: string
   readonly item: Item
   readonly tool: string
@@ -1312,6 +1313,8 @@ function nativePlan(candidate: ToolCandidate): ToolPlan {
 
 function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boolean }): ToolCandidate[] {
   const edited = editedParams(input)
+  const modes = new Set(input.records.filter((record) => record.item.startsWith("toolmode:")).map((record) => record.item))
+  const exposures = new Map(input.items.filter((item) => modes.has(item.id)).map((item) => [item.id, item]))
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
@@ -1319,16 +1322,22 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
       const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       const tool = parseId(item.id, "tool:")
       const params = paramPlans(input, agent, edited.get(tool))
+      const exposure = exposures.get(`toolmode:${tool}`)
+      const requested = item.execute !== true && exposure !== undefined
+        ? resolvedFor(exposure, agent, input).assembled === "codemode" ? "codemode" : "direct"
+        : undefined
+      const mode = requested === (item.codemode === true ? "codemode" : "direct") ? undefined : requested
       // isNoop compares only text and enablement (it is shared with base and
       // instruction plans, which have no pin), so a pin-only change on a Code
       // Mode tool would be discarded here before catalogPlans ever sees it.
       // Let the candidate survive when the resolved pin differs from the
       // registry default, or when the agent sees a parameter edited.
-      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false) && params.length === 0
+      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false) && params.length === 0 && mode === undefined
       if (options?.skipNoop !== true && noop) return []
       return [{
         agent: agent.id,
-        item,
+        item: mode === undefined ? item : { ...item, codemode: mode === "codemode" },
+        ...(mode === undefined ? {} : { mode }),
         tool,
         enabled: resolved.enabled,
         text: resolved.assembled,
@@ -1417,6 +1426,7 @@ function instructionPlanPath(id: string): string {
 }
 
 export interface SessionPlans {
+  readonly exposure: readonly { readonly agent: string; readonly tool: string; readonly mode: "direct" | "codemode" }[]
   readonly base: readonly BasePlan[]
   readonly native: readonly ToolPlan[]
   readonly denials: readonly ToolCandidate[]
@@ -1474,6 +1484,7 @@ export function sessionPlans(
   const scrubByAgent = scrubKeywordsByAgent(input)
   const needsNarrowing = tableNarrows(permissions, input.agents.map((agent) => agent.id)) || (input.teamAgents?.length ?? 0) > 0
   return {
+    exposure: candidates.flatMap((candidate) => candidate.mode === undefined ? [] : [{ agent: candidate.agent, tool: candidate.tool, mode: candidate.mode }]),
     base,
     native,
     denials,
@@ -1501,6 +1512,13 @@ export async function installSessionPlans(
 ): Promise<Registration[]> {
   const installed: Registration[] = []
   try {
+    if (plans.exposure.length > 0) {
+      installed.push(await runHook(ctx.session.hook, "tools", (event) => Effect.sync(() => {
+        for (const plan of plans.exposure) {
+          if (plan.agent === String(event.agent)) event.modes[plan.tool] = plan.mode
+        }
+      })))
+    }
     const team = new Set(input.teamAgents ?? [])
     const instructions = precomputed?.instructions ?? instructionPlans(input)
     const scrubByAgent = new Map(plans.scrubByAgent)

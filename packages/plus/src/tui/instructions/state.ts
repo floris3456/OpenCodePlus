@@ -1728,6 +1728,17 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     commitColdMove,
     cancelColdMove,
     memo: treeMemo,
+    pathOf: (id: string) => {
+      const result = matchedTree(memoInput(), `id:${id}`, treeMemo())
+      const index = result.rows.findIndex((row) => row.id === id)
+      if (index < 0) return []
+      const chain: TreeNode[] = [result.rows[index]!]
+      for (let at = index - 1; at >= 0; at--) {
+        const row = result.rows[at]!
+        if (row.depth < chain[0]!.depth) chain.unshift(row)
+      }
+      return chain
+    },
     nodes,
     matched: (): ReadonlySet<string> => {
       nodes()

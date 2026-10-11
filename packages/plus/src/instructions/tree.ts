@@ -96,6 +96,7 @@ import type { MemoInput as BaseMemoInput } from "./resolve-memo.js"
 import { ownBody, wrappingSection, type Section, type Split } from "./sections.js"
 import type { TeamLevel } from "./teams.js"
 import { categoryOfRow, categoryOrder, hostOf } from "./permission-catalog.js"
+import { toolModes } from "./tool-mode.js"
 import { curatedRuleMessage } from "./tool-permissions.js"
 
 export type { Memo }
@@ -604,6 +605,7 @@ function canDescend(node: Lazy, rowId: string): boolean {
     const ownerPath = node.id.slice("item:".length, -node.address.item.length)
     if (node.address.item.startsWith("tool:")) {
       const tool = node.address.item.slice("tool:".length)
+      if (rowId === `item:${ownerPath}toolmode:${tool}`) return true
       if (["item", "section"].some((kind) => rowId.startsWith(`${kind}:${ownerPath}param:${tool}:`))) return true
       if (rowId.startsWith(`item:${ownerPath}perm:`)) {
         const permission = rowId.slice(`item:${ownerPath}perm:`.length).split(":")[0]
@@ -1844,6 +1846,7 @@ export function controlKind(item: string | undefined): "toggle" | "cycle" | "tex
 }
 
 export function controlChoices(item: string | undefined): readonly string[] | undefined {
+  if (item?.startsWith("toolmode:")) return toolModes
   if (item === "setting:mode") return ["primary", "subagent", "all"]
   if (item === "compaction:strategy") return ["auto", "local", "remote"]
   return undefined
@@ -1886,7 +1889,7 @@ function lazyControls(
     label: kind === "setting" ? "Settings" : "Compaction",
     depth,
     actions: noActions(),
-    children: () => [...new Set(items.filter((item) => item.kind === kind).map((item) => item.id))]
+    children: () => [...new Set(items.filter((item) => item.kind === kind && isControl(item.id)).map((item) => item.id))]
       .flatMap((item) => {
         const upstream = controlItemFor(items, addressOf(level, owner, item, null, teamRef, catalogue))
         return upstream === undefined ? [] : [upstream]
@@ -1896,7 +1899,7 @@ function lazyControls(
   })
 }
 
-function lazyControl(
+export function lazyControl(
   memo: Memo,
   level: Level,
   owner: string | null,
@@ -3036,8 +3039,9 @@ function toolOriginGroup(
     depth,
     actions: noActions(),
     children: () => {
-      const code = items.filter((item) => item.codemode === true)
-      const rows = items
+      const exposed = exposedTools(memo, items, level, owner, catalogue, teamRef)
+      const code = exposed.filter((item) => item.codemode === true)
+      const rows = exposed
         .filter((item) => item.codemode !== true)
         .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath))
       if (code.length === 0) return rows
@@ -3115,8 +3119,9 @@ function toolServerGroup(
     depth,
     actions: noActions(),
     children: () => {
-      const code = items.filter((item) => item.codemode === true)
-      const rows = items
+      const exposed = exposedTools(memo, items, level, owner, catalogue, teamRef)
+      const code = exposed.filter((item) => item.codemode === true)
+      const rows = exposed
         .filter((item) => item.codemode !== true)
         .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath))
       if (code.length === 0) return rows
@@ -3141,6 +3146,15 @@ function toolServerGroup(
 // segment with no dotted namespace keeps today's single flat group, id and
 // label unchanged, so `image`, `opencode`, `instructions`, `monitor`,
 // `release`, `team` and `search` look exactly as today.
+function exposedTools(memo: Memo, items: readonly Item[], level: Level, owner: string | null, catalogue?: Catalogue, teamRef?: RowTeam): readonly Item[] {
+  return items.map((item) => {
+    if (item.execute === true) return item
+    const exposure = memo.ctx.items.find((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+    if (exposure === undefined) return item
+    return { ...item, codemode: wholeOf(memo, level, owner, exposure, catalogue, teamRef).assembled === "codemode" }
+  })
+}
+
 function codemodeGroup(
   ctx: BuildContext,
   memo: Memo,
@@ -3300,6 +3314,8 @@ function lazyItem(
     if (!tool) return sections
     return [
       ...sections,
+      ...ctx.items.filter((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+        .map((entry) => lazyControl(memo, level, owner, entry, depth + 1, teamRef, catalogue, ownerPath)),
       ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
       ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent),
     ]

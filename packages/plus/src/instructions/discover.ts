@@ -28,6 +28,7 @@ import {
   type SplitRecord,
 } from "./model.js"
 import { catalogItems, categoryOfRow, parameterApprovals } from "./permission-catalog.js"
+import { toolModeItem } from "./tool-mode.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
@@ -206,6 +207,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const items = [
     ...toolRows,
     ...paramRows,
+    ...toolRows.filter((tool) => tool.execute !== true).map(toolModeItem),
     ...baseRows,
     ...skillRows,
     ...roleRows,
