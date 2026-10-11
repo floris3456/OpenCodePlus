@@ -1,4 +1,4 @@
-import Pacer from "opencode-pacer/server"
+import Pacer from "opencode-pacer/v2/server"
 import { Meter, type MeterSnapshot } from "opencode-pacer/core"
 import { PacerRpc } from "opencode-pacer/rpc"
 import { Plugin } from "@opencode/plugin"
@@ -10,6 +10,7 @@ import { portableMessages } from "./quota/portable.js"
 import { Definition } from "./quota/rpc.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { pacerSnapshot } from "./quota/pacer-snapshot.js"
+import { createNextUse } from "./quota/next-use.js"
 
 export const ID = "opencode-pacer"
 
@@ -132,8 +133,10 @@ export default Plugin.define({
         if (kind === "compaction") await controller.compacting(event.sessionID, handoff)
       })
     }
-    // Read the plugin's cached meter, not CPA: opening /usage cannot add proxy polling.
+    // Percentages/catalogue are cached. The separate read-only routing preview
+    // uses Plus's existing capability and is coalesced across visible clients.
     const meter = new Meter()
+    const nextUse = createNextUse({ read: (key) => ctx.storage.get(key), fetch, now: Date.now })
     await ctx.rpc.register(UsageDefinition, {
       enabled: async () => {
         await refresh()
@@ -146,9 +149,15 @@ export default Plugin.define({
             status: "disabled" as const,
             message: "Connect CLIProxyAPI with Pacer through /connect to inspect credential usage.",
           }
-        meter.restore((await ctx.rpc(PacerRpc).snapshot({})) as MeterSnapshot)
-        const providers = input.providerID === "cliproxyapi" ? (state.providers.get(input.modelID) ?? []) : []
-        return { status: "ready" as const, snapshot: pacerSnapshot(meter, input, Date.now(), providers) }
+        const cached = (await ctx.rpc(PacerRpc).usage({ providerID: input.providerID, modelID: input.modelID })) as {
+          snapshot: MeterSnapshot
+          providers: string[]
+        }
+        meter.restore(cached.snapshot, true)
+        const providers = cached.providers.length ? cached.providers : input.providerID === "cliproxyapi" ? (state.providers.get(input.modelID) ?? []) : []
+        const snapshot = pacerSnapshot(meter, input, Date.now(), providers)
+        const next = await nextUse(state.routes[input.providerID], input)
+        return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }
       },
     })
     return stop

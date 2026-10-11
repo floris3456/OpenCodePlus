@@ -30,6 +30,21 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
             return Response.json({
               view: "usage",
               now: Date.now() / 1000,
+              ...(url.searchParams.get("auth") !== "api-key"
+                ? {
+                    next_use: {
+                      v: 1,
+                      at_ms: Date.now(),
+                      expires_ms: Date.now() + 30000,
+                      mode: "dry-run",
+                      provider: "claude",
+                      model: "claude-sonnet-4-6",
+                      auth: "claude-next",
+                      reason: "cold_move",
+                      forced: false,
+                    },
+                  }
+                : {}),
               credentials: ["claude", "codex"].map((provider) => ({
                 id: provider,
                 alias: provider,
@@ -207,6 +222,7 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
           request: new Request(`${server.url.origin}/v1/messages`, { headers: otherRequest.headers }),
           response: quotaResponse,
         })
+        expect(paths.length).toBe(requestsBeforeQuota)
         const live = yield* host.rpc(UsageDefinition).read({
           sessionID,
           providerID: "cliproxyapi",
@@ -214,10 +230,14 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
           all: false,
         })
         expect(live.snapshot?.current).toBe("claude")
+        expect(live.snapshot?.active).toEqual(["claude"])
+        expect(live.snapshot?.next_use?.auth).toBe("claude-next")
         expect(live.snapshot?.credentials[0]?.windows[0]?.remaining).toBe(37)
         expect(live.snapshot?.credentials[0]?.windows[0]?.state).toBe("current")
         expect(quotaResponse.bodyUsed).toBe(false)
-        expect(paths.length).toBe(requestsBeforeQuota)
+        expect(paths.length).toBe(requestsBeforeQuota + 1)
+        yield* host.rpc(UsageDefinition).read({ sessionID, providerID: "cliproxyapi", modelID: ref.id, all: false })
+        expect(paths.length).toBe(requestsBeforeQuota + 1)
         yield* hooks.trigger("session", "http.response", {
           sessionID,
           agent,

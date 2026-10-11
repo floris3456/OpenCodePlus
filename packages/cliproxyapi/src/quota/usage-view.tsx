@@ -248,12 +248,52 @@ function CredentialView(props: {
   const theme = props.context.theme
   const windows = createMemo(() => credentialWindows(props.credential))
   const labelWidth = () => Math.min(18, Math.max(2, ...windows().map((window) => label(window).length)))
+  const identity = () => {
+    const session = props.store.input()?.sessionID
+    if (
+      session &&
+      props.context.data.session.status(session) === "running" &&
+      props.snapshot.active.includes(props.credential.id)
+    )
+      return "IN USE"
+    if (props.snapshot.current === props.credential.id) return "LAST USED"
+  }
+  const next = () => {
+    const value = props.snapshot.next_use
+    if (
+      !value ||
+      value.expires_ms <= props.store.now() * 1000 ||
+      value.model !== props.snapshot.model ||
+      value.auth !== props.credential.id ||
+      value.provider !== props.credential.provider
+    )
+      return
+    if (value.auth === props.snapshot.current && props.snapshot.last_used * 1000 >= value.at_ms) return
+    return value
+  }
   return (
     <box flexShrink={0}>
-      <text fg={theme.text.base} wrapMode="none" truncate>
-        <b>{props.credential.alias}</b>
-        <span style={{ fg: theme.text.muted }}> · {props.credential.provider}</span>
-      </text>
+      <box flexDirection="row">
+        <text fg={theme.text.base} wrapMode="none" truncate flexShrink={1}>
+          <b>{props.credential.alias}</b>
+          <span style={{ fg: theme.text.muted }}> · {props.credential.provider}</span>
+        </text>
+        <Show when={identity()}>
+          <text
+            flexShrink={0}
+            fg={identity() === "IN USE" ? theme.text.feedback.success.base : theme.text.feedback.info.base}
+          >
+            {" "}
+            · {identity()}
+          </text>
+        </Show>
+        <Show when={next()}>
+          <text flexShrink={0} fg={theme.text.feedback.info.base}>
+            {" "}
+            · NEXT USE{next()?.mode === "dry-run" ? " · dry-run" : ""}
+          </text>
+        </Show>
+      </box>
       <Show when={props.details}>
         <text fg={theme.text.muted} wrapMode="none" truncate>
           {props.credential.id}

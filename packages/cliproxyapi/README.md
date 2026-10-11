@@ -16,7 +16,13 @@ The bundled code stays in the executable when removed from the enabled plugins.
   Pacer's cached catalogue, even before the first request and after a response ends.
 - `/usage --all` retains Plus's all-provider credentials, quota-window bars and
   reset countdowns, including the narrow-terminal panel. It reads the cached
-  Pacer meter rather than making another proxy request.
+  Pacer meter. **IN USE** arrives with primary response headers and replaces
+  **LAST USED** until execution ends. Auxiliary replies only update percentages.
+- **NEXT USE** displays Pacer's per-chat proposal, explicitly labelled in dry-run.
+  Plus uses its own existing claim capability for this read-only preview. Reads
+  are coalesced for 15 seconds per chat/model; they read Pacer's stored evidence,
+  never a provider quota endpoint. Expired previews and changed models clear the
+  marker. The live Pacer server must support `next_use`; older servers omit it.
 - Plus's dedicated compaction decision hook replaces the stock plugin's
   context-overflow workaround. Summary selection stays per chat, supports a
   fallback, preserves portable checkpoint conversion and bounds switch retries.
