@@ -24,7 +24,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "opencode-pacer": "github:floris3456/opencode-pacer#a032f4220a8704e653711bccc9be22a6652c704f",
+    "opencode-pacer": "github:floris3456/opencode-pacer#84d978db85b1259f1744a1404dc27085b4db99ea",
     "@opencode/plugin": "workspace:*",
     "@opencode/schema": "workspace:*",
     "@opencode/util": "workspace:*",
