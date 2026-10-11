@@ -1576,7 +1576,7 @@ test("the Defaults view of a native agent never claims the host model is active 
   expect(modelRow(nodes, "project", "model:acme/chosen")?.badges.active).toBe(true)
 })
 
-test("a native tool row lists its Description and a Permissions group whose categories hold editable rule rows", () => {
+test("a zero-parameter native tool lists its Description and owner-scoped editable rules", () => {
   const shellText = "shell tool"
   const all = [
     makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
@@ -1610,7 +1610,7 @@ test("a native tool row lists its Description and a Permissions group whose cate
   // so its rule rows keep their native state (DESIGN §3.3).
   const nodes = expandAll({
     items: all,
-    records: [],
+    records: [{ type: "rule", level: "project", agent: "Implementer", tool: "shell", id: "custom", label: "Custom", patterns: ["custom *"], keywords: ["custom"], updated: UPDATED }],
     agents: agents(),
     links: [{ type: "link", level: "project", agent: "Implementer", preset: { kind: "agent", id: "build" }, updated: UPDATED }],
   })

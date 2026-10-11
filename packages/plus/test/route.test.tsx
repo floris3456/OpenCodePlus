@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
+import type { Plugin } from "@opencode/plugin/tui"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -10,13 +11,15 @@ import { fingerprint, resolve, scopesOf } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
 import { load, save } from "../src/instructions/store.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
-import { expandedTree } from "../src/instructions/tree.js"
+import { expandedTree, type TreeNode } from "../src/instructions/tree.js"
 import type { PresetRef, Snapshot } from "../src/rpc.js"
 import { Definition } from "../src/rpc.js"
 import { createInstructionsDialogs } from "../src/tui/instructions/dialogs.js"
 import { HELP, HelpDialog } from "../src/tui/instructions/help.js"
 import { factsOf, notesOf } from "../src/tui/instructions/inspector.js"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
+import { createInstructionsState } from "../src/tui/instructions/state.js"
+import { createSnapshotCache } from "../src/tui/snapshot-cache.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
 import type { TestFixture } from "./tui.js"
 import { agentInfo, fullContext } from "./harness.js"
@@ -209,10 +212,11 @@ test("roots render with agents and subtree groups", async () => {
     expect(breadcrumb(expanded)).toContain("Project › Agents › User › Implementer")
     expect(expanded).toContain("Implementer")
     expect(expanded).toContain("Tools")
-    expect(expanded).toContain("Base")
     expect(expanded).toContain("System")
     // Skills are no category tab: they live under Tools › skill › Permissions.
     expect(expanded.split("\n").find((line) => line.includes("Settings") && line.includes("System"))).not.toContain("Skills")
+    await category(fixture, "System")
+    expect(fixture.captureCharFrame()).toContain("Base")
     // Global's Agents group holds Helper under its User subgroup.
     await goto(fixture, "agent:global:Helper", "Helper")
     expect(breadcrumb(fixture.captureCharFrame())).toContain("Global › Agents › User › Helper")
@@ -342,7 +346,7 @@ test("help dialog lists keys and leaves the screen untouched", async () => {
   const dialog = await renderPlusFixture({
     snapshots: [createSnapshot()],
     width: 120,
-    height: 60,
+    height: 90,
     render: (context) => createComponent(HelpDialog, { context }),
   })
   try {
@@ -2580,13 +2584,13 @@ test("addRule cancelling any prompt writes nothing, blank keywords saves with de
         toast: { show: () => {} },
         router: { navigate: () => {} },
       },
-    } as unknown as import("@opencode/plugin/tui").Plugin.Context
+    } as unknown as Plugin.Context
     const fakeState = {
-      snapshot: () => undefined,
+      ...createInstructionsState(fakeContext),
       refresh: async () => {
         refreshCalls++
       },
-    } as unknown as import("../src/tui/instructions/state.js").InstructionsState
+    }
     const dialogs = createInstructionsDialogs(fakeContext, fakeState)
     const toolNode = {
       id: "tool-node",
@@ -2595,8 +2599,10 @@ test("addRule cancelling any prompt writes nothing, blank keywords saves with de
       depth: 0,
       address: { level: "project", agent: "my-agent", item: "tool:shell", section: null },
       badges: {},
-    } as unknown as import("../src/instructions/tree.js").TreeNode
+    } satisfies TreeNode
     await dialogs.addRule(toolNode)
+    dialogs.dispose()
+    fakeState.dispose()
     const api = createPlusApi(realCtx, state)
     const snap = await api.snapshot()
     if (!snap.ok) throw new Error("snapshot failed")
@@ -2666,13 +2672,15 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
         toast: { show: () => {} },
         router: { navigate: () => {} },
       },
-    } as unknown as import("@opencode/plugin/tui").Plugin.Context
+    } as unknown as Plugin.Context
+    const cache = createSnapshotCache()
+    cache.put(project, fresh)
     const fakeState = {
-      snapshot: () => fresh,
+      ...createInstructionsState(fakeContext, cache),
       refresh: async () => {
         refreshCalls++
       },
-    } as unknown as import("../src/tui/instructions/state.js").InstructionsState
+    }
     const dialogs = createInstructionsDialogs(fakeContext, fakeState)
     const permNode = {
       id: "perm-node",
@@ -2681,8 +2689,10 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
       depth: 0,
       address: { level: "project", agent: "alpha", item: "perm:shell:my-rule", section: null },
       badges: {},
-    } as unknown as import("../src/instructions/tree.js").TreeNode
+    } satisfies TreeNode
     await dialogs.editRule(permNode)
+    dialogs.dispose()
+    fakeState.dispose()
     const api = createPlusApi(realCtx, state)
     const snap = await api.snapshot()
     if (!snap.ok) throw new Error("snapshot failed")

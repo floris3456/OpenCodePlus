@@ -150,15 +150,17 @@ test("add on an MCP server row is refused and writes no section record", () => {
   expect(added.refusal).toBe(`"docs" does not support sections`)
 })
 
-test("add on the heading-derived agent description appends a section without an item-level record", () => {
+test("add on a multi-heading agent description preserves the original siblings", () => {
   const source = input()
   const row = nodeById(expandedTree(source), "item:project:alpha:setting:description")
   const added = addSection(source, row.id, "Details", "More detail.")
   if ("refusal" in added) throw new Error(`expected add success ${added.refusal}`)
   expect(added.splits.some((entry) => entry.item === "setting:description")).toBe(false)
-  expect(added.records.some((entry) => entry.item === "setting:description" && entry.section === null)).toBe(false)
   const text = wholeText({ ...source, records: added.records }, "setting:description")
-  expect(text).toContain("More detail.")
+  expect(text).toBe(`${HEADED}\n# Details\n\nMore detail.\n`)
+  const sections = expandedTree({ ...source, records: added.records }).filter((node) => node.address?.agent === "alpha" && node.address.level === "project" && node.address.item === "setting:description" && node.address.section !== null)
+  expect(sections.map((node) => node.label)).toEqual(["Purpose", "Usage", "Details"])
+  expect(new Set(sections.map((node) => node.depth)).size).toBe(1)
 })
 
 // ---------------------------------------------------------------------------

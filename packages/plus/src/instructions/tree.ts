@@ -346,7 +346,9 @@ const pathCache = new WeakMap<Memo, Map<string, readonly Lazy[]>>()
 
 function cacheChildren(node: Lazy): Lazy {
   let children: readonly Lazy[] | undefined
-  return { ...node, children: () => children ??= node.children().map(cacheChildren) }
+  // Preserve lazy getters: spreading the row resolves expandable/actions even
+  // when a structural query never needs the row's text or sections.
+  return Object.create(node, { children: { value: () => children ??= node.children().map(cacheChildren) } }) as Lazy
 }
 
 export function collectSkeleton(roots: readonly Lazy[]): Lazy[] {
