@@ -324,7 +324,6 @@ export const SnapshotRowlinkRecord = Schema.Struct({
   targetSection: Schema.NullOr(Schema.String),
   link: Schema.Union([
     Schema.Literal("either"),
-    Schema.Literal("oneway"),
     Schema.Literal("shownWhenOn"),
     Schema.Literal("shownWhenOff"),
     Schema.Literal("shownAlways"),

@@ -26,7 +26,7 @@ import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import type { InstructionsState } from "./state.js"
-import { sameOwnerView, sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../instructions/rowlinks.js"
+import { sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../instructions/rowlinks.js"
 
 export interface InstructionsDialogsOptions {
   /** The row a node hangs under; defaults to the flat tree's nearest shallower row. */
@@ -1428,25 +1428,23 @@ export function createInstructionsDialogs(
     await state.deleteFolder(node)
   }
 
-  async function editRowlink(primary: TreeNode, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
+  async function editRowlink(primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
     const type = await context.ui.dialog.select<Exclude<RowlinkType, "shownAlways">>({
       title: `Link · ${primary.label} → ${target.item}${target.section === null ? "" : ` / ${target.section}`}`,
       placeholder: `Type (now ${current})`,
+      current: current === "shownAlways" ? undefined : current,
       options: [
         { title: "either · turning either on turns the other off", value: "either" },
-        { title: "oneway · primary on turns linked row off", value: "oneway" },
         { title: "shownWhenOn · linked row sent while primary is on", value: "shownWhenOn" },
         { title: "shownWhenOff · linked row sent while primary is off", value: "shownWhenOff" },
       ],
     })
-    if (disposed || type === undefined) return
-    const live = await context.ui.dialog.select<boolean>({
-      title: "Link enabled / mask",
-      placeholder: enabled ? "Currently enabled" : "Currently masked",
-      options: [{ title: "Enabled", value: true }, { title: "Mask at this level", value: false }],
-    })
-    if (disposed || live === undefined) return
-    await state.saveRowlink(primary, target, type, live)
+    if (disposed) return
+    if (type === undefined) {
+      state.setStatus("Row link cancelled")
+      return
+    }
+    await state.saveRowlink(primary, target, type, enabled)
   }
 
   async function rowlink(node: TreeNode | undefined) {
@@ -1458,24 +1456,55 @@ export function createInstructionsDialogs(
       await editRowlink(primary, node.address)
       return
     }
-    const links = state.linksFor(node)
-    if (links.length === 0) { state.beginRowlink(node); return }
-    const picked = await context.ui.dialog.select<number>({
-      title: `Row links · ${node.label}`,
-      placeholder: "Primary → linked row (incoming / outgoing)",
-      options: [
-        ...links.map((link, value) => ({ title: `${link.direction}: ${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} · ${link.enabled ? "enabled" : "masked"} (${link.level})`, value })),
-        { title: "Link another row", value: -1 },
-      ],
-    })
-    if (disposed || picked === undefined) return
-    if (picked === -1) { state.beginRowlink(node); return }
-    const link = links[picked]
-    if (link === undefined) return
-    // An incoming link edits its named primary, never reverses the pair.
-    const owner = state.linkRows().find((candidate) => candidate.address !== undefined && sameOwnerView(node.address!, candidate.address) && sameEndpoint(candidate.address, link.item, link.section))
-    if (owner === undefined) { state.setStatus(`Primary ${link.item} is not available in this view`); return }
-    await editRowlink(owner, { item: link.target, section: link.targetSection }, link.type, link.enabled)
+    if (state.linksFor(node).length === 0) { state.beginRowlink(node); return }
+    let selected = 0
+    while (!disposed) {
+      const links = state.linksFor(node)
+      let action: { kind: "toggle" | "delete"; index: number } | undefined
+      const picked = await context.ui.dialog.select<number>({
+        title: `Row links · ${node.label}`,
+        placeholder: "Primary → linked row (incoming / outgoing)",
+        current: links.length === 0 ? -1 : Math.min(selected, links.length - 1),
+        options: [
+          ...links.map((link, value) => ({ title: `${link.enabled ? "enabled" : "disabled"} · ${link.direction}: ${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} (${link.level})`, value })),
+          { title: "Link another row", value: -1 },
+        ],
+        actions: [
+          { bind: "space", title: "Enable / disable", onTrigger: (index) => {
+            if (index < 0) return
+            action = { kind: "toggle", index }
+            context.ui.dialog.clear()
+          } },
+          { bind: "d", title: "Delete local link", onTrigger: (index) => {
+            if (index < 0) return
+            action = { kind: "delete", index }
+            context.ui.dialog.clear()
+          } },
+        ],
+      })
+      if (disposed || (picked === undefined && action === undefined)) return
+      if (picked === -1) { state.beginRowlink(node); return }
+      selected = action?.index ?? picked!
+      const link = links[selected]
+      if (link === undefined) return
+      // The link already identifies its primary. Do not resolve every row in
+      // every owner just to reopen this editor, including for incoming links.
+      const owner = {
+        address: { ...node.address, item: link.item, section: link.section },
+        label: sameEndpoint(node.address, link.item, link.section) ? node.label : link.item,
+      }
+      const target = { item: link.target, section: link.targetSection }
+      if (action?.kind === "toggle") {
+        void state.saveRowlink(owner, target, link.type, !link.enabled)
+        continue
+      }
+      if (action?.kind === "delete") {
+        void state.deleteRowlink(owner, target)
+        continue
+      }
+      await editRowlink(owner, target, link.type, link.enabled)
+      return
+    }
   }
 
   return { rowlink, addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, renameFolder, renameRow, deleteFolder, dispose }

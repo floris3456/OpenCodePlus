@@ -1090,10 +1090,10 @@ function boundariesEqual(
 
 // ── write-time switches (B9, B10) ─────────────────────────────────────────
 //
-// An `either`/`oneway` rowlink is a durable on/off relationship: turning the
+// An `either` rowlink is a durable on/off relationship: turning the
 // primary on saves the connected rows off *in the same save*, like exclusive
 // models and teams, so a request never evaluates it. `either` fires from
-// whichever end turns on; `oneway` only from its primary. One hop only: the
+// whichever end turns on. One hop only: the
 // rows it turns off do not fire their own links (B10). Only the effective
 // links fire — `switchedOff` reads the same nearest-level/tombstone answer the
 // link tool reports, so an upstream switch masked at this level does nothing.

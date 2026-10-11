@@ -76,7 +76,7 @@ export interface Loaded {
   readonly wholeRowsMigrated: boolean
   /** True when this load turned category records into folders and order records. */
   readonly foldersMigrated: boolean
-  /** True when this load turned a customization's `requires` list into rowlink records. */
+  /** True when this load migrated `requires` lists or retired one-way links. */
   readonly rowlinksMigrated: boolean
 }
 
@@ -347,7 +347,7 @@ const V2Order = Schema.Struct({
 })
 
 // Row links (rowlinks.ts): switches and gates between two rows of one owner
-// and level. `requires` on a customization migrates into these at load.
+// and level. `requires` and the read-only legacy `oneway` type migrate at load.
 const V2Rowlink = Schema.Struct({
   type: Schema.Literal("rowlink"),
   level: LevelSchema,
@@ -419,6 +419,7 @@ interface ParsedFile {
   readonly revision: number
   readonly records: readonly (StoredRecord | LegacyCategory)[]
   readonly migrated: boolean
+  readonly rowlinksMigrated?: boolean
 }
 
 export async function load(projectDir: string): Promise<Loaded> {
@@ -445,7 +446,7 @@ export async function load(projectDir: string): Promise<Loaded> {
       splitsMigrated: splits.migrated,
       wholeRowsMigrated: wholeRows.migrated,
       foldersMigrated: folders.migrated,
-      rowlinksMigrated: rowlinks.migrated,
+      rowlinksMigrated: rowlinks.migrated || projectParsed.rowlinksMigrated === true || globalParsed.rowlinksMigrated === true,
     }
   }
   // A v1 project file may hold defaults-level records (old `agent: "*"` rows);
@@ -469,7 +470,7 @@ export async function load(projectDir: string): Promise<Loaded> {
     splitsMigrated: splits.migrated,
     wholeRowsMigrated: wholeRows.migrated,
     foldersMigrated: folders.migrated,
-    rowlinksMigrated: rowlinks.migrated,
+    rowlinksMigrated: rowlinks.migrated || projectParsed.rowlinksMigrated === true || globalParsed.rowlinksMigrated === true,
   }
 }
 
@@ -1080,7 +1081,7 @@ function parseFile(text: string | undefined): ParsedFile {
   const lines = text.split("\n").filter((line) => line.trim().length > 0)
   if (lines.length === 0) return { revision: 0, records: [], migrated: false }
   const v2 = Option.getOrUndefined(decodeV2Header(lines[0]))
-  if (v2 !== undefined) return { revision: v2.revision, records: parseV2(lines.slice(1)), migrated: false }
+  if (v2 !== undefined) return { revision: v2.revision, ...parseV2(lines.slice(1)), migrated: false }
   // Any header without "version" is v1 and must be migrated; never write v1 again.
   const v1 = Option.getOrUndefined(decodeV1Header(lines[0]))
   return { revision: v1?.revision ?? 0, records: lines.slice(1).flatMap(migrateLine), migrated: true }
@@ -1095,8 +1096,9 @@ function route(records: readonly StoredRecord[]): { project: StoredRecord[]; glo
   return { project: canonical(project), global: canonical(global) }
 }
 
-function parseV2(lines: string[]): (StoredRecord | LegacyCategory)[] {
-  return lines.flatMap((line): (StoredRecord | LegacyCategory)[] => {
+function parseV2(lines: string[]) {
+  let rowlinksMigrated = false
+  const records = lines.flatMap((line): (StoredRecord | LegacyCategory)[] => {
     const record = Option.getOrUndefined(decodeV2Record(line))
     if (record === undefined) return []
     if (record.type === "category") return [record]
@@ -1114,7 +1116,10 @@ function parseV2(lines: string[]): (StoredRecord | LegacyCategory)[] {
         },
       ]
     if (record.type === "order") return [{ type: "order", level: "global", scope: record.scope, items: [...record.items], updated: record.updated }]
-    if (record.type === "rowlink")
+    if (record.type === "rowlink") {
+      // Retired one-way switches become reversible conditions. Keep the pair,
+      // owner, enabled state and provenance; persist via the existing migration gate.
+      if (record.link === "oneway") rowlinksMigrated = true
       return [
         {
           type: "rowlink",
@@ -1126,11 +1131,12 @@ function parseV2(lines: string[]): (StoredRecord | LegacyCategory)[] {
           section: record.section,
           target: record.target,
           targetSection: record.targetSection,
-          link: record.link,
+          link: record.link === "oneway" ? "shownWhenOff" : record.link,
           ...(record.enabled === undefined ? {} : { enabled: record.enabled }),
           updated: record.updated,
         },
       ]
+    }
     if (record.type === "team")
       return [
         {
@@ -1217,6 +1223,7 @@ function parseV2(lines: string[]): (StoredRecord | LegacyCategory)[] {
       },
     ]
   })
+  return { records, rowlinksMigrated }
 }
 
 function migrateLine(line: string): StoredRecord[] {

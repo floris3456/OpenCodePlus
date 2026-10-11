@@ -183,7 +183,7 @@ const LogDescription =
 const LinkDescription =
   "Inspect or set a row link between two rows of one owner and level (B9–B12).\n" +
   "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled, the level/owner it is stored at, and whether it is a shipped <!-- requires --> marker (shipped, from text).\n" +
-  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), oneway (turning id on saves target off; target on leaves id alone), shownWhenOn / shownWhenOff (the target is sent only while id is on / off). A gate's primary must be a whole row, not a section.\n" +
+  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), shownWhenOn / shownWhenOff (the target is sent only while id is on / off). A gate's primary must be a whole row, not a section.\n" +
   "enabled:false stores a tombstone that masks the pair at this level, including an upstream link; enabled true or omitted stores a live link.\n" +
   "Both ends must resolve in the same level and owner view; an unknown, protected or self link refuses without writing."
 
@@ -365,7 +365,6 @@ const LinkInput = Schema.Struct({
   type: Schema.optionalKey(
     Schema.Union([
       Schema.Literal("either"),
-      Schema.Literal("oneway"),
       Schema.Literal("shownWhenOn"),
       Schema.Literal("shownWhenOff"),
     ]),
@@ -933,7 +932,7 @@ function linkRow(
     // A gate's primary is a condition row; a section is not a row the gate can
     // read (its on/off is not one answer), so refuse rather than silently use
     // the whole item's state.
-    if (type !== "either" && type !== "oneway" && primary.section !== null)
+    if (type !== "either" && primary.section !== null)
       return yield* Effect.fail(
         new Tool.Error({ message: `link.invalid: a "${type}" gate cannot have a section as its condition; condition the whole row` }),
       )

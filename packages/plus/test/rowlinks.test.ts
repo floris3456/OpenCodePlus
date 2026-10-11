@@ -1,6 +1,6 @@
 // Row links (plus-1.2.0 S2a, B9–B12): the pure link algebra the tool and the
 // request-time gates read. One stored concept covers a write-time switch
-// (`either`/`oneway`) and a read-time gate (`shownWhenOn`/`shownWhenOff`); a
+// (`either`) and a read-time gate (`shownWhenOn`/`shownWhenOff`); a
 // tombstone masks a pair at its level. These tests use the real helpers and
 // the real chain resolution, never a reimplementation.
 import { expect, test } from "bun:test"
@@ -27,8 +27,8 @@ const UPDATED = "2026-01-01T00:00:00.000Z"
 test("requires adapter upserts a local switch pair and retains unrelated pairs", () => {
   const target = address({ item: "tool:s" })
   const existing = [
-    link({ item: "tool:a", target: "tool:s", link: "oneway" }),
-    link({ item: "tool:b", target: "tool:s", link: "oneway" }),
+    link({ item: "tool:a", target: "tool:s", link: "either" }),
+    link({ item: "tool:b", target: "tool:s", link: "either" }),
     link({ level: "global", item: "tool:a", target: "tool:s", link: "either" }),
   ]
   const next = requiresGateRecords(existing, target, target, ["tool:a"], UPDATED)
@@ -47,7 +47,7 @@ test("requires adapter upserts a local switch pair and retains unrelated pairs",
 
 test("a stored switch replacing a marker retains stored provenance", () => {
   const target = address({ item: "tool:s" })
-  const answer = gateAnswer([link({ item: "tool:a", target: "tool:s", link: "oneway" })], scopes(), target, ["tool:a"])
+  const answer = gateAnswer([link({ item: "tool:a", target: "tool:s", link: "either" })], scopes(), target, ["tool:a"])
   expect(answer?.ids).toEqual([])
   expect(answer?.from).toEqual({ kind: "level", level: "project" })
   expect(answer?.here).toBe(true)
@@ -56,8 +56,8 @@ test("a stored switch replacing a marker retains stored provenance", () => {
 for (const scenario of [
   { name: "nearer switch replaces inherited gate", links: [
     { level: "global", item: "tool:a", link: "shownWhenOn" },
-    { level: "project", item: "tool:a", link: "oneway" },
-  ], marker: [], ids: [], inspected: [["tool:a", "oneway"]] },
+    { level: "project", item: "tool:a", link: "either" },
+  ], marker: [], ids: [], inspected: [["tool:a", "either"]] },
   { name: "stored opposite replaces shipped marker", links: [
     { level: "project", item: "tool:a", link: "shownWhenOff" },
   ], marker: ["tool:a"], ids: ["!tool:a"], inspected: [["tool:a", "shownWhenOff"]] },
@@ -120,10 +120,10 @@ test("effectiveRowlinks keeps the nearest level's record and masks a tombstone",
 
 test("effectiveRowlinks: a live record at this level shadows the level above", () => {
   const above = link({ level: "global", item: "tool:a", target: "tool:b", link: "either" })
-  const here = link({ item: "tool:a", target: "tool:b", link: "oneway" })
+  const here = link({ item: "tool:a", target: "tool:b", link: "shownWhenOff" })
   const { live } = effectiveRowlinks([above, here], scopes(), address())
   expect(live).toHaveLength(1)
-  expect(live[0]?.link).toBe("oneway")
+  expect(live[0]?.link).toBe("shownWhenOff")
   expect(live[0]?.level).toBe("project")
 })
 
@@ -141,19 +141,19 @@ test("writeRowlink upserts one record per pair at this level and stores a tombst
   expect(masked).toHaveLength(1)
   expect(masked[0]?.enabled).toBe(false)
   // A different pair is added, not replacing the first.
-  const both = writeRowlink(masked, address(), { item: "tool:a", section: null }, { item: "tool:c", section: null }, "oneway", undefined, UPDATED)
+  const both = writeRowlink(masked, address(), { item: "tool:a", section: null }, { item: "tool:c", section: null }, "shownWhenOff", undefined, UPDATED)
   expect(both).toHaveLength(2)
 })
 
-test("switchedOff fires one hop, symmetric for either and primary-only for oneway", () => {
+test("switchedOff fires symmetrically for either, never for a conditional link", () => {
   const either = link({ item: "tool:a", target: "tool:b", link: "either" })
-  const oneway = link({ item: "tool:c", target: "tool:d", link: "oneway" })
-  const links = [either, oneway]
+  const conditional = link({ item: "tool:c", target: "tool:d", link: "shownWhenOff" })
+  const links = [either, conditional]
   // Toggling either end of `either` turns the other off.
   expect(switchedOff(links, scopes(), address(), { item: "tool:a", section: null })).toEqual([{ item: "tool:b", section: null }])
   expect(switchedOff(links, scopes(), address(), { item: "tool:b", section: null })).toEqual([{ item: "tool:a", section: null }])
-  // `oneway` fires only from its primary.
-  expect(switchedOff(links, scopes(), address(), { item: "tool:c", section: null })).toEqual([{ item: "tool:d", section: null }])
+  // A condition never changes either endpoint's saved state.
+  expect(switchedOff(links, scopes(), address(), { item: "tool:c", section: null })).toEqual([])
   expect(switchedOff(links, scopes(), address(), { item: "tool:d", section: null })).toEqual([])
   // No cascade: turning the switched-off target on fires nothing.
   expect(switchedOff([either], scopes(), address(), { item: "tool:b", section: null })).toEqual([{ item: "tool:a", section: null }])
@@ -161,15 +161,15 @@ test("switchedOff fires one hop, symmetric for either and primary-only for onewa
 
 test("switchPartners reports the effective partner in both directions", () => {
   const either = link({ item: "tool:a", target: "tool:b", link: "either" })
-  const oneway = link({ item: "tool:c", target: "tool:d", link: "oneway" })
-  expect(switchPartners([either, oneway], scopes(), address(), { item: "tool:a", section: null }).map((p) => p.endpoint)).toEqual([
+  const conditional = link({ item: "tool:c", target: "tool:d", link: "shownWhenOff" })
+  expect(switchPartners([either, conditional], scopes(), address(), { item: "tool:a", section: null }).map((p) => p.endpoint)).toEqual([
     { item: "tool:b", section: null },
   ])
-  expect(switchPartners([either, oneway], scopes(), address(), { item: "tool:b", section: null }).map((p) => p.endpoint)).toEqual([
+  expect(switchPartners([either, conditional], scopes(), address(), { item: "tool:b", section: null }).map((p) => p.endpoint)).toEqual([
     { item: "tool:a", section: null },
   ])
-  // oneway's target is not a partner in the reverse direction.
-  expect(switchPartners([either, oneway], scopes(), address(), { item: "tool:d", section: null })).toEqual([])
+  // Conditional links are not switch partners.
+  expect(switchPartners([either, conditional], scopes(), address(), { item: "tool:d", section: null })).toEqual([])
 })
 
 test("linksTouching and rowlinkView report outgoing and incoming effective links", () => {

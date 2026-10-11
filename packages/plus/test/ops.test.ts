@@ -159,7 +159,7 @@ function exactId(input: MemoInput, id: string): string {
 function switchLink(
   item: string,
   target: string,
-  link: "either" | "oneway" = "either",
+  link: "either" | "shownWhenOff" = "either",
   enabled?: boolean,
 ): readonly RowlinkRecord[] {
   return [
@@ -214,24 +214,23 @@ test("turning a row on writes its either link's partner off in one save", () => 
   expect(reverse.records.some((record) => record.item === "tool:bash" && record.state === "off")).toBe(true)
 })
 
-test("oneway fires only from its primary and no switch cascades", () => {
-  // coder starts off; turning it on must leave bash alone (oneway never fires
-  // from its connected end).
+test("conditions never write linked state and no switch cascades", () => {
+  // A condition must not change saved state at either end.
   const target = baseInput({
-    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    rowlinks: switchLink("tool:bash", "tool:coder", "shownWhenOff"),
     records: [offRecord("tool:coder")],
   })
   const targetResult = setEnabled(target, findId(target, "tool:coder"), true)
   if ("refusal" in targetResult) throw new Error(`expected success, got ${targetResult.refusal}`)
   expect(targetResult.records.some((record) => record.item === "tool:bash")).toBe(false)
-  // bash starts off; turning the primary on writes coder off.
+  // Turning the primary on excludes text, without saving coder off.
   const primary = baseInput({
-    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    rowlinks: switchLink("tool:bash", "tool:coder", "shownWhenOff"),
     records: [offRecord("tool:bash")],
   })
   const primaryResult = setEnabled(primary, findId(primary, "tool:bash"), true)
   if ("refusal" in primaryResult) throw new Error(`expected success, got ${primaryResult.refusal}`)
-  expect(primaryResult.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  expect(primaryResult.records.some((record) => record.item === "tool:coder")).toBe(false)
   // No cascade: bash—coder and coder—sample; turning bash on disables coder but
   // never follows coder's own link to sample.
   const chain = baseInput({

@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal } from "solid-js"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
-import { applies, formatDuration, formatWarming, parsePermItemId, parseWarming, resolve, resolveSplit, threeWay } from "../../instructions/model.js"
+import { applies, formatDuration, formatWarming, parsePermItemId, parseWarming, resolve, resolveSplit, scopedTo, threeWay } from "../../instructions/model.js"
 import type {
   Address,
   AgentSource,
@@ -82,7 +82,6 @@ import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../..
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { rowlinkView, sameOwnerView, sameEndpoint, writeRowlink, type RowlinkType, type RowlinkEndpoint, type RowlinkRecord } from "../../instructions/rowlinks.js"
 import { markerIn } from "../../instructions/requires.js"
-import { expandedTree } from "../../instructions/tree.js"
 
 export type { TreeNode }
 
@@ -1654,12 +1653,12 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   function linksFor(node: TreeNode) {
     const memo = treeMemo()
     const chain = chainFor(node)
-    if (node.address === undefined || memo === undefined || chain === undefined) return []
+    if (node.address === undefined || memo === undefined) return []
     // Inspect the source span, not assembled/fullText (which strips markers).
-    const marker = markerIn(resolve({ ...chain, records: chain.customizations, scopes: memo.ctx.scopes }).text) ?? []
+    const marker = chain === undefined ? [] : markerIn(resolve({ ...chain, records: chain.customizations, scopes: memo.ctx.scopes }).text) ?? []
     return rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, node.address, node.address, marker)
   }
-  async function saveRowlink(primary: TreeNode, target: RowlinkEndpoint, link: Exclude<RowlinkType, "shownAlways">, enabled = true): Promise<boolean> {
+  async function saveRowlink(primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, link: RowlinkType, enabled = true): Promise<boolean> {
     const current = snapshot()
     const address = primary.address
     if (current === undefined || address === undefined) return false
@@ -1670,7 +1669,25 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const converted = recordsOf(current.records)
     const links = writeRowlink(converted.filter((record) => record.type === "rowlink"), address, address, target, link, enabled, now())
     setSnapshot({ ...current, records: [...current.records.filter((record) => record.type !== "rowlink"), ...links.map(snapshotRecordOf).filter((record): record is SnapshotRecord => record !== undefined)] })
-    lastOpStatus = enabled ? `Linked "${primary.label}" (${link})` : `Masked link from "${primary.label}"`
+    lastOpStatus = enabled ? `Linked "${primary.label}" (${link})` : `Disabled link from "${primary.label}"`
+    localVersion++
+    const version = localVersion
+    const edit = new Promise<boolean>((resolve) => pendingEdits.push({ version, resolve }))
+    void scheduleDrain()
+    return edit
+  }
+  async function deleteRowlink(primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint): Promise<boolean> {
+    const current = snapshot()
+    const address = primary.address
+    if (current === undefined || address === undefined) return false
+    const records = current.records.filter((record) => !(record.type === "rowlink" && scopedTo(record, address)
+      && sameEndpoint(address, record.item, record.section) && sameEndpoint(target, record.target, record.targetSection)))
+    if (records.length === current.records.length) {
+      setStatus("Inherited links can be disabled with Space; delete them at their source level")
+      return false
+    }
+    setSnapshot({ ...current, records })
+    lastOpStatus = `Deleted link from "${primary.label}"`
     localVersion++
     const version = localVersion
     const edit = new Promise<boolean>((resolve) => pendingEdits.push({ version, resolve }))
@@ -1691,8 +1708,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     linkPrimary,
     beginRowlink,
     linksFor,
-    linkRows: () => expandedTree(memoInput()),
     saveRowlink,
+    deleteRowlink,
     rowlinkTarget,
     cancelRowlink,
     snapshot,

@@ -1145,6 +1145,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     batch(() => {
       setMode("browse")
       setTarget(undefined)
+      if (state.linkPrimary() !== undefined) {
+        state.cancelRowlink()
+        state.setStatus("Row link cancelled")
+      }
     })
   }
 
@@ -1479,6 +1483,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       ]
     }
     if (state.snapshot() === undefined) return [["esc", "back"]]
+    if (state.linkPrimary() !== undefined && !filtering()) return [
+      ["↑↓", "move"], ["←→", "open/close"], ["[ ]", "category"], ["tab", "pane"],
+      ["/", "filter"], ["L", "finish link"], ["esc", "cancel link"],
+    ]
     if (filtering()) return [["type", "to filter"], ["↑↓", "move"], ["enter", "go to"], ["ctrl+space", "toggle"], ["esc", "clear filter"]]
     if (state.coldMove() !== undefined) return [["↑↓", "move in try order"], ["enter", "drop"], ["esc", "cancel"]]
     if (state.move()?.isSection) return [["↑↓", "reorder siblings"], ["←→", "cross-parent unsupported"], ["enter", "drop"], ["esc", "cancel"]]

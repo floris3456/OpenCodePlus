@@ -3668,10 +3668,10 @@ test("instructions_link upserts, inspects both directions, and masks with enable
     { direction: "incoming", item: "tool:reader" },
   ])
   // A second upsert on the same pair replaces it (still one record) and takes the new type.
-  await runOk(link, { id: reader, target: question, type: "oneway" })
+  await runOk(link, { id: reader, target: question, type: "shownWhenOff" })
   const replaced = await linksOf(project)
   expect(replaced).toHaveLength(1)
-  expect(replaced[0]?.link).toBe("oneway")
+  expect(replaced[0]?.link).toBe("shownWhenOff")
   // enabled:false stores a tombstone that still inspects, marked disabled.
   await runOk(link, { id: reader, target: question, enabled: false })
   const masked = (await runOk(link, { id: reader })) as { links: { enabled: boolean }[] }
@@ -3744,8 +3744,7 @@ async function customizationState(project: string, item: string): Promise<"on" |
   return record?.state
 }
 
-for (const type of ["either", "oneway"] as const) {
-  test(`model rowlinks ${type}: activation and state:on persist physical records in one save`, async () => {
+test("model rowlinks either: activation and state:on persist physical records in one save", async () => {
     const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2"), modelInfo("acme", "nova-3")], classifications: { "nova-2": "general", "nova-3": "general" } })
     const set = need(tools, "instructions_set")
     await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })
@@ -3755,7 +3754,7 @@ for (const type of ["either", "oneway"] as const) {
     await runOk(set, { id: model, warming: "on", interval: "15m", prompt: "keep alive" })
     await runOk(set, { id: model, compactWarm: "on", compactionInstructions: "retain C1" })
     await runOk(set, { id: reader, state: "on" })
-    await runOk(need(tools, "instructions_link"), { id: model, target: reader, type })
+    await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "either" })
     const before = await load(project)
     // The exact operation used by TUI Space, not an alternate switch algebra.
     const equivalent = activateModelRow(memoFromSnapshot(await snapshotOf(api)), model)
@@ -3768,15 +3767,13 @@ for (const type of ["either", "oneway"] as const) {
     expect(await customizationState(project, "tool:reader")).toBe("off")
     expect((await runFail(set, { id: model, state: "off" })).message).toContain("cannot be toggled off by state")
     expect(await load(project)).toEqual(activated)
-    // Explicitly turning the target back on is the only resurrection. Either
-    // masks the active model; oneway deliberately leaves it active.
+    // Explicitly turning the target back on disables the active model.
     const reverseEquivalent = toggle(memoInputOf(await snapshotOf(api)), reader)
     if ("refusal" in reverseEquivalent) throw new Error(reverseEquivalent.refusal)
-    if (type === "either") expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
+    expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
     await runOk(set, { id: reader, state: "on" })
     const reversed = await load(project)
-    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject(type === "either" ? { active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" } : { active: true })
-    if (type === "either") {
+    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
       const snapshot = await snapshotOf(api)
       const retained = expandedTree(memoInputOf(snapshot)).find((node) => node.id === model)
       expect(retained).toBeDefined()
@@ -3790,9 +3787,7 @@ for (const type of ["either", "oneway"] as const) {
       expect(after.projectRevision + after.globalRevision).toBe(prior.projectRevision + prior.globalRevision + 1)
       expect(await customizationState(project, "tool:reader")).toBe("off")
       expect(after.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
-    }
-  })
-}
+})
 
 test("model rowlinks inherit, mask, stay one-hop and refuse protected writes atomically", async () => {
   const { api, tools, project } = await freshFixture({
@@ -3810,7 +3805,7 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   const reader = "item:project:build:tool:reader"
   const extra = "item:project:build:tool:extra"
   await runOk(link, { id: globalModel, target: "item:global:build:tool:reader", type: "either" })
-  await runOk(link, { id: reader, target: extra, type: "oneway" })
+  await runOk(link, { id: reader, target: extra, type: "either" })
   await runOk(set, { id: reader, state: "off" })
   // The inherited either switches alt off when reader turns on at Project.
   await runOk(set, { id: reader, state: "on" })
@@ -3834,7 +3829,7 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   const switchMemo = memoInputOf(await snapshotOf(api))
   const unsupported = activateModelRow({ ...switchMemo, rowlinks: [...(switchMemo.rowlinks ?? []), {
     type: "rowlink", level: "project", agent: "build", item: "model:acme/alt", section: null,
-    target: "setting:description", targetSection: null, link: "oneway", updated: "2026-01-01T00:00:00.000Z",
+    target: "setting:description", targetSection: null, link: "either", updated: "2026-01-01T00:00:00.000Z",
   }] }, model)
   expect(unsupported).toMatchObject({ refusal: 'Linked row "setting:description" has no switch state' })
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["build"] }))
@@ -3854,7 +3849,7 @@ test("model rowlinks create and chat pick compose switches; linked replacement r
   await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "global", agent: "build" })
   const model = "item:project:build:model:acme/alt"
   const reader = "item:project:build:tool:reader"
-  await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "oneway" })
+  await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "either" })
   await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
   await runOk(set, { id: reader, state: "on" })
   const before = await load(project)
@@ -3921,7 +3916,7 @@ test("set state:on persists its either partner off in one save, and it stays off
   expect(await customizationState(project, "tool:question")).toBe("off")
 })
 
-test("set state:on is symmetric for either and primary-only for oneway", async () => {
+test("set state:on changes the partner only for either, not conditional links", async () => {
   const { api, tools, project } = await freshFixture({
     tools: [
       { id: "reader", description: "read things", options: { codemode: false } },
@@ -3932,15 +3927,16 @@ test("set state:on is symmetric for either and primary-only for oneway", async (
   const set = need(tools, "instructions_set")
   const reader = await rowIdOf(api, "tool:reader")
   const question = await rowIdOf(api, "tool:question")
-  await runOk(link, { id: reader, target: question, type: "oneway" })
-  // Turn the target on first; oneway leaves the primary alone.
+  await runOk(link, { id: reader, target: question, type: "shownWhenOff" })
+  // Conditions leave saved state alone in both directions.
   await runOk(set, { id: question, state: "on" })
   expect(await customizationState(project, "tool:reader")).toBeUndefined()
-  // Primary on turns the target off.
+  // Primary on leaves the target's saved state on.
   await runOk(set, { id: reader, state: "on" })
-  expect(await customizationState(project, "tool:question")).toBe("off")
+  expect(await customizationState(project, "tool:question")).toBe("on")
   // Either is symmetric: turn the target on and the primary goes off.
   await runOk(link, { id: reader, target: question, type: "either" })
+  await runOk(set, { id: question, state: "off" })
   await runOk(set, { id: question, state: "on" })
   expect(await customizationState(project, "tool:reader")).toBe("off")
 })
@@ -4138,12 +4134,12 @@ test("durable section gates and inspection agree across pair replacements and ba
   const section = nodes.find((node) => node.address?.level === "project" && node.address.agent === "gateprobe" && node.label === "Questions")
   if (section?.address === undefined) throw new Error("Missing project Questions section")
   const target = section.address
-  const pair = (level: "project" | "global", item: string, link: "oneway" | "shownWhenOn" | "shownWhenOff" | "shownAlways") => ({
+  const pair = (level: "project" | "global", item: string, link: "either" | "shownWhenOn" | "shownWhenOff" | "shownAlways") => ({
     type: "rowlink" as const, level, agent: "gateprobe", item, section: link === "shownAlways" ? target.section : null,
     target: target.item, targetSection: target.section, link, updated: "2026-01-01T00:00:00.000Z",
   })
   for (const scenario of [
-    { pairs: [pair("global", "tool:question", "shownWhenOn"), pair("project", "tool:question", "oneway")], inspected: [["tool:question", "oneway"]], kept: true },
+    { pairs: [pair("global", "tool:question", "shownWhenOn"), pair("project", "tool:question", "either")], inspected: [["tool:question", "either"]], kept: true },
     { pairs: [pair("project", "tool:question", "shownWhenOff")], inspected: [["tool:question", "shownWhenOff"]], kept: true },
     { pairs: [pair("global", target.item, "shownAlways"), pair("project", "tool:reader", "shownWhenOn")], inspected: [["tool:reader", "shownWhenOn"]], kept: false },
     { pairs: [pair("global", "tool:reader", "shownWhenOn"), pair("project", target.item, "shownAlways")], inspected: [], kept: true },
@@ -4180,19 +4176,19 @@ test("legacy requires durably replaces a same-scope switch pair without duplicat
   const extra = "item:project:gateprobe:tool:extra"
   const set = need(tools, "instructions_set")
   const link = need(tools, "instructions_link")
-  await runOk(link, { id: reader, target: question, type: "oneway" })
-  await runOk(link, { id: extra, target: question, type: "oneway" })
+  await runOk(link, { id: reader, target: question, type: "either" })
+  await runOk(link, { id: extra, target: question, type: "either" })
   const operation = setRequires(memoInputOf(await snapshotOf(api)), question, ["tool:reader"])
   if ("refusal" in operation) throw new Error(operation.refusal)
   expect(operation.rowlinks?.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
   await runOk(set, { id: question, requires: ["tool:reader"] })
   const stored = await linksOf(project)
   expect(stored.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
-  expect(stored.filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["oneway"])
+  expect(stored.filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["either"])
   const shown = await runOk(need(tools, "instructions_show"), { id: question }) as { requires?: { id: string }[] }
   expect(shown.requires?.map((entry) => entry.id)).toEqual(["tool:reader"])
   await runOk(set, { id: question, requires: [] })
-  expect((await linksOf(project)).filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["oneway"])
+  expect((await linksOf(project)).filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["either"])
   await runOk(set, { id: question, requires: null })
-  expect((await linksOf(project)).map((record) => [record.item, record.link])).toEqual([["tool:extra", "oneway"]])
+  expect((await linksOf(project)).map((record) => [record.item, record.link])).toEqual([["tool:extra", "either"]])
 })
