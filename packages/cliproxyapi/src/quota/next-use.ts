@@ -19,8 +19,22 @@ export function createNextUse(io: { read(key: string): Promise<unknown>; fetch: 
       )
       if (stored._tag === "None") return
       const view = await chatUsage(io.fetch, origin, stored.value.capability, `${input.providerID}/${input.modelID}`)
-      if (view.next_use?.model !== input.modelID || view.next_use.expires_ms <= io.now()) return
-      return view.next_use
+      const next = view.next_use
+      if (next?.model !== input.modelID || next.expires_ms <= io.now()) return
+      // Pacer's parser retains absent keys as undefined; the public RPC requires JSON.
+      return {
+        v: next.v,
+        at_ms: next.at_ms,
+        expires_ms: next.expires_ms,
+        mode: next.mode,
+        provider: next.provider,
+        model: next.model,
+        reason: next.reason,
+        forced: next.forced,
+        ...(next.candidates_at_ms === undefined ? {} : { candidates_at_ms: next.candidates_at_ms }),
+        ...(next.auth === undefined ? {} : { auth: next.auth }),
+        ...(next.alias === undefined ? {} : { alias: next.alias }),
+      }
     })().catch(() => undefined)
     cache.set(key, { at: io.now(), result })
     return result

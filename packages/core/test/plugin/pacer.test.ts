@@ -1,5 +1,5 @@
 import { expect } from "bun:test"
-import { Effect, Schedule } from "effect"
+import { Effect, Schedule, Schema } from "effect"
 import { Integration } from "@opencode/core/integration"
 import { Model } from "@opencode/core/model"
 import { Plugin } from "@opencode/core/plugin"
@@ -241,6 +241,8 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         expect(live.snapshot?.current).toBe("claude")
         expect(live.snapshot?.active).toEqual(["claude"])
         expect(live.snapshot?.next_use?.auth).toBe("claude-next")
+        // The public RPC envelope requires JSON, including omitted preview fields.
+        expect(Schema.is(Schema.Json)(live)).toBe(true)
         expect(live.snapshot?.credentials[0]?.windows[0]?.remaining).toBe(37)
         expect(live.snapshot?.credentials[0]?.windows[0]?.state).toBe("current")
         expect(quotaResponse.bodyUsed).toBe(false)
