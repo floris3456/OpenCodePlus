@@ -357,7 +357,9 @@ it.live("discovers exported specifiers from the resolved tree even when dist/ ex
           },
         }),
         "consumer/node_modules/@opencode/plugin/src/promise/index.ts": "export const root = 'src'",
+        "consumer/node_modules/@opencode/plugin/src/effect/zeta.ts": "export const last = true",
         "consumer/node_modules/@opencode/plugin/src/effect/index.ts": "export * as plugin from './plugin.ts'",
+        "consumer/node_modules/@opencode/plugin/src/effect/alpha.ts": "export const first = true",
         "consumer/node_modules/@opencode/plugin/src/effect/plugin.ts": "export const leaf = 'src'",
         "consumer/node_modules/@opencode/plugin/src/unexported.ts": "export const secret = true",
         "consumer/node_modules/@opencode/plugin/dist/promise/index.js": "export const root = 'dist'",
@@ -372,6 +374,14 @@ it.live("discovers exported specifiers from the resolved tree even when dist/ ex
     expect(discovered.get("@opencode/plugin/effect")?.replaceAll("\\", "/")).toEndWith("src/effect/index.ts")
     expect(discovered.get("@opencode/plugin/effect/plugin")?.replaceAll("\\", "/")).toEndWith("src/effect/plugin.ts")
     expect(discovered.has("@opencode/plugin/unexported")).toBe(false)
+    expect([...discovered.keys()]).toEqual([
+      "@opencode/plugin",
+      "@opencode/plugin/effect/alpha",
+      "@opencode/plugin/effect",
+      "@opencode/plugin/effect/index",
+      "@opencode/plugin/effect/plugin",
+      "@opencode/plugin/effect/zeta",
+    ])
 
     const hostDiscovered = discoverPluginRuntimeSpecifiers()
     expect(hostDiscovered.has("effect/schema/SchemaJITCompiler")).toBe(true)

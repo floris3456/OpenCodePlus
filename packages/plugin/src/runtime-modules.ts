@@ -38,7 +38,9 @@ export function discoverPluginRuntimeSpecifiers(
     const scanDir = relParts.length > 1 ? path.join(realDir, relParts[0]) : realDir
     const ext = path.extname(rootEntry) || ".js"
     entries.set(pkgName, toLoadPath(rootEntry))
-    for (const file of new Bun.Glob(`**/*${ext}`).scanSync({ cwd: scanDir })) {
+    // Filesystem enumeration order changes generated loader/chunk order across
+    // build hosts, so release rebuilds must discover exports in a stable order.
+    for (const file of [...new Bun.Glob(`**/*${ext}`).scanSync({ cwd: scanDir })].sort()) {
       const normalized = file.replaceAll("\\", "/")
       if (
         normalized.startsWith("internal/") ||
