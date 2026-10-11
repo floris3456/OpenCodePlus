@@ -264,7 +264,7 @@ function allRequests(variant: MissVariant, now: number): Plus.MonitorRequest[] {
       cacheRead: 0,
       cacheWrite: 900,
       cost: 0.008,
-      verdict: "cold",
+      verdict: "compacted",
       cause: "compacted",
       confidence: "certain",
       tools: ["write"],

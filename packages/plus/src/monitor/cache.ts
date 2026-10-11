@@ -723,7 +723,9 @@ function causeStep(
   const usable = measured.state === "reported" && measured.input !== undefined && measured.read !== undefined
   const bounded = usable && expected !== undefined ? Math.min(expected, measured.input!) : undefined
   const shortfall = bounded === undefined ? 0 : Math.max(0, bounded - measured.read!)
-  const verdict: MonitorRequest["verdict"] = !usable
+  const verdict: MonitorRequest["verdict"] = compacted
+    ? "compacted"
+    : !usable
     ? "none"
     : shortfall >= 1024
       ? measured.read === 0 ? "miss" : "partial"

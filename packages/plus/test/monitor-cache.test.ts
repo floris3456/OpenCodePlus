@@ -214,7 +214,7 @@ test("local changes remain observable independently of unknown legacy cache diag
       { scope: "session", sessionID: c.session, view: "cache", id: `${c.session}-2` },
       { now: 500_000 },
     )
-    expect(report.detail?.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
+    expect(report.detail?.request).toMatchObject({ verdict: c.session === "compacted" ? "compacted" : "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
     expect(report.detail?.request.expected).toBeUndefined()
     expect(report.detail?.request.cause).toBe(c.cause)
     expect(report.detail?.request.evidence).toContain(c.evidence)

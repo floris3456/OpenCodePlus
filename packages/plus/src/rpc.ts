@@ -1550,7 +1550,7 @@ export const MonitorRequest = Schema.Struct({
   cacheRead: Schema.Number,
   cacheWrite: Schema.Number,
   cost: Schema.Number,
-  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "none", "error"]),
+  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "compacted", "none", "error"]),
   outcome: Schema.optionalKey(Schema.String),
   compaction: Schema.optionalKey(CompactionObservation),
   promptCacheDiagnostic: Schema.optionalKey(PromptCacheDiagnostic),

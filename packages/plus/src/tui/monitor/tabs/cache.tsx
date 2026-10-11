@@ -105,7 +105,7 @@ export function CacheTab(props: CacheTabProps) {
                   <text fg={theme().text.muted} width={kindWidth()} attributes={TextAttributes.BOLD}>
                     Kind
                   </text>
-                  <text fg={theme().text.muted} width={10} attributes={TextAttributes.BOLD}>
+                  <text fg={theme().text.muted} width={12} attributes={TextAttributes.BOLD}>
                     Verdict
                   </text>
                   <text fg={theme().text.muted} width={causeWidth()} attributes={TextAttributes.BOLD}>
@@ -196,7 +196,7 @@ export function CacheTab(props: CacheTabProps) {
                             </text>
                             <text
                               fg={isSelected() ? fg() : verdictFg(req.verdict)}
-                              width={10}
+                              width={12}
                               attributes={TextAttributes.BOLD}
                             >
                               {`[${req.verdict.toUpperCase()}]`}
