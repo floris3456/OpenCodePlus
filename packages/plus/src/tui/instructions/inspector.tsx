@@ -80,7 +80,7 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   if (node.address !== undefined) {
     const scopes = memo?.ctx.scopes ?? contextOfSnapshot(snapshot)
     const links = rowlinkView(snapshot.records.filter((record) => record.type === "rowlink").map(rowlinkOf), scopes, node.address, node.address)
-    links.forEach((link) => facts.push([`${link.direction} link`, `${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} · ${link.enabled ? "enabled" : "masked"} (${link.level})`]))
+    links.forEach((link) => facts.push([`${link.direction} link`, `${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} · ${link.enabled ? "enabled" : "disabled"} (${link.level})`]))
   }
   const modelField = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
   if (modelField !== undefined) {

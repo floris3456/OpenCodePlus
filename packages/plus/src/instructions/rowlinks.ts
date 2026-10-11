@@ -3,8 +3,7 @@
 // A *switch* is a durable on/off relationship between two rows, like model
 // rows and teams being exclusive: turning A on saves the linked row B off in
 // the same save, and B stays off until someone turns it on. `either` is
-// symmetric (turning B on saves A off too); `oneway` only turns the target off
-// when the primary turns on, never the other way. A switch acts one hop: the
+// symmetric (turning B on saves A off too). A switch acts one hop: the
 // rows it turns off do not fire their own links (B10).
 //
 // A *gate* is the old `requires:` condition, now data: the target row (or a
@@ -27,10 +26,10 @@
 import type { Address, Catalogue, ChainNode, From, Level, Scopes, TeamRef } from "./model.js"
 import { catalogueForAddress, resolutionChain, sameTeam, scopedTo } from "./model.js"
 
-export type RowlinkType = "either" | "oneway" | "shownWhenOn" | "shownWhenOff" | "shownAlways"
+export type RowlinkType = "either" | "shownWhenOn" | "shownWhenOff" | "shownAlways"
 
 /** The switch types: turning the primary on saves the connected row off. */
-export const SWITCH_TYPES: readonly RowlinkType[] = ["either", "oneway"]
+export const SWITCH_TYPES: readonly RowlinkType[] = ["either"]
 /** The gate types: the connected row is sent only while the primary is (not) on. */
 export const GATE_TYPES: readonly RowlinkType[] = ["shownWhenOn", "shownWhenOff", "shownAlways"]
 
@@ -428,7 +427,7 @@ export function requiresGateRecords(
 
 /**
  * The connected endpoints a switch turns off when `toggled` turns on. `either`
- * fires whichever end is toggled; `oneway` fires only its primary. Only the
+ * fires whichever end is toggled. Only the
  * effective links fire: the nearest chain node that says anything about a pair
  * decides it, so a tombstone or gate at this level masks an upstream switch
  * (`effectiveRowlinks`), exactly as the tool's view reports. No cascade:
@@ -441,11 +440,11 @@ export function switchedOff(
   toggled: RowlinkEndpoint,
 ): RowlinkEndpoint[] {
   return effectiveRowlinks(links, scopes, address)
-    .live.filter((link) => link.link === "either" || link.link === "oneway")
+    .live.filter((link) => link.link === "either")
     .flatMap((link): RowlinkEndpoint[] => {
       const primary = { item: link.item, section: link.section }
       const connected = { item: link.target, section: link.targetSection }
-      if (sameEndpoint(toggled, connected.item, connected.section)) return link.link === "either" ? [primary] : []
+      if (sameEndpoint(toggled, connected.item, connected.section)) return [primary]
       if (sameEndpoint(toggled, primary.item, primary.section)) return [connected]
       return []
     })
@@ -458,7 +457,7 @@ export function switchPartners(
   address: Address,
   endpoint: RowlinkEndpoint,
 ): { readonly endpoint: RowlinkEndpoint; readonly link: RowlinkRecord }[] {
-  const switches = links.filter((link) => link.link === "either" || link.link === "oneway")
+  const switches = links.filter((link) => link.link === "either")
   if (switches.length === 0) return []
   const chain = resolutionChain(address, scopes)
   const byKey = new Map<string, { link: RowlinkRecord; depth: number }>()

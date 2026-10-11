@@ -10,7 +10,8 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
+import { InstructionsClipboardOutput } from "../src/rpc.js"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -37,7 +38,7 @@ async function tempProject(): Promise<string> {
 function fixtureContext(project: string): Context {
   return fullContext({
     directory: project,
-    agents: [agentInfo("alpha", "upstream role")],
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("build", "build role")],
     tools: [
       { id: "reader", description: "read things", options: { codemode: false } },
       { id: "skill", description: "Load a skill", options: { codemode: false } },
@@ -179,6 +180,33 @@ test("a write through the RPC records the actor as cli", async () => {
   }
 })
 
+test("a reflected write through the TUI command runner retains its human actor", async () => {
+  const project = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project)
+  const state = createState()
+  await Effect.runPromise(activate(ctx, state))
+  const fixture = { ctx, state, handlers: createHandlers(ctx, state), api: createPlusApi(ctx, state) }
+  try {
+    const id = "item:defaults:alpha:tool:reader"
+    const refused = await invoke(fixture.handlers, "instructions.run", {
+      op: "batch", input: { op: "set", id, selected: [id], input: { text: "CLI edit" } },
+    })
+    expect(refused).toMatchObject({ applied: [], failed: [{ id, reason: expect.stringContaining("protected") }] })
+    const result = await invoke(fixture.handlers, "instructions.run", {
+      op: "batch", actor: { type: "tui" },
+      input: { op: "set", id, selected: [id], input: { text: "Human edit" } },
+    })
+    expect(result).toEqual({ applied: [id], skipped: [], failed: [] })
+    const log = await fixture.api.log({ where: "actor:tui" })
+    expect(log.value.entries.some((entry) => entry.actor.type === "tui" && entry.target.includes("reader"))).toBe(true)
+    const cli = await fixture.api.log({ where: "actor:cli" })
+    expect(cli.value.entries).toEqual([])
+  } finally {
+    await Effect.runPromise(deactivate(fixture.state))
+  }
+})
+
 test("an unknown op refuses by value, naming the known ops", async () => {
   const fixture = await activatedFixture()
   try {
@@ -188,6 +216,68 @@ test("an unknown op refuses by value, naming the known ops", async () => {
     expect(result.error.message).toContain('op.unknown: unknown op "nope"')
     expect(result.error.message).toContain("known: ")
     expect(result.error.usage).toBeUndefined()
+  } finally {
+    await Effect.runPromise(deactivate(fixture.state))
+  }
+})
+
+test("clipboard RPC copies frozen configuration and failed or cancelled cuts leave the store unchanged", async () => {
+  const fixture = await activatedFixture()
+  try {
+    const id = "item:defaults:alpha:tool:reader"
+    await invoke(fixture.handlers, "instructions.run", { op: "set", input: { id, text: "Captured description" } })
+    const copy = Schema.decodeUnknownSync(InstructionsClipboardOutput)(await invoke(fixture.handlers, "instructions.run", {
+      op: "clipboard", input: { action: "copy", ids: [id] },
+    }))
+    await invoke(fixture.handlers, "instructions.run", { op: "set", input: { id, text: "Later source description" } })
+    const pasted = await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "paste", clipboard: copy.clipboard, into: "group:project:build:tools" } })
+    expect(pasted).toMatchObject({ consumed: false, rows: ["item:project:build:tool:reader"] })
+    const saved = (await fixture.api.snapshot()).value
+    expect(saved.records).toContainEqual(expect.objectContaining({ type: "customization", level: "project", agent: "build", item: "tool:reader", text: "Captured description" }))
+    expect(saved.records).toContainEqual(expect.objectContaining({ type: "customization", level: "defaults", agent: "alpha", item: "tool:reader", text: "Later source description" }))
+    const cut = Schema.decodeUnknownSync(InstructionsClipboardOutput)(await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "cut", ids: [id] } }))
+    const failed = await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "paste", clipboard: cut.clipboard, into: "group:project:build:system" } })
+    expect(failed).toHaveProperty("error")
+    expect((await fixture.api.snapshot()).value.records).toEqual(saved.records)
+    await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "clear", clipboard: cut.clipboard } })
+    expect((await fixture.api.snapshot()).value.records).toEqual(saved.records)
+    expect(await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "paste", clipboard: cut.clipboard, into: "group:project:build:tools" } })).toHaveProperty("error")
+    const moving = Schema.decodeUnknownSync(InstructionsClipboardOutput)(await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "cut", ids: [id] } }))
+    const moved = await invoke(fixture.handlers, "instructions.run", { op: "clipboard", input: { action: "paste", clipboard: moving.clipboard, into: "group:project:build:tools" } })
+    expect(moved).toMatchObject({ consumed: true })
+    const after = (await fixture.api.snapshot()).value
+    expect(after.records).toContainEqual(expect.objectContaining({ type: "customization", level: "defaults", agent: "alpha", item: "tool:reader", state: "off" }))
+    expect(after.records).toContainEqual(expect.objectContaining({ type: "customization", level: "project", agent: "build", item: "tool:reader", text: "Later source description" }))
+    const record = after.records.find((record) => record.type === "customization" && record.item === "tool:reader")
+    if (record?.type !== "customization") throw new Error("missing transferred configuration")
+    const invalid = await fixture.api.layoutWrite({
+      expectedProjectRevision: after.revision, expectedGlobalRevision: after.globalRevision,
+      folders: [], orders: [], target: "invalid-transfer", status: "Invalid transfer",
+      changes: { upsert: [{ ...record, item: "toolmode:reader", state: undefined, text: "invalid-mode" }], remove: [] },
+    })
+    expect(invalid.ok).toBe(false)
+    expect((await fixture.api.snapshot()).value.records).toEqual(after.records)
+    expect((await fixture.api.snapshot()).value.orders).toEqual(after.orders)
+  } finally {
+    await Effect.runPromise(deactivate(fixture.state))
+  }
+})
+
+test("batch creation keeps the new resource id and rebases owner and tool fields", async () => {
+  const fixture = await activatedFixture()
+  try {
+    const rows = ["item:defaults:alpha:tool:reader", "item:project:build:tool:reader"]
+    const created = await invoke(fixture.handlers, "instructions.run", {
+      op: "batch", actor: { type: "tui" },
+      input: { op: "create", id: rows[0], selected: rows, input: { kind: "rule", id: "shared-name", label: "Selected rule", patterns: ["*.txt"] } },
+    })
+    expect(created).toEqual({ applied: rows, skipped: [], failed: [] })
+    const snapshot = (await fixture.api.snapshot()).value
+    expect(snapshot.records.filter((record) => record.type === "rule" && record.id === "shared-name")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent: "alpha", level: "defaults", tool: "reader" }),
+      expect.objectContaining({ agent: "build", level: "project", tool: "reader" }),
+    ]))
+    expect(snapshot.records.filter((record) => record.type === "rule" && record.id.includes("item:"))).toEqual([])
   } finally {
     await Effect.runPromise(deactivate(fixture.state))
   }

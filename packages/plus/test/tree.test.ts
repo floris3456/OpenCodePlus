@@ -143,7 +143,6 @@ test("Implementer subtree shape under the project root", () => {
     "Settings",
     "Models",
     "Tools",
-    "Base",
     "System",
   ])
   expect(childrenOf(nodes, "group:project:Implementer:tools").map((node) => node.label)).toEqual([
@@ -154,8 +153,8 @@ test("Implementer subtree shape under the project root", () => {
   expect(childrenOf(nodes, "group:project:Implementer:tools:native").map((node) => node.label)).toEqual(["aaa", "bash", "skill"])
   expect(childrenOf(nodes, "group:project:Implementer:tools:mcp").map((node) => node.label)).toEqual(["sample"])
   expect(childrenOf(nodes, "group:project:Implementer:tools:mcp:sample").map((node) => node.label)).toEqual(["odd-name"])
-  // Skills have one place: the skill tool's Permissions › Skills category.
-  expect(childrenOf(nodes, "group:project:Implementer:tool:skill:permissions").map((node) => node.label)[0]).toBe("Skills")
+  // With no discovered parameters in this fixture, Skills sits under the tool.
+  expect(childrenOf(nodes, "item:project:Implementer:tool:skill").map((node) => node.label)).toEqual(["Description", "Skills"])
   expect(childrenOf(nodes, "group:project:Implementer:tool:skill:permissions:skills").map((node) => node.label)).toEqual([
     "OpenCode",
     "OpenCodePlus",
@@ -165,7 +164,8 @@ test("Implementer subtree shape under the project root", () => {
     "MCP",
     "Project",
   ])
-  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)[0]).toBe("Role/persona")
+  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)).toEqual(["Instructions", "Base"])
+  expect(childrenOf(nodes, "group:project:Implementer:system:instructions").map((node) => node.label)[0]).toBe("Role/persona")
 })
 
 test("identical subtree under each of the three roots", () => {
@@ -177,7 +177,8 @@ test("identical subtree under each of the three roots", () => {
   ] as const) {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
-    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Base", "System"])
+    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "System"])
+    expect(childrenOf(nodes, `group:${level}:${agent}:system`).map((node) => node.label)).toEqual(["Instructions", "Base"])
   }
 })
 
@@ -195,7 +196,6 @@ test("Defaults holds two catalogues with the Models section between them, each o
     "group:defaults::settings",
     "group:defaults::models",
     "group:defaults::tools",
-    "group:defaults::base",
     "group:defaults::system",
     "group:defaults::mcp",
   ])
@@ -203,7 +203,6 @@ test("Defaults holds two catalogues with the Models section between them, each o
     "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
     "group:defaults:/teams:tools",
-    "group:defaults:/teams:base",
     "group:defaults:/teams:system",
     "group:defaults:/teams:mcp",
   ])
@@ -354,7 +353,6 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
     "group:project:crew/:CrewMate:settings",
     "group:project:crew/:CrewMate:models",
     "group:project:crew/:CrewMate:tools",
-    "group:project:crew/:CrewMate:base",
     "group:project:crew/:CrewMate:system",
   ])
   // Member rows carry the member's own `<team>/:<member>` owner path so the
@@ -393,10 +391,9 @@ test("a team member's own rows list under the tools they govern, rows for absent
     agents: [...agents(), { id: member, scope: "project", origin: "plus" }, { id: peer, scope: "project", origin: "plus" }],
     teams: [{ level: "project", team: "crew", enabled: true, agents: [member, peer] }],
   })
-  // Its "Delegate to" rows list under team_delegate → Permissions → Delegate to.
-  const to = `group:project:crew/:${member}:tool:team_delegate:permissions:to`
-  expect(nodes.find((node) => node.id === to)?.label).toBe("Delegate to")
-  const rows = childrenOf(nodes, to)
+  // This fixture has no parameter schema; its rules sit directly under the tool.
+  const to = `item:project:crew/:${member}:tool:team_delegate`
+  const rows = childrenOf(nodes, to).filter((node) => node.address?.item.startsWith("perm:"))
   expect(rows.map((node) => node.id)).toEqual([
     `item:project:crew/:${member}:perm:team_delegate:to.${member}`,
     `item:project:crew/:${member}:perm:team_delegate:to.${peer}`,
@@ -517,7 +514,7 @@ test("registered team member yields its Role/persona under System", () => {
   const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
   expect(systemGroup).toBeDefined()
   expect(
-    childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
+    childrenOf(nodes, "group:project:crew/:CrewMate:system:instructions").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
   ).toBe(true)
 })
 
@@ -563,7 +560,6 @@ test("team Special group row and special agent subtrees across all three levels"
         `group:${level}:crew/:special:${id}:settings`,
         `group:${level}:crew/:special:${id}:models`,
         `group:${level}:crew/:special:${id}:tools`,
-        `group:${level}:crew/:special:${id}:base`,
         `group:${level}:crew/:special:${id}:system`,
       ])
       for (const group of agentKids) {
@@ -652,7 +648,6 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
     "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
     "group:defaults:/teams:tools",
-    "group:defaults:/teams:base",
     "group:defaults:/teams:system",
     "group:defaults:/teams:mcp",
   ])
@@ -738,7 +733,7 @@ test("MCP tools group by item.server, never the tool name", () => {
 
 test("Role/persona is first under System", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
-  const labels = childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)
+  const labels = childrenOf(nodes, "group:project:Implementer:system:instructions").map((node) => node.label)
   expect(labels[0]).toBe("Role/persona")
   expect(labels).toContain("guide")
 })
@@ -769,7 +764,7 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
     { level: "project", agent: "Implementer", item: "system:role", section: "purpose" },
     { level: "project", agent: "Implementer", item: "system:role", section: "usage" },
   ])
-  expect(sections.map((node) => node.depth)).toEqual([6, 6])
+  expect(sections.map((node) => node.depth)).toEqual([8, 8])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
   expect(sections.every((node) => node.add === "section")).toBe(true)
@@ -784,11 +779,11 @@ test("a lone top-level heading is not an extra level: children render directly a
   const nodes = expandAll(input)
   const itemRow = nodes.find((node) => node.id === "item:project:Implementer:skill:solo")
   if (!itemRow) throw new Error("expected skill row")
-  const children = childrenOf(nodes, itemRow.id)
+  const children = childrenOf(nodes, `${itemRow.id}:description`)
   expect(children.map((node) => [node.id, node.label, node.depth])).toEqual([
-    ["section:project:Implementer:skill:solo:title", "Introduction", itemRow.depth + 1],
-    ["section:project:Implementer:skill:solo:title/a", "A", itemRow.depth + 1],
-    ["section:project:Implementer:skill:solo:title/b", "B", itemRow.depth + 1],
+    ["section:project:Implementer:skill:solo:title", "Introduction", itemRow.depth + 2],
+    ["section:project:Implementer:skill:solo:title/a", "A", itemRow.depth + 2],
+    ["section:project:Implementer:skill:solo:title/b", "B", itemRow.depth + 2],
   ])
   const intro = children[0]
   if (intro === undefined) throw new Error("expected Introduction row")
@@ -811,14 +806,14 @@ test("a wrapper with no body shows no Introduction, and several top-level sectio
     records: [],
     agents: agents(),
   })
-  expect(childrenOf(nodes, "item:project:Implementer:skill:bare").map((node) => node.label)).toEqual(["A", "B"])
+  expect(childrenOf(nodes, "item:project:Implementer:skill:bare:description").map((node) => node.label)).toEqual(["A", "B"])
   // Two H1s are two real sections: both keep their rows.
   const multi = expandAll({
     items: [skillTool, makeItem({ id: "skill:multi", kind: "skill", group: "project", title: "multi", text: "# Alpha\na\n# Beta\nb\n" })],
     records: [],
     agents: agents(),
   })
-  expect(childrenOf(multi, "item:project:Implementer:skill:multi").map((node) => node.label)).toEqual(["Alpha", "Beta"])
+  expect(childrenOf(multi, "item:project:Implementer:skill:multi:description").map((node) => node.label)).toEqual(["Alpha", "Beta"])
   // A tool's wrapper hides under its Description group like any other item's.
   const tool = expandAll({
     items: [makeItem({ id: "tool:desc", title: "desc", text: "# T\np\n## A\na\n" })],
@@ -834,7 +829,7 @@ test("a wrapper with no body shows no Introduction, and several top-level sectio
     records: [{ ...makeRecord(), item: "skill:quiet", section: "title", state: "off" }],
     agents: agents(),
   })
-  expect(childrenOf(saved, "item:project:Implementer:skill:quiet").map((node) => node.label)).toEqual(["Introduction", "A"])
+  expect(childrenOf(saved, "item:project:Implementer:skill:quiet:description").map((node) => node.label)).toEqual(["Introduction", "A"])
 })
 
 test("whole Role/persona and whole base rows refuse toggle but read unsupported", () => {
@@ -874,14 +869,14 @@ test("expanding a Code Mode tool yields editable children like a normal tool", (
   expect(children.length).toBeGreaterThan(0)
   for (const child of children) {
     expect(child.kind).toBe("section")
-    expect(child.actions?.toggle).toBe(true)
+    expect(child.actions?.toggle).toBe(false)
     expect(child.actions?.edit).toBe(true)
     expect(child.badges.unsupported).toBeUndefined()
   }
   const normal = childrenOf(nodes, "item:project:Implementer:tool:bash")
   expect(normal.length).toBeGreaterThan(0)
   for (const child of normal) {
-    expect(child.actions?.toggle).toBe(true)
+    expect(child.actions?.toggle).toBe(false)
     expect(child.actions?.edit).toBe(true)
     expect(child.badges.unsupported).toBeUndefined()
   }
@@ -973,8 +968,8 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:global")).toBe("skill")
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:defaults")).toBe("skill")
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:preset")).toBe("skill")
-  expect(adds.get("group:project:Implementer:system")).toBe("instruction")
-  expect(adds.get("group:defaults::system")).toBe("instruction")
+  expect(adds.get("group:project:Implementer:system:instructions")).toBe("instruction")
+  expect(adds.get("group:defaults::system:instructions")).toBe("instruction")
   expect(adds.get("group:defaults::mcp")).toBe("mcp")
   expect(adds.get("group:project:Implementer:tools")).toBeUndefined()
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills")).toBe("skill")
@@ -1040,7 +1035,6 @@ test("expansion emits only expanded children", () => {
     "group:project:Implementer:settings",
     "group:project:Implementer:models",
     "group:project:Implementer:tools",
-    "group:project:Implementer:base",
     "group:project:Implementer:system",
     "group:project:teams",
     "root:global",
@@ -1069,7 +1063,6 @@ test("expansion emits only expanded children", () => {
     "group:defaults::settings",
     "group:defaults::models",
     "group:defaults::tools",
-    "group:defaults::base",
     "group:defaults::system",
     "group:defaults::mcp",
     "group:defaults:/models",
@@ -1626,18 +1619,15 @@ test("a native tool row lists its Description and a Permissions group whose cate
   // The tool row hosts both sections and rules, so `a` offers the choice
   // instead of a direct section add.
   expect(toolRow.add).toBeUndefined()
-  // A one-section text is the Description row itself, then Permissions.
+  // This fixture has no parameter schema: Description and permission rows are direct.
   const kids = childrenOf(nodes, toolRow.id)
   expect(kids.map((node) => [node.id, node.kind, node.label])).toEqual([
-    ["section:project:Implementer:tool:shell:whole", "section", "Full text"],
-    ["group:project:Implementer:tool:shell:permissions", "group", "Permissions"],
+    ["item:project:Implementer:tool:shell:description", "section", "Description"],
+    ["item:project:Implementer:perm:shell:custom", "item", "Custom"],
+    ["item:project:Implementer:perm:shell:git-push", "item", "Git push"],
   ])
-  expect(kids[0]?.actions?.toggle).toBe(true)
-  // The curated and the user rule share shell's Commands category, by title.
-  expect(childrenOf(nodes, "group:project:Implementer:tool:shell:permissions").map((node) => [node.id, node.label])).toEqual([
-    ["group:project:Implementer:tool:shell:permissions:commands", "Commands"],
-  ])
-  expect(childrenOf(nodes, "group:project:Implementer:tool:shell:permissions:commands").map((node) => node.id)).toEqual([
+  expect(kids[0]?.actions?.toggle).toBe(false)
+  expect(kids.slice(1).map((node) => node.id)).toEqual([
     "item:project:Implementer:perm:shell:custom",
     "item:project:Implementer:perm:shell:git-push",
   ])
@@ -1650,19 +1640,18 @@ test("a native tool row lists its Description and a Permissions group whose cate
   expect(custom?.actions?.pin).toBe(false)
 })
 
-test("a tool text with several sections hangs them under a Description group that shows the whole text", () => {
+test("a tool text with several sections hangs them under an editable Description row", () => {
   const all = [makeItem({ id: "tool:coder", kind: "tool", group: "native", title: "coder", text: "# Alpha\n\na\n\n# Beta\n\nb\n" })]
   const nodes = expandAll({ items: all, records: [], agents: agents() })
   const toolRow = nodes.find((node) => node.id === "item:project:Implementer:tool:coder")
   if (!toolRow) throw new Error("expected coder tool row")
   const description = childrenOf(nodes, toolRow.id).find((node) => node.label === "Description")
-  expect(description?.kind).toBe("group")
-  expect(description?.id).toBe("group:project:Implementer:tool:coder:description")
-  // The group carries the tool's address so its detail shows every section
-  // combined, but it offers no action of its own.
+  expect(description?.kind).toBe("section")
+  expect(description?.id).toBe("item:project:Implementer:tool:coder:description")
+  // Description edits the whole text at the same underlying address.
   expect(description?.address).toEqual({ level: "project", agent: "Implementer", item: "tool:coder", section: null })
-  expect(description?.actions).toEqual({ toggle: false, edit: false, reset: false, remove: false, split: false, pin: false })
-  expect(childrenOf(nodes, "group:project:Implementer:tool:coder:description").map((node) => node.id)).toEqual([
+  expect(description?.actions).toEqual({ toggle: false, edit: true, reset: false, remove: false, split: true, pin: false })
+  expect(childrenOf(nodes, "item:project:Implementer:tool:coder:description").map((node) => node.id)).toEqual([
     "section:project:Implementer:tool:coder:alpha",
     "section:project:Implementer:tool:coder:beta",
   ])
@@ -1879,12 +1868,8 @@ test("mined rows list under Mentioned in instructions, most-mentioned first, not
     }),
   ]
   const nodes = expandAll({ items: all, records: [], agents: agents() })
-  const permissions = "group:project:Implementer:tool:shell:permissions"
-  // A curated rule keeps its tool's category even when mentioned; what only
-  // instructions text suggested is kept apart from it.
-  expect(childrenOf(nodes, permissions).map((node) => node.label)).toEqual(["Commands", "Mentioned in instructions"])
-  expect(childrenOf(nodes, `${permissions}:commands`).map((node) => node.label)).toEqual(["Git push"])
-  expect(childrenOf(nodes, `${permissions}:suggested`).map((node) => node.label)).toEqual(["Zzz mentioned", "Aaa mentioned"])
+  // Category ordering remains stable after removing the category wrappers.
+  expect(childrenOf(nodes, "item:project:Implementer:tool:shell").map((node) => node.label)).toEqual(["Description", "Git push", "Zzz mentioned", "Aaa mentioned"])
 })
 
 test("nested agent id and team member group ids never collide", async () => {

@@ -15,6 +15,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { FolderRecord, OrderRecord } from "../src/instructions/folders.js"
 import type { AgentSource, Item } from "../src/instructions/model.js"
 import { fingerprint } from "../src/instructions/model.js"
+import { query } from "../src/instructions/query.js"
 import {
   planFolderCreate,
   planFolderDelete,
@@ -161,10 +162,11 @@ test("a tab's order record sets its top level, and unknown ids are ignored", () 
 test("a row moves into a folder, out of it, and before or after a sibling in the same folder", () => {
   const mine = folder("tools:mine", "Mine", ["tool:reader"])
   const into = planRowMove(memoOf([mine]), layoutOf([mine]), row("tool:bash"), { into: "folder:tools:mine" }, UPDATED)
-  expect(planned(into).folders[0]?.items).toEqual(["tool:reader", "tool:bash"])
+  expect(planned(into).folders.find((folder) => folder.owner === TOOLS)?.items).toEqual(["tool:reader", "tool:bash"])
+  expect(planned(into).folders.find((folder) => folder.owner === undefined)).toEqual(mine)
 
   const out = planRowMove(memoOf([mine]), layoutOf([mine]), row("tool:reader"), { into: "tab:tools" }, UPDATED)
-  expect(planned(out).folders[0]?.items).toEqual([])
+  expect(planned(out).folders.find((folder) => folder.owner === TOOLS)?.items).toEqual([])
 
   const both = folder("tools:mine", "Mine", ["tool:reader", "tool:bash"])
   const before = planRowMove(
@@ -174,9 +176,9 @@ test("a row moves into a folder, out of it, and before or after a sibling in the
     { before: row("tool:reader") },
     UPDATED,
   )
-  expect(planned(before).folders[0]?.items).toEqual(["tool:bash", "tool:reader"])
+  expect(planned(before).folders.find((folder) => folder.owner === TOOLS)?.items).toEqual(["tool:bash", "tool:reader"])
   const after = planRowMove(memoOf([both]), layoutOf([both]), row("tool:reader"), { after: row("tool:bash") }, UPDATED)
-  expect(planned(after).folders[0]?.items).toEqual(["tool:bash", "tool:reader"])
+  expect(planned(after).folders.find((folder) => folder.owner === TOOLS)?.items).toEqual(["tool:bash", "tool:reader"])
 })
 
 test("a folder moves into another folder of its tab, and is reparented there", () => {
@@ -191,8 +193,8 @@ test("a folder moves into another folder of its tab, and is reparented there", (
     UPDATED,
   )
   const next = planned(change)
-  expect(next.folders.find((record) => record.id === "tools:other")?.items).toEqual(["folder:tools:mine"])
-  expect(next.folders.find((record) => record.id === "tools:mine")?.parent).toBe("tools:other")
+  expect(next.folders.find((record) => record.id === `${TOOLS}/tools:other`)?.items).toEqual([`folder:${TOOLS}/tools:mine`])
+  expect(next.folders.find((record) => record.id === `${TOOLS}/tools:mine`)?.parent).toBe(`${TOOLS}/tools:other`)
 })
 
 test("moves are refused across tabs, into a folder's own descendant, and for built-in structure", () => {
@@ -238,16 +240,16 @@ test("a row whose home is an origin group cannot be placed beside a sibling at t
 
 test("folders are created at a tab's top level or inside a folder, renamed and deleted in place", () => {
   const created = planFolderCreate(memoOf([]), layoutOf([]), TOOLS, "Mine", UPDATED)
-  expect("target" in created && created.target).toBe("folder:tools:mine")
+  expect("target" in created && created.target).toBe(`folder:${TOOLS}:mine`)
   const top = planned(created)
-  expect(top.orders.find((record) => record.scope === "tab:tools")?.items).toEqual(["folder:tools:mine"])
+  expect(top.orders.find((record) => record.scope === `group:${TOOLS}`)?.items).toEqual([`folder:${TOOLS}:mine`])
 
-  const nested = planFolderCreate(memoOf(top.folders, top.orders), top, folderRow("tools:mine"), "Inner", UPDATED)
+  const nested = planFolderCreate(memoOf(top.folders, top.orders), top, folderRow(`${TOOLS}:mine`), "Inner", UPDATED)
   const deep = planned(nested)
-  expect(deep.folders.find((record) => record.id === "tools:inner")?.parent).toBe("tools:mine")
+  expect(deep.folders.find((record) => record.id === `${TOOLS}:inner`)?.parent).toBe(`${TOOLS}:mine`)
 
-  const renamed = planned(planFolderRename(deep, "tools:mine", "Renamed", UPDATED))
-  expect(renamed.folders.find((record) => record.id === "tools:mine")?.name).toBe("Renamed")
+  const renamed = planned(planFolderRename(deep, `${TOOLS}:mine`, "Renamed", UPDATED, TOOLS))
+  expect(renamed.folders.find((record) => record.id === `${TOOLS}:mine`)?.name).toBe("Renamed")
 
   const before = layoutOf(
     [folder("tools:mine", "Mine", ["tool:reader"])],
@@ -258,6 +260,19 @@ test("folders are created at a tab's top level or inside a folder, renamed and d
   expect(deleted.orders[0]?.items).toEqual(["tool:skill", "tool:reader"])
 })
 
+test("editing legacy membership forks it for one owner and deletion does not resurrect the shared folder", () => {
+  const legacy = folder("tools:mine", "Mine", ["tool:reader"])
+  const input = { ...memoOf([legacy]), agents: [...agents(), { id: "Helper", scope: "project" as const, origin: "user" as const }] }
+  const changed = planned(planRowMove(input, layoutOf([legacy]), row("tool:bash"), { into: "folder:tools:mine" }, UPDATED))
+  const next = { ...input, ...changed }
+  expect(query(next, { where: "agent:Implementer folder:Mine item:tool" }).rows.map((row) => row.id)).toContain(row("tool:bash"))
+  expect(query(next, { where: "agent:Helper folder:Mine item:tool" }).rows.map((row) => row.id)).not.toContain("item:project:Helper:tool:bash")
+  const removed = planned(planFolderDelete(changed, `${TOOLS}/tools:mine`, UPDATED, TOOLS))
+  expect(removed.folders).toEqual([legacy])
+  expect(query({ ...input, ...removed }, { where: "level:project agent:Implementer folder:Mine item:tool" }).rows).toEqual([])
+  expect(query({ ...input, ...removed }, { where: "agent:Helper folder:Mine item:tool" }).rows.map((row) => row.id)).toContain("item:project:Helper:tool:reader")
+})
+
 test("the instruction tools create, move, rename and delete a folder through the store", async () => {
   const parent = process.env.TMPDIR ?? os.tmpdir()
   const root = await fs.mkdtemp(path.join(parent, "plus-folders-tools-"))
@@ -266,7 +281,7 @@ test("the instruction tools create, move, rename and delete a folder through the
   const project = path.join(root, "project")
   const ctx = fullContext({
     directory: project,
-    agents: [agentInfo("Implementer", "upstream role")],
+    agents: [agentInfo("Implementer", "upstream role"), agentInfo("build", "build role")],
     tools: [{ id: "reader", description: "read things", options: { codemode: false } }],
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
@@ -291,13 +306,13 @@ test("the instruction tools create, move, rename and delete a folder through the
   const created = (await runOk(need("instructions_create"), { kind: "folder", name: "Mine", id: toolsTab })) as {
     id: string
   }
-  expect(created.id).toBe("folder:tools:mine")
+  expect(created.id).toBe(`folder:${toolsTab}:mine`)
 
-  const moved = (await runOk(need("instructions_move"), { id: owned("tool:reader"), into: "folder:tools:mine" })) as {
+  const moved = (await runOk(need("instructions_move"), { id: owned("tool:reader"), into: created.id })) as {
     status: string
   }
   expect(moved.status).toContain("Mine")
-  expect(childrenOf((await nodesNow()).nodes, ownedFolder("tools:mine")).map((node) => node.id)).toEqual([
+  expect(childrenOf((await nodesNow()).nodes, ownedFolder(`${toolsTab}:mine`)).map((node) => node.id)).toEqual([
     owned("tool:reader"),
   ])
 
@@ -307,13 +322,31 @@ test("the instruction tools create, move, rename and delete a folder through the
     ),
   ).rejects.toThrow()
 
-  await runOk(need("instructions_set"), { id: ownedFolder("tools:mine"), rename: "Gear" })
+  await runOk(need("instructions_set"), { id: ownedFolder(`${toolsTab}:mine`), rename: "Gear" })
   expect((await nodesNow()).snapshot.folders?.map((record) => record.name)).toEqual(["Gear"])
 
-  await runOk(need("instructions_delete"), { id: "folder:tools:mine", confirm: true })
+  await runOk(need("instructions_delete"), { id: created.id, confirm: true })
   const after = await nodesNow()
   expect(after.snapshot.folders ?? []).toEqual([])
   expect(childrenOf(after.nodes, `${toolsTab}:native`).some((node) => node.id === owned("tool:reader"))).toBe(true)
+  await runOk(need("instructions_create"), { kind: "folder", name: "Project only", id: "group:project:build:tools" })
+  const projectState = await nodesNow()
+  expect(projectState.snapshot.folders?.find((folder) => folder.name === "Project only")).toMatchObject({ level: "project", owner: "group:project:build:tools" })
+  const refused = await api.layoutWrite({ folders: [], orders: [], expectedGlobalRevision: after.snapshot.globalRevision, expectedProjectRevision: after.snapshot.revision, target: "stale", status: "stale write" })
+  expect(refused.ok).toBe(false)
+  expect((await nodesNow()).snapshot.folders?.some((folder) => folder.name === "Project only")).toBe(true)
+  const other = createPlusApi(fullContext({ directory: path.join(root, "other"), agents: [agentInfo("Implementer", "upstream role")] }), createState())
+  const separate = await other.snapshot()
+  if (!separate.ok) throw new Error("snapshot failed")
+  expect(separate.value.folders?.some((folder) => folder.name === "Project only")).toBe(false)
+  const batch = await runOk(need("instructions_batch"), {
+    op: "set", id: owned("tool:reader"),
+    selected: [owned("tool:reader"), "item:project:build:tool:reader", "missing-row"],
+    input: { text: "Independently saved descriptions" },
+  })
+  expect(batch).toMatchObject({ applied: [owned("tool:reader"), "item:project:build:tool:reader"], skipped: [{ id: "missing-row", reason: "Row no longer exists" }], failed: [] })
+  const records = (await nodesNow()).snapshot.records
+  expect(records.filter((record) => record.type === "customization" && record.item === "tool:reader" && record.text === "Independently saved descriptions")).toHaveLength(2)
 })
 
 function toolContext(): Tool.Context {

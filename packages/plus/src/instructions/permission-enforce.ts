@@ -73,6 +73,7 @@ export function resetAgentRowsCache(): void {
 // agents that do.
 export function permissionTable(input: {
   readonly items: readonly Item[]
+  readonly item?: (item: Item, agent: string) => Item | undefined
   readonly teamMembers: readonly string[]
   readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string }
   readonly describe?: (agent: string) => string | undefined
@@ -96,6 +97,7 @@ export function permissionTable(input: {
       if (cached !== undefined) return cached
     }
     const resolved = rows
+      .flatMap((row) => { const item = input.item === undefined ? row : input.item(row, agent); return item === undefined ? [] : [item] })
       .filter((item) => applies(item, agent))
       .map((item) => {
         const state = input.resolve(item, agent)
@@ -124,6 +126,7 @@ export function permissionTable(input: {
     },
     ruleRows: (agent, tool) =>
       rules
+        .flatMap((row) => { const item = input.item === undefined ? row : input.item(row, agent); return item === undefined ? [] : [item] })
         .filter((item) => (item.permTool === tool || (item.alsoUnder ?? []).includes(tool)) && applies(item, agent))
         .map((item) => {
           const state = input.resolve(item, agent)
@@ -249,7 +252,8 @@ export function decide(rows: readonly PermRow[], call: Call): Decision {
     }
     if (kind === "approval") {
       for (const row of group) {
-        if (row.item.ruleId === "when.delegated") {
+        if (row.item.permissionParameter !== undefined && valuesAt(input, row.item.permissionParameter).length === 0) continue
+        if (row.item.ruleId === "when.delegated" || row.item.permissionSource?.endsWith(":when.delegated") === true) {
           if (!row.on) headlessRefusal = denied(row.item.message ?? "this call is not allowed in a delegated run")
           continue
         }

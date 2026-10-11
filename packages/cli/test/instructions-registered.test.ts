@@ -89,10 +89,10 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
       op: "move",
       input: { id: "row", into: "folder", before: "first", after: "last" },
     })
-    expect(await parse(["link", "row", "--target", "other", "--enabled=false", "--type", "oneway"])).toEqual({
+    expect(await parse(["link", "row", "--target", "other", "--enabled=false", "--type", "shownWhenOff"])).toEqual({
       kind: "run",
       op: "link",
-      input: { id: "row", target: "other", enabled: false, type: "oneway" },
+      input: { id: "row", target: "other", enabled: false, type: "shownWhenOff" },
     })
     for (const [args, text] of [
       [["--json", '{"text":"json"}', "--text", "literal"], "literal"],
@@ -120,6 +120,8 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
       expect((await runInstructionsCommand(args, deps)).exitCode).toBe(2)
     }
     expect(runs).toEqual([])
+    // Enum validation belongs to the registered server schema.
+    expect((await runInstructionsCommand(["link", "row", "--target", "other", "--type", "oneway"], deps)).exitCode).toBe(2)
     expect((await runInstructionsCommand(["set", "row", "--state=invalid"], deps)).exitCode).toBe(2)
     expect((await runInstructionsCommand(["list", "--limit=5"], deps)).exitCode).toBe(0)
     const listed = JSON.parse((await runInstructionsCommand(["list", "--limit=6082"], deps)).stdout) as {

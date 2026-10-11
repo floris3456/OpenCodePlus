@@ -67,6 +67,8 @@ export interface RowLineProps {
   readonly context: Plugin.Context
   readonly row: Row
   readonly selected: boolean
+  readonly marked?: boolean
+  readonly cut?: boolean
   readonly focused: boolean
   readonly sidebar?: boolean
   /** An owner's tools switched on; none is a warning (the agent cannot act). */
@@ -90,6 +92,7 @@ export function RowLine(props: RowLineProps) {
     return props.focused ? theme().background.action.primary.focused : theme().background.raised.high
   }
   const labelColor = () => {
+    if (props.cut) return theme().text.muted
     if (props.selected && props.focused) return theme().text.action.primary.focused
     if (node().badges.disabled !== undefined) return theme().text.formfield.disabled
     if (off() || props.row.context === true || (props.row.role === "group" && props.sidebar)) return theme().text.muted
@@ -154,6 +157,9 @@ export function RowLine(props: RowLineProps) {
         <text flexShrink={0} wrapMode="none" fg={theme().text.formfield.selected}>
           {"↕ "}
         </text>
+      </Show>
+      <Show when={props.marked}>
+        <text flexShrink={0} fg={theme().text.formfield.selected}>{"✓ "}</text>
       </Show>
       <text
         flexShrink={1}

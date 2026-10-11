@@ -159,7 +159,7 @@ function exactId(input: MemoInput, id: string): string {
 function switchLink(
   item: string,
   target: string,
-  link: "either" | "oneway" = "either",
+  link: "either" | "shownWhenOff" = "either",
   enabled?: boolean,
 ): readonly RowlinkRecord[] {
   return [
@@ -214,24 +214,23 @@ test("turning a row on writes its either link's partner off in one save", () => 
   expect(reverse.records.some((record) => record.item === "tool:bash" && record.state === "off")).toBe(true)
 })
 
-test("oneway fires only from its primary and no switch cascades", () => {
-  // coder starts off; turning it on must leave bash alone (oneway never fires
-  // from its connected end).
+test("conditions never write linked state and no switch cascades", () => {
+  // A condition must not change saved state at either end.
   const target = baseInput({
-    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    rowlinks: switchLink("tool:bash", "tool:coder", "shownWhenOff"),
     records: [offRecord("tool:coder")],
   })
   const targetResult = setEnabled(target, findId(target, "tool:coder"), true)
   if ("refusal" in targetResult) throw new Error(`expected success, got ${targetResult.refusal}`)
   expect(targetResult.records.some((record) => record.item === "tool:bash")).toBe(false)
-  // bash starts off; turning the primary on writes coder off.
+  // Turning the primary on excludes text, without saving coder off.
   const primary = baseInput({
-    rowlinks: switchLink("tool:bash", "tool:coder", "oneway"),
+    rowlinks: switchLink("tool:bash", "tool:coder", "shownWhenOff"),
     records: [offRecord("tool:bash")],
   })
   const primaryResult = setEnabled(primary, findId(primary, "tool:bash"), true)
   if ("refusal" in primaryResult) throw new Error(`expected success, got ${primaryResult.refusal}`)
-  expect(primaryResult.records.some((record) => record.item === "tool:coder" && record.state === "off")).toBe(true)
+  expect(primaryResult.records.some((record) => record.item === "tool:coder")).toBe(false)
   // No cascade: bash—coder and coder—sample; turning bash on disables coder but
   // never follows coder's own link to sample.
   const chain = baseInput({
@@ -316,7 +315,7 @@ test("an inherited switch fires for the level below, a mixed owner's never does"
 
 test("switches resolve section states rather than their whole-row state", () => {
   const base = baseInput()
-  const sections = expandedTree(base).filter((node) => node.kind === "section" && node.address?.item === "tool:coder")
+  const sections = expandedTree(base).filter((node) => node.kind === "section" && node.address?.item === "tool:coder" && node.address.section !== null)
   const primary = sections[0]!
   const partner = sections[1]!
   const primaryAddress = primary.address!
@@ -566,7 +565,7 @@ test("removalPlan agent delete success", () => {
 test("removalPlan section refusal", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
-  const section = nodes.find((candidate) => candidate.kind === "section")
+  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.section !== null)
   if (!section) throw new Error("expected a section row")
   const plan = removalPlan(input, section.id)
   if (!("refusal" in plan)) throw new Error("expected refusal")
@@ -685,7 +684,7 @@ test("setEnabled shares toggle status for Code Mode rows and refusal for unexclu
 test("Code Mode sections toggle like any other section", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
-  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.item === "tool:coder")
+  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.item === "tool:coder" && candidate.address.section !== null)
   if (!section) throw new Error("missing coder section")
   const toggled = toggle(input, section.id)
   if ("refusal" in toggled) throw new Error(`expected toggle success ${toggled.refusal}`)
@@ -882,7 +881,7 @@ test("row ids round-trip items with colons, sections, agents, and colon teams", 
   expect("refusal" in roleResult).toBe(true)
   if (!("refusal" in roleResult)) throw new Error("expected refusal")
   expect(roleResult.refusal).toBe(`"Role/persona" cannot be excluded and remains in effect`)
-  const section = nodes.find((candidate) => candidate.kind === "section")
+  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.section !== null)
   if (!section) throw new Error("missing section")
   const parts = section.id.split(":")
   expect(parts[0]).toBe("section")

@@ -1,4 +1,5 @@
 import { builtinBaseIds } from "../agents/base.js"
+import { ownRule, ruleItem } from "./rules.js"
 import { booleanControl, controlIds, controlItemFor, controlItems, isControl } from "./agent-controls.js"
 import { mentions, met, requirementOf } from "./requires.js"
 import { guidanceItemId } from "./paths.js"
@@ -95,7 +96,8 @@ import {
 import type { MemoInput as BaseMemoInput } from "./resolve-memo.js"
 import { ownBody, wrappingSection, type Section, type Split } from "./sections.js"
 import type { TeamLevel } from "./teams.js"
-import { categoryLabel, categoryOfRow, categoryOrder, hostOf } from "./permission-catalog.js"
+import { categoryOfRow, categoryOrder, hostOf } from "./permission-catalog.js"
+import { toolModes } from "./tool-mode.js"
 import { curatedRuleMessage } from "./tool-permissions.js"
 
 export type { Memo }
@@ -246,6 +248,8 @@ export interface TreeNode {
   readonly kind: TreeNodeKind
   readonly label: string
   readonly depth: number
+  /** Known child availability for text rows, including whole-text Description aliases. */
+  readonly expandable?: boolean
   readonly address?: Address
   readonly add?: AddKind
   readonly owner?: RowOwner
@@ -303,6 +307,7 @@ export interface Lazy {
   readonly kind: TreeNodeKind
   readonly label: string
   readonly depth: number
+  readonly expandable?: boolean
   readonly address?: Address
   readonly add?: AddKind
   readonly owner?: RowOwner
@@ -322,12 +327,26 @@ export interface Lazy {
 // through materialize() for rows that survive the structural filters.
 // Roots in DESIGN §2 order; Presets last.
 export function skeletonOf(memo: Memo): Lazy[] {
-  return [
+  const cached = skeletonCache.get(memo)
+  if (cached !== undefined) return cached
+  const roots = [
     lazyRoot(memo.ctx, memo, "project"),
     lazyRoot(memo.ctx, memo, "global"),
     lazyRoot(memo.ctx, memo, "defaults"),
     lazyPresetRoot(memo.ctx, memo),
-  ]
+  ].map(cacheChildren)
+  skeletonCache.set(memo, roots)
+  return roots
+}
+
+// A memo represents one immutable snapshot/draft. Cache only visited branches;
+// selection, move planning and rendering can share them without expanding peers.
+const skeletonCache = new WeakMap<Memo, Lazy[]>()
+const pathCache = new WeakMap<Memo, Map<string, readonly Lazy[]>>()
+
+function cacheChildren(node: Lazy): Lazy {
+  let children: readonly Lazy[] | undefined
+  return { ...node, children: () => children ??= node.children().map(cacheChildren) }
 }
 
 export function collectSkeleton(roots: readonly Lazy[]): Lazy[] {
@@ -393,25 +412,38 @@ function cachedSelfReview(memo: Memo, id: string, compute: () => boolean): boole
 }
 
 export function findLazy(memo: Memo, rowId: string): Lazy | undefined {
-  const roots = skeletonOf(memo)
-  const found = descendLazy(roots, rowId)
-  if (found !== undefined) return found
-  return collectSkeleton(roots).find((node) => node.id === rowId)
+  return lazyPath(memo, rowId).at(-1)
 }
 
-function descendLazy(nodes: readonly Lazy[], rowId: string): Lazy | undefined {
-  for (const node of nodes) {
-    if (node.id === rowId) return node
-    if (canDescend(node, rowId)) {
-      const found = descendLazy(node.children(), rowId)
-      if (found !== undefined) return found
-    }
+/** The real ancestor path, including saved folders and semantic tool exposure. */
+export function lazyPath(memo: Memo, rowId: string): readonly Lazy[] {
+  let cache = pathCache.get(memo)
+  if (cache === undefined) {
+    cache = new Map<string, readonly Lazy[]>()
+    pathCache.set(memo, cache)
   }
-  return undefined
+  const cached = cache.get(rowId)
+  if (cached !== undefined) return cached
+  const walk = (nodes: readonly Lazy[], targeted: boolean): readonly Lazy[] | undefined => {
+    for (const node of nodes) {
+      if (node.id === rowId) return [node]
+      if (targeted && !canDescend(node, rowId)) continue
+      const found = walk(node.children(), targeted)
+      if (found !== undefined) return [node, ...found]
+    }
+    return undefined
+  }
+  const path = walk(skeletonOf(memo), true) ?? walk(skeletonOf(memo), false) ?? []
+  cache.set(rowId, path)
+  return path
 }
 
 function canDescend(node: Lazy, rowId: string): boolean {
+  if (node.id.endsWith(":system") && rowId === node.id.replace(/:system$/, ":base")) return true
   if (rowId.startsWith(node.id + ":") || rowId.startsWith(node.id + "/")) return true
+  if (node.kind === "section" && node.id.endsWith(":description")) {
+    return rowId.startsWith(node.id.slice(0, -":description".length).replace(/^item:/, "section:") + ":")
+  }
 
   const parts = rowId.split(":")
   const rowKind = parts[0]
@@ -595,6 +627,20 @@ function canDescend(node: Lazy, rowId: string): boolean {
 
   if (node.kind === "item") {
     if (node.address === undefined) return false
+    const ownerPath = node.id.slice("item:".length, -node.address.item.length)
+    if (node.address.item.startsWith("tool:")) {
+      const tool = node.address.item.slice("tool:".length)
+      if (rowId === `item:${ownerPath}toolmode:${tool}`) return true
+      if (["item", "section"].some((kind) => rowId.startsWith(`${kind}:${ownerPath}param:${tool}:`))) return true
+      if (rowId.startsWith(`item:${ownerPath}perm:`)) {
+        const permission = rowId.slice(`item:${ownerPath}perm:`.length).split(":")[0]
+        if (permission !== undefined && hostOf(permission) === tool || rowId.endsWith(`@${tool}`)) return true
+      }
+      if (tool === "skill" && ["item", "section"].some((kind) => rowId.startsWith(`${kind}:${ownerPath}skill:`))) return true
+    }
+    if (node.address.item.startsWith("param:") && rowId.startsWith(`item:${ownerPath}`)) {
+      return rowId.startsWith(`item:${ownerPath}perm:`) || rowId.startsWith(`item:${ownerPath}skill:`)
+    }
     // A Defaults › Models row holds its field rows.
     if (isModelSettingRowId(rowId)) return modelSettingParentRowId(rowId) === node.id
     if (rowKind === "section") {
@@ -788,6 +834,7 @@ function shell(lazy: Lazy, badges: TreeNodeBadges): TreeNode {
     ...(lazy.owner === undefined ? {} : { owner: lazy.owner }),
     ...(lazy.enabledRow === undefined ? {} : { enabledRow: lazy.enabledRow }),
     ...(lazy.introduction === undefined ? {} : { introduction: lazy.introduction }),
+    ...(lazy.expandable === undefined ? {} : { expandable: lazy.expandable }),
     badges,
     actions: lazy.actions,
   }
@@ -1166,7 +1213,6 @@ function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, dept
     lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
-    lazyBase(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySystem(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyMcpInventory(ctx, memo, catalogue, depth),
   ])
@@ -1208,10 +1254,13 @@ function arrangeList(memo: Memo, id: string, home: readonly Lazy[]): readonly La
 }
 
 function arrangeTab(memo: Memo, group: Lazy): Lazy {
+  if (group.id.endsWith(":system")) return group
   const tab = tabOfGroupId(group.id)
   if (tab === undefined) return group
-  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab)
-  const listed = orderOf(memo.ctx.orders, `tab:${tab}`)?.items ?? []
+  const own = orderOf(memo.ctx.orders, groupScope(group.id))
+  const scoped = own !== undefined || memo.ctx.folders.some((folder) => folder.owner === group.id)
+  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab && folder.owner === (scoped ? group.id : undefined))
+  const listed = (own ?? orderOf(memo.ctx.orders, `tab:${tab}`))?.items ?? []
   if (folders.length === 0 && listed.length === 0) return group
   const byItem = new Map(folders.flatMap((folder) => folder.items.filter((entry) => folderIdOfRef(entry) === undefined).map((item) => [item, folder.id] as const)))
   const referenced = new Set(folders.flatMap((folder) => folder.items.flatMap((entry) => folderIdOfRef(entry) ?? [])))
@@ -1409,7 +1458,6 @@ function lazyOwnerRow(
         lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
         lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
-        lazyBase(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
       ]),
   }), row.level, row.id)
@@ -1729,7 +1777,6 @@ function lazyTeamMember(
         lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
         lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
-        lazyBase(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:base`, teamRef, "teams", memberPath),
         lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
       ]),
   }), level, owner, teamRef, "teams", memberPath)
@@ -1770,7 +1817,6 @@ function lazyTeamSpecialAgent(
         lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
         lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
         lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
-        lazyBase(ctx, memo, level, owner, agent, 5, `${specialGroup}:base`, teamRef, "teams", specialPath),
         lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
       ]),
   }), level, owner, teamRef, "teams", specialPath)
@@ -1831,6 +1877,7 @@ export function controlKind(item: string | undefined): "toggle" | "cycle" | "tex
 }
 
 export function controlChoices(item: string | undefined): readonly string[] | undefined {
+  if (item?.startsWith("toolmode:")) return toolModes
   if (item === "setting:mode") return ["primary", "subagent", "all"]
   if (item === "compaction:strategy") return ["auto", "local", "remote"]
   return undefined
@@ -1847,6 +1894,7 @@ function itemsForControls(memo: Memo): readonly Item[] {
 }
 
 export function controlValue(item: string, text: string, enabled: boolean): string {
+  if (item.startsWith("toolmode:") && text === "codemode") return "Code Mode"
   if (controlKind(item) === "toggle") return enabled ? "On" : "Off"
   if (controlChoices(item) !== undefined) return text.length === 0 ? "Inherited" : text[0].toUpperCase() + text.slice(1)
   if (text.length > 0) return text.replace(/\s+/g, " ").slice(0, 80)
@@ -1873,7 +1921,7 @@ function lazyControls(
     label: kind === "setting" ? "Settings" : "Compaction",
     depth,
     actions: noActions(),
-    children: () => [...new Set(items.filter((item) => item.kind === kind).map((item) => item.id))]
+    children: () => [...new Set(items.filter((item) => item.kind === kind && isControl(item.id)).map((item) => item.id))]
       .flatMap((item) => {
         const upstream = controlItemFor(items, addressOf(level, owner, item, null, teamRef, catalogue))
         return upstream === undefined ? [] : [upstream]
@@ -1883,7 +1931,7 @@ function lazyControls(
   })
 }
 
-function lazyControl(
+export function lazyControl(
   memo: Memo,
   level: Level,
   owner: string | null,
@@ -1911,6 +1959,9 @@ function lazyControl(
     kind: "item",
     label: item.title[0].toUpperCase() + item.title.slice(1),
     depth,
+    get expandable() {
+      return sectioned && splitOf(memo, level, owner, item, catalogue, teamRef).kind !== "whole"
+    },
     address,
     ...(sectioned ? { add: "section" as const } : {}),
     get actions() {
@@ -1940,10 +1991,11 @@ function lazyControl(
       }
     },
     reviewCount: () => 0,
-    children: () =>
-      sectioned
-        ? sectionKids(memo.ctx, memo, level, owner, item, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath)
-        : [],
+    children: () => {
+      if (!sectioned) return []
+      const split = splitOf(memo, level, owner, item, catalogue, teamRef)
+      return split.kind === "whole" ? [] : sectionKids(memo.ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
+    },
   }
 }
 
@@ -2911,10 +2963,32 @@ function lazySystem(
   catalogue?: Catalogue,
   ownerPath?: string,
 ): Lazy {
+  const id = groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`
+  return branch(memo, {
+    kind: "group", id, label: "System", depth, actions: noActions(),
+    children: () => withFolders(memo, [
+      lazySystemInstructions(ctx, memo, level, owner, agent, depth + 1, `${id}:instructions`, teamRef, catalogue, ownerPath),
+      lazyBase(ctx, memo, level, owner, agent, depth + 1, id.replace(/:system$/, ":base"), teamRef, catalogue, ownerPath),
+    ]),
+  })
+}
+
+function lazySystemInstructions(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+  groupId?: string,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
   return branch(memo, {
     kind: "group",
     id: groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`,
-    label: "System",
+    label: "Instructions",
     depth,
     add: "instruction",
     actions: noActions(),
@@ -3027,8 +3101,9 @@ function toolOriginGroup(
     depth,
     actions: noActions(),
     children: () => {
-      const code = items.filter((item) => item.codemode === true)
-      const rows = items
+      const exposed = exposedTools(memo, items, level, owner, catalogue, teamRef)
+      const code = exposed.filter((item) => item.codemode === true)
+      const rows = exposed
         .filter((item) => item.codemode !== true)
         .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath))
       if (code.length === 0) return rows
@@ -3106,8 +3181,9 @@ function toolServerGroup(
     depth,
     actions: noActions(),
     children: () => {
-      const code = items.filter((item) => item.codemode === true)
-      const rows = items
+      const exposed = exposedTools(memo, items, level, owner, catalogue, teamRef)
+      const code = exposed.filter((item) => item.codemode === true)
+      const rows = exposed
         .filter((item) => item.codemode !== true)
         .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath))
       if (code.length === 0) return rows
@@ -3132,6 +3208,15 @@ function toolServerGroup(
 // segment with no dotted namespace keeps today's single flat group, id and
 // label unchanged, so `image`, `opencode`, `instructions`, `monitor`,
 // `release`, `team` and `search` look exactly as today.
+function exposedTools(memo: Memo, items: readonly Item[], level: Level, owner: string | null, catalogue?: Catalogue, teamRef?: RowTeam): readonly Item[] {
+  return items.map((item) => {
+    if (item.execute === true) return item
+    const exposure = memo.ctx.items.find((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+    if (exposure === undefined) return item
+    return { ...item, codemode: wholeOf(memo, level, owner, exposure, catalogue, teamRef).assembled === "codemode" }
+  })
+}
+
 function codemodeGroup(
   ctx: BuildContext,
   memo: Memo,
@@ -3280,34 +3365,19 @@ function lazyItem(
   const kids = (): readonly Lazy[] => {
     if (perm) return []
     const tool = item.kind === "tool"
-    if (executable) return toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent)
+    if (executable) return [
+      ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
+      ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent),
+    ]
     const sections = cachedKids(memo, rowId, () => {
       const split = splitOf(memo, level, owner, item, catalogue, teamRef)
-      // A tool's text is its Description: one section is the Description row
-      // itself, several hang under a Description group whose detail shows
-      // them combined. Other items keep their sections as direct children.
-      if (tool && split.sections.length === 1) {
-        const only = split.sections[0]
-        return only === undefined
-          ? []
-          : [lazySection(ctx, memo, level, owner, item, only, depth + 1, teamRef, catalogue, ownerPath, { label: "Full text" })]
-      }
-      if (tool && split.sections.length > 1)
-        return [
-          branch(memo, {
-            kind: "group",
-            id: `${rowId.replace(/^item:/, "group:")}:description`,
-            label: "Description",
-            depth: depth + 1,
-            actions: noActions(),
-            children: () => sectionKids(ctx, memo, level, owner, item, split, depth + 2, teamRef, catalogue, ownerPath),
-          }, address),
-        ]
-      return sectionKids(ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
+      return [descriptionRow(memo, level, owner, item, rowId, split, depth + 1, teamRef, catalogue, ownerPath)]
     })
     if (!tool) return sections
     return [
       ...sections,
+      ...ctx.items.filter((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+        .map((entry) => lazyControl(memo, level, owner, entry, depth + 1, teamRef, catalogue, ownerPath)),
       ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
       ...toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, agent),
     ]
@@ -3389,9 +3459,14 @@ export function toolPermissionRows(
   owner: string | null,
   toolId: string,
   level?: Level,
+  team?: RowTeam,
+  catalogue?: Catalogue,
 ): { category: string; rows: ListedRow[] }[] {
   const listed = permIndex(ctx).get(toolId) ?? []
-  const rows = listed.filter(
+  const rows = listed.flatMap((row) => {
+    const item = ruleItem(row.item, ctx.rules, ctx.scopes, addressOf(level ?? "project", owner, row.item.id, null, team, catalogue))
+    return item === undefined ? [] : [{ ...row, item }]
+  }).filter(
     (row) =>
       (owner === null ? row.item.agents === undefined : applies(row.item, owner)) &&
       (level === undefined || listedAt(level, row.item)),
@@ -3429,7 +3504,7 @@ export function toolPermRows(
   ownerPath?: string,
 ): Lazy[] {
   if (item.kind !== "tool") return []
-  return toolPermissionRows(ctx, owner, item.id.slice("tool:".length), level).flatMap((entry) =>
+  return toolPermissionRows(ctx, owner, item.id.slice("tool:".length), level, teamRef, catalogue).flatMap((entry) =>
     entry.rows.map((row) => lazyPermRow(memo, level, owner, row.item, depth, teamRef, catalogue, ownerPath, row.alias)),
   )
 }
@@ -3451,10 +3526,7 @@ function permIndex(ctx: BuildContext): Map<string, ListedRow[]> {
   return index
 }
 
-// A tool's Permissions group: one group per category, each holding its rows.
-// Omitted when the tool lists no row for this owner. Structural only: building
-// it resolves nothing, so the query engine walks it without paying for a
-// split.
+// Permission rows sit directly beneath the argument they constrain.
 export function toolPermissions(
   ctx: BuildContext,
   memo: Memo,
@@ -3467,40 +3539,39 @@ export function toolPermissions(
   catalogue?: Catalogue,
   ownerPath?: string,
   agent: AgentSource | null = null,
+  parameter?: string,
 ): Lazy[] {
   const toolId = item.id.slice("tool:".length)
-  const categories = toolPermissionRows(ctx, owner, toolId, level)
-  // The skill tool's Skills category is the one place skills live: each row
-  // is the skill itself (on/off is whether this agent may load it; it opens
-  // into the skill's text), grouped by origin, with Add.
-  const skills = toolId === "skill"
-  if (categories.length === 0 && !skills) return []
-  const prefix = `${rowId.replace(/^item:/, "group:")}:permissions`
+  const categories = toolPermissionRows(ctx, owner, toolId, level, teamRef, catalogue)
+  const params = paramIndex(ctx).get(toolId) ?? []
   return [
-    branch(memo, {
-      kind: "group",
-      id: prefix,
-      label: "Permissions",
-      depth,
-      actions: noActions(),
-      children: () => [
-        ...(skills
-          ? [lazySkills(ctx, memo, level, owner, agent, depth + 1, `${prefix}:skills`, teamRef, catalogue, ownerPath)]
-          : []),
-        ...categories.map((entry) =>
-          branch(memo, {
-            kind: "group",
-            id: `${prefix}:${entry.category}`,
-            label: categoryLabel(toolId, entry.category),
-            depth: depth + 1,
-            actions: noActions(),
-            children: () =>
-              entry.rows.map((row) => lazyPermRow(memo, level, owner, row.item, depth + 2, teamRef, catalogue, ownerPath, row.alias)),
-          }),
-        ),
-      ],
-    }),
+    ...(toolId === "skill" && (parameter === "name" || (params.length === 0 && parameter === undefined))
+      ? [lazySkills(ctx, memo, level, owner, agent, depth, `${rowId.replace(/^item:/, "group:")}:permissions:skills`, teamRef, catalogue, ownerPath)]
+      : []),
+    ...categories.flatMap((entry) => entry.rows
+      .filter((row) => permissionParameter(row.item, toolId, params) === parameter)
+      .map((row) => lazyPermRow(memo, level, owner, row.item, depth, teamRef, catalogue, ownerPath, row.alias))),
   ]
+}
+
+function permissionParameter(item: Item, tool: string, params: readonly Item[]): string | undefined {
+  if (params.length === 0) return undefined
+  if (item.permissionParameter !== undefined) return item.permissionParameter
+  const field = item.field?.split(/[.\[]/)[0]
+  if (field !== undefined && params.some((param) => param.title === field)) return field
+  const resource: Record<string, string> = {
+    read: "path", edit: "path", write: "path", patch: "patchText", shell: "command",
+    glob: "pattern", grep: "pattern", webfetch: "url", websearch: "query", skill: "name", subagent: "agent",
+    team_delegate: "role", team_followup: "run", team_integrate: "run", team_finish: "status",
+    team_checkpoint: "files", team_set_checks: "checks", team_stop: "run", team_status: "run",
+    team_diff: "run", team_list: "all", team_check: "id",
+    instructions_list: "where", instructions_show: "id", instructions_log: "where",
+  }
+  const name = item.ruleId === "limits.attachment" && tool === "team_delegate" ? "briefFile"
+    : resource[tool]
+  if (name !== undefined && params.some((param) => param.title === name)) return name
+  if (params.length === 1) return params[0]?.title
+  return undefined
 }
 
 const paramIndexCache = new WeakMap<readonly Item[], Map<string, Item[]>>()
@@ -3518,7 +3589,7 @@ function paramIndex(ctx: BuildContext): Map<string, Item[]> {
   return index
 }
 
-// A tool's Parameters group: one row per top-level parameter, in schema
+// A tool's direct parameter rows, in schema
 // order. Its text is the parameter's description; an optional one switches
 // off (the model no longer sees it), a required one cannot.
 export function toolParameters(
@@ -3534,17 +3605,8 @@ export function toolParameters(
   ownerPath?: string,
 ): Lazy[] {
   const params = paramIndex(ctx).get(item.id.slice("tool:".length)) ?? []
-  if (params.length === 0) return []
-  return [
-    branch(memo, {
-      kind: "group",
-      id: `${rowId.replace(/^item:/, "group:")}:parameters`,
-      label: "Parameters",
-      depth,
-      actions: noActions(),
-      children: () => params.map((param) => lazyParamRow(memo, level, owner, param, depth + 1, teamRef, catalogue, ownerPath)),
-    }),
-  ]
+  return params.map((param) => lazyParamRow(memo, level, owner, param, depth, teamRef, catalogue, ownerPath, () =>
+    toolPermissions(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath, null, param.title)))
 }
 
 function lazyParamRow(
@@ -3556,30 +3618,36 @@ function lazyParamRow(
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
+  permissions: () => readonly Lazy[] = () => [],
 ): Lazy {
   const address = addressOf(level, owner, item.id, null, teamRef, catalogue)
   const id = rowIdOf("item", level, owner, item.id, catalogue, ownerPath)
+  const editable = item.paramTool !== "execute"
   return {
     id,
     kind: "item",
     label: `${item.title}: ${item.paramType ?? "any"}${item.required === true ? " (required)" : ""}`,
     depth,
     address,
-    // B7: a parameter's text is its description, so it takes sections like any
+    // The host-owned execute schema cannot be rewritten by the plugin.
+    // A parameter's text is its description, so it takes sections like any
     // other text row (heading-derived, or a manual split and `a` on sections).
-    add: "section",
+    ...(editable ? { add: "section" as const } : {}),
     actions: {
       toggle: item.required !== true,
-      edit: true,
-      reset: canReset(memo.ctx.customizations, address),
+      edit: editable,
+      reset: editable && canReset(memo.ctx.customizations, address),
       remove: false,
-      split: true,
+      split: editable,
       pin: false,
     },
     selfReview: () => cachedSelfReview(memo, id, () => flagOf(memo, level, owner, item, null, catalogue, teamRef)),
     partial: () => permBadges(memo, level, owner, item, teamRef, catalogue),
     reviewCount: () => 0,
-    children: () => sectionKids(memo.ctx, memo, level, owner, item, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath),
+    children: () => [
+      ...(editable ? [descriptionRow(memo, level, owner, item, id, splitOf(memo, level, owner, item, catalogue, teamRef), depth + 1, teamRef, catalogue, ownerPath)] : []),
+      ...permissions(),
+    ],
   }
 }
 
@@ -3608,7 +3676,7 @@ function lazyPermRow(
       toggle: true,
       edit: true,
       reset: canReset(memo.ctx.customizations, address),
-      remove: item.custom === true,
+      remove: ownRule(memo.ctx.rules, address) !== undefined,
       split: false,
       pin: false,
     },
@@ -3724,11 +3792,49 @@ function itemBadges(
   }
 }
 
-// One item's section rows at `base`, the depth a top-level section renders at.
-// A lone top-level heading that wraps the whole document is not an extra level
-// (sections.ts wrappingSection): its children render at `base` and its own body
-// becomes the first child row, "Introduction", when it has content or a record
-// keeps it addressable. Section ids, addresses and stored records never change.
+// A text-row alias of the item's whole address, not a second stored body.
+// Its distinct row id lets the tree expand Description independently of the item.
+function descriptionRow(
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  item: Item,
+  rowId: string,
+  split: Split,
+  depth: number,
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+  ownerPath?: string,
+): Lazy {
+  const address = addressOf(level, owner, item.id, null, teamRef, catalogue)
+  return {
+    id: `${rowId}:description`,
+    kind: "section",
+    label: "Description",
+    depth,
+    expandable: split.kind !== "whole",
+    address,
+    add: "section",
+    actions: {
+      edit: true,
+      toggle: false,
+      reset: canReset(memo.ctx.customizations, address),
+      remove: false,
+      split: true,
+      pin: false,
+    },
+    selfReview: () => flagOf(memo, level, owner, item, null, catalogue, teamRef),
+    partial: () => ({
+      ...itemBadges(memo, level, owner, null, item, false, teamRef, catalogue),
+      review: flagOf(memo, level, owner, item, null, catalogue, teamRef),
+    }),
+    reviewCount: () => 0,
+    children: () => split.kind === "whole" ? [] : sectionKids(memo.ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath),
+  }
+}
+
+// A lone wrapper heading is not an extra level: its body becomes Introduction
+// and its children render at `base`. Stored section ids and addresses stay stable.
 function sectionKids(
   ctx: BuildContext,
   memo: Memo,

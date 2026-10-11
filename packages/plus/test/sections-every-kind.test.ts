@@ -87,8 +87,9 @@ test("MCP tool description takes sections through the tool path", () => {
   const row = nodeById(nodes, "item:project:alpha:tool:search_docs")
   expect(row.add).toBe("section")
   expect(row.actions?.split).toBe(true)
-  const description = nodeById(nodes, "group:project:alpha:tool:search_docs:description")
-  expect(description.kind).toBe("group")
+  const description = nodeById(nodes, "item:project:alpha:tool:search_docs:description")
+  expect(description.kind).toBe("section")
+  expect(description.actions?.edit).toBe(true)
   expect(nodes.some((node) => node.id.includes("tool:search_docs:purpose"))).toBe(true)
 })
 

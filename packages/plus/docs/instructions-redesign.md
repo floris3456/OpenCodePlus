@@ -71,11 +71,15 @@ splits retain span-replacement behavior. Add appends a trailing section. Section
 reach MCP tool/parameter and agent/member descriptions, not MCP server config;
 keep-alive and per-model compaction prompts remain whole.
 
-`L` manages row links: `either` (mutual exclusion), `oneway` (primary switches
-target off), `shownWhenOn` and `shownWhenOff` (ANDed request gates). Switches act
-one hop. Both ends share owner/level view; pair-local masks suppress inherited
-links without masking unrelated pairs. Inspection includes upstream marker
-provenance; marker text is stripped from requests. No public fifth link type.
+`L` manages row links: `either` (mutual exclusion), `shownWhenOn` and
+`shownWhenOff` (ANDed conditions on sent text, without changing saved row state).
+Enter edits the selected link's type, Space enables/disables it, and `d` deletes
+a local link. Disabling an inherited link overrides that pair at the current
+level; deleting a local override restores inheritance. Esc cancels a pending
+primary, including when leaving its text editor. Switches act one hop. Both
+ends share owner/level view. Inspection includes upstream marker provenance;
+marker text is stripped from requests. Existing `oneway` records migrate to
+`shownWhenOff`, preserving endpoints, scope and enabled state.
 
 The `instructions-tools` skill documents `link({id,target?,type?,enabled?})`,
 `move({id,into?,before?,after?})`, and the CLI mirror:

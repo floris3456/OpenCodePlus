@@ -10,6 +10,7 @@
 // agents, team members, a team's Special agents, presets, Defaults entries,
 // and the Defaults catalogues themselves ("Every agent", "Every member").
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { rowTeamOf, wholeOf } from "../../instructions/resolve-memo.js"
 import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 
 export const LEVELS = [
@@ -70,6 +71,8 @@ export interface Workspace {
   readonly owner?: Row
   readonly categories: readonly TreeNode[]
   readonly category?: TreeNode
+  readonly subcategories?: readonly TreeNode[]
+  readonly subcategory?: TreeNode
   readonly list: readonly Row[]
   /** Every emitted row's parent: dialogs and breadcrumbs read it. */
   readonly parents: ReadonlyMap<string, TreeNode>
@@ -101,6 +104,7 @@ export function workspaceOf(input: WorkspaceInput, known: Set<string> = new Set(
   for (const row of slice.nav) if (row.expanded) known.add(row.node.id)
   if (slice.owner?.role === "owner") known.add(slice.owner.node.id)
   if (slice.category !== undefined) known.add(slice.category.id)
+  if (slice.subcategory !== undefined) known.add(slice.subcategory.id)
   for (const row of slice.list) if (row.depth === 0 && row.expanded && !input.listOpen.has(row.node.id)) known.add(row.node.id)
   for (const id of [...known]) {
     const node = rows.find((entry) => entry.id === id)
@@ -137,6 +141,7 @@ function wantedOpen(
   if (owner !== undefined && owner.role === "owner" && !open.has(owner.node.id)) wanted.push(owner.node.id)
   const category = slice.category
   if (category !== undefined && !open.has(category.id)) wanted.push(category.id)
+  if (slice.subcategory !== undefined && !open.has(slice.subcategory.id)) wanted.push(slice.subcategory.id)
   // A category's own subgroups (Tools › OpenCode, System › …) open by
   // default: they read as headings, not as another level to descend.
   for (const row of slice.list)
@@ -150,7 +155,7 @@ function sliceOf(
   root: string,
   input: WorkspaceInput,
   open: ReadonlySet<string>,
-): Pick<Workspace, "nav" | "owner" | "categories" | "category" | "list"> {
+): Pick<Workspace, "nav" | "owner" | "categories" | "category" | "subcategories" | "subcategory" | "list"> {
   const start = rows.findIndex((node) => node.id === root)
   if (start === -1) return { nav: [], categories: [], list: [] }
   const top = rows[start]!
@@ -210,9 +215,16 @@ function sliceOf(
   }
   const children = directChildren(rows, ownerIndex)
   const categories = children.filter((node) => node.kind === "group" && (owner.role === "owner" || CATEGORY.test(node.id)))
-  const category = categories.find((node) => node.id === input.category) ?? categories[0]
+  const preferred = input.category?.replace(/:system:instructions$/, ":system").replace(/:base$/, ":system")
+  const category = categories.find((node) => node.id === preferred) ?? categories[0]
   if (category === undefined) return { nav, owner, categories, list: [] }
   const categoryIndex = rows.findIndex((node) => node.id === category.id)
+  if (category.id.endsWith(":system")) {
+    const subcategories = directChildren(rows, categoryIndex).filter((node) => node.kind === "group")
+    const subcategory = subcategories.find((node) => node.id === input.category) ?? subcategories[0]
+    const list = subcategory === undefined ? [] : subtreeOf(rows, rows.findIndex((node) => node.id === subcategory.id)).map((node) => listRow(node, subcategory.depth, open))
+    return { nav, owner, categories, category, subcategories, subcategory, list }
+  }
   const list = subtreeOf(rows, categoryIndex).map((node) => listRow(node, category.depth, open))
   return { nav, owner, categories, category, list }
 }
@@ -232,6 +244,7 @@ function listRow(node: TreeNode, base: number, open: ReadonlySet<string>): Row {
 
 /** Rows that can hold children: a model row opens into its field rows; sections, rule rows and scalar controls are leaves. */
 export function canExpand(node: TreeNode): boolean {
+  if (node.expandable !== undefined) return node.expandable
   if (node.kind === "section") return false
   if (isModelSettingRowId(node.id) || isModelFieldRowId(node.id)) return false
   // B7: a sectioned text control (the description, the agent-wide compaction
@@ -382,17 +395,21 @@ export function toolCountOf(memo: Memo, ownerKey: string, codemode: (item: strin
   if (group === undefined) return undefined
   const rows = toolRows(group)
   const on = rows.filter((row) => row.on)
-  return { on: on.length, codemode: on.filter((row) => codemode(row.item) && !row.pinned).length, total: rows.length }
+  return { on: on.length, codemode: on.filter((row) => {
+    if (row.pinned) return false
+    const exposure = memo.ctx.items.find((item) => item.id === `toolmode:${row.item.slice("tool:".length)}`)
+    return exposure === undefined ? codemode(row.item) : wholeOf(memo, row.address.level, row.address.agent, exposure, row.address.catalogue, rowTeamOf(row.address)).assembled === "codemode"
+  }).length, total: rows.length }
 }
 
 // The tool rows below a Tools group. Tool rows are leaves here: their sections
 // and permission rows are not tools and the old sweep never opened them.
-function toolRows(lazy: Lazy): { readonly item: string; readonly on: boolean; readonly pinned: boolean }[] {
+function toolRows(lazy: Lazy): { readonly item: string; readonly address: NonNullable<Lazy["address"]>; readonly on: boolean; readonly pinned: boolean }[] {
   if (lazy.kind === "item") {
     const address = lazy.address
     if (address === undefined || address.section !== null || !address.item.startsWith("tool:")) return []
     const badges = lazy.partial()
-    return [{ item: address.item, on: badges.state === "on", pinned: badges.pinned === true }]
+    return [{ item: address.item, address, on: badges.state === "on", pinned: badges.pinned === true }]
   }
   return lazy.children().flatMap(toolRows)
 }

@@ -25,7 +25,19 @@ export function derive(text: string, title: string): Split {
   if (headings.length > 0) return headingSplit(text, headings)
   const blocks = findBlocks(text)
   if (blocks.length > 0) return blockSplit(text, blocks)
-  return { kind: "whole", sections: [{ id: "whole", name: "Full text", depth: 0, start: 0, end: text.length }] }
+  return { kind: "whole", sections: [{ id: "whole", name: "Description", depth: 0, start: 0, end: text.length }] }
+}
+
+/** Move a complete heading span while keeping its descendants nested and fenced code intact. */
+export function relocateHeadingSpan(text: string, name: string, depth: number): string {
+  const split = derive(text, name)
+  const root = split.sections[0]
+  if (split.kind !== "heading" || root === undefined || root.start !== 0 || root.id === "preamble") return `${"#".repeat(depth + 1)} ${name}\n\n${text}`
+  return split.sections.toReversed().reduce((out, section) => {
+    const lineEnd = out.indexOf("\n", section.start)
+    const hashes = "#".repeat(Math.min(6, Math.max(1, depth + section.depth - root.depth + 1)))
+    return out.slice(0, section.start) + `${hashes} ${section === root ? name : section.name}` + out.slice(lineEnd < 0 ? out.length : lineEnd)
+  }, text)
 }
 
 export function manual(text: string, boundaries: readonly Boundary[]): Split {

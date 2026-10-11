@@ -5,7 +5,7 @@ import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, un
 import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
-import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { controlKind, lazyPath, materialize, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { isDefaultSwitchField, isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseColdDefaultItemId, parseColdModelItemId, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
@@ -517,11 +517,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return rows.find((row) => row.key === key) ?? rows[0]
   })
 
-  const listKey = () => `${workspace().owner?.key ?? ""}|${workspace().category?.id ?? ""}`
+  const activeCategory = () => workspace().subcategory ?? workspace().category
+  const listKey = () => `${workspace().owner?.key ?? ""}|${activeCategory()?.id ?? ""}`
   const listRows = (): readonly Row[] => (filtering() && state.filter().trim().length > 0 ? filterRows() : workspace().list)
   // A user category leads its own list with a category header row; that header
   // alone is not content, so the empty-category text still shows.
-  const listHasChildren = (): boolean => listRows().some((row) => row.node.id !== workspace().category?.id)
+  const listHasChildren = (): boolean => listRows().some((row) => row.node.id !== activeCategory()?.id)
   const listRow = createMemo(() => {
     const rows = listRows()
     const filtered = filtering() && state.filter().trim().length > 0
@@ -542,7 +543,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   })
 
   const currentRow = (): Row | undefined => (focus() === "nav" ? navRow() : listRow())
-  const current = (): TreeNode | undefined => currentRow()?.node ?? (focus() === "list" ? workspace().category : undefined)
+  const current = (): TreeNode | undefined => currentRow()?.node ?? (focus() === "list" ? activeCategory() : undefined)
 
   // ---- initial agent (after create) and the session's current agent ----
 
@@ -626,13 +627,24 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   })
   createEffect(() => {
     const nav = workspace().nav
+    const memo = state.memo()
     // Track the reveal request itself, not only the nav it waits for: a rename
     // may reveal a row the current snapshot already carries.
     state.revealed()
     const wanted = wantedReveal
     if (wanted === undefined) return
     const row = nav.find((entry) => entry.key === wanted)
-    if (row === undefined) return
+    if (row === undefined) {
+      if (memo === undefined) return
+      const chain = lazyPath(memo, wanted)
+      if (chain.length === 0) return
+      wantedReveal = undefined
+      untrack(() => {
+        closeFilter()
+        revealChain(chain.map((entry) => materialize(entry)), wanted)
+      })
+      return
+    }
     wantedReveal = undefined
     untrack(() => {
       selectNav(row)
@@ -679,12 +691,37 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   function move(delta: number) {
+    rangeSelection = undefined
     const rows = focus() === "nav" ? workspace().nav : listRows()
     if (rows.length === 0) return
     const at = rows.findIndex((row) => row.key === currentRow()?.key)
     const next = rows[Math.min(rows.length - 1, Math.max(0, (at === -1 ? 0 : at) + delta))]!
     if (focus() === "nav") selectNav(next)
     else selectList(next)
+  }
+
+  let rangeSelection: { anchor: string; base: ReadonlySet<string>; pane: string } | undefined
+  function markRow() {
+    rangeSelection = undefined
+    const row = currentRow()
+    if (row === undefined) return
+    const next = new Set(state.selection())
+    if (next.has(row.node.id)) next.delete(row.node.id)
+    else next.add(row.node.id)
+    state.setSelection(next)
+  }
+
+  function markRange(delta: number) {
+    const rows = focus() === "nav" ? workspace().nav : listRows()
+    const index = rows.findIndex((row) => row.key === currentRow()?.key)
+    if (index < 0) return
+    const pane = focus() === "nav" ? `nav:${level()}` : listKey()
+    if (rangeSelection?.pane !== pane || !rows.some((row) => row.key === rangeSelection?.anchor)) rangeSelection = { anchor: rows[index]!.key, base: state.selection(), pane }
+    const anchor = rows.findIndex((row) => row.key === rangeSelection!.anchor)
+    const next = Math.min(rows.length - 1, Math.max(0, index + delta))
+    state.setSelection(new Set([...rangeSelection.base, ...rows.slice(Math.min(anchor, next), Math.max(anchor, next) + 1).map((row) => row.node.id)]))
+    if (focus() === "nav") selectNav(rows[next]!)
+    else selectList(rows[next]!)
   }
 
   function page(): number {
@@ -709,7 +746,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const remap = (ids: ReadonlySet<string>) => new Set([...ids].map((id) => across(id)!))
     const owner = workspace().owner
     const ownerThere = owner?.role === "owner" && owner.node.kind === "agent" ? across(owner.key) : undefined
-    const category = across(workspace().category?.id)
+    const category = across(activeCategory()?.id)
     const row = across(listRow()?.key)
     batch(() => {
       setLevel(next)
@@ -741,6 +778,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       return
     }
     setFocus("nav")
+  }
+
+  function switchSubcategory(delta: number) {
+    const view = workspace()
+    const list = view.subcategories ?? []
+    if (view.owner === undefined || list.length === 0) return
+    const index = list.findIndex((node) => node.id === view.subcategory?.id)
+    const next = list[(index + delta + list.length) % list.length]!
+    setCategories({ ...categories(), [view.owner.key]: next.id })
   }
 
   function setOpen(row: Row, open: boolean) {
@@ -934,7 +980,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       return
     }
     const owner = chain[ownerIndex]!
-    const category = chain[ownerIndex + 1]!
+    const outer = chain[ownerIndex + 1]!
+    const category = outer.id.endsWith(":system") && chain[ownerIndex + 2]?.kind === "group" ? chain[ownerIndex + 2]! : outer
     const ownerKey = owner.kind === "group" ? `${owner.id}#every` : owner.id
     const inside = chain.slice(ownerIndex + 2, -1).map((entry) => entry.id)
     batch(() => {
@@ -1021,7 +1068,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       void dialogs.addColdModel(node!)
       return
     }
-    const category = workspace().category
+    const category = activeCategory()
     const tool = node?.kind === "item" && node.address?.item.startsWith("tool:") === true && node.actions?.split === true
     if (focus() === "list" && node !== undefined && node.add === undefined && !tool && category?.add !== undefined) {
       void dialogs.addFor(category)
@@ -1131,7 +1178,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function permItem(node: TreeNode) {
     const item = node.address?.item
     if (item === undefined || !item.startsWith("perm:") || node.address?.section !== null) return undefined
-    return state.snapshot()?.items.find((entry) => entry.id === item)
+    return state.effectiveItem(node)
   }
 
   function openMode(next: Mode, node: TreeNode) {
@@ -1145,6 +1192,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     batch(() => {
       setMode("browse")
       setTarget(undefined)
+      if (state.linkPrimary() !== undefined) {
+        state.cancelRowlink()
+        state.setStatus("Row link cancelled")
+      }
     })
   }
 
@@ -1259,7 +1310,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     }
     const control = controlKind(node.address.item)
     if (control === "cycle") {
-      void state.cycle(node)
+      void state.cycle(node).then((saved) => {
+        if (saved && node.address?.item.startsWith("toolmode:")) revealChain(state.pathOf(node.id))
+      })
       return
     }
     if (isReview(node)) {
@@ -1438,8 +1491,14 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   function escape() {
     if (state.linkPrimary() !== undefined) { state.cancelRowlink(); state.setStatus("Row link cancelled"); return }
+    if (state.clipboard()?.mode === "cut") { state.cancelClipboard(); return }
     if (filtering()) {
       closeFilter()
+      return
+    }
+    if (state.selection().size > 0) {
+      state.setSelection(new Set<string>())
+      rangeSelection = undefined
       return
     }
     if (focus() === "list") {
@@ -1479,6 +1538,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       ]
     }
     if (state.snapshot() === undefined) return [["esc", "back"]]
+    if (state.linkPrimary() !== undefined && !filtering()) return [
+      ["↑↓", "move"], ["←→", "open/close"], ["[ ]", "category"], ["tab", "pane"],
+      ["/", "filter"], ["L", "finish link"], ["esc", "cancel link"],
+    ]
     if (filtering()) return [["type", "to filter"], ["↑↓", "move"], ["enter", "go to"], ["ctrl+space", "toggle"], ["esc", "clear filter"]]
     if (state.coldMove() !== undefined) return [["↑↓", "move in try order"], ["enter", "drop"], ["esc", "cancel"]]
     if (state.move()?.isSection) return [["↑↓", "reorder siblings"], ["←→", "cross-parent unsupported"], ["enter", "drop"], ["esc", "cancel"]]
@@ -1486,6 +1549,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const row = currentRow()
     const hints: [string, string][] = [["↑↓", "move"]]
+    if (state.clipboard() !== undefined) hints.push(["ctrl+v", `paste ${state.clipboard()!.rows.length}`])
+    hints.push(["x", node !== undefined && state.selection().has(node.id) ? "deselect" : "select row"])
     if (focus() === "nav") {
       if (row?.role === "owner" || row?.role === "every") hints.push(["→", "open"])
       else if (row?.expandable === true) hints.push(["←→", row.expanded ? "close" : "open"])
@@ -1520,8 +1585,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node?.actions?.split === true) hints.push(["s", "split"])
     if ((workspace().levels.find((entry) => entry.id === level())?.review ?? 0) > 0) hints.push(["n", "next review"])
     if (workspace().categories.length > 1) hints.push(["[ ]", "category"])
+    if (workspace().subcategories !== undefined) hints.push([".", "System tab"])
     hints.push(["tab", focus() === "nav" ? "list" : "sidebar"], ["/", "filter"], ["?", "help"])
-    hints.push(["esc", focus() === "nav" ? "close" : "sidebar"])
+    hints.push(["esc", state.clipboard()?.mode === "cut" ? "cancel cut" : state.selection().size > 0 ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
     return hints
   }
 
@@ -1580,6 +1646,13 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       commands: [
         { bind: "up", title: "Previous row", group: "Instructions", run: () => move(-1) },
         { bind: "down", title: "Next row", group: "Instructions", run: () => move(1) },
+        { bind: "x", title: "Select or deselect row", group: "Instructions", run: markRow },
+        { bind: "ctrl+c", title: "Copy rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("copy", node) } },
+        { bind: "ctrl+x", title: "Cut rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("cut", node) } },
+        { bind: "ctrl+v", title: "Paste rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("paste", node) } },
+        { bind: "shift+up", title: "Extend selection up", group: "Instructions", run: () => markRange(-1) },
+        { bind: "shift+down", title: "Extend selection down", group: "Instructions", run: () => markRange(1) },
+        { bind: "ctrl+a", title: "Select visible rows", group: "Instructions", run: () => state.setSelection(new Set((focus() === "nav" ? workspace().nav : listRows()).map((row) => row.node.id))) },
         { bind: "pageup", title: "Page up", group: "Instructions", run: () => move(-page()) },
         { bind: "pagedown", title: "Page down", group: "Instructions", run: () => move(page()) },
         { bind: "home", title: "First row", group: "Instructions", run: () => move(-100000) },
@@ -1602,6 +1675,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         ...(wide() ? [{ bind: "shift+w,alt+w", title: "Resize panels", group: "Instructions", run: startResize }] : []),
         { bind: "[", title: "Previous category", group: "Instructions", run: () => switchCategory((index, count) => (index - 1 + count) % count) },
         { bind: "]", title: "Next category", group: "Instructions", run: () => switchCategory((index, count) => (index + 1) % count) },
+        ...(workspace().subcategories === undefined ? [] : [
+          { bind: ".", title: "Next System tab", group: "Instructions", run: () => switchSubcategory(1) },
+        ]),
         ...workspace().categories.map((category, index) => ({
           bind: String(index + 1),
           title: `Show ${category.label}`,
@@ -1653,6 +1729,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       <text flexShrink={0} fg={theme().text.base} attributes={TextAttributes.BOLD}>
         Instructions
       </text>
+      <Show when={state.selection().size > 0}>
+        <text flexShrink={0} fg={theme().text.formfield.selected} onMouseUp={() => state.setSelection(new Set<string>())}>{state.selection().size} selected</text>
+      </Show>
+      <Show when={state.clipboard()}>
+        {(clipboard) => <text flexShrink={0} fg={theme().text.muted}>{clipboard().rows.length} {clipboard().mode === "cut" ? "cut" : "copied"}</text>}
+      </Show>
       <For each={workspace().levels}>
         {(entry) => (
           <text flexShrink={0} wrapMode="none" onMouseUp={() => showLevel(entry.id)}>
@@ -1722,6 +1804,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               <RowLine
                 context={props.context}
                 row={row}
+                marked={state.selection().has(row.node.id)}
+                cut={state.isCut(row.node)}
                 sidebar
                 {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key, row.key === workspace().owner?.key)?.on } : {})}
                 moving={state.move()?.rowId === row.node.id}
@@ -1779,6 +1863,21 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               )}
             </Show>
             <CategoryTabs />
+            <Show when={workspace().subcategories}>
+              {(tabs) => (
+                <box flexDirection="row" flexShrink={0} columnGap={2}>
+                  <For each={tabs()}>{(tab) => (
+                    <text fg={tab.id === workspace().subcategory?.id ? theme().text.base : theme().text.muted} onMouseUp={() => {
+                      const owner = workspace().owner
+                      if (owner !== undefined) setCategories({ ...categories(), [owner.key]: tab.id })
+                    }}>
+                      {tab.id === workspace().subcategory?.id ? <b><u>{tab.label}</u></b> : tab.label}
+                    </text>
+                  )}</For>
+                  <text fg={theme().text.muted}>. switch tab</text>
+                </box>
+              )}
+            </Show>
           </box>
         }
       >
@@ -1812,7 +1911,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               ? state.filter().trim().length === 0
                 ? "Type to filter"
                 : "No matches"
-              : workspace().category?.add === undefined
+              : activeCategory()?.add === undefined
                   ? "Nothing here"
                   : "Nothing here yet · a adds one"}
           </text>
@@ -1829,6 +1928,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 <RowLine
                   context={props.context}
                   row={row}
+                  marked={state.selection().has(row.node.id)}
+                  cut={state.isCut(row.node)}
                   moving={state.move()?.rowId === row.node.id}
                   selected={row.key === listRow()?.key}
                   focused={focus() === "list" && !modal()}
@@ -2019,6 +2120,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       </Show>
       <Show when={mode() === "browse"}>
         <KeyHints context={props.context} hints={fitHints(hints(), dimensions().width - 2)} />
+      </Show>
+      <Show when={state.notices().length > 0 && !modal()}>
+        <box position="absolute" right={1} bottom={2} width={Math.min(64, dimensions().width - 2)} flexDirection="column" gap={1}>
+          <For each={state.notices()}>{(notice) => (
+            <box border paddingLeft={1} paddingRight={1} borderColor={theme().text.feedback.info.base} backgroundColor={theme().background.base}>
+              <text fg={theme().text.feedback.info.base}>{notice.text}</text>
+            </box>
+          )}</For>
+        </box>
       </Show>
     </box>
   )

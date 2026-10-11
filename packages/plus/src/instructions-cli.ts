@@ -20,12 +20,13 @@ export interface CliActor {
 }
 
 export const cliActor: CliActor = { type: "cli" }
+export type InstructionActor = CliActor | { readonly type: "tui" }
 
 export interface InstructionCliOp {
   readonly description: string
   /** The op input as a JSON Schema object. */
   readonly inputSchema: Record<string, unknown>
-  readonly run: (input: unknown, actor: CliActor) => Promise<unknown>
+  readonly run: (input: unknown, actor: InstructionActor) => Promise<unknown>
 }
 
 export type InstructionCliRegistry = Record<string, InstructionCliOp>
@@ -48,7 +49,12 @@ export interface OpRefusal {
 const CLI_NAMESPACE = "instructions"
 
 // Carries the actor a CLI run must record; only set while a run is in flight.
-const cliActorContext = new AsyncLocalStorage<CliActor>()
+const cliActorContext = new AsyncLocalStorage<InstructionActor>()
+
+export function interactiveActor(): { readonly type: "tui" } | undefined {
+  const actor = cliActorContext.getStore()
+  return actor?.type === "tui" ? actor : undefined
+}
 
 // A tool input that fails its own schema when a CLI op runs: a usage error,
 // not a refusal of the operation.
@@ -84,11 +90,12 @@ export async function runOp(
   registry: InstructionCliRegistry,
   op: string,
   input: unknown,
+  actor: InstructionActor = cliActor,
 ): Promise<unknown> {
   const entry = registry[op]
   if (entry === undefined) return refusal(unknownOpMessage(op, registry))
   try {
-    return await entry.run(input, cliActor)
+    return await entry.run(input, actor)
   } catch (error) {
     if (error instanceof CliUsageError) return { error: { message: error.message, usage: true } }
     return refusal(error instanceof Error ? error.message : String(error))
@@ -107,7 +114,7 @@ export function toolRegistry(tools: readonly (Tool.Info & { readonly id: string 
         {
           description: tool.description,
           inputSchema: inputSchema(tool.input),
-          run: (input: unknown, actor: CliActor) => runTool(tool, input, actor),
+          run: (input: unknown, actor: InstructionActor) => runTool(tool, input, actor),
         },
       ]),
   )
@@ -119,7 +126,7 @@ export function toolRegistry(tools: readonly (Tool.Info & { readonly id: string 
 async function runTool(
   tool: Tool.Info & { readonly id: string },
   input: unknown,
-  actor: CliActor,
+  actor: InstructionActor,
 ): Promise<unknown> {
   const schema = tool.input
   const value = Schema.isSchema(schema)

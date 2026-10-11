@@ -1953,7 +1953,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   // returns that row id, not the project-level default the old code wrote.
   expect(created).toMatchObject({ tool: "shell", id: "item:defaults::perm:shell:no-push", item: "perm:shell:no-push" })
   const afterCreate = await snapshotOf(api)
-  const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.address?.item === "perm:shell:no-push")
+  const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.id === created.id)
   if (customRow === undefined) throw new Error("missing custom perm row")
   const customShownRecord = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
     id: string
@@ -2115,9 +2115,10 @@ test("deleting a protected agent's custom rule through another agent's row is re
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow === undefined) throw new Error("missing beta row for alpha-owned custom rule")
-  const error = await runFail(need(tools, "instructions_delete"), { id: betaRow.id, confirm: true })
-  expect(error.message).toContain("agent.protected")
+  expect(betaRow).toBeUndefined()
+  const error = await runFail(need(tools, "instructions_delete"), { id: "item:project:alpha:perm:shell:custom", confirm: true })
+  expect(error.message).toContain("row.unknown")
+  await runFail(need(tools, "instructions_delete"), { id: "item:project:beta:perm:shell:custom", confirm: true })
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
 })
@@ -2162,7 +2163,7 @@ test("removeRule refuses a protected owner's rule for a tool actor and lets the 
   expect((await logLines(project)).length).toBeGreaterThan(beforeLogs.length)
 })
 
-test("rule.remove RPC from another agent's row refuses a tool actor and lets the TUI remove it", async () => {
+test("rule.remove RPC respects owner identity and protected-owner permissions", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -2179,7 +2180,8 @@ test("rule.remove RPC from another agent's row refuses a tool actor and lets the
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  expect(betaRow).toBeUndefined()
+  expect((await api.removeRule({ level: "project", agent: "beta", tool: "shell", id: "custom" })).ok).toBe(false)
   const beforeLogs = await logLines(project)
   const handlers = createHandlers(ctx, state)
   const captured: { current?: { type: string; message: string } } = {}
@@ -2191,7 +2193,7 @@ test("rule.remove RPC from another agent's row refuses a tool actor and lets the
   }
   const exit = await Effect.runPromiseExit(
     handlers["rule.remove"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", actor: { type: "tool" } },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tool" } },
       throwing,
     ),
   )
@@ -2205,7 +2207,7 @@ test("rule.remove RPC from another agent's row refuses a tool actor and lets the
   // missing actor means the TUI, so the same call succeeds.
   const tui = await Effect.runPromise(
     handlers["rule.remove"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom" },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom" },
       throwing,
     ),
   )
@@ -2233,16 +2235,16 @@ test("updating a protected agent's custom rule through another agent's row is re
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow === undefined) throw new Error("missing beta row for alpha-owned custom rule")
-  const error = await runFail(need(tools, "instructions_set"), { id: betaRow.id, label: "Hacked", patterns: ["evil *"] })
-  expect(error.message).toContain("agent.protected")
+  expect(betaRow).toBeUndefined()
+  const error = await runFail(need(tools, "instructions_set"), { id: "item:project:alpha:perm:shell:custom", label: "Hacked", patterns: ["evil *"] })
+  expect(error.message).toContain("row.unknown")
   const after = await snapshotOf(api)
   const kept = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
   if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
   expect(kept.label).toBe("Custom")
 })
 
-test("rule.update RPC from another agent's row refuses a tool actor and lets the TUI write", async () => {
+test("rule.update RPC protects the addressed owner and lets the TUI write", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
   const ctx = fullContext({
@@ -2259,7 +2261,7 @@ test("rule.update RPC from another agent's row refuses a tool actor and lets the
   const betaRow = expandedTree(memoFromSnapshot(snapshot)).find(
     (node) => node.address?.item === "perm:shell:custom" && node.address?.agent === "beta",
   )
-  if (betaRow?.address === undefined) throw new Error("missing beta row for alpha-owned custom rule")
+  expect(betaRow).toBeUndefined()
   const beforeLogs = await logLines(project)
   const handlers = createHandlers(ctx, state)
   const captured: { current?: { type: string; message: string } } = {}
@@ -2271,7 +2273,7 @@ test("rule.update RPC from another agent's row refuses a tool actor and lets the
   }
   const exit = await Effect.runPromiseExit(
     handlers["rule.update"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
       throwing,
     ),
   )
@@ -2293,7 +2295,7 @@ test("rule.update RPC from another agent's row refuses a tool actor and lets the
   // The TUI path (no actor) writes the same row through the same boundary.
   const tui = await Effect.runPromise(
     handlers["rule.update"](
-      { level: betaRow.address.level, agent: betaRow.address.agent, tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"] },
       throwing,
     ),
   )
@@ -2426,7 +2428,7 @@ test("updateRule stale retry preserves the edit and the log agrees with what per
   expect(after.revision).toBe(3)
 })
 
-test("updateRule through a project row keeps a global rule in the global store", async () => {
+test("updateRule through a project row creates an independent override of a global rule", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -2456,31 +2458,43 @@ test("updateRule through a project row keeps a global rule in the global store",
     actor: { type: "tui" },
   })
   if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
-  expect(updated.value.level).toBe("global")
+  expect(updated.value.level).toBe("project")
   expect(updated.value.agent).toBe("alpha")
   expect(updated.value.label).toBe("Edited")
   const after = await snapshotOf(api)
-  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared")
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")
   if (persisted === undefined || persisted.type !== "rule") throw new Error("expected shared rule to persist")
-  expect(persisted.level).toBe("global")
+  expect(persisted.level).toBe("project")
   expect(persisted.agent).toBe("alpha")
   expect(persisted.label).toBe("Edited")
   expect(persisted.patterns).toEqual(["edited *"])
   const { load } = await import("../src/instructions/store.js")
   const stored = await load(project)
   expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "global")).toBe(true)
-  expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")).toBe(false)
+  expect(stored.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.level === "project")).toBe(true)
+  expect(stored.records.find((record) => record.type === "rule" && record.id === "shared" && record.level === "global")).toMatchObject({ label: "Original", patterns: ["orig *"] })
   const { globalRecordsPath, projectRecordsPath } = await import("../src/instructions/paths.js")
   const globalText = await Bun.file(globalRecordsPath()).text()
   expect(globalText).toContain(`"id":"shared"`)
   if (await Bun.file(projectRecordsPath(project)).exists()) {
     const projectText = await Bun.file(projectRecordsPath(project)).text()
-    expect(projectText).not.toContain(`"id":"shared"`)
+    expect(projectText).toContain(`"id":"shared"`)
   }
   const logged = await api.log({ where: "op:rule.update" })
   if (!logged.ok) throw new Error("log failed")
-  const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:global:alpha:shell:shared")
-  if (entry === undefined) throw new Error("missing global rule.update log entry")
+  const entry = logged.value.entries.find((candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:shared")
+  if (entry === undefined) throw new Error("missing project rule.update log entry")
+})
+
+test("concurrent same-id rule creation across owners persists independently and deletion preserves its peer", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({ directory: project, agents: [agentInfo("alpha", "role"), agentInfo("beta", "role")], tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }], session: { hook: () => Effect.succeed({ dispose: Effect.void }) } })
+  const api = createPlusApi(ctx, createState())
+  const created = await Promise.all(["alpha", "beta"].map((agent) => api.addRule({ level: "project", agent, tool: "shell", id: "independent", label: agent, patterns: [`${agent} *`], actor: { type: "tui" } })))
+  expect(created.every((result) => result.ok)).toBe(true)
+  expect((await snapshotOf(api)).records.filter((record) => record.type === "rule" && record.id === "independent")).toHaveLength(2)
+  expect((await api.removeRule({ level: "project", agent: "alpha", tool: "shell", id: "independent" })).ok).toBe(true)
+  expect((await snapshotOf(api)).records.filter((record) => record.type === "rule" && record.id === "independent")).toEqual([expect.objectContaining({ agent: "beta", patterns: ["beta *"] })])
 })
 
 test("updateRule retry preserves an unrelated concurrent deletion", async () => {
@@ -2633,7 +2647,7 @@ test("concurrent updateRule creates for the same target never report false succe
   expect(entries[0]?.revision).toBe(after.revision)
 })
 
-test("updateRule preserves a shared agent:null owner instead of retargeting it", async () => {
+test("updateRule creates an owner override without changing the shared default", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -2653,8 +2667,7 @@ test("updateRule preserves a shared agent:null owner instead of retargeting it",
   })
   if (!seeded.ok) throw new Error(`seed failed: ${seeded.error.message}`)
   expect(seeded.value.agent).toBeNull()
-  // Update through another agent's row address: protection follows the
-  // matched record, and the owner (including legitimate null) follows it too.
+  // An agent edit materializes its own definition; shared defaults stay intact.
   const updated = await api.updateRule({
     level: "project",
     agent: "alpha",
@@ -2666,19 +2679,20 @@ test("updateRule preserves a shared agent:null owner instead of retargeting it",
     actor: { type: "tui" },
   })
   if (!updated.ok) throw new Error(`update failed: ${updated.error.message}`)
-  expect(updated.value.level).toBe("defaults")
-  expect(updated.value.agent).toBeNull()
+  expect(updated.value.level).toBe("project")
+  expect(updated.value.agent).toBe("alpha")
   expect(updated.value.label).toBe("Shared edited")
   const after = await snapshotOf(api)
-  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared")
+  const persisted = after.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "shared" && record.agent === "alpha")
   if (persisted === undefined || persisted.type !== "rule") throw new Error("expected shared rule to persist")
-  expect(persisted.level).toBe("defaults")
-  expect(persisted.agent).toBeNull()
+  expect(persisted.level).toBe("project")
+  expect(persisted.agent).toBe("alpha")
   expect(persisted.label).toBe("Shared edited")
+  expect(after.records.find((record) => record.type === "rule" && record.id === "shared" && record.agent === null)).toMatchObject({ label: "Shared", patterns: ["shared *"] })
   const logged = await api.log({ where: "op:rule.update" })
   if (!logged.ok) throw new Error("log failed")
   const updateEntry = logged.value.entries.find(
-    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:defaults::shell:shared",
+    (candidate) => candidate.op === "rule.update" && candidate.target === "rule:project:alpha:shell:shared",
   )
   if (updateEntry === undefined) throw new Error("missing shared rule.update log entry at the shared address")
 })
@@ -3416,7 +3430,10 @@ test("instructions_set {preset} relinks and unlinks the row's owner; protected a
   const rows = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
     rows: { id: string; from?: string }[]
   }
-  expect(rows.rows).toEqual([{ id: "item:project:helper:tool:reader", from: "from preset Basic › orchestrator" }])
+  expect(rows.rows).toEqual([
+    { id: "item:project:helper:tool:reader", from: "from preset Basic › orchestrator" },
+    { id: "item:project:helper:tool:reader:description", from: "from preset Basic › orchestrator" },
+  ])
   await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "basic", id: "implementer" } })
   expect((await snapshotOf(api)).links).toEqual([
     expect.objectContaining({ agent: "helper", preset: { kind: "member", team: "basic", id: "implementer" } }),
@@ -3680,10 +3697,10 @@ test("instructions_link upserts, inspects both directions, and masks with enable
     { direction: "incoming", item: "tool:reader" },
   ])
   // A second upsert on the same pair replaces it (still one record) and takes the new type.
-  await runOk(link, { id: reader, target: question, type: "oneway" })
+  await runOk(link, { id: reader, target: question, type: "shownWhenOff" })
   const replaced = await linksOf(project)
   expect(replaced).toHaveLength(1)
-  expect(replaced[0]?.link).toBe("oneway")
+  expect(replaced[0]?.link).toBe("shownWhenOff")
   // enabled:false stores a tombstone that still inspects, marked disabled.
   await runOk(link, { id: reader, target: question, enabled: false })
   const masked = (await runOk(link, { id: reader })) as { links: { enabled: boolean }[] }
@@ -3756,8 +3773,7 @@ async function customizationState(project: string, item: string): Promise<"on" |
   return record?.state
 }
 
-for (const type of ["either", "oneway"] as const) {
-  test(`model rowlinks ${type}: activation and state:on persist physical records in one save`, async () => {
+test("model rowlinks either: activation and state:on persist physical records in one save", async () => {
     const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2"), modelInfo("acme", "nova-3")], classifications: { "nova-2": "general", "nova-3": "general" } })
     const set = need(tools, "instructions_set")
     await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" })
@@ -3767,7 +3783,7 @@ for (const type of ["either", "oneway"] as const) {
     await runOk(set, { id: model, warming: "on", interval: "15m", prompt: "keep alive" })
     await runOk(set, { id: model, compactWarm: "on", compactionInstructions: "retain C1" })
     await runOk(set, { id: reader, state: "on" })
-    await runOk(need(tools, "instructions_link"), { id: model, target: reader, type })
+    await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "either" })
     const before = await load(project)
     // The exact operation used by TUI Space, not an alternate switch algebra.
     const equivalent = activateModelRow(memoFromSnapshot(await snapshotOf(api)), model)
@@ -3780,15 +3796,13 @@ for (const type of ["either", "oneway"] as const) {
     expect(await customizationState(project, "tool:reader")).toBe("off")
     expect((await runFail(set, { id: model, state: "off" })).message).toContain("cannot be toggled off by state")
     expect(await load(project)).toEqual(activated)
-    // Explicitly turning the target back on is the only resurrection. Either
-    // masks the active model; oneway deliberately leaves it active.
+    // Explicitly turning the target back on disables the active model.
     const reverseEquivalent = toggle(memoInputOf(await snapshotOf(api)), reader)
     if ("refusal" in reverseEquivalent) throw new Error(reverseEquivalent.refusal)
-    if (type === "either") expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
+    expect(reverseEquivalent.models?.find((record) => record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
     await runOk(set, { id: reader, state: "on" })
     const reversed = await load(project)
-    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject(type === "either" ? { active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" } : { active: true })
-    if (type === "either") {
+    expect(reversed.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: false, prompt: "keep alive", compactionInstructions: "retain C1", compactWarm: "on" })
       const snapshot = await snapshotOf(api)
       const retained = expandedTree(memoInputOf(snapshot)).find((node) => node.id === model)
       expect(retained).toBeDefined()
@@ -3802,9 +3816,7 @@ for (const type of ["either", "oneway"] as const) {
       expect(after.projectRevision + after.globalRevision).toBe(prior.projectRevision + prior.globalRevision + 1)
       expect(await customizationState(project, "tool:reader")).toBe("off")
       expect(after.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
-    }
-  })
-}
+})
 
 test("model rowlinks inherit, mask, stay one-hop and refuse protected writes atomically", async () => {
   const { api, tools, project } = await freshFixture({
@@ -3822,7 +3834,7 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   const reader = "item:project:build:tool:reader"
   const extra = "item:project:build:tool:extra"
   await runOk(link, { id: globalModel, target: "item:global:build:tool:reader", type: "either" })
-  await runOk(link, { id: reader, target: extra, type: "oneway" })
+  await runOk(link, { id: reader, target: extra, type: "either" })
   await runOk(set, { id: reader, state: "off" })
   // The inherited either switches alt off when reader turns on at Project.
   await runOk(set, { id: reader, state: "on" })
@@ -3846,7 +3858,7 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   const switchMemo = memoInputOf(await snapshotOf(api))
   const unsupported = activateModelRow({ ...switchMemo, rowlinks: [...(switchMemo.rowlinks ?? []), {
     type: "rowlink", level: "project", agent: "build", item: "model:acme/alt", section: null,
-    target: "setting:description", targetSection: null, link: "oneway", updated: "2026-01-01T00:00:00.000Z",
+    target: "setting:description", targetSection: null, link: "either", updated: "2026-01-01T00:00:00.000Z",
   }] }, model)
   expect(unsupported).toMatchObject({ refusal: 'Linked row "setting:description" has no switch state' })
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["build"] }))
@@ -3866,7 +3878,7 @@ test("model rowlinks create and chat pick compose switches; linked replacement r
   await runOk(create, { kind: "model", providerID: "acme", modelID: "alt", level: "global", agent: "build" })
   const model = "item:project:build:model:acme/alt"
   const reader = "item:project:build:tool:reader"
-  await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "oneway" })
+  await runOk(need(tools, "instructions_link"), { id: model, target: reader, type: "either" })
   await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
   await runOk(set, { id: reader, state: "on" })
   const before = await load(project)
@@ -3933,7 +3945,7 @@ test("set state:on persists its either partner off in one save, and it stays off
   expect(await customizationState(project, "tool:question")).toBe("off")
 })
 
-test("set state:on is symmetric for either and primary-only for oneway", async () => {
+test("set state:on changes the partner only for either, not conditional links", async () => {
   const { api, tools, project } = await freshFixture({
     tools: [
       { id: "reader", description: "read things", options: { codemode: false } },
@@ -3944,15 +3956,16 @@ test("set state:on is symmetric for either and primary-only for oneway", async (
   const set = need(tools, "instructions_set")
   const reader = await rowIdOf(api, "tool:reader")
   const question = await rowIdOf(api, "tool:question")
-  await runOk(link, { id: reader, target: question, type: "oneway" })
-  // Turn the target on first; oneway leaves the primary alone.
+  await runOk(link, { id: reader, target: question, type: "shownWhenOff" })
+  // Conditions leave saved state alone in both directions.
   await runOk(set, { id: question, state: "on" })
   expect(await customizationState(project, "tool:reader")).toBeUndefined()
-  // Primary on turns the target off.
+  // Primary on leaves the target's saved state on.
   await runOk(set, { id: reader, state: "on" })
-  expect(await customizationState(project, "tool:question")).toBe("off")
+  expect(await customizationState(project, "tool:question")).toBe("on")
   // Either is symmetric: turn the target on and the primary goes off.
   await runOk(link, { id: reader, target: question, type: "either" })
+  await runOk(set, { id: question, state: "off" })
   await runOk(set, { id: question, state: "on" })
   expect(await customizationState(project, "tool:reader")).toBe("off")
 })
@@ -4150,12 +4163,12 @@ test("durable section gates and inspection agree across pair replacements and ba
   const section = nodes.find((node) => node.address?.level === "project" && node.address.agent === "gateprobe" && node.label === "Questions")
   if (section?.address === undefined) throw new Error("Missing project Questions section")
   const target = section.address
-  const pair = (level: "project" | "global", item: string, link: "oneway" | "shownWhenOn" | "shownWhenOff" | "shownAlways") => ({
+  const pair = (level: "project" | "global", item: string, link: "either" | "shownWhenOn" | "shownWhenOff" | "shownAlways") => ({
     type: "rowlink" as const, level, agent: "gateprobe", item, section: link === "shownAlways" ? target.section : null,
     target: target.item, targetSection: target.section, link, updated: "2026-01-01T00:00:00.000Z",
   })
   for (const scenario of [
-    { pairs: [pair("global", "tool:question", "shownWhenOn"), pair("project", "tool:question", "oneway")], inspected: [["tool:question", "oneway"]], kept: true },
+    { pairs: [pair("global", "tool:question", "shownWhenOn"), pair("project", "tool:question", "either")], inspected: [["tool:question", "either"]], kept: true },
     { pairs: [pair("project", "tool:question", "shownWhenOff")], inspected: [["tool:question", "shownWhenOff"]], kept: true },
     { pairs: [pair("global", target.item, "shownAlways"), pair("project", "tool:reader", "shownWhenOn")], inspected: [["tool:reader", "shownWhenOn"]], kept: false },
     { pairs: [pair("global", "tool:reader", "shownWhenOn"), pair("project", target.item, "shownAlways")], inspected: [], kept: true },
@@ -4192,19 +4205,19 @@ test("legacy requires durably replaces a same-scope switch pair without duplicat
   const extra = "item:project:gateprobe:tool:extra"
   const set = need(tools, "instructions_set")
   const link = need(tools, "instructions_link")
-  await runOk(link, { id: reader, target: question, type: "oneway" })
-  await runOk(link, { id: extra, target: question, type: "oneway" })
+  await runOk(link, { id: reader, target: question, type: "either" })
+  await runOk(link, { id: extra, target: question, type: "either" })
   const operation = setRequires(memoInputOf(await snapshotOf(api)), question, ["tool:reader"])
   if ("refusal" in operation) throw new Error(operation.refusal)
   expect(operation.rowlinks?.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
   await runOk(set, { id: question, requires: ["tool:reader"] })
   const stored = await linksOf(project)
   expect(stored.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
-  expect(stored.filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["oneway"])
+  expect(stored.filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["either"])
   const shown = await runOk(need(tools, "instructions_show"), { id: question }) as { requires?: { id: string }[] }
   expect(shown.requires?.map((entry) => entry.id)).toEqual(["tool:reader"])
   await runOk(set, { id: question, requires: [] })
-  expect((await linksOf(project)).filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["oneway"])
+  expect((await linksOf(project)).filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["either"])
   await runOk(set, { id: question, requires: null })
-  expect((await linksOf(project)).map((record) => [record.item, record.link])).toEqual([["tool:extra", "oneway"]])
+  expect((await linksOf(project)).map((record) => [record.item, record.link])).toEqual([["tool:extra", "either"]])
 })

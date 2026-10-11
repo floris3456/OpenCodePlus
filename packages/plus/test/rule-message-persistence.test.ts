@@ -507,7 +507,7 @@ describe("rule message persistence across boundaries", () => {
       const snapshot = await snapshotOf(api)
       const rows = expandedTree(memoInputOf(snapshot))
       expect(rows.some((node) => node.id === created.id)).toBe(true)
-      const customRow = rows.find((node) => node.address?.item === "perm:shell:no-force-push")
+      const customRow = rows.find((node) => node.id === created.id)
       if (customRow === undefined) throw new Error("missing custom perm row")
 
       // instructions_show (default view) returns message
@@ -555,7 +555,7 @@ describe("rule message persistence across boundaries", () => {
       })
 
       const snapshot = await snapshotOf(api)
-      const customRow = expandedTree(memoInputOf(snapshot)).find((node) => node.address?.item === "perm:shell:no-force-push")
+      const customRow = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:defaults::perm:shell:no-force-push")
       if (customRow === undefined) throw new Error("missing custom perm row")
 
       // 1. Update message via instructions_set

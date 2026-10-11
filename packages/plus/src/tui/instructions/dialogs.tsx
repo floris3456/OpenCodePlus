@@ -26,7 +26,7 @@ import { renameCandidateOf, validateRenameName } from "./rename.js"
 import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import type { InstructionsState } from "./state.js"
-import { sameOwnerView, sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../instructions/rowlinks.js"
+import { sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../instructions/rowlinks.js"
 
 export interface InstructionsDialogsOptions {
   /** The row a node hangs under; defaults to the flat tree's nearest shallower row. */
@@ -470,6 +470,10 @@ export function createInstructionsDialogs(
     const preset = await pickAgentPreset(context, snapshot)
     if (disposed) return
     if (preset === undefined) return
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "agent", id, ...(preset === null ? {} : { preset }) })
+      return
+    }
     const scope = levelOfRow(node) ?? (await pickScope("Agent scope"))
     if (disposed) return
     if (scope === undefined) return
@@ -547,7 +551,7 @@ export function createInstructionsDialogs(
         ? await promptName("Member name or pattern", `A member entry of ${team}; ${wildcards} (e.g. *orchestrator*)`, "*orchestrator*")
         : await promptName("Member name", `A new member of team ${team}; use / for nesting. .. is not allowed.`, "my-agent")
     if (id === undefined) return
-    await addMember(level, team, id)
+    await addMember(level, team, id, node)
   }
 
   // Defaults → Teams: a team entry is a team pattern with at least one member
@@ -561,12 +565,16 @@ export function createInstructionsDialogs(
     await addMember("defaults", team, id)
   }
 
-  async function addMember(level: "project" | "global" | "defaults", team: string, id: string): Promise<void> {
+  async function addMember(level: "project" | "global" | "defaults", team: string, id: string, node?: TreeNode): Promise<void> {
     const snapshot = await currentSnapshot()
     if (snapshot === undefined) return
     const preset = await pickAgentPreset(context, snapshot)
     if (disposed) return
     if (preset === undefined) return
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "member", id, ...(preset === null ? {} : { preset }) })
+      return
+    }
     try {
       const ref = await plus["team.addAgent"](
         { level, team, id, ...(preset === null ? {} : { preset }) },
@@ -813,6 +821,10 @@ export function createInstructionsDialogs(
       ...(owner.link === undefined ? {} : { current: owner.link }),
     })
     if (disposed || preset === undefined) return
+    if (state.selectionContains(node)) {
+      await state.batchOperation(node, "set", { preset })
+      return
+    }
     const said = preset === null ? `Unlinked ${node.label}` : `Linked ${node.label} to ${presetName(snapshot, preset)}`
     await run(
       () =>
@@ -959,6 +971,10 @@ export function createInstructionsDialogs(
       if (picked === undefined) return
       variant = picked === "" ? undefined : picked
     }
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "model", providerID: provider, modelID, ...(variant === undefined ? {} : { variant }) })
+      return
+    }
     if (level === undefined) {
       const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
         title: "Model scope",
@@ -1030,20 +1046,18 @@ export function createInstructionsDialogs(
   // inherits its address catalogue so adding from a Teams row writes a Teams
   // rule; an agent-qualified row never gains one (catalogueField semantics),
   // so only the `agent === null` form forwards it.
-  function scopeFromToolOrPermRow(
-    node: TreeNode | undefined,
-  ): { level: "project" | "global" | "defaults"; agent: string | null; catalogue?: "agents" | "teams" } | undefined {
+  function scopeFromToolOrPermRow(node: TreeNode | undefined) {
     if (node === undefined || node.kind !== "item" || node.address === undefined) return undefined
-    if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:")) return undefined
-    // Rules are not added at preset level yet: the caller prompts for a scope.
-    if (node.address.level === "preset") return undefined
+    if (!node.address.item.startsWith("tool:") && !node.address.item.startsWith("perm:") && !node.address.item.startsWith("param:")) return undefined
     const catalogue = node.address.agent === null ? node.address.catalogue : undefined
-    return { level: node.address.level, agent: node.address.agent, ...(catalogue === undefined ? {} : { catalogue }) }
+    return { level: node.address.level, agent: node.address.agent, ...(catalogue === undefined ? {} : { catalogue }), ...(node.address.team === undefined ? {} : { team: node.address.team }) }
   }
 
   function toolFromToolOrPermRow(node: TreeNode | undefined): string | undefined {
     if (node === undefined || node.address === undefined) return undefined
     const item = node.address.item
+    const parameter = state.snapshot()?.items.find((entry) => entry.id === item)?.paramTool
+    if (parameter !== undefined) return parameter
     if (item.startsWith("tool:")) {
       const tool = item.slice("tool:".length)
       return tool.length > 0 ? tool : undefined
@@ -1059,7 +1073,7 @@ export function createInstructionsDialogs(
   async function addRule(node?: TreeNode): Promise<void> {
     if (disposed) return
     const scoped = scopeFromToolOrPermRow(node)
-    let level: "project" | "global" | "defaults" | undefined = scoped?.level
+    let level: "project" | "global" | "defaults" | "preset" | undefined = scoped?.level
     let agent: string | null | undefined = scoped?.agent
     const catalogue = scoped?.catalogue
     let tool = toolFromToolOrPermRow(node)
@@ -1104,6 +1118,10 @@ export function createInstructionsDialogs(
     if (disposed) return
     if (rawMessage === undefined) return
     const message = rawMessage.trim()
+    if (node !== undefined && state.selectionContains(node)) {
+      await state.batchOperation(node, "create", { kind: "rule", id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) })
+      return
+    }
     if (level === undefined) {
       const pickedLevel = await context.ui.dialog.select<"project" | "global" | "defaults">({
         title: "Rule scope",
@@ -1157,7 +1175,7 @@ export function createInstructionsDialogs(
     if (level === undefined || agent === undefined) return
     try {
       const ref = await plus["rule.add"](
-        { level, agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
+        { level, agent, ...(catalogue === undefined ? {} : { catalogue }), ...(scoped?.team === undefined ? {} : { team: scoped.team }), tool, id: slugify(label), label, patterns, ...(keywords === undefined ? {} : { keywords }), ...(message.length === 0 ? {} : { message }) },
         { location: context.location },
       )
       if (disposed) return
@@ -1190,8 +1208,7 @@ export function createInstructionsDialogs(
     // catalogue. A matched record keeps its stored identity server-side, and
     // an agent-qualified row never gains a catalogue.
     const catalogue = address.agent === null ? address.catalogue : undefined
-    const snapshot = state.snapshot()
-    const current = snapshot?.items.find((entry) => entry.id === address.item)
+    const current = state.effectiveItem(node)
     const tool = current?.permTool ?? parsed.tool
     const ruleId = current?.ruleId ?? parsed.ruleId
     const rawLabel = await context.ui.dialog.prompt({
@@ -1235,22 +1252,21 @@ export function createInstructionsDialogs(
             .split(",")
             .map((entry) => entry.trim())
             .filter((entry) => entry.length > 0)
-    // The stored message lives on the rule record, not the snapshot item, so
-    // a user rule can be edited back to the generic refusal by clearing it.
-    const storedRule = snapshot?.records.find(
-      (record): record is Plus.SnapshotRuleRecord => record.type === "rule" && record.tool === tool && record.id === ruleId,
-    )
     const rawMessage = await context.ui.dialog.prompt({
       title: "Message shown on refusal (optional)",
       placeholder: "force pushes are not allowed here",
-      value: storedRule?.message ?? "",
+      value: current?.message ?? "",
     })
     if (disposed) return
     if (rawMessage === undefined) return
     const message = rawMessage.trim()
+    if (state.selectionContains(node)) {
+      await state.batchOperation(node, "set", { label, patterns, ...(keywords === undefined ? {} : { keywords }), message })
+      return
+    }
     try {
       const ref = await plus["rule.update"](
-        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
+        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), ...(address.team === undefined ? {} : { team: address.team }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
         { location: context.location },
       )
       if (disposed) return
@@ -1408,6 +1424,10 @@ export function createInstructionsDialogs(
       return undefined
     }
     if (validated.name === target.from) return undefined
+    if (state.selectionContains(node)) {
+      await state.batchOperation(node, "set", { rename: validated.name })
+      return undefined
+    }
     const row = await state.renameRow(
       target.kind === "member"
         ? { kind: "member", level: target.level, team: target.team, from: target.from, to: validated.name }
@@ -1439,25 +1459,23 @@ export function createInstructionsDialogs(
     await state.deleteFolder(node)
   }
 
-  async function editRowlink(primary: TreeNode, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
+  async function editRowlink(node: TreeNode, primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
     const type = await context.ui.dialog.select<Exclude<RowlinkType, "shownAlways">>({
       title: `Link · ${primary.label} → ${target.item}${target.section === null ? "" : ` / ${target.section}`}`,
       placeholder: `Type (now ${current})`,
+      current: current === "shownAlways" ? undefined : current,
       options: [
         { title: "either · turning either on turns the other off", value: "either" },
-        { title: "oneway · primary on turns linked row off", value: "oneway" },
         { title: "shownWhenOn · linked row sent while primary is on", value: "shownWhenOn" },
         { title: "shownWhenOff · linked row sent while primary is off", value: "shownWhenOff" },
       ],
     })
-    if (disposed || type === undefined) return
-    const live = await context.ui.dialog.select<boolean>({
-      title: "Link enabled / mask",
-      placeholder: enabled ? "Currently enabled" : "Currently masked",
-      options: [{ title: "Enabled", value: true }, { title: "Mask at this level", value: false }],
-    })
-    if (disposed || live === undefined) return
-    await state.saveRowlink(primary, target, type, live)
+    if (disposed) return
+    if (type === undefined) {
+      state.setStatus("Row link cancelled")
+      return
+    }
+    await state.saveSelectedRowlink(node, primary, target, type, enabled)
   }
 
   async function rowlink(node: TreeNode | undefined) {
@@ -1466,27 +1484,58 @@ export function createInstructionsDialogs(
     if (primary !== undefined) {
       if (!state.rowlinkTarget(node)) return
       state.cancelRowlink()
-      await editRowlink(primary, node.address)
+      await editRowlink(primary, primary, node.address)
       return
     }
-    const links = state.linksFor(node)
-    if (links.length === 0) { state.beginRowlink(node); return }
-    const picked = await context.ui.dialog.select<number>({
-      title: `Row links · ${node.label}`,
-      placeholder: "Primary → linked row (incoming / outgoing)",
-      options: [
-        ...links.map((link, value) => ({ title: `${link.direction}: ${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} · ${link.enabled ? "enabled" : "masked"} (${link.level})`, value })),
-        { title: "Link another row", value: -1 },
-      ],
-    })
-    if (disposed || picked === undefined) return
-    if (picked === -1) { state.beginRowlink(node); return }
-    const link = links[picked]
-    if (link === undefined) return
-    // An incoming link edits its named primary, never reverses the pair.
-    const owner = state.linkRows().find((candidate) => candidate.address !== undefined && sameOwnerView(node.address!, candidate.address) && sameEndpoint(candidate.address, link.item, link.section))
-    if (owner === undefined) { state.setStatus(`Primary ${link.item} is not available in this view`); return }
-    await editRowlink(owner, { item: link.target, section: link.targetSection }, link.type, link.enabled)
+    if (state.linksFor(node).length === 0) { state.beginRowlink(node); return }
+    let selected = 0
+    while (!disposed) {
+      const links = state.linksFor(node)
+      let action: { kind: "toggle" | "delete"; index: number } | undefined
+      const picked = await context.ui.dialog.select<number>({
+        title: `Row links · ${node.label}`,
+        placeholder: "Primary → linked row (incoming / outgoing)",
+        current: links.length === 0 ? -1 : Math.min(selected, links.length - 1),
+        options: [
+          ...links.map((link, value) => ({ title: `${link.enabled ? "enabled" : "disabled"} · ${link.direction}: ${link.item}${link.section === null ? "" : ` / ${link.section}`} → ${link.target}${link.targetSection === null ? "" : ` / ${link.targetSection}`} · ${link.type} (${link.level})`, value })),
+          { title: "Link another row", value: -1 },
+        ],
+        actions: [
+          { bind: "space", title: "Enable / disable", onTrigger: (index) => {
+            if (index < 0) return
+            action = { kind: "toggle", index }
+            context.ui.dialog.clear()
+          } },
+          { bind: "d", title: "Delete local link", onTrigger: (index) => {
+            if (index < 0) return
+            action = { kind: "delete", index }
+            context.ui.dialog.clear()
+          } },
+        ],
+      })
+      if (disposed || (picked === undefined && action === undefined)) return
+      if (picked === -1) { state.beginRowlink(node); return }
+      selected = action?.index ?? picked!
+      const link = links[selected]
+      if (link === undefined) return
+      // The link already identifies its primary. Do not resolve every row in
+      // every owner just to reopen this editor, including for incoming links.
+      const owner = {
+        address: { ...node.address, item: link.item, section: link.section },
+        label: sameEndpoint(node.address, link.item, link.section) ? node.label : link.item,
+      }
+      const target = { item: link.target, section: link.targetSection }
+      if (action?.kind === "toggle") {
+        void state.saveSelectedRowlink(node, owner, target, link.type, !link.enabled)
+        continue
+      }
+      if (action?.kind === "delete") {
+        void state.deleteSelectedRowlink(node, owner, target)
+        continue
+      }
+      await editRowlink(node, owner, target, link.type, link.enabled)
+      return
+    }
   }
 
   return { rowlink, addFor, addAgent, addTeamAgent, addBase, addSkill, addInstruction, addMcp, addTeam, addModel, addColdModel, editModelField, editModelSetting, addRule, editRule, relink, when, renameFolder, renameRow, deleteFolder, dispose }

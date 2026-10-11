@@ -4,7 +4,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { globalRecordsPath, projectRecordsPath } from "../src/instructions/paths.js"
-import { load, save, stable, type StoredRecord } from "../src/instructions/store.js"
+import { ensureCatalogues, load, save, stable, type StoredRecord } from "../src/instructions/store.js"
 import { Plus } from "../src/rpc.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -379,7 +379,7 @@ function compareForTest(left: StoredRecord, right: StoredRecord): number {
   return JSON.stringify(left) < JSON.stringify(right) ? -1 : 1
 }
 
-function rowlink(overrides?: Partial<Extract<StoredRecord, { type: "rowlink" }>>): StoredRecord {
+function rowlink(overrides?: Partial<Extract<StoredRecord, { type: "rowlink" }>>): Extract<StoredRecord, { type: "rowlink" }> {
   return {
     type: "rowlink",
     level: "project",
@@ -399,7 +399,7 @@ test("rowlink records round-trip through save then load, including a tombstone",
   const records: StoredRecord[] = [
     rowlink(),
     rowlink({ item: "tool:a", target: "tool:c", link: "shownWhenOn", enabled: false }),
-    rowlink({ level: "global", agent: null, item: "tool:d", target: "tool:e", link: "oneway" }),
+    rowlink({ level: "global", agent: null, item: "tool:d", target: "tool:e", link: "shownWhenOff" }),
   ]
   const saved = await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
   expect(saved.ok).toBe(true)
@@ -411,6 +411,30 @@ test("rowlink records round-trip through save then load, including a tombstone",
   expect(
     await save(project, { expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision, records: [...loaded.records].reverse() }),
   ).toMatchObject({ ok: true, changed: { project: false, global: false } })
+})
+
+test("legacy one-way links migrate once to shownWhenOff, retaining endpoints and disabled state", async () => {
+  const { project } = await isolated()
+  const projectLink = { ...rowlink(), link: "oneway" }
+  const globalLink = { ...rowlink({ level: "global", enabled: false, catalogue: "teams", team: { level: "global", team: "crew" } }), link: "oneway" }
+  await fs.mkdir(path.dirname(projectRecordsPath(project)), { recursive: true })
+  await fs.mkdir(path.dirname(globalRecordsPath()), { recursive: true })
+  await Bun.write(projectRecordsPath(project), [JSON.stringify({ version: 2, revision: 3 }), JSON.stringify(projectLink)].join("\n") + "\n")
+  await Bun.write(globalRecordsPath(), [JSON.stringify({ version: 2, revision: 4 }), JSON.stringify(globalLink)].join("\n") + "\n")
+  const loaded = await load(project)
+  expect(loaded.rowlinksMigrated).toBe(true)
+  expect(loaded.records).toContainEqual({ ...projectLink, link: "shownWhenOff" })
+  expect(loaded.records).toContainEqual({ ...globalLink, link: "shownWhenOff" })
+  const migrated = await ensureCatalogues(project)
+  expect(migrated.rowlinksMigrated).toBe(true)
+  expect(migrated.loaded.rowlinksMigrated).toBe(false)
+  expect(migrated.loaded.projectRevision).toBe(4)
+  expect(migrated.loaded.globalRevision).toBe(5)
+  expect(await Bun.file(projectRecordsPath(project)).text()).not.toContain("oneway")
+  expect(await Bun.file(globalRecordsPath()).text()).not.toContain("oneway")
+  expect((await ensureCatalogues(project)).rowlinksMigrated).toBe(false)
+  expect((await load(project)).records).toEqual(migrated.loaded.records)
+  expect(Schema.is(Plus.SnapshotRowlinkRecord)(projectLink)).toBe(false)
 })
 
 function team(overrides?: Partial<Extract<StoredRecord, { type: "team" }>>): StoredRecord {

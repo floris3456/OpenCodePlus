@@ -1,7 +1,10 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
+import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
+import { interactiveActor } from "./instructions-cli.js"
+import { captureRows, pasteRows, type Clipboard } from "./instructions/clipboard.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -74,7 +77,8 @@ import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
 import type { Address, CustomizationRecord, Item, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
-import { buildTreeMemo } from "./instructions/tree.js"
+import { buildTreeMemo, lazyPath } from "./instructions/tree.js"
+import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
 import { rowlinksOf } from "./instructions/resolve-memo.js"
@@ -146,7 +150,7 @@ const MoveDescription =
   "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
   "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
   "A section moves before or after a sibling under the same parent inside its own item; the item's text is rewritten so the request order changes (a heading-derived move folds the consumed same-level child texts into the parent).\n" +
-  "Row and folder moves are display only: nothing there changes what the model sees."
+  "Category membership is saved for this owner and shared with the TUI. Ordinary category moves retain the row's execution settings."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
@@ -166,7 +170,7 @@ const CreateDescription =
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
   "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
-  "folder (name, id = the tab row or folder row to create it in; a folder groups rows inside one tab, display only),\n" +
+  "folder (name, id = the tab row or folder row to create it in; a saved category belonging to this owner and tab),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
@@ -183,7 +187,7 @@ const LogDescription =
 const LinkDescription =
   "Inspect or set a row link between two rows of one owner and level (B9–B12).\n" +
   "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled, the level/owner it is stored at, and whether it is a shipped <!-- requires --> marker (shipped, from text).\n" +
-  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), oneway (turning id on saves target off; target on leaves id alone), shownWhenOn / shownWhenOff (the target is sent only while id is on / off). A gate's primary must be a whole row, not a section.\n" +
+  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), shownWhenOn / shownWhenOff (the target is sent only while id is on / off). A gate's primary must be a whole row, not a section.\n" +
   "enabled:false stores a tombstone that masks the pair at this level, including an upstream link; enabled true or omitted stores a live link.\n" +
   "Both ends must resolve in the same level and owner view; an unknown, protected or self link refuses without writing."
 
@@ -367,7 +371,6 @@ const LinkInput = Schema.Struct({
   type: Schema.optionalKey(
     Schema.Union([
       Schema.Literal("either"),
-      Schema.Literal("oneway"),
       Schema.Literal("shownWhenOn"),
       Schema.Literal("shownWhenOff"),
     ]),
@@ -376,8 +379,110 @@ const LinkInput = Schema.Struct({
 })
 
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
+  const clipboards = new Map<string, Clipboard>()
   return runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
+    editor.add({
+      name: "clipboard",
+      description: "Copy or cut selected Instructions rows, then paste into a compatible row or category. Copy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.",
+      input: Schema.Struct({
+        action: Schema.Literals(["copy", "cut", "paste", "clear"]),
+        ids: Schema.optionalKey(Schema.Array(Schema.String)),
+        clipboard: Schema.optionalKey(Schema.String),
+        into: Schema.optionalKey(Schema.String),
+      }),
+      output: Plus.InstructionsClipboardOutput,
+      options,
+      origin,
+      execute: (input, context) => Effect.gen(function* () {
+        if (input.action === "clear") {
+          if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
+          return { output: { status: "Clipboard cleared", rows: [] } }
+        }
+        const snapshot = yield* snapshotOrFail(api)
+        const memo = memoFromSnapshot(snapshot)
+        if (input.action === "copy" || input.action === "cut") {
+          const captured = captureRows(memo, input.ids ?? [], input.action)
+          if ("refusal" in captured) return yield* Effect.fail(new Tool.Error({ message: captured.refusal }))
+          if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
+          const id = crypto.randomUUID()
+          clipboards.set(id, captured)
+          return { output: { clipboard: id, mode: captured.mode, rows: captured.rows, status: `${captured.rows.length} row(s) ${input.action === "cut" ? "ready to move" : "copied"}` } }
+        }
+        const captured = input.clipboard === undefined ? undefined : clipboards.get(input.clipboard)
+        if (captured === undefined) return yield* Effect.fail(new Tool.Error({ message: "Clipboard is unavailable; copy or cut the rows again" }))
+        if (input.into === undefined) return yield* Effect.fail(new Tool.Error({ message: "Choose a paste destination" }))
+        const plan = pasteRows(memo, captured, input.into)
+        if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
+        const delta = deltaOf(memo.records, plan.memo.records)
+        const written = yield* Effect.promise(() => api.layoutWrite({
+          ...plan.layout,
+          changes: { upsert: delta.upsert.flatMap((record) => { const row = snapshotRecordOf(record); return row === undefined ? [] : [row] }), remove: delta.remove },
+          expectedProjectRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision,
+          target: input.into!, status: `Pasted ${captured.rows.length} row(s)`, actor: actorFrom(context),
+        }))
+        if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: written.error.message }))
+        if (captured.mode === "cut") clipboards.delete(input.clipboard!)
+        return { output: { ...written.value, rows: plan.rows, consumed: captured.mode === "cut" } }
+      }),
+    })
+    editor.add({
+      name: "batch",
+      description: "Apply one row operation to the corresponding setting in every selected row. id is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
+      input: Schema.Struct({
+        op: Schema.Literals(["set", "reset", "split", "create", "delete", "move", "link"]),
+        id: Schema.String,
+        selected: Schema.Array(Schema.String),
+        input: Schema.Record(Schema.String, Schema.Unknown),
+      }),
+      output: Plus.InstructionsBatchOutput,
+      options,
+      origin,
+      execute: (input, context) => Effect.gen(function* () {
+        const snapshot = yield* snapshotOrFail(api)
+        const memo = buildTreeMemo(memoFromSnapshot(snapshot))
+        const reflected = reflectedRows(memo, input.id, input.selected)
+        if (input.op === "set" && (input.input.active === true || input.input.state === "on")) {
+          const refusal = modelActivationRefusal(reflected.targets)
+          if (refusal !== undefined) return yield* Effect.fail(new Tool.Error({ message: refusal }))
+        }
+        const tools = yield* ctx.tool.list()
+        const operation = tools.find((tool) => tool.name === input.op && tool.options?.namespace === "instructions")
+        if (operation === undefined || !Schema.isSchema(operation.input)) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
+        const applied: string[] = []
+        const failed: { id: string; reason: string }[] = []
+        const created = new Set<string>()
+        const skipped = [...reflected.skipped]
+        for (const row of reflected.targets) {
+          const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(input.input.target)) : undefined
+          const target = peer === undefined ? undefined : reflectedPeer(memo, input.id, row.id, input.selected, peer)
+          if (peer !== undefined && target === undefined) {
+            failed.push({ id: row.id, reason: "Does not have the corresponding link endpoint" })
+            continue
+          }
+          const fields = input.op === "create" ? creationFields(memo, row, input.input) : { ...input.input, id: row.id, ...(target === undefined ? {} : { target: target.id }) }
+          if ("refusal" in fields) {
+            failed.push({ id: row.id, reason: String(fields.refusal) })
+            continue
+          }
+          const decoded = Schema.decodeUnknownOption(operation.input)(fields)
+          if (Option.isNone(decoded)) {
+            failed.push({ id: row.id, reason: `Invalid arguments for ${input.op}` })
+            continue
+          }
+          const identity = JSON.stringify(decoded.value)
+          if (input.op === "create" && created.has(identity)) {
+            skipped.push({ id: row.id, reason: "The same shared resource was already created for another selected row" })
+            continue
+          }
+          yield* operation.execute(decoded.value, context).pipe(Effect.match({
+            onSuccess: () => { applied.push(row.id); created.add(identity) },
+            onFailure: (error) => { failed.push({ id: row.id, reason: error.message }) },
+          }))
+        }
+        return { output: { applied, skipped, failed } }
+      }),
+    })
     editor.add({
       name: "list",
       description: ListDescription,
@@ -437,7 +542,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const folderId = folderIdOfRef(rowToken(node) ?? "")
           if (folderId !== undefined) {
             if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
-            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString()), actor)
+            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString(), node.id.split(":folder:")[0]), actor)
             return { output: { id: input.id, ...applied } }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
@@ -463,7 +568,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
           if (input.include !== undefined && input.resolve !== "merge")
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
-          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
+          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => protectedForActor(snapshot, agent))
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -579,7 +684,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const memo = memoFromSnapshot(snapshot)
           const folderId = folderIdOfInput(memo, input.id)
           if (folderId !== undefined) {
-            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString()), actor)
+            const owner = input.id.includes(":folder:") ? input.id.split(":folder:")[0] : snapshot.folders?.find((folder) => folder.id === folderId)?.owner
+            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner), actor)
             return { output: { id: input.id, ...applied } }
           }
           const node = findRow(memo, input.id)
@@ -641,7 +747,36 @@ function snapshotOrFail(api: PlusApi): Effect.Effect<Plus.Snapshot, Tool.Error> 
   })
 }
 
+function creationFields(memo: Memo, row: TreeNode, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.kind === "folder") return { ...input, id: row.id }
+  const path = lazyPath(memo, row.id)
+  const owner = row.address ?? path.findLast((entry) => entry.owner !== undefined)?.owner
+  const level = owner?.level ?? path.find((entry) => entry.kind === "root")?.id.slice("root:".length)
+  if (input.kind === "model" || input.kind === "rule") {
+    if (owner === undefined) return { refusal: `"${row.label}" does not identify an owner` }
+    const fields = {
+      ...Object.fromEntries(Object.entries(input).filter(([key]) => !["level", "scope", "agent", "team", "catalogue"].includes(key))),
+      level: owner.level, agent: owner.agent ?? "_",
+      ...(owner.catalogue === undefined ? {} : { catalogue: owner.catalogue }),
+      ...(owner.team === undefined ? {} : { team: owner.team.team }),
+    }
+    if (input.kind === "model") return fields
+    const item = memo.ctx.items.find((item) => item.id === row.address?.item)
+    const tool = item?.paramTool ?? item?.permTool ?? (row.address?.item.startsWith("tool:") ? row.address.item.slice("tool:".length) : undefined)
+    return tool === undefined ? { refusal: `"${row.label}" does not identify a rule's tool` } : { ...fields, tool }
+  }
+  if (input.kind === "member" || input.kind === "presetMember") {
+    const team = path.findLast((entry) => entry.owner?.team !== undefined)?.owner?.team?.team
+    if (team === undefined) return { refusal: `"${row.label}" does not identify a team` }
+    return { ...input, level, team }
+  }
+  if (input.kind === "agent" || input.kind === "team" || input.kind === "skill") return { ...input, scope: level, level }
+  return input
+}
+
 function actorFrom(context: Tool.Context): Plus.Actor {
+  const human = interactiveActor()
+  if (human !== undefined) return human
   return {
     type: "tool",
     agent: String(context.agent),
@@ -738,6 +873,7 @@ function applyLayout(api: PlusApi, snapshot: Plus.Snapshot, change: LayoutChange
     if ("refusal" in change) return yield* Effect.fail(new Tool.Error({ message: change.refusal }))
     const written = yield* Effect.promise(() =>
       api.layoutWrite({
+        expectedProjectRevision: snapshot.revision,
         folders: [...change.layout.folders],
         orders: [...change.layout.orders],
         expectedGlobalRevision: snapshot.globalRevision,
@@ -790,12 +926,16 @@ function protectedOf(snapshot: Plus.Snapshot, node: TreeNode): string | undefine
   if (node.owner?.level === "preset" || node.address?.level === "preset") return undefined
   if (node.kind === "agent") {
     const agent = node.id.split(":").slice(2).join(":")
-    if (agent !== "" && snapshot.protectedAgents.includes(agent)) return agent
+    if (agent !== "" && protectedForActor(snapshot, agent)) return agent
     return undefined
   }
   const owner = node.address?.agent ?? node.owner?.agent
-  if (owner !== undefined && owner !== null && snapshot.protectedAgents.includes(owner)) return owner
+  if (owner !== undefined && owner !== null && protectedForActor(snapshot, owner)) return owner
   return undefined
+}
+
+function protectedForActor(snapshot: Plus.Snapshot, agent: string | null): boolean {
+  return interactiveActor() === undefined && agent !== null && snapshot.protectedAgents.includes(agent)
 }
 
 // `set {id, rename}`: rename an agent, on-disk team member or Project/Global
@@ -935,7 +1075,7 @@ function linkRow(
     // A gate's primary is a condition row; a section is not a row the gate can
     // read (its on/off is not one answer), so refuse rather than silently use
     // the whole item's state.
-    if (type !== "either" && type !== "oneway" && primary.section !== null)
+    if (type !== "either" && primary.section !== null)
       return yield* Effect.fail(
         new Tool.Error({ message: `link.invalid: a "${type}" gate cannot have a section as its condition; condition the whole row` }),
       )
@@ -951,7 +1091,7 @@ function linkRow(
     const withoutRowlinks = memo.records.filter((record) => record.type !== "rowlink")
     const status =
       input.enabled === false
-        ? `Masked the ${type} link between "${node.label}" and "${targetNode.label}" at this level`
+        ? `Disabled the ${type} link between "${node.label}" and "${targetNode.label}" at this level`
         : `Linked "${node.label}" to "${targetNode.label}" (${type})`
     const applied = yield* mutateDelta(api, memo, [...withoutRowlinks, ...next], actor, status)
     return { output: { id: input.id, target: input.target, type, enabled: input.enabled !== false, ...applied } }
@@ -1222,7 +1362,7 @@ function setModel(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
       }
-      const op = editModelRow(memo, id, fields, undefined, (owner) => owner !== null && snapshot.protectedAgents.includes(owner))
+      const op = editModelRow(memo, id, fields, undefined, (owner) => protectedForActor(snapshot, owner))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateModels(api, memo, op.models, op.status, actor, op.records)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1244,7 +1384,7 @@ function setModel(
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.state === "off") return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be toggled off by state; remove the candidate to mask it` }))
-    const op = activateModelRow(memo, id, undefined, (owner) => owner !== null && snapshot.protectedAgents.includes(owner))
+    const op = activateModelRow(memo, id, undefined, (owner) => protectedForActor(snapshot, owner))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, { records: op.records ?? memo.records.filter((record): record is CustomizationRecord => record.type === "customization"), splits: memo.records.filter((record): record is SplitRecord => record.type === "split"), models: op.models, status: op.status }, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1444,7 +1584,7 @@ function setPerm(
       if (limitOf(input.text) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
       const text = String(limitOf(input.text))
-      const op = computeSet(memo, { id, text }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
+      const op = computeSet(memo, { id, text }, treeMemo, (agent) => protectedForActor(snapshot, agent))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateOp(api, memo, op, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1452,7 +1592,7 @@ function setPerm(
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
-    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
+    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo, (agent) => protectedForActor(snapshot, agent))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, op, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1505,23 +1645,12 @@ function deleteRuleRow(
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
     if (parsed === undefined) return yield* Effect.fail(unknownError(id))
-    const item = memo.items.find((entry) => entry.id === address.item)
-    if (item?.custom !== true) {
-      const label = found?.label ?? id
-      return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deleted: only user-created rules can be deleted` }))
-    }
-    // Custom rules display globally: the selected row's agent is whatever
-    // subtree the user happened to open, not the record's owner. Validate the
-    // owner of the record actually matched (by global tool+id identity) before
-    // deleting, or a rule owned by protected alpha is deletable through beta.
-    const existing = memo.records.find(
-      (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
-    )
-    if (existing === undefined) return yield* Effect.fail(unknownError(id))
-    if (existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
+    const existing = ownRule(rulesOfMemo(memo), address)
+    if (existing === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${found?.label ?? id}" cannot be deleted: only user-created rules owned by this row can be deleted` }))
+    if (existing.agent !== null && protectedForActor(snapshot, existing.agent))
       return yield* Effect.fail(protectedError(existing.agent))
     const result = yield* Effect.promise(() =>
-      api.removeRule({ level: existing.level, agent: existing.agent, tool: parsed.tool, id: parsed.ruleId, actor }),
+      api.removeRule({ level: existing.level, agent: existing.agent, ...catalogueField(existing), ...(existing.team === undefined ? {} : { team: existing.team }), tool: parsed.tool, id: parsed.ruleId, actor }),
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     return { output: { ...result.value, status: `Removed "${id}"` } }
@@ -1542,16 +1671,9 @@ function updateRuleRow(
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
     if (parsed === undefined) return yield* Effect.fail(unknownError(id))
-    // Same global-identity protection as delete: the row's agent is whatever
-    // subtree is open, so check the matched record's owner before writing, or
-    // a protected owner's rule is editable through another agent's row. The
-    // PlusApi updateRule repeats this guard at the shared boundary, so direct
-    // RPC callers inherit it too.
-    const existing = memo.records.find(
-      (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
-    )
-    if (existing !== undefined && existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
-      return yield* Effect.fail(protectedError(existing.agent))
+    const existing = ruleAt(rulesOfMemo(memo), contextOfSnapshot(snapshot), address)
+    if (address.agent !== null && protectedForActor(snapshot, address.agent))
+      return yield* Effect.fail(protectedError(address.agent))
     // A message-only edit derives label and patterns from the rule it edits
     // (the user record, else the upstream perm item it materialises), so
     // `set({ id, message })` works without restating the whole rule.
@@ -1569,12 +1691,13 @@ function updateRuleRow(
         // create a Teams rule, not an Agents one. A matched record keeps its
         // stored catalogue server-side, so this only matters for a new one.
         ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
+        ...(address.team === undefined ? {} : { team: address.team }),
         tool: parsed.tool,
         id: parsed.ruleId,
         label,
         patterns: [...patterns],
-        ...(input.keywords === undefined ? {} : { keywords: [...input.keywords] }),
-        ...(input.message === undefined ? {} : { message: input.message }),
+        keywords: [...(input.keywords ?? existing?.keywords ?? upstream?.keywords ?? [])],
+        message: input.message ?? existing?.message ?? upstream?.message ?? "",
         actor,
       }),
     )
@@ -1631,7 +1754,7 @@ function setGroup(
     if (input.mode !== undefined || input.requires !== undefined)
       return yield* Effect.fail(new Tool.Error({ message: `"${label}" is a group: only state on|off applies` }))
     const target = input.state === undefined ? undefined : input.state === "on"
-    const isProtected = (agent: string) => snapshot.protectedAgents.includes(agent)
+    const isProtected = (agent: string) => protectedForActor(snapshot, agent)
     const op = toggleGroup(memo, id, undefined, target, isProtected)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, op, actor)
@@ -1774,7 +1897,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const provenance = upstream.provenance === undefined ? [] : [...upstream.provenance]
       const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
       const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
-      const message = ruleMessageOf(snapshot, upstream)
+      const message = upstream.custom === true ? upstream.message : curatedRuleMessage(upstream.permTool ?? "", upstream.ruleId ?? "") ?? upstream.message
       return {
         output: {
           id,
@@ -1937,25 +2060,13 @@ function mergeOp(memo: MemoInput, treeMemo: Memo, node: TreeNode, input: { id: s
   return resolveReview(memo, input.id, "merge", text, undefined, treeMemo)
 }
 
-function upstreamOf(memo: MemoInput, address: Pick<Address, "item" | "agent" | "team" | "memberOf">) {
+function upstreamOf(memo: MemoInput, address: Address) {
   if (isControl(address.item)) return controlItemFor(memo.items, address)
   const matches = memo.items.filter((item) => item.id === address.item)
-  if (address.agent === null) return matches[0]
-  return matches.find((item) => applies(item, address.agent as string)) ?? matches[0]
-}
-
-// The refusal text a perm row installs: a user rule's own stored message
-// wins, a curated row ships one, a mined row has none and keeps core's
-// generic refusal.
-function ruleMessageOf(snapshot: Plus.Snapshot, item: Item): string | undefined {
-  const tool = item.permTool
-  const rule = item.ruleId
-  if (tool === undefined || rule === undefined) return undefined
-  if (item.custom !== true) return curatedRuleMessage(tool, rule) ?? item.message
-  const record = snapshot.records.find(
-    (entry): entry is Plus.SnapshotRuleRecord => entry.type === "rule" && entry.tool === tool && entry.id === rule,
-  )
-  return record?.message
+  const item = matches.find((item) => address.agent === null || applies(item, address.agent)) ?? matches[0]
+  if (item === undefined || item.kind !== "perm") return item
+  const context = buildTreeMemo(memo).ctx
+  return ruleItem(item, context.rules, context.scopes, address)
 }
 
 function recordOfRow(
@@ -1982,7 +2093,7 @@ function recordOfRow(
   if (address.item.startsWith("perm:")) {
     const parsed = parsePermItemId(address.item)
     if (parsed !== undefined) {
-      const rule = rulesOfMemo(memo).find((record) => record.tool === parsed.tool && record.id === parsed.ruleId)
+      const rule = ownRule(rulesOfMemo(memo), address)
       if (rule !== undefined) return rule
     }
   }
@@ -2055,7 +2166,7 @@ function createRow(
         return yield* Effect.fail(new Tool.Error({ message: "create agent requires scope project|global" }))
       const snapshot = yield* snapshotOrFail(api)
       const candidate = input.id.trim()
-      if (candidate !== "" && snapshot.protectedAgents.includes(candidate))
+      if (candidate !== "" && protectedForActor(snapshot, candidate))
         return yield* Effect.fail(protectedError(candidate))
       const preset = yield* presetInputOrFail(snapshot, input.preset)
       const created = yield* Effect.promise(() =>
@@ -2214,7 +2325,7 @@ function createRow(
       const teammate = input.id.trim()
       // A Defaults member entry is a pattern, not an agent: protection is
       // about agents a tool may not create.
-      if (level !== "defaults" && teammate !== "" && snapshot.protectedAgents.includes(teammate))
+      if (level !== "defaults" && teammate !== "" && protectedForActor(snapshot, teammate))
         return yield* Effect.fail(protectedError(teammate))
       const preset = yield* presetInputOrFail(snapshot, input.preset)
       const created = yield* Effect.promise(() =>
@@ -2241,7 +2352,7 @@ function createRow(
         return yield* Effect.fail(new Tool.Error({ message: "create model requires agent for project|global|preset levels" }))
       const agent = level === "defaults" && (rawAgent.length === 0 || rawAgent === "_") ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
-      if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
+      if (level !== "preset" && agent !== null && protectedForActor(snapshot, agent))
         return yield* Effect.fail(protectedError(agent))
       const memo = memoFromSnapshot(snapshot)
       const team = input.team?.trim()
@@ -2311,12 +2422,19 @@ function createRow(
       const rawAgent = input.agent?.trim() ?? ""
       const agent = rawAgent.length === 0 || rawAgent === "_" ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
-      if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
+      if (level !== "preset" && agent !== null && protectedForActor(snapshot, agent))
         return yield* Effect.fail(protectedError(agent))
+      const team = input.team?.trim()
+      const member = team === undefined ? undefined : findRow(memoFromSnapshot(snapshot), `team:${level}:${team}:${agent}`)
+      if (team !== undefined && member?.owner === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: `rule.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
+      const owner = team === undefined ? {} : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
+        ? { team: { level, team } } : { memberOf: { level, team } }
       const created = yield* Effect.promise(() =>
         api.addRule({
           level,
           agent,
+          ...(owner.team === undefined ? {} : { team: owner.team }),
           ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
           tool: input.tool as string,
           id: input.id as string,
@@ -2338,6 +2456,7 @@ function createRow(
           createdItemRow(memo, {
             level: created.value.agent === null ? "defaults" : created.value.level,
             agent: created.value.agent,
+            ...owner,
             item: permItemId(created.value.tool, created.value.id),
             ...catalogueField({ agent: created.value.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
           }),

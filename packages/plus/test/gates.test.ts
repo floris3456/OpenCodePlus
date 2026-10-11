@@ -20,7 +20,7 @@ test("section assembly honors pair type changes, opposite markers and scoped bar
   const barrier = (level: Level) => gate({ ...target, level, item: "system:role", section: "role/checks", link: "shownAlways" })
   const role = { ...items[0]!, text: "# Role\n\n## Checks\n<!-- requires: tool:question -->\nRun checks.\n" }
   for (const scenario of [
-    { links: [inherited, gate({ ...target, item: "tool:question", link: "oneway" })], kept: true },
+    { links: [inherited, gate({ ...target, item: "tool:question", link: "either" })], kept: true },
     { links: [gate({ ...target, item: "tool:question", link: "shownWhenOff" })], kept: true },
     { links: [barrier("global"), gate({ ...target, item: "tool:team_check", link: "shownWhenOn" })], kept: false },
     { links: [inherited, barrier("project")], kept: true },

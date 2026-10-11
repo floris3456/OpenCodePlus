@@ -1,4 +1,5 @@
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
+import { ruleItem } from "./rules.js"
 import type { MCPEditor } from "@opencode/plugin/effect/mcp"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration, Transform } from "@opencode/plugin/effect/registration"
@@ -582,11 +583,14 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
     const chain = resolutionChain(address, input.scopes)
     const chainKey = chainContentKey(chain)
 
-    const itemsForAgent = permRows.filter((item) => applies(item, agentId))
+    const itemsForAgent = permRows.flatMap((item) => {
+      const resolved = runtimeRule(item, agent ?? { id: agentId, level: "project" }, input)
+      return resolved === undefined || !applies(resolved, agentId) ? [] : [resolved]
+    })
     const itemsDigest = itemsForAgent
       .map((item) => {
         const recHash = recordsIndex.get(item.id)?.hash ?? ""
-        return `${item.id}:${item.fingerprint}:${item.enabled}:${recHash}`
+        return JSON.stringify([item.id, item.fingerprint, item.enabled, item.message, item.keywords, recHash])
       })
       .join(";")
 
@@ -599,6 +603,7 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
 
   return permissionTable({
     items: input.items,
+    item: (item, agentId) => runtimeRule(item, byId.get(agentId) ?? { id: agentId, level: "project" }, input),
     teamMembers: input.teamAgents ?? [],
     resolve: (item, agentId) => {
       const agent = byId.get(agentId)
@@ -720,7 +725,7 @@ export async function runRegistration<Editor>(
   )
 }
 
-async function runHook<Name extends "context" | "catalog" | "compaction">(
+async function runHook<Name extends "context" | "catalog" | "compaction" | "tools">(
   hook: (name: Name, callback: (input: SessionHooks[Name]) => Effect.Effect<void>) => Effect.Effect<Registration, never, Scope.Scope>,
   name: Name,
   callback: (input: SessionHooks[Name]) => Effect.Effect<void>,
@@ -737,6 +742,7 @@ async function runHook<Name extends "context" | "catalog" | "compaction">(
 }
 
 interface ChainArgs {
+  readonly rules?: readonly RuleRecord[]
   readonly records: readonly CustomizationRecord[]
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
@@ -752,7 +758,7 @@ export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs, gate
   const runtime = runtimeScope(agent, args.scopes)
   return resolve({
     ...(gate === undefined ? {} : { gate }),
-    upstream: item,
+    upstream: runtimeRule(item, agent, args) ?? item,
     records: args.records,
     splits: args.splits,
     scopes: runtime.scopes,
@@ -763,6 +769,14 @@ export function resolvedFor(item: Item, agent: ApplyAgent, args: ChainArgs, gate
       section: null,
       ...(agent.team !== undefined ? { team: agent.team } : {}),
     },
+  })
+}
+
+function runtimeRule(item: Item, agent: ApplyAgent, args: ChainArgs): Item | undefined {
+  const runtime = runtimeScope(agent, args.scopes)
+  return ruleItem(item, args.rules ?? [], runtime.scopes, {
+    level: runtime.level, agent: agent.id, item: item.id, section: null,
+    ...(agent.team === undefined ? {} : { team: agent.team }),
   })
 }
 
@@ -994,8 +1008,9 @@ function pushRule(
 // closed. Rows of every other kind are enforced there too.
 function permDenials(input: ApplyInput): Rule[] {
   return input.agents.flatMap((agent) =>
-    input.items.flatMap((item): Rule[] => {
-      if (item.kind !== "perm") return []
+    input.items.flatMap((upstream): Rule[] => {
+      const item = runtimeRule(upstream, agent, input)
+      if (item === undefined || item.kind !== "perm") return []
       // Team policy rows carry both sides of their answer and install through
       // policyRules; installing their patterns here too would double them.
       if (item.policy !== undefined) return []
@@ -1006,7 +1021,7 @@ function permDenials(input: ApplyInput): Rule[] {
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
       const action = item.permAction ?? actionForToolId(tool)
-      const message = ruleDenialMessage(input, item, tool)
+      const message = item.custom === true ? item.message : curatedRuleMessage(tool, item.ruleId ?? "") ?? item.message
       return item.patterns.map((pattern) => ({
         agent: agent.id,
         action,
@@ -1032,8 +1047,11 @@ function shellAllowList(input: ApplyInput): Rule[] {
   const action = closing.permAction ?? actionForToolId("shell")
   return input.agents.flatMap((agent): Rule[] => {
     if (!applies(closing, agent.id) || resolvedFor(closing, agent, input).enabled) return []
-    const opened = rows.filter((item) => item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled)
-    const message = allowListMessage(closing.message ?? "this command is not allowed here", opened.map((item) => item.title))
+    const opened = rows.flatMap((row) => {
+      const item = runtimeRule(row, agent, input)
+      return item !== undefined && item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled ? [item] : []
+    })
+    const message = allowListMessage(runtimeRule(closing, agent, input)?.message ?? "this command is not allowed here", opened.map((item) => item.title))
     return [
       { agent: agent.id, action, resource: "*", effect: "deny", allowList: "closing", message },
       ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
@@ -1080,16 +1098,6 @@ export function orderRules<
     .map((rule, index) => ({ rule, index }))
     .toSorted((left, right) => rank(left.rule) - rank(right.rule) || left.index - right.index)
     .map((entry) => entry.rule)
-}
-
-// The refusal text a perm row installs. A user RuleRecord's own message wins
-// for the row it backs; a shipped curated rule carries one; a mined row has
-// none and keeps core's generic refusal.
-function ruleDenialMessage(input: ApplyInput, item: Item, tool: string): string | undefined {
-  const ruleId = item.ruleId
-  if (ruleId === undefined) return undefined
-  if (item.custom === true) return input.rules?.find((record) => record.tool === tool && record.id === ruleId)?.message
-  return curatedRuleMessage(tool, ruleId) ?? item.message
 }
 
 // Policy rows: every policy row resolved for the member it belongs to,
@@ -1152,8 +1160,9 @@ function teamToolDenials(candidates: readonly ToolCandidate[], members: readonly
 function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
   const out = new Map<string, string[]>()
   for (const agent of input.agents) {
-    const keywords = input.items.flatMap((item) => {
-      if (item.kind !== "perm") return []
+    const keywords = input.items.flatMap((upstream) => {
+      const item = runtimeRule(upstream, agent, input)
+      if (item === undefined || item.kind !== "perm") return []
       if (item.keywords === undefined || item.keywords.length === 0) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
@@ -1290,6 +1299,7 @@ function basePlans(input: ApplyInput): BasePlan[] {
 }
 
 interface ToolCandidate {
+  readonly mode?: "direct" | "codemode"
   readonly agent: string
   readonly item: Item
   readonly tool: string
@@ -1312,6 +1322,8 @@ function nativePlan(candidate: ToolCandidate): ToolPlan {
 
 function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boolean }): ToolCandidate[] {
   const edited = editedParams(input)
+  const modes = new Set(input.records.filter((record) => record.item.startsWith("toolmode:")).map((record) => record.item))
+  const exposures = new Map(input.items.filter((item) => modes.has(item.id)).map((item) => [item.id, item]))
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
@@ -1319,16 +1331,22 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
       const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       const tool = parseId(item.id, "tool:")
       const params = paramPlans(input, agent, edited.get(tool))
+      const exposure = exposures.get(`toolmode:${tool}`)
+      const requested = item.execute !== true && exposure !== undefined
+        ? resolvedFor(exposure, agent, input).assembled === "codemode" ? "codemode" : "direct"
+        : undefined
+      const mode = requested === (item.codemode === true ? "codemode" : "direct") ? undefined : requested
       // isNoop compares only text and enablement (it is shared with base and
       // instruction plans, which have no pin), so a pin-only change on a Code
       // Mode tool would be discarded here before catalogPlans ever sees it.
       // Let the candidate survive when the resolved pin differs from the
       // registry default, or when the agent sees a parameter edited.
-      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false) && params.length === 0
+      const noop = isNoop(item, resolved) && resolved.pinned === (item.pinned ?? false) && params.length === 0 && mode === undefined
       if (options?.skipNoop !== true && noop) return []
       return [{
         agent: agent.id,
-        item,
+        item: mode === undefined ? item : { ...item, codemode: mode === "codemode" },
+        ...(mode === undefined ? {} : { mode }),
         tool,
         enabled: resolved.enabled,
         text: resolved.assembled,
@@ -1417,6 +1435,7 @@ function instructionPlanPath(id: string): string {
 }
 
 export interface SessionPlans {
+  readonly exposure: readonly { readonly agent: string; readonly tool: string; readonly mode: "direct" | "codemode" }[]
   readonly base: readonly BasePlan[]
   readonly native: readonly ToolPlan[]
   readonly denials: readonly ToolCandidate[]
@@ -1474,6 +1493,7 @@ export function sessionPlans(
   const scrubByAgent = scrubKeywordsByAgent(input)
   const needsNarrowing = tableNarrows(permissions, input.agents.map((agent) => agent.id)) || (input.teamAgents?.length ?? 0) > 0
   return {
+    exposure: candidates.flatMap((candidate) => candidate.mode === undefined ? [] : [{ agent: candidate.agent, tool: candidate.tool, mode: candidate.mode }]),
     base,
     native,
     denials,
@@ -1501,6 +1521,13 @@ export async function installSessionPlans(
 ): Promise<Registration[]> {
   const installed: Registration[] = []
   try {
+    if (plans.exposure.length > 0) {
+      installed.push(await runHook(ctx.session.hook, "tools", (event) => Effect.sync(() => {
+        for (const plan of plans.exposure) {
+          if (plan.agent === String(event.agent)) event.modes[plan.tool] = plan.mode
+        }
+      })))
+    }
     const team = new Set(input.teamAgents ?? [])
     const instructions = precomputed?.instructions ?? instructionPlans(input)
     const scrubByAgent = new Map(plans.scrubByAgent)

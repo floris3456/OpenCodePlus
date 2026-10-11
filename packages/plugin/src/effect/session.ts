@@ -203,6 +203,13 @@ export interface SessionWarming {
   settings: SessionWarmingSettings | undefined
 }
 
+/** Request-local tool exposure overrides, by registry tool id. Permissions still apply. */
+export interface SessionTools {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  modes: Record<string, "direct" | "codemode">
+}
+
 export interface SessionCatalog {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
@@ -217,6 +224,7 @@ export interface SessionCatalog {
 export interface SessionHooks {
   /** Destination-scoped, awaited after a committed folder move and before destination execution. */
   readonly moved: { readonly source: Session.Info; readonly destination: Session.Info }
+  readonly tools: SessionTools
   readonly "model.observed": SessionModelObserved
   readonly prompt: SessionPrompt
   readonly context: SessionContext

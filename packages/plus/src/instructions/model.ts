@@ -141,6 +141,10 @@ export interface Item {
   readonly category?: string
   /** Perm rows only: how the row is enforced. Absent means "rule": core rules on `permAction` (see permission-catalog.ts). */
   readonly permKind?: PermKind
+  /** A permission scoped to one top-level tool argument. */
+  readonly permissionParameter?: string
+  /** Legacy call-level row whose overrides remain the default for this argument. */
+  readonly permissionSource?: string
   /** input/value/param/limit/approval rows: the input field the row reads (dotted path; `[]` walks an array). */
   readonly field?: string
   /** value rows: the literal the row allows. param rows: the value that counts as using the parameter (absent: any value). */
@@ -1598,12 +1602,13 @@ function resolutionContentKey(
   chainKey: string,
 ): string {
   const upstream = input.upstream
+  const legacy = upstream.permissionSource === undefined ? "" : itemRecordsIndex(input.records).get(upstream.permissionSource)?.hash ?? ""
   const gateKey = input.gate === undefined ? "none" : identityKey(input.gate)
   const agent = input.address.agent
   const native = input.scopes.native === undefined ? "u" : agent !== null && input.scopes.native.has(agent) ? "n" : "-"
   const presets = scopesContentKey(input.scopes)
   const owners = `${(upstream.agents ?? []).join(",")}|${upstream.ownedBy ?? ""}`
-  return `${upstream.id}:${upstreamTextKey(upstream)}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${owners}:${addressKey(input.address)}:${recordsHash}:${splitsHash}:${chainKey}:${native}:${presets}:${gateKey}`
+  return `${upstream.id}:${upstreamTextKey(upstream)}:${upstream.enabled}:${upstream.pinned ?? ""}:${upstream.kind}:${upstream.title}:${owners}:${addressKey(input.address)}:${recordsHash}:${upstream.permissionSource ?? ""}:${legacy}:${splitsHash}:${chainKey}:${native}:${presets}:${gateKey}`
 }
 
 const resolutionCacheLimit = 20000
@@ -1855,7 +1860,13 @@ function threeWaySection(input: ChainInput): ThreeWay | undefined {
 
 function wholeRecords(input: ChainInput): readonly CustomizationRecord[] {
   const entry = itemRecordsIndex(input.records).get(input.address.item)
-  return entry?.sections.get(null) ?? []
+  const own = entry?.sections.get(null) ?? []
+  if (input.upstream.permissionSource === undefined) return own
+  const legacy = itemRecordsIndex(input.records).get(input.upstream.permissionSource)?.sections.get(null) ?? []
+  return [
+    ...own.map((record) => ({ ...legacy.find((fallback) => scopedTo(fallback, record)), ...record })),
+    ...legacy.filter((record) => !own.some((current) => scopedTo(current, record))).map((record) => ({ ...record, item: input.address.item })),
+  ]
 }
 
 export function sectionRecords(input: ChainInput, id: string): CustomizationRecord[] {
@@ -1872,7 +1883,7 @@ function valueAt(
   section: string | null,
 ): ShippedValue | undefined {
   if (node.shipped === undefined) return at(records, node)
-  return input.scopes.presets?.shipped(node.shipped, input.address.item, section, input.upstream, input.address.agent, (agent) =>
+  return input.scopes.presets?.shipped(node.shipped, input.upstream.permissionSource ?? input.address.item, section, input.upstream, input.address.agent, (agent) =>
     linkedPresets({ ...input.address, agent }, input.scopes),
   )
 }
@@ -2128,7 +2139,8 @@ export function ownAndAbove(input: ChainInput): { readonly own: CustomizationRec
 
 // What the chain above `own` resolves: the same address with `own` removed.
 function resolveAbove(input: ChainInput, own: CustomizationRecord): Resolved {
-  return resolve({ ...input, records: input.records.filter((record) => record !== own) })
+  return resolve({ ...input, records: input.records.filter((record) =>
+    !sameNode(record, own) && !(record.item === input.upstream.permissionSource && record.section === own.section && scopedTo(record, own))) })
 }
 
 function isReview(own: CustomizationRecord, current: () => string): boolean {

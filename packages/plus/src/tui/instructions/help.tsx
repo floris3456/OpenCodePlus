@@ -23,6 +23,10 @@ export const HELP: readonly HelpGroup[] = [
       ["W / alt+W", "resize the panels (wide): ←/[ move divider left · →/] move divider right · tab switch · enter/esc save"],
       ["/", "filter this level as you type · esc clears"],
       ["esc", "back one step; from the sidebar it closes the screen"],
+      [".", "switch System sub-tab: Instructions / Base"],
+      ["x · shift+↑↓ · ctrl+a", "select a row · select a range · select visible rows; Esc clears"],
+      ["", "selected rows stay selected across agents and tabs; edits reflect to compatible settings"],
+      ["ctrl+c / ctrl+x / ctrl+v", "copy / cut / paste selected rows; cut stays pending until paste succeeds; Esc cancels"],
     ],
   ],
   [
@@ -47,6 +51,7 @@ export const HELP: readonly HelpGroup[] = [
       ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section, category"],
       ["l", "link an agent, member, team, entry or User preset to a preset (or unlink)"],
       ["L", "row links: select primary, navigate to another row, L finishes; Esc cancels"],
+      ["", "link list: Enter edits type; Space enables/disables; d deletes a local link"],
       ["d", "delete (asks first; a user category's rows go home)"],
     ],
   ],

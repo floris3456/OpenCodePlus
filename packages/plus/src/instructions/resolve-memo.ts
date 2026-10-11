@@ -1,4 +1,5 @@
 import { catalogueOf, resolve, resolveEnabled, resolveSplit, scopedTo } from "./model.js"
+import { ruleItem } from "./rules.js"
 import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
 import type { RowlinkRecord } from "./rowlinks.js"
@@ -258,7 +259,7 @@ export function wholeOf(memo: Memo, level: Level, owner: string | null, item: It
   const cached = memo.whole.get(key)
   if (cached !== undefined) return cached
   const resolved = resolve({
-    upstream: item,
+    upstream: ruleItem(item, memo.ctx.rules, memo.ctx.scopes, addressOf(level, owner, item.id, null, catalogue, team)) ?? item,
     records: memo.ctx.customizations,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,
@@ -277,7 +278,7 @@ export function enabledOf(memo: Memo, level: Level, owner: string | null, item: 
   const cached = memo.enabled.get(key)
   if (cached !== undefined) return cached
   const enabled = resolveEnabled({
-    upstream: item,
+    upstream: ruleItem(item, memo.ctx.rules, memo.ctx.scopes, addressOf(level, owner, item.id, null, catalogue, team)) ?? item,
     records: memo.ctx.customizations,
     splits: memo.ctx.splits,
     scopes: memo.ctx.scopes,

@@ -93,7 +93,7 @@ test("live Parent add, Child edit and Parent save retain the outside Sibling", (
   const full = resolve({ upstream, records: saved.records, splits: [], scopes, address: { level: "global", agent: "alpha", item: item.id, section: null } }).fullText!
   expect(headings(full)).toEqual(["# Parent", "## Child", "## Added", "# Sibling"])
   for (const canary of ["PARENT_CANARY", "CHILD_CANARY", "CHILD_EDIT_CANARY", "ADDED_CANARY", "PARENT_EDIT_CANARY", "SIBLING_CANARY"]) expect(full.split(canary)).toHaveLength(2)
-  expect(expandedTree(fixture(saved.records)).filter((row) => row.kind === "section" && row.address?.level === "global" && row.address.item === "system:role").map((row) => row.label)).toEqual(["Parent", "Child", "Added", "Sibling"])
+  expect(expandedTree(fixture(saved.records)).filter((row) => row.kind === "section" && row.address?.level === "global" && row.address.item === "system:role").map((row) => row.label)).toEqual(["Description", "Parent", "Child", "Added", "Sibling"])
 })
 
 test("a parent's full-span customization sends each heading once, with the child's edit", () => {

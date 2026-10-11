@@ -49,8 +49,24 @@ test("the sidebar lists catalogues, origins, owners and teams with their members
   // The first owner shows by default, with its categories as tabs.
   expect(ws.owner?.key).toBe("agent:project:build")
   // No Skills tab: skills live under Tools › skill › Permissions › Skills.
-  expect(ws.categories.map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Base", "System"])
+  expect(ws.categories.map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "System"])
   expect(ws.category?.label).toBe("Settings")
+})
+
+test("System contains Instructions and Base tabs and restores old Base selections", () => {
+  const source = rowsOf()
+  const known = new Set<string>()
+  const system = workspaceOf(input(source.rows, { category: "group:project:build:system" }), known)
+  expect(system.categories.map((node) => node.label)).not.toContain("Base")
+  expect(system.subcategories?.map((node) => node.label)).toEqual(["Instructions", "Base"])
+  expect(system.subcategory?.id).toBe("group:project:build:system:instructions")
+  expect(system.list.some((row) => row.node.address?.item === "base:gpt")).toBe(false)
+  const base = workspaceOf(input(source.rows, { category: "group:project:build:base" }), known)
+  expect(base.category?.id).toBe("group:project:build:system")
+  expect(base.subcategory?.id).toBe("group:project:build:base")
+  expect(base.list.map((row) => row.node.address?.item)).toEqual(["base:gpt"])
+  expect(base.list[0]?.depth).toBe(0)
+  expect(base.parents.get("group:project:build:base")?.id).toBe("group:project:build:system")
 })
 
 test("the list is the category's own subtree, its origin subgroups open by default", () => {

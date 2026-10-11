@@ -1,14 +1,13 @@
-// Folders and display order (plus-1.2.0 S1a). A folder is a collapsible group
-// inside one tab (Tools, System, Models, …) holding that tab's rows and child
-// folders. An order record lists the display order of one list that is not a
-// folder: a tab's top level (`tab:<tab>`) or the sidebar. Both are global and
-// agent-independent, and both are display only: nothing here reaches the model.
-// Sections are the exception: moving a section rewrites the item's text.
+// Saved category membership shared by the TUI and Instructions tools. New
+// categories belong to one owner's tab; ownerless records retain the legacy
+// global layout until an owner edits it, at which point it is copied locally.
 
 /** One folder in a tab. `items` are item ids and child folders (`folder:<id>`), in display order. */
 export interface FolderRecord {
   readonly type: "folder"
-  readonly level: "global"
+  readonly level: "global" | "project"
+  /** The owning tab's tree id; absent only on legacy shared folders. */
+  readonly owner?: string
   readonly tab: string
   readonly id: string
   readonly name: string
@@ -20,7 +19,7 @@ export interface FolderRecord {
 /** The display order of one list: `tab:<tab>` or `sidebar`. Ids missing from it keep today's order after the listed ones. */
 export interface OrderRecord {
   readonly type: "order"
-  readonly level: "global"
+  readonly level: "global" | "project"
   readonly scope: string
   readonly items: readonly string[]
   readonly updated: string
@@ -52,6 +51,7 @@ export function tabOfItem(item: string): string {
 
 /** The tab key a tree group id ends with, if it is a tab. */
 export function tabOfGroupId(id: string): string | undefined {
+  if (id.endsWith(":system:instructions")) return "system"
   const match = /:(settings|models|compaction|tools|base|system|mcp)$/.exec(id)
   return match?.[1]
 }
@@ -116,14 +116,15 @@ export function uniqueFolderId(records: readonly FolderRecord[], tab: string, na
 /** Create a folder in `tab` (inside `parent` when given), listed last in its list. */
 export function createFolderRecord(
   records: readonly (FolderRecord | OrderRecord)[],
-  input: { readonly tab: string; readonly name: string; readonly parent?: string },
+  input: { readonly tab: string; readonly name: string; readonly parent?: string; readonly owner?: string },
   updated: string,
 ): (FolderRecord | OrderRecord)[] {
   const folders = records.filter((record): record is FolderRecord => record.type === "folder")
-  const id = uniqueFolderId(folders, input.tab, input.name)
+  const id = uniqueFolderId(folders, input.owner ?? input.tab, input.name)
   const folder: FolderRecord = {
     type: "folder",
-    level: "global",
+    level: input.owner === undefined ? "global" : layoutLevel(input.owner),
+    ...(input.owner === undefined ? {} : { owner: input.owner }),
     tab: input.tab,
     id,
     name: input.name.trim(),
@@ -187,9 +188,13 @@ export function layoutRefusal(folders: readonly FolderRecord[], orders: readonly
   const badTab = folders.find((folder) => !tabKeys.some((tab) => tab === folder.tab))
   if (badTab !== undefined) return `folder "${badTab.name}" names no tab`
   const badParent = folders.find(
-    (folder) => folder.parent !== undefined && folderOf(folders, folder.parent)?.tab !== folder.tab,
+    (folder) => folder.parent !== undefined && (folderOf(folders, folder.parent)?.tab !== folder.tab || folderOf(folders, folder.parent)?.owner !== folder.owner),
   )
   if (badParent !== undefined) return `folder "${badParent.name}" must sit in a folder of its own tab`
+  const badOwner = folders.find((folder) => folder.owner === undefined
+    ? folder.level !== "global"
+    : !/^group:(project|global|defaults|preset):/.test(folder.owner) || tabOfGroupId(folder.owner) !== folder.tab || folder.level !== layoutLevel(folder.owner))
+  if (badOwner !== undefined) return `folder "${badOwner.name}" has an invalid owner or storage level`
   const cyclic = folders.find((folder) => ancestorsOf(folders, folder.id).includes(folder.id))
   if (cyclic !== undefined) return `folder "${cyclic.name}" cannot sit inside itself`
   const badScope = orders.find(
@@ -202,6 +207,40 @@ export function layoutRefusal(folders: readonly FolderRecord[], orders: readonly
 export interface LayoutRecordSet {
   readonly folders: FolderRecord[]
   readonly orders: OrderRecord[]
+}
+
+export function layoutLevel(owner: string): "project" | "global" {
+  return owner.startsWith("group:project:") ? "project" : "global"
+}
+
+/** Isolate one owner before planning; materialize legacy membership on first edit. */
+export function ownerLayout(layout: { readonly folders: readonly FolderRecord[]; readonly orders: readonly OrderRecord[] }, owner: string) {
+  const tab = tabOfGroupId(owner)
+  if (tab === undefined) throw new Error(`Not a category: ${owner}`)
+  const own = layout.orders.some((order) => order.scope === groupScope(owner)) || layout.folders.some((folder) => folder.owner === owner)
+  const source = layout.folders.filter((folder) => folder.tab === tab && folder.owner === (own ? owner : undefined))
+  const ids = new Map(source.map((folder) => [folder.id, own ? folder.id : `${owner}/${folder.id}`]))
+  const token = (value: string) => {
+    const id = folderIdOfRef(value)
+    return id === undefined ? value : folderRef(ids.get(id) ?? id)
+  }
+  const folders = source.map((folder) => ({
+    ...folder, id: ids.get(folder.id)!, owner, level: layoutLevel(owner), items: folder.items.map(token),
+    ...(folder.parent === undefined ? {} : { parent: ids.get(folder.parent) ?? folder.parent }),
+  }))
+  const order = orderOf(layout.orders, own ? groupScope(owner) : `tab:${tab}`)
+  const orders: OrderRecord[] = order === undefined ? [] : [{ ...order, scope: `tab:${tab}`, items: order.items.map(token) }]
+  return {
+    folders, orders, token,
+    finish: (next: { readonly folders: readonly FolderRecord[]; readonly orders: readonly OrderRecord[] }, updated: string) => ({
+      folders: [...layout.folders.filter((folder) => folder.owner !== owner), ...next.folders.map((folder) => ({ ...folder, owner, level: layoutLevel(owner) }))],
+      // Even an empty order marks this owner's layout as independent of legacy folders.
+      orders: [...layout.orders.filter((entry) => entry.scope !== groupScope(owner)), {
+        type: "order" as const, level: layoutLevel(owner), scope: groupScope(owner),
+        items: orderOf(next.orders, `tab:${tab}`)?.items ?? [], updated,
+      }],
+    }),
+  }
 }
 
 export function splitLayout(records: readonly (FolderRecord | OrderRecord)[]): LayoutRecordSet {

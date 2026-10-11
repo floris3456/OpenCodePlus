@@ -27,7 +27,8 @@ import {
   type RuleRecord,
   type SplitRecord,
 } from "./model.js"
-import { catalogItems, categoryOfRow } from "./permission-catalog.js"
+import { catalogItems, categoryOfRow, parameterApprovals } from "./permission-catalog.js"
+import { toolModeItem } from "./tool-mode.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
@@ -169,7 +170,12 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     return { ...source, base }
   })
   const toolRows = toolItems(tools, baselines)
-  const paramRows = paramItems(tools)
+  const paramRows: Item[] = [...paramItems(tools), {
+    id: "param:execute:code", kind: "param", group: "native", title: "code",
+    text: "JavaScript to run in the Code Mode runtime.", enabled: true,
+    fingerprint: fingerprint("JavaScript to run in the Code Mode runtime."),
+    paramTool: "execute", paramType: "string", required: true,
+  }]
   const baseRows = baseItems(input.baseTemplates)
   const skillRows = skillItems(skills, directory, baselines)
   const roleRows = roleItems(agents, baselines, bodies)
@@ -188,6 +194,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const permRows = permItems({
     tools,
     toolRows,
+    paramRows,
     baseRows,
     skillRows,
     roleRows,
@@ -200,6 +207,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const items = [
     ...toolRows,
     ...paramRows,
+    ...toolRows.filter((tool) => tool.execute !== true).map(toolModeItem),
     ...baseRows,
     ...skillRows,
     ...roleRows,
@@ -208,7 +216,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...guidanceRows,
     ...mcp.items,
     ...modelRows,
-    ...permRows,
+    ...parameterApprovals(permRows, paramRows),
     ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent, inheritedInstructions)),
     ...controlItems(undefined, {}, inheritedInstructions),
   ]
@@ -627,7 +635,7 @@ function toolItems(
 }
 
 // One row per top-level parameter of each tool's input schema (Tools ›
-// <tool> › Parameters): its description is the row text, so it edits and
+// <tool>): its description is the row text, so it edits and
 // resets like any text row; an optional one can be switched off.
 function paramItems(tools: readonly (Tool.Info & { readonly id: string })[]): Item[] {
   return tools.flatMap((tool) => {
@@ -1027,6 +1035,7 @@ function guidanceItems(order: number): Item[] {
 function permItems(input: {
   readonly tools: readonly (Tool.Info & { readonly id: string })[]
   readonly toolRows: readonly Item[]
+  readonly paramRows: readonly Item[]
   readonly baseRows: readonly Item[]
   readonly skillRows: readonly Item[]
   readonly roleRows: readonly Item[]
@@ -1102,44 +1111,34 @@ function permItems(input: {
       })
     })
   }
-  const catalogById = new Map(catalog.map((item) => [item.id, item] as const))
+  const catalogById = new Map([...catalog, ...parameterApprovals(catalog, input.paramRows)].map((item) => [item.id, item] as const))
   for (const record of input.ruleRecords) {
     const id = permItemId(record.tool, record.id)
-    const text = `${record.label}\n${record.patterns.join("\n")}`
     const action = permActionForTool(input.tools, record.tool)
     // A user's edit of a catalog row keeps what the row is (its category,
     // kind, input field, fallback or allow role) and replaces only its label,
     // patterns, keywords and refusal text.
     const shipped = catalogById.get(id)
     if (shipped !== undefined) {
-      byId.set(id, {
-        ...shipped,
-        title: record.label,
-        text,
-        fingerprint: fingerprint(text),
-        patterns: [...record.patterns],
-        keywords: [...record.keywords],
-        custom: true,
-        ...(record.message === undefined ? {} : { message: record.message }),
-      })
+      byId.set(id, shipped)
       continue
     }
+    if (byId.has(id)) continue
     byId.set(id, {
       id,
       kind: "perm",
       group: "none",
-      title: record.label,
-      text,
+      title: record.id,
+      text: "",
       enabled: upstreamEnabled(),
-      fingerprint: fingerprint(text),
+      fingerprint: fingerprint(""),
       permTool: record.tool,
       ruleId: record.id,
-      patterns: [...record.patterns],
-      keywords: [...record.keywords],
+      patterns: [],
+      keywords: [],
       provenance: [],
       custom: true,
       // The agent the rule was created for owns it (§3.3 fallback: upstream).
-      ...(record.agent === null ? {} : { ownedBy: record.agent }),
       category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }, false),
       ...(action === undefined ? {} : { permAction: action }),
     })

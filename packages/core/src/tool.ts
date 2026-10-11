@@ -45,6 +45,7 @@ export interface Interface extends State.Transformable<Editor> {
   readonly snapshot: (
     permissions?: Permission.Ruleset,
     inputs?: ReadonlyMap<string, JsonSchema.JsonSchema>,
+    modes?: Readonly<Record<string, "direct" | "codemode">>,
   ) => Effect.Effect<Snapshot>
 }
 
@@ -230,7 +231,7 @@ const layer = Layer.effect(
       transform: state.transform,
       reload: state.reload,
       list: () => Effect.sync(() => Array.from(state.get().tools.values())),
-      snapshot: Effect.fn("Tool.snapshot")((permissions, inputs) =>
+      snapshot: Effect.fn("Tool.snapshot")((permissions, inputs, modes) =>
         Effect.sync(() => {
           const data = state.get()
           const active = new Map<string, Tool.Info>()
@@ -239,8 +240,8 @@ for (const [name, tool] of data.tools) {
             if (whollyDisabled(tool.options?.permission ?? name, rules) || whollyDisabled(name, rules)) continue
             active.set(name, tool)
           }
-          const direct = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode === false))
-          const codeModeTools = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode !== false))
+          const direct = new Map(Array.from(active).filter(([id, tool]) => id !== "execute" && (modes?.[id] ?? (tool.options?.codemode === false ? "direct" : "codemode")) === "direct"))
+          const codeModeTools = new Map(Array.from(active).filter(([id]) => !direct.has(id)))
           const namespaces = data.namespaces
           const edited = inputs !== undefined && inputs.size > 0
           const codeModeInventory = { tools: codeModeTools, namespaces, ...(edited ? { inputs } : {}) }

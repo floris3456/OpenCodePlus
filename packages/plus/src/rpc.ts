@@ -135,6 +135,8 @@ export const SnapshotItem = Schema.Struct({
   skillScope: Schema.optionalKey(SkillScope),
   skillPreset: Schema.optionalKey(Schema.String),
   paramTool: Schema.optionalKey(Schema.String),
+  permissionParameter: Schema.optionalKey(Schema.String),
+  permissionSource: Schema.optionalKey(Schema.String),
   paramType: Schema.optionalKey(Schema.String),
   required: Schema.optionalKey(Schema.Boolean),
   permTool: Schema.optionalKey(Schema.String),
@@ -328,7 +330,6 @@ export const SnapshotRowlinkRecord = Schema.Struct({
   targetSection: Schema.NullOr(Schema.String),
   link: Schema.Union([
     Schema.Literal("either"),
-    Schema.Literal("oneway"),
     Schema.Literal("shownWhenOn"),
     Schema.Literal("shownWhenOff"),
     Schema.Literal("shownAlways"),
@@ -404,7 +405,8 @@ export const SnapshotPresetRecord = Schema.Struct({
 export interface SnapshotFolderRecord extends Schema.Schema.Type<typeof SnapshotFolderRecord> {}
 export const SnapshotFolderRecord = Schema.Struct({
   type: Schema.Literal("folder"),
-  level: Schema.Literal("global"),
+  level: Schema.Literals(["global", "project"]),
+  owner: Schema.optionalKey(Schema.String),
   tab: Schema.String,
   id: Schema.String,
   name: Schema.String,
@@ -416,7 +418,7 @@ export const SnapshotFolderRecord = Schema.Struct({
 export interface SnapshotOrderRecord extends Schema.Schema.Type<typeof SnapshotOrderRecord> {}
 export const SnapshotOrderRecord = Schema.Struct({
   type: Schema.Literal("order"),
-  level: Schema.Literal("global"),
+  level: Schema.Literals(["global", "project"]),
   scope: Schema.String,
   items: Schema.Array(Schema.String),
   updated: Schema.String,
@@ -587,7 +589,22 @@ export interface InstructionsRunInput extends Schema.Schema.Type<typeof Instruct
 export const InstructionsRunInput = Schema.Struct({
   op: Schema.String,
   input: Schema.Record(Schema.String, Schema.Unknown),
+  actor: Schema.optionalKey(Schema.Struct({ type: Schema.Literal("tui") })),
 }).annotate({ identifier: "Plus.InstructionsRunInput" })
+
+export const InstructionsBatchOutput = Schema.Struct({
+  applied: Schema.Array(Schema.String),
+  skipped: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+  failed: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+})
+
+export const InstructionsClipboardOutput = Schema.Struct({
+  status: Schema.String,
+  rows: Schema.Array(Schema.String),
+  clipboard: Schema.optionalKey(Schema.String),
+  mode: Schema.optionalKey(Schema.Literals(["copy", "cut"])),
+  consumed: Schema.optionalKey(Schema.Boolean),
+})
 
 // One stored row addressed by identity for the delta form's `remove`: the
 // record type plus the fields that make up its target id (recordIdentity in
@@ -918,6 +935,9 @@ export const ModelSettingsInvalid = Schema.Struct({
 // the snapshot at `expectedGlobalRevision`; a newer store refuses the write.
 export interface LayoutWriteInput extends Schema.Schema.Type<typeof LayoutWriteInput> {}
 export const LayoutWriteInput = Schema.Struct({
+  expectedProjectRevision: Schema.Number,
+  /** Configuration transferred with placement, committed by the same guarded save. */
+  changes: Schema.optionalKey(MutateChanges),
   folders: Schema.Array(SnapshotFolderRecord),
   orders: Schema.Array(SnapshotOrderRecord),
   expectedGlobalRevision: Schema.Number,
@@ -2100,6 +2120,7 @@ export const RuleAddInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   catalogue: Schema.optionalKey(Catalogue),
+  team: Schema.optionalKey(TeamOwner),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,
@@ -2113,6 +2134,8 @@ export interface RuleRemoveInput extends Schema.Schema.Type<typeof RuleRemoveInp
 export const RuleRemoveInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
+  catalogue: Schema.optionalKey(Catalogue),
+  team: Schema.optionalKey(TeamOwner),
   tool: Schema.String,
   id: Schema.String,
   actor: Schema.optionalKey(Actor),
@@ -2123,6 +2146,7 @@ export const RuleUpdateInput = Schema.Struct({
   level: Level,
   agent: Schema.NullOr(Schema.String),
   catalogue: Schema.optionalKey(Catalogue),
+  team: Schema.optionalKey(TeamOwner),
   tool: Schema.String,
   id: Schema.String,
   label: Schema.String,

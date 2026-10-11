@@ -513,6 +513,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           return { level: input.level, agent: input.agent, ...(input.team === undefined ? {} : { team: input.team }), preset: input.preset }
         },
         "catalog.models": async () => ({ models: options.models ?? [] }),
+        "instructions.log": async () => ({ entries: [], total: 0 }),
         "model.add": async (input: ModelAddInput) => {
           fake.modelAdds.push(input)
           fail("model.add")

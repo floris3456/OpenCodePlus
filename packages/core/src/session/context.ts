@@ -146,9 +146,10 @@ const layer = Layer.effect(
       const info = agent.info
       // Session permissions narrow discovery the same way they narrow the tool snapshot.
       const permissions = Permission.merge(info.permissions, session.permissions ?? [])
+      const exposure = yield* hooks.trigger("session", "tools", { sessionID, agent: info.id, modes: {} })
       const loaded = yield* Effect.all(
         {
-          tools: registry.snapshot(permissions),
+          tools: registry.snapshot(permissions, undefined, exposure.modes),
           builtins: builtins.load(),
           discovery: discovery.load(),
           skills: skillInstructions.load(permissions),
@@ -173,7 +174,7 @@ const layer = Layer.effect(
             entry.input !== undefined && entry.input !== own?.get(path) ? [[path, entry.input] as const] : [],
           ),
         )
-        const tools = inputs.size === 0 ? loaded.tools : yield* registry.snapshot(permissions, inputs)
+        const tools = inputs.size === 0 ? loaded.tools : yield* registry.snapshot(permissions, inputs, exposure.modes)
         if (tools.codeModeCatalog === undefined) return { tools, catalog: undefined }
         return { tools, catalog: CodeModeCatalog.applyOverrides(tools.codeModeCatalog, event.tools) }
       })

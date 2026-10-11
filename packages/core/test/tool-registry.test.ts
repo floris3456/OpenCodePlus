@@ -663,6 +663,36 @@ describe("Tool", () => {
     }),
   )
 
+  it.effect("routes tools per snapshot without changing other requests or bypassing permission filtering", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* service.transform((editor) => {
+        editor.add({ ...make(), name: "direct", options: { codemode: false } })
+        editor.add({ ...make(), name: "scripted", options: { codemode: true } })
+      })
+      const original = yield* service.snapshot()
+      const moved = yield* service.snapshot(undefined, undefined, { direct: "codemode", scripted: "direct" })
+      expect(original.definitions.map((tool) => tool.name)).toEqual(["direct", "execute"])
+      expect(moved.definitions.map((tool) => tool.name)).toEqual(["scripted", "execute"])
+      expect(moved.codeModeCatalog && codeModeListings(moved.codeModeCatalog).map((tool) => tool.path)).toEqual(["direct"])
+      expect((yield* moved.execute(call("scripted"))).output).toEqual({ text: "scripted" })
+      const executed = yield* moved.execute({ ...call("execute"), call: {
+        type: "tool-call", id: "moved-tool", name: "execute", input: { code: 'return await tools.direct({ text: "through code" })' },
+      } })
+      expect(JSON.stringify(executed.output)).toContain("through code")
+      expect(yield* moved.execute(call("direct")).pipe(Effect.flip)).toBeInstanceOf(Tool.Error)
+      expect((yield* service.snapshot()).definitions.map((tool) => tool.name)).toEqual(["direct", "execute"])
+      expect((yield* original.execute(call("direct"))).output).toEqual({ text: "direct" })
+      const denied = yield* service.snapshot([
+        { action: "direct", resource: "*", effect: "deny" },
+        { action: "scripted", resource: "*", effect: "deny" },
+      ], undefined, { direct: "codemode", scripted: "direct" })
+      expect(denied.definitions.map((tool) => tool.name)).toEqual(["execute"])
+      expect(denied.codeModeCatalog?.tools).toEqual([])
+      expect(yield* denied.execute(call("scripted")).pipe(Effect.flip)).toBeInstanceOf(Tool.Error)
+    }),
+  )
+
   it.effect("keeps execute available without Code Mode tools unless explicitly denied", () =>
     Effect.gen(function* () {
       const service = yield* Tool.Service

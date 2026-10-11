@@ -4,12 +4,12 @@ import {
   listOps,
   runOp,
   unknownOpMessage,
-  type CliActor,
+  type InstructionActor,
   type InstructionCliRegistry,
 } from "../src/instructions-cli"
 
-function registry(): { registry: InstructionCliRegistry; seen: Array<{ input: unknown; actor: CliActor }> } {
-  const seen: Array<{ input: unknown; actor: CliActor }> = []
+function registry(): { registry: InstructionCliRegistry; seen: Array<{ input: unknown; actor: InstructionActor }> } {
+  const seen: Array<{ input: unknown; actor: InstructionActor }> = []
   return {
     seen,
     registry: {
