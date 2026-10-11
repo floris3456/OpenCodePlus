@@ -179,6 +179,33 @@ test("a write through the RPC records the actor as cli", async () => {
   }
 })
 
+test("a reflected write through the TUI command runner retains its human actor", async () => {
+  const project = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project)
+  const state = createState()
+  await Effect.runPromise(activate(ctx, state))
+  const fixture = { ctx, state, handlers: createHandlers(ctx, state), api: createPlusApi(ctx, state) }
+  try {
+    const id = "item:defaults:alpha:tool:reader"
+    const refused = await invoke(fixture.handlers, "instructions.run", {
+      op: "batch", input: { op: "set", id, selected: [id], input: { text: "CLI edit" } },
+    })
+    expect(refused).toMatchObject({ applied: [], failed: [{ id, reason: expect.stringContaining("protected") }] })
+    const result = await invoke(fixture.handlers, "instructions.run", {
+      op: "batch", actor: { type: "tui" },
+      input: { op: "set", id, selected: [id], input: { text: "Human edit" } },
+    })
+    expect(result).toEqual({ applied: [id], skipped: [], failed: [] })
+    const log = await fixture.api.log({ where: "actor:tui" })
+    expect(log.value.entries.some((entry) => entry.actor.type === "tui" && entry.target.includes("reader"))).toBe(true)
+    const cli = await fixture.api.log({ where: "actor:cli" })
+    expect(cli.value.entries).toEqual([])
+  } finally {
+    await Effect.runPromise(deactivate(fixture.state))
+  }
+})
+
 test("an unknown op refuses by value, naming the known ops", async () => {
   const fixture = await activatedFixture()
   try {

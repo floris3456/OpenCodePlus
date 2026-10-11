@@ -24,6 +24,8 @@ export const HELP: readonly HelpGroup[] = [
       ["/", "filter this level as you type · esc clears"],
       ["esc", "back one step; from the sidebar it closes the screen"],
       [".", "switch System sub-tab: Instructions / Base"],
+      ["x · shift+↑↓ · ctrl+a", "select a row · select a range · select visible rows; Esc clears"],
+      ["", "selected rows stay selected across agents and tabs; edits reflect to compatible settings"],
     ],
   ],
   [

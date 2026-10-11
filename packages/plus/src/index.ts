@@ -3285,7 +3285,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
     "instructions.run": (input) =>
       Effect.gen(function* () {
         const tools = yield* ctx.tool.list()
-        const result = yield* Effect.promise(() => runOp(toolRegistry(tools), input.op, input.input))
+        const result = yield* Effect.promise(() => runOp(toolRegistry(tools), input.op, input.input, input.actor))
         return result
       }),
     "instructions.assembled": (input, context) =>

@@ -3404,7 +3404,10 @@ test("instructions_set {preset} relinks and unlinks the row's owner; protected a
   const rows = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
     rows: { id: string; from?: string }[]
   }
-  expect(rows.rows).toEqual([{ id: "item:project:helper:tool:reader", from: "from preset Basic › orchestrator" }])
+  expect(rows.rows).toEqual([
+    { id: "item:project:helper:tool:reader", from: "from preset Basic › orchestrator" },
+    { id: "item:project:helper:tool:reader:description", from: "from preset Basic › orchestrator" },
+  ])
   await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "basic", id: "implementer" } })
   expect((await snapshotOf(api)).links).toEqual([
     expect.objectContaining({ agent: "helper", preset: { kind: "member", team: "basic", id: "implementer" } }),

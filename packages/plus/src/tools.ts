@@ -1,7 +1,9 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
+import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
+import { interactiveActor } from "./instructions-cli.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -376,6 +378,51 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
   return runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
     editor.add({
+      name: "batch",
+      description: "Apply one row operation to the corresponding setting in every selected row. id is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
+      input: Schema.Struct({
+        op: Schema.Literals(["set", "reset", "split", "create", "delete", "move", "link"]),
+        id: Schema.String,
+        selected: Schema.Array(Schema.String),
+        input: Schema.Record(Schema.String, Schema.Unknown),
+      }),
+      output: Plus.InstructionsBatchOutput,
+      options,
+      origin,
+      execute: (input, context) => Effect.gen(function* () {
+        const snapshot = yield* snapshotOrFail(api)
+        const memo = buildTreeMemo(memoFromSnapshot(snapshot))
+        const reflected = reflectedRows(memo, input.id, input.selected)
+        if (input.op === "set" && (input.input.active === true || input.input.state === "on")) {
+          const refusal = modelActivationRefusal(reflected.targets)
+          if (refusal !== undefined) return yield* Effect.fail(new Tool.Error({ message: refusal }))
+        }
+        const tools = yield* ctx.tool.list()
+        const operation = tools.find((tool) => tool.name === input.op && tool.options?.namespace === "instructions")
+        if (operation === undefined || !Schema.isSchema(operation.input)) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
+        const applied: string[] = []
+        const failed: { id: string; reason: string }[] = []
+        for (const row of reflected.targets) {
+          const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(input.input.target)) : undefined
+          const target = peer === undefined ? undefined : reflectedPeer(memo, input.id, row.id, input.selected, peer)
+          if (peer !== undefined && target === undefined) {
+            failed.push({ id: row.id, reason: "Does not have the corresponding link endpoint" })
+            continue
+          }
+          const decoded = Schema.decodeUnknownOption(operation.input)({ ...input.input, id: row.id, ...(target === undefined ? {} : { target: target.id }) })
+          if (Option.isNone(decoded)) {
+            failed.push({ id: row.id, reason: `Invalid arguments for ${input.op}` })
+            continue
+          }
+          yield* operation.execute(decoded.value, context).pipe(Effect.match({
+            onSuccess: () => { applied.push(row.id) },
+            onFailure: (error) => { failed.push({ id: row.id, reason: error.message }) },
+          }))
+        }
+        return { output: { applied, skipped: reflected.skipped, failed } }
+      }),
+    })
+    editor.add({
       name: "list",
       description: ListDescription,
       input: ListInput,
@@ -460,7 +507,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
           if (input.include !== undefined && input.resolve !== "merge")
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
-          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
+          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => protectedForActor(snapshot, agent))
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -640,6 +687,8 @@ function snapshotOrFail(api: PlusApi): Effect.Effect<Plus.Snapshot, Tool.Error> 
 }
 
 function actorFrom(context: Tool.Context): Plus.Actor {
+  const human = interactiveActor()
+  if (human !== undefined) return human
   return {
     type: "tool",
     agent: String(context.agent),
@@ -789,12 +838,16 @@ function protectedOf(snapshot: Plus.Snapshot, node: TreeNode): string | undefine
   if (node.owner?.level === "preset" || node.address?.level === "preset") return undefined
   if (node.kind === "agent") {
     const agent = node.id.split(":").slice(2).join(":")
-    if (agent !== "" && snapshot.protectedAgents.includes(agent)) return agent
+    if (agent !== "" && protectedForActor(snapshot, agent)) return agent
     return undefined
   }
   const owner = node.address?.agent ?? node.owner?.agent
-  if (owner !== undefined && owner !== null && snapshot.protectedAgents.includes(owner)) return owner
+  if (owner !== undefined && owner !== null && protectedForActor(snapshot, owner)) return owner
   return undefined
+}
+
+function protectedForActor(snapshot: Plus.Snapshot, agent: string | null): boolean {
+  return interactiveActor() === undefined && agent !== null && snapshot.protectedAgents.includes(agent)
 }
 
 // `set {id, rename}`: rename an agent, on-disk team member or Project/Global
@@ -950,7 +1003,7 @@ function linkRow(
     const withoutRowlinks = memo.records.filter((record) => record.type !== "rowlink")
     const status =
       input.enabled === false
-        ? `Masked the ${type} link between "${node.label}" and "${targetNode.label}" at this level`
+        ? `Disabled the ${type} link between "${node.label}" and "${targetNode.label}" at this level`
         : `Linked "${node.label}" to "${targetNode.label}" (${type})`
     const applied = yield* mutateDelta(api, memo, [...withoutRowlinks, ...next], actor, status)
     return { output: { id: input.id, target: input.target, type, enabled: input.enabled !== false, ...applied } }
@@ -1219,7 +1272,7 @@ function setModel(
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
       }
-      const op = editModelRow(memo, id, fields, undefined, (owner) => owner !== null && snapshot.protectedAgents.includes(owner))
+      const op = editModelRow(memo, id, fields, undefined, (owner) => protectedForActor(snapshot, owner))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateModels(api, memo, op.models, op.status, actor, op.records)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1241,7 +1294,7 @@ function setModel(
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.state === "off") return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be toggled off by state; remove the candidate to mask it` }))
-    const op = activateModelRow(memo, id, undefined, (owner) => owner !== null && snapshot.protectedAgents.includes(owner))
+    const op = activateModelRow(memo, id, undefined, (owner) => protectedForActor(snapshot, owner))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, { records: op.records ?? memo.records.filter((record): record is CustomizationRecord => record.type === "customization"), splits: memo.records.filter((record): record is SplitRecord => record.type === "split"), models: op.models, status: op.status }, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1437,7 +1490,7 @@ function setPerm(
       if (limitOf(input.text) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes a number (got "${input.text}")` }))
       const text = String(limitOf(input.text))
-      const op = computeSet(memo, { id, text }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
+      const op = computeSet(memo, { id, text }, treeMemo, (agent) => protectedForActor(snapshot, agent))
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
       const applied = yield* mutateOp(api, memo, op, actor)
       return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1445,7 +1498,7 @@ function setPerm(
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be activated` }))
-    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo, (agent) => agent !== null && snapshot.protectedAgents.includes(agent))
+    const op = computeSet(memo, { id, ...(input.state === undefined ? {} : { state: input.state }) }, treeMemo, (agent) => protectedForActor(snapshot, agent))
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, op, actor)
     return { output: { id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
@@ -1511,7 +1564,7 @@ function deleteRuleRow(
       (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
     )
     if (existing === undefined) return yield* Effect.fail(unknownError(id))
-    if (existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
+    if (existing.agent !== null && protectedForActor(snapshot, existing.agent))
       return yield* Effect.fail(protectedError(existing.agent))
     const result = yield* Effect.promise(() =>
       api.removeRule({ level: existing.level, agent: existing.agent, tool: parsed.tool, id: parsed.ruleId, actor }),
@@ -1543,7 +1596,7 @@ function updateRuleRow(
     const existing = memo.records.find(
       (record): record is RuleRecord => record.type === "rule" && record.tool === parsed.tool && record.id === parsed.ruleId,
     )
-    if (existing !== undefined && existing.agent !== null && snapshot.protectedAgents.includes(existing.agent))
+    if (existing !== undefined && existing.agent !== null && protectedForActor(snapshot, existing.agent))
       return yield* Effect.fail(protectedError(existing.agent))
     // A message-only edit derives label and patterns from the rule it edits
     // (the user record, else the upstream perm item it materialises), so
@@ -1624,7 +1677,7 @@ function setGroup(
     if (input.mode !== undefined || input.requires !== undefined)
       return yield* Effect.fail(new Tool.Error({ message: `"${label}" is a group: only state on|off applies` }))
     const target = input.state === undefined ? undefined : input.state === "on"
-    const isProtected = (agent: string) => snapshot.protectedAgents.includes(agent)
+    const isProtected = (agent: string) => protectedForActor(snapshot, agent)
     const op = toggleGroup(memo, id, undefined, target, isProtected)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
     const applied = yield* mutateOp(api, memo, op, actor)
@@ -2048,7 +2101,7 @@ function createRow(
         return yield* Effect.fail(new Tool.Error({ message: "create agent requires scope project|global" }))
       const snapshot = yield* snapshotOrFail(api)
       const candidate = input.id.trim()
-      if (candidate !== "" && snapshot.protectedAgents.includes(candidate))
+      if (candidate !== "" && protectedForActor(snapshot, candidate))
         return yield* Effect.fail(protectedError(candidate))
       const preset = yield* presetInputOrFail(snapshot, input.preset)
       const created = yield* Effect.promise(() =>
@@ -2207,7 +2260,7 @@ function createRow(
       const teammate = input.id.trim()
       // A Defaults member entry is a pattern, not an agent: protection is
       // about agents a tool may not create.
-      if (level !== "defaults" && teammate !== "" && snapshot.protectedAgents.includes(teammate))
+      if (level !== "defaults" && teammate !== "" && protectedForActor(snapshot, teammate))
         return yield* Effect.fail(protectedError(teammate))
       const preset = yield* presetInputOrFail(snapshot, input.preset)
       const created = yield* Effect.promise(() =>
@@ -2234,7 +2287,7 @@ function createRow(
         return yield* Effect.fail(new Tool.Error({ message: "create model requires agent for project|global|preset levels" }))
       const agent = level === "defaults" && (rawAgent.length === 0 || rawAgent === "_") ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
-      if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
+      if (level !== "preset" && agent !== null && protectedForActor(snapshot, agent))
         return yield* Effect.fail(protectedError(agent))
       const memo = memoFromSnapshot(snapshot)
       const team = input.team?.trim()
@@ -2304,7 +2357,7 @@ function createRow(
       const rawAgent = input.agent?.trim() ?? ""
       const agent = rawAgent.length === 0 || rawAgent === "_" ? null : rawAgent
       const snapshot = yield* snapshotOrFail(api)
-      if (level !== "preset" && agent !== null && snapshot.protectedAgents.includes(agent))
+      if (level !== "preset" && agent !== null && protectedForActor(snapshot, agent))
         return yield* Effect.fail(protectedError(agent))
       const created = yield* Effect.promise(() =>
         api.addRule({

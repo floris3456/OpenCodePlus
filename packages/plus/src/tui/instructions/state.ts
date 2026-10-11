@@ -1,5 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
+import { modelActivationRefusal, reflectedEndpoint, reflectedRows } from "../../instructions/reflection.js"
 import { createMemo, createSignal } from "solid-js"
+import { Option, Schema } from "effect"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
 import { applies, formatDuration, formatWarming, parsePermItemId, parseWarming, resolve, resolveSplit, scopedTo, threeWay } from "../../instructions/model.js"
 import type {
@@ -16,7 +18,7 @@ import type {
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
 import { deltaOf, keyIdentity, recordIdentity, snapshotRecordOf, type Delta } from "../../instructions/delta.js"
 import type { StoredRecord } from "../../instructions/store.js"
-import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, lazyPath, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import {
   isDefaultSwitchField,
   isEvery,
@@ -26,6 +28,7 @@ import {
   parseColdDefaultItemId,
   parseColdModelItemId,
   parseModelDefaultItemId,
+  parseModelFieldItemId,
   parseModelSettingItemId,
   type HostModel,
   type ModelSettingsRecord,
@@ -42,7 +45,6 @@ import {
   removeColdModelRow,
   removeDefaultColdModel,
   setModelCompactionRow,
-  toggleModelCompactionSwitch,
   isModelRowId,
   isPermRowId,
   modelReviewChoice,
@@ -78,7 +80,7 @@ import {
 import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
 import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js"
-import { Definition, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
+import { Definition, InstructionsBatchOutput, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { rowlinkView, sameOwnerView, sameEndpoint, writeRowlink, type RowlinkType, type RowlinkEndpoint, type RowlinkRecord } from "../../instructions/rowlinks.js"
 import { markerIn } from "../../instructions/requires.js"
@@ -208,6 +210,54 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   const [filter, setFilter] = createSignal<string>("")
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
+  const [selection, setSelection] = createSignal<ReadonlySet<string>>(new Set())
+
+  function reflect<Args extends readonly unknown[]>(operation: (node: TreeNode, ...args: Args) => Promise<boolean>, label: string) {
+    return async (node: TreeNode, ...args: Args): Promise<boolean> => {
+      const memo = treeMemo()
+      if (memo === undefined || selection().size === 0) return operation(node, ...args)
+      const rows = reflectedRows(memo, node.id, [...selection()])
+      if (rows.targets.length === 1 && rows.skipped.length === 0) return operation(rows.targets[0]!, ...args)
+      const failed: string[] = []
+      const applied: string[] = []
+      for (const target of rows.targets) {
+        if (await operation(target, ...args)) applied.push(target.id)
+        else failed.push(`${target.label}: ${status()}`)
+      }
+      setStatus(`${label}: ${applied.length} applied${rows.skipped.length === 0 ? "" : `, ${rows.skipped.length} without this setting`}${failed.length === 0 ? "" : `; ${failed.join("; ")}`}`)
+      return applied.length > 0 && failed.length === 0
+    }
+  }
+
+  async function confirmSelection(node: TreeNode, label: string, operation: (node: TreeNode, approved?: boolean) => Promise<boolean>): Promise<boolean> {
+    const memo = treeMemo()
+    const targets = memo === undefined ? [] : reflectedRows(memo, node.id, [...selection()]).targets
+    if (targets.length <= 1) return operation(node)
+    const approved = await context.ui.dialog.confirm({ title: `${label} ${targets.length} rows?`, message: `${label} the corresponding rows in the selection? Their existing data will be changed.` })
+    if (!approved) return false
+    return reflect(operation, label)(node, true)
+  }
+
+  function selectionContains(node: TreeNode): boolean {
+    const memo = treeMemo()
+    return memo !== undefined && selection().size > 0 && lazyPath(memo, node.id).some((row) => selection().has(row.id))
+  }
+
+  async function batchOperation(node: TreeNode, op: "set" | "reset" | "split" | "create" | "delete" | "move" | "link", input: Record<string, unknown>): Promise<boolean> {
+    await awaitDrain()
+    try {
+      const result = await plus["instructions.run"]({ op: "batch", input: { op, id: node.id, selected: [...selection()], input }, actor: { type: "tui" } }, { location: context.location })
+      const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsBatchOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
+      if (Option.isNone(decoded)) { setStatus("Unexpected batch response"); return false }
+      if ("error" in decoded.value) { setStatus(decoded.value.error.message); return false }
+      await refresh()
+      setStatus(`${decoded.value.applied.length} applied, ${decoded.value.skipped.length} without this setting${decoded.value.failed.length === 0 ? "" : `; ${decoded.value.failed.map((failure) => `${failure.id}: ${failure.reason}`).join("; ")}`}`)
+      return decoded.value.applied.length > 0 && decoded.value.failed.length === 0
+    } catch (error) {
+      setStatus(errorMessage(error))
+      return false
+    }
+  }
   // The S1b pick-up move draft: while set, the tree renders this layout instead
   // of the snapshot's. One write on drop, none on cancel.
   const [move, setMove] = createSignal<MoveState | undefined>(undefined)
@@ -704,6 +754,21 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persist(result.records, result.splits, result.status, result.retryHint, result.models)
   }
 
+  async function toggleSelected(node: TreeNode): Promise<boolean> {
+    if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
+      const memo = treeMemo()
+      const refusal = memo === undefined ? undefined : modelActivationRefusal(reflectedRows(memo, node.id, [...selection()]).targets)
+      if (refusal !== undefined) { setStatus(refusal); return false }
+      return reflect(toggleRow, "Activated")(node)
+    }
+    const enabled = node.badges.state !== "on"
+    return reflect(async (target) => {
+      if (target.kind === "group" || target.kind === "team" && target.enabledRow === undefined)
+        return target.badges.state === (enabled ? "on" : "off") || await toggleRow(target)
+      return setEnabledRow(target, enabled)
+    }, enabled ? "Enabled" : "Disabled")(node)
+  }
+
   // A group row turns its nearest toggleable rows on or off in one write
   // (ops.toggleGroup): all on means all off, otherwise all on. Team groups
   // toggle all their teams through team.setEnabled and the write queue.
@@ -1051,10 +1116,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return persist(result.records, result.splits, result.status, result.retryHint)
   }
 
-  async function togglePinRow(node: TreeNode): Promise<boolean> {
-    return setPinRow(node, node.badges.pinned !== true)
-  }
-
   async function saveTextRow(node: TreeNode, text: string): Promise<boolean> {
     if (blockedControlWrite(node)) return false
     const result = saveText(memoInput(), node.id, text, treeMemo())
@@ -1067,7 +1128,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     return saved
   }
 
-  async function resetNode(node: TreeNode): Promise<boolean> {
+  async function resetNode(node: TreeNode, approved = false): Promise<boolean> {
     if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
     const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
     if (setting !== undefined) {
@@ -1104,7 +1165,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(result.refusal)
       return false
     }
-    const confirmed = await context.ui.dialog.confirm({
+    const confirmed = approved || await context.ui.dialog.confirm({
       title: node.enabledRow === undefined ? `Reset "${node.label}"?` : `Reset controls for "${node.label}"?`,
       message: node.enabledRow === undefined
         ? `Reset "${node.label}" to its default? This discards the override and cannot be undone.`
@@ -1135,7 +1196,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     if (current === undefined || choices === undefined || current.actions?.edit !== true) return false
     const value = resolvedText(current)
     const index = choices.indexOf(value)
-    return saveTextRow(current, choices[(index + 1) % choices.length])
+    return reflect(saveTextRow, "Updated")(current, choices[(index + 1) % choices.length])
   }
 
   async function saveSplitRow(
@@ -1329,14 +1390,14 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // honest refusal naming why it cannot be deleted. The route offers d on
   // every item and section row so refusals reach the user as status text;
   // rows without remove actions never delete.
-  async function remove(node: TreeNode): Promise<boolean> {
+  async function remove(node: TreeNode, approved = false): Promise<boolean> {
     await awaitDrain()
     if (isModelDefaultRowId(node.id)) {
       if (node.actions?.remove !== true) {
         setStatus(`"${node.label}" has no Defaults › Models values to clear`)
         return false
       }
-      const confirmed = await context.ui.dialog.confirm({
+      const confirmed = approved || await context.ui.dialog.confirm({
         title: `Clear "${node.label}"?`,
         message: `Clear the Defaults › Models values for "${node.label}"? Warming then follows the level below it again.`,
       })
@@ -1352,7 +1413,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         setStatus(result.refusal)
         return false
       }
-      const confirmed = await context.ui.dialog.confirm({
+      const confirmed = approved || await context.ui.dialog.confirm({
         title: `Remove "${node.label}"?`,
         message: `Remove model "${node.label}" at this level? A local candidate is deleted; an inherited or upstream one is hidden here, and re-adding the model clears that.`,
       })
@@ -1375,7 +1436,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         setStatus(`"${node.label}" cannot be deleted: only user-created rules can be deleted`)
         return false
       }
-      const confirmed = await context.ui.dialog.confirm({
+      const confirmed = approved || await context.ui.dialog.confirm({
         title: `Remove "${node.label}"?`,
         message: `Remove rule "${node.label}"? This cannot be undone.`,
       })
@@ -1403,7 +1464,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(plan.refusal)
       return false
     }
-    const confirmed = await context.ui.dialog.confirm({
+    const confirmed = approved || await context.ui.dialog.confirm({
       title: plan.confirmTitle,
       message: plan.confirmMessage,
     })
@@ -1524,16 +1585,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return false
     }
     const setting = parseModelSettingItemId(item)
+    const value = (node.badges.value ?? "").toLowerCase().startsWith("on") ? "off" : "on"
     if (setting !== undefined && isDefaultSwitchField(setting.field)) {
-      const on = (node.badges.value ?? "").startsWith("on")
-      return editModelSettings(node, { [setting.field]: on ? "off" : "on" } as never)
+      return reflect(editModelSettings, "Model switch")(node, { [setting.field]: value } as never)
     }
-    const result = toggleModelCompactionSwitch(memoInput(), node.id, treeMemo())
-    if ("refusal" in result) {
-      setStatus(result.refusal)
-      return false
-    }
-    return persistModels(result.models, result.status, result.retryHint)
+    const field = parseModelFieldItemId(item)?.field
+    if (field !== "compactWarm" && field !== "coldCompact") { setStatus(`"${node.label}" is not a model switch`); return false }
+    return reflect(setModelCompaction, "Model switch")(node, { [field]: value })
   }
 
   // The strategy a Defaults compaction field cycles from: the first word of the
@@ -1678,6 +1736,19 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     void scheduleDrain()
     return edit
   }
+
+  function reflectRowlink(node: TreeNode, primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, operation: (primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint) => Promise<boolean>): Promise<boolean> {
+    const memo = treeMemo()
+    if (memo === undefined || !selectionContains(node)) return operation(primary, target)
+    const selected = [...selection()]
+    return reflect(async (row) => {
+      if (primary.address === undefined || row.address === undefined) { setStatus("This row cannot own a link"); return false }
+      const from = reflectedEndpoint(memo, node.id, row.id, selected, primary.address)
+      const to = reflectedEndpoint(memo, node.id, row.id, selected, target)
+      if (from === undefined || to === undefined) { setStatus("Does not have the corresponding link endpoint"); return false }
+      return operation({ address: { ...row.address, ...from }, label: from.item }, to)
+    }, "Row link")(node)
+  }
   async function deleteRowlink(primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint): Promise<boolean> {
     const current = snapshot()
     const address = primary.address
@@ -1707,10 +1778,17 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   function cancelRowlink() { setLinkPrimary(undefined) }
 
   return {
+    selection,
+    setSelection,
+    reflect,
+    selectionContains,
+    batchOperation,
     linkPrimary,
     beginRowlink,
     linksFor,
     saveRowlink,
+    saveSelectedRowlink: (node: TreeNode, primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, link: RowlinkType, enabled = true) => reflectRowlink(node, primary, target, (from, to) => saveRowlink(from, to, link, enabled)),
+    deleteSelectedRowlink: (node: TreeNode, primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint) => reflectRowlink(node, primary, target, deleteRowlink),
     deleteRowlink,
     rowlinkTarget,
     cancelRowlink,
@@ -1723,8 +1801,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     coldMove,
     toggleModelSwitch,
     modelCompactionView,
-    addColdModel,
-    removeColdModel,
+    addColdModel: reflect(addColdModel, "Added fallback model"),
+    removeColdModel: reflect(removeColdModel, "Removed fallback model"),
     beginColdMove,
     moveColdDraft,
     commitColdMove,
@@ -1751,45 +1829,45 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     status,
     setStatus,
     loading,
-    toggle: toggleRow,
+    toggle: toggleSelected,
     cycle: cycleRow,
-    setEnabled: setEnabledRow,
-    setPin: setPinRow,
-    togglePin: togglePinRow,
-    setRequires: setRequiresRow,
+    setEnabled: reflect(setEnabledRow, "Enabled state"),
+    setPin: reflect(setPinRow, "Pinned state"),
+    togglePin: (node: TreeNode) => reflect(setPinRow, "Pinned state")(node, node.badges.pinned !== true),
+    setRequires: reflect(setRequiresRow, "Condition"),
     conditionChoices: () => {
       const memo = treeMemo()
       return memo === undefined ? [] : conditionChoices(memo)
     },
-    saveText: saveTextRow,
-    reset: resetNode,
-    saveSplit: saveSplitRow,
-    addSection: addSectionRow,
+    saveText: reflect(saveTextRow, "Description"),
+    reset: (node: TreeNode) => confirmSelection(node, "Reset", resetNode),
+    saveSplit: reflect(saveSplitRow, "Split"),
+    addSection: reflect(addSectionRow, "Added section"),
     createTeam,
-    createFolder,
+    createFolder: reflect(createFolder, "Created category"),
     moveRow,
-    renameFolder,
+    renameFolder: reflect(renameFolder, "Renamed category"),
     renameRow,
-    deleteFolder,
+    deleteFolder: reflect(deleteFolder, "Deleted category"),
     splitPreview,
     resolvedText,
     threeWay: threeWayFor,
-    resolveKeep,
-    resolveTake,
-    resolveEdit,
-    resolveMerge,
+    resolveKeep: reflect(resolveKeep, "Kept overrides"),
+    resolveTake: reflect(resolveTake, "Accepted upstream"),
+    resolveEdit: reflect(resolveEdit, "Resolved review"),
+    resolveMerge: reflect(resolveMerge, "Merged review"),
     reviewChoice,
     modelReview,
     resolveModel,
-    editModelField,
-    editModelSettings,
-    setModelCompaction,
+    editModelField: reflect(editModelField, "Model setting"),
+    editModelSettings: reflect(editModelSettings, "Model setting"),
+    setModelCompaction: reflect(setModelCompaction, "Compaction setting"),
     modelDefaultsView,
     reveal,
     revealed,
     treeWith,
     queryIds,
-    remove,
+    remove: (node: TreeNode) => confirmSelection(node, "Delete", remove),
     refresh,
     dispose,
   }

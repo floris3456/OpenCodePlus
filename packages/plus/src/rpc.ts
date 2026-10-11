@@ -585,7 +585,14 @@ export interface InstructionsRunInput extends Schema.Schema.Type<typeof Instruct
 export const InstructionsRunInput = Schema.Struct({
   op: Schema.String,
   input: Schema.Record(Schema.String, Schema.Unknown),
+  actor: Schema.optionalKey(Schema.Struct({ type: Schema.Literal("tui") })),
 }).annotate({ identifier: "Plus.InstructionsRunInput" })
+
+export const InstructionsBatchOutput = Schema.Struct({
+  applied: Schema.Array(Schema.String),
+  skipped: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+  failed: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+})
 
 // One stored row addressed by identity for the delta form's `remove`: the
 // record type plus the fields that make up its target id (recordIdentity in

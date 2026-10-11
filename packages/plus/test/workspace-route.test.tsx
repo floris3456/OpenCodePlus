@@ -38,6 +38,29 @@ function reviewSnapshot(): Snapshot {
   })
 }
 
+test("selected tools keep their marks across navigation and Space applies one resulting value", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({
+      agents: [build], items: [tool("tool:read", "read", "Read files"), tool("tool:write", "write", "Write files")],
+      records: [{ type: "customization", level: "project", agent: "build", item: "tool:read", section: null, state: "off", basedOn: fingerprint("Read files"), updated: "2026-10-11T00:00:00Z" }],
+    })], width: 130, height: 40,
+  })
+  await reach(fixture, "item:project:build:tool:read", "read")
+  expect(dispatch(fixture, "x")).toBe(true)
+  expect(dispatch(fixture, "tab")).toBe(true)
+  expect(dispatch(fixture, "tab")).toBe(true)
+  expect(dispatch(fixture, "down")).toBe(true)
+  await fixture.waitForFrame((frame) => selectedRow(frame).includes("write"))
+  expect(dispatch(fixture, "x")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes("2 selected"))
+  expect(dispatch(fixture, "space")).toBe(true)
+  await fixture.waitForFrame(() => fixture.fake.mutateInputs.some((input) => input.records.some((record) => record.type === "customization" && record.item === "tool:write" && record.state === "off")))
+  const records = fixture.fake.mutateInputs.at(-1)?.records ?? []
+  expect(records.filter((record) => record.type === "customization" && ["tool:read", "tool:write"].includes(record.item)).map((record) => record.type === "customization" ? record.state : undefined)).toEqual(["off", "off"])
+  expect(dispatch(fixture, "escape")).toBe(true)
+  await fixture.waitForFrame((frame) => !frame.includes("2 selected"))
+})
+
 test("System sub-tabs support keyboard switching and Base filter reveal", async () => {
   await using fixture = await renderInstructionsRoute({
     snapshots: [createSnapshot({ agents: [build], items: [{ ...tool("base:gpt", "GPT base", "base instructions"), kind: "base", group: "none" }] })],

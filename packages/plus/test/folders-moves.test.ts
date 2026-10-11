@@ -339,6 +339,14 @@ test("the instruction tools create, move, rename and delete a folder through the
   const separate = await other.snapshot()
   if (!separate.ok) throw new Error("snapshot failed")
   expect(separate.value.folders?.some((folder) => folder.name === "Project only")).toBe(false)
+  const batch = await runOk(need("instructions_batch"), {
+    op: "set", id: owned("tool:reader"),
+    selected: [owned("tool:reader"), "item:project:build:tool:reader", "missing-row"],
+    input: { text: "Independently saved descriptions" },
+  })
+  expect(batch).toMatchObject({ applied: [owned("tool:reader"), "item:project:build:tool:reader"], skipped: [{ id: "missing-row", reason: "Row no longer exists" }], failed: [] })
+  const records = (await nodesNow()).snapshot.records
+  expect(records.filter((record) => record.type === "customization" && record.item === "tool:reader" && record.text === "Independently saved descriptions")).toHaveLength(2)
 })
 
 function toolContext(): Tool.Context {

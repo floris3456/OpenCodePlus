@@ -680,12 +680,37 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   }
 
   function move(delta: number) {
+    rangeSelection = undefined
     const rows = focus() === "nav" ? workspace().nav : listRows()
     if (rows.length === 0) return
     const at = rows.findIndex((row) => row.key === currentRow()?.key)
     const next = rows[Math.min(rows.length - 1, Math.max(0, (at === -1 ? 0 : at) + delta))]!
     if (focus() === "nav") selectNav(next)
     else selectList(next)
+  }
+
+  let rangeSelection: { anchor: string; base: ReadonlySet<string>; pane: string } | undefined
+  function markRow() {
+    rangeSelection = undefined
+    const row = currentRow()
+    if (row === undefined) return
+    const next = new Set(state.selection())
+    if (next.has(row.node.id)) next.delete(row.node.id)
+    else next.add(row.node.id)
+    state.setSelection(next)
+  }
+
+  function markRange(delta: number) {
+    const rows = focus() === "nav" ? workspace().nav : listRows()
+    const index = rows.findIndex((row) => row.key === currentRow()?.key)
+    if (index < 0) return
+    const pane = focus() === "nav" ? `nav:${level()}` : listKey()
+    if (rangeSelection?.pane !== pane || !rows.some((row) => row.key === rangeSelection?.anchor)) rangeSelection = { anchor: rows[index]!.key, base: state.selection(), pane }
+    const anchor = rows.findIndex((row) => row.key === rangeSelection!.anchor)
+    const next = Math.min(rows.length - 1, Math.max(0, index + delta))
+    state.setSelection(new Set([...rangeSelection.base, ...rows.slice(Math.min(anchor, next), Math.max(anchor, next) + 1).map((row) => row.node.id)]))
+    if (focus() === "nav") selectNav(rows[next]!)
+    else selectList(rows[next]!)
   }
 
   function page(): number {
@@ -1459,6 +1484,11 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       closeFilter()
       return
     }
+    if (state.selection().size > 0) {
+      state.setSelection(new Set<string>())
+      rangeSelection = undefined
+      return
+    }
     if (focus() === "list") {
       setFocus("nav")
       return
@@ -1507,6 +1537,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const row = currentRow()
     const hints: [string, string][] = [["↑↓", "move"]]
+    hints.push(["x", node !== undefined && state.selection().has(node.id) ? "deselect" : "select row"])
     if (focus() === "nav") {
       if (row?.role === "owner" || row?.role === "every") hints.push(["→", "open"])
       else if (row?.expandable === true) hints.push(["←→", row.expanded ? "close" : "open"])
@@ -1543,7 +1574,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (workspace().categories.length > 1) hints.push(["[ ]", "category"])
     if (workspace().subcategories !== undefined) hints.push([".", "System tab"])
     hints.push(["tab", focus() === "nav" ? "list" : "sidebar"], ["/", "filter"], ["?", "help"])
-    hints.push(["esc", focus() === "nav" ? "close" : "sidebar"])
+    hints.push(["esc", state.selection().size > 0 ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
     return hints
   }
 
@@ -1602,6 +1633,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       commands: [
         { bind: "up", title: "Previous row", group: "Instructions", run: () => move(-1) },
         { bind: "down", title: "Next row", group: "Instructions", run: () => move(1) },
+        { bind: "x", title: "Select or deselect row", group: "Instructions", run: markRow },
+        { bind: "shift+up", title: "Extend selection up", group: "Instructions", run: () => markRange(-1) },
+        { bind: "shift+down", title: "Extend selection down", group: "Instructions", run: () => markRange(1) },
+        { bind: "ctrl+a", title: "Select visible rows", group: "Instructions", run: () => state.setSelection(new Set((focus() === "nav" ? workspace().nav : listRows()).map((row) => row.node.id))) },
         { bind: "pageup", title: "Page up", group: "Instructions", run: () => move(-page()) },
         { bind: "pagedown", title: "Page down", group: "Instructions", run: () => move(page()) },
         { bind: "home", title: "First row", group: "Instructions", run: () => move(-100000) },
@@ -1678,6 +1713,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       <text flexShrink={0} fg={theme().text.base} attributes={TextAttributes.BOLD}>
         Instructions
       </text>
+      <Show when={state.selection().size > 0}>
+        <text flexShrink={0} fg={theme().text.formfield.selected} onMouseUp={() => state.setSelection(new Set<string>())}>{state.selection().size} selected</text>
+      </Show>
       <For each={workspace().levels}>
         {(entry) => (
           <text flexShrink={0} wrapMode="none" onMouseUp={() => showLevel(entry.id)}>
@@ -1747,6 +1785,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
               <RowLine
                 context={props.context}
                 row={row}
+                marked={state.selection().has(row.node.id)}
                 sidebar
                 {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key, row.key === workspace().owner?.key)?.on } : {})}
                 moving={state.move()?.rowId === row.node.id}
@@ -1869,6 +1908,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 <RowLine
                   context={props.context}
                   row={row}
+                  marked={state.selection().has(row.node.id)}
                   moving={state.move()?.rowId === row.node.id}
                   selected={row.key === listRow()?.key}
                   focused={focus() === "list" && !modal()}

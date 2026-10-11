@@ -403,6 +403,20 @@ export function findLazy(memo: Memo, rowId: string): Lazy | undefined {
   return collectSkeleton(roots).find((node) => node.id === rowId)
 }
 
+/** The real ancestor path, including saved folders and semantic tool exposure. */
+export function lazyPath(memo: Memo, rowId: string): readonly Lazy[] {
+  const walk = (nodes: readonly Lazy[], targeted: boolean): readonly Lazy[] | undefined => {
+    for (const node of nodes) {
+      if (node.id === rowId) return [node]
+      if (targeted && !canDescend(node, rowId)) continue
+      const found = walk(node.children(), targeted)
+      if (found !== undefined) return [node, ...found]
+    }
+    return undefined
+  }
+  return walk(skeletonOf(memo), true) ?? walk(skeletonOf(memo), false) ?? []
+}
+
 function descendLazy(nodes: readonly Lazy[], rowId: string): Lazy | undefined {
   for (const node of nodes) {
     if (node.id === rowId) return node

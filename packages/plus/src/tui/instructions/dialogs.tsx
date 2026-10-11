@@ -802,6 +802,10 @@ export function createInstructionsDialogs(
       ...(owner.link === undefined ? {} : { current: owner.link }),
     })
     if (disposed || preset === undefined) return
+    if (state.selectionContains(node)) {
+      await state.batchOperation(node, "set", { preset })
+      return
+    }
     const said = preset === null ? `Unlinked ${node.label}` : `Linked ${node.label} to ${presetName(snapshot, preset)}`
     await run(
       () =>
@@ -1237,6 +1241,10 @@ export function createInstructionsDialogs(
     if (disposed) return
     if (rawMessage === undefined) return
     const message = rawMessage.trim()
+    if (state.selectionContains(node)) {
+      await state.batchOperation(node, "set", { label, patterns, ...(keywords === undefined ? {} : { keywords }), message })
+      return
+    }
     try {
       const ref = await plus["rule.update"](
         { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
@@ -1397,6 +1405,10 @@ export function createInstructionsDialogs(
       return undefined
     }
     if (validated.name === target.from) return undefined
+    if (state.selectionContains(node)) {
+      await state.batchOperation(node, "set", { rename: validated.name })
+      return undefined
+    }
     const row = await state.renameRow(
       target.kind === "member"
         ? { kind: "member", level: target.level, team: target.team, from: target.from, to: validated.name }
@@ -1428,7 +1440,7 @@ export function createInstructionsDialogs(
     await state.deleteFolder(node)
   }
 
-  async function editRowlink(primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
+  async function editRowlink(node: TreeNode, primary: Pick<TreeNode, "address" | "label">, target: RowlinkEndpoint, current: RowlinkType = "either", enabled = true) {
     const type = await context.ui.dialog.select<Exclude<RowlinkType, "shownAlways">>({
       title: `Link · ${primary.label} → ${target.item}${target.section === null ? "" : ` / ${target.section}`}`,
       placeholder: `Type (now ${current})`,
@@ -1444,7 +1456,7 @@ export function createInstructionsDialogs(
       state.setStatus("Row link cancelled")
       return
     }
-    await state.saveRowlink(primary, target, type, enabled)
+    await state.saveSelectedRowlink(node, primary, target, type, enabled)
   }
 
   async function rowlink(node: TreeNode | undefined) {
@@ -1453,7 +1465,7 @@ export function createInstructionsDialogs(
     if (primary !== undefined) {
       if (!state.rowlinkTarget(node)) return
       state.cancelRowlink()
-      await editRowlink(primary, node.address)
+      await editRowlink(primary, primary, node.address)
       return
     }
     if (state.linksFor(node).length === 0) { state.beginRowlink(node); return }
@@ -1495,14 +1507,14 @@ export function createInstructionsDialogs(
       }
       const target = { item: link.target, section: link.targetSection }
       if (action?.kind === "toggle") {
-        void state.saveRowlink(owner, target, link.type, !link.enabled)
+        void state.saveSelectedRowlink(node, owner, target, link.type, !link.enabled)
         continue
       }
       if (action?.kind === "delete") {
-        void state.deleteRowlink(owner, target)
+        void state.deleteSelectedRowlink(node, owner, target)
         continue
       }
-      await editRowlink(owner, target, link.type, link.enabled)
+      await editRowlink(node, owner, target, link.type, link.enabled)
       return
     }
   }

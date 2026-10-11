@@ -67,6 +67,7 @@ export interface RowLineProps {
   readonly context: Plugin.Context
   readonly row: Row
   readonly selected: boolean
+  readonly marked?: boolean
   readonly focused: boolean
   readonly sidebar?: boolean
   /** An owner's tools switched on; none is a warning (the agent cannot act). */
@@ -154,6 +155,9 @@ export function RowLine(props: RowLineProps) {
         <text flexShrink={0} wrapMode="none" fg={theme().text.formfield.selected}>
           {"↕ "}
         </text>
+      </Show>
+      <Show when={props.marked}>
+        <text flexShrink={0} fg={theme().text.formfield.selected}>{"✓ "}</text>
       </Show>
       <text
         flexShrink={1}
