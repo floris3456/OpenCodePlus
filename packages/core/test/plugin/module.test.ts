@@ -316,6 +316,29 @@ it.live("redirects plugin dependencies with a nested Effect 3 installation to th
   }),
 )
 
+it.live("bundles TUI runtime loaders with OpenTUI's asynchronous native initialization", () =>
+  Effect.gen(function* () {
+    const directory = yield* tmpdirScoped()
+    const entries = discoverPluginRuntimeSpecifiers()
+    const specifiers = ["@opencode/plugin/tui", "@opencode/plugin/tui/index", "@opencode/plugin/tui/pane-resize"]
+    const entry = path.join(directory.path, "runtime.ts")
+    yield* Effect.promise(() => Bun.write(entry, `export default [${specifiers.map((specifier) => pluginRuntimeLoaderCode(specifier, entries)).join(",")}]`))
+    const result = yield* Effect.promise(() => Bun.build({
+      entrypoints: [entry],
+      target: "bun",
+      external: ["@opentui/core-*"],
+      plugins: [{
+        name: "host-runtime-paths",
+        setup(build) {
+          build.onResolve({ filter: /^@opencode\/plugin\/tui(?:\/|$)/ }, (args) => ({ path: entries.get(args.path)! }))
+        },
+      }],
+    }))
+    expect(result.logs.filter((log) => log.level === "error")).toEqual([])
+    expect(result.success).toBe(true)
+  }),
+)
+
 it.live("discovers exported specifiers from the resolved tree even when dist/ exists, and validates barrel loader routing, async loader dedup, and Windows foreign filters", () =>
   Effect.gen(function* () {
     const directory = yield* tmpdirScoped()

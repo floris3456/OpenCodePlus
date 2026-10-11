@@ -65,6 +65,11 @@ export function discoverPluginRuntimeSpecifiers(
 }
 
 export function pluginRuntimeLoaderCode(specifier: string, entries: ReadonlyMap<string, string>) {
+  // OpenTUI initializes its native library with top-level await. Keep TUI
+  // exports lazy and asynchronous in standalone builds, as the source loader does.
+  if (specifier === "@opencode/plugin/tui" || specifier.startsWith("@opencode/plugin/tui/")) {
+    return `() => import(${JSON.stringify(specifier)})`
+  }
   if (specifier.startsWith("effect/")) {
     const slash = specifier.lastIndexOf("/")
     const parent = specifier.slice(0, slash)
