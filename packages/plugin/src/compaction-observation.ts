@@ -15,7 +15,7 @@ export const CompactionObservation = Schema.Struct({
   selectedStrategy: Schema.Literals(["native", "text-summary"]),
   selectionReason: Schema.Literals([
     "explicit-local", "explicit-remote", "portable-required", "auto-native", "auto-text",
-    "anthropic-below-minimum", "native-not-triggered", "checkpoint-handoff",
+    "anthropic-below-minimum", "native-not-triggered", "native-unavailable", "checkpoint-handoff",
   ]),
   modelSource: Schema.optional(Schema.Literals(["active-model", "decision-hook", "agent-config", "compaction-agent", "fallback-list", "checkpoint-owner"])),
 })
