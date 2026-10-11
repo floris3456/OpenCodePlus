@@ -779,6 +779,13 @@ function causeStep(
   }
 }
 
+// Failed attempts and in-flight requests have not consumed the context boundary.
+function contextBaseline(rows: readonly RequestRow[], current: RequestRow) {
+  return rows.findLast((row) =>
+    row.status === "completed" && row.ended !== undefined && row.ended <= current.started &&
+    (current.kind === "ping" || current.isTitle || (row.kind !== "ping" && !row.isTitle)))
+}
+
 interface CostStep {
   readonly missing: number
   readonly missCost: number | undefined
@@ -1080,7 +1087,7 @@ export function foldSession(
       : earlier.slice(-64).findLast(eligible)
     const lastRealIndex = earlier.findLastIndex((p) => p.kind !== "ping" && !p.isTitle)
     const lastReal = earlier[lastRealIndex]
-    const last = r.kind === "ping" || r.isTitle ? earlier.at(-1) : lastReal
+    const last = contextBaseline(earlier, r)
     const between = factsBetween(ordered, last?.started ?? 0, r.started)
 
     // 1. Diff: calculate prefix diff and expected tokens
@@ -1219,7 +1226,7 @@ function requestDetail(
   const previous = summary.previous ? earlier.find((row) => row.id === summary.previous!.id) : undefined
   const lastRealIndex = earlier.findLastIndex((row) => row.kind !== "ping" && !row.isTitle)
   const lastReal = earlier[lastRealIndex]
-  const last = r.kind === "ping" || r.isTitle ? earlier.at(-1) : lastReal
+  const last = contextBaseline(earlier, r)
   const fp = fingerprints.get(r.id)
   const before = previous ? fingerprints.get(previous.id) : undefined
   const diff = prefixDiff(before, fp)

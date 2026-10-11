@@ -6,7 +6,7 @@ import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
-test("compaction labels only the first completed request, preserving subsequent cache verdicts", async () => {
+test.each(["none", "error", "running"] as const)("compaction labels only the first completed request after %s, preserving subsequent cache verdicts", async (status) => {
   const db = await ledger()
   db.session({ id: "synthetic" }, 1)
   for (const [id, at, input, read] of [
@@ -20,10 +20,15 @@ test("compaction labels only the first completed request, preserving subsequent 
     db.requestObserved(id, { version: 1, completeness: "final", inputTokens: input, cacheReadInputTokens: read })
     db.requestFingerprint({ requestID: id, sessionID: "synthetic", ...fingerprintWireBody({ input: id === "before" ? "old context" : "compacted context" }, { protocol: "openai-responses" }) })
   }
+  if (status !== "none") {
+    db.requestStarted({ id: "retry", sessionID: "synthetic", started: 25, kind: "step", model: "fixture", provider: "fixture" })
+    if (status === "error") db.requestEnded("retry", { ended: 26, status })
+  }
   db.contextFact({ sessionID: "synthetic", at: 20, kind: "compaction" })
   const report = queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache" }, { now: 100 })
-  expect(report.requests?.map((request) => request.verdict)).toEqual(["hit", "compacted", "hit", "miss"])
-  expect(report.requests?.[1]).toMatchObject({ cause: "compacted", missTokens: 0, measurement: { read: 2176 } })
+  expect(report.requests?.map((request) => request.verdict)).toEqual(["hit", ...(status === "none" ? [] : [status === "error" ? "error" : "none"] as const), "compacted", "hit", "miss"])
+  expect(report.requests?.find((request) => request.id === "compacted")).toMatchObject({ cause: "compacted", missTokens: 0, measurement: { read: 2176 } })
+  expect(queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache", id: "compacted" }, { now: 100 }).detail?.request.verdict).toBe("compacted")
   expect(report.totals.misses).toBe(1)
 })
 
