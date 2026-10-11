@@ -18,6 +18,7 @@ import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
 import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
+import { SessionMovement } from "./movement.js"
 import { SessionProjector } from "./projector.js"
 import { SessionRunner } from "./runner/index.js"
 import { SessionStore } from "./store.js"
@@ -142,8 +143,9 @@ const layer = Layer.effect(
               )
               const moved = [SessionEvent.Moved, { sessionID: input.sessionID, ...destination }] as const
               const first = cancellations[0]
-              if (!first) return yield* bus.publish(...moved).pipe(Effect.asVoid)
-              return yield* bus.publishAll([first, ...cancellations.slice(1), moved])
+              return yield* SessionMovement.commit(store, instances, input.sessionID,
+                first ? bus.publishAll([first, ...cancellations.slice(1), moved]) : bus.publish(...moved).pipe(Effect.asVoid),
+              )
             }
             yield* admission
               .admit({

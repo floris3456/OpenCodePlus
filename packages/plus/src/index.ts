@@ -289,6 +289,7 @@ export default Plugin.define({
       )
       yield* watchHostEvents(ctx, state)
       yield* watchSharedStore(ctx, state)
+      yield* ctx.session.hook("moved", (event) => transferSessionModel(ctx, state, event.source, event.destination))
       // Core runs warming hooks in registration order on one event, so Plus
       // decides before the monitor records the warming fact: registered the
       // other way round, the fact kept core's proposal ("on") after Plus had
@@ -6452,6 +6453,49 @@ function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => v
     ],
     (force) => onChange(undefined, force),
   )
+}
+
+// Placement has committed; persist and publish the destination row before the runner continues.
+export function transferSessionModel(
+  ctx: Context,
+  state: PlusState,
+  source: Session.Info,
+  destination: Session.Info,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (!source.model) return
+    const agent = source.agent ?? (yield* Effect.promise(() => currentSessionAgent(ctx, source.id)))
+    if (!agent) return
+    const from = yield* Effect.promise(() => activationDirectory(source.location.directory))
+    const directory = yield* Effect.promise(() => activationDirectory(destination.location.directory))
+    if (from === directory) return
+    const stored = yield* Effect.promise(() => load(from))
+    const target = { providerID: source.model.providerID, modelID: source.model.id, variant: source.model.variant }
+    const members = yield* Effect.promise(() => resolveAllTeamAgents(from, stored.records.filter(isTeamRecord), []))
+    const member = members.find((entry) => entry.id === agent)
+    const team = member?.team === undefined ? undefined : { level: scopeLevel(member.scope), team: member.team }
+    const candidates = stored.records.filter((record): record is ModelRecord =>
+      record.type === "model" && record.level === "project" && record.removed !== true &&
+      record.agent === agent && sameTeam(record.team, team) &&
+      record.providerID === target.providerID && record.modelID === target.modelID,
+    )
+    const row = candidates.find((record) => sameModelRef(record, target)) ?? candidates.find((record) => record.variant === undefined)
+    // Global-only selections already travel with the user. Do not freeze inherited values into
+    // a project row when there is no saved project configuration to transfer.
+    if (!row) return
+    const saved = yield* Effect.promise(() => updateRecords(directory, (records) => {
+      const models = modelsOf(records)
+      const existing = models.find((record) => scopedTo(record, row) && sameModelRef(record, row))
+      // Existing destination configuration wins. Activation follows folder movement, just as an
+      // explicit model pick does, without importing any other source inventory.
+      const copied = existing
+        ? models.map((record) => record === existing && record.removed ? { ...record, removed: undefined } : record)
+        : [...models, structuredClone(row)]
+      return [...records.filter((record) => record.type !== "model"), ...activateModel(copied, row, row)]
+    }))
+    if (!saved.ok) return yield* Effect.die("Project model transfer changed concurrently; retry the session move")
+    yield* refreshAfterFileChange(ctx, state, directory)
+  })
 }
 
 // A session created with, or switched to, an agent adopts that agent's active
