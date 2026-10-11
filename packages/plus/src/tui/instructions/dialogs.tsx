@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
+import { keywordsForPattern } from "../../instructions/tool-permissions.js"
 import { Definition, type Level, type Plus, type PresetRef } from "../../rpc.js"
 import { parsePermItemId } from "../../instructions/model.js"
 import {
@@ -1190,7 +1191,8 @@ export function createInstructionsDialogs(
   // enter on a perm row: label → patterns → keywords, each prefilled with the
   // row's current values. Tool and rule id reuse the snapshot item's permTool
   // and ruleId; level/agent come from the row's own address, so no tool or
-  // scope prompts. Blank keywords derive via keywordsForPattern on the server.
+  // scope prompts. Blank keywords request defaults explicitly; omission on an
+  // update preserves the inherited definition's keywords.
   async function editRule(node: TreeNode): Promise<void> {
     if (disposed) return
     const address = node.address
@@ -1247,7 +1249,7 @@ export function createInstructionsDialogs(
     if (rawKeywords === undefined) return
     const keywords =
       rawKeywords.trim().length === 0
-        ? undefined
+        ? [...new Set(patterns.flatMap(keywordsForPattern))]
         : rawKeywords
             .split(",")
             .map((entry) => entry.trim())
@@ -1261,12 +1263,12 @@ export function createInstructionsDialogs(
     if (rawMessage === undefined) return
     const message = rawMessage.trim()
     if (state.selectionContains(node)) {
-      await state.batchOperation(node, "set", { label, patterns, ...(keywords === undefined ? {} : { keywords }), message })
+      await state.batchOperation(node, "set", { label, patterns, keywords, message })
       return
     }
     try {
       const ref = await plus["rule.update"](
-        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), ...(address.team === undefined ? {} : { team: address.team }), tool, id: ruleId, label, patterns, ...(keywords === undefined ? {} : { keywords }), message },
+        { level: address.level, agent: address.agent, ...(catalogue === undefined ? {} : { catalogue }), ...(address.team === undefined ? {} : { team: address.team }), tool, id: ruleId, label, patterns, keywords, message },
         { location: context.location },
       )
       if (disposed) return

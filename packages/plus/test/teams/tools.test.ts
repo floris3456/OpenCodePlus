@@ -570,6 +570,8 @@ test("the instructions namespace still registers alongside team", async () => {
   expect(need(created.tools, "instructions_list").options?.namespace).toBe("instructions")
   expect(need(created.tools, "team_status").options?.namespace).toBe("team")
   expect([...created.tools.keys()].filter((id) => id.startsWith("instructions_")).toSorted()).toEqual([
+    "instructions_batch",
+    "instructions_clipboard",
     "instructions_create",
     "instructions_delete",
     "instructions_link",

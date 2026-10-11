@@ -10,7 +10,7 @@ import { ownBody, wrappingSection } from "../../instructions/sections.js"
 import { curatedRuleMessage, scrubLines } from "../../instructions/tool-permissions.js"
 import { agentOf, contextOfSnapshot, itemOf, listingOfSnapshot, recordOf } from "../../instructions/snapshot.js"
 import { controlKind, controlValue, withControlItems, type TreeNode } from "../../instructions/tree.js"
-import type { Level, Plus, Snapshot } from "../../rpc.js"
+import type { Level, Snapshot } from "../../rpc.js"
 import { presetName } from "../preset-picker.js"
 
 // Everything the inspector derives from a snapshot once. The inspector renders

@@ -414,6 +414,8 @@ test("activation in a child worktree installs the parent project's agents and to
         expect(toolIds).toContain("team_delegate")
         expect(toolIds).toContain("team_status")
         expect(toolIds.filter((id) => id.startsWith("instructions_")).toSorted()).toEqual([
+          "instructions_batch",
+          "instructions_clipboard",
           "instructions_create",
           "instructions_delete",
           "instructions_link",
