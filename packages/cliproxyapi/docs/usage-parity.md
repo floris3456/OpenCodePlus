@@ -44,3 +44,17 @@ controller's capability; stock account-switch handling remains disabled in Plus.
 
 This is a source integration branch, not a promoted Plus release. NEXT USE also
 requires the corresponding Pacer server update to be deployed.
+
+## Shared quota subscription
+
+The dependency now pins `84d978d`: the server adapter subscribes to Pacer's shared
+usage changes instead of fetching that view once per minute. Any caller's response
+headers wake idle viewers, which receive existing meter RPC events immediately.
+This does not change the viewing chat's LAST USED or IN USE identity. The native
+Pacer resource uses a bounded held GET with an opaque cursor; old servers fall
+back to cached-view reads every five seconds. Provider polling remains in Pacer.
+
+Server support is Pacer `d727bc8`, including the Codex premium/main-pool correction
+and stored-duplicate migration in `18b2ccf`. Both server and client must be loaded
+for immediate cross-user propagation. Stock 2.0.26 host verification includes an
+idle viewer receiving another user's update without sending any inference.
