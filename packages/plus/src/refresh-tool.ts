@@ -1,6 +1,5 @@
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
-import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
 import { runRegistration } from "./instructions/apply.js"
 import type { PlusApi } from "./index.js"

@@ -294,7 +294,6 @@ describe("ConfigProviderPlugin.Plugin", () => {
       const providers = yield* Provider.Service
       const models = yield* Model.Service
       const providerID = Provider.ID.make("custom")
-      // A catalogue model with a 272k prompt budget inside a 400k window.
       for (const id of ["smaller", "larger", "explicit", "untouched"])
         yield* providers.transform((editor) => {
           editor.models.update(providerID, Model.ID.make(id), (model) => {
@@ -324,6 +323,70 @@ describe("ConfigProviderPlugin.Plugin", () => {
       expect(yield* limit("larger")).toEqual({ context: 500_000, input: 272_000, output: 128_000 })
       expect(yield* limit("explicit")).toEqual({ context: 200_000, input: 150_000, output: 50_000 })
       expect(yield* limit("untouched")).toEqual({ context: 400_000, input: 272_000, output: 128_000 })
+    }),
+  )
+
+  it.effect("merges partial config capabilities onto the base model's existing fields", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      const modelID = Model.ID.make("partial")
+      yield* providers.transform((editor) => {
+        editor.models.update(providerID, modelID, (model) => {
+          model.capabilities = { tools: false, input: ["text"], output: ["text"] }
+        })
+      })
+      const entries = [
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: { partial: { capabilities: { input: ["text", "image"] } } },
+              },
+            },
+          }),
+        }),
+      ]
+
+      yield* addPlugin(entries)
+
+      expect((yield* models.get(providerID, modelID))?.capabilities).toEqual({
+        tools: false,
+        input: ["text", "image"],
+        output: ["text"],
+      })
+    }),
+  )
+
+  it.effect("resolves a config model with only input/output capabilities using default tools", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      const modelID = Model.ID.make("demo")
+      const entries = [
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: { demo: { name: "Demo", capabilities: { input: ["text"], output: ["text"] } } },
+              },
+            },
+          }),
+        }),
+      ]
+
+      yield* addPlugin(entries)
+
+      expect((yield* models.get(providerID, modelID))?.capabilities).toEqual({
+        tools: true,
+        input: ["text"],
+        output: ["text"],
+      })
     }),
   )
 
@@ -645,6 +708,8 @@ describe("ConfigProviderPlugin.Plugin", () => {
                         reasoningField: "vendor_reasoning",
                         maxTokensField: "max_completion_tokens",
                         requireFinishReason: false,
+                        supportsEffortUpdates: false,
+                        supportsThinkingBlockBinding: false,
                       },
                       capabilities: { tools: true, input: ["text"], output: ["text"] },
                       disabled: true,
@@ -743,6 +808,8 @@ describe("ConfigProviderPlugin.Plugin", () => {
           reasoningField: "vendor_reasoning",
           maxTokensField: "max_completion_tokens",
           requireFinishReason: false,
+          supportsEffortUpdates: false,
+          supportsThinkingBlockBinding: false,
         })
         expect(model.capabilities).toEqual({ tools: true, input: ["text"], output: ["text"] })
         expect(model.enabled).toBe(false)

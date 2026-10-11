@@ -10,11 +10,6 @@ function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
 }
 
-function fail(code: string, message: string, accepted?: unknown): TeamApiResult {
-  if (accepted === undefined) return { ok: false, error: { code, message } }
-  return { ok: false, error: { code, message, accepted } }
-}
-
 // validateChecks throws a toolError-shaped plain object; surface it unchanged
 // (same code, message and accepted delegateHandler returns).
 function thrownError(error: unknown): { code: string; message: string; accepted?: unknown } {

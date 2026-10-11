@@ -59,7 +59,7 @@ import { Tool } from "@opencode/core/tool"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { asc, eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Stream } from "effect"
-import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import { testEffect } from "./lib/effect"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
@@ -276,7 +276,7 @@ const setup = Effect.gen(function* () {
     db,
     bus,
     session,
-    instructions: yield* instructionBuiltIns.load(sessionID),
+    instructions: yield* instructionBuiltIns.load(),
     instances: Instance.Service.of({
       // Generation only exercises the Location's model context.
       provide: () =>

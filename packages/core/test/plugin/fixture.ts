@@ -3,6 +3,8 @@ import { AISDK } from "@opencode/core/aisdk"
 import { Command } from "@opencode/core/command"
 import { Config } from "@opencode/core/config"
 import { Credential } from "@opencode/core/credential"
+import { Database } from "@opencode/core/database/database"
+import { FileAccess } from "@opencode/core/file-access"
 import { LayerNodePlatform } from "@opencode/util/effect/app-node-platform"
 import { AppProcess } from "@opencode/util/process"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -56,6 +58,8 @@ const npmLayer = Layer.succeed(
 
 const generateLayer = Layer.succeed(Generate.Service, Generate.Service.of({ text: () => Effect.succeed("") }))
 
+const configLayer = Config.testLayer()
+
 const permissionLayer = Layer.succeed(
   Permission.Service,
   Permission.Service.of({
@@ -69,7 +73,7 @@ const permissionLayer = Layer.succeed(
   }),
 )
 
-export const PluginTestLayer = Layer.merge(
+export const makePluginTestLayer = (permission = permissionLayer) =>
   AppNodeBuilder.build(
     LayerNode.group([
       AppProcess.node,
@@ -78,6 +82,9 @@ export const PluginTestLayer = Layer.merge(
       Location.node,
       Npm.node,
       Credential.node,
+      Config.node,
+      Database.node,
+      FileAccess.node,
       Bus.node,
       Form.node,
       Generate.node,
@@ -116,17 +123,11 @@ export const PluginTestLayer = Layer.merge(
     [
       Location.node.replace(tempLocationLayer),
       Npm.node.replace(npmLayer),
-      Config.node.replace(Config.testLayer()),
+      Config.node.replace(configLayer),
       Mcp.node.replace(emptyMcpLayer),
       Generate.node.replace(generateLayer),
-      Permission.node.replace(permissionLayer),
+      Permission.node.replace(permission),
     ],
-  ),
-  // The plugin host reads Config for its config seam, so bodies that build a
-  // host need Config.Service in scope. The graph above keeps its own
-  // in-memory instance for its internals; this second one only serves the
-  // outer scope (its reload is a no-op). Tests that need their own entries
-  // provide a Config.testLayer closer to the effect, which wins over this
-  // one; a test-wide layer farther out never overrides it.
-  Config.testLayer(),
-)
+  ).pipe(Layer.provideMerge(configLayer))
+
+export const PluginTestLayer = makePluginTestLayer()

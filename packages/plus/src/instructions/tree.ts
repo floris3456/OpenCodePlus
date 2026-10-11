@@ -15,9 +15,7 @@ import {
   modelItemId,
   parseModelItemId,
   presetKey,
-  resolve,
   resolveActiveModel,
-  resolveSplit,
   sameModelCandidate,
   scopedTo,
 } from "./model.js"
@@ -25,17 +23,14 @@ import type {
   Address,
   AgentSource,
   Catalogue,
-  CustomizationRecord,
   EntryRecord,
   From,
   Item,
   Level,
-  ModelRecord,
   PresetOrigin,
   PresetRef,
   Resolved,
   ReviewPart,
-  SplitRecord,
   TeamRef,
 } from "./model.js"
 import { folderIdOfRef, folderRef, groupScope, orderOf, tabOfGroupId, type FolderRecord } from "./folders.js"
@@ -44,10 +39,8 @@ import {
   COLD_ITEM_SEGMENT,
   coldCompactSummary,
   coldDefaultItemId,
-  coldListRowId,
   coldListValue,
   coldModelItemId,
-  compactionFromWords,
   COLD_COMPACT_LABEL,
   effectiveCompaction,
   hostModelOf,
@@ -2225,7 +2218,6 @@ function modelRowChildren(
   catalogue?: Catalogue,
   ownerPath?: string,
 ): readonly Lazy[] {
-  const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
   return [
     lazyModelField(memo, ctx, level, owner, candidate, "model", depth, teamRef, catalogue, ownerPath),
     lazyModelField(memo, ctx, level, owner, candidate, "effort", depth, teamRef, catalogue, ownerPath),

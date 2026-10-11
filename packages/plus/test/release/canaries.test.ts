@@ -43,7 +43,7 @@ import type { Info } from "@opencode/schema/tool"
 import { Global } from "@opencode/util/global"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Cause, Context, Effect, Exit, Layer, Schema } from "effect"
-import { ChildProcess } from "effect/unstable/process"
+import { ChildProcess } from "effect/process"
 import { AppNodeBuilder } from "../../../core/src/effect/app-node-builder.js"
 import { Config } from "../../../core/src/config.js"
 import { ConfigVariable } from "../../../core/src/config/variable.js"
@@ -203,6 +203,7 @@ const emptyCredentialLayer = Layer.succeed(
 const emptyWellKnownLayer = Layer.succeed(
   WellKnown.Service,
   WellKnown.Service.of({
+    cached: () => Effect.succeed([]),
     entries: () => Effect.succeed([]),
     snapshot: () => [],
     refresh: () => Effect.succeed(false),

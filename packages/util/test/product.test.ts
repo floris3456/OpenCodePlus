@@ -3,9 +3,7 @@ import fs from "fs"
 import os from "os"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Context, Effect, Layer } from "effect"
 import { Product } from "../src/product.js"
-import { Global } from "../src/global.js"
 
 const productModule = pathToFileURL(path.join(import.meta.dir, "../src/product.ts")).href
 const globalModule = pathToFileURL(path.join(import.meta.dir, "../src/global.ts")).href

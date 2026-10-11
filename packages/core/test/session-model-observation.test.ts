@@ -20,7 +20,7 @@ import { SessionModelObservation } from "@opencode/core/session/model-observatio
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { DateTime, Effect, Exit, Layer, Logger, Stream } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
 import { queryMonitor } from "../../plus/src/monitor/query.js"

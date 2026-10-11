@@ -83,6 +83,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       get: () => Effect.die("unused integration.get"),
       connect: {
         key: () => Effect.die("unused integration.connect.key"),
+        external: () => Effect.die("unused integration.connect.external"),
       },
       oauth: {
         connect: () => Effect.die("unused integration.oauth.connect"),
@@ -100,6 +101,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       connection: {
         active: () => Effect.die("unused integration.connection.active"),
         resolve: () => Effect.die("unused integration.connection.resolve"),
+        status: () => Effect.die("unused integration.connection.status"),
       },
     },
     instruction: overrides.instruction ?? {
@@ -184,18 +186,19 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       create: overrides.session?.create ?? (() => Effect.die("unused session.create")),
       get: overrides.session?.get ?? (() => Effect.die("unused session.get")),
       active: overrides.session?.active ?? (() => Effect.die("unused session.active")),
+      remove: overrides.session?.remove ?? (() => Effect.die("unused session.remove")),
       switchAgent: overrides.session?.switchAgent ?? (() => Effect.die("unused session.switchAgent")),
       switchModel: overrides.session?.switchModel ?? (() => Effect.die("unused session.switchModel")),
       prompt: overrides.session?.prompt ?? (() => Effect.die("unused session.prompt")),
       generate: overrides.session?.generate ?? (() => Effect.die("unused session.generate")),
       command: overrides.session?.command ?? (() => Effect.die("unused session.command")),
+      compact: overrides.session?.compact ?? (() => Effect.die("unused session.compact")),
       update: overrides.session?.update ?? (() => Effect.die("unused session.update")),
       move: overrides.session?.move ?? (() => Effect.die("unused session.move")),
       synthetic: overrides.session?.synthetic ?? (() => Effect.die("unused session.synthetic")),
       interrupt: overrides.session?.interrupt ?? (() => Effect.die("unused session.interrupt")),
       wait: overrides.session?.wait ?? (() => Effect.die("unused session.wait")),
       context: overrides.session?.context ?? (() => Effect.die("unused session.context")),
-      compact: overrides.session?.compact ?? (() => Effect.die("unused session.compact")),
     },
   }
 }
@@ -314,6 +317,7 @@ export function integrationHost(integration: Integration.Interface): Plugin.Cont
     get: () => Effect.die("unused integration.get"),
     connect: {
       key: () => Effect.die("unused integration.connect.key"),
+      external: () => Effect.die("unused integration.connect.external"),
     },
     oauth: {
       connect: () => Effect.die("unused integration.oauth.connect"),
@@ -333,6 +337,15 @@ export function integrationHost(integration: Integration.Interface): Plugin.Cont
         integration.connection.resolve(
           connection.type === "credential" ? { ...connection, id: Credential.ID.make(connection.id) } : connection,
         ),
+      status: (input) =>
+        integration.connection.status({
+          integrationID: Integration.ID.make(input.integrationID),
+          connection:
+            input.connection.type === "credential"
+              ? { ...input.connection, id: Credential.ID.make(input.connection.id) }
+              : input.connection,
+          status: input.status,
+        }),
     },
     transform: (callback) =>
       integration.transform((editor) =>
@@ -417,6 +430,16 @@ export function integrationHost(integration: Integration.Interface): Plugin.Cont
                 })
                 return
               }
+              if (input.method.type === "external") {
+                editor.method.update({
+                  integrationID: Integration.ID.make(input.integrationID),
+                  method: {
+                    ...input.method,
+                    id: Integration.MethodID.make(input.method.id),
+                  },
+                })
+                return
+              }
               editor.method.update({
                 integrationID: Integration.ID.make(input.integrationID),
                 method: input.method,
@@ -467,7 +490,7 @@ export function webSearchHost(websearch: WebSearch.Interface): Plugin.Context["w
 }
 
 function internalMethod(value: IntegrationMethod): Integration.Method {
-  if (value.type === "oauth" || value.type === "command") {
+  if (value.type === "oauth" || value.type === "command" || value.type === "external") {
     return { ...value, id: Integration.MethodID.make(value.id) }
   }
   return value

@@ -1,19 +1,21 @@
 export * as ServerProcess from "./server-process"
 
 import { NodeServices } from "@effect/platform-node"
-import { Service, type DiscoverOptions } from "@opencode/client/effect/service"
+import { Service } from "@opencode/client/effect/service"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_UPSTREAM, OPENCODE_VERSION } from "./version"
 import { AppProcess } from "@opencode/util/process"
 import { randomBytes, randomUUID } from "node:crypto"
-import { Effect, Option, Redacted, Schedule, Schema } from "effect"
+import { Effect, Option, Redacted, Schema } from "effect"
 import { PersistentPty } from "@opencode/schema/persistent-pty"
-import { HttpServer } from "effect/unstable/http"
+import { HttpServer } from "effect/http"
+import { NetAddress } from "effect/net"
 import { Env } from "./env"
 import { ServiceConfig } from "./services/service-config"
 import { RetainedImage } from "./services/retained-image"
 import { ServiceRegistration } from "./services/service-registration"
+import { RemoteTunnel } from "./services/remote-tunnel"
 import { WebUi } from "./services/web-ui"
 import { databasePath } from "./database-path"
 
@@ -49,7 +51,11 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
     inherited === undefined
       ? undefined
       : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PersistentPty.Handoff))(inherited).pipe(
-          Effect.mapError(() => new Error("Invalid PTY restart handoff")),
+          Effect.catch(() =>
+            Effect.logWarning("Ignoring invalid PTY restart handoff; persistent terminals will start fresh").pipe(
+              Effect.as(undefined),
+            ),
+          ),
         )
   const global = yield* Global.Service
   if (options.mode === "service") yield* Effect.sync(() => process.chdir(global.home))
@@ -60,11 +66,11 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       const config = options.mode === "service" ? yield* ServiceConfig.read() : {}
       const hostname = options.hostname ?? config.hostname ?? "127.0.0.1"
       const port = options.port ?? config.port ?? (options.mode === "service" ? ServiceConfig.defaultPort() : undefined)
-      const incumbent =
+      const findIncumbent =
         serviceOptions !== undefined && port !== undefined
-          ? yield* Service.incumbent({ ...serviceOptions, url: serviceURL(hostname, port) })
+          ? Service.incumbent({ ...serviceOptions, url: serviceURL(hostname, port) })
           : undefined
-      if (incumbent !== undefined) return
+      if (findIncumbent !== undefined && (yield* findIncumbent) !== undefined) return
       // Keep a package-manager or curl install replaceable while the service runs; Desktop updates its own copy.
       if (options.mode === "service" && process.platform === "win32" && RetainedImage.installed(global.home))
         yield* RetainedImage.retain(global.cache, "service")
@@ -82,7 +88,8 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       if (!password) return yield* Effect.fail(new Error("Missing server password"))
       const instanceID = randomUUID()
       const transform = yield* WebUi.handler()
-      const server = yield* start(
+      const remote = { urls: [] as ReadonlyArray<string> }
+      const launch = start(
         {
           app: {
             name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
@@ -139,25 +146,51 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
                 }),
             },
         transform,
-      ).pipe(
-        Effect.catch((error: unknown) => {
-          if (serviceOptions === undefined || port === undefined || !addressInUse(error)) return Effect.fail(error)
-          return recognizeIncumbent(serviceOptions, hostname, port).pipe(
-            Effect.flatMap((found) => {
-              if (found) return Effect.void
-              // Echo the conflict on stderr for the spawning parent, whose
-              // contender capture only keeps the child's stderr tail.
-              const failure = new Error(
+        () => remote.urls,
+      )
+      const server = yield* launch.pipe(
+        Effect.catch((error) => {
+          if (findIncumbent === undefined || !addressInUse(error)) return Effect.fail(error)
+          return Effect.gen(function* () {
+            const deadline = Date.now() + 15_000
+            const foreign = port !== undefined && (yield* foreignOccupant(hostname, port))
+            while (!foreign && Date.now() < deadline) {
+              const found = yield* findIncumbent.pipe(Effect.timeoutOption(deadline - Date.now()))
+              if (Option.isSome(found) && found.value !== undefined) return
+              yield* Effect.sleep("100 millis")
+              if (Date.now() >= deadline) break
+              // Failed binds close their scope; a successful bind may take longer than this window to boot.
+              const server = yield* launch.pipe(Effect.catchIf(addressInUse, () => Effect.void))
+              if (server !== undefined) return server
+            }
+            const failure = new Error(
                 `Managed service port ${port} on ${hostname} is already in use by another process. ` +
                   "Configure another port with `opencode service set port <port>` and start the service again.",
                 { cause: error },
-              )
-              return Effect.flatMap(Effect.sync(() => console.error(failure.message)), () => Effect.fail(failure))
-            }),
-          )
+            )
+            console.error(failure.message)
+            return yield* Effect.fail(failure)
+          })
         }),
       )
       if (server === undefined) return
+      if (serviceOptions !== undefined && config.remote !== undefined && NetAddress.isInetAddress(server.address)) {
+        const bound = NetAddress.formatIp(server.address.address)
+        // A wildcard bind also listens on loopback, which is all the tunnel needs to reach.
+        const target =
+          bound === "0.0.0.0" || bound === "::"
+            ? `127.0.0.1:${server.address.port}`
+            : NetAddress.formatInet(server.address)
+        yield* Effect.forkScoped(
+          RemoteTunnel.run({
+            route: config.remote.route,
+            target,
+            onURL: (url) => {
+              remote.urls = url === undefined ? [] : [url]
+            },
+          }),
+        )
+      }
       const url = HttpServer.formatAddress(server.address)
       console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
       if (foreground && !environmentPassword) console.log(`server password ${password}`)
@@ -168,20 +201,6 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           : Effect.never
     }).pipe(Effect.annotateLogs({ role: "server" })),
   )
-})
-
-const recognizeIncumbent = Effect.fnUntraced(function* (options: DiscoverOptions, hostname: string, port: number) {
-  // Probe once: a 200 body that is provably not opencode-shaped means a
-  // foreign occupant, so fail fast without the incumbent retry below.
-  // Anything else (connection refused, hanging listener, opencode-shaped
-  // health, opencode auth/status codes) keeps retrying for slow starters.
-  if (yield* foreignOccupant(hostname, port)) return false
-  const found = yield* Service.incumbent({ ...options, url: serviceURL(hostname, port) }).pipe(
-    Effect.filterOrFail((value) => value !== undefined),
-    Effect.retry(Schedule.spaced("100 millis")),
-    Effect.timeoutOption("15 seconds"),
-  )
-  return Option.isSome(found)
 })
 
 const decodeInfoProbe = Schema.decodeUnknownOption(

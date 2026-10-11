@@ -13,11 +13,6 @@ function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
 }
 
-function fail(code: string, message: string, accepted?: unknown): TeamApiResult {
-  if (accepted === undefined) return { ok: false, error: { code, message } }
-  return { ok: false, error: { code, message, accepted } }
-}
-
 export function sortRuns(records: RunRecord[]): RunRecord[] {
   return [...records].toSorted((a, b) => {
     if (a.lastUsed !== b.lastUsed) return a.lastUsed < b.lastUsed ? 1 : -1

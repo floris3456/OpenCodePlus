@@ -1,12 +1,12 @@
 import { Cause, Deferred, Effect, Exit, PlatformError, Queue, Sink, Stream } from "effect"
-import { ChildProcess } from "effect/unstable/process"
+import { ChildProcess } from "effect/process"
 import {
   ExitCode,
   make,
   makeHandle,
   ProcessId,
   type ChildProcessSpawner,
-} from "effect/unstable/process/ChildProcessSpawner"
+} from "effect/process/ChildProcessSpawner"
 import { refuse, unreachable, type SshCarrier } from "./connection.js"
 
 /**

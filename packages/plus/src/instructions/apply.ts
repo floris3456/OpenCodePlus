@@ -883,16 +883,6 @@ export async function applyRolesWithUpdates(ctx: Context, updates: readonly { ag
   })
 }
 
-async function applyRoles(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
-  const updates = roleUpdates(input)
-  return applyRolesWithUpdates(ctx, updates)
-}
-
-interface SkillApplied {
-  readonly agentChanged: boolean
-  readonly skillChanged: boolean
-}
-
 export interface SkillPlans {
   readonly denials: readonly { agent: string; skill: string }[]
   readonly copies: readonly { agent: string; skill: string; text: string }[]
@@ -960,18 +950,6 @@ export async function installSkillPlans(
     await disposeRegistrations(installed)
     throw error
   }
-}
-
-async function applySkills(
-  ctx: Context,
-  input: ApplyInput,
-  onInstall: (registration: Registration) => void,
-): Promise<SkillApplied> {
-  const plans = skillPlans(input)
-  if (plans.denials.length === 0 && plans.copies.length === 0) return { agentChanged: false, skillChanged: false }
-  const installed = await installSkillPlans(ctx, plans, input.teamAgents)
-  for (const reg of installed) onInstall(reg)
-  return { agentChanged: plans.rules.length > 0, skillChanged: plans.copies.length > 0 }
 }
 
 function pushRule(
@@ -1736,40 +1714,6 @@ function applyPinnedPlans(
   return Effect.void
 }
 
-async function applySession(
-  ctx: Context,
-  input: ApplyInput,
-  permissions: PermissionTable,
-): Promise<{ registrations: Registration[]; tools: readonly ToolPlan[]; agentChanged: boolean }> {
-  const plans = sessionPlans(input, permissions)
-  const instructions = instructionPlans(input)
-  if (
-    plans.base.length === 0 &&
-    plans.native.length === 0 &&
-    instructions.length === 0 &&
-    plans.denials.length === 0 &&
-    plans.catalogPlans.length === 0 &&
-    plans.permDenies.length === 0 &&
-    !plans.scrubByAgent.some(([_, k]) => k.length > 0) &&
-    !plans.needsNarrowing
-  )
-    return { registrations: [], tools: [], agentChanged: false }
-  const roles = roleUpdates(input)
-  const customByAgent = await readCustomSystem(ctx, input.agents)
-  const planSet = createPlanSet({
-    roles: new Map(roles.map((r) => [r.agent, r.text])),
-    base: plans.base,
-    native: plans.native,
-    instructions,
-    scrubByAgent: new Map(plans.scrubByAgent),
-    needsNarrowing: plans.needsNarrowing,
-    permissions,
-    customByAgent,
-  })
-  const installed = await installSessionPlans(ctx, input, plans, permissions, undefined, { instructions, customByAgent })
-  return { registrations: installed, tools: plans.tools, agentChanged: plans.denials.length > 0 || plans.permDenies.length > 0 }
-}
-
 // The one host-sourced classification: mirror the core optimize plugin
 // (core/src/plugin/optimize.ts lines 59-62) — look the REQUEST model ref up
 // in the catalog list, defaulting to a bare ref (name = id, like
@@ -2073,9 +2017,4 @@ export async function applyMcpWithUpdates(
       current.disabled = true
     }
   })
-}
-
-async function applyMcp(ctx: Context, input: ApplyInput): Promise<Registration | undefined> {
-  const updates = mcpPlans(input)
-  return applyMcpWithUpdates(ctx, updates)
 }

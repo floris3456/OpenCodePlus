@@ -7,7 +7,7 @@ import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Effect, Layer } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import { refuseNetwork, testEffect } from "../../core/test/lib/effect"
 
 const it = testEffect(Layer.empty)

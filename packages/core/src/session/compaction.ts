@@ -41,7 +41,7 @@ import { SessionProviderContext } from "./provider-context.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionRunnerRetry } from "./runner/retry.js"
 import { toLLMMessages } from "./runner/to-llm-message.js"
-import { toSessionError } from "./to-session-error.js"
+import { contentFilterError, toSessionError } from "./to-session-error.js"
 import { SessionUsage } from "./usage.js"
 
 export type Settings = {
@@ -379,12 +379,20 @@ export const layer = Layer.effect(
           ),
           Effect.flatMap(({ owner, instruction }) =>
             Effect.gen(function* () {
+              // The summary model may have a smaller window than the active chat model.
+              const ceiling = calculateCeiling(owner.context.model.limit, settings.buffer)
+              const cap = Number.isFinite(ceiling)
+                ? ceiling
+                : calculateCeiling({ ...owner.context.model.limit, context: UNKNOWN_WINDOW }, settings.buffer)
+              const localBudget = trigger.reason === "overflow"
+                ? Math.min(cap, Math.floor(estimateContext(owner.context) * SHRINK_STEPS[0]))
+                : cap
               // Re-expanding an opaque window for local/overflow recovery must not select a smaller tail
               // just because the summary input is now a full transcript rather than the native window.
               const retained = context.messages.some(SessionProviderContext.isCheckpoint)
                 ? { older: owner.context.messages, recent: yield* retain(context, settings.keep) }
                 : undefined
-              const result = yield* summarize(owner, budget, settings.keep, instruction, retained).pipe(
+              const result = yield* summarize(owner, localBudget, settings.keep, instruction, retained).pipe(
                 Effect.mapError((failure) => ({ ...failure, model: owner.context.model.ref })),
                 Effect.provideService(SessionModelObservation.Compaction, {
                   ...observation,
@@ -955,10 +963,7 @@ export const layer = Layer.effect(
                   message: "Compaction summary reached the output token limit",
                 })
               case "content-filter":
-                return unusable({
-                  type: "provider.content-filter",
-                  message: "Compaction summary was blocked by the provider",
-                })
+                return unusable(contentFilterError("Compaction summary was blocked by the provider", event.reason))
               default:
                 return Effect.succeed(streamed)
             }

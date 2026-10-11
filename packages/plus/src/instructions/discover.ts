@@ -93,7 +93,6 @@ export interface DiscoverInput {
 
 export async function discover(input: DiscoverInput): Promise<Discovered> {
   const directory = input.ctx.location.directory
-  const projectDirectory = input.ctx.location.project.directory
   const live = await yieldList(input.ctx.agent.list())
   const agents = input.agentUpstream === undefined ? live : [
     ...input.agentUpstream,
@@ -903,27 +902,6 @@ function upstreamMcpAvailable(
   if (shared?.state === "off") return true
   if (shared?.state === "on") return false
   return config.disabled !== true
-}
-
-// The ambient set core applies (packages/core/src/config/plugin/
-// instruction.ts): the global config AGENTS.md first, then project AGENTS.md
-// files from the location upward to the stop directory
-// (nearest-to-farthest). Descendant files, which core surfaces only as
-// synthetic messages when read, are not inventory. Plus cannot reach core's
-// internal project/global discovery flags, so both scopes are always
-// included; a core deployment with either scope disabled applies a subset of
-// what is listed here.
-async function discoverInstructionFiles(
-  directory: string,
-  projectDirectory: string,
-): Promise<{ path: string; text: string }[]> {
-  const candidates = instructionCandidates(directory, projectDirectory)
-  const texts = await Promise.all(candidates.map((file) => readText(file)))
-  return candidates.flatMap((file, index) => {
-    const text = texts[index]
-    if (text === undefined) return []
-    return [{ path: file, text }]
-  })
 }
 
 export function instructionCandidates(directory: string, projectDirectory: string): string[] {

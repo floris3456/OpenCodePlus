@@ -6,14 +6,13 @@ import { EventManifest } from "@opencode/schema/event-manifest"
 import type { Event } from "@opencode/schema/event"
 import { ServerConfig } from "@opencode/schema/mcp"
 import { App } from "../app.js"
-import { Effect, Option, Schema, Stream } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { Agent } from "../agent.js"
 import { AISDK } from "../aisdk.js"
 import { Command } from "../command.js"
 import { Config } from "../config.js"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
-import { Environment } from "../environment/index.js"
 import { Integration } from "../integration.js"
 import { KV } from "../kv.js"
 import { Location } from "../location.js"
@@ -72,7 +71,6 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const models = yield* Model.Service
   const commands = yield* Command.Service
   const bus = yield* Bus.Service
-  const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
   const integration = yield* Integration.Service
   const pluginStorage = yield* storageFactory
   const mcp = yield* Mcp.Service
@@ -341,6 +339,16 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
             label: input.label,
           })
         },
+        external: (input) => {
+          if (location.workspaceID !== undefined)
+            return Effect.fail(new PlacedHostAccessError({ message: "Placed operations cannot modify host credential store" }))
+          return integration.connection.external({
+            integrationID: Integration.ID.make(input.integrationID),
+            methodID: Integration.MethodID.make(input.methodID),
+            answer: input.answer,
+            label: input.label,
+          })
+        },
       },
       oauth: {
         connect: (input) =>
@@ -406,6 +414,15 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
             connection.type === "credential" ? { ...connection, id: Credential.ID.make(connection.id) } : connection,
           )
         },
+        status: (input) =>
+          integration.connection.status({
+            integrationID: Integration.ID.make(input.integrationID),
+            connection:
+              input.connection.type === "credential"
+                ? { ...input.connection, id: Credential.ID.make(input.connection.id) }
+                : input.connection,
+            status: input.status,
+          }),
       },
       transform: (callback) =>
         integration.transform((editor) => {
@@ -629,8 +646,9 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
           model: input?.model,
           metadata: input?.metadata,
           permissions: input?.permissions,
-          location:
-            input?.location ?? Location.Ref.make({ directory: location.directory, workspaceID: location.workspaceID }),
+          ...(input?.parentID === undefined
+            ? { location: input?.location ?? Location.Ref.make({ directory: location.directory, workspaceID: location.workspaceID }) }
+            : { parentID: input.parentID }),
         })
       },
       get: (input) => sessions.get(input.sessionID),
@@ -639,14 +657,18 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
         sessions.active.pipe(
           Effect.map((ids) => Object.fromEntries(Array.from(ids, (id) => [id, { type: "running" as const }]))),
         ),
+      remove: (input) => sessions.remove(input.sessionID),
       switchAgent: sessions.switchAgent,
       switchModel: sessions.switchModel,
       prompt: sessions.prompt,
       generate: (input) => sessions.generate(input).pipe(Effect.map((text) => ({ text }))),
       command: (input) => sessions.command({ ...input, command: input.name }),
+      compact: sessions.compact,
       update: Effect.fn(function* (input) {
         yield* sessions.get(input.sessionID)
         if (input.title !== undefined) yield* sessions.rename({ sessionID: input.sessionID, title: input.title })
+        if (input.metadata !== undefined)
+          yield* sessions.setMetadata({ sessionID: input.sessionID, metadata: input.metadata })
         if (input.permissions !== undefined)
           yield* sessions.setPermissions({ sessionID: input.sessionID, permissions: input.permissions })
       }),
@@ -658,7 +680,6 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
           .pipe(Effect.map((interrupted) => ({ interrupted }))),
       wait: (input) => sessions.wait(input.sessionID),
       context: (input) => sessions.context(input.sessionID),
-      compact: sessions.compact,
     },
   }
   return context
@@ -767,6 +788,12 @@ function methodImplementation(input: IntegrationMethodRegistration): Integration
     }
   }
   if (input.method.type === "command") {
+    return {
+      integrationID: Integration.ID.make(input.integrationID),
+      method: { ...input.method, id: Integration.MethodID.make(input.method.id) },
+    }
+  }
+  if (input.method.type === "external") {
     return {
       integrationID: Integration.ID.make(input.integrationID),
       method: { ...input.method, id: Integration.MethodID.make(input.method.id) },

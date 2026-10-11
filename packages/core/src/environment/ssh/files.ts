@@ -1,7 +1,7 @@
 import path from "node:path"
 import { Cause, Effect, Fiber, Stream } from "effect"
-import { ChildProcess } from "effect/unstable/process"
-import type { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcess } from "effect/process"
+import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import type { Watcher } from "../../filesystem/watcher.js"
 import { quote } from "./exec.js"
 

@@ -1,25 +1,14 @@
 import { readFile, rm } from "node:fs/promises"
-import { homedir } from "node:os"
-import { join } from "node:path"
-import {
-  type DiscoverOptions,
-  type Endpoint,
-  type Info,
-  type EnsureOptions,
-  type StopOptions,
-  ServiceRefusalError,
-} from "../service.js"
-import {
-  contenderFailure,
-  contenderFinished,
-  type ServiceContender,
-  spawnServiceContender,
-} from "../service-contender.js"
+import type { DiscoverOptions, Endpoint, Info, EnsureOptions, StopOptions } from "../service.js"
+import { ServiceRefusalError } from "../service.js"
+import { contenderPool, spawnServiceContender } from "../service-contender.js"
 import { defaultEnsureTiming, ensureTiming, type EnsureTiming } from "../service-timing.js"
 import { matchesVersion } from "../service-version.js"
 import { PtyHandoff } from "../pty-handoff.js"
+import { decide, fallback, headers, isPlusProduct, probeResult, same } from "../service-probe.js"
 
 export * from "../service.js"
+export { headers }
 
 // Find, start, and stop the local opencode background service.
 //
@@ -41,12 +30,9 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
   const timing = ensureTiming(options)
   const allowReplacement = options.replace ?? !isPlusProduct()
   const deadline = Date.now() + timing.promiseTimeout
-  const contenders = new Set<ServiceContender>()
+  const pool = contenderPool(timing)
   let timeouts: { readonly info: Info; readonly count: number } | undefined
   let announced = false
-  let lastSpawn = 0
-  let spawnDelay = timing.spawnDelay
-  let pendingFailure: Error | undefined
 
   const announce = (reason: "missing" | "version-mismatch", previousVersion?: string) => {
     if (announced) return
@@ -57,12 +43,7 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
     const [command, ...args] = options.command ?? ["opencode", "serve", "--service"]
     if (command === undefined) throw new Error("Missing service command")
     try {
-      return spawnServiceContender(
-        command,
-        args,
-        await PtyHandoff.environment(options.file ?? fallback(), options.env),
-        options.directory,
-      )
+      return spawnServiceContender(command, args, await PtyHandoff.environment(options.file ?? fallback(), options.env), options.directory)
     } catch (cause) {
       throw new Error("Failed to start server", { cause })
     }
@@ -70,16 +51,14 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
 
   try {
     while (true) {
-      if (Date.now() >= deadline) throw new Error("Timed out waiting for the background service to start")
+      if (Date.now() >= deadline)
+        throw pool.failure() ?? new Error("Timed out waiting for the background service to start")
       const registration = await registered(options.file, timing.requestTimeout)
+      if (registration.unexpectedPeer && registration.info !== undefined && !allowReplacement && !stopped(registration.info.pid))
+        throw new ServiceRefusalError("unexpected-peer", "Unexpected service peer encountered; replacement refused", registration.info)
       if (registration.timedOut && registration.info !== undefined) {
-        if (!allowReplacement) {
-          throw new ServiceRefusalError(
-            "timeout",
-            "Background service is unresponsive; replacement refused",
-            registration.info,
-          )
-        }
+        if (!allowReplacement)
+          throw new ServiceRefusalError("timeout", "Background service is unresponsive; replacement refused", registration.info)
         timeouts = {
           info: registration.info,
           count: timeouts !== undefined && same(timeouts.info, registration.info) ? timeouts.count + 1 : 1,
@@ -89,111 +68,53 @@ export async function ensure(options: EnsureOptions = {}): Promise<Endpoint> {
           console.warn("Background service is unresponsive; recovery cannot preserve persistent terminals")
           await PtyHandoff.clear(options.file ?? fallback())
           await terminate(registration.info, options, timing)
+          pool.evict(registration.info.pid)
+          pool.recruitNow()
           timeouts = undefined
-          lastSpawn = Date.now() - spawnDelay
         }
       } else timeouts = undefined
 
-      if (registration.unexpectedPeer && registration.info !== undefined && !stopped(registration.info.pid)) {
-        if (!allowReplacement) {
-          throw new ServiceRefusalError(
-            "unexpected-peer",
-            "Unexpected service peer encountered; replacement refused",
-            registration.info,
-          )
-        }
-      }
-
       if (registration.service !== undefined) {
-        spawnDelay = timing.spawnDelay
-        pendingFailure = undefined
+        pool.serviceAnswered()
         const service = registration.service
-        const compatible = service.compatible && matchesVersion(service.version, options)
-        if (compatible && service.state === "ready") {
+        const decision = decide(service, options)
+        if (decision._tag === "fail") throw decision.error
+        if (decision._tag === "reuse") {
           await PtyHandoff.complete(options.file ?? fallback(), service.info)
           return service.endpoint
         }
-        if (compatible && service.state === "failed") throw new Error("Background service failed to start")
-        if (!compatible) {
-          if (!allowReplacement) {
-            throw new ServiceRefusalError(
-              "version-mismatch",
-              `Service version mismatch: running ${service.version ?? "unknown"}, replacement refused`,
-              registration.info,
-            )
-          }
+        if (decision._tag === "replace") {
           announce("version-mismatch", service.version)
           if (service.state !== "ready")
             console.warn("Background service is not ready; replacement cannot preserve persistent terminals")
-          await stop({
-            file: options.file,
-            pty: service.state === "ready" ? "handoff" : "clear",
-          }).catch(() => undefined)
-          lastSpawn = 0
+          await stop({ file: options.file, pty: decision.pty }).catch(() => undefined)
+          pool.evict(service.info.pid)
         }
       } else {
-        if (lastSpawn === 0 && registration.info !== undefined) lastSpawn = Date.now()
-        const finished = [...contenders].filter(contenderFinished)
-        if (finished.some((item) => item.child.exitCode === 0)) {
-          spawnDelay = Math.min(spawnDelay * 2, timing.maxSpawnDelay)
-        }
-        // Zero exits are elected losers in a legitimate race: back off above
-        // and keep retrying without spawning extra replacements. A non-zero
-        // failure is a real startup error (for example a port conflict) that
-        // the pending record below stops replacing, so it surfaces once live
-        // contenders drain.
-        const expectedFailures = finished.filter((item) => item.child.exitCode === 0)
-        const unexpected = finished.filter((item) => !expectedFailures.includes(item))
-        const realFailure =
-          unexpected.length === 0
-            ? undefined
-            : unexpected.map(contenderFailure).find((error): error is Error => error !== undefined)
-        if (realFailure !== undefined) pendingFailure = realFailure
-        finished.forEach((item) => contenders.delete(item))
-        if (pendingFailure !== undefined && contenders.size === 0) throw pendingFailure
-        if (pendingFailure !== undefined) {
-          await delay(timing.pollInterval)
-          continue
-        }
-        // Keep one candidate plus one lock probe so a pre-lock stall cannot block recovery.
-        if (contenders.size < 2 && Date.now() - lastSpawn >= spawnDelay) {
+        const failed = pool.reap()
+        if (failed !== undefined) throw failed
+        if (pool.shouldRecruit(registration.info !== undefined)) {
           announce("missing")
-          contenders.add(await spawnContender())
-          lastSpawn = Date.now()
+          pool.add(await spawnContender())
         }
       }
       await delay(timing.pollInterval)
     }
   } finally {
-    contenders.forEach((contender) => contender.release())
+    pool.releaseAll()
   }
 }
 
 /** Stop the registered local service. */
 export async function stop(options: StopOptions = {}) {
   const info = await read(options.file)
-  if (options.pty === "handoff" && info !== undefined)
-    await PtyHandoff.prepare(options.file ?? fallback(), info, defaultEnsureTiming.requestTimeout)
-  else await PtyHandoff.clear(options.file ?? fallback())
-  if (info !== undefined) await terminate(info, options, defaultEnsureTiming)
-}
-
-function fallback() {
-  const app = isPlusProduct() ? "opencodeplus" : "opencode"
-  return join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), app, "service.json")
-}
-
-function isPlusProduct() {
-  const product = process.env["OPENCODE_PRODUCT"]
-  return product === "opencodeplus" || product === "plus"
-}
-
-/** Create HTTP authentication headers for a service endpoint. */
-export function headers(endpoint: Endpoint) {
-  if (endpoint.auth === undefined) return undefined
-  return {
-    authorization: "Basic " + Buffer.from(endpoint.auth.username + ":" + endpoint.auth.password).toString("base64"),
-  }
+  // Terminal handoff is best-effort; it must never keep the old service running.
+  await (
+    options.pty === "handoff" && info !== undefined
+      ? PtyHandoff.prepare(options.file ?? fallback(), info, defaultEnsureTiming.requestTimeout)
+      : PtyHandoff.clear(options.file ?? fallback())
+  ).catch((cause: unknown) => console.warn("Failed to prepare persistent terminals for replacement", cause))
+  if (info !== undefined) await terminate(info, options, ensureTiming(options))
 }
 
 async function read(file?: string) {
@@ -206,77 +127,9 @@ async function read(file?: string) {
   }
 }
 
-type LocalService = {
-  readonly info: Info
-  readonly endpoint: Endpoint
-  readonly version?: string
-  readonly state: "ready" | "waiting" | "failed"
-  readonly compatible: boolean
-}
-
-async function probeResult(info: Info, timeout = defaultEnsureTiming.requestTimeout) {
-  const endpoint = {
-    url: info.url,
-    auth:
-      info.password === undefined
-        ? undefined
-        : { type: "basic" as const, username: "opencode", password: info.password },
-  } satisfies Endpoint
-  const signal = AbortSignal.timeout(timeout)
-  const result = await fetch(new URL("/api/info", info.url), { headers: headers(endpoint), signal })
-    .then(async (response) => ({
-      response,
-      body: response.status === 404 ? undefined : ((await response.json()) as unknown),
-    }))
-    .then(
-      (value) => ({ value }),
-      (cause: unknown) => ({ cause }),
-    )
-  if ("cause" in result) return { service: undefined, timedOut: signal.aborted, unexpectedPeer: false }
-  const response = result.value.response
-// The previous V2 service exposes /api/status instead. Its authenticated 404 is enough
-  // to recognize the registered daemon as incompatible and route it through replacement.
-  if (response.status === 404)
-    return {
-      service: {
-        info,
-        endpoint,
-        version: info.version,
-        state: "ready" as const,
-        compatible: false,
-      } satisfies LocalService,
-      timedOut: false,
-    }
-  const serverInfo = decodeInfo(result.value.body)
-  if (serverInfo !== undefined) {
-    if (serverInfo.pid !== info.pid) return { service: undefined, timedOut: false, unexpectedPeer: true }
-    if (info.version !== undefined && serverInfo.version !== info.version)
-      return { service: undefined, timedOut: false, unexpectedPeer: true }
-    return {
-      service: {
-        info,
-        endpoint,
-        version: serverInfo.version,
-        state: response.ok ? "ready" : response.status === 500 ? "failed" : "waiting",
-        compatible: true,
-      } satisfies LocalService,
-      timedOut: false,
-      unexpectedPeer: false,
-    }
-  }
-return { service: undefined, timedOut: false, unexpectedPeer: true }
-}
-
-function decodeInfo(input: unknown) {
-  if (typeof input !== "object" || input === null) return
-  if (!("version" in input) || typeof input.version !== "string") return
-  if (!("pid" in input) || typeof input.pid !== "number" || !Number.isInteger(input.pid) || input.pid < 0) return
-  return { version: input.version, pid: input.pid }
-}
-
 async function registered(file?: string, timeout?: number) {
   const info = await read(file)
-if (info === undefined) return { info: undefined, service: undefined, timedOut: false, unexpectedPeer: false }
+  if (info === undefined) return { info: undefined, service: undefined, timedOut: false, unexpectedPeer: false }
   return { info, ...(await probeResult(info, timeout)) }
 }
 
@@ -303,17 +156,13 @@ async function waitUntilStopped(pid: number, timing: EnsureTiming) {
   return false
 }
 
-function same(left: Info, right: Info) {
-  return left.id === right.id && left.version === right.version && left.url === right.url && left.pid === right.pid
-}
-
 async function terminate(info: Info, options: { readonly file?: string }, timing: EnsureTiming) {
   const current = await read(options.file)
   if (current === undefined || !same(current, info)) return
   signal(info.pid, "SIGTERM")
+  // The registration can disappear or change hands before this process exits. Only the PID we
+  // signalled can tell us whether it has stopped, so escalate based on that process.
   if (!(await waitUntilStopped(info.pid, timing))) {
-    const latest = await read(options.file)
-    if (latest === undefined || !same(latest, info)) return
     signal(info.pid, "SIGKILL")
     if (!(await waitUntilStopped(info.pid, timing))) throw new Error(`Server process ${info.pid} is still running`)
   }

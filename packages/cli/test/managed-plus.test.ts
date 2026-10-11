@@ -1,9 +1,10 @@
-import { NodeFileSystem, NodeServices } from "@effect/platform-node"
+import { NodeServices } from "@effect/platform-node"
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { LayerNode } from "@opencode/util/effect/layer-node"
+import { EffectFlock } from "@opencode/util/effect-flock"
 import { Updater } from "../src/services/updater"
 import { ServiceConfig } from "../src/services/service-config"
 import { Product } from "@opencode/util/product"
@@ -74,7 +75,7 @@ test("Plus product identity updates only through its own installer and never rep
         expect(ServiceConfig.legacyFilename("beta")).toBeUndefined()
       }).pipe(
         Effect.provide(Updater.layer),
-        Effect.provide(LayerNode.compile(AppProcess.node)),
+        Effect.provide(LayerNode.compile(LayerNode.group([AppProcess.node, EffectFlock.node]))),
         Effect.provide(globalLayer),
         Effect.provide(NodeServices.layer),
       ),

@@ -1,5 +1,5 @@
 import type { Effect, PlatformError } from "effect"
-import type { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import type { Opts, Proc } from "#pty"
 import type { Driver } from "./driver.js"
 import type { Watcher } from "../filesystem/watcher.js"

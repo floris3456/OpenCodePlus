@@ -13,7 +13,6 @@ import {
   drillInto,
   filterReport,
   formatClock,
-  formatTokens,
   GROUPS,
   queryOf,
   SCOPES,
