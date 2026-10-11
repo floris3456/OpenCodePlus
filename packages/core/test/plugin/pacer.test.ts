@@ -20,16 +20,24 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
   Effect.acquireUseRelease(
     Effect.sync(() => {
       const paths: string[] = []
+      const reading = { left: 73, at: Date.now(), cursor: "initial" }
+      const changed = Promise.withResolvers<void>()
+      const subscribed = Promise.withResolvers<void>()
       const server = Bun.serve({
         hostname: "127.0.0.1",
         port: 0,
-        fetch(request) {
+        async fetch(request) {
           const url = new URL(request.url)
           paths.push(url.pathname + url.search)
+          if (url.searchParams.get("cursor") === "initial") {
+            subscribed.resolve()
+            await changed.promise
+          }
           if (url.searchParams.get("view") === "usage")
             return Response.json({
               view: "usage",
-              now: Date.now() / 1000,
+              now: reading.at / 1000,
+              cursor: reading.cursor,
               ...(url.searchParams.get("auth") !== "api-key"
                 ? {
                     next_use: {
@@ -54,7 +62,7 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
                   {
                     scope: "all",
                     seconds: 18000,
-                    left: 73,
+                    left: reading.left,
                     reset_ms: Date.now() + 3600000,
                     read_ms: Date.now(),
                     state: "current",
@@ -95,9 +103,9 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
           })
         },
       })
-      return { server, paths }
+      return { server, paths, reading, changed, subscribed }
     }),
-    ({ server, paths }) =>
+    ({ server, paths, reading, changed, subscribed }) =>
       Effect.gen(function* () {
         const plugin = yield* Plugin.Service
         const host = yield* PluginHost.make(plugin)
@@ -129,6 +137,7 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
           )
         expect(usage.snapshot?.credentials.map((row) => row.provider)).toEqual(["claude", "codex"])
         expect(usage.snapshot?.credentials.every((row) => row.windows[0]?.remaining === 73)).toBe(true)
+        yield* Effect.promise(() => subscribed.promise).pipe(Effect.timeout("3 seconds"))
         const before = paths.length
         const selected = yield* host.rpc(UsageDefinition).read({
           providerID: "cliproxyapi",
@@ -258,6 +267,28 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         const decision = yield* hooks.trigger("session", "compaction.decide", boundary)
         expect(decision.compact).toBe(true)
         expect(decision.portable).toBe(true)
+
+        // A different caller's quota observation wakes the held subscription. An idle
+        // viewer sees it through the cached RPC without acquiring a serving identity.
+        reading.left = 19
+        reading.at = Date.now() + 2
+        reading.cursor = "changed"
+        changed.resolve()
+        const idle = yield* host.rpc(UsageDefinition).read({
+          sessionID: "ses_pacer_idle",
+          providerID: "cliproxyapi",
+          modelID: ref.id,
+          all: false,
+        }).pipe(Effect.repeat({
+          while: (result) => result.snapshot?.credentials[0]?.windows[0]?.remaining !== 19,
+          times: 100,
+          schedule: Schedule.spaced("20 millis"),
+        }))
+        expect(idle.snapshot?.credentials[0]?.windows[0]?.remaining).toBe(19)
+        expect(idle.snapshot?.current).toBe("")
+        expect(idle.snapshot?.active).toEqual([])
+        expect(paths.some((path) => path.includes("cursor=initial") && path.includes("wait_ms=20000"))).toBe(true)
+        expect(paths.some((path) => path.startsWith("/v1/messages"))).toBe(false)
       }),
     ({ server }) => Effect.sync(() => server.stop(true)),
   ),
