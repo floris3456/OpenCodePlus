@@ -215,6 +215,7 @@ test("roots render with agents and subtree groups", async () => {
     expect(expanded).toContain("System")
     // Skills are no category tab: they live under Tools › skill › Permissions.
     expect(expanded.split("\n").find((line) => line.includes("Settings") && line.includes("System"))).not.toContain("Skills")
+    dispatch(fixture, "right")
     await category(fixture, "System")
     expect(fixture.captureCharFrame()).toContain("Base")
     // Global's Agents group holds Helper under its User subgroup.
@@ -2569,6 +2570,8 @@ test("addRule cancelling any prompt writes nothing, blank keywords saves with de
       location: realCtx.location,
       client: {
         rpc: () => ({
+          events: { on: () => () => {} },
+          "instructions.snapshot": () => Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)),
           "rule.add": async (input: never) => {
             addCalls++
             return Effect.runPromise(handlers["rule.add"](input, throwing))
@@ -2657,6 +2660,8 @@ test("editRule cancelling any prompt writes nothing, blank keywords saves with d
       location: realCtx.location,
       client: {
         rpc: () => ({
+          events: { on: () => () => {} },
+          "instructions.snapshot": () => Effect.runPromise(handlers["instructions.snapshot"](undefined, throwing)),
           "rule.update": async (input: never) => {
             updateCalls++
             return Effect.runPromise(handlers["rule.update"](input, throwing))

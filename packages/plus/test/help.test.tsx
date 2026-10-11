@@ -36,7 +36,7 @@ test("wide help has two equally starting columns and every group title", async (
   await using fixture = await renderPlusFixture({
     snapshots: [],
     width: 130,
-    height: 45,
+    height: 90,
     render: (context) => createComponent(HelpDialog, { context }),
   })
   await fixture.flush()
@@ -50,10 +50,9 @@ test("wide help has two equally starting columns and every group title", async (
   }
   // The left column's groups align, the right column's groups align, and the
   // right column starts further right (two columns).
-  expect(start("Change")).toBe(start("Move"))
-  const right = ["Create and link", "Review (a row marked !)", "Colours and marks", "Filter"].map(start)
-  expect(new Set(right).size).toBe(1)
-  expect(right[0]).toBeGreaterThan(start("Move"))
+  const starts = helpColumns(HELP, HELP_COLUMN_WIDTH).map((column) => column.map(([title]) => start(title)))
+  for (const column of starts) expect(new Set(column).size).toBe(1)
+  expect(starts[1]![0]).toBeGreaterThan(starts[0]![0]!)
   // The level keys, bulk expansion and the panel resize mode are documented.
   expect(frame).toContain("shift+tab")
   expect(frame).toContain("shift+[ ] { }")

@@ -2771,9 +2771,9 @@ describe("SessionRunnerLLM", () => {
           id: route === AnthropicMessages.route ? "claude-sonnet-4-6" : "gpt-5",
           provider: route === AnthropicMessages.route ? "anthropic" : "openai",
           route,
-          // This fixture returns text; native route discovery has separate checkpoint tests.
-          compaction: { type: "summary" },
         })
+        // This fixture returns text; native route discovery has separate checkpoint tests.
+        s.compaction = { type: "summary" }
         yield* agents.transform((editor) =>
           editor.update(agentID, (agent) => {
             agent.system = "Review the project carefully."

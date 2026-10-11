@@ -1782,7 +1782,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
   })
 
   if (preview.kind === "heading") {
-    const isSection = node.kind === "section"
+    const isSection = node.kind === "section" && address.section !== null
     const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
     if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
 
@@ -1801,7 +1801,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
         })()
     const anchor = targetSection ?? wrappingSection(preview)
 
-    const hashes = "#".repeat(Math.max(2, appendDepth + 1))
+    const hashes = "#".repeat(Math.max(1, appendDepth + 1))
     if (includesHeading) {
       const source = derive(text.trim(), name)
       const depth = source.sections[0]?.depth ?? 0
@@ -1854,7 +1854,7 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     }
   }
 
-  const isSection = node.kind === "section"
+  const isSection = node.kind === "section" && address.section !== null
   const targetSection = isSection ? preview.sections.find((s) => s.id === address.section) : undefined
   if (isSection && targetSection === undefined) return { refusal: `Section not found for "${node.label}"` }
 
