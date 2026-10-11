@@ -16,6 +16,7 @@ import { createRowStore, createRowWindow } from "../window.js"
 import { RequestFacts } from "../request-facts.js"
 
 export interface StepsTabProps {
+  readonly width?: number
   readonly context: Plugin.Context
   readonly report: Plus.MonitorReport | undefined
   readonly selectedIndex: number
@@ -54,7 +55,7 @@ export function StepsTab(props: StepsTabProps) {
 
   // Narrow terminals drop whole columns, keeping time, kind, agent/model,
   // input, read and output (the fields that identify a step).
-  const available = () => dimensions().width - 2
+  const available = () => (props.width ?? dimensions().width) - 2
   const showReason = () => available() >= 110
   const showCost = () => available() >= 102
   const showWrite = () => available() >= 88

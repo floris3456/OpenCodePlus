@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { Definition, type Plus } from "../../rpc.js"
 import {
@@ -68,6 +68,9 @@ export interface MonitorViewProps {
   readonly mode?: string
   readonly onClose: () => void
   readonly onOpenFull?: () => void
+  readonly onToggleFullscreen?: () => void
+  readonly width?: number
+  readonly focus?: () => void
 }
 
 export function createMonitorSettings(
@@ -106,9 +109,11 @@ export function createMonitorSettings(
 }
 
 export function MonitorView(props: MonitorViewProps) {
+  onMount(() => props.focus?.())
   const theme = () => props.context.theme
   const plus = props.context.client.rpc(Definition)
   const dimensions = useTerminalDimensions()
+  const width = () => props.width ?? dimensions().width
   const defaultScope = props.full ? "session" : "tree"
   const store = createMonitorSettings(props.context, defaultScope, props.full ? "monitor" : "monitor-composer")
   const initialSessionID = props.initialSession ? props.sessionID() : undefined
@@ -809,6 +814,9 @@ export function MonitorView(props: MonitorViewProps) {
       ...(props.onOpenFull === undefined
         ? []
         : [{ bind: "shift+m,M", title: "Open full monitor", group: "Monitor", run: () => props.onOpenFull?.() }]),
+      ...(props.onToggleFullscreen === undefined
+        ? []
+        : [{ bind: "shift+m,M", title: "Toggle Monitor fullscreen", group: "Monitor", run: props.onToggleFullscreen }]),
     ],
   }))
 
@@ -908,7 +916,7 @@ export function MonitorView(props: MonitorViewProps) {
           {(current) => (
             <box flexDirection="column" flexShrink={0}>
               <text fg={theme().text.base} wrapMode="none" truncate>
-                {totalsLine(current().totals, dimensions().width)}
+                {totalsLine(current().totals, width())}
               </text>
               <ToolsTab
                 context={props.context}
@@ -934,6 +942,7 @@ export function MonitorView(props: MonitorViewProps) {
     <box
       flexDirection="column"
       flexGrow={1}
+      minHeight={0}
       paddingLeft={1}
       paddingRight={1}
       minWidth={0}
@@ -949,18 +958,20 @@ export function MonitorView(props: MonitorViewProps) {
 
       {/* Scope Line */}
       <box flexDirection="row" flexShrink={0}>
-        <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
+        <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
           Scope:{" "}
         </text>
-        <text fg={theme().text.action.primary.focused} attributes={TextAttributes.BOLD}>
+        <text fg={theme().text.action.primary.focused} attributes={TextAttributes.BOLD} minWidth={0} wrapMode="none" truncate>
           {scopeLabel()}
         </text>
-        <text fg={theme().text.muted}> [s] step · [S] add session · [T] team</text>
+        <Show when={width() >= 80}>
+          <text fg={theme().text.muted}> [s] step · [S] add session · [T] team</text>
+        </Show>
       </box>
 
       {/* When Line */}
       <box flexDirection="row" flexShrink={0}>
-        <text fg={theme().text.base} attributes={TextAttributes.BOLD}>
+        <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
           When:{" "}
         </text>
         <text fg={theme().text.action.primary.focused} attributes={TextAttributes.BOLD}>
@@ -1005,7 +1016,7 @@ export function MonitorView(props: MonitorViewProps) {
       <Show when={report()}>
         {(current) => (
           <box flexDirection="column" flexShrink={0} marginTop={0}>
-            <For each={totalsLines(current().totals, dimensions().width)}>
+            <For each={totalsLines(current().totals, Math.max(1, width() - 2))}>
               {(line) => (
                 <text fg={theme().text.base} wrapMode="none" truncate>
                   {line}
@@ -1021,7 +1032,9 @@ export function MonitorView(props: MonitorViewProps) {
         <For each={TABS}>
           {(tab, index) => {
             const isActive = () => settings().tab === tab
-            const label = `[${index() + 1} ${tab.charAt(0).toUpperCase() + tab.slice(1)}]`
+            const label = () => width() < 60
+              ? `[${index() + 1} ${tab.slice(0, 3)}]`
+              : `[${index() + 1} ${tab.charAt(0).toUpperCase() + tab.slice(1)}]`
             return (
               <box
                 backgroundColor={isActive() ? theme().background.action.primary.focused : undefined}
@@ -1032,7 +1045,7 @@ export function MonitorView(props: MonitorViewProps) {
                   fg={isActive() ? theme().text.action.primary.focused : theme().text.muted}
                   attributes={isActive() ? TextAttributes.BOLD : undefined}
                 >
-                  {label}
+                  {label()}
                 </text>
               </box>
             )
@@ -1060,14 +1073,15 @@ export function MonitorView(props: MonitorViewProps) {
           fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading monitor data…" : ""}</text>}
         >
           {(_current) => (
-            <box flexDirection="column" flexGrow={1} minWidth={0}>
+            <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
               <Show when={tab() === "overview"}>
                 <scrollbox flexGrow={1} minWidth={0}>
-                  <OverviewTab context={props.context} report={shown()} full={true} collection={collection()} />
+                  <OverviewTab context={props.context} report={shown()} full={true} collection={collection()} width={width()} />
                 </scrollbox>
               </Show>
               <Show when={tab() === "cache"}>
                 <CacheTab
+                  width={width()}
                   context={props.context}
                   report={shown()}
                   selectedIndex={selected()}
@@ -1095,6 +1109,7 @@ export function MonitorView(props: MonitorViewProps) {
               </Show>
               <Show when={tab() === "sessions"}>
                 <SessionsTab
+                  width={width()}
                   context={props.context}
                   report={shown()}
                   selectedIndex={selected()}
@@ -1109,6 +1124,7 @@ export function MonitorView(props: MonitorViewProps) {
               </Show>
               <Show when={tab() === "steps"}>
                 <StepsTab
+                  width={width()}
                   context={props.context}
                   report={shown()}
                   selectedIndex={selected()}
@@ -1127,9 +1143,12 @@ export function MonitorView(props: MonitorViewProps) {
       {/* Always-visible Hint Bar */}
       <box flexDirection="row" flexShrink={0} marginTop={1}>
         <text fg={theme().text.muted} wrapMode="none" truncate flexGrow={1}>
-          {hintBarText(dimensions().width)}
+          {hintBarText(width())}
         </text>
       </box>
+      <Show when={props.onToggleFullscreen}>
+        <text fg={theme().text.muted} flexShrink={0}>M fullscreen · esc close</text>
+      </Show>
     </box>
   )
 }

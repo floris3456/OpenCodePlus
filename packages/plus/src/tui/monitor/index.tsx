@@ -1,10 +1,9 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createSignal } from "solid-js"
-import { MonitorView, TOOLS_BODY_ROWS } from "./view.js"
+import { createSignal, Show } from "solid-js"
+import { MonitorView } from "./view.js"
 
-// The monitor in the TUI: a Tools tab in the session composer (next to
-// Subagents, Shell and Team) for the chat at hand, and a full-screen view
-// (the /tools command) for history, grouping and comparisons.
+// Sessions use the host's panel, including its in-place fullscreen toggle.
+// The route also makes Monitor available from Home, where panels cannot open.
 export function createMonitor(context: Plugin.Context) {
   const [previous, setPrevious] = createSignal<ReturnType<Plugin.Context["ui"]["router"]["current"]>>({
     ...context.ui.router.current(),
@@ -13,9 +12,14 @@ export function createMonitor(context: Plugin.Context) {
 
   const open = (sessionID?: string) => {
     const current = context.ui.router.current()
+    if (current.type === "session") {
+      context.ui.dialog.clear()
+      context.ui.panel.open("plus.monitor")
+      return
+    }
     if (current.type === "plugin" && current.name === "monitor") return
     setPrevious({ ...current })
-    setChat(sessionID ?? (current.type === "session" ? current.sessionID : undefined))
+    setChat(sessionID)
     context.ui.dialog.clear()
     context.ui.router.navigate({ type: "plugin", name: "monitor" })
   }
@@ -37,38 +41,28 @@ export function createMonitor(context: Plugin.Context) {
     ),
   })
 
-  const disposeTab =
-    context.ui.composer?.tab({
-      id: "monitor",
-      label: "Tools",
-      height: TOOLS_BODY_ROWS,
-      hints: () => [
-        { label: "group", shortcut: "g" },
-        { label: "scope", shortcut: "s" },
-        { label: "window", shortcut: "t" },
-        { label: "filter", shortcut: "a/f" },
-        { label: "full", shortcut: "M" },
-      ],
-      render: (input) => (
+  const disposePanel = context.ui.slot({
+    append: "session.panel",
+    render: (panel) => (
+      <Show when={panel.name === "plus.monitor"}>
         <MonitorView
           context={context}
-          sessionID={() => input.sessionID}
-          active={input.active}
-          full={false}
-          mode="composer"
-          onClose={input.close}
-          onOpenFull={() => {
-            input.close()
-            open(input.sessionID)
-          }}
+          sessionID={() => panel.sessionID}
+          active={() => panel.focused}
+          full
+          width={panel.width}
+          focus={panel.focus}
+          onClose={panel.close}
+          onToggleFullscreen={panel.toggleFullscreen}
         />
-      ),
-    }) ?? (() => {})
+      </Show>
+    ),
+  })
 
   return {
     open,
     dispose: () => {
-      disposeTab()
+      disposePanel()
       disposeRoute()
     },
   }

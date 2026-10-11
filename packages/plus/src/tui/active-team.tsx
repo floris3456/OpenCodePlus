@@ -1,7 +1,8 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import { Definition, type TeamLevel, type TeamListEntry, type TeamRunEntry } from "../rpc.js"
 import { SessionRunEvents } from "../teams/session-events.js"
 
@@ -226,32 +227,30 @@ export function createActiveTeam(
     const [showInactiveSignal, setShowInactiveSignal] = createSignal(false)
     const [treeViewSignal, setTreeViewSignal] = createSignal(true)
 
-    const disposeComposerTab = context.ui.composer?.tab({
-      id: "team",
-      label: "Team",
-      hints: () => [
-        { label: "move", shortcut: "↑↓" },
-        { label: "attach", shortcut: "⏎" },
-        { label: showInactiveSignal() ? "inactive" : "active", shortcut: "ctrl+a" },
-        { label: treeViewSignal() ? "tree" : "all", shortcut: "ctrl+t" },
-        { label: "stop|resume", shortcut: "ctrl+d" },
-        { label: "monitor", shortcut: "M" },
-      ],
-      render: (input) => (
-        <TeamMonitorTab
-          sessionID={input.sessionID}
-          active={input.active}
-          close={input.close}
-          activeTeam={activeTeam}
-          context={context}
-          showInactive={showInactiveSignal}
-          setShowInactive={setShowInactiveSignal}
-          treeView={treeViewSignal}
-          setTreeView={setTreeViewSignal}
-          {...(options.openMonitor === undefined ? {} : { onOpenMonitor: options.openMonitor })}
-        />
+    const [selection, setSelection] = createStore<Record<string, number>>({})
+    const disposePanel = context.ui.slot({
+      append: "session.panel",
+      render: (panel) => (
+        <Show when={panel.name === "plus.team"}>
+          <TeamMonitorTab
+            sessionID={panel.sessionID}
+            active={() => panel.focused}
+            close={panel.close}
+            toggleFullscreen={panel.toggleFullscreen}
+            focus={panel.focus}
+            selected={() => selection[panel.sessionID] ?? 0}
+            onSelect={(index) => setSelection(panel.sessionID, index)}
+            activeTeam={activeTeam}
+            context={context}
+            showInactive={showInactiveSignal}
+            setShowInactive={setShowInactiveSignal}
+            treeView={treeViewSignal}
+            setTreeView={setTreeViewSignal}
+            {...(options.openMonitor === undefined ? {} : { onOpenMonitor: options.openMonitor })}
+          />
+        </Show>
       ),
-    }) ?? (() => {})
+    })
 
     function dispose() {
       disposed = true
@@ -259,7 +258,7 @@ export function createActiveTeam(
       unsubscribeInstructions()
       unregisterGroups()
       disposeSlot()
-      disposeComposerTab()
+      disposePanel()
       disposeRoot()
     }
 
@@ -275,6 +274,10 @@ export interface TeamMonitorTabProps {
   sessionID: string
   active: () => boolean
   close: () => void
+  toggleFullscreen?: () => void
+  focus?: () => void
+  selected?: () => number
+  onSelect?: (index: number) => void
   activeTeam?: () => ActiveTeamInfo | undefined
   context: Plugin.Context
   showInactive?: () => boolean
@@ -299,8 +302,33 @@ export function stopRunMountLog(): void {
 }
 
 export function TeamMonitorTab(props: TeamMonitorTabProps) {
+  onMount(() => props.focus?.())
   const plus = props.context.client.rpc(Definition)
-  const [store, setStore] = createStore({ selected: 0, runs: [] as readonly TeamRunEntry[] })
+  const [store, setStore] = createStore({ selected: 0, loaded: false, runs: [] as readonly TeamRunEntry[] })
+  const renderer = useRenderer()
+  let scroll: ScrollBoxRenderable | undefined
+  let revealPending = true
+  const selected = () => props.selected?.() ?? store.selected
+  const select = (index: number) => {
+    setStore("selected", index)
+    props.onSelect?.(index)
+    revealPending = true
+  }
+  const revealSelection = () => {
+    if (!scroll || scroll.isDestroyed || scroll.viewport.height === 0) return
+    const index = selected()
+    if (index < scroll.scrollTop) scroll.scrollTo(index)
+    if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
+  }
+  const revealAfterLayout = () => {
+    if (!revealPending || !scroll || scroll.viewport.height === 0) return
+    revealPending = false
+    revealSelection()
+  }
+  // Resizing can clamp scrollTop after onSizeChange. Follow once after layout,
+  // rather than on every frame, so mouse scrolling remains independent.
+  renderer.on("frame", revealAfterLayout)
+  onCleanup(() => renderer.off("frame", revealAfterLayout))
   // Runs are keyed by id: a poll that returns the same runs updates them in
   // place instead of rebuilding every row component.
   const [internalShowInactive, setInternalShowInactive] = createSignal(false)
@@ -337,6 +365,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       (output) => {
         if (disposed) return
         setStore("runs", reconcile(output.runs, { key: "id" }))
+        setStore("loaded", true)
       },
       () => {
         if (disposed) return
@@ -400,15 +429,21 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   })
 
   createEffect(() => {
-    if (!props.active()) return
+    if (!props.active() || !store.loaded) return
     const list = visibleRuns()
     if (list.length === 0) {
-      if (store.selected !== 0) setStore("selected", 0)
+      if (selected() !== 0) select(0)
       return
     }
-    if (store.selected >= list.length) {
-      setStore("selected", Math.max(0, list.length - 1))
+    if (selected() >= list.length) {
+      select(Math.max(0, list.length - 1))
     }
+  })
+
+  createEffect(() => {
+    selected()
+    revealPending = true
+    revealSelection()
   })
 
   function attachRun(run: TeamRunEntry) {
@@ -452,49 +487,51 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   }
 
   props.context.keymap.layer(() => ({
-    mode: "composer",
     enabled: () => props.active(),
     priority: 1,
     commands: [
       {
         id: "composer.team.up",
+        bind: "up",
         title: "Previous run",
-        group: "Composer",
+        group: "Team",
         run() {
-          if (store.selected === 0) {
+          if (selected() === 0) {
             props.close()
             return
           }
-          setStore("selected", (prev) => prev - 1)
+          select(selected() - 1)
         },
       },
       {
         id: "composer.team.down",
+        bind: "down",
         title: "Next run",
-        group: "Composer",
+        group: "Team",
         run() {
           const list = visibleRuns()
           if (list.length === 0) return
-          setStore("selected", (prev) => (prev + 1) % list.length)
+          select((selected() + 1) % list.length)
         },
       },
       {
         id: "composer.team.select",
+        bind: "return",
         title: "Attach run",
-        group: "Composer",
+        group: "Team",
         run() {
           const list = visibleRuns()
-          const run = list[store.selected]
+          const run = list[selected()]
           if (run) attachRun(run)
         },
       },
       {
         id: "composer.team.toggle_activity",
         title: "Toggle inactive runs",
-        group: "Composer",
+        group: "Team",
         bind: "ctrl+a",
         run() {
-          setStore("selected", 0)
+          select(0)
           setShowInactive((prev) => !prev)
           refreshRuns()
         },
@@ -502,10 +539,10 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       {
         id: "composer.team.toggle_tree",
         title: "Toggle tree view",
-        group: "Composer",
+        group: "Team",
         bind: "ctrl+t",
         run() {
-          setStore("selected", 0)
+          select(0)
           setTreeView((prev) => !prev)
           refreshRuns()
         },
@@ -513,18 +550,30 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
       {
         id: "composer.team.action",
         title: "Stop or resume run",
-        group: "Composer",
+        group: "Team",
         bind: "ctrl+d",
         run() {
           const list = visibleRuns()
-          const run = list[store.selected]
+          const run = list[selected()]
           if (run) void handleAction(run)
         },
       },
       {
+        bind: "escape",
+        title: "Close Team",
+        group: "Team",
+        run: props.close,
+      },
+      {
+        bind: "f",
+        title: "Toggle Team fullscreen",
+        group: "Team",
+        run: () => props.toggleFullscreen?.(),
+      },
+      {
         id: "composer.team.monitor",
-        title: "Open Monitor page",
-        group: "Composer",
+        title: "Open Monitor",
+        group: "Team",
         bind: "shift+m,M",
         run() {
           props.close()
@@ -544,74 +593,90 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   }))
 
   return (
-    <Show
-      when={visibleRuns().length > 0}
-      fallback={
-        <box paddingLeft={1}>
-          <text fg={props.context.theme.text.muted}>
-            {treeView() && store.runs.length === 0
-              ? "No team runs from this chat · ctrl+t shows all"
-              : showInactive()
-                ? "No inactive runs"
-                : "No active runs"}
-          </text>
-        </box>
-      }
-    >
-      <scrollbox scrollbarOptions={{ visible: false }} maxHeight={5}>
-        <For each={visibleRuns()}>
-          {(run, index) => {
-            if (runMountLog.enabled) runMountLog.ids.push(run.id)
-            const isSelected = createMemo(() => index() === store.selected)
-            const isCurrent = createMemo(() => run.sessionID === props.sessionID)
-            return (
-              <box
-                flexDirection="row"
-                paddingLeft={1}
-                paddingRight={1}
-                backgroundColor={
-                  isSelected()
-                    ? props.context.theme.background.action.primary.focused
-                    : isCurrent()
-                      ? props.context.theme.background.action.primary.selected
-                      : props.context.theme.background.action.primary.base
-                }
-                onMouseMove={() => setStore("selected", index())}
-                onMouseUp={() => {
-                  setStore("selected", index())
-                  attachRun(run)
-                }}
-              >
-                <box flexGrow={1} minWidth={0} flexDirection="row">
+    <box flexDirection="column" flexGrow={1} minHeight={0} minWidth={0} paddingLeft={1} paddingRight={1}>
+      <text fg={props.context.theme.text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
+        Team
+      </text>
+      <Show
+        when={visibleRuns().length > 0}
+        fallback={
+          <box paddingLeft={1}>
+            <text fg={props.context.theme.text.muted}>
+              {treeView() && store.runs.length === 0
+                ? "No team runs from this chat · ctrl+t shows all"
+                : showInactive()
+                  ? "No inactive runs"
+                  : "No active runs"}
+            </text>
+          </box>
+        }
+      >
+        <scrollbox
+          ref={(value: ScrollBoxRenderable) => { scroll = value }}
+          onSizeChange={() => { revealPending = true }}
+          scrollbarOptions={{ visible: false }}
+          flexGrow={1}
+          minHeight={0}
+        >
+          <For each={visibleRuns()}>
+            {(run, index) => {
+              if (runMountLog.enabled) runMountLog.ids.push(run.id)
+              const isSelected = createMemo(() => index() === selected())
+              const isCurrent = createMemo(() => run.sessionID === props.sessionID)
+              return (
+                <box
+                  height={1}
+                  flexShrink={0}
+                  flexDirection="row"
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={
+                    isSelected()
+                      ? props.context.theme.background.action.primary.focused
+                      : isCurrent()
+                        ? props.context.theme.background.action.primary.selected
+                        : props.context.theme.background.action.primary.base
+                  }
+                  onMouseMove={() => select(index())}
+                  onMouseUp={() => {
+                    select(index())
+                    attachRun(run)
+                  }}
+                >
+                  <box flexGrow={1} minWidth={0} flexDirection="row">
+                    <text
+                      fg={
+                        isSelected()
+                          ? props.context.theme.text.action.primary.focused
+                          : isCurrent()
+                            ? props.context.theme.text.action.primary.selected
+                            : props.context.theme.text.action.primary.base
+                      }
+                      attributes={isSelected() ? TextAttributes.BOLD : undefined}
+                      wrapMode="none"
+                    >
+                      {"  ".repeat(treeView() ? (run.depth ?? 0) : 0)}{run.id} — {run.role} — {run.state}{run.task ? ` — ${run.task}` : ""}
+                    </text>
+                  </box>
                   <text
                     fg={
                       isSelected()
                         ? props.context.theme.text.action.primary.focused
-                        : isCurrent()
-                          ? props.context.theme.text.action.primary.selected
-                          : props.context.theme.text.action.primary.base
+                        : props.context.theme.text.muted
                     }
-                    attributes={isSelected() ? TextAttributes.BOLD : undefined}
                     wrapMode="none"
                   >
-                    {"  ".repeat(treeView() ? (run.depth ?? 0) : 0)}{run.id} — {run.role} — {run.state}{run.task ? ` — ${run.task}` : ""}
+                    {run.state}
                   </text>
                 </box>
-                <text
-                  fg={
-                    isSelected()
-                      ? props.context.theme.text.action.primary.focused
-                      : props.context.theme.text.muted
-                  }
-                  wrapMode="none"
-                >
-                  {run.state}
-                </text>
-              </box>
-            )
-          }}
-        </For>
-      </scrollbox>
-    </Show>
+              )
+            }}
+          </For>
+        </scrollbox>
+      </Show>
+      <text fg={props.context.theme.text.muted} flexShrink={0}>
+        {`↑↓ move · ⏎ attach · ctrl+a ${showInactive() ? "inactive" : "active"} · ctrl+t ${treeView() ? "tree" : "all"} · ctrl+d stop/resume · M monitor · f fullscreen · esc close`}
+      </text>
+    </box>
   )
 }

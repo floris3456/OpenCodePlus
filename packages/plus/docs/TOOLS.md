@@ -724,16 +724,13 @@ its current state
 (`packages/plus/src/teams/api-lifecycle.ts:80`–`packages/plus/src/teams/api-lifecycle.ts:103`,
 `packages/plus/src/index.ts:2098`).
 
-## 9. Team composer tab
+## 9. Team panel
 
-The chat composer registers a tab `id: "team"`, `label: "Team"`
-(`packages/plus/src/tui/active-team.tsx:214`). The tab contributes four hints —
-`move ↑↓`, `attach ⏎`, `active ctrl+a` and `stop|resume ctrl+d`
-(`packages/plus/src/tui/active-team.tsx:217`–`packages/plus/src/tui/active-team.tsx:222`);
-the composer renders them label-first and appends its own `tabs ←/→`, so the
-bar reads `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`. The
-`ctrl+a` hint names the view that is on: it reads `inactive ctrl+a` while the
-inactive view is showing.
+`/team` opens `plus.team` through upstream's `ui.panel` API and `session.panel`
+slot (`packages/plus/src/tui/active-team.tsx`). The footer lists navigation,
+active/inactive and tree/all filters, stop/resume, Monitor (`M`), fullscreen (`f`)
+and close (`Esc`). Arrow navigation scrolls with the highlighted row. Filters
+and per-session selection survive closing and reopening the panel.
 
 Rows are runs, one per run, rendered `id — role — state — task`
 (`packages/plus/src/tui/active-team.tsx:498`), newest first because the list
@@ -743,22 +740,21 @@ The default view filters to active states `working`, `idle`, `starting`,
 `dead`, `superseded`, `reaped`
 (`packages/plus/src/tui/active-team.tsx:329`–`packages/plus/src/tui/active-team.tsx:336`).
 The list refreshes on `teams.changed`, on `session.*` data events, and on a 2 s
-tick while the tab is active
+tick while the panel is focused
 (`packages/plus/src/tui/active-team.tsx:305`–`packages/plus/src/tui/active-team.tsx:321`).
 
 | Key | Command | Behavior |
 | --- | --- | --- |
-| `↑` | `composer.team.up` | Previous run; at the first row, closes the tab (`packages/plus/src/tui/active-team.tsx:396`) |
-| `↓` | `composer.team.down` | Next run, wrapping (`packages/plus/src/tui/active-team.tsx:408`) |
-| `⏎` | `composer.team.select` | Attach: navigates to the run's session and closes the tab (`packages/plus/src/tui/active-team.tsx:418`, `packages/plus/src/tui/active-team.tsx:350`) |
+| `↑` | `composer.team.up` | Previous run, scrolling into view; at the first row, closes the panel |
+| `↓` | `composer.team.down` | Next run, scrolling into view and wrapping |
+| `⏎` | `composer.team.select` | Attach: navigates to the run's session and closes the panel |
 | `ctrl+a` | `composer.team.toggle_activity` | Toggle active/inactive view, reset selection to the first row (`packages/plus/src/tui/active-team.tsx:428`) |
 | `ctrl+d` | `composer.team.action` | `idle` → stop via `team.runs.stop`; `stopped`/`dead` → attach (resume); `working` → toast `Run must be interrupted first`; other states are ignored (`packages/plus/src/tui/active-team.tsx:439`, `packages/plus/src/tui/active-team.tsx:357`–`packages/plus/src/tui/active-team.tsx:388`) |
 
-The keymap layer is `mode: "composer"`, `enabled` while the tab is active,
-`priority: 1` (`packages/plus/src/tui/active-team.tsx:390`). That layer owns
-`ctrl+d` while the tab is active; the host's global `app.exit` also names
-`ctrl+d` (`packages/tui/src/config/keybind.ts:48`), and the tab binding takes
-precedence — `ctrl+d` reaches the Team tab and no fallback key is used.
+The keymap layer is enabled while the panel is focused, with `priority: 1`.
+Existing `composer.team.*` IDs remain for keybinding compatibility. That layer
+owns `ctrl+d` while focused; when focus returns to the session, panel bindings
+are inactive. Upstream owns sizing, narrow-terminal fullscreen and closing.
 Mouse move selects a row, mouse up attaches it
 (`packages/plus/src/tui/active-team.tsx:480`).
 

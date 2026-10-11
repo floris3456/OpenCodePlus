@@ -419,7 +419,7 @@ function agentsFor(requests: readonly Plus.MonitorRequest[], now: number): Plus.
   return all.filter((row) => seen.has(row.agent)).sort((a, b) => b.lastActive - a.lastActive)
 }
 
-function createFixtureReport(
+export function createFixtureReport(
   input: Plus.MonitorQueryInput,
   variant: MissVariant,
   now: number,

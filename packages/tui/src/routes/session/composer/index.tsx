@@ -7,10 +7,8 @@ import { Keymap } from "../../../context/keymap"
 import { SubagentsTab } from "./subagents-tab"
 import { ShellTab } from "./shell-tab"
 import { TerminalsTab } from "./terminals-tab"
-import { PluginComposerTabs } from "./team-monitor-tab"
 import { ComposerContext, type ComposerTab } from "./context"
 
-export { composerPluginTabs } from "./team-monitor-tab"
 export { useComposerTab, type ComposerHint } from "./context"
 
 export type ComposerProps = {
@@ -139,7 +137,6 @@ export function Composer(props: ComposerProps) {
             <Show when={props.terminals}>
               <TerminalsTab sessionID={props.sessionID} visibleTerminalID={props.visibleTerminalID} />
             </Show>
-            <PluginComposerTabs sessionID={props.sessionID} />
             <box flexDirection="row" gap={2} paddingLeft={1} flexShrink={0}>
               <For each={footerHints()}>
                 {(hint) => (

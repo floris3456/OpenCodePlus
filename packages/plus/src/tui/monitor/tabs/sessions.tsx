@@ -7,6 +7,7 @@ import { formatClock, formatCost, formatTokens, formatReusePercent } from "../fo
 import { createRowStore, createRowWindow } from "../window.js"
 
 export interface SessionsTabProps {
+  readonly width?: number
   readonly context: Plugin.Context
   readonly report: Plus.MonitorReport | undefined
   readonly selectedIndex: number
@@ -40,7 +41,7 @@ export function SessionsTab(props: SessionsTabProps) {
 
   // Drop whole columns when the terminal is narrow so labels never lose their
   // values; keep the session, state, steps, tokens and last activity always.
-  const available = () => dimensions().width - 2
+  const available = () => (props.width ?? dimensions().width) - 2
   const showAgent = () => available() >= 116
   const showCost = () => available() >= 102
   const showHitRate = () => available() >= 92

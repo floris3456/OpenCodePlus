@@ -512,29 +512,6 @@ export interface AgentsUI {
   readonly set?: (id: string) => void
 }
 
-export interface ComposerHint {
-  readonly label: string
-  readonly shortcut: string
-}
-
-export interface ComposerTabRenderInput {
-  readonly sessionID: string
-  readonly active: () => boolean
-  readonly close: () => void
-}
-
-export interface ComposerTabOptions {
-  readonly id: string
-  readonly label: string
-  /**
-   * Body height in rows. Omitted keeps the host's native body height; a tab
-   * that needs more rows asks for them here and renders that many itself.
-   */
-  readonly height?: number
-  readonly render: (input: ComposerTabRenderInput) => JSX.Element
-  readonly hints?: () => readonly ComposerHint[]
-}
-
 export interface UI {
   readonly dialog: Dialog
   readonly toast: Toast
@@ -575,9 +552,6 @@ export interface UI {
     move(sessionID: string, index: number): boolean
     /** Closes an open tab, or the active tab when omitted, and returns false when no tab matched. */
     close(sessionID?: string): boolean
-  }
-  readonly composer: {
-    tab(options: ComposerTabOptions): () => void
   }
   readonly model: {
     /** The prompt's selected model; variant is undefined for the model default. Reactive when read in a Solid computation. */

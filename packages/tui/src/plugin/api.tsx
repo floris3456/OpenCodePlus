@@ -33,7 +33,6 @@ import { useOptionalPanel } from "../context/panel"
 import { useLocal } from "../context/local"
 import { abbreviateHome } from "../util/path-format"
 import { DialogAgent } from "../component/dialog-agent"
-import { composerPluginTabs } from "../routes/session/composer/team-monitor-tab"
 import { promptSendGuards } from "../component/prompt/send-guard"
 
 export type Dispose = () => Promise<void>
@@ -299,22 +298,6 @@ export function createPluginContext(input: {
           if (!target || !host.sessionTabs.tabs().some((tab) => tab.sessionID === target)) return false
           host.sessionTabs.close(target)
           return true
-        },
-      },
-      composer: {
-        tab(options) {
-          const unregister = composerPluginTabs.register({
-            ...options,
-            render: (tabInput) => provide(() => options.render(tabInput)),
-          })
-          let cleaned = false
-          const cleanup = () => {
-            if (cleaned) return
-            cleaned = true
-            unregister()
-          }
-          input.owned.push(async () => cleanup())
-          return cleanup
         },
       },
       model: {

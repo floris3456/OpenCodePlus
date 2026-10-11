@@ -1660,15 +1660,17 @@ badge). A created team starts disabled. Built-in teams cannot be created or
 deleted, and take no members (no Defaults overlay is read). Store
 persistence and the RPC surface are implemented.
 
-### Run-backed Team composer tab (`tui/active-team.tsx`)
+### Run-backed Team panel (`tui/active-team.tsx`)
 
-In a chat, arrow-down to the `Team` composer tab shows runs in the current namespace (not members), one row per run displaying `id`, `role`, `state`, and `task`, newest first.
+In a chat, `/team` opens the upstream `session.panel` contribution named `plus.team`. It shows runs in the current namespace (not members), one row per run displaying `id`, `role`, `state`, and `task`, newest first. Its default filter is the current chat's team tree; `ctrl+t` toggles all runs.
 - Default view displays active runs (`working`, `idle`, `starting`, `blocked_input`, `stopping`).
 - `ctrl+a` toggles to inactive runs (`stopped`, `dead`, `superseded`, `reaped`), newest first, and back; the hint bar indicates which view is active.
 - `Enter` (`composer.team.select`) on any row, active or inactive, attaches by navigating to that run's session (`sessionID`).
 - `ctrl+d` (`composer.team.action`): on an `idle` run, stops the run; on a `stopped` or `dead` run, resumes by attaching to its session (the lifecycle resume consumes any retained `stopRequested`, so the resumed run reads `working` once its first prompt starts executing and settles `idle` on success); on a `working` run, displays a toast warning that the run must be interrupted first.
-- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  stop|resume ctrl+d  tabs ←/→`; the `ctrl+a` hint names the view that is on (`inactive ctrl+a` while the inactive view is showing), and `tabs ←/→` is the composer's own hint.
-- The list automatically refreshes on `teams.changed`, host session lifecycle events, and on a 2 s periodic interval while the tab is active.
+- Arrow navigation scrolls to keep the selected row visible, including wrapping and layout changes. Selection is retained per session while the panel is closed; its active/inactive and tree/all filters also survive closure.
+- The footer names navigation and filters, `f` for the host's full-screen toggle, `M` for Monitor, and `Esc` to close. Keyboard actions are scoped to panel focus. Existing `composer.team.*` command IDs remain for keybinding compatibility.
+- The list automatically refreshes on `teams.changed`, host session lifecycle events, and on a 2 s periodic interval while the panel is focused.
+- Monitor uses `plus.monitor` in the same upstream slot. `/monitor` and `/tools` open it in a session; `M` toggles full screen in place without remounting its contents. Home retains the standalone Monitor route. Plus's custom `ui.composer.tab` registration API is retired.
 
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 

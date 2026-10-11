@@ -6,6 +6,7 @@ import type { Plus } from "../../../rpc.js"
 import { formatClock, formatCost, formatCostLabel, formatTokens, formatReusePercent, pad } from "../format.js"
 
 export interface OverviewTabProps {
+  readonly width?: number
   readonly context: Plugin.Context
   readonly report: Plus.MonitorReport | undefined
   readonly full: boolean
@@ -15,11 +16,12 @@ export interface OverviewTabProps {
 export function OverviewTab(props: OverviewTabProps) {
   const theme = () => props.context.theme
   const dimensions = useTerminalDimensions()
+  const width = () => props.width ?? dimensions().width
   const current = () => props.report
   // The agent table drops its model column before it would clip on narrow terminals.
   // Columns keep Time/agent 16, Steps 8, Hit 10, Misses 8, Tokens 10, Cost 10,
   // Active 10 = 72; the model column adds 18, so it needs 90 + padding + margins.
-  const showModel = () => dimensions().width - 4 >= 95
+  const showModel = () => width() - 4 >= 95
 
   const topTools = () => {
     const r = current()
@@ -82,7 +84,7 @@ export function OverviewTab(props: OverviewTabProps) {
                 {(totals) => (
                   <box flexDirection="column" paddingLeft={1} minWidth={0} flexShrink={0}>
                     <Show
-                      when={dimensions().width >= 100}
+                      when={width() >= 100}
                       fallback={
                         <text fg={theme().text.base} wrapMode="none" truncate>
                           {`In: ${formatTokens(totals().input)} · Read: ${formatTokens(totals().cacheRead)} · Write: ${formatTokens(totals().cacheWrite)} · Reuse: ${formatReusePercent(totals().hitRate)}`}
@@ -123,7 +125,7 @@ export function OverviewTab(props: OverviewTabProps) {
               {/* Top 3 Misses */}
               <box flexDirection="column" flexGrow={1} minWidth={0} marginRight={1}>
                 <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0} wrapMode="none" truncate>
-                  {dimensions().width >= 100 ? "Top Cache Misses" : "Top Misses"}
+                  {width() >= 100 ? "Top Cache Misses" : "Top Misses"}
                 </text>
                 <Show
                   when={topMisses().length > 0}
@@ -158,7 +160,7 @@ export function OverviewTab(props: OverviewTabProps) {
               {/* Top 3 Carried Tools */}
               <box flexDirection="column" flexGrow={1} minWidth={0}>
                 <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexShrink={0} wrapMode="none" truncate>
-                  {dimensions().width >= 110 ? "Top Tools by Carried Tokens" : "Top Tools"}
+                  {width() >= 110 ? "Top Tools by Carried Tokens" : "Top Tools"}
                 </text>
                 <Show
                   when={topTools().length > 0}

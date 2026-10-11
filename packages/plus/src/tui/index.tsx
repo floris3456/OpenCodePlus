@@ -57,6 +57,15 @@ export default Plugin.define({
               },
             },
             {
+              id: "plus.team.open",
+              title: "Team: runs and members",
+              group: "OpenCodePlus",
+              palette: true,
+              slash: { name: "team" },
+              enabled: () => context.ui.router.current().type === "session",
+              run: () => { context.ui.panel.open("plus.team") },
+            },
+            {
               id: "plus.monitor.open",
               title: "Monitor: tokens, cache and tools",
               group: "OpenCodePlus",

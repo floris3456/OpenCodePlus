@@ -168,7 +168,7 @@ export function ToolsTab(props: ToolsTabProps) {
   )
 
   return (
-    <box flexDirection="column" flexGrow={1} minWidth={0}>
+    <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
       <Show when={props.full && props.report}>
         {(current) => (
           <text fg={theme().text.base} wrapMode="none" truncate flexShrink={0}>
@@ -197,7 +197,7 @@ export function ToolsTab(props: ToolsTabProps) {
             </scrollbox>
           }
         >
-          <scrollbox flexGrow={1}>
+          <scrollbox flexGrow={1} minHeight={0} ref={(next: ScrollBoxRenderable) => props.onScrollRef?.(next)}>
             <GroupRows />
           </scrollbox>
         </Show>

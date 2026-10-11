@@ -154,9 +154,9 @@ Teams: project teams in `<project>/.opencodeplus/teams/<team>/<id>.md`, global t
 
 RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/rename/list`, `team.runs.list/stop`, `modelSettings.set`, `warming.status/set` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier with optional `template` and optional `fields` overriding template defaults, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `instructions.changed`, `teams.changed`, `warming.changed`. The binding contract is `SPEC.md`.
 
-## Team tab
+## Team panel
 
-Arrow-down in the composer switches to the `Team` tab, which defaults to listing runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
+In a session, `/team` (palette: "Team: runs and members") opens the Team panel. It defaults to listing runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
 - One row per run showing `id`, `role`, `state`, and `task`.
 - Default view shows active runs in the current team tree.
 - `ctrl+t` toggles between the current chat's team tree and all runs in the namespace; hint bar indicates the current view (`tree` / `all`).
@@ -164,7 +164,8 @@ Arrow-down in the composer switches to the `Team` tab, which defaults to listing
 - `Enter` attaches by navigating to that run's session (`sessionID`).
 - `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. Both `ctrl+a`, `Enter`, and `ctrl+d` keep working in both views.
 - A chat in no team tree shows `No team runs from this chat · ctrl+t shows all`.
-- Hint bar: `move ↑↓  attach ⏎  active ctrl+a  tree ctrl+t  stop|resume ctrl+d  monitor M  tabs ←/→`; the `ctrl+a` hint reads `inactive ctrl+a` while inactive runs are shown, `ctrl+t` reads `all ctrl+t` while all runs are shown, `M` opens the Monitor page on this session, and `tabs ←/→` is the composer's own hint.
+- Arrow keys keep the selected run visible, including beyond the last visible row and when wrapping back to the top. Selection is retained per session while reopening the panel; active/inactive and tree/all filters survive closing it.
+- `f` toggles full-screen presentation, `M` opens Monitor, and `Esc` closes the panel. Narrow terminals use full screen automatically. Keys belong to the panel only while it has focus.
 
 ## Tools
 
@@ -692,8 +693,9 @@ Plugin RPC: `compaction.triggers` takes `{ sessionID }`; `compaction.triggers.se
 One page for chat metrics: reasoning, cache reads and writes, uncached input, output, cost, steps and tools with their token attribution, with heavy emphasis on cache misses.
 
 - **Where**:
-  - Full-screen `/monitor` (palette: "Monitor: tokens, cache and tools"; `/tools` is an alias, and `M` in composer `Tools` and `Team` tabs opens it). It opens filtered on the session it was opened from.
-  - A compact `Tools` tab in the session composer, next to Subagents, Shell, Terminals and Team, defaulting to the current team tree. It always shows Tools and drills from the selected row even while the full page remembers another tab; the compact and full page keep their own persisted settings.
+  - `/monitor` (palette: "Monitor: tokens, cache and tools"; `/tools` is an alias, and `M` in Team opens it) opens a session panel with all five Monitor tabs. The session scope follows the open chat; scope and filter preferences persist.
+  - `M` expands the same panel to full screen and shrinks it back, keeping its filters, selection, and mounted contents. Narrow terminals use full screen automatically. `Esc` closes it.
+  - From Home, Monitor opens as a standalone full-screen page; closing it returns to Home. Team and Tools no longer add composer tabs.
 - **Scope** (header line 1, `s` steps through):
   - **This session**: only that session.
   - **Team tree**: root of this session's delegation tree + all descendants at any depth.

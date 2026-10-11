@@ -8,6 +8,7 @@ import { sessionLocationMissingStory } from "./session-location-missing"
 import { oneCellSpinnerStory } from "./one-cell-spinner"
 import { monitorStory, monitorPagesStory, monitorPayloadsStory } from "./monitor"
 import { linkClicksStory } from "./link-clicks"
+import { plusPanelsStory } from "./plus-panels"
 
 /**
  * A story is a full-screen, fixture-driven simulation of a real production component. Stories own
@@ -28,6 +29,7 @@ const stories: Story[] = [
   monitorPagesStory,
   monitorPayloadsStory,
   linkClicksStory,
+  plusPanelsStory,
 ]
 
 function Commands(props: { context: Plugin.Context }) {

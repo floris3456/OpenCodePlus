@@ -427,7 +427,7 @@ test("enabling a team from the server side does not change the agent when a sess
   manager.dispose()
 })
 
-test("createActiveTeam registers composer tab and hints, cleans up on dispose", async () => {
+test("createActiveTeam registers the session panel and cleans up on dispose", async () => {
   let registeredTab: any = undefined
   let tabUnregistered = false
 
@@ -455,35 +455,21 @@ test("createActiveTeam registers composer tab and hints, cleans up on dispose", 
     theme: { text: { subdued: "gray" } },
     ui: {
       toast: { show: () => {} },
-      slot: () => () => {},
+      slot: (claim: { append?: string }) => {
+        if (claim.append !== "session.panel") return () => {}
+        registeredTab = claim
+        return () => { tabUnregistered = true }
+      },
       agents: {
         groups: () => () => {},
         activeGroup: { current: () => undefined, set: () => {} },
-      },
-      composer: {
-        tab: (tab: any) => {
-          registeredTab = tab
-          return () => {
-            tabUnregistered = true
-          }
-        },
       },
     },
   }
 
   const manager = createActiveTeam(context)
   expect(registeredTab).toBeDefined()
-  expect(registeredTab.id).toBe("team")
-  expect(registeredTab.label).toBe("Team")
-  const hints = registeredTab.hints()
-  expect(hints).toEqual([
-    { label: "move", shortcut: "↑↓" },
-    { label: "attach", shortcut: "⏎" },
-    { label: "active", shortcut: "ctrl+a" },
-    { label: "tree", shortcut: "ctrl+t" },
-    { label: "stop|resume", shortcut: "ctrl+d" },
-    { label: "monitor", shortcut: "M" },
-  ])
+  expect(registeredTab.append).toBe("session.panel")
 
   manager.dispose()
   expect(tabUnregistered).toBe(true)
@@ -682,7 +668,7 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   expect(defaultFrame).not.toContain("w-run-stopped")
   expect(defaultFrame).not.toContain("w-run-dead")
 
-  expect(commands.length).toBe(7)
+  expect(commands.length).toBe(9)
   const upCmd = commands.find((c) => c.id === "composer.team.up")
   const downCmd = commands.find((c) => c.id === "composer.team.down")
   const selectCmd = commands.find((c) => c.id === "composer.team.select")

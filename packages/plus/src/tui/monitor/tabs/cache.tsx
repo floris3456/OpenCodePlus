@@ -17,6 +17,7 @@ import { createRowStore, createRowWindow } from "../window.js"
 import { RequestFacts } from "../request-facts.js"
 
 export interface CacheTabProps {
+  readonly width?: number
   readonly context: Plugin.Context
   readonly report: Plus.MonitorReport | undefined
   readonly selectedIndex: number
@@ -40,7 +41,7 @@ export function CacheTab(props: CacheTabProps) {
   // Narrow terminals drop whole columns, keeping time, kind (so pings stay
   // distinguishable), verdict, cause and evidence; the agent/model column goes
   // first, then input and cost.
-  const available = () => dimensions().width - 2
+  const available = () => (props.width ?? dimensions().width) - 2
   const showInput = () => available() >= 96
   const showCost = () => available() >= 110
   const showAgent = () => available() >= 84
