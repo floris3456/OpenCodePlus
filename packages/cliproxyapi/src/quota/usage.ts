@@ -24,10 +24,26 @@ export const UsageSnapshot = Schema.Struct({
   max_age_seconds: Schema.Number,
   all: Schema.Boolean,
   provider: Schema.String,
+  providers: Schema.optional(Schema.Array(Schema.String)),
   model: Schema.String,
   current: Schema.String,
   active: Schema.Array(Schema.String),
   last_used: Schema.Number,
+  next_use: Schema.optional(
+    Schema.Struct({
+      v: Schema.Literal(1),
+      at_ms: Schema.Number,
+      expires_ms: Schema.Number,
+      candidates_at_ms: Schema.optional(Schema.Number),
+      mode: Schema.Literals(["off", "dry-run", "active"]),
+      provider: Schema.String,
+      model: Schema.String,
+      reason: Schema.String,
+      auth: Schema.optional(Schema.String),
+      alias: Schema.optional(Schema.String),
+      forced: Schema.Boolean,
+    }),
+  ),
   credentials: Schema.Array(
     Schema.Struct({
       id: Schema.String,

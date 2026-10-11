@@ -51,6 +51,7 @@ function snapshot(): UsageSnapshot {
 function fixture(options: { manual?: boolean; interval?: number; current?: string } = {}) {
   const [model, setModel] = createSignal({ providerID: "cliproxyapi", modelID: "claude-sonnet" })
   const [dialog, setDialog] = createSignal<() => JSX.Element>()
+  const [status, setStatus] = createSignal<"idle" | "running">("idle")
   const [route, setRoute] = createSignal<{ type: "home" } | { type: "session"; sessionID: string }>({
     type: "session",
     sessionID: "ses_a",
@@ -68,6 +69,7 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
   const color = RGBA.fromHex("#cccccc")
   const token = { base: color, selected: color, hovered: color }
   const context = {
+    data: { session: { status } },
     theme: {
       text: {
         base: color,
@@ -124,7 +126,7 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
   })
   const command = (id: string) =>
     state.layers.flatMap((layer) => layer.commands ?? []).findLast((command) => command.id === id)!
-  return { state, context, dialog, setModel, setRoute, command }
+  return { state, context, dialog, setModel, setRoute, setStatus, command }
 }
 
 async function mount(f: ReturnType<typeof fixture>, width = 80, height = 24) {
@@ -148,6 +150,39 @@ async function frame(output: Awaited<ReturnType<typeof createTestRenderer>>) {
   return output.captureCharFrame()
 }
 
+test("live IN USE replaces LAST USED, and NEXT USE remains an independent expiring marker", async () => {
+  const f = fixture()
+  f.setStatus("running")
+  f.state.result = {
+    status: "ready",
+    snapshot: {
+      ...snapshot(),
+      active: ["account-0"],
+      providers: ["claude", "codex"],
+      next_use: {
+        v: 1,
+        at_ms: Date.now(),
+        expires_ms: Date.now() + 30000,
+        model: "claude-sonnet",
+        provider: "codex",
+        auth: "account-1",
+        mode: "dry-run",
+        reason: "cold_move",
+        forced: false,
+      },
+    },
+  }
+  const output = await mount(f)
+  let text = await frame(output)
+  expect(text).toContain("IN USE")
+  expect(text).not.toContain("LAST USED")
+  expect(text).toContain("NEXT USE")
+  f.setStatus("idle")
+  text = await frame(output)
+  expect(text).not.toContain("IN USE")
+  expect(text).toContain("LAST USED")
+})
+
 test("sidebar only shows the serving credential, never the all-credentials fallback", async () => {
   const f = fixture()
   const output = await mount(f)
@@ -159,9 +194,11 @@ test("sidebar only shows the serving credential, never the all-credentials fallb
   expect([...f.state.slots.keys()]).toEqual(["sidebar.content", "app"])
 })
 
-test("no serving credential leaves the sidebar empty", async () => {
+test("selected-model providers appear before the first request", async () => {
   const f = fixture({ current: "" })
-  expect((await frame(await mount(f))).trim()).toBe("")
+  const text = await frame(await mount(f))
+  expect(text).toContain("Account 0")
+  expect(text).not.toContain("Account 1")
 })
 
 test("usage opens a bounded popup with pages, and closing it keeps the sidebar compact", async () => {

@@ -1,27 +1,40 @@
-import type { Meter } from "../pacer/meter.js"
+import type { Meter } from "opencode-pacer/core"
 import type { UsageInput, UsageSnapshot } from "./usage.js"
 
 /** Keep Pacer's freshness decision separate from the age of its provider reading. */
 export function pacerSnapshot(
-  meter: Pick<Meter, "lastServed" | "rows">,
+  meter: Pick<Meter, "lastServed" | "rows" | "snapshot">,
   input: UsageInput,
   now: number,
+  providers?: readonly string[],
 ): UsageSnapshot {
   const served = input.sessionID ? meter.lastServed(input.sessionID) : undefined
   const rows = meter.rows()
+  const current = rows.find(
+    (row) => row.id === served?.auth && (providers === undefined || providers.includes(row.provider)),
+  )
+  const activity = input.sessionID ? meter.snapshot().activity?.[input.sessionID]?.auth : undefined
   return {
     protocol: 1,
     view: "usage",
     now: now / 1000,
     max_age_seconds: 90,
-    all: input.all || !served,
-    provider: rows.find((c) => c.id === served?.auth)?.provider ?? "",
+    all: input.all || (providers === undefined && !served),
+    provider: providers?.[0] ?? current?.provider ?? "",
+    ...(providers === undefined ? {} : { providers }),
     model: input.modelID,
-    current: served?.auth ?? "",
-    active: [],
+    current: current?.id ?? "",
+    active:
+      activity &&
+      rows.some((row) => row.id === activity && (providers === undefined || providers.includes(row.provider)))
+        ? [activity]
+        : [],
     last_used: (served?.at_ms ?? 0) / 1000,
     credentials: rows
-      .filter((c) => input.all || !served || c.id === served.auth)
+      .filter(
+        (c) =>
+          input.all || (providers === undefined ? !served || c.id === served.auth : providers.includes(c.provider)),
+      )
       .map((c) => ({
         id: c.id,
         alias: c.alias,

@@ -58,20 +58,22 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
         if (reading()?.key !== key) setReading({ key, received: 0 })
       })
       const controller = new AbortController()
-      const state = { request: 0, pending: false }
+      const state = { pushed: 0, pending: false }
       const meter = new Meter()
       const off = context.client.rpc(PacerRpc).events.on("meter", (event) => {
         const snapshot = (event.data as unknown as PacerMeterEvent).snapshot
-        meter.restore(snapshot)
-        // A pending cached read must not overwrite a newer pushed response.
-        state.request++
+        meter.restore(snapshot, true)
+        state.pushed++
         const now = Date.now()
         batch(() => {
           setClock(now)
           setReading({
             key,
             result: { status: "ready" },
-            snapshot: pacerSnapshot(meter, value, now),
+            snapshot: {
+              ...pacerSnapshot(meter, value, now, reading()?.snapshot?.providers),
+              next_use: reading()?.snapshot?.next_use,
+            },
             received: now,
           })
         })
@@ -79,17 +81,27 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
       const load = async () => {
         if (state.pending) return
         state.pending = true
-        const request = ++state.request
+        const pushed = state.pushed
         const next = await rpc.read(value, { signal: controller.signal }).then(
           (result) => ({ result }),
           () => ({ result: undefined }),
         )
         state.pending = false
-        if (controller.signal.aborted || request !== state.request) return
+        if (controller.signal.aborted) return
         const now = Date.now()
+        const result =
+          next.result?.snapshot && state.pushed !== pushed
+            ? {
+                ...next.result,
+                snapshot: {
+                  ...pacerSnapshot(meter, value, now, next.result.snapshot.providers),
+                  next_use: next.result.snapshot.next_use,
+                },
+              }
+            : next.result
         batch(() => {
           setClock(now)
-          setReading((previous) => merge(key, previous, next.result, now))
+          setReading((previous) => merge(key, previous, result, now))
         })
       }
       void load()
