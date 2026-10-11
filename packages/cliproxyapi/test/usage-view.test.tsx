@@ -179,7 +179,7 @@ test("usage opens a bounded popup with pages, and closing it keeps the sidebar c
   const next = await frame(output)
   expect(next).toContain("2/3")
   expect(next).toContain("Account 4")
-  f.context.ui.dialog.clear()
+  await f.command("plus.usage.close").run()
   const closed = await frame(output)
   expect(closed).toContain("Account 0")
   expect(closed).not.toContain("Account 4")

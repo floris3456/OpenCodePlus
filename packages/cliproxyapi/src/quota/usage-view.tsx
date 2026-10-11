@@ -148,6 +148,7 @@ function UsageDialog(props: { context: Plugin.Context; store: UsageStore; all: b
   props.context.keymap.layer(() => ({
     mode: "modal",
     commands: [
+      { id: "plus.usage.close", bind: "escape", run: () => props.context.ui.dialog.clear() },
       { id: "plus.usage.previous", bind: "left", run: () => move(-1) },
       { id: "plus.usage.next", bind: "right", run: () => move(1) },
       { id: "plus.usage.scope", bind: "a", run: scope },
