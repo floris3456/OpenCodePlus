@@ -62,7 +62,7 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
       const meter = new Meter()
       const off = context.client.rpc(PacerRpc).events.on("meter", (event) => {
         const snapshot = (event.data as unknown as PacerMeterEvent).snapshot
-        meter.restore(snapshot)
+        meter.restore(snapshot, true)
         state.pushed++
         const now = Date.now()
         batch(() => {
@@ -70,7 +70,10 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
           setReading({
             key,
             result: { status: "ready" },
-            snapshot: pacerSnapshot(meter, value, now, reading()?.snapshot?.providers),
+            snapshot: {
+              ...pacerSnapshot(meter, value, now, reading()?.snapshot?.providers),
+              next_use: reading()?.snapshot?.next_use,
+            },
             received: now,
           })
         })
@@ -90,7 +93,13 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
         // the catalogue's selected-model provider mapping from the cached RPC.
         const result =
           next.result?.snapshot && state.pushed !== pushed
-            ? { ...next.result, snapshot: pacerSnapshot(meter, value, now, next.result.snapshot.providers) }
+            ? {
+                ...next.result,
+                snapshot: {
+                  ...pacerSnapshot(meter, value, now, next.result.snapshot.providers),
+                  next_use: next.result.snapshot.next_use,
+                },
+              }
             : next.result
         batch(() => {
           setClock(now)

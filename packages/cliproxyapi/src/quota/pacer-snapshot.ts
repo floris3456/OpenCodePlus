@@ -1,9 +1,9 @@
-import type { Meter } from "../pacer/meter.js"
+import type { Meter } from "opencode-pacer/core"
 import type { UsageInput, UsageSnapshot } from "./usage.js"
 
 /** Keep Pacer's freshness decision separate from the age of its provider reading. */
 export function pacerSnapshot(
-  meter: Pick<Meter, "lastServed" | "rows">,
+  meter: Pick<Meter, "lastServed" | "rows" | "snapshot">,
   input: UsageInput,
   now: number,
   providers?: readonly string[],
@@ -13,6 +13,7 @@ export function pacerSnapshot(
   const current = rows.find(
     (row) => row.id === served?.auth && (providers === undefined || providers.includes(row.provider)),
   )
+  const activity = input.sessionID ? meter.snapshot().activity?.[input.sessionID]?.auth : undefined
   return {
     protocol: 1,
     view: "usage",
@@ -23,7 +24,11 @@ export function pacerSnapshot(
     ...(providers === undefined ? {} : { providers }),
     model: input.modelID,
     current: current?.id ?? "",
-    active: [],
+    active:
+      activity &&
+      rows.some((row) => row.id === activity && (providers === undefined || providers.includes(row.provider)))
+        ? [activity]
+        : [],
     last_used: (served?.at_ms ?? 0) / 1000,
     credentials: rows
       .filter(
