@@ -89,7 +89,7 @@ import { monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } fro
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { compactColdNow } from "./compaction/cold-now.js"
-import { decideCompactionTriggers, getCompactionTriggers, setCompactionTriggers } from "./compaction/triggers.js"
+import { getCompactionTriggers, setCompactionTriggers } from "./compaction/triggers.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
@@ -289,6 +289,7 @@ export default Plugin.define({
       )
       yield* watchHostEvents(ctx, state)
       yield* watchSharedStore(ctx, state)
+      yield* ctx.session.hook("moved", (event) => transferSessionModel(ctx, state, event.source, event.destination))
       // Core runs warming hooks in registration order on one event, so Plus
       // decides before the monitor records the warming fact: registered the
       // other way round, the fact kept core's proposal ("on") after Plus had
@@ -1680,6 +1681,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
         ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
         ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+        ...(input.compactionInput === undefined ? {} : { compactionInput: input.compactionInput }),
+        ...(input.compactionOutput === undefined ? {} : { compactionOutput: input.compactionOutput }),
       })
       if ("error" in compact) return invalidModelSettings(compact.error)
       const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
@@ -3914,15 +3917,17 @@ export function decideCompactionFor(
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)
+    const triggers = event.reason === "auto" && event.auto && !event.due && !event.compact && !event.refusal && event.metrics?.advanced
+      ? await Effect.runPromise(getCompactionTriggers(ctx, event.sessionID))
+      : undefined
     decideCompaction(event, {
+      ...(triggers === undefined ? {} : { triggers }),
       rows: compactionRowsOf(state, event.agent, event.model),
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),
       ...(agentWide === undefined ? {} : { agent: agentWide }),
       ...(cold === undefined ? {} : { cold }),
     })
-    if (event.reason === "auto" && event.auto && !event.due && !event.compact && !event.refusal && event.metrics?.advanced)
-      decideCompactionTriggers(event, await Effect.runPromise(getCompactionTriggers(ctx, event.sessionID)))
   })
 }
 
@@ -4917,6 +4922,8 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
       ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
       ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+      ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+      ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}
@@ -6454,6 +6461,49 @@ function watchSharedStoreFile(onChange: (source: undefined, force: boolean) => v
   )
 }
 
+// Placement has committed; persist and publish the destination row before the runner continues.
+export function transferSessionModel(
+  ctx: Context,
+  state: PlusState,
+  source: Session.Info,
+  destination: Session.Info,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    if (!source.model) return
+    const agent = source.agent ?? (yield* Effect.promise(() => currentSessionAgent(ctx, source.id)))
+    if (!agent) return
+    const from = yield* Effect.promise(() => activationDirectory(source.location.directory))
+    const directory = yield* Effect.promise(() => activationDirectory(destination.location.directory))
+    if (from === directory) return
+    const stored = yield* Effect.promise(() => load(from))
+    const target = { providerID: source.model.providerID, modelID: source.model.id, variant: source.model.variant }
+    const members = yield* Effect.promise(() => resolveAllTeamAgents(from, stored.records.filter(isTeamRecord), []))
+    const member = members.find((entry) => entry.id === agent)
+    const team = member?.team === undefined ? undefined : { level: scopeLevel(member.scope), team: member.team }
+    const candidates = stored.records.filter((record): record is ModelRecord =>
+      record.type === "model" && record.level === "project" && record.removed !== true &&
+      record.agent === agent && sameTeam(record.team, team) &&
+      record.providerID === target.providerID && record.modelID === target.modelID,
+    )
+    const row = candidates.find((record) => sameModelRef(record, target)) ?? candidates.find((record) => record.variant === undefined)
+    // Global-only selections already travel with the user. Do not freeze inherited values into
+    // a project row when there is no saved project configuration to transfer.
+    if (!row) return
+    const saved = yield* Effect.promise(() => updateRecords(directory, (records) => {
+      const models = modelsOf(records)
+      const existing = models.find((record) => scopedTo(record, row) && sameModelRef(record, row))
+      // Existing destination configuration wins. Activation follows folder movement, just as an
+      // explicit model pick does, without importing any other source inventory.
+      const copied = existing
+        ? models.map((record) => record === existing && record.removed ? { ...record, removed: undefined } : record)
+        : [...models, structuredClone(row)]
+      return [...records.filter((record) => record.type !== "model"), ...activateModel(copied, row, row)]
+    }))
+    if (!saved.ok) return yield* Effect.die("Project model transfer changed concurrently; retry the session move")
+    yield* refreshAfterFileChange(ctx, state, directory)
+  })
+}
+
 // A session created with, or switched to, an agent adopts that agent's active
 // model via switchModel, and only when the session's current model differs.
 // An agent switch returns to the chat's last model for that agent, read from
@@ -6810,6 +6860,8 @@ function toSnapshot(
             ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
             ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
             ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+            ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+            ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),
             ...(record.originalCandidate === undefined ? {} : { originalCandidate: { ...record.originalCandidate } }),
             updated: record.updated,

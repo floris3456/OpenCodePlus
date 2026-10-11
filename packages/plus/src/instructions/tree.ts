@@ -917,6 +917,8 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
         summary: () => compactionStrategyWord(defaultsCompaction(ctx, key, record).strategy.value),
         children: [
           () => lazyModelDefaultField(ctx, memo, key, record, "compactionStrategy", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInput", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionOutput", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "compactionModel", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "compactionInstructions", 4),
         ],
@@ -960,6 +962,11 @@ function lazyModelDefaultField(
   const own = record?.[field] !== undefined
   const switchField = isDefaultSwitchField(field)
   const value = (): string => {
+    if (field === "compactionInput" || field === "compactionOutput") {
+      const threshold = defaultsCompaction(ctx, key, record)[field]
+      const text = threshold.value ? `${threshold.value} tokens` : "off"
+      return own ? text : `${text} · ${compactionSource(threshold.from)}`
+    }
     if (field === "compactionStrategy") {
       const strategy = defaultsCompaction(ctx, key, record).strategy
       return own ? compactionStrategyWord(strategy.value) : `${compactionStrategyWord(strategy.value)} · ${compactionSource(strategy.from)}`
@@ -2241,6 +2248,8 @@ function modelRowChildren(
       summary: () => compactionGroupSummary(memo, ctx, level, owner, candidate, teamRef, catalogue),
       children: [
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactionStrategy", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "compactionInput", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "compactionOutput", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactionModel", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactionInstructions", depth + 1, teamRef, catalogue, ownerPath),
       ],
@@ -2589,6 +2598,12 @@ function lazyModelField(
       const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactWarm")
       return { value: own ? (compactWarm.value ? "on" : "off") : `${compactWarm.value ? "on" : "off"} · ${compactionSource(compactWarm.from)}`, own }
     }
+    if (field === "compactionInput" || field === "compactionOutput") {
+      const threshold = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)[field]
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, field)
+      const text = threshold.value ? `${threshold.value} tokens` : "off"
+      return { value: own ? text : `${text} · ${compactionSource(threshold.from)}`, own }
+    }
     if (field === "compactionStrategy") {
       const compaction = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)
       const strategy = compaction.strategy
@@ -2647,7 +2662,7 @@ function ownCompactionField(
   candidate: { providerID: string; modelID: string; variant?: string },
   teamRef: RowTeam | undefined,
   catalogue: Catalogue | undefined,
-  field: "compactWarm" | "compactionStrategy" | "compactionModel" | "compactionInstructions",
+  field: "compactWarm" | "compactionStrategy" | "compactionModel" | "compactionInstructions" | "compactionInput" | "compactionOutput",
 ): boolean {
   const target = targetOf(candidate)
   const scope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }

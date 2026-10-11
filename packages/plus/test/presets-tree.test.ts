@@ -9,10 +9,11 @@ import {
   type EntryRecord,
   type Item,
   type LinkRecord,
+  type ModelRecord,
   type PresetRecord,
 } from "../src/instructions/model.js"
 import { fromLabel, reviewLabel } from "../src/instructions/from-label.js"
-import { findRow } from "../src/instructions/ops.js"
+import { findRow, resetModelFieldRow, setModelFieldRow } from "../src/instructions/ops.js"
 import { nativePresetIds, plusTeamPresets, presetLabels, presetListing } from "../src/instructions/presets.js"
 import { query } from "../src/instructions/query.js"
 import { expandedTree, tree, type MemoInput, type TreeNode } from "../src/instructions/tree.js"
@@ -90,6 +91,34 @@ function input(overrides: Partial<MemoInput> = {}): MemoInput {
 function all(): TreeNode[] {
   return expandedTree(input())
 }
+
+test("threshold fields edit and reset on project/global/defaults agents, team members and both preset categories", () => {
+  const records: ModelRecord[] = [
+    { type: "model", level: "project", agent: "alice", providerID: "test", modelID: "chat", updated: UPDATED },
+    { type: "model", level: "global", agent: "build", providerID: "test", modelID: "chat", updated: UPDATED },
+    { type: "model", level: "defaults", agent: null, providerID: "test", modelID: "chat", updated: UPDATED },
+    { type: "model", level: "project", agent: "lead", catalogue: "teams", providerID: "test", modelID: "chat", updated: UPDATED },
+    { type: "model", level: "preset", agent: "mine", providerID: "test", modelID: "chat", updated: UPDATED },
+    { type: "model", level: "preset", agent: "lead", catalogue: "teams", team: { level: "preset", team: "crew" }, providerID: "test", modelID: "chat", updated: UPDATED },
+  ]
+  const base = input({ records, teams: [{ level: "project", team: "crew", enabled: false, agents: ["lead"] }] })
+  const nodes = expandedTree(base)
+  for (const record of records) {
+    for (const field of ["compactionInput", "compactionOutput"] as const) {
+      const row = nodes.find((node) => node.address?.item === `modelfield:${field}:test/chat` &&
+        node.address.level === record.level && node.address.agent === record.agent && node.address.team?.team === record.team?.team)
+      if (!row) throw new Error(`missing ${field} for ${JSON.stringify(record)}`)
+      const set = setModelFieldRow(base, row.id, "24000")
+      if ("refusal" in set) throw new Error(set.refusal)
+      const changed = set.models.filter((entry) => entry[field] !== undefined)
+      expect(changed).toHaveLength(1)
+      expect(changed[0]).toMatchObject({ level: record.level, agent: record.agent, [field]: "24000", ...(record.team ? { team: record.team } : {}) })
+      const reset = resetModelFieldRow({ ...base, records: set.models }, row.id)
+      if ("refusal" in reset) throw new Error(reset.refusal)
+      expect(reset.models.some((entry) => entry[field] !== undefined)).toBe(false)
+    }
+  }
+})
 
 function row(nodes: readonly TreeNode[], id: string): TreeNode {
   const found = nodes.find((node) => node.id === id)

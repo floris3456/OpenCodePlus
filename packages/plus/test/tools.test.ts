@@ -325,7 +325,7 @@ test("C1 registered model set and emitted field reset persist atomically without
   const resetTool = need(tools, "instructions_reset")
   const created = await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" }) as { id: string }
   await runOk(set, decoded(set, { id: created.id, prompt: "keep alive" }))
-  const values = { compactWarm: "on", coldCompact: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "" }
+  const values = { compactWarm: "on", coldCompact: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
   // Bind the taught six typed fields to the registered schema and real write,
   // not just the permissive field-id parser.
   for (const field of Object.keys(values)) expect(teachingSkillContent).toContain(`\`${field}\``)
@@ -342,10 +342,12 @@ test("C1 registered model set and emitted field reset persist atomically without
   expect((await runFail(set, decoded(set, { id: created.id, interval: "invalid", compactionStrategy: "local" }))).message).toContain("interval")
   expect(await load(project)).toEqual(before)
   const rows = expandedTree(memoInputOf(await snapshotOf(api)))
-  for (const field of ["compactWarm", "compactionStrategy", "compactionModel", "compactionInstructions"]) {
+  expect((await runFail(set, decoded(set, { id: created.id, prompt: "changed", compactionInput: "0" }))).message).toContain("positive whole token count")
+  expect(await load(project)).toEqual(before)
+  for (const field of ["compactWarm", "compactionStrategy", "compactionModel", "compactionInstructions", "compactionInput", "compactionOutput"]) {
     const row = rows.find((node) => node.id.startsWith("item:defaults:alpha:") && node.address?.item.startsWith(`modelfield:${field}:`))
     if (row === undefined) throw new Error(`missing emitted ${field} row`)
-    await runOk(set, decoded(set, { id: row.id, text: field === "compactWarm" ? "off" : field === "compactionStrategy" ? "local" : field === "compactionModel" ? "acme/other" : "summarize" }))
+    await runOk(set, decoded(set, { id: row.id, text: field === "compactionInput" || field === "compactionOutput" ? "30000" : field === "compactWarm" ? "off" : field === "compactionStrategy" ? "local" : field === "compactionModel" ? "acme/other" : "summarize" }))
     expect(await own()).toMatchObject({ prompt: "keep alive", active: true })
     await runOk(resetTool, decoded(resetTool, { id: row.id }))
     expect(await own()).not.toHaveProperty(field)
@@ -378,10 +380,20 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
   await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", coldCompact: "off", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
   const stored = (await load(project)).records.find((record) => record.type === "modelSettings")
   expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", coldCompact: "off", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
+  await runOk(set, decoded(set, { id: row.id, compactionInput: "90000", compactionOutput: "off" }))
+  expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ compactionInput: "90000", compactionOutput: "off" })
   const before = await load(project)
   expect((await runFail(set, decoded(set, { id: row.id, prompt: "changed", coldModels: "acme/first,acme/first" }))).message).toContain("twice")
   expect(await load(project)).toEqual(before)
   const emitted = expandedTree(memoInputOf(await snapshotOf(api)))
+  for (const field of ["compactionInput", "compactionOutput"]) {
+    const threshold = emitted.find((node) => node.address?.item === `modelsetting:${field}:${row.address!.item.slice("modeldefault:".length)}`)
+    if (!threshold) throw new Error(`missing ${field}`)
+    await runOk(set, decoded(set, { id: threshold.id, text: "60000" }))
+    expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ [field]: "60000" })
+    await runOk(need(tools, "instructions_reset"), { id: threshold.id })
+    expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty(field)
+  }
   expect(emitted.some((node) => node.address?.item.startsWith("modelsetting:coldModels:"))).toBe(false)
   expect(teachingSkillContent).toContain("no `modelsetting:coldModels` field row is emitted")
   const bogus = `item:defaults:/models:modelsetting:coldModels:${row.address!.item.slice("modeldefault:".length)}`

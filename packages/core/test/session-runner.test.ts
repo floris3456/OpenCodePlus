@@ -3113,7 +3113,7 @@ describe("SessionRunnerLLM", () => {
     })
   }
 
-  scenario("stops after three smaller compaction inputs overflow", function* (s) {
+  scenario("stops when compaction input cannot shrink without dropping unsummarized exchanges", function* (s) {
     // Large enough that the conversation, not the system prompt, is most of the request.
     const filler = "context ".repeat(1_000)
     yield* s.llm.push(...Array.from({ length: 8 }, (_, index) => TestLLM.text(`Answer ${index}`, `answer-${index}`)))
@@ -3127,20 +3127,18 @@ describe("SessionRunnerLLM", () => {
       Stream.fail(
         new AIError({ reason: new InvalidRequestError({ message: "Too long", classification: "context-overflow" }) }),
       )
-    yield* s.llm.push(overflow(), overflow(), overflow(), overflow())
+    yield* s.llm.push(overflow())
     const compaction = yield* s.session.compact({ sessionID })
     yield* s.resume
 
-    expect(s.requests).toHaveLength(4)
-    expect(userTexts(s.requests[2])[0].length).toBeLessThan(userTexts(s.requests[1])[0].length)
-    expect(userTexts(s.requests[3])[0].length).toBeLessThan(userTexts(s.requests[2])[0].length)
-    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "failed" })
+    expect(s.requests).toHaveLength(1)
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "failed", error: { type: "compaction.failed" } })
     yield* s.llm.push(TestLLM.text("Continued", "continued"))
     yield* s.runPrompt("Continue")
-    expect(userTexts(s.requests[4])).toContain(`Request 0: ${filler}`)
+    expect(userTexts(s.requests[1])).toContain(`Request 0: ${filler}`)
   })
 
-  scenario("resends compaction as text after payload too large, then shrinks later rejections", function* (s) {
+  scenario("resends compaction as text after payload too large, then fails rather than dropping exchanges", function* (s) {
     const image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     const filler = "context ".repeat(1_000)
     yield* s.session.prompt({
@@ -3157,19 +3155,18 @@ describe("SessionRunnerLLM", () => {
     )
     s.currentModel = unknownContextModel
     s.requests.length = 0
-    yield* s.llm.push(...Array.from({ length: 5 }, () => Stream.fail(payloadTooLarge())))
+    yield* s.llm.push(Stream.fail(payloadTooLarge()), Stream.fail(payloadTooLarge()))
     const compaction = yield* s.session.compact({ sessionID })
     yield* s.resume
 
-    // The first rejection resends everything as text, which carries no media; later ones shrink like "too long".
-    expect(s.requests).toHaveLength(5)
+    // The first rejection resends everything as text; the next cannot drop unsummarized exchanges.
+    expect(s.requests).toHaveLength(2)
     expect(s.requests[0]?.messages.some((message) => message.content.some((part) => part.type === "media"))).toBeTrue()
     expect(s.requests[1]?.messages.every((message) => message.role === "user")).toBeTrue()
     expect(userTexts(s.requests[1])[0]).toContain("[image/png omitted]")
     expect(userTexts(s.requests[1])[0]).not.toMatch(/older exchanges? omitted/)
-    expect(userTexts(s.requests[2])[0].length).toBeLessThan(userTexts(s.requests[1])[0].length)
-    expect(userTexts(s.requests[3])[0].length).toBeLessThan(userTexts(s.requests[2])[0].length)
-    expect(userTexts(s.requests[4])[0].length).toBeLessThan(userTexts(s.requests[3])[0].length)
+    expect(userTexts(s.requests[1])[0]).toContain("Request 0 with an image")
+    expect(userTexts(s.requests[1])[0]).toContain("Request 5:")
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "failed" })
   })
 
@@ -3198,7 +3195,7 @@ describe("SessionRunnerLLM", () => {
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "completed" })
   })
 
-  scenario("shrinks after payload too large on a compaction already sent as text", function* (s) {
+  scenario("preserves every exchange when payload recovery switches an oversized compaction to text", function* (s) {
     const service = yield* SessionCompaction.Service
     yield* service.transform((editor) => editor.configure({ buffer: 3_000 }))
     s.currentModel = testModel("large-history", { context: 1_000_000, output: 32_000 })
@@ -3213,14 +3210,14 @@ describe("SessionRunnerLLM", () => {
     const compaction = yield* s.session.compact({ sessionID })
     yield* s.resume
 
-    // The first send was already text, so there is no media left to drop; the rejection counts like "too long".
     expect(s.requests).toHaveLength(2)
-    expect(s.requests[0]?.messages.every((message) => message.role === "user")).toBeTrue()
-    expect(userTexts(s.requests[1])[0].length).toBeLessThan(userTexts(s.requests[0])[0].length)
+    expect(s.requests[1]?.messages.every((message) => message.role === "user")).toBeTrue()
+    expect(userTexts(s.requests[1])[0]).toContain("Request 0:")
+    expect(userTexts(s.requests[1])[0]).toContain("Request 4:")
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "completed" })
   })
 
-  scenario("aims the first overflow compaction below the rejected context", function* (s) {
+  scenario("keeps unsummarized exchanges when the overflow compaction cannot safely meet its smaller target", function* (s) {
     const filler = "context ".repeat(1_000)
     yield* s.llm.push(...Array.from({ length: 4 }, (_, index) => TestLLM.text(`Answer ${index}`, `answer-${index}`)))
     yield* Effect.forEach(
@@ -3236,11 +3233,9 @@ describe("SessionRunnerLLM", () => {
     )
     yield* s.runPrompt("Continue")
 
-    // The history fits the model's window by estimate, but the provider just rejected it, so older exchanges go.
     expect(s.requests).toHaveLength(3)
-    expect(userTexts(s.requests[1])[0]).toContain("older exchanges omitted")
-    expect(userTexts(s.requests[1])[0]).not.toContain("Request 0:")
-    expect(userTexts(s.requests[1])[0]).toContain("Request 3:")
+    expect(userTexts(s.requests[1]).join("\n")).toContain("Request 0:")
+    expect(userTexts(s.requests[1]).join("\n")).toContain("Request 3:")
   })
 
   scenario("serializes history and omits media after a summary input overflow", function* (s) {
@@ -3286,7 +3281,7 @@ describe("SessionRunnerLLM", () => {
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({ status: "completed" })
   })
 
-  scenario("fits serialized compaction history by omitting oldest exchanges", function* (s) {
+  scenario("sends whole compaction history when fitting it would omit unsummarized exchanges", function* (s) {
     const service = yield* SessionCompaction.Service
     yield* service.transform((editor) => editor.configure({ buffer: 3_000 }))
     s.currentModel = testModel("large-history", { context: 1_000_000, output: 32_000 })
@@ -3302,10 +3297,9 @@ describe("SessionRunnerLLM", () => {
     yield* s.resume
 
     expect(s.requests).toHaveLength(1)
-    expect(userTexts(s.requests[0])[0]).toContain("older exchanges omitted")
-    expect(userTexts(s.requests[0])[0]).not.toContain("Request 0:")
-    expect(userTexts(s.requests[0])[0]).not.toContain("Request 1:")
-    expect(userTexts(s.requests[0])[0]).toContain("Request 2:")
+    expect(userTexts(s.requests[0]).join("\n")).toContain("Request 0:")
+    expect(userTexts(s.requests[0]).join("\n")).toContain("Request 1:")
+    expect(userTexts(s.requests[0]).join("\n")).toContain("Request 2:")
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
       status: "completed",
       summary: "## Objective\n- Recovered",
@@ -3486,6 +3480,73 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(8)
     expect(JSON.stringify(s.requests[7].messages)).toContain('"encrypted":"second"')
   })
+
+  for (const strategy of ["local", "remote"] as const) {
+    scenario(`${strategy} repeatedly compacts growing assistant-tool history without another user boundary`, function* (s) {
+      s.currentModel = LanguageModel.make({ id: "native", provider: "openai", route: OpenAIResponses.route })
+      modelLimits.set("native", { context: 11000, output: 1000 })
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.transform((editor) => editor.configure({ keep: 100 }))
+      const agents = yield* Agent.Service
+      yield* agents.transform((editor) => editor.update(Agent.defaultID, (agent) => { agent.compaction = { strategy } }))
+      const checkpoint = (index: number) => strategy === "local"
+        ? TestLLM.text(`## Objective\n- Original objective; preserve finding-1 through finding-${index}`, `summary-${index}`)
+        : CompactionCheckpointResponse.make({ responseID: `resp_${index}`, checkpoint: { type: "compaction", provider: s.currentModel.provider, encrypted: `window-${index}` } })
+      const tool = (index: number, inputTokens: number) => TestLLM.complete(
+        { reason: { normalized: "tool-calls" }, usage: { inputTokens, nonCachedInputTokens: inputTokens } },
+        LLMEvent.toolCall({ id: `call_${index}`, name: "echo", input: { text: `finding-${index} ${"detail ".repeat(100)}` } }),
+      )
+      yield* s.llm.push(tool(1, 10000), checkpoint(1), tool(2, 500), tool(3, 10000), checkpoint(3), tool(4, 500), tool(5, 10000), checkpoint(5), TestLLM.textWithUsage("Finished", "done", 500))
+      yield* s.runPrompt("Original objective")
+      expect(s.requests).toHaveLength(9)
+      expect(s.executions).toHaveLength(5)
+      const messages = yield* s.messages
+      expect(messages.filter((message) => message.type === "user")).toHaveLength(1)
+      const checkpoints = messages.filter((message) => message.type === "compaction" && message.status === "completed")
+      expect(checkpoints).toHaveLength(3)
+      expect(checkpoints.every((message) => message.recent.length <= 400)).toBe(true)
+      for (const [request, finding] of [[1, 1], [4, 3], [7, 5]]) {
+        const serialized = JSON.stringify(s.requests[request].messages)
+        expect(serialized).toContain(`finding-${finding}`)
+        expect(serialized).toContain(`call_${finding}`)
+        expect(serialized).toContain("tool-result")
+      }
+      expect(JSON.stringify(s.requests[8].messages)).toContain(strategy === "local" ? "finding-5" : "window-5")
+      expect(JSON.stringify(s.requests[8].messages)).not.toContain("detail detail detail")
+    })
+
+    scenario(`${strategy} compaction stops a measured non-shrinking autonomous loop and allows later context growth`, function* (s) {
+      s.currentModel = LanguageModel.make({ id: "native", provider: "openai", route: OpenAIResponses.route })
+      modelLimits.set("native", { context: 11_000, output: 1_000 })
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.transform((editor) => editor.configure({ keep: 100 }))
+      const agents = yield* Agent.Service
+      yield* agents.transform((editor) => editor.update(Agent.defaultID, (agent) => { agent.compaction = { strategy } }))
+      const checkpoint = () => strategy === "local"
+        ? TestLLM.text("## Objective\n- Preserve the original objective and findings", "summary")
+        : CompactionCheckpointResponse.make({ responseID: "resp_bounded", checkpoint: { type: "compaction", provider: s.currentModel.provider, encrypted: "bounded-window" } })
+      yield* s.llm.push(TestLLM.textWithUsage("Earlier findings", "before", 10000))
+      yield* s.runPrompt("Original objective")
+      yield* s.llm.push(checkpoint(), TestLLM.complete(
+        { reason: { normalized: "tool-calls" }, usage: { inputTokens: 10000, nonCachedInputTokens: 10000 } },
+        LLMEvent.toolCall({ id: "call_after", name: "echo", input: { text: "small new finding" } }),
+      ))
+      const failed = yield* Effect.exit(s.runPrompt("Continue autonomously"))
+      expect(Exit.isFailure(failed)).toBe(true)
+      if (Exit.isFailure(failed)) expect(Cause.pretty(failed.cause)).toContain("Compaction did not reduce")
+      expect(s.requests).toHaveLength(3)
+      expect(s.executions).toEqual(["small new finding"])
+      expect(JSON.stringify(s.requests[2].messages)).toContain(strategy === "local" ? "original objective and findings" : "bounded-window")
+      // Resuming unchanged cannot spend another compaction call, even with no new user boundary.
+      expect(Exit.isFailure(yield* Effect.exit(s.resume))).toBe(true)
+      expect(s.requests).toHaveLength(3)
+      // A later prompt changes the context: this is not a permanent per-session disable switch.
+      yield* s.llm.push(checkpoint(), TestLLM.textWithUsage("Progress", "later", 500))
+      yield* s.runPrompt("New objective after changing the task")
+      expect(s.requests).toHaveLength(5)
+      expect(JSON.stringify(s.requests[4].messages)).toContain("New objective")
+    })
+  }
 
   scenario("recovers an overflowing native window with another native compaction", function* (s) {
     s.currentModel = LanguageModel.make({ id: "native", provider: "openai", route: OpenAIResponses.route })
@@ -3692,20 +3753,18 @@ describe("SessionRunnerLLM", () => {
     ])
   })
 
-  scenario("compacts before requesting an undersized configured context limit", function* (s) {
+  scenario("fails once when fixed context exceeds an undersized configured context limit", function* (s) {
     yield* setupOverflowRecovery(s)
     s.currentModel = undersizedContextModel
     yield* s.llm.push(
       TestLLM.text("## Objective\n- Recover undersized limit", "text-summary-undersized-limit"),
-      TestLLM.text("Recovered", "text-final-undersized-limit"),
     )
-    yield* s.runPrompt("Continue")
-
-    expect(s.requests).toHaveLength(2)
-    expect(yield* s.context).toMatchObject([
-      { type: "compaction", summary: "## Objective\n- Recover undersized limit" },
-      { type: "assistant", finish: "stop" },
+    expect(Exit.isFailure(yield* Effect.exit(s.runPrompt("Continue")))).toBe(true)
+    expect(s.requests).toHaveLength(1)
+    expect((yield* s.messages).filter((message) => message.type === "compaction")).toMatchObject([
+      { status: "failed", error: { type: "compaction.failed" } },
     ])
+    expect((yield* s.context).some((message) => message.type === "user" && message.text.includes("Earlier question"))).toBe(true)
   })
 
   scenario("persists a second context overflow after one recovery", function* (s) {

@@ -286,6 +286,8 @@ export function snapshotRecordOf(record: StoredRecord): Plus.SnapshotRecord | un
       ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
       ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
       ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+      ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+      ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
       ...(record.originalCandidate === undefined
         ? {}

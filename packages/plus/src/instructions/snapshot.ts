@@ -149,6 +149,8 @@ function modelOf(record: Plus.SnapshotModelRecord): ModelRecord {
     ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
     ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
     ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+    ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+    ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
     ...(record.originalCandidate === undefined
       ? {}
@@ -230,6 +232,8 @@ export function modelSettingsRecordOf(record: Plus.SnapshotModelSettingsRecord):
     ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
     ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
     ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+    ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+    ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
     updated: record.updated,
   }
 }

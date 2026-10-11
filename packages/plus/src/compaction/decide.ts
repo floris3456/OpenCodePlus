@@ -3,6 +3,7 @@ import { Model } from "@opencode/schema/model"
 import { cacheLifetime } from "../monitor/cache.js"
 import type { RequestFingerprintData, RequestRow } from "../monitor/ledger.js"
 import type { WarmingStatus } from "../warming.js"
+import { decideCompactionTriggers } from "./triggers.js"
 import {
   effectiveCompaction,
   type CompactionDefaults,
@@ -25,6 +26,9 @@ import {
 //   3. the CPA account-switch case: CPA has already armed a summary with its
 //      own models and marked the decision `metadata["quota.switch"]`; when the
 //      chat model's cold list is not empty, its models replace CPA's.
+//   4. early input/output thresholds: explicit chat values → agent model row
+//      chain → Defaults › Models › this model → Every model. Cold/armed/quota
+//      decisions and core's automatic-compaction preference retain precedence.
 //
 // An armed list (a team `compactWith`, or `/compact-cold`; the in-memory
 // consumeColdCompaction) takes priority over all of it: it is the user's
@@ -71,6 +75,8 @@ export interface ColdCompactionState {
 }
 
 export interface CompactionDecisionContext {
+  /** Explicit per-chat thresholds override inherited model thresholds field by field. */
+  readonly triggers?: { readonly input?: number; readonly output?: number }
   /** The agent's model rows for this chat's model, each field with its level. */
   readonly rows?: ResolvedCompactionFields
   /** Defaults › Models › this model. */
@@ -120,11 +126,17 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
     event.explanation = { ...event.explanation, trigger: "handoff" }
     return
   }
-  if (!coldFires(effective.coldCompact.value, coldModels, context.cold)) return
-  armModels(event, coldModels)
-  event.optional = true
-  event.metadata = { ...event.metadata, "plus.cold": { models: [...coldModels] } }
-  event.explanation = { ...event.explanation, trigger: "cold" }
+  if (coldFires(effective.coldCompact.value, coldModels, context.cold)) {
+    armModels(event, coldModels)
+    event.optional = true
+    event.metadata = { ...event.metadata, "plus.cold": { models: [...coldModels] } }
+    event.explanation = { ...event.explanation, trigger: "cold" }
+  }
+  decideCompactionTriggers(event, {
+    sessionID: event.sessionID,
+    input: context.triggers?.input ?? effective.compactionInput.value,
+    output: context.triggers?.output ?? effective.compactionOutput.value,
+  })
 }
 
 /** #1 writes the summary; #2… are its fallbacks, replacing CPA's single one. */

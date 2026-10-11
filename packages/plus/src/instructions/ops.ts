@@ -2882,7 +2882,8 @@ export function modelFieldEdit(
   if (field === "interval") return { fields: { ...base, interval: text } }
   if (field === "prompt") return { fields: { ...base, prompt: text } }
   const asTyped =
-    field === "compactionStrategy" ? { compactionStrategy: text }
+    field === "compactionInput" || field === "compactionOutput" ? { [field]: text }
+      : field === "compactionStrategy" ? { compactionStrategy: text }
       : field === "compactionModel" ? { compactionModel: text }
         : field === "compactionInstructions" ? { compactionInstructions: text }
           : field === "compactWarm" ? { compactWarm: text }
@@ -2967,6 +2968,8 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
   // Models) decides again. An explicit empty Instructions is a value, not a
   // reset, so reset only fires when this level actually sets the field.
   if (
+    parsed.field === "compactionInput" ||
+    parsed.field === "compactionOutput" ||
     parsed.field === "compactWarm" ||
     parsed.field === "coldCompact" ||
     parsed.field === "compactionStrategy" ||

@@ -171,6 +171,8 @@ export function toRpcRecords(
         ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
         ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
         ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+        ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
+        ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
         ...(record.removed === undefined ? {} : { removed: record.removed }),
         ...(record.originalCandidate === undefined
           ? {}
@@ -1220,7 +1222,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // level (null clears it so the level below decides), one write.
   async function setModelCompaction(
     node: TreeNode,
-    fields: { compactWarm?: string | null; coldCompact?: string | null; coldModels?: readonly string[] | null; compactionStrategy?: string | null; compactionModel?: string | null; compactionInstructions?: string | null },
+    fields: { compactWarm?: string | null; coldCompact?: string | null; coldModels?: readonly string[] | null; compactionStrategy?: string | null; compactionModel?: string | null; compactionInstructions?: string | null; compactionInput?: string | null; compactionOutput?: string | null },
   ): Promise<boolean> {
     const result = setModelCompactionRow(memoInput(), node.id, fields, treeMemo())
     if ("refusal" in result) {
@@ -1252,6 +1254,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       compactionStrategy?: string | null
       compactionModel?: string | null
       compactionInstructions?: string | null
+      compactionInput?: string | null
+      compactionOutput?: string | null
     },
   ): Promise<boolean> {
     const current = snapshot()

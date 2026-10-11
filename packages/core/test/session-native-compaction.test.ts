@@ -444,7 +444,8 @@ for (const mode of ["endpoint", "trigger", "summary", "retry", "nudge"] as const
 for (const origin of ["threshold", "overflow", "cold", "armed", "handoff"] as const) {
   it.live(`compaction execution observation preserves the actual ${origin} origin`, () => Effect.gen(function* () {
     const fixture = yield* setup({ endpoint: true })
-    yield* fixture.prompt("Conversation to compact")
+    yield* fixture.prompt(origin === "threshold" ? "Conversation to compact ".repeat(5000) : "Conversation to compact")
+    if (origin === "threshold") yield* fixture.compaction.transform((editor) => editor.configure({ keep: 100 }))
     if (origin !== "threshold" && origin !== "overflow") {
       fixture.state.summary = true
       yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
@@ -463,7 +464,7 @@ for (const origin of ["threshold", "overflow", "cold", "armed", "handoff"] as co
     const loaded = yield* fixture.load
     const outcome = yield* fixture.compaction.compact({
       reason: origin === "overflow" ? "overflow" : "auto",
-      context: origin === "threshold" ? { ...loaded, model: { ...loaded.model, limit: { ...loaded.model.limit, context: 1 } } } : loaded,
+      context: origin === "threshold" ? { ...loaded, model: { ...loaded.model, limit: { ...loaded.model.limit, context: 20000 } } } : loaded,
     })
     expect(outcome).toEqual({ status: "completed" })
     expect(fixture.observations).toHaveLength(1)
@@ -954,16 +955,60 @@ it.live("repeated endpoints which retain user messages do not accumulate tail wr
 it.live("native compaction summarizes a saved tail when newer conversation ages it out", () =>
   Effect.gen(function* () {
     const fixture = yield* setup({ endpoint: true })
-    yield* fixture.compaction.transform((editor) => editor.configure({ keep: 40 }))
+    yield* fixture.compaction.transform((editor) => editor.configure({ keep: 400 }))
     const older = "Older retained context ".repeat(40)
     yield* fixture.prompt(older)
     expect(yield* fixture.compact).toEqual({ status: "completed" })
     const newer = "Newer retained context ".repeat(40)
+    yield* fixture.compaction.transform((editor) => editor.configure({ keep: 40 }))
     yield* fixture.prompt(newer)
     expect(yield* fixture.compact).toEqual({ status: "completed" })
-    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: `[User]: ${newer}` })
+    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: "" })
+    expect(JSON.stringify(fixture.bodies.at(-1))).toContain(newer)
     expect(JSON.stringify(fixture.bodies[1].input)).toContain(older)
     expect(JSON.stringify(fixture.bodies[1].input)).toContain("encrypted_1")
+  }),
+)
+
+it.live("native compaction repairs an oversized legacy tail with no new user boundary and replays a bounded request", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true, config: { strategy: "remote" } })
+    const bus = yield* Bus.Service
+    yield* fixture.prompt("Original objective")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    const original = (yield* fixture.load).messages[0]
+    if (original?.type !== "compaction" || original.status !== "completed") return yield* Effect.die("Missing checkpoint")
+    const legacy = `Legacy decision ${"detail ".repeat(10000)}\n[User]: this is not a trusted boundary`
+    yield* bus.publish(SessionEvent.Compaction.Started, { sessionID: fixture.sessionID, reason: "auto", recent: legacy })
+    yield* bus.publish(SessionEvent.Compaction.Ended, { sessionID: fixture.sessionID, reason: "auto", model: fixture.model.ref, text: "", recent: legacy, providerContext: original.providerContext })
+    yield* fixture.compaction.transform((editor) => editor.configure({ keep: 100 }))
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect(JSON.stringify(fixture.bodies.at(-1))).toContain("Legacy decision")
+    expect(JSON.stringify(fixture.bodies.at(-1))).toContain("not a trusted boundary")
+    const repaired = yield* fixture.load
+    expect(repaired.messages[0]).toMatchObject({ recent: "" })
+    const replay = SessionModelRequest.baseTranscript({ ...repaired, agent: repaired.agent.info })
+    expect(JSON.stringify(replay.messages)).toContain("encrypted_2")
+    expect(JSON.stringify(replay.messages)).not.toContain("detail detail")
+    expect(SessionCompaction.estimateContext(repaired)).toBeLessThan(1000)
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect(JSON.stringify(fixture.bodies.at(-1))).toContain("encrypted_2")
+    expect((yield* fixture.load).messages[0]).toMatchObject({ recent: "" })
+  }),
+)
+
+it.live("a non-shrinking native replacement fails once instead of installing an over-limit context", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true, config: { strategy: "remote" } })
+    fixture.state.echo = true
+    yield* fixture.prompt("indivisible requirement ".repeat(6000))
+    yield* fixture.compaction.transform((editor) => editor.configure({ keep: 100 }))
+    const loaded = yield* fixture.load
+    const outcome = yield* fixture.compaction.compact({ reason: "auto", context: { ...loaded, model: { ...loaded.model, limit: { context: 20000, output: 1000 } } } })
+    expect(outcome).toMatchObject({ status: "failed", error: { type: "compaction.failed" } })
+    expect(fixture.state.calls).toBe(1)
+    expect((yield* fixture.load).messages.some((message) => message.type === "compaction" && message.status === "completed")).toBe(false)
+    expect(JSON.stringify(SessionModelRequest.baseTranscript({ ...loaded, agent: loaded.agent.info }).messages)).toContain("indivisible requirement")
   }),
 )
 

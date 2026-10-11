@@ -215,6 +215,8 @@ export interface SessionCatalog {
 }
 
 export interface SessionHooks {
+  /** Destination-scoped, awaited after a committed folder move and before destination execution. */
+  readonly moved: { readonly source: Session.Info; readonly destination: Session.Info }
   readonly "model.observed": SessionModelObserved
   readonly prompt: SessionPrompt
   readonly context: SessionContext

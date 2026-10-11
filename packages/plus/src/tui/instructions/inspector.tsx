@@ -221,10 +221,18 @@ export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string
 function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
   const defaults = modelDefaultsView(node, snapshot)
   if (defaults === undefined) return []
+  const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
+  if (setting?.field === "compactionInput" || setting?.field === "compactionOutput")
+    return [
+      "Chat overrides win, then the agent's model row chain, then this model's Defaults, then Every model. Unset means no extra early trigger.",
+      setting.field === "compactionInput"
+        ? "Input measures the estimated next-prompt tokens."
+        : "Output counts primary assistant output + reasoning since the latest completed compaction.",
+      "Enter a positive whole token count or off. Empty/r restores inheritance. Automatic compaction must be on; the normal context limit still applies.",
+    ]
   const rows = ["The agent's own model row sets a field first; whatever it leaves out resolves here."]
   if (defaults.key.providerID !== undefined) rows.push("Below this row: Every model, then opencode.json, then the built-in defaults.")
   else rows.push("Below this row: opencode.json and the built-in defaults.")
-  const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
   if (setting === undefined) rows.push("→ opens its fields; each edits on its own.")
   else rows.push("Enter edits; empty inherits. r resets this field.")
   if (setting?.field === "warming" || setting?.field === "interval")

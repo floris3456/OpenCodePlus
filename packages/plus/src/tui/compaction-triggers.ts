@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition } from "../rpc.js"
 
-/** Blank removes the extra trigger; it never disables the normal context limit. */
+/** Blank restores model inheritance; it never disables the normal context limit. */
 export function parseCompactionTrigger(text: string) {
   const value = text.trim()
   if (value === "") return { value: null }
@@ -26,9 +26,9 @@ export async function editCompactionTriggers(context: Plugin.Context) {
   if (!current) return
   const inputText = await context.ui.dialog.prompt({
     title: "Compaction input trigger · this chat",
-    description: "Estimated next-prompt tokens. Extra early trigger; normal context limit remains. Blank resets. Both fields save together.",
+    description: "Estimated next-prompt tokens. Overrides the model's early trigger; normal context limit remains. Blank follows model settings. Both fields save together.",
     value: current.input === undefined ? "" : String(current.input),
-    placeholder: "Default context limit",
+    placeholder: "Follow model settings",
   })
   if (inputText === undefined) return
   const input = parseCompactionTrigger(inputText)
@@ -38,9 +38,9 @@ export async function editCompactionTriggers(context: Plugin.Context) {
   }
   const outputText = await context.ui.dialog.prompt({
     title: "Compaction output trigger · this chat",
-    description: "Generated output + reasoning tokens since compaction. Blank resets. Applies at the next safe boundary; no message is sent. Automatic compaction must be on.",
+    description: "Generated output + reasoning tokens since compaction. Blank follows model settings. Applies at the next safe boundary; no message is sent. Automatic compaction must be on.",
     value: current.output === undefined ? "" : String(current.output),
-    placeholder: "No extra output trigger",
+    placeholder: "Follow model settings",
   })
   if (outputText === undefined) return
   const output = parseCompactionTrigger(outputText)
@@ -58,6 +58,6 @@ export async function editCompactionTriggers(context: Plugin.Context) {
   if (!saved) return
   context.ui.toast.show({
     variant: "success",
-    message: `Compaction triggers saved: input ${saved.input ?? "default"}, output ${saved.output ?? "off"}. Next safe boundary; no message sent.`,
+    message: `Compaction triggers saved: input ${saved.input ?? "follow model"}, output ${saved.output ?? "follow model"}. Next safe boundary; no message sent.`,
   })
 }

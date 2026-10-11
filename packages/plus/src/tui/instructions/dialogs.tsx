@@ -163,6 +163,17 @@ export function createInstructionsDialogs(
       await state.editModelSettings(node, { compactionStrategy: next })
       return
     }
+    if (field === "compactionInput" || field === "compactionOutput") {
+      const raw = await context.ui.dialog.prompt({
+        title: `${MODEL_SETTING_LABELS[field]} · ${isEvery(parsed.key) ? "Every model" : `${parsed.key.providerID}/${parsed.key.modelID}`}`,
+        description: `${fieldHelp(field, [])} Empty inherits. Now: ${node.badges.value ?? "off"}.`,
+        value: state.modelDefaultsView(node)?.record?.[field] ?? "",
+        placeholder: node.badges.value ?? "off",
+      })
+      if (disposed || raw === undefined) return
+      await state.editModelSettings(node, { [field]: raw.trim().length === 0 ? null : raw.trim() })
+      return
+    }
     const current = await currentSnapshot()
     if (disposed || current === undefined) return
     const effective = state.modelDefaultsView(node)
@@ -1519,6 +1530,8 @@ function fieldHelp(field: ModelDefaultField, variants: readonly string[]): strin
     return "Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT."
   if (field === "prompt") return "The text of the keep-alive request."
   if (field === "compactionInstructions") return "The summary request's instructions; an empty prompt is a value of its own."
+  if (field === "compactionInput") return "Early compaction at this estimated input token count. Positive whole number or off; off overrides inherited triggers. Context safety still applies."
+  if (field === "compactionOutput") return "Early compaction after this many assistant output + reasoning tokens since the last compaction. Positive whole number or off; off overrides inherited triggers."
   if (field === "compactionStrategy") return "auto follows the model's policy; local writes a text summary; remote uses the provider."
   return `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}.`
 }

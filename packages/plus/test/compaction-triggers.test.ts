@@ -5,6 +5,8 @@ import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { Schema } from "effect"
 import { decideCompactionTriggers } from "../src/compaction/triggers.js"
+import { decideCompaction } from "../src/compaction/decide.js"
+import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { Plus } from "../src/rpc.js"
 
 const decision = (overrides: Partial<SessionCompactionDecision> = {}): SessionCompactionDecision => ({
@@ -74,5 +76,29 @@ test("manual, overflow, safety threshold, auto:false, cold/armed/quota and fresh
     const before = structuredClone(event)
     decideCompactionTriggers(event, { sessionID: event.sessionID, input: 1, output: 1 })
     expect(event).toEqual(before)
+  }
+})
+
+test("model thresholds fire inclusively, chat values override per field, and off suppresses inherited triggers", () => {
+  const every: ModelSettingsRecord = { type: "modelSettings", level: "defaults", updated: "2026-10-11", compactionInput: "100", compactionOutput: "30" }
+  const input = decision()
+  decideCompaction(input, { every })
+  expect(input.explanation).toMatchObject({ trigger: "input-threshold", threshold: 100 })
+  const output = decision()
+  decideCompaction(output, { every, triggers: { input: 101 } })
+  expect(output.explanation).toMatchObject({ trigger: "output-threshold", threshold: 30 })
+  const chat = decision()
+  decideCompaction(chat, { every, triggers: { input: 101, output: 31 } })
+  expect(chat.compact).toBeUndefined()
+  const off = decision()
+  decideCompaction(off, { every, rows: { compactionInput: { value: "off", level: "project" }, compactionOutput: { value: "off", level: "global" } } })
+  expect(off.compact).toBeUndefined()
+  const overridden = decision()
+  decideCompaction(overridden, { model: { ...every, compactionInput: "off", compactionOutput: "off" }, triggers: { output: 30 } })
+  expect(overridden.explanation).toMatchObject({ trigger: "output-threshold", threshold: 30 })
+  for (const overrides of [{ auto: false }, { reason: "manual" as const }, { reason: "overflow" as const }, { due: true }, { metrics: { input: 100, output: 30, advanced: false } }]) {
+    const event = decision(overrides)
+    decideCompaction(event, { every })
+    expect(event.compact).toBeUndefined()
   }
 })

@@ -19,7 +19,7 @@ import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import type { SessionError } from "@opencode/schema/session-error"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
-import { Context, Effect, Layer, Option, Result, Stream } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Result, Stream } from "effect"
 import { PluginHooks } from "../plugin/hooks.js"
 import { SessionRequestPrepare } from "./request-prepare.js"
 import { compactionBoundary } from "./compaction-boundary.js"
@@ -34,7 +34,7 @@ import { Token } from "../util/token.js"
 import type { SessionContext } from "./context.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
-import type { SessionMessage } from "./message.js"
+import { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
 import { SessionModelObservation } from "./model-observation.js"
 import { SessionProviderContext } from "./provider-context.js"
@@ -113,6 +113,10 @@ const PDF_TOKEN_ESTIMATE = 2_000
 /** Anthropic answered normally because the request sat below its compaction trigger. */
 const NATIVE_NOT_TRIGGERED = "compaction.not-triggered"
 const NATIVE_UNAVAILABLE = "compaction.native-unavailable"
+const nonShrinkingError: SessionError.Error = {
+  type: "compaction.failed",
+  message: "Compaction did not reduce the next request below the context limit. The provider checkpoint or fixed instructions/tools remain too large; reduce that fixed context or select a compaction model/strategy that can compress it, then resume.",
+}
 
 const compactionUsageKind = (cause: unknown) =>
   cause instanceof AIError && cause.reason._tag === "InvalidProviderOutput" ? cause.reason.compaction : undefined
@@ -256,6 +260,18 @@ export const layer = Layer.effect(
       // Plugins may request earlier compaction, but cannot override this preference.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
       if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact) return { status: "skipped" }
+      // Opaque windows cannot be sized locally. The first primary request measures the rebuilt
+      // checkpoint. If it was already full, do not keep recompressing it after every small tool call.
+      // Oversized legacy readable tails get one repair; genuine subsequent growth gets a new attempt.
+      const previous = previousCompaction(context.messages)
+      const first = context.messages.slice(1).find((message) => message.type === "assistant")
+      if (
+        trigger.reason === "auto" && previous && Token.estimate(previous.recent) <= settings.keep &&
+        !context.messages.slice(1).some((message) => message.type === "user") &&
+        first?.type === "assistant" && hasMeasuredPrompt(first, context.model.ref) && first.tokens &&
+        first.tokens.input + first.tokens.cache.read + first.tokens.cache.write >= ceiling &&
+        context.messages.slice(1).reduce((sum, message) => sum + Token.estimate(messageToText(message)), 0) < Math.max(settings.keep, ceiling * 0.1)
+      ) return { status: "failed", error: nonShrinkingError }
       // An unknown window never triggers auto compaction, but the compaction request still needs a size to aim for.
       const cap = Number.isFinite(ceiling)
         ? ceiling
@@ -335,12 +351,23 @@ export const layer = Layer.effect(
             : native ? "auto-native"
             : belowMinimum ? "anthropic-below-minimum" : "auto-text",
       }
-      const completed = (owner: Trigger, result: Result) =>
-        publish(owner, {
+      const completed = (owner: Trigger, result: Result) => {
+        const checkpoint = SessionMessage.CompactionCompleted.make({
+          id: SessionMessage.ID.create(), type: "compaction", status: "completed", reason: "auto",
+          summary: result.text, recent: result.recent, providerContext: result.providerContext,
+          time: { created: DateTime.nowUnsafe() },
+        })
+        // Include instructions, tools, provider replacement messages AND the separately replayed tail.
+        // A successful provider operation is not necessarily a usable context reduction.
+        if (trigger.reason !== "manual" && due(context, ceiling) &&
+          estimateContext({ ...context, messages: [checkpoint] }) >= ceiling)
+          return publish(owner, { error: nonShrinkingError })
+        return publish(owner, {
           ...result,
           ...(decision.portable ? { providerState: undefined } : {}),
           metadata: { ...result.metadata, ...decision.metadata },
         })
+      }
       // A failed compaction is recorded; an optional auto compaction then reports skipped so the runner
       // sends its step uncompacted. Manual and overflow ignore `optional`.
       const settle = (failure: Failure): Effect.Effect<Outcome> =>
@@ -530,8 +557,10 @@ export const layer = Layer.effect(
      */
     const retain = Effect.fnUntraced(function* (context: SessionContext.Loaded, keep: number) {
       const previous = previousCompaction(context.messages)
+      // Legacy native checkpoints omitted the tail field's meaning. New checkpoints distinguish
+      // intentionally empty bounded tails so repeated compaction cannot resurrect archived history.
       const messages =
-        previous && SessionProviderContext.isCheckpoint(previous) && !previous.recent
+        previous && SessionProviderContext.isCheckpoint(previous) && !previous.recent && previous.metadata?.["compaction.bounded-tail"] !== true
           ? yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
           : context.messages
       return splitConversation(messages, keep, true)?.recent ?? ""
@@ -592,7 +621,7 @@ export const layer = Layer.effect(
 
     /**
      *   first:  [E1 … E8][E9 E10]                  →  [S1 + "E9 E10"]
-     *   same:   [S1 + "E9 E10"]                   →  [S2 + "E9 E10"]  no new conversation cannot age the tail out
+     *   same:   [S1 + "E9 E10"]                   →  [S2 + "E9 E10"]  while the tail fits the allowance
      *   small:  [S1 + "E9 E10"][E11]              →  [S2 + "E9 E10 E11"] when the combined tail fits
      *   again:  [S1 + "E9 E10"][E11 … E18][E19]    →  [S2 + "E19"]      S2 covers S1, E9 E10, and E11–E18
      *
@@ -612,8 +641,8 @@ export const layer = Layer.effect(
      *   </conversation-checkpoint>
      *   [new messages…]
      *
-     * E = one exchange: a user message and the replies to it. S = a summary. [S + "…"] = one checkpoint: a summary
-     * plus the newest `keep` tokens of messages, saved as text.
+     * E = one whole projected message (an assistant includes its tool results). S = a summary.
+     * [S + "…"] = one checkpoint: a summary plus at most `keep` tokens of readable messages.
      */
     const summarize = Effect.fnUntraced(function* (
       trigger: Trigger,
@@ -675,7 +704,7 @@ export const layer = Layer.effect(
      *
      * window = the previous compaction and everything since. item = one encrypted compaction item, which only
      * replays on the endpoint that made it. U = a user message as typed. The separate readable tail remains
-     * outside the opaque checkpoint until actual newer conversation ages it out of `keep`.
+     * outside the opaque checkpoint while it fits `keep`; aged-out material enters the next checkpoint.
      */
     const compactNatively = Effect.fnUntraced(function* (
       trigger: Trigger,
@@ -805,7 +834,7 @@ export const layer = Layer.effect(
     })
 
     /**
-     * Sends the request as-is if it is estimated to fit `target`, and as text otherwise (see `flattenAndDropOldest`).
+     * Sends the request as-is if it is estimated to fit `target`, and as text otherwise (see `flattenConversation`).
      * Limits and estimates can be wrong, so until the provider rejects something as too long, a request that cannot
      * be made to fit is sent whole: unchanged, or as text once its media has to go. A "too long" rejection means the
      * estimate ran low, so the next attempts aim at 70%, 50%, then 35% of the first rejected request's estimate, and a
@@ -837,18 +866,18 @@ export const layer = Layer.effect(
         const fits = !asText && estimateRequest(prepared.request) <= target
         const request = fits
           ? prepared.request
-          : (flattenAndDropOldest(prepared.request, context, target) ??
+          : (flattenConversation(prepared.request, context, target) ??
             (rejections > 0
               ? undefined
               : asText
-                ? flattenAndDropOldest(prepared.request, context, Number.POSITIVE_INFINITY)
+                ? flattenConversation(prepared.request, context, Number.POSITIVE_INFINITY)
                 : prepared.request))
         if (!request) {
           return yield* Effect.fail<Failure>({
             error: {
               type: "compaction.failed",
               message:
-                "The compaction request cannot be reduced further without losing the latest exchange or checkpoint",
+                "The compaction request cannot be reduced further without losing unsummarized conversation or its checkpoint",
             },
           })
         }
@@ -892,10 +921,9 @@ export const layer = Layer.effect(
      * the conversation since that compaction as one text message. A previous summary always stays in front, while
      * its verbatim recent part becomes the oldest transcript entry; a previous native window stays exactly as the
      * provider made it. The transcript leaves out reasoning, media, and instruction updates, and cuts long tool
-     * outputs. Only if it still does not fit are whole exchanges dropped, oldest first. Undefined when even the
-     * newest exchange does not fit.
+     * outputs. Undefined when the transcript still does not fit: exchanges being summarized are not disposable.
      */
-    const flattenAndDropOldest = (request: LLMRequest, context: SessionContext.Loaded, target: number) => {
+    const flattenConversation = (request: LLMRequest, context: SessionContext.Loaded, target: number) => {
       const previous = previousCompaction(context.messages)
       const end =
         request.messages.findLastIndex(
@@ -910,7 +938,7 @@ export const layer = Layer.effect(
         ? toLLMMessages([{ ...summary, recent: "" }], context.model.ref)
         : request.messages.slice(0, end)
 
-      // A user message and everything after it, up to the next one, is one exchange: kept or dropped whole.
+      // Preserve real message boundaries without interpreting labels in user text.
       const exchanges = request.messages.slice(end).reduce<string[]>(
         (groups, message) => {
           const text = flattenMessage(message)
@@ -922,18 +950,11 @@ export const layer = Layer.effect(
         summary?.recent ? [summary.recent] : [],
       )
 
-      const note = (omitted: number) =>
-        omitted ? `[${omitted} older ${omitted === 1 ? "exchange" : "exchanges"} omitted]\n\n` : ""
-      // Room for the longest possible note is set aside before choosing what to keep.
-      const room =
-        target -
-        estimateRequest({ system: request.system, tools: request.tools, messages: lead }) -
-        Token.estimate(note(exchanges.length))
-      const kept = exchanges.slice(oldestToDrop(exchanges, (text) => Token.estimate(text) + 1, room))
-      if (kept.length === 0) return undefined
-      return LLMRequest.update(request, {
-        messages: [...lead, Message.user(note(exchanges.length - kept.length) + kept.join("\n\n"))],
-      })
+      // These exchanges are the source of the new checkpoint, not disposable replay. Omitting one
+      // would commit a successful compaction that silently forgot unsummarized conversation.
+      const messages = [...lead, ...(exchanges.length ? [Message.user(exchanges.join("\n\n"))] : [])]
+      if (estimateRequest({ ...request, messages }) > target) return undefined
+      return LLMRequest.update(request, { messages })
     }
 
     const stream = (context: SessionContext.Loaded, request: LLMRequest, prepared: Prepared) => {
@@ -1089,7 +1110,7 @@ export const layer = Layer.effect(
           recent: outcome.recent,
           ...usage,
         },
-        { metadata: outcome.metadata },
+        { metadata: { ...outcome.metadata, "compaction.bounded-tail": true } },
       )
       return { status: "completed" }
     })
@@ -1180,18 +1201,13 @@ const recentStart = (
   keep: number,
   summarized: boolean,
 ) => {
-  // Drop the oldest entries until the rest fit the allowance, but always keep the newest one.
-  const dropped = Math.min(
-    oldestToDrop(entries, (entry) => Token.estimate(entry.text), keep),
-    entries.length - 1,
-  )
+  // A projected assistant message owns both its calls and their settled results. It is a safe
+  // boundary even without another user prompt. Never split serialized legacy tails on text labels:
+  // an oversized entry instead goes into the checkpoint whole, including a single huge exchange.
+  const dropped = oldestToDrop(entries, (entry) => Token.estimate(entry.text) + Token.estimate("\n\n"), keep)
+  if (dropped > 0) return dropped
 
-  // Start at a user message so an assistant's tool calls and results stay together.
-  const userBoundary = entries.findLastIndex((entry, index) => index <= dropped && entry.message.type === "user")
-  if (userBoundary > 0) return userBoundary
-
-  // There is already a summary to rewrite. Keep all fitting conversation, including its old tail;
-  // with no new conversation the tail survives unchanged even if the allowance was reduced.
+  // A fitting checkpoint tail survives repeated compaction unchanged.
   if (summarized) return 0
 
   // Everything fits. Keep only the latest exchange so there is an older part left to summarize.

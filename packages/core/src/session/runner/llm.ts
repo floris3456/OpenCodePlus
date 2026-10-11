@@ -32,6 +32,8 @@ import { SessionStep } from "./step.js"
 import { ToolOutput } from "../../tool-output.js"
 import { Plugin } from "../../plugin.js"
 import { PluginHooks } from "../../plugin/hooks.js"
+import { Instance } from "../../instance/service.js"
+import { SessionMovement } from "../movement.js"
 import { MAX_STEPS_PROMPT } from "./max-steps.js"
 
 const CONTINUE_AFTER_INCOMPLETE_STREAM =
@@ -43,6 +45,7 @@ const layer = Layer.effect(
     const bus = yield* Bus.Service
     const lifecycle = yield* LocationLifecycle.Service
     const store = yield* SessionStore.Service
+    const instances = yield* Instance.Service
     const context = yield* SessionContext.Service
     const modelTransport = yield* SessionModelTransport.Service
     const db = (yield* Database.Service).db
@@ -116,10 +119,10 @@ const layer = Layer.effect(
                     yield* restore(
                       Effect.gen(function* () {
                         yield* modelTransport.close(sessionID)
-                        yield* bus.publishAll([
+                        yield* SessionMovement.commit(store, instances, sessionID, bus.publishAll([
                           [SessionEvent.InboxDelivered, { sessionID, inboxID: next.id }],
                           [SessionEvent.Moved, { sessionID, ...next.payload }],
-                        ])
+                        ]))
                       }),
                     )
                   return next
@@ -410,6 +413,7 @@ export const node = makeLocationNode({
   layer,
   deps: [
     Bus.node,
+    Instance.node,
     LocationLifecycle.node,
     llmClient,
     SessionContext.node,
