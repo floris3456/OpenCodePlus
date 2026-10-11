@@ -8,6 +8,33 @@ import { cleanupLedgers, collect, ledger, script, usage } from "./monitor-fixtur
 
 afterEach(cleanupLedgers)
 
+test("combined sessions and overlapping trees aggregate once and never include unselected sessions", async () => {
+  const db = await ledger()
+  const clock = { now: 1_000 }
+  const collector = collect(db, clock)
+  for (const [id, parentID] of [["a"], ["child", "a"], ["b"], ["outside"]]) {
+    const session = script(id!, clock)
+    session.created({ parentID })
+    session.step(`m-${id}`)
+    session.call(`m-${id}`, `c-${id}`, "read", { path: `/work/project/${id}` })
+    session.ok(`m-${id}`, `c-${id}`, "result")
+    session.end(`m-${id}`, "stop", usage(100, 10))
+    session.events.forEach((event) => collector.observe(event))
+  }
+  const sessions = queryMonitor(db, { scope: "session", sessionIDs: ["a", "b", "a"], view: "sessions" }, { now: clock.now })
+  expect(sessions.totals).toMatchObject({ steps: 2, calls: 2, input: 200 })
+  expect(sessions.sessions?.map((row) => row.sessionID).sort()).toEqual(["a", "b"])
+  expect(sessions.feed.map((row) => row.sessionID).sort()).toEqual(["a", "b"])
+  const trees = queryMonitor(db, { scope: "tree", sessionIDs: ["a", "child", "b"], view: "cache" }, { now: clock.now })
+  expect(trees.totals).toMatchObject({ steps: 3, calls: 3, input: 300 })
+  expect(trees.requests?.map((row) => row.sessionID).sort()).toEqual(["a", "b", "child"])
+  for (const scope of ["session", "tree"] as const) {
+    const empty = queryMonitor(db, { scope, sessionID: "outside", sessionIDs: [], view: "sessions" }, { now: clock.now })
+    expect(empty.totals.steps).toBe(0)
+    expect(empty.sessions).toEqual([])
+  }
+})
+
 function call(target: Ledger, callID: string) {
   return target.db.query<Record<string, unknown>, [string]>("select * from call where call_id = ?").get(callID)
 }

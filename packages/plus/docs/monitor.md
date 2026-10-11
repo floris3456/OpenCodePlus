@@ -4,6 +4,20 @@ What tools each agent uses and what they cost, live, with a durable log for
 later comparison. User-facing behaviour is in the README (`## Tools`); this
 file records why it is built this way and what was measured.
 
+## Session filters
+
+Opening `/monitor` from a chat starts with that chat selected (`filters 1`),
+regardless of the saved scope. `S` adds another session to the combined report;
+already-selected sessions are omitted. Enter on a Sessions row adds that session,
+and Space selects its tree. Repeated selections do not add duplicate filters or
+count data twice. Backspace/Esc undoes the last filter change; saved preferences
+are preserved. Tool, agent, model and request-detail selections also reject repeats.
+
+The RPC and tool accept `sessionIDs` for combined `session` or `tree` scopes.
+It takes precedence over `sessionID`; an explicit empty list reads no sessions.
+Tree scope unions the selected sessions' complete delegation trees, without
+double-counting overlapping roots or descendants.
+
 ## Data source
 
 One assistant message is one step (one LLM call). Core publishes every fact

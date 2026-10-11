@@ -20,6 +20,7 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "monitor" } as const
 
 export const QueryDescription =
+  "For a combined session or tree report, pass sessionIDs:[...]; it overrides sessionID, and an empty list selects nothing. " +
   "Request arrays are bounded (default 100, maximum 500), chronological within each page. requestPage:{limit,cursor,direction:'older'|'newer'} uses requestPage.older/newer cursors; omitted cursor returns latest. Other collections use pages:{section:{limit,cursor}} and report.pages[section].next/previous (facets use report.facets.pages). Sessions/context/agents/teams/unstable default to 100 rows; detail.* defaults to 50. Changed content visibly resets stale revision cursors. Counts/coverage stay full-population. Text search is page-local. Presentation text is previewed at 512 characters with truncation metadata; fullText:true requests unabridged selected-page text. Request tool-name previews have toolsTotal/toolsComplete; all attributed calls remain reachable through detail.calls pages. " +
   "One call returns the calling session's cache misses with cause, confidence and one-line evidence, plus token/cost totals and tool groups. query({view:'cache', id}) returns full evidence: named segment diff, timings, ping history, account switches, expected versus actual tokens, session/message ids and attributed calls. Verdicts: hit, partial miss, miss, cold start, no cache reported, failed request.\n" +
   "Tokens per call are attributed: call = share of the step's output spent writing the call, result = tokens the result added to the next prompt (measured from the next step; estimated when it cannot be), carried = result × later steps until compaction.\n" +
@@ -32,6 +33,7 @@ const Duration = Schema.String.annotate({ description: "A duration back from now
 const QueryInput = Schema.Struct({
   scope: Schema.optionalKey(MonitorScope),
   sessionID: Schema.optionalKey(Schema.String),
+  sessionIDs: Schema.optionalKey(Schema.Array(Schema.String)),
   team: Schema.optionalKey(Schema.String),
   view: Schema.optionalKey(MonitorView),
   id: Schema.optionalKey(Schema.String),
@@ -85,7 +87,9 @@ export async function registerMonitorTools(ctx: Context): Promise<Registration> 
           const query: MonitorQueryInput = {
             scope,
             ...(scope === "session" || scope === "tree"
-              ? { sessionID: input.sessionID ?? String(context.sessionID) }
+              ? input.sessionIDs !== undefined
+                ? { sessionIDs: input.sessionIDs }
+                : { sessionID: input.sessionID ?? String(context.sessionID) }
               : {}),
             ...(input.team === undefined ? {} : { team: input.team }),
             ...(input.view === undefined ? {} : { view: input.view }),

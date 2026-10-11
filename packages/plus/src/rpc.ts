@@ -1375,6 +1375,8 @@ export const MonitorQueryInput = Schema.Struct({
   scope: MonitorScope,
   /** Session scope is only this session; tree includes its root and descendants. */
   sessionID: Schema.optionalKey(Schema.String),
+  /** Combined session/tree selection; takes precedence over sessionID, including when empty. */
+  sessionIDs: Schema.optionalKey(Schema.Array(Schema.String)),
   team: Schema.optionalKey(Schema.String),
   since: Schema.optionalKey(Schema.Number),
   until: Schema.optionalKey(Schema.Number),

@@ -31,6 +31,7 @@ export function createMonitor(context: Plugin.Context) {
           return current.type === "plugin" && current.name === "monitor"
         }}
         full
+        initialSession
         onClose={() => context.ui.router.navigate(previous())}
       />
     ),

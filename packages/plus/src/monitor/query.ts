@@ -149,21 +149,22 @@ function clamp(value: number): number {
 
 // The sessions in scope, as a CTE named `scope` (absent for scope "all").
 export function scopeOf(input: MonitorQueryInput, context: QueryContext): { cte: string; bindings: Bindings } {
-  if (input.scope === "session" && input.sessionID !== undefined)
+  const ids = input.sessionIDs ?? (input.sessionID === undefined ? [] : [input.sessionID])
+  if (input.scope === "session")
     return {
-      cte: "with scope(id) as (select $root)",
-      bindings: { $root: input.sessionID },
+      cte: "with scope(id) as (select distinct value from json_each($roots))",
+      bindings: { $roots: JSON.stringify(ids) },
     }
-  if (input.scope === "tree" && input.sessionID !== undefined)
+  if (input.scope === "tree")
     return {
       cte: `with recursive ancestors(id, parent_id) as (
-        select id, parent_id from session where id = $root
+        select id, parent_id from session where id in (select value from json_each($roots))
         union select s.id, s.parent_id from session s join ancestors a on s.id = a.parent_id
       ), scope(id) as (
         select coalesce(parent_id, id) from ancestors where parent_id is null or parent_id not in (select id from session)
         union select s.id from session s join scope on s.parent_id = scope.id
       )`,
-      bindings: { $root: input.sessionID },
+      bindings: { $roots: JSON.stringify(ids) },
     }
   if (input.scope === "team" && input.team !== undefined)
     return { cte: "with scope(id) as (select id from session where team = $team)", bindings: { $team: input.team } }

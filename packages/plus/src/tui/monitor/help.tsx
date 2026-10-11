@@ -22,12 +22,12 @@ export function MonitorHelp(props: HelpProps) {
         { key: "1 – 5", desc: "Switch tab (Overview, Cache, Tools, Sessions, Steps)" },
         { key: "tab / shift+tab", desc: "Next / previous tab" },
         { key: "s", desc: "Step scope (This session · Team tree · Team · Project · Everything)" },
-        { key: "S", desc: "Open session picker (grouped by team tree, sorted by activity)" },
+        { key: "S", desc: "Add another session to the combined report (selected sessions are omitted)" },
         { key: "T", desc: "Pick team (scope to a chosen Plus team)" },
         { key: "t", desc: "Step window (All · Since last compaction · 15m · 1h · 24h · 7d · 30d)" },
         { key: "/", desc: "Filter rows by text" },
         { key: "?", desc: "Toggle this help view" },
-        { key: "esc", desc: "Back out of drill-down / close monitor" },
+        { key: "esc", desc: "Undo last filter / close monitor" },
       ],
     },
     {
@@ -43,8 +43,8 @@ export function MonitorHelp(props: HelpProps) {
       title: "Tools Tab",
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select row" },
-        { key: "Enter", desc: "Drill into row (e.g. tool → targets, agent → tools)" },
-        { key: "⌫ / esc", desc: "Back out of drill-down" },
+        { key: "Enter", desc: "Filter by row (e.g. tool → targets, agent → tools)" },
+        { key: "⌫ / esc", desc: "Undo last filter" },
         { key: "g", desc: "Group by (tool · agent · model · target · session · config)" },
         { key: "o", desc: "Sort by (tokens · carried · calls · errors · time)" },
         { key: "a", desc: "Filter by agent" },
@@ -59,8 +59,8 @@ export function MonitorHelp(props: HelpProps) {
       title: "Sessions Tab",
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select session in delegation tree" },
-        { key: "Enter", desc: "Scope monitor to this session (temporary; ⌫ restores)" },
-        { key: "space", desc: "Scope monitor to this session's tree (temporary; ⌫ restores)" },
+        { key: "Enter", desc: "Add this session to the report (no duplicates; ⌫ undoes)" },
+        { key: "space", desc: "Add this session's tree to the report (no duplicates; ⌫ undoes)" },
       ],
     },
     {
