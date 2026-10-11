@@ -249,7 +249,8 @@ export function decide(rows: readonly PermRow[], call: Call): Decision {
     }
     if (kind === "approval") {
       for (const row of group) {
-        if (row.item.ruleId === "when.delegated") {
+        if (row.item.permissionParameter !== undefined && valuesAt(input, row.item.permissionParameter).length === 0) continue
+        if (row.item.ruleId === "when.delegated" || row.item.permissionSource?.endsWith(":when.delegated") === true) {
           if (!row.on) headlessRefusal = denied(row.item.message ?? "this call is not allowed in a delegated run")
           continue
         }

@@ -20,6 +20,7 @@ export function hasVisibleChildren(nodes: readonly TreeNode[], index: number): b
 // non-section row keeps its "+" marker even though the children are hidden
 // from the flat list.
 export function isExpandableRow(node: TreeNode, visibleChildren: boolean, expanded: ReadonlySet<string>): boolean {
+  if (node.expandable !== undefined) return node.expandable
   if (node.kind === "section") return false
   if (node.kind === "item" && controlKind(node.address?.item) !== undefined) return false
   if (isModelFieldRowId(node.id) || isModelSettingRowId(node.id)) return false

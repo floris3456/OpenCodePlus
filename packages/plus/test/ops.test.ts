@@ -315,7 +315,7 @@ test("an inherited switch fires for the level below, a mixed owner's never does"
 
 test("switches resolve section states rather than their whole-row state", () => {
   const base = baseInput()
-  const sections = expandedTree(base).filter((node) => node.kind === "section" && node.address?.item === "tool:coder")
+  const sections = expandedTree(base).filter((node) => node.kind === "section" && node.address?.item === "tool:coder" && node.address.section !== null)
   const primary = sections[0]!
   const partner = sections[1]!
   const primaryAddress = primary.address!
@@ -565,7 +565,7 @@ test("removalPlan agent delete success", () => {
 test("removalPlan section refusal", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
-  const section = nodes.find((candidate) => candidate.kind === "section")
+  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.section !== null)
   if (!section) throw new Error("expected a section row")
   const plan = removalPlan(input, section.id)
   if (!("refusal" in plan)) throw new Error("expected refusal")
@@ -684,7 +684,7 @@ test("setEnabled shares toggle status for Code Mode rows and refusal for unexclu
 test("Code Mode sections toggle like any other section", () => {
   const input = baseInput()
   const nodes = expandedTree(input)
-  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.item === "tool:coder")
+  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.item === "tool:coder" && candidate.address.section !== null)
   if (!section) throw new Error("missing coder section")
   const toggled = toggle(input, section.id)
   if ("refusal" in toggled) throw new Error(`expected toggle success ${toggled.refusal}`)
@@ -881,7 +881,7 @@ test("row ids round-trip items with colons, sections, agents, and colon teams", 
   expect("refusal" in roleResult).toBe(true)
   if (!("refusal" in roleResult)) throw new Error("expected refusal")
   expect(roleResult.refusal).toBe(`"Role/persona" cannot be excluded and remains in effect`)
-  const section = nodes.find((candidate) => candidate.kind === "section")
+  const section = nodes.find((candidate) => candidate.kind === "section" && candidate.address?.section !== null)
   if (!section) throw new Error("missing section")
   const parts = section.id.split(":")
   expect(parts[0]).toBe("section")

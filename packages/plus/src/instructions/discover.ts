@@ -27,7 +27,7 @@ import {
   type RuleRecord,
   type SplitRecord,
 } from "./model.js"
-import { catalogItems, categoryOfRow } from "./permission-catalog.js"
+import { catalogItems, categoryOfRow, parameterApprovals } from "./permission-catalog.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
 import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
 import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
@@ -169,7 +169,12 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     return { ...source, base }
   })
   const toolRows = toolItems(tools, baselines)
-  const paramRows = paramItems(tools)
+  const paramRows: Item[] = [...paramItems(tools), {
+    id: "param:execute:code", kind: "param", group: "native", title: "code",
+    text: "JavaScript to run in the Code Mode runtime.", enabled: true,
+    fingerprint: fingerprint("JavaScript to run in the Code Mode runtime."),
+    paramTool: "execute", paramType: "string", required: true,
+  }]
   const baseRows = baseItems(input.baseTemplates)
   const skillRows = skillItems(skills, directory, baselines)
   const roleRows = roleItems(agents, baselines, bodies)
@@ -188,6 +193,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const permRows = permItems({
     tools,
     toolRows,
+    paramRows,
     baseRows,
     skillRows,
     roleRows,
@@ -208,7 +214,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...guidanceRows,
     ...mcp.items,
     ...modelRows,
-    ...permRows,
+    ...parameterApprovals(permRows, paramRows),
     ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent, inheritedInstructions)),
     ...controlItems(undefined, {}, inheritedInstructions),
   ]
@@ -627,7 +633,7 @@ function toolItems(
 }
 
 // One row per top-level parameter of each tool's input schema (Tools ›
-// <tool> › Parameters): its description is the row text, so it edits and
+// <tool>): its description is the row text, so it edits and
 // resets like any text row; an optional one can be switched off.
 function paramItems(tools: readonly (Tool.Info & { readonly id: string })[]): Item[] {
   return tools.flatMap((tool) => {
@@ -1027,6 +1033,7 @@ function guidanceItems(order: number): Item[] {
 function permItems(input: {
   readonly tools: readonly (Tool.Info & { readonly id: string })[]
   readonly toolRows: readonly Item[]
+  readonly paramRows: readonly Item[]
   readonly baseRows: readonly Item[]
   readonly skillRows: readonly Item[]
   readonly roleRows: readonly Item[]
@@ -1102,7 +1109,7 @@ function permItems(input: {
       })
     })
   }
-  const catalogById = new Map(catalog.map((item) => [item.id, item] as const))
+  const catalogById = new Map([...catalog, ...parameterApprovals(catalog, input.paramRows)].map((item) => [item.id, item] as const))
   for (const record of input.ruleRecords) {
     const id = permItemId(record.tool, record.id)
     const text = `${record.label}\n${record.patterns.join("\n")}`

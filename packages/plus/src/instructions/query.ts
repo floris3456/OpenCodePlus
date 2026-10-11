@@ -306,24 +306,16 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
     if (chains) stack.push(next)
   }
   const skipRows = parsed.filters.some((filter) => filter.excludesSections)
-  const wantsGroups = !skipRows || parsed.filters.some((filter) => filter.mentionsGroups === true)
-  const needIds = !skipRows || wantsGroups || parsed.filters.some((filter) => filter.mentionsSections)
+  const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
       const enumerated = !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
-      push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.flatMap((section) => (section.group ? [] : [section.id])) })
+      push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
       for (const section of enumerated) {
-        if (section.group !== undefined) {
-          // The group shows the tool's text in the detail pane, but it is
-          // not the tool row: item filters must not match it twice.
-          if (wantsGroups)
-            push({ id: section.id, kind: "group", label: section.label, depth: section.depth, orphan: false, lazy: section.group, parent: undefined, address: undefined, sectionIds: [] })
-          continue
-        }
         if (!skipRows)
-          push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: undefined, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
+          push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: section.row, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
       }
-      // A tool row's Parameters and Permissions groups, their categories and rows are
+      // A tool's parameters and their permissions are
       // walked directly: building them resolves nothing, whereas
       // lazy.children() would also derive sections via splitOf and resolve
       // every address even for structural misses.
@@ -332,17 +324,20 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
       // Perm rows hang off the tool row and share its owner path, which the
       // row id already carries between `item:<level>:` and `:<itemId>`.
       const ownerPath = address === undefined ? "" : lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1)
+      const tool = item?.kind === "param" && item.paramTool !== undefined ? lookupItem(state, `tool:${item.paramTool}`, address.agent, address) : item
       const groups =
-        item === undefined || address === undefined || item.kind !== "tool"
+        tool === undefined || tool.kind !== "tool"
           ? []
+          : item?.kind === "param"
+            ? toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id.replace(`param:${item.paramTool}:${item.title}`, tool.id), lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath, null, item.title)
           : [
-              ...toolParameters(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
-              ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, item, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
+              ...toolParameters(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
+              ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
             ]
       const walk = (node: Lazy) => {
         // A skill row under the skill tool's Skills category is a full item
         // (its own text and sections), not a permission row: visit it.
-        if (node.kind === "item" && node.address?.item.startsWith("skill:") === true) return visit(node)
+        if (node.kind === "item" && (node.address?.item.startsWith("skill:") === true || node.address?.item.startsWith("param:") === true)) return visit(node)
         push({ id: node.id, kind: node.kind, label: node.label, depth: node.depth, orphan: false, lazy: node, parent: undefined, address: node.address, sectionIds: [] })
         if (node.kind === "group") for (const child of node.children()) walk(child)
       }
@@ -380,7 +375,7 @@ const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group",
 function missesById(parsed: Parsed, itemId: string): boolean {
   const id = itemId.toLowerCase()
   const rest = id.slice("item:".length)
-  const under = [`section:${rest}:`, `group:${rest}:`]
+  const under = [`section:${rest}:`, `group:${rest}:`, `${id}:description`]
   return parsed.filters.some(
     (filter) =>
       filter.idPrefixes !== undefined &&
@@ -400,24 +395,20 @@ interface SectionRow {
   readonly label: string
   readonly depth: number
   readonly address?: Address
-  /** The tool's Description group, listed before the sections it holds. */
-  readonly group?: Lazy
   /** The row whose children hold this section, when it is not the item row. */
   readonly parent?: Lazy
+  readonly row?: Lazy
 }
 
 function sectionsFor(lazy: Lazy): SectionRow[] {
-  // Single source of truth for "this row has no sections": read the tree's
-  // lazy children, which already return [] for the host-owned execute row. A
-  // tool's sections may sit under its Description group; the group itself is
-  // returned too so it lists in tree order.
+  // Description and its split sections share the tree's own addresses and
+  // actions. Host-owned rows have no editable text children.
   const rows: SectionRow[] = []
   for (const child of lazy.children()) {
-    if (child.kind === "group" && child.id.endsWith(":description")) {
-      rows.push({ id: child.id, label: child.label, depth: child.depth, address: child.address, group: child })
+    if (child.id === `${lazy.id}:description`) {
+      rows.push({ id: child.id, label: child.label, depth: child.depth, address: child.address, row: child })
       for (const section of child.children()) {
-        if (section.kind !== "section" || section.address === undefined) continue
-        rows.push({ id: section.id, label: section.label, depth: section.depth, address: section.address, parent: child })
+        rows.push({ id: section.id, label: section.label, depth: section.depth, address: section.address, parent: child, row: section })
       }
       continue
     }
@@ -495,10 +486,11 @@ function isOrphan(
   catalogue?: Catalogue,
 ): boolean {
   const item = lookupItem(state, itemId, agent)
-  if (item === undefined) return true
+  if (item === undefined && !state.memo.ctx.items.some((row) => row.permissionSource === itemId)) return true
   // Presets and Defaults entries own records too, without being agents.
   if (agent !== null && !state.agents.has(agent) && !ownsRecords(state, level, agent)) return true
   if (section === null) return false
+  if (item === undefined) return true
   return !splitOf(state.memo, level, agent, item, catalogue).sections.some((entry) => entry.id === section)
 }
 
@@ -530,12 +522,13 @@ function resolvedTextOf(state: QueryState, candidate: Candidate): string {
   if (candidate.resolvedText !== undefined) return candidate.resolvedText
   const address = candidate.address
   const item = address === undefined ? undefined : lookupItem(state, address.item, address.agent, address)
-  const text =
+  const resolved =
     address === undefined || item === undefined
-      ? ""
+      ? undefined
       : address.section === null
-        ? wholeOf(state.memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address)).text
-        : sectionResolveOf(state.memo, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address)).text
+        ? wholeOf(state.memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
+        : sectionResolveOf(state.memo, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address))
+  const text = resolved?.fullText ?? resolved?.text ?? ""
   candidate.resolvedText = text
   return text
 }
@@ -1424,7 +1417,7 @@ function project(state: QueryState, candidate: Candidate, fields: readonly Field
       // the returned rows instead of trusting the enumeration cache.
       if (candidate.kind === "item" && candidate.address !== undefined && !candidate.orphan) {
         const lazy = candidate.lazy
-        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(lazy).flatMap((section) => (section.group === undefined ? [section.id] : []))
+        row.sections = lazy === undefined ? candidate.sectionIds : sectionsFor(lazy).map((section) => section.id)
       }
     }
   }

@@ -232,6 +232,7 @@ function listRow(node: TreeNode, base: number, open: ReadonlySet<string>): Row {
 
 /** Rows that can hold children: a model row opens into its field rows; sections, rule rows and scalar controls are leaves. */
 export function canExpand(node: TreeNode): boolean {
+  if (node.expandable !== undefined) return node.expandable
   if (node.kind === "section") return false
   if (isModelSettingRowId(node.id) || isModelFieldRowId(node.id)) return false
   // B7: a sectioned text control (the description, the agent-wide compaction

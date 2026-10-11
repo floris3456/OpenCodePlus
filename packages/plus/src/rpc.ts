@@ -135,6 +135,8 @@ export const SnapshotItem = Schema.Struct({
   skillScope: Schema.optionalKey(SkillScope),
   skillPreset: Schema.optionalKey(Schema.String),
   paramTool: Schema.optionalKey(Schema.String),
+  permissionParameter: Schema.optionalKey(Schema.String),
+  permissionSource: Schema.optionalKey(Schema.String),
   paramType: Schema.optionalKey(Schema.String),
   required: Schema.optionalKey(Schema.Boolean),
   permTool: Schema.optionalKey(Schema.String),

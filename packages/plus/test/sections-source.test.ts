@@ -60,23 +60,25 @@ function findNodeId(input: MemoInput, itemId: string, section?: string): string 
   return node.id
 }
 
-test("naming: the whole-body entry of an unsplit row is labelled 'Full text'", () => {
+test("unsplit text has a non-expandable Description row at its whole-text address", () => {
   const input = baseInput()
   const tree = expandedTree(input)
 
   // Unsplit tool row (tool:bash has no headings)
-  const bashSection = tree.find((n) => n.address?.item === "tool:bash" && n.address?.section === "whole")
+  const bashSection = tree.find((n) => n.kind === "section" && n.address?.item === "tool:bash" && n.address.section === null)
   expect(bashSection).toBeDefined()
-  expect(bashSection?.label).toBe("Full text")
+  expect(bashSection?.label).toBe("Description")
+  expect(bashSection?.expandable).toBe(false)
 
   // Unsplit non-tool row (system:prose has no headings)
-  const proseSection = tree.find((n) => n.address?.item === "system:prose" && n.address?.section === "whole")
+  const proseSection = tree.find((n) => n.kind === "section" && n.address?.item === "system:prose" && n.address.section === null)
   expect(proseSection).toBeDefined()
-  expect(proseSection?.label).toBe("Full text")
+  expect(proseSection?.label).toBe("Description")
+  expect(proseSection?.expandable).toBe(false)
 
-  // derive() on plain prose returns "Full text"
+  // The stable whole-section id remains available for stored overrides.
   const split = derive("plain text", "General")
-  expect(split.sections[0]?.name).toBe("Full text")
+  expect(split.sections[0]?.name).toBe("Description")
 })
 
 for (const baseline of ["", "Plain role", "# Previous\nPrevious body."]) {

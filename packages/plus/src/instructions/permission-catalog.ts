@@ -1,5 +1,5 @@
-// Per-tool permissions: the categories every tool lists under its Permissions
-// node and the rows each category ships with.
+// Per-tool permissions, grouped internally by enforcement category. The tree
+// lists each rule beneath the parameter it constrains, without category rows.
 //
 // A category is one thing a tool can be asked to do differently (which files,
 // which commands, which members, which parameters, how much). Its rows are
@@ -1372,6 +1372,28 @@ export function catalogItems(tools: readonly Item[], actionOf: (tool: string) =>
       })
     })
   })
+}
+
+/** Call-wide approvals become independently editable argument approvals. */
+export function parameterApprovals(rows: readonly Item[], parameters: readonly Item[]): Item[] {
+  const expanded = rows.flatMap((row) => {
+    if (row.permissionParameter !== undefined) return []
+    if (row.permKind !== "approval" || row.field !== undefined) return [row]
+    const params = parameters.filter((parameter) => parameter.paramTool === row.permTool)
+    // A zero-argument tool still needs its call-level approval setting.
+    if (params.length === 0) return [row]
+    return params.map((parameter) => ({
+      ...row,
+      id: `${row.id}@${encodeURIComponent(parameter.title)}`,
+      ruleId: `${row.ruleId}@${encodeURIComponent(parameter.title)}`,
+      permissionParameter: parameter.title,
+      permissionSource: row.id,
+      title: row.category === "approval" ? `Ask before using ${parameter.title}` : row.title,
+    }))
+  })
+  // Explicit argument-level rule edits win over defaults copied from the old
+  // call-level row, regardless of the store's record ordering.
+  return [...new Map([...expanded, ...rows.filter((row) => row.permissionParameter !== undefined)].map((row) => [row.id, row])).values()]
 }
 
 // A limit row's text is its number; every other row's text is its label and

@@ -57,7 +57,7 @@ async function goto(fixture: TestFixture, id: string, label: string): Promise<vo
 async function showSection(fixture: TestFixture, label: string): Promise<void> {
   await expand(fixture)
   await sleep(50)
-  if (!listPane(fixture.captureCharFrame()).includes(label) && listPane(fixture.captureCharFrame()).includes("▸ Description")) {
+  if (!listPane(fixture.captureCharFrame()).includes(label) && /▸.*Description/.test(listPane(fixture.captureCharFrame()))) {
     await moveTo(fixture, "Description")
     await expand(fixture)
   }
@@ -1516,9 +1516,8 @@ test("right on an item row reveals its sections for select and toggle", async ()
   })
   try {
     await gotoMcpItem(fixture)
-    // Right expands the item row itself; the section rows appear in the list
-    // with their on/off glyph.
-    await expand(fixture)
+    // Right expands the item, then its Description into editable sections.
+    await showSection(fixture, "Purpose")
     await fixture.waitForFrame((frame) => listPane(frame).includes("● Purpose"))
     await moveTo(fixture, "Purpose")
     expect(selectedRow(fixture.captureCharFrame())).toContain("● Purpose")
@@ -1545,7 +1544,7 @@ test("a lone H1 wrapper is not repeated: Introduction shows only its own body", 
   })
   try {
     await gotoMcpItem(fixture)
-    await expand(fixture)
+    await showSection(fixture, "Introduction")
     await fixture.waitForFrame((frame) => listPane(frame).includes("● A"))
     const frame = fixture.captureCharFrame()
     // The wrapper's title is not an extra row; its body is Introduction.
@@ -1711,7 +1710,7 @@ test("whole Role/persona and whole base rows refuse toggle without saving", asyn
     expect(dispatch(fixture, "space")).toBe(false)
     expect(fixture.fake.mutateInputs.length).toBe(0)
     // Section toggles under the same role still apply: exclusions assemble.
-    await expand(fixture)
+    await showSection(fixture, "Purpose")
     await fixture.waitForFrame((frame) => listPane(frame).includes("● Purpose"))
     await moveTo(fixture, "Purpose")
     expect(binds(fixture)).toContain("space")
@@ -2174,7 +2173,7 @@ test("a on a generic row prompts for rule scope and creates a per-agent rule", a
   }
 })
 
-test("perm rows list under the tool's Permissions and category, and enter opens the rule editor", async () => {
+test("zero-parameter permission rows list directly, and enter opens the rule editor", async () => {
   const snapshot = createSnapshot({
     agents: [projectAgent("Implementer")],
     items: [
@@ -2235,11 +2234,10 @@ test("perm rows list under the tool's Permissions and category, and enter opens 
   })
   try {
     await goto(fixture, "item:project:Implementer:tool:shell", "shell")
-    // Rule rows are editable leaves under the tool's Permissions group and
-    // their category; enter offers the rule editor.
+    // With no parameter schema in this fixture, rules are direct editable leaves.
     await reach(fixture, "item:project:Implementer:perm:shell:git-push", "Git push")
-    expect(listPane(fixture.captureCharFrame())).toContain("Permissions")
-    expect(breadcrumb(fixture.captureCharFrame())).toContain("shell › Permissions › Commands › Git push")
+    expect(listPane(fixture.captureCharFrame())).not.toContain("Permissions")
+    expect(breadcrumb(fixture.captureCharFrame())).toContain("shell › Git push")
     await fixture.waitForFrame((frame) => footer(frame).includes("enter edit rule"))
     expect(footer(fixture.captureCharFrame())).toContain("enter edit rule")
     expect(dispatch(fixture, "return")).toBe(true)

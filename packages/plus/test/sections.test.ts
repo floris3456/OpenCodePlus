@@ -108,7 +108,7 @@ test("derive falls back to whole", () => {
   const split = derive(text, "General")
   expect(split).toEqual({
     kind: "whole",
-    sections: [{ id: "whole", name: "Full text", depth: 0, start: 0, end: text.length }],
+    sections: [{ id: "whole", name: "Description", depth: 0, start: 0, end: text.length }],
   })
 })
 

@@ -47,6 +47,8 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.pinned === undefined ? {} : { pinned: item.pinned }),
     ...(item.execute === undefined ? {} : { execute: item.execute }),
     ...(item.paramTool === undefined ? {} : { paramTool: item.paramTool }),
+    ...(item.permissionParameter === undefined ? {} : { permissionParameter: item.permissionParameter }),
+    ...(item.permissionSource === undefined ? {} : { permissionSource: item.permissionSource }),
     ...(item.paramType === undefined ? {} : { paramType: item.paramType }),
     ...(item.required === undefined ? {} : { required: item.required }),
     ...(item.permTool === undefined ? {} : { permTool: item.permTool }),

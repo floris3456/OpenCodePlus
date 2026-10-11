@@ -233,7 +233,7 @@ test("agent is a case-insensitive substring match with exact _ sentinel", () => 
 })
 
 test("sections projection survives structural filtering", () => {
-  const whole = ["section:project:Implementer:tool:bash:whole"]
+  const whole = ["item:project:Implementer:tool:bash:description"]
   expect(query(input(), { where: "kind:item", fields: ["id", "sections"] }).rows.find((row) => row.id === bash)?.sections).toEqual(whole)
   expect(query(input(), { where: "can:split", fields: ["id", "sections"] }).rows.find((row) => row.id === bash)?.sections).toEqual(whole)
 })
@@ -326,7 +326,7 @@ test("has covers records, splits, sections, and text", () => {
 })
 
 test("id is a prefix match on the row id", () => {
-  expect(query(input(), { where: `id:${bash}` }).rows.map((row) => row.id)).toEqual([bash])
+  expect(query(input(), { where: `id:${bash}` }).rows.map((row) => row.id)).toEqual([bash, `${bash}:description`])
   expect(ids("id:zzz")).toHaveLength(0)
 })
 
@@ -619,7 +619,7 @@ test("sort directive, explicit sort, and ordering", () => {
   const byTokens = query(input(), { where: "kind:item level:project agent:Implementer", sort: "tokens" }).rows
   const counts = byTokens.map((row) => row.tokens ?? 0)
   expect([...counts].sort((a, b) => a - b)).toEqual(counts)
-  const byUpdated = query(input(), { where: "has:record sort:updated" }).rows
+  const byUpdated = query(input(), { where: "kind:item has:record sort:updated" }).rows
   expect(byUpdated[byUpdated.length - 1]?.id).toBe("item:defaults:Template:base:gpt")
   expect(query(input(), { where: "has:record sort:-updated" }).rows[0]?.id).toBe("item:defaults:Template:base:gpt")
 })
@@ -648,7 +648,7 @@ test("projection defaults and opt-in fields", () => {
   }).rows[0]
   expect(full).toMatchObject({ id: bash, label: "bash", text: "custom bash", upstream: "run commands", updated: OLD })
   expect(full?.record).toMatchObject({ text: "custom bash" })
-  expect(full?.sections).toEqual(["section:project:Implementer:tool:bash:whole"])
+  expect(full?.sections).toEqual(["item:project:Implementer:tool:bash:description"])
   expect(full).not.toHaveProperty("path")
   expect(full).not.toHaveProperty("tokens")
   const [agent] = query(input(), { where: "id:agent:project:Implementer", fields: ["id", "label", "path", "text", "record"] }).rows
@@ -692,7 +692,7 @@ test("memo shares one resolve cache with no double resolves", () => {
   const itemCount = new Set(
     tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true && node.address?.item.startsWith("modelsetting:") !== true).map((node) => node.id),
   ).size
-  const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
+  const sectionCount = new Set(tree.filter((node) => node.kind === "section" && node.address?.section !== null).map((node) => node.id)).size
   query(snapshot, { where: "text:e tokens:>0 upstream:e" }, memo)
   expect(memo.whole.size).toBe(itemCount)
   expect(memo.section.size).toBe(sectionCount)
@@ -708,7 +708,7 @@ test("badge-backed queries resolve each address at most once through the shared 
   const itemCount = new Set(
     tree.filter((node) => node.kind === "item" && node.address?.item.startsWith("modeldefault:") !== true && node.address?.item.startsWith("modelsetting:") !== true).map((node) => node.id),
   ).size
-  const sectionCount = new Set(tree.filter((node) => node.kind === "section").map((node) => node.id)).size
+  const sectionCount = new Set(tree.filter((node) => node.kind === "section" && node.address?.section !== null).map((node) => node.id)).size
   const found = query(snapshot, { where: "review:true" }, memo)
   expect(found.total).toBeGreaterThan(0)
   expect(memo.whole.size).toBe(itemCount)
@@ -761,26 +761,31 @@ test("execute rows expose no sections in query", () => {
 
 test("ordinary tool sections still enumerate with real counts", () => {
   const snap = executeSectionsSnap()
-  const bashSections = query(snap, { where: "id:section:project:Implementer:tool:bash:", fields: ["id"] }).rows.map((row) => row.id).sort()
-  expect(bashSections).toEqual(["section:project:Implementer:tool:bash:whole"])
+  const bashSections = query(snap, { where: "kind:section id:item:project:Implementer:tool:bash:", fields: ["id"] }).rows.map((row) => row.id).sort()
+  expect(bashSections).toEqual(["item:project:Implementer:tool:bash:description"])
   const coderSections = query(snap, { where: "id:section:project:Implementer:tool:coder:", fields: ["id"] }).rows.map((row) => row.id).sort()
   expect(coderSections).toEqual(["section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
   const editable = query(snap, { where: "can:edit", fields: ["id"] }).rows.map((row) => row.id)
-  expect(editable).toContain("section:project:Implementer:tool:bash:whole")
+  expect(editable).toContain("item:project:Implementer:tool:bash:description")
   expect(editable).toContain("section:project:Implementer:tool:coder:alpha")
   expect(editable).toContain("section:project:Implementer:tool:coder:beta")
   const [bashRow] = query(snap, { where: "id:item:project:Implementer:tool:bash", fields: ["id", "sections"] }).rows
-  expect(bashRow?.sections).toEqual(["section:project:Implementer:tool:bash:whole"])
+  expect(bashRow?.sections).toEqual(["item:project:Implementer:tool:bash:description"])
   const [coderRow] = query(snap, { where: "id:item:project:Implementer:tool:coder", fields: ["id", "sections"] }).rows
-  expect(coderRow?.sections?.slice().sort()).toEqual(["section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
+  expect(coderRow?.sections?.slice().sort()).toEqual(["item:project:Implementer:tool:coder:description", "section:project:Implementer:tool:coder:alpha", "section:project:Implementer:tool:coder:beta"].sort())
 })
 
-test("kind:group lists a tool's Description group, which exists only once its sections are known", () => {
+test("Description is a text row, never a structural group", () => {
   const snap = executeSectionsSnap()
-  const groups = query(snap, { where: "kind:group", fields: ["id"], limit: 1000 }).rows.map((row) => row.id)
-  expect(groups).toContain("group:project:Implementer:tool:coder:description")
-  // A one-section tool has no Description group: its section is the row.
+  const memo = buildMemo(snap)
+  const groups = query(snap, { where: "kind:group", fields: ["id"], limit: 1000 }, memo).rows.map((row) => row.id)
+  expect(memo.whole.size).toBe(0)
+  expect(memo.section.size).toBe(0)
+  expect(groups).not.toContain("group:project:Implementer:tool:coder:description")
   expect(groups).not.toContain("group:project:Implementer:tool:bash:description")
+  const descriptions = query(snap, { where: "kind:section label:Description", fields: ["id"], limit: 1000 }).rows.map((row) => row.id)
+  expect(descriptions).toContain("item:project:Implementer:tool:coder:description")
+  expect(descriptions).toContain("item:project:Implementer:tool:bash:description")
 })
 
 function permSnap() {
@@ -804,7 +809,7 @@ function permSnap() {
   })
 }
 
-test("perm rows list under the tool's Permissions and category groups, and item:perm and tool filters find them", () => {
+test("zero-parameter permission rows list directly and item:perm and tool filters find them", () => {
   const snap = permSnap()
   const tree = expandedTree(snap)
   const toolRow = tree.find((node) => node.id === "item:project:Implementer:tool:shell")
@@ -816,16 +821,13 @@ test("perm rows list under the tool's Permissions and category groups, and item:
     if (node.depth <= depth) break
     below.push({ id: node.id, label: node.label, depth: node.depth - depth })
   }
-  // A one-section text is the Description row itself; the rule sits under
-  // Permissions → its tool's category.
+  // No parameter schema in this fixture: the rule sits directly under the tool.
   expect(below).toEqual([
-    { id: "section:project:Implementer:tool:shell:whole", label: "Full text", depth: 1 },
-    { id: "group:project:Implementer:tool:shell:permissions", label: "Permissions", depth: 1 },
-    { id: "group:project:Implementer:tool:shell:permissions:commands", label: "Commands", depth: 2 },
-    { id: "item:project:Implementer:perm:shell:git-push", label: "Git push", depth: 3 },
+    { id: "item:project:Implementer:tool:shell:description", label: "Description", depth: 1 },
+    { id: "item:project:Implementer:perm:shell:git-push", label: "Git push", depth: 1 },
   ])
   const groups = query(snap, { where: "id:group:project:Implementer:tool:shell:permissions", fields: ["id"] }).rows.map((row) => row.id)
-  expect(groups).toEqual(["group:project:Implementer:tool:shell:permissions", "group:project:Implementer:tool:shell:permissions:commands"])
+  expect(groups).toEqual([])
   const byItem = query(snap, { where: "item:perm", fields: ["id"] }).rows.map((row) => row.id)
   expect(byItem).toContain("item:project:Implementer:perm:shell:git-push")
   const byTool = query(snap, { where: "item:perm tool:shell", fields: ["id"] }).rows.map((row) => row.id)
