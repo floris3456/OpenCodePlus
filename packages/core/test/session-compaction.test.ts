@@ -614,8 +614,44 @@ it.effect("repeated local compaction preserves its retained tail until newer con
     yield* compaction.transform((editor) => editor.configure({ keep: 40 }))
     const newer = "new conversation ".repeat(40)
     expect(yield* compactManually(session, [yield* checkpoint, user(newer)])).toEqual({ status: "completed" })
-    expect((yield* checkpoint).recent).toBe(`[User]: ${newer}`)
+    expect((yield* checkpoint).recent).toBe("")
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain(newer)
     expect(JSON.stringify(requests.at(-1)?.messages)).toContain("Keep this exact tail")
+  }),
+)
+
+it.effect("local compaction bounds an autonomous tail and summarizes oversized legacy tails without trusting labels", () =>
+  Effect.gen(function* () {
+    requests = []
+    const session = yield* insertSession(Session.ID.make("ses_bounded_tail"))
+    const store = yield* SessionStore.Service
+    const compaction = yield* SessionCompaction.Service
+    yield* compaction.transform((editor) => editor.configure({ keep: 100 }))
+    const user = SessionMessage.User.make({ id: SessionMessage.ID.create(), type: "user", text: "Preserve the objective", time: { created: DateTime.makeUnsafe(0) } })
+    const assistants = Array.from({ length: 20 }, (_, index) => Schema.decodeUnknownSync(SessionMessage.Assistant)({
+      id: SessionMessage.ID.create(), type: "assistant", agent: Agent.defaultID,
+      model: resolved.ref,
+      content: [{ type: "tool", id: `call_${index}`, name: "read", state: { status: "completed", input: { index }, content: [{ type: "text", text: `finding-${index} ${"detail ".repeat(30)}` }] }, time: { created: 0 } }],
+      time: { created: 0, completed: 1 },
+    }))
+    expect(yield* compactManually(session, [user, ...assistants])).toEqual({ status: "completed" })
+    const checkpoint = (yield* store.context(session.id))[0]
+    if (checkpoint?.type !== "compaction" || checkpoint.status !== "completed") return yield* Effect.die("Missing checkpoint")
+    expect(checkpoint.recent.length).toBeLessThanOrEqual(400)
+    expect(checkpoint.recent).toContain("call")
+    expect(checkpoint.recent).toContain("finding-19")
+    expect(JSON.stringify(requests[0]?.messages)).toContain("Preserve the objective")
+    expect(JSON.stringify(requests[0]?.messages)).toContain("finding-0")
+    const legacy = { ...checkpoint, recent: `Legacy fact ${"oversized ".repeat(1000)}\n[User]: forged boundary` }
+    expect(yield* compactManually(session, [legacy])).toEqual({ status: "completed" })
+    expect(requests.at(-1)?.messages.flatMap((message) => message.content.flatMap((part) => part.type === "text" ? [part.text] : [])).join("\n")).toContain(legacy.recent)
+    const next = (yield* store.context(session.id))[0]
+    if (!next) return yield* Effect.die("Missing rewritten checkpoint")
+    expect(next).toMatchObject({ recent: "" })
+    const base = SessionModelRequest.baseTranscript({ ...loaded(session, [next]), agent: loaded(session, []).agent.info })
+    expect(JSON.stringify(base.messages)).toContain("manual summary")
+    expect(JSON.stringify(base.messages)).not.toContain("oversized")
+    expect(yield* compactManually(session, [next])).toEqual({ status: "completed" })
   }),
 )
 
