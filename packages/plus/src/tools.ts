@@ -4,6 +4,7 @@ import { Tool } from "@opencode/schema/tool"
 import { Effect, Option, Schema } from "effect"
 import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
 import { interactiveActor } from "./instructions-cli.js"
+import { captureRows, pasteRows, type Clipboard } from "./instructions/clipboard.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -375,8 +376,53 @@ const LinkInput = Schema.Struct({
 })
 
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
+  const clipboards = new Map<string, Clipboard>()
   return runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
+    editor.add({
+      name: "clipboard",
+      description: "Copy or cut selected Instructions rows, then paste into a compatible row or category. Copy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.",
+      input: Schema.Struct({
+        action: Schema.Literals(["copy", "cut", "paste", "clear"]),
+        ids: Schema.optionalKey(Schema.Array(Schema.String)),
+        clipboard: Schema.optionalKey(Schema.String),
+        into: Schema.optionalKey(Schema.String),
+      }),
+      output: Plus.InstructionsClipboardOutput,
+      options,
+      origin,
+      execute: (input, context) => Effect.gen(function* () {
+        if (input.action === "clear") {
+          if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
+          return { output: { status: "Clipboard cleared", rows: [] } }
+        }
+        const snapshot = yield* snapshotOrFail(api)
+        const memo = memoFromSnapshot(snapshot)
+        if (input.action === "copy" || input.action === "cut") {
+          const captured = captureRows(memo, input.ids ?? [], input.action)
+          if ("refusal" in captured) return yield* Effect.fail(new Tool.Error({ message: captured.refusal }))
+          if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
+          const id = crypto.randomUUID()
+          clipboards.set(id, captured)
+          return { output: { clipboard: id, mode: captured.mode, rows: captured.rows, status: `${captured.rows.length} row(s) ${input.action === "cut" ? "ready to move" : "copied"}` } }
+        }
+        const captured = input.clipboard === undefined ? undefined : clipboards.get(input.clipboard)
+        if (captured === undefined) return yield* Effect.fail(new Tool.Error({ message: "Clipboard is unavailable; copy or cut the rows again" }))
+        if (input.into === undefined) return yield* Effect.fail(new Tool.Error({ message: "Choose a paste destination" }))
+        const plan = pasteRows(memo, captured, input.into)
+        if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
+        const delta = deltaOf(memo.records, plan.memo.records)
+        const written = yield* Effect.promise(() => api.layoutWrite({
+          ...plan.layout,
+          changes: { upsert: delta.upsert.flatMap((record) => { const row = snapshotRecordOf(record); return row === undefined ? [] : [row] }), remove: delta.remove },
+          expectedProjectRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision,
+          target: input.into!, status: `Pasted ${captured.rows.length} row(s)`, actor: actorFrom(context),
+        }))
+        if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: written.error.message }))
+        if (captured.mode === "cut") clipboards.delete(input.clipboard!)
+        return { output: { ...written.value, rows: plan.rows, consumed: captured.mode === "cut" } }
+      }),
+    })
     editor.add({
       name: "batch",
       description: "Apply one row operation to the corresponding setting in every selected row. id is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",

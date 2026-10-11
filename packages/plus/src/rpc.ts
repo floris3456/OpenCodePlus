@@ -594,6 +594,14 @@ export const InstructionsBatchOutput = Schema.Struct({
   failed: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
 })
 
+export const InstructionsClipboardOutput = Schema.Struct({
+  status: Schema.String,
+  rows: Schema.Array(Schema.String),
+  clipboard: Schema.optionalKey(Schema.String),
+  mode: Schema.optionalKey(Schema.Literals(["copy", "cut"])),
+  consumed: Schema.optionalKey(Schema.Boolean),
+})
+
 // One stored row addressed by identity for the delta form's `remove`: the
 // record type plus the fields that make up its target id (recordIdentity in
 // instructions/delta.ts) and its catalogue. Only the mutable snapshot record
@@ -922,6 +930,8 @@ export const ModelSettingsInvalid = Schema.Struct({
 export interface LayoutWriteInput extends Schema.Schema.Type<typeof LayoutWriteInput> {}
 export const LayoutWriteInput = Schema.Struct({
   expectedProjectRevision: Schema.Number,
+  /** Configuration transferred with placement, committed by the same guarded save. */
+  changes: Schema.optionalKey(MutateChanges),
   folders: Schema.Array(SnapshotFolderRecord),
   orders: Schema.Array(SnapshotOrderRecord),
   expectedGlobalRevision: Schema.Number,

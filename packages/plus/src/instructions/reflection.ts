@@ -96,6 +96,10 @@ function corresponding(memo: Memo, root: Lazy, row: Lazy, key: string): Lazy | u
   return undefined
 }
 
+export function correspondingRow(source: Memo, root: Lazy, row: Lazy, destination: Memo, target: Lazy): Lazy | undefined {
+  return row.id === root.id ? target : corresponding(destination, target, target, relativeKey(source, root, row))
+}
+
 function relativeKey(memo: Memo, root: Lazy, row: Lazy): string {
   const address = row.address
   if (address === undefined) return row.id === root.id ? "root" : `structure:${tabOfGroupId(row.id) ?? row.id.slice(root.id.length)}`

@@ -80,7 +80,7 @@ import {
 import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
 import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js"
-import { Definition, InstructionsBatchOutput, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
+import { Definition, InstructionsBatchOutput, InstructionsClipboardOutput, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { rowlinkView, sameOwnerView, sameEndpoint, writeRowlink, type RowlinkType, type RowlinkEndpoint, type RowlinkRecord } from "../../instructions/rowlinks.js"
 import { markerIn } from "../../instructions/requires.js"
@@ -211,6 +211,70 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   const [status, setStatus] = createSignal<string>("")
   const [loading, setLoading] = createSignal<boolean>(true)
   const [selection, setSelection] = createSignal<ReadonlySet<string>>(new Set())
+  const [notices, setNotices] = createSignal<readonly { readonly id: string; readonly text: string }[]>([])
+  const noticeSince = new Date().toISOString()
+  const noticeSeen = new Set<string>()
+  const noticeTimers = new Set<ReturnType<typeof setTimeout>>()
+  async function readNotices() {
+    const result = await plus["instructions.log"]({ where: `since:${noticeSince}`, limit: 100 }, { location: context.location })
+    if (disposed) return
+    for (const entry of result.entries.toReversed()) {
+      // One save can be logged in both stores; its revision differs but its
+      // actor, timestamp and change receipt are the same.
+      const id = JSON.stringify([entry.ts, entry.actor, entry.op, entry.target, entry.summary])
+      if (noticeSeen.has(id)) continue
+      noticeSeen.add(id)
+      const who = entry.actor.type === "tui" ? "You" : entry.actor.agent ?? entry.actor.type
+      setNotices((previous) => [...previous, { id, text: `${who}: ${entry.summary}` }].slice(-4))
+      const timer = setTimeout(() => {
+        noticeTimers.delete(timer)
+        if (!disposed) setNotices((previous) => previous.filter((notice) => notice.id !== id))
+      }, 4500)
+      noticeTimers.add(timer)
+    }
+    while (noticeSeen.size > 200) noticeSeen.delete(noticeSeen.values().next().value!)
+  }
+  const [clipboard, setClipboard] = createSignal<{ readonly id: string; readonly mode: "copy" | "cut"; readonly rows: readonly string[] }>()
+
+  async function clipboardOperation(action: "copy" | "cut" | "paste", node: TreeNode): Promise<boolean> {
+    await awaitDrain()
+    const previous = clipboard()
+    try {
+      const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
+        action,
+        ...(previous === undefined ? {} : { clipboard: previous.id }),
+        ...(action === "paste" ? { into: node.id } : { ids: selectionContains(node) ? [...selection()] : [node.id] }),
+      } }, { location: context.location })
+      const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsClipboardOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
+      if (disposed) {
+        if (Option.isSome(decoded) && !("error" in decoded.value) && decoded.value.clipboard !== undefined)
+          await plus["instructions.run"]({ op: "clipboard", input: { action: "clear", clipboard: decoded.value.clipboard }, actor: { type: "tui" } }, { location: context.location })
+        return false
+      }
+      if (Option.isNone(decoded)) { setStatus("Unexpected clipboard response"); return false }
+      if ("error" in decoded.value) { setStatus(decoded.value.error.message); return false }
+      if (action === "paste") {
+        if (decoded.value.consumed) { setClipboard(undefined); setSelection(new Set<string>()) }
+        await refresh()
+      }
+      if (decoded.value.clipboard !== undefined && decoded.value.mode !== undefined)
+        setClipboard({ id: decoded.value.clipboard, mode: decoded.value.mode, rows: decoded.value.rows })
+      setStatus(decoded.value.status)
+      return true
+    } catch (error) {
+      setStatus(errorMessage(error))
+      return false
+    }
+  }
+
+  function cancelClipboard(): boolean {
+    const current = clipboard()
+    if (current === undefined) return false
+    setClipboard(undefined)
+    void plus["instructions.run"]({ op: "clipboard", input: { action: "clear", clipboard: current.id }, actor: { type: "tui" } }, { location: context.location }).catch((error) => setStatus(errorMessage(error)))
+    setStatus("Cut cancelled")
+    return true
+  }
 
   function reflect<Args extends readonly unknown[]>(operation: (node: TreeNode, ...args: Args) => Promise<boolean>, label: string) {
     return async (node: TreeNode, ...args: Args): Promise<boolean> => {
@@ -1562,6 +1626,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   void requestReload()
   const unsubscribeInstructions = plus.events.on("instructions.changed", (event?: unknown) => {
+    void readNotices().catch((error) => { if (!disposed) setStatus(errorMessage(error)) })
     const payload = (event && typeof event === "object" && "data" in event ? event.data : event) as
       | Plus.InstructionsChanged
       | undefined
@@ -1571,8 +1636,10 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     void requestReload()
   })
   function dispose() {
+    if (clipboard() !== undefined) cancelClipboard()
     disposed = true
     unsubscribeInstructions()
+    for (const timer of noticeTimers) clearTimeout(timer)
   }
 
   // Space on a compaction switch: the field row (`Compact before cold`) or the
@@ -1779,6 +1846,15 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
   return {
     selection,
+    notices,
+    clipboard,
+    isCut: (node: TreeNode) => {
+      const pending = clipboard()
+      const memo = treeMemo()
+      return pending?.mode === "cut" && memo !== undefined && lazyPath(memo, node.id).some((row) => pending.rows.includes(row.id))
+    },
+    clipboardOperation,
+    cancelClipboard,
     setSelection,
     reflect,
     selectionContains,

@@ -26,6 +26,7 @@ export const HELP: readonly HelpGroup[] = [
       [".", "switch System sub-tab: Instructions / Base"],
       ["x · shift+↑↓ · ctrl+a", "select a row · select a range · select visible rows; Esc clears"],
       ["", "selected rows stay selected across agents and tabs; edits reflect to compatible settings"],
+      ["ctrl+c / ctrl+x / ctrl+v", "copy / cut / paste selected rows; cut stays pending until paste succeeds; Esc cancels"],
     ],
   ],
   [

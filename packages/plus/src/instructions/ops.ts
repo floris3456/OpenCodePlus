@@ -103,7 +103,7 @@ import type { Memo } from "./resolve-memo.js"
 import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
 import { collectSkeleton, expandedTree, findLazy, groupToggleOf, groupToggleRows, materialize, skeletonOf } from "./tree.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
-import { derive, headingSpan, manual, parentIndexes, slice, wrappingSection, type Boundary } from "./sections.js"
+import { derive, headingSpan, manual, parentIndexes, relocateHeadingSpan, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
 
 // Folders and display order (S1a). A move is planned from the folder and order
@@ -1782,7 +1782,7 @@ export function saveSplit(
   }
 }
 
-export function addSection(input: MemoInput, rowId: string, name: string, text: string, sharedMemo?: Memo): OpResult {
+export function addSection(input: MemoInput, rowId: string, name: string, text: string, sharedMemo?: Memo, includesHeading = false): OpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
@@ -1824,9 +1824,15 @@ export function addSection(input: MemoInput, rowId: string, name: string, text: 
     const anchor = targetSection ?? wrappingSection(preview)
 
     const hashes = "#".repeat(Math.max(2, appendDepth + 1))
+    if (includesHeading) {
+      const source = derive(text.trim(), name)
+      const depth = source.sections[0]?.depth ?? 0
+      if (source.sections.some((section) => hashes.length + section.depth - depth > 6))
+        return { refusal: "This section is too deeply nested here; paste it under a shallower section" }
+    }
     const headingLine = `${hashes} ${name}`
     const body = text.trim()
-    const sectionBlock = body.length > 0 ? `${headingLine}\n\n${body}` : headingLine
+    const sectionBlock = includesHeading ? relocateHeadingSpan(body, name, hashes.length - 1) : body.length > 0 ? `${headingLine}\n\n${body}` : headingLine
 
     // The anchor's resolved text is its effective full span, with the child
     // overrides that win over it (B39 rule 2) already applied. Writing that span

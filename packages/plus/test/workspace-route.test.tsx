@@ -9,6 +9,25 @@ import { createSnapshot, createTestTheme, renderInstructionsRoute } from "./tui.
 
 const build = { id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }
 
+test("saved human and tool receipts stack once and expire after live change events", async () => {
+  const entries: Plus.LogEntry[] = []
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build] })], width: 130, height: 40,
+    rpc: { "instructions.log": async () => ({ entries, total: entries.length }) },
+  })
+  await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+  entries.push(
+    { ts: new Date().toISOString(), actor: { type: "tool", agent: "helper" }, op: "layout", target: "tools", summary: "Pasted saved tool configuration", revision: 1 },
+    { ts: new Date().toISOString(), actor: { type: "tui" }, op: "edit", target: "description", summary: "Saved shared description", revision: 2 },
+  )
+  await fixture.emitChanged()
+  await fixture.waitForFrame((frame) => frame.includes("helper: Pasted saved tool configuration") && frame.includes("You: Saved shared description"))
+  await fixture.emitChanged()
+  expect(fixture.captureCharFrame().match(/helper: Pasted saved tool configuration/g)).toHaveLength(1)
+  await sleep(4700)
+  await fixture.waitForFrame((frame) => !frame.includes("helper: Pasted saved tool configuration") && !frame.includes("You: Saved shared description"))
+})
+
 function tool(id: string, title: string, text: string) {
   return { id, kind: "tool" as const, group: "native" as const, title, text, enabled: true, fingerprint: fingerprint(text) }
 }

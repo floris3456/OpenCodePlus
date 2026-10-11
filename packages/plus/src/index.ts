@@ -1747,10 +1747,22 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const currentOrders = current.records.filter((record): record is OrderRecord => record.type === "order")
       const folders = input.folders.map((folder) => stamped(folder, currentFolders.find((record) => record.id === folder.id), updated))
       const orders = input.orders.map((order) => stamped(order, currentOrders.find((record) => record.scope === order.scope), updated))
+      const config = await read(directory)
+      const upserts = input.changes?.upsert.map(toRecord) ?? []
+      const removed = new Set(input.changes?.remove.map(keyIdentity) ?? [])
+      const replaced = new Set(upserts.map(recordIdentity))
+      const records = [
+        ...current.records.filter((record) => record.type !== "folder" && record.type !== "order" && !removed.has(recordIdentity(record)) && !replaced.has(recordIdentity(record))),
+        ...upserts, ...folders, ...orders,
+      ]
+      const protectedChange = protectedRefusal(input.actor, deltaRows(current.records, records), config)
+      if (protectedChange !== undefined) return invalidLayout(protectedChange.message)
+      const invalid = invalidOf(upserts)
+      if (invalid !== undefined) return invalidLayout(invalid.reason)
       const saved = await save(directory, {
         expectedProjectRevision: current.projectRevision,
         expectedGlobalRevision: current.globalRevision,
-        records: [...current.records.filter((record) => record.type !== "folder" && record.type !== "order"), ...folders, ...orders],
+        records,
       })
       if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
       for (const level of ["project", "global"] as const) {

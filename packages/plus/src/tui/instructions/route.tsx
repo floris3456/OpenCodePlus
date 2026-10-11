@@ -1480,6 +1480,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
 
   function escape() {
     if (state.linkPrimary() !== undefined) { state.cancelRowlink(); state.setStatus("Row link cancelled"); return }
+    if (state.clipboard()?.mode === "cut") { state.cancelClipboard(); return }
     if (filtering()) {
       closeFilter()
       return
@@ -1537,6 +1538,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const row = currentRow()
     const hints: [string, string][] = [["↑↓", "move"]]
+    if (state.clipboard() !== undefined) hints.push(["ctrl+v", `paste ${state.clipboard()!.rows.length}`])
     hints.push(["x", node !== undefined && state.selection().has(node.id) ? "deselect" : "select row"])
     if (focus() === "nav") {
       if (row?.role === "owner" || row?.role === "every") hints.push(["→", "open"])
@@ -1574,7 +1576,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (workspace().categories.length > 1) hints.push(["[ ]", "category"])
     if (workspace().subcategories !== undefined) hints.push([".", "System tab"])
     hints.push(["tab", focus() === "nav" ? "list" : "sidebar"], ["/", "filter"], ["?", "help"])
-    hints.push(["esc", state.selection().size > 0 ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
+    hints.push(["esc", state.clipboard()?.mode === "cut" ? "cancel cut" : state.selection().size > 0 ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
     return hints
   }
 
@@ -1634,6 +1636,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "up", title: "Previous row", group: "Instructions", run: () => move(-1) },
         { bind: "down", title: "Next row", group: "Instructions", run: () => move(1) },
         { bind: "x", title: "Select or deselect row", group: "Instructions", run: markRow },
+        { bind: "ctrl+c", title: "Copy rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("copy", node) } },
+        { bind: "ctrl+x", title: "Cut rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("cut", node) } },
+        { bind: "ctrl+v", title: "Paste rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("paste", node) } },
         { bind: "shift+up", title: "Extend selection up", group: "Instructions", run: () => markRange(-1) },
         { bind: "shift+down", title: "Extend selection down", group: "Instructions", run: () => markRange(1) },
         { bind: "ctrl+a", title: "Select visible rows", group: "Instructions", run: () => state.setSelection(new Set((focus() === "nav" ? workspace().nav : listRows()).map((row) => row.node.id))) },
@@ -1716,6 +1721,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       <Show when={state.selection().size > 0}>
         <text flexShrink={0} fg={theme().text.formfield.selected} onMouseUp={() => state.setSelection(new Set<string>())}>{state.selection().size} selected</text>
       </Show>
+      <Show when={state.clipboard()}>
+        {(clipboard) => <text flexShrink={0} fg={theme().text.muted}>{clipboard().rows.length} {clipboard().mode === "cut" ? "cut" : "copied"}</text>}
+      </Show>
       <For each={workspace().levels}>
         {(entry) => (
           <text flexShrink={0} wrapMode="none" onMouseUp={() => showLevel(entry.id)}>
@@ -1786,6 +1794,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                 context={props.context}
                 row={row}
                 marked={state.selection().has(row.node.id)}
+                cut={state.isCut(row.node)}
                 sidebar
                 {...(row.role === "owner" || row.role === "every" ? { tools: toolCount(row.key, row.key === workspace().owner?.key)?.on } : {})}
                 moving={state.move()?.rowId === row.node.id}
@@ -1909,6 +1918,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
                   context={props.context}
                   row={row}
                   marked={state.selection().has(row.node.id)}
+                  cut={state.isCut(row.node)}
                   moving={state.move()?.rowId === row.node.id}
                   selected={row.key === listRow()?.key}
                   focused={focus() === "list" && !modal()}
@@ -2099,6 +2109,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       </Show>
       <Show when={mode() === "browse"}>
         <KeyHints context={props.context} hints={fitHints(hints(), dimensions().width - 2)} />
+      </Show>
+      <Show when={state.notices().length > 0 && !modal()}>
+        <box position="absolute" right={1} bottom={2} width={Math.min(64, dimensions().width - 2)} flexDirection="column" gap={1}>
+          <For each={state.notices()}>{(notice) => (
+            <box border paddingLeft={1} paddingRight={1} borderColor={theme().text.feedback.info.base} backgroundColor={theme().background.base}>
+              <text fg={theme().text.feedback.info.base}>{notice.text}</text>
+            </box>
+          )}</For>
+        </box>
       </Show>
     </box>
   )
