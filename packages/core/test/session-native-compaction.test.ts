@@ -88,6 +88,9 @@ const setup = Effect.fnUntraced(function* (options: {
   endpoint?: boolean
   config?: Agent.Compaction
   policy?: boolean
+  summaryPolicy?: boolean
+  unsupported?: { status: number; message: string }
+  noCompaction?: boolean
   anthropic?: "direct" | "compatible"
   quota?: boolean
 } = {}) {
@@ -157,6 +160,11 @@ const setup = Effect.fnUntraced(function* (options: {
               { status: 429, headers: retry ? {} : { "x-should-retry": "false" } },
             )
           }
+          if (options.unsupported && (new URL(request.url).pathname.endsWith("/compact") || JSON.stringify(bodies.at(-1)).includes("compaction_trigger")))
+            return Response.json({ error: { message: options.unsupported.message, type: "invalid_request_error" } }, {
+              status: options.unsupported.status,
+              headers: { "x-should-retry": "false" },
+            })
           if (options.anthropic) {
             const native = bodies.at(-1)?.context_management !== undefined
             // A not-triggered request is a native attempt that Anthropic answered normally, so it returns
@@ -283,6 +291,8 @@ const setup = Effect.fnUntraced(function* (options: {
           ? Anthropic.configure({ apiKey: "fixture", baseURL: server.url.toString() })
           : AnthropicCompatible.configure({ baseURL: server.url.toString(), provider: "relay" })
         ).model("claude-opus-4-6")
+      : options.noCompaction
+      ? LanguageModel.update(native, { route: native.route.with({ compact: {} }) })
       : endpoint
       ? LanguageModel.update(native, {
           route: native.route.with({ compact: { endpoint: native.route.compact.endpoint } }),
@@ -292,7 +302,7 @@ const setup = Effect.fnUntraced(function* (options: {
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
       cost: [],
       limit: { context: 200_000, output: 32_000 },
-compaction: options.policy === false ? undefined : { type: "native" },
+      compaction: options.summaryPolicy ? { type: "summary" } : options.policy === false ? undefined : { type: "native" },
     },
   )
   const available = yield* NativeModels
@@ -467,15 +477,81 @@ for (const origin of ["threshold", "overflow", "cold", "armed", "handoff"] as co
   }))
 }
 
-it.live("Auto without native policy records a provider-backed text summary, not a local-only operation", () => Effect.gen(function* () {
-  const fixture = yield* setup({ endpoint: true, policy: false })
+for (const endpoint of [false, true]) {
+  it.live(`Auto discovers ${endpoint ? "endpoint" : "trigger"} compaction without a native model policy`, () => Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint, policy: false })
+    yield* fixture.prompt("Conversation to compact")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect(fixture.state.calls).toBe(1)
+    expect(yield* fixture.checkpoint).toBeDefined()
+    expect(fixture.observations[0]?.compaction).toMatchObject({ configuredStrategy: "auto", selectedStrategy: "native", selectionReason: "auto-native" })
+    expect(fixture.observations[0]?.compaction?.modelPolicy).toBeUndefined()
+  }))
+}
+
+for (const options of [{ noCompaction: true }, { summaryPolicy: true }]) {
+  it.live(`Auto uses a text summary for ${options.noCompaction ? "a route without compaction" : "an explicit summary policy"}`, () => Effect.gen(function* () {
+    const fixture = yield* setup({ ...options, policy: false })
+    fixture.state.summary = true
+    yield* fixture.prompt("Conversation to compact")
+    expect(yield* fixture.compact).toEqual({ status: "completed" })
+    expect(fixture.state.calls).toBe(1)
+    expect(fixture.observations[0]?.compaction).toMatchObject({ configuredStrategy: "auto", strategySource: "built-in", selectedStrategy: "text-summary", selectionReason: "auto-text", modelSource: "active-model" })
+    expect(fixture.observations[0]?.exchanges[0]?.transport).toBe("http")
+  }))
+}
+
+for (const endpoint of [false, true]) {
+  for (const status of [400, 404, 405, 422, 501]) {
+    it.live(`Auto falls back after unsupported ${endpoint ? "endpoint" : "trigger"} compaction (${status})`, () => Effect.gen(function* () {
+      const fixture = yield* setup({ endpoint, policy: false, unsupported: { status, message: "Compaction is not supported" } })
+      fixture.state.summary = true
+      yield* fixture.prompt("Original request must survive fallback")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      expect(fixture.state.calls).toBe(2)
+      expect(fixture.observations.map((event) => event.compaction?.selectedStrategy)).toEqual(["native", "text-summary"])
+      expect(fixture.observations[1]?.compaction?.selectionReason).toBe("native-unavailable")
+      expect(JSON.stringify(fixture.bodies[1])).toContain("Original request must survive fallback")
+      expect((yield* fixture.load).messages.at(-1)).toMatchObject({ status: "completed", summary: "## Objective\n- Recovered locally" })
+    }))
+  }
+}
+
+for (const rejection of [
+  { status: 401, message: "Unauthorized" },
+  { status: 429, message: "Rate limit" },
+  { status: 500, message: "Internal error" },
+  { status: 400, message: "Invalid input" },
+]) {
+  it.live(`Auto does not hide unrelated provider failures (${rejection.status})`, () => Effect.gen(function* () {
+    const fixture = yield* setup({ endpoint: true, policy: false, unsupported: rejection })
+    fixture.state.summary = true
+    yield* fixture.prompt("Conversation to compact")
+    expect(yield* fixture.compact).toMatchObject({ status: "failed" })
+    expect(fixture.state.calls).toBe(1)
+    expect(fixture.observations).toHaveLength(1)
+  }))
+}
+
+it.live("automatic unsupported fallback settles both records and keeps the original conversation", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true, policy: false, unsupported: { status: 404, message: "Not found" } })
+  fixture.state.summary = true
+  yield* fixture.prompt("Original automatic compaction request")
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => { event.compact = true }))
+  expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "completed" })
+  const store = yield* SessionStore.Service
+  const messages = yield* store.messages({ sessionID: fixture.sessionID, order: "asc" })
+  expect(messages.filter((message) => message.type === "compaction").map((message) => message.status)).toEqual(["failed", "completed"])
+  expect(JSON.stringify(fixture.bodies[1])).toContain("Original automatic compaction request")
+  expect(fixture.state.calls).toBe(2)
+}))
+
+it.live("Explicit remote does not fall back when the deployment rejects compaction", () => Effect.gen(function* () {
+  const fixture = yield* setup({ endpoint: true, config: { strategy: "remote" }, unsupported: { status: 404, message: "Not found" } })
   fixture.state.summary = true
   yield* fixture.prompt("Conversation to compact")
-  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  expect(yield* fixture.compact).toMatchObject({ status: "failed" })
   expect(fixture.state.calls).toBe(1)
-  expect(fixture.observations[0]?.compaction).toMatchObject({ configuredStrategy: "auto", strategySource: "built-in", selectedStrategy: "text-summary", selectionReason: "auto-text", modelSource: "active-model" })
-  expect(fixture.observations[0]?.compaction?.modelPolicy).toBeUndefined()
-  expect(fixture.observations[0]?.exchanges[0]?.transport).toBe("http")
 }))
 
 it.live("an explanation hint alone cannot arm compaction or override auto:false", () => Effect.gen(function* () {

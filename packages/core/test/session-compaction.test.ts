@@ -820,7 +820,7 @@ it.effect("compaction hooks can supply the summary instead of the model", () =>
   }),
 )
 
-it.effect("native compaction fails without a model call on a route that cannot compact", () =>
+it.effect("Auto falls back from a native model policy when the route cannot compact", () =>
   Effect.gen(function* () {
     requests = []
     const compaction = yield* SessionCompaction.Service
@@ -840,13 +840,9 @@ it.effect("native compaction fails without a model call on a route that cannot c
         inputID: SessionMessage.ID.create(),
       }),
     ).toEqual({
-      status: "failed",
-      error: {
-        type: "provider.unsupported-operation",
-        message: "Native compaction is not supported for test/openai-chat",
-      },
+      status: "completed",
     })
-    expect(requests).toHaveLength(0)
+    expect(requests).toHaveLength(1)
   }),
 )
 

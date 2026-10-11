@@ -88,9 +88,9 @@ Add `compaction` to any [OpenCode configuration file](/config):
 
 ## Providers
 
-By default OpenCode writes the summary itself, using the session's model. Some
-providers can compact the conversation on their side instead. Enable it per
-provider or model with `settings.compaction`:
+The default AUTO strategy tries provider compaction when the selected route
+implements it. Routes without compaction use a local summary. You can explicitly
+prefer summaries per provider or model with `settings.compaction`:
 
 ```jsonc title="opencode.jsonc"
 {
@@ -106,8 +106,15 @@ provider or model with `settings.compaction`:
 }
 ```
 
-A model setting overrides the provider setting. `native` uses the provider's
-compaction; `summary` uses OpenCode's own.
+A model setting overrides the provider setting. `native` is no longer required
+to enable remote compaction in AUTO; `summary` explicitly selects OpenCode's own
+summary. The agent's explicit LOCAL or REMOTE strategy overrides this policy.
+
+AUTO verifies deployment support through the actual compaction request, without
+a separate probe. A missing endpoint or explicit unsupported-compaction response
+falls back to a local summary; authentication, rate-limit, and transient server
+errors retain their normal failure/retry behavior. Explicit REMOTE fails instead
+of falling back.
 
 With native compaction, OpenCode sends the conversation to the provider's
 compaction endpoint. The provider returns an opaque, encrypted item that stands

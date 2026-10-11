@@ -112,6 +112,7 @@ const IMAGE_TOKEN_ESTIMATE = 1_500
 const PDF_TOKEN_ESTIMATE = 2_000
 /** Anthropic answered normally because the request sat below its compaction trigger. */
 const NATIVE_NOT_TRIGGERED = "compaction.not-triggered"
+const NATIVE_UNAVAILABLE = "compaction.native-unavailable"
 
 const compactionUsageKind = (cause: unknown) =>
   cause instanceof AIError && cause.reason._tag === "InvalidProviderOutput" ? cause.reason.compaction : undefined
@@ -263,9 +264,8 @@ export const layer = Layer.effect(
       const budget =
         trigger.reason === "overflow" ? Math.min(cap, Math.floor(estimateContext(context) * SHRINK_STEPS[0])) : cap
 
-      // An explicit remote strategy demands provider compaction even when the active model would choose a
-      // summary, and an explicit local strategy demands a summary even when the model supports native. The
-      // decision may override the agent's strategy for this compaction.
+      // Auto discovers native support from the executable route unless the model explicitly prefers a
+      // summary. Local/remote force their respective strategy; the decision hook may override the agent.
       const configuredStrategy = decision.strategy ?? context.agent.info.compaction?.strategy ?? "auto"
       if (decision.portable && configuredStrategy === "remote")
         return {
@@ -297,8 +297,13 @@ export const layer = Layer.effect(
             message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
           },
         })
+      const operations = context.model.model.route.compact
       const native =
-        strategy === "remote" || (strategy === "auto" && !belowMinimum && context.model.compaction?.type === "native")
+        strategy === "remote" ||
+        (strategy === "auto" &&
+          !belowMinimum &&
+          context.model.compaction?.type !== "summary" &&
+          (operations?.trigger !== undefined || operations?.endpoint !== undefined))
       const observation: CompactionObservation = {
         version: 1,
         trigger:
@@ -342,6 +347,7 @@ export const layer = Layer.effect(
         publish(trigger, failure).pipe(
           Effect.map((outcome) => (decision.optional && trigger.reason === "auto" ? { status: "skipped" } : outcome)),
         )
+      let fallbackReason = observation.selectionReason
       if (native) {
         const attempt = yield* Effect.result(
           compactNatively(trigger, budget, settings.keep, strategy).pipe(
@@ -350,9 +356,10 @@ export const layer = Layer.effect(
         )
         if (Result.isSuccess(attempt)) return yield* completed(trigger, attempt.success)
         const failure = attempt.failure
-        if (failure.error.type !== NATIVE_NOT_TRIGGERED) return yield* settle(failure)
-        // Anthropic answered normally because the request sat below its compaction trigger. An explicit
-        // remote strategy fails honestly; Auto falls through to the local summary below.
+        if (failure.error.type !== NATIVE_NOT_TRIGGERED && failure.error.type !== NATIVE_UNAVAILABLE)
+          return yield* settle(failure)
+        // Auto falls back when the deployment cannot compact or Anthropic answered below its trigger.
+        // Explicit remote never gets the unavailable sentinel and must fail if Anthropic did not compact.
         if (strategy === "remote")
           return yield* settle({
             error: {
@@ -360,6 +367,7 @@ export const layer = Layer.effect(
               message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
             },
           })
+        fallbackReason = failure.error.type === NATIVE_UNAVAILABLE ? "native-unavailable" : "native-not-triggered"
         // Close the automatic record first so the local fallback's own record is the one it completes. A
         // manual record is completed by the fallback itself.
         if (trigger.reason !== "manual") yield* publish(trigger, failure)
@@ -397,7 +405,7 @@ export const layer = Layer.effect(
                 Effect.provideService(SessionModelObservation.Compaction, {
                   ...observation,
                   selectedStrategy: "text-summary",
-                  selectionReason: native ? "native-not-triggered" : observation.selectionReason,
+                  selectionReason: fallbackReason,
                   modelSource:
                     chosen ? chosen === decision.compactionModel ? "decision-hook" : "fallback-list"
                       : context.agent.info.compaction?.model ? "agent-config"
@@ -775,7 +783,25 @@ export const layer = Layer.effect(
         return unsupported(`Native compaction is not supported for ${request.model.provider}/${request.model.route.id}`)
       }
 
-      return yield* deliver(trigger, prepared, recent, budget, send)
+      return yield* deliver(trigger, prepared, recent, budget, (request) =>
+        send(request).pipe(
+          Effect.mapError((cause) => {
+            if (strategy !== "auto" || !(cause instanceof AIError)) return cause
+            const reason = cause.reason
+            const status = reason.http?.status
+            // Protocol support is not deployment support. Missing operations and explicit compaction
+            // rejections permit fallback; auth, quota and transient failures retain normal retry behavior.
+            const unavailable =
+              reason._tag === "UnsupportedOperation" ||
+              ((status === 404 || status === 405 || status === 501) &&
+                reason._tag !== "Authentication" && reason._tag !== "QuotaExceeded") ||
+              (reason._tag === "InvalidRequest" && (status === 400 || status === 422) &&
+                /compaction|compact|context_management/i.test(reason.message) &&
+                /not supported|unsupported|not available|unknown|unrecognized|not allowed/i.test(reason.message))
+            return unavailable ? { error: { ...toSessionError(cause), type: NATIVE_UNAVAILABLE } } : cause
+          }),
+        ),
+      )
     })
 
     /**

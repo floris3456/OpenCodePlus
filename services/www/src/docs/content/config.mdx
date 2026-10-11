@@ -341,8 +341,9 @@ Control automatic context compaction and how much recent context it preserves.
 }
 ```
 
-Local summaries remain the default. Opt into native provider compaction for both
-automatic and manual requests with a provider or model policy:
+The default AUTO strategy prefers native compaction when the selected route
+implements it, falling back to a local summary if the deployment rejects it as
+unsupported. A provider or model policy can explicitly select summaries:
 
 ```jsonc
 {
