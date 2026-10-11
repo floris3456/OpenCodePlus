@@ -1,16 +1,16 @@
 import { Instance } from "@opencode/core/instance/service"
 import { Session } from "@opencode/core/session"
 import { Effect, Layer } from "effect"
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
-import { InvalidRequestError, SessionNotFoundError } from "@opencode/protocol/errors"
-import { annotateRoute, sessionInfo, type LocationServices } from "../location"
+import { HttpRouter, HttpServerRequest } from "effect/http"
+import { HttpApiMiddleware } from "effect/http-api"
+import { LocationNotFoundError, InvalidRequestError, SessionNotFoundError } from "@opencode/protocol/errors"
+import { annotateRoute, locationErrors, sessionInfo, type LocationServices } from "../location"
 
 export class SessionLocationMiddleware extends HttpApiMiddleware.Service<
   SessionLocationMiddleware,
   { provides: LocationServices }
 >()("@opencode/HttpApiSessionLocation", {
-  error: [InvalidRequestError, SessionNotFoundError],
+  error: [InvalidRequestError, SessionNotFoundError, LocationNotFoundError],
 }) {}
 
 export const sessionLocationLayer = Layer.effect(
@@ -24,7 +24,7 @@ export const sessionLocationLayer = Layer.effect(
         const route = yield* HttpRouter.RouteContext
         const request = yield* HttpServerRequest.HttpServerRequest
         const session = yield* sessionInfo(sessions, route.params.sessionID)
-        return yield* effect.pipe(instances.provide(session), annotateRoute(request))
+        return yield* effect.pipe(instances.provide(session), locationErrors, annotateRoute(request))
       }),
     )
   }),

@@ -1,6 +1,6 @@
 import { Release } from "@opencode/schema/release"
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { ConflictError, ForbiddenError } from "../errors.js"
 
 // The whole public release vocabulary: record an intent, read its status, and settle

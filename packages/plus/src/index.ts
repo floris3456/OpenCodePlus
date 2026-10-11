@@ -9,7 +9,7 @@ import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { DateTime, Effect, Exit, Queue, Scope, Schema, Semaphore, Stream } from "effect"
+import { DateTime, Effect, Queue, Scope, Schema, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -19,7 +19,7 @@ import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFiel
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
-import { apply, applyAgentControls, applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
+import { applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
@@ -34,7 +34,7 @@ import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
 import { enforcementState, type EnforcementState, type PermissionTable } from "./instructions/permission-enforce.js"
-import { applyTeamAgent, dedupeAgents, installTeamAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
+import { dedupeAgents, parseTeamFields, type TeamFields } from "./instructions/teams-apply.js"
 import { assembled } from "./instructions/assembled.js"
 import { memoInputOf } from "./instructions/snapshot.js"
 import { pickModelRow, switchModelActivation, type ModelPick } from "./instructions/ops.js"
@@ -56,7 +56,7 @@ import { activateModel, addModelRecord, catalogueField, catalogueMatches, finger
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
-import { deltaOf, deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
+import { deltaRows, keyIdentity, recordIdentity, recordTarget } from "./instructions/delta.js"
 import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -1415,7 +1415,6 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     addMcp: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const config = await read(directory)
       const result = await addMcp({ projectDirectory: directory, name: input.name, config: { ...input.config } })
       if (!result.ok && result.reason === "exists")
         return {
@@ -4272,7 +4271,6 @@ async function renameTeamMember(
     return { ok: false, error: { code: "agent.missing", message: `Agent ${input.from} does not exist at ${sourcePath}: ${reason}`, data: { path: sourcePath } } }
   }
   const source = { level: input.scope, agent: input.from, team: { level: input.scope, team: validatedTeam.team } }
-  const target = { level: input.scope, agent: input.to, team: { level: input.scope, team: validatedTeam.team } }
   const delegateFrom = `perm:team_delegate:to.${input.from}`
   const delegateTo = `perm:team_delegate:to.${input.to}`
   const memberIds = known.agents.map((agent) => agent.id)
@@ -5252,26 +5250,6 @@ export function buildActiveModels(
   return next
 }
 
-interface BaseTemplateSuccess {
-  readonly ok: true
-  readonly id: string
-}
-
-interface BaseTemplateExists {
-  readonly ok: false
-  readonly reason: "exists"
-  readonly id: string
-}
-
-interface BaseTemplateInvalid {
-  readonly ok: false
-  readonly reason: "invalid"
-  readonly id: string
-  readonly message: string
-}
-
-type BaseTemplateResult = BaseTemplateSuccess | BaseTemplateExists | BaseTemplateInvalid
-
 // Instruction create result types stay local to index.ts; deletion reuses the
 // path-confined helpers from instructions/paths.ts.
 interface CreateInstructionSuccess {
@@ -6237,35 +6215,6 @@ async function stablePublishView(
   return { agents, items, scopes, teamAgents, teamBodies, outputIds, overrides }
 }
 
-async function fingerprintPublish(
-  discovered: Discovered,
-  records: readonly StoredRecord[],
-  directory: string,
-  builtins: readonly BuiltinTeam[] = [],
-  owned: ReadonlyMap<string, TeamOwnership> = new Map(),
-): Promise<string> {
-  const view = await stablePublishView(discovered, records, directory, builtins, owned)
-  const teamRecords = records.filter(isTeamRecord)
-  const allDiscoveredTeams = await discoverAllTeams(directory, builtins)
-  const winningEnabled = winningEnabledTeams(allDiscoveredTeams, teamRecords)
-  const { specialRoleOverrides } = computeSpecialOverrides(
-    winningEnabled,
-    discovered,
-    records,
-    contextFor(discovered.agents, discovered.items, records, allDiscoveredTeams),
-  )
-  return JSON.stringify({
-    items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined || item.agents !== undefined),
-    agents: view.agents,
-    servers: discovered.servers,
-    records,
-    teamBodies: view.teamBodies,
-    overrides: [...view.overrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
-    specialOverrides: [...specialRoleOverrides].toSorted((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0)),
-    scopes: { global: [...view.scopes.global].toSorted(), defaults: [...view.scopes.defaults].toSorted() },
-  })
-}
-
 async function readTeamBody(file: string): Promise<string | undefined> {
   return fs.readFile(file, "utf8").catch(() => undefined)
 }
@@ -6282,57 +6231,6 @@ async function resolveAllTeamAgents(
   const disk = await Promise.all([discoverTeams("project", directory), discoverTeams("global", directory)])
   const builtin = discoverBuiltinTeams(builtins)
   return resolveTeams([...disk[0], ...disk[1], ...builtin], records, regular).agents
-}
-
-// Built-in winners carry no path, so they install from the source registry
-// instead of the filesystem. One registration per member so a later failure
-// unwinds the earlier members, mirroring installTeamAgents.
-async function installBuiltinTeamAgents(
-  ctx: Context,
-  agents: readonly AgentSource[],
-  builtins: readonly BuiltinTeam[],
-  overrides?: ReadonlyMap<string, string>,
-): Promise<{ registrations: Registration[]; installedIds: string[] }> {
-  const installed: Registration[] = []
-  const installedIds: string[] = []
-  try {
-    for (const agent of agents) {
-      if (agent.team === undefined) continue
-      const body = builtinBody(builtins, agent.team, agent.id)
-      if (body === undefined) continue
-      const fields: TeamFields = builtins.find((entry) => entry.name === agent.team)?.members.find((member) => member.id === agent.id)?.fields ?? { permissions: [] }
-      installed.push(await runBuiltinRegistration(ctx, agent.id, agentBody(body), fields, overrides?.get(agent.id)))
-      installedIds.push(agent.id)
-    }
-    if (installed.length > 0) await Effect.runPromise(ctx.agent.reload())
-    return { registrations: [...installed], installedIds: [...installedIds] }
-  } catch (error) {
-    const reversed = installed.slice().reverse()
-    for (const registration of reversed) {
-      await Effect.runPromise(registration.dispose).catch(() => {})
-    }
-    throw error
-  }
-}
-
-async function runBuiltinRegistration(
-  ctx: Context,
-  id: string,
-  body: string,
-  fields: TeamFields,
-  override?: string,
-): Promise<Registration> {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const scope = yield* Scope.make()
-      return yield* Effect.suspend(() =>
-        ctx.agent.transform((editor: AgentEditor) => applyTeamAgent(editor, id, body, fields, override)),
-      ).pipe(
-        Effect.provideService(Scope.Scope, scope),
-        Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignoreCause)),
-      )
-    }),
-  )
 }
 
 // The canonical event names, not string guesses: agent and skill reloads

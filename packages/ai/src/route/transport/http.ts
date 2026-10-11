@@ -1,11 +1,19 @@
-import { Effect, Stream } from "effect"
-import { Headers, HttpClientRequest } from "effect/unstable/http"
+import { Clock, Duration, Effect, Stream } from "effect"
+import { Headers, HttpClientRequest } from "effect/http"
 import { Auth } from "../auth.js"
 import { render as renderEndpoint } from "../endpoint.js"
 import { Framing } from "../framing.js"
 import type { HttpMiddleware, Transport, TransportExecuteOptions, TransportPrepareInput } from "./index.js"
 import * as ProviderShared from "../../protocols/shared.js"
-import { AIError, mergeJsonRecords, TransportError, type LLMRequest } from "../../schema/index.js"
+import {
+  AIError,
+  DEFAULT_HTTP_TIMEOUT_MS,
+  mergeJsonRecords,
+  TransportError,
+  type HttpContext,
+  type HttpTimeout,
+  type LLMRequest,
+} from "../../schema/index.js"
 import { RequestExecutor } from "../executor.js"
 
 export type JsonRequestInput<Body> = TransportPrepareInput<Body>
@@ -87,55 +95,54 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
         middleware: prepareInput.middleware,
       }
     }),
-  execute: (prepared, _request, runtime, options?: TransportExecuteOptions) =>
+  execute: (prepared, request, runtime, options?: TransportExecuteOptions) =>
     Effect.gen(function* () {
-      const response = yield* options?.idleTimeout
-        ? Effect.timeoutOrElse(runtime.http.execute(prepared.request, prepared.middleware), {
-            duration: options.idleTimeout,
-            orElse: () =>
-              Effect.fail(
-                new AIError({
-                  reason: new TransportError({
-                    message: "Timed out waiting for HTTP response headers",
-                    transport: "http",
-                    code: "idle-timeout",
-                    operation: "request",
-                    phase: "receive",
-                    delivery: "ambiguous",
-                    url: prepared.request.url,
-                  }),
-                }),
-              ),
-          })
-        : runtime.http.execute(prepared.request, prepared.middleware)
-      const rawStream = RequestExecutor.responseStream(response)
-      const byteStream = options?.idleTimeout
-        ? Stream.timeoutOrElse(rawStream, {
-            duration: options.idleTimeout,
-            orElse: () =>
-              Stream.fail(
-                new AIError({
-                  reason: new TransportError({
-                    message: "Timed out waiting for HTTP response data",
-                    transport: "http",
-                    code: "idle-timeout",
-                    operation: "read",
-                    phase: "receive",
-                    delivery: "accepted",
-                    url: prepared.request.url,
-                    http: RequestExecutor.responseHttp(response),
-                  }),
-                }),
-              ),
-          })
-        : rawStream
+      const timeout = (operation: "request" | "read", message: string, http?: HttpContext) =>
+        new AIError({
+          reason: new TransportError({
+            message,
+            transport: "http",
+            operation,
+            code: options?.idleTimeout ? "idle-timeout" : "Timeout",
+            phase: "receive",
+            delivery: operation === "request" ? "ambiguous" : "accepted",
+            url: prepared.request.url,
+            http,
+          }),
+        })
+      const started = yield* Clock.currentTimeMillis
+      // Unlike the header and chunk limits, the whole-request budget has no default.
+      const total = request.http?.timeout ? Duration.millis(request.http.timeout) : Duration.infinity
+      const response = yield* runtime.http.execute(prepared.request, prepared.middleware).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.min(options?.idleTimeout === undefined ? timeoutDuration(request.http?.headerTimeout) : Duration.fromInputUnsafe(options.idleTimeout), total),
+          orElse: () => timeout("request", "Timed out waiting for response headers"),
+        }),
+      )
+      const http = RequestExecutor.responseHttp(response)
+      const remaining = Duration.subtract(total, Duration.millis((yield* Clock.currentTimeMillis) - started))
       return {
-        frames: prepared.framing.frame(byteStream),
-        http: RequestExecutor.responseHttp(response),
+        frames: prepared.framing.frame(
+          RequestExecutor.responseStream(response).pipe(
+            Stream.timeoutOrElse({
+              duration: options?.idleTimeout ?? timeoutDuration(request.http?.chunkTimeout),
+              orElse: () => Stream.fail(timeout("read", "Timed out waiting for response data", http)),
+            }),
+            Stream.interruptWhen(
+              Effect.sleep(remaining).pipe(
+                Effect.andThen(Effect.fail(timeout("read", "Timed out waiting for the response to complete", http))),
+              ),
+            ),
+          ),
+        ),
+        http,
         body: prepared.framing.body,
       }
     }),
 })
+
+const timeoutDuration = (value: HttpTimeout | undefined) =>
+  value === false ? Duration.infinity : Duration.millis(value ?? DEFAULT_HTTP_TIMEOUT_MS)
 
 export const sseJson = {
   id: "http-json/sse",

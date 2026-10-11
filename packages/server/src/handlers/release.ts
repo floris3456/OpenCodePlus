@@ -2,7 +2,7 @@ import { ReleaseRequestStore } from "@opencode/core/release/index"
 import { ConflictError, ForbiddenError } from "@opencode/protocol/errors"
 import { RELEASE_PERMIT_HEADER, ReleaseRequestNotFoundError } from "@opencode/protocol/groups/release"
 import { Effect, Option, Schema } from "effect"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../api"
 
 // Submitting records intent. A permit presented alongside it is verified by the

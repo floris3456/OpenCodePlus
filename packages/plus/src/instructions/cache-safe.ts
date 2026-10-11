@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto"
 import path from "node:path"
 import { Session } from "@opencode/schema/session"
-import { SessionMessage } from "@opencode/schema/session-message"
 import { Effect } from "effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionContext } from "@opencode/plugin/effect/session"

@@ -7,7 +7,6 @@ import type { Plus } from "../../../rpc.js"
 import {
   formatClock,
   formatCost,
-  formatMs,
   formatMsLabel,
   formatTokens,
   formatReportedRead,

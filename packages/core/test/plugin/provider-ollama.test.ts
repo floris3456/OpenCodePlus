@@ -1,5 +1,7 @@
 import { Bus } from "@opencode/core/bus"
 import { Config } from "@opencode/core/config"
+import { Environment, makeFiles } from "@opencode/core/environment/index"
+import { EnvironmentUnavailable } from "@opencode/core/environment/unavailable"
 import { Integration } from "@opencode/core/integration"
 import { Model } from "@opencode/core/model"
 import { Plugin } from "@opencode/core/plugin"
@@ -8,6 +10,7 @@ import { OllamaPlugin, make } from "@opencode/core/plugin/provider/ollama"
 import { ProviderPlugins } from "@opencode/core/plugin/provider"
 import { Provider } from "@opencode/core/provider"
 import { Document, Event, Info } from "@opencode/schema/config"
+import { Workspace } from "@opencode/schema/workspace"
 import { describe, expect } from "bun:test"
 import { Duration, Effect, Layer, Schema } from "effect"
 import { testEffect } from "../lib/effect"
@@ -38,6 +41,26 @@ function eventually<A>(
 }
 
 describe("OllamaPlugin", () => {
+  it.live("skips unconfigured default local discovery when the location has no local execution plane", () =>
+    Effect.gen(function* () {
+      const plugin = yield* Plugin.Service
+      const host = yield* PluginHost.make(plugin)
+      const providers = yield* Provider.Service
+      yield* OllamaPlugin.effect(host).pipe(
+        Effect.provideService(
+          Environment.Service,
+          Environment.Service.of({
+            placement: { kind: "workspace", workspaceID: Workspace.ID.make("wrk_test") },
+            files: makeFiles({ spawner: EnvironmentUnavailable.spawner }),
+            spawner: EnvironmentUnavailable.spawner,
+          }),
+        ),
+      )
+      yield* Effect.promise(() => Bun.sleep(20))
+      expect(yield* providers.get(Provider.ID.make("ollama"))).toBeUndefined()
+    }),
+  )
+
   it.live("discovers local completion models and native metadata", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
@@ -70,7 +93,7 @@ describe("OllamaPlugin", () => {
                     }
                   : body.model === "unknown-context"
                     ? show({ family: "unknown", capabilities: ["completion"], context: 0 })
-                  : show({ family: "nomic-bert", capabilities: ["embedding"], context: 8192 }),
+                    : show({ family: "nomic-bert", capabilities: ["embedding"], context: 8192 }),
               )
             },
           }),
@@ -299,6 +322,22 @@ describe("OllamaPlugin", () => {
             yield* eventually(providers.get(providerID), (provider) => provider?.settings?.apiKey === "")
             expect(requests).toContainEqual({ authorization: null, method: "GET", path: "/proxy/api/tags" })
             expect(requests).toContainEqual({ authorization: null, method: "POST", path: "/proxy/api/show" })
+
+            requests.splice(0)
+            const apiBaseURL = `${configured.url.origin}/proxy/api`
+            yield* config.setEntries([configuration({ baseURL: apiBaseURL, apiKey: "api-secret" })])
+            yield* bus.publish(Event.Updated, {})
+            yield* eventually(providers.get(providerID), (provider) => provider?.settings?.baseURL === apiBaseURL)
+            expect(requests).toContainEqual({
+              authorization: "Bearer api-secret",
+              method: "GET",
+              path: "/proxy/api/tags",
+            })
+            expect(requests).toContainEqual({
+              authorization: "Bearer api-secret",
+              method: "POST",
+              path: "/proxy/api/show",
+            })
           }),
         ({ initial, configured }) => Effect.promise(() => Promise.all([initial.stop(true), configured.stop(true)])),
       ),

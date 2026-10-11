@@ -1,7 +1,7 @@
 import { Effect, PlatformError, Schema } from "effect"
 import type { Scope } from "effect"
-import { ChildProcess } from "effect/unstable/process"
-import type { ChildProcessHandle, ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcess } from "effect/process"
+import type { ChildProcessHandle, ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import type { Opts, Proc } from "#pty"
 import { lazy } from "../../util/lazy.js"
 

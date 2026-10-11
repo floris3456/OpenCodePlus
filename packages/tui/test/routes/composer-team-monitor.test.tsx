@@ -71,6 +71,7 @@ async function createTestComposer(input: {
         <box flexGrow={1} />
         <Composer
           sessionID="parent"
+          terminals
           open={input.open ?? true}
           onClose={input.onClose}
         />
@@ -173,7 +174,6 @@ function StatefulTab(props: { mount: () => number; onCleanup: () => void }) {
 test("plugin tab appears fourth after Subagents, Shell, and Terminals, and activates with right", async () => {
   let activeState = false
   let receivedSessionID = ""
-  let closeCalled = false
 
   const unregister = composerPluginTabs.register({
     id: "test-tab",

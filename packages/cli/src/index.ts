@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import { ensurePluginRuntime } from "@opencode/plugin/runtime"
+import { EffectFlock } from "@opencode/util/effect-flock"
 import { Cause, Effect } from "effect"
 import { getErrorReported } from "effect/Runtime"
 import { Commands } from "./commands/commands"
@@ -15,6 +17,8 @@ import { Config } from "./config"
 import { Npm } from "@opencode/util/npm"
 import { Heap } from "./heap"
 import { CpuProfile } from "./cpu-profile"
+
+ensurePluginRuntime()
 
 if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
   const { askpass } = await import("./ssh-askpass")
@@ -31,6 +35,8 @@ export const handlers = {
     list: () => import("./commands/handlers/auth/list"),
     login: () => import("./commands/handlers/auth/login"),
     logout: () => import("./commands/handlers/auth/logout"),
+    export: () => import("./commands/handlers/auth/export"),
+    import: () => import("./commands/handlers/auth/import"),
     switch: () => import("./commands/handlers/auth/switch"),
   },
   debug: {
@@ -117,7 +123,7 @@ if (import.meta.main || typeof Bun === "undefined" || process.argv[1]?.includes(
     Effect.provide(Config.layer),
     Effect.provide(Updater.layer),
     Effect.provide(
-      LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node]), {
+      LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node, EffectFlock.node]), {
         replacements: [
           Global.node.replace(
             Global.layerWith(process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {}),

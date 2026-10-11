@@ -8,7 +8,6 @@ import { SubagentsTab } from "./subagents-tab"
 import { ShellTab } from "./shell-tab"
 import { TerminalsTab } from "./terminals-tab"
 import { PluginComposerTabs } from "./team-monitor-tab"
-import { useConfig } from "../../../config"
 import { ComposerContext, type ComposerTab } from "./context"
 
 export { composerPluginTabs } from "./team-monitor-tab"
@@ -19,12 +18,12 @@ export type ComposerProps = {
   open: boolean
   defaultTab?: string
   onClose?: () => void
+  terminals?: boolean
   visibleTerminalID?: string
 }
 
 export function Composer(props: ComposerProps) {
   const theme = useTheme()
-  const config = useConfig().data
 
   const [store, setStore] = createStore({
     tabs: {} as Record<string, ComposerTab>,
@@ -51,8 +50,6 @@ export function Composer(props: ComposerProps) {
   })
 
   function close() {
-    const tab = activeTab()
-    tab?.onClose?.()
     props.onClose?.()
   }
 
@@ -139,7 +136,7 @@ export function Composer(props: ComposerProps) {
             </box>
             <SubagentsTab sessionID={props.sessionID} />
             <ShellTab sessionID={props.sessionID} />
-            <Show when={config.session.terminal}>
+            <Show when={props.terminals}>
               <TerminalsTab sessionID={props.sessionID} visibleTerminalID={props.visibleTerminalID} />
             </Show>
             <PluginComposerTabs sessionID={props.sessionID} />

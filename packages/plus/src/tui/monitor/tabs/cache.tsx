@@ -8,7 +8,6 @@ import {
   cacheRequests,
   formatClock,
   formatCost,
-  formatMs,
   formatMsLabel,
   formatTokens,
   formatReportedRead,

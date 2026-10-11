@@ -27,7 +27,7 @@ import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { renameCandidateOf } from "./rename.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
-import { ancestry, canExpand, CATEGORY, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, folderName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, CATEGORY, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, folderName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -46,10 +46,6 @@ interface View {
   listOpen: string[]
   listCollapsed: string[]
   focus: Focus
-}
-
-function isExpandable(node: TreeNode): boolean {
-  return canExpand(node) && node.kind !== "section"
 }
 
 function canToggle(node: TreeNode | undefined): boolean {

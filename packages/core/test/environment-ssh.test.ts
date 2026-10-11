@@ -1,8 +1,8 @@
 import fs from "node:fs/promises"
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Fiber, PlatformError, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
-import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { collectStream } from "@opencode/util/process"
@@ -572,4 +572,3 @@ environmentConformance(
     }).pipe(Effect.provide(LayerNode.compile(CrossSpawnSpawner.node))),
   process.platform !== "linux",
 )
-

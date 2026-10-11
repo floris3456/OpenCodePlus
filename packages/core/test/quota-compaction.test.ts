@@ -1,14 +1,11 @@
-import { expect, test } from "bun:test"
-import { GenerationOptions, LLMClient, LLMEvent, LanguageModel, ToolDefinition, type LLMRequest } from "@opencode/ai"
+import { expect } from "bun:test"
+import { LLMClient, LLMEvent, LanguageModel, type LLMRequest } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Database } from "@opencode/core/database/database"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
-import { EventTable } from "@opencode/core/event/sql"
 import { SessionCompaction } from "@opencode/core/session/compaction"
-import type { SessionContext } from "@opencode/core/session/context"
-import { SessionEvent } from "@opencode/core/session/event"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionModelRequest } from "@opencode/core/session/model-request"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
@@ -19,16 +16,12 @@ import { SessionStore } from "@opencode/core/session/store"
 import { Session } from "@opencode/core/session"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
-import { App } from "@opencode/core/app"
 import { Agent } from "@opencode/core/agent"
 import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Money } from "@opencode/schema/money"
 import { Model } from "@opencode/core/model"
-import { Skill } from "@opencode/schema/skill"
-import { Shell } from "@opencode/schema/shell"
-import { DateTime, Effect, Fiber, Layer, Schema, Stream } from "effect"
-import { asc, eq } from "drizzle-orm"
+import { DateTime, Effect, Layer, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
 let requests: LLMRequest[] = []
@@ -417,7 +410,6 @@ it.effect("compactionFallbacks replaces compactionFallback when both are set", (
   Effect.gen(function* () {
     const hooks = yield* PluginHooks.Service
     const compaction = yield* SessionCompaction.Service
-    const store = yield* SessionStore.Service
     const session = yield* insertSession(Session.ID.make("ses_quota_fallbacks_replace"))
     yield* compaction.transform((editor) => editor.configure({ auto: true, keep: 0 }))
     yield* hooks.register("session", "compaction.decide", (event) =>

@@ -114,7 +114,7 @@ export async function resolveLabTargets(input: LabTargetInput): Promise<LabTarge
 }
 
 export interface HostCall {
-  readonly method: "GET" | "POST" | "PATCH"
+  readonly method: "GET" | "POST" | "PATCH" | "DELETE"
   readonly path: string
   readonly status: number
 }
@@ -138,7 +138,7 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
   const calls: HostCall[] = []
   const authorization = `Basic ${Buffer.from(`opencode:${options.password}`, "utf8").toString("base64")}`
 
-  async function request(method: "GET" | "POST" | "PATCH", requestPath: string, body?: unknown): Promise<unknown> {
+  async function request(method: "GET" | "POST" | "PATCH" | "DELETE", requestPath: string, body?: unknown): Promise<unknown> {
     const response = await fetchImpl(`${baseUrl}${requestPath}`, {
       method,
       headers: {
@@ -167,6 +167,10 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
   // Every method maps one documented route to one client-API-shaped result;
   // the casts are the single bridge boundary between JSON and the host types.
   const domain: SessionDomain = {
+    remove: (input) =>
+      Effect.promise(async () => {
+        await request("DELETE", `/api/session/${segment(input.sessionID)}`)
+      }),
     create: (input) =>
       Effect.promise(async () => {
         const body = await request("POST", "/api/session", input ?? {})

@@ -1,5 +1,5 @@
 import type { Catalogue, Level } from "../../instructions/model.js"
-import { MODELS_GROUP_ID, MODELS_OWNER } from "../../instructions/model-settings.js"
+import { MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 import { categorySummary } from "../../instructions/permission-catalog.js"
 import type { TreeNode } from "../../instructions/tree.js"
 

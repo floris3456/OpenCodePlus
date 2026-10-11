@@ -220,7 +220,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // instructions.changed events need no reload. A host change re-emits the same
   // revisions later (nothing was written since), so the match expires.
   const ownWrites = new Map<string, number>()
-  let lastConfirmedRevisions = { revision: 0, globalRevision: 0 }
   let lastOpStatus = ""
   let localVersion = 0
   let draining = false
@@ -280,7 +279,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   if (cached !== undefined) {
     setSnapshot(cached.snapshot)
     confirmedRecords = recordsOf(cached.snapshot.records)
-    lastConfirmedRevisions = { revision: cached.snapshot.revision, globalRevision: cached.snapshot.globalRevision }
   }
 
   // Presets and Defaults entries get the Role/persona row every agent has.
@@ -397,7 +395,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       const freshStored = recordsOf(fresh.records)
       cache.put(directory, fresh)
       confirmedRecords = freshStored
-      lastConfirmedRevisions = { revision: fresh.revision, globalRevision: fresh.globalRevision }
       if (pending.upsert.length + pending.remove.length === 0) {
         setSnapshot(fresh)
         setStatus("")
@@ -428,7 +425,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setSnapshot(fresh)
       cache.put(directory, fresh)
       confirmedRecords = recordsOf(fresh.records)
-      lastConfirmedRevisions = { revision: fresh.revision, globalRevision: fresh.globalRevision }
       setStatus("Refreshed from host")
     } catch (error: unknown) {
       if (disposed || requestGen !== generation) return
@@ -546,10 +542,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
 
         if (errorThrown === undefined && result !== undefined && result.ok === true) {
           confirmedRecords = applyDeltaToRecords(confirmedRecords, delta)
-          lastConfirmedRevisions = {
-            revision: result.revision,
-            globalRevision: result.globalRevision,
-          }
           ownWrites.set(`${result.revision}/${result.globalRevision}`, Date.now())
 
           if (wantSnapshot && result.snapshot !== undefined) {
@@ -559,10 +551,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
                 cache.put(directory, result.snapshot)
               }
               confirmedRecords = recordsOf(result.snapshot.records)
-              lastConfirmedRevisions = {
-                revision: result.snapshot.revision,
-                globalRevision: result.snapshot.globalRevision,
-              }
             }
           }
 
@@ -597,10 +585,6 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
               cache.put(directory, result.snapshot)
             }
             confirmedRecords = recordsOf(result.snapshot.records)
-            lastConfirmedRevisions = {
-              revision: result.snapshot.revision,
-              globalRevision: result.snapshot.globalRevision,
-            }
           }
 
           const msg = errorThrown !== undefined

@@ -135,7 +135,7 @@ function integrationDomain(): IntegrationDomain {
   return {
     list: die("unused integration.list"),
     get: die("unused integration.get"),
-    connect: { key: die("unused integration.connect.key") },
+    connect: { key: die("unused integration.connect.key"), external: die("unused integration.connect.external") },
     oauth: {
       connect: die("unused integration.oauth.connect"),
       status: die("unused integration.oauth.status"),
@@ -150,6 +150,7 @@ function integrationDomain(): IntegrationDomain {
     connection: {
       active: die("unused integration.connection.active"),
       resolve: die("unused integration.connection.resolve"),
+      status: die("unused integration.connection.status"),
     },
     transform: die("unused integration.transform"),
     reload: die("unused integration.reload"),
@@ -809,6 +810,7 @@ function sessionDomain(overrides: Partial<SessionDomain> = {}): SessionDomain {
     create: overrides.create ?? die("unused session.create"),
     get: overrides.get ?? die("unused session.get"),
     active: overrides.active ?? die("unused session.active"),
+    remove: overrides.remove ?? die("unused session.remove"),
     switchAgent: overrides.switchAgent ?? die("unused session.switchAgent"),
     switchModel: overrides.switchModel ?? die("unused session.switchModel"),
     prompt: overrides.prompt ?? die("unused session.prompt"),
