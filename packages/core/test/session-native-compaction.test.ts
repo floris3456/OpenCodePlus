@@ -3,6 +3,7 @@ import { LLMClient, LanguageModel, Message, ToolDefinition } from "@opencode/ai"
 import { Anthropic, AnthropicCompatible, OpenAI } from "@opencode/ai/providers"
 import { Agent } from "@opencode/core/agent"
 import { Bus } from "@opencode/core/bus"
+import { Config } from "@opencode/core/config"
 import { Database } from "@opencode/core/database/database"
 import { llmClient } from "@opencode/core/effect/app-node-platform"
 import { Instructions } from "@opencode/core/instructions/index"
@@ -17,6 +18,9 @@ import { SessionInbox } from "@opencode/core/session/inbox"
 import { InstructionState } from "@opencode/core/session/instruction-state"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionModelRequest } from "@opencode/core/session/model-request"
+import { SessionModelObservation } from "@opencode/core/session/model-observation"
+import { fingerprintWireBody } from "../../plus/src/monitor/fingerprint.js"
+import { compactionAppend } from "../../plus/src/monitor/cache.js"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionProviderContext } from "@opencode/core/session/provider-context"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
@@ -76,6 +80,7 @@ const it = testEffect(
     {
       replacements: [
         Bus.node.replace(Bus.configured({ persist: true })),
+        Config.node.replace(Config.testLayer()),
         Agent.node.replace(agents),
         Model.node.replace(catalog),
         SessionRunnerModel.node.replace(models),
@@ -127,6 +132,7 @@ const setup = Effect.fnUntraced(function* (options: {
         hostname: "127.0.0.1",
         port: 0,
         async fetch(request) {
+          if (options.anthropic && request.method === "GET") return Response.json({ capabilities: { compaction: { supported: true } } })
           if (options.quota && request.method === "GET")
             return Response.json({
               protocol: 1,
@@ -406,6 +412,33 @@ agent: { id: Agent.defaultID, info: { ...Agent.Info.default(Agent.defaultID), co
     available,
   }
 })
+
+for (const strategy of ["remote", "local"] as const) it.live(`C1 ${strategy} uses the completed request's tools and prefix`, () => Effect.gen(function* () {
+  const fixture = yield* setup({ anthropic: "direct", config: { strategy } })
+  yield* fixture.prompt("Synthetic conversation")
+  const context = yield* fixture.load
+  const transcript = SessionModelRequest.baseTranscript({ ...context, agent: context.agent.info })
+  const prepared = yield* fixture.requests.primary({ ...context, agent: context.agent.id, ...transcript })
+  yield* SessionModelObservation.run(prepared.observer, LLMClient.generate(prepared.request, prepared.options))
+  yield* fixture.hooks.register("session", "compaction", (event) => Effect.sync(() => {
+    if (event.tools?.read) event.tools.read.description = "A newly rebuilt tool description"
+  }))
+  expect((yield* fixture.compact).status).toBe("completed")
+  const fps = fixture.bodies.map((body) => ({ requestID: "fixture", sessionID: "fixture", ...fingerprintWireBody(body, { protocol: "anthropic-messages" }) }))
+  expect(compactionAppend(fps[0], fps[1], strategy === "remote" ? "native" : "text-summary")).toEqual({ valid: true })
+}))
+
+it.live("C4 portable summary reuses readable native checkpoint without a second request", () => Effect.gen(function* () {
+  const fixture = yield* setup({ anthropic: "direct" })
+  yield* fixture.prompt("Synthetic history ".repeat(15000))
+  expect((yield* fixture.compact).status).toBe("completed")
+  const calls = fixture.state.calls
+  yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => { event.portable = true }))
+  expect((yield* fixture.compact).status).toBe("completed")
+  expect(fixture.state.calls).toBe(calls)
+  const last = (yield* fixture.load).messages.findLast((message) => message.type === "compaction" && message.status === "completed")
+  expect(last).toMatchObject({ summary: "Native summary" })
+}))
 
 for (const mode of ["endpoint", "trigger", "summary", "retry", "nudge"] as const) {
   it.live(`compaction observations capture each ${mode} invocation before aggregate settlement`, () => Effect.gen(function* () {

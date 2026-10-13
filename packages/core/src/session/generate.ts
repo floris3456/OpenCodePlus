@@ -58,6 +58,7 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       model: loaded.model,
       tools: loaded.tools,
       system: transcript.system,
+      historyEpoch: transcript.historyEpoch,
       messages: transcript.messages,
       inputTokens: SessionCompaction.estimatePrompt(loaded),
       // Transport hooks must see this wire request as auxiliary generate so Monitor

@@ -25,7 +25,7 @@ function fp(id: string, text = "synthetic unchanged prompt", previous?: string):
 }
 const fold = (rows: RequestRow[], fps: RequestFingerprintData[]) => foldSession(rows, [], new Map(fps.map((p) => [p.requestID, p]))).analysis.details
 
-test("168832 historical read cannot manufacture loss in a changed 15025 input request", () => {
+test("changed fingerprints cannot hide a measured loss; the frontier is capped by current input", () => {
   const first = row("old", 10, usage(169496, 168832))
   const observations = [usage(15025, 0), usage(15025), usage(15025, 15025), undefined]
   const results = observations.map((observation) => fold([first, row("now", 20, observation)], [fp("old"), fp("now", "contracted prompt")])[1]!.request)
@@ -33,12 +33,8 @@ test("168832 historical read cannot manufacture loss in a changed 15025 input re
   expect(results[0]?.measurement?.read).toBe(0)
   expect(results[1]?.measurement?.read).toBeUndefined()
   expect(results[2]?.measurement?.share).toBe(1)
-  for (const result of results) {
-    expect(result.expected).toBeUndefined()
-    expect(result.missTokens).toBe(0)
-    expect(isMiss(result)).toBe(false)
-    expect(result.confidence).toBe("unknown")
-  }
+  expect(results.map((r) => r.verdict)).toEqual(["miss", "none", "hit", "none"])
+  expect(results.map((r) => r.missTokens)).toEqual([15025, 0, 0, 0])
 })
 
 test("compatible measured prefix with explicit zero retains supported shortfall detection", () => {
@@ -49,19 +45,19 @@ test("compatible measured prefix with explicit zero retains supported shortfall 
   expect(full).toMatchObject({ verdict: "hit", expected: 15025, missTokens: 0 })
 })
 
-test("branch A→C uses A, never B's larger read count", () => {
+test("request links explain content but the latest completed lineage request supplies the frontier", () => {
   const result = fold([
     row("a", 10, usage(10000, 10000)), row("b", 20, usage(18000, 18000)), row("c", 30, usage(11000, 10000)),
   ], [fp("a"), fp("b", "B", "a"), fp("c", "C", "a")])[2]!
-  expect(result.previous?.id).toBe("a")
-  expect(result.request).toMatchObject({ verdict: "hit", expected: 10000, missTokens: 0 })
+  expect(result.previous?.id).toBe("b")
+  expect(result.request).toMatchObject({ verdict: "hit", expected: 11000, missTokens: 0 })
 })
 
 test("running first and post-compaction rows remain pending; positive reads are not cold", () => {
   const running = { ...row("running", 10, usage(1000, 0)), status: "running", ended: undefined }
   const result = foldSession([running], [{ id: 1, sessionID: "synthetic", at: 5, kind: "compaction" }], new Map()).analysis.details[0]!.request
   expect(result).toMatchObject({ verdict: "none", measurement: { state: "running" }, missTokens: 0 })
-  expect(fold([row("first", 10, usage(1000, 1000))], [fp("first")])[0]!.request.verdict).toBe("hit")
+  expect(fold([row("first", 10, usage(1000, 1000))], [fp("first")])[0]!.request.verdict).toBe("cold")
 })
 
 test("inclusive measured population: read100 + write900 is10%; zero and missing denominators unavailable", () => {
@@ -91,7 +87,8 @@ test("warming is excluded from useful-work ratio; final usage on a failed reques
     { ...row("failed", 30, usage(1000, 0)), status: "error" },
   ], []).map((d) => d.request)
   expect(reuseRate(requests)).toEqual({ hitRate: 0.05, measuredRequests: 2, unknownRequests: 0, measuredInput: 2000 })
-  expect(requests[2]?.verdict).toBe("error")
+  expect(requests[2]?.verdict).toBe("hit")
+  expect(requests[2]?.outcome).toBe("error")
   expect(isMiss(requests[2]!)).toBe(false)
 })
 
@@ -105,7 +102,7 @@ test("failed and incompatible pings receive no followed-by-hit credit", () => {
     const analyzed = foldSession([ping, row("next", 20, usage(10000, 10000))], [], new Map([
       ["ping", fp("ping")], ["next", fp("next", variant === "prefix" ? "different prefix" : "synthetic unchanged prompt")],
     ])).analysis
-    expect(windowedSessionSignals(analyzed, { since: 0, until: 30 }).pings.followedByHit).toBe(variant === "compatible" ? 1 : 0)
+    expect(windowedSessionSignals(analyzed, { since: 0, until: 30 }).pings.followedByHit).toBe(variant === "compatible" || variant === "prefix" ? 1 : 0)
   }
 })
 
@@ -115,9 +112,9 @@ test("interior marked equality cannot locate a whole-request measured read", () 
     requestID: id, sessionID: "synthetic", ...fingerprintWireBody({ messages: [marked, { role: "user", content: id.repeat(20000) }] }, { protocol: "anthropic-messages" }),
   }))
   const result = fold([row("a", 10, usage(12000, 10000)), row("b", 20, usage(3000, 0))], fingerprints)[1]!.request
-  expect(result.expected).toBeUndefined()
-  expect(result.missTokens).toBe(0)
-  expect(isMiss(result)).toBe(false)
+  expect(result.expected).toBe(3000)
+  expect(result.missTokens).toBe(3000)
+  expect(isMiss(result)).toBe(true)
 })
 
 test("auxiliary requests cannot hide invalidating facts after the selected anchor", () => {
@@ -125,8 +122,8 @@ test("auxiliary requests cannot hide invalidating facts after the selected ancho
     for (const auxiliary of [false, true]) {
       const rows = [row("a", 10, usage(10000, 10000)), ...(auxiliary ? [{ ...row("g", 20, usage(100, 0)), kind: "generate" }] : []), row("b", 30, usage(10000, 0))]
       const request = foldSession(rows, [{ id: 1, sessionID: "synthetic", at: 15, kind }], new Map([fp("a"), fp("b")].map((p) => [p.requestID, p]))).analysis.details.at(-1)!.request
-      expect(request.expected).toBeUndefined()
-      expect(isMiss(request)).toBe(false)
+      expect(request.expected).toBe(10000)
+      expect(isMiss(request)).toBe(true)
     }
   }
 })

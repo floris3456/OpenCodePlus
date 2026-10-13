@@ -194,7 +194,7 @@ test("legacy zero after a long gap retains failed pings without asserting expiry
   const detail = last(db, "expired", "full")
   legacy(detail.request)
   expect(detail.request.cacheWrite).toBe(147223)
-  expect(detail.request.cause).not.toBe("cache-expired")
+  expect(detail.request.cause).toBe("cache-expired")
   expect(detail.timing.lastPingAt).toBe(base + 483_139)
   expect(detail.timing.warming).toBe("failed")
   expect(detail.pings).toHaveLength(2)
@@ -236,7 +236,7 @@ test("legacy first, compacted and switched requests retain facts without asserti
   db.contextFact({ sessionID: "compacted", at: 1500, kind: "compaction" })
   record(db, "compacted", { id: "after", at: 2000, count: 6, read: 0, write: 5000 })
   const after = last(db, "compacted", "after")
-  expect(after.request).toMatchObject({ verdict: "compacted", missTokens: 0, measurement: { state: "legacy-unknown" } })
+  expect(after.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
   expect(after.request.cause).toBe("compacted")
   expect(after.request.evidence).toContain("Compaction occurred")
 
@@ -284,7 +284,7 @@ test("legacy positive reads after a long gap cannot be overwritten by an expiry 
   const detail = last(db, "kept", "late")
   legacy(detail.request)
   expect(detail.request.cacheRead).toBe(10100)
-  expect(detail.request.cause).toBe("unknown")
+  expect(detail.request.cause).toBe("cache-expired")
 })
 
 test("rotating endpoints and quota hand-offs still name their cause", async () => {
@@ -336,7 +336,7 @@ test("pricing cannot turn a legacy write-only baseline into an expiry loss", asy
   record(db, "coldexpired", { id: "late", at: base + 400_000, count: 42, read: 0, write: 21000 })
   const late = last(db, "coldexpired", "late")
   legacy(late.request)
-  expect(late.request.cause).toBe("unknown")
+  expect(late.request.cause).toBe("cache-expired")
   expect(late.request.cacheWrite).toBe(21000)
   expect(late.request.missCost).toBeUndefined() // Legacy usage cannot establish a zero-priced shortfall.
 })

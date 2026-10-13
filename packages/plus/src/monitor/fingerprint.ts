@@ -164,7 +164,7 @@ const optionPaths = new Set([
   "reasoning", "temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty",
   "max_output_tokens", "max_tokens", "max_completion_tokens", "service_tier", "seed",
   "text", "parallel_tool_calls", "tool_choice", "thinking", "output_config", "container",
-  "context_management", "reasoning_effort", "response_format",
+  "context_management", "compaction", "reasoning_effort", "response_format",
   "prompt_cache_options.ttl", "prompt_cache_options.comparison_response_id",
   "reasoning.effort", "reasoning.summary", "text.verbosity", "text.format",
   "text.format.type", "text.format.name", "text.format.strict", "text.format.schema",

@@ -54,6 +54,31 @@ const unsupportedProvider = ["id", "whitelist", "blacklist"] as const
 const unsupportedModel = ["release_date", "attachment", "reasoning", "temperature", "experimental"] as const
 const LegacyAutoupdate = Schema.Literals([true, false, "notify"])
 
+function diagnoseCompaction(input: Record<string, unknown>, diagnostics: Diagnostic[]) {
+  const check = (value: unknown, path: string[], allowed: readonly string[], correction: string) => {
+    if (!isRecord(value)) return
+    Object.keys(value).filter((key) => !allowed.includes(key)).forEach((key) => diagnostics.push({
+      kind: "unsupported", path: [...path, key], message: `Unknown compaction key; ${correction}`,
+    }))
+  }
+  const policy = (value: unknown, path: string[]) => {
+    if (!isRecord(value)) return
+    if (own(value, "compaction")) diagnostics.push({ kind: "unsupported", path: [...path, "compaction"], message: "Misplaced compaction policy; use settings.compaction.type = summary (local) or native" })
+    if (isRecord(value.settings)) check(value.settings.compaction, [...path, "settings", "compaction"], ["type"], "use settings.compaction.type = summary (local) or native")
+  }
+  if (isRecord(input.providers)) Object.entries(input.providers).forEach(([provider, value]) => {
+    const path = ["providers", provider]
+    policy(value, path)
+    if (isRecord(value) && isRecord(value.models)) Object.entries(value.models).forEach(([model, value]) => {
+      policy(value, [...path, "models", model])
+    })
+  })
+  if (isRecord(input.agents)) Object.entries(input.agents).forEach(([agent, value]) => {
+    if (isRecord(value)) check(value.compaction, ["agents", agent, "compaction"], ["strategy", "model", "system"], "use compaction.strategy = auto, local or remote")
+  })
+  check(input.compaction, ["compaction"], ["auto", "buffer", "keep", "reserved", "preserve_recent_tokens", "tail_turns", "prune"], "use auto, buffer or keep")
+}
+
 export function normalize(input: unknown): Result {
   if (!isRecord(input))
     return {
@@ -64,6 +89,7 @@ export function normalize(input: unknown): Result {
     }
 
   const diagnostics: Diagnostic[] = []
+  diagnoseCompaction(input, diagnostics)
   const encoded: Record<string, unknown> = {}
   unsupportedTopLevel.forEach((key) => unsupportedIfPresent(input, key, [key], diagnostics))
 

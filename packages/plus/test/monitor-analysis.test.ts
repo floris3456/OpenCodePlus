@@ -807,7 +807,7 @@ test("#13: failed and incompatible legacy pings cannot supply a reusable-token e
       { now: 500_000 },
     ).detail!
     expect(detail.request).toMatchObject({ verdict: "none", missTokens: 0, measurement: { state: "legacy-unknown" } })
-    expect(detail.request.cause).not.toBe("cache-expired")
+    expect(detail.request.cause).toBe(c.name === "different-variant" ? "unknown" : "cache-expired")
     // Failed / different-model pings cannot become the comparable predecessor.
     // Variant incompatibility is checked for size even when chronology selects it.
     expect(detail.previous?.id).toBe(c.name === "different-variant" ? "ping" : "real-a")
@@ -859,7 +859,7 @@ test("#13: only a completed same-identity ping becomes the timing predecessor, w
   unfinished.requestFingerprint({ requestID: "ping-open", sessionID: "u", created: 390_000, ...fingerprintWireBody(anthropicBody("ping"), { protocol: "anthropic-messages" }) })
   step(unfinished, { session: "u", id: "primary", at: 400_000, provider, model, wire: anthropicBody("next"), protocol: "anthropic-messages", read: 0, write: 0, input: 9193 })
   const openDetail = queryMonitor(unfinished, { scope: "session", sessionID: "u", view: "cache", id: "primary" }, { now: 500_000 }).detail!
-  expect(openDetail.request).toMatchObject({ verdict: "none", cause: "unknown", measurement: { state: "legacy-unknown" } })
+  expect(openDetail.request).toMatchObject({ verdict: "none", cause: "cache-expired", measurement: { state: "legacy-unknown" } })
   expect(openDetail.previous?.id).toBe("real")
   expect(openDetail.timing.gapMs).toBe(398_999)
 
@@ -906,7 +906,7 @@ test("#8: agent/model selection filters pings, follow stats, unread and instabil
   expect(a.totals.cacheRead).toBe(8000)
   // Agent B's write is outside A's selection; Agent A's instability is in A.
   expect(a.unread).toBe(0)
-  expect(a.unstable).toContainEqual({ sessionID: "f", segment: "system wire", streak: 3 })
+  expect(a.unstable).toContainEqual({ sessionID: "f", segment: "system wire", streak: 4 })
   const b = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache", agents: ["B"] }, { now: 7_000_000 })
   // Neither legacy follow-up is measurable; A's ping and instability are not in B.
   expect(b.pings).toMatchObject({ sent: 1, cost: 0.02, followedByHit: 0, followedByMiss: 0 })
@@ -917,7 +917,7 @@ test("#8: agent/model selection filters pings, follow stats, unread and instabil
   const none = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache" }, { now: 7_000_000 })
   expect(none.pings).toMatchObject({ sent: 2, cost: 0.03, followedByHit: 0, followedByMiss: 0 })
   expect(none.unread).toBe(1000)
-  expect(none.unstable).toContainEqual({ sessionID: "f", segment: "system wire", streak: 3 })
+  expect(none.unstable).toContainEqual({ sessionID: "f", segment: "system wire", streak: 4 })
   // The model filter narrows the same way.
   const wrongModel = queryMonitor(db, { scope: "session", sessionID: "f", view: "cache", models: ["anthropic/other"] }, { now: 7_000_000 })
   expect(wrongModel.pings).toMatchObject({ sent: 0, cost: 0 })

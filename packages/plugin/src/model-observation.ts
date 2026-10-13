@@ -12,6 +12,8 @@ export interface SessionModelObserved {
   readonly model: Model.Ref
   readonly kind: "primary" | "compaction" | "title" | "generate"
   readonly purpose?: "warming"
+  /** Checkpoint actually used to assemble history, not a completion-time fact. */
+  readonly historyEpoch?: string
   readonly compaction?: CompactionObservation
   readonly invocationID: string
   readonly operationID: string

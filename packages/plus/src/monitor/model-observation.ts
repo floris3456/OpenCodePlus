@@ -20,6 +20,10 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
   const id = single?.requestID ?? event.invocationID
   ledger.db.transaction(() => {
     if (ledger.getRequest(id)?.observation) return
+    if (event.compaction?.trigger === "handoff") ledger.contextFact({
+      sessionID: event.sessionID, at: event.started, kind: "quota_handoff",
+      detail: { requestID: id, operationID: event.operationID },
+    })
     if (!single)
       event.exchanges.forEach((exchange) => {
         ledger.requestStarted({ ...start, id: exchange.requestID, started: exchange.started })
@@ -36,6 +40,7 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
           invocationID: event.invocationID,
           operationID: event.operationID,
           compaction: event.compaction,
+          historyEpoch: event.historyEpoch,
         })
       })
     ledger.requestStarted({ ...start, id, started: single?.started ?? event.started })
@@ -61,6 +66,7 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
       operationID: event.operationID,
       exchangeCount: event.exchangeCount,
       compaction: event.compaction,
+      historyEpoch: event.historyEpoch,
     })
     // A final HTTP response identifies the effective fingerprint; an unacknowledged WS frame does not.
     const response = !single ? event.exchanges.findLast((exchange) => exchange.outcome === "response") : undefined

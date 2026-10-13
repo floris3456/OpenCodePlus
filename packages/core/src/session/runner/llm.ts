@@ -285,6 +285,7 @@ const layer = Layer.effect(
             model: loaded.model,
             tools: loaded.tools,
             system: transcript.system,
+            historyEpoch: transcript.historyEpoch,
             messages: stepLimitReached
               ? [...transcript.messages, Message.assistant(MAX_STEPS_PROMPT)]
               : transcript.messages,

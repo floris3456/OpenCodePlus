@@ -202,6 +202,7 @@ const compactionPartSchema = Schema.Struct({
   encrypted: Schema.optional(Schema.String),
   /** Null means the provider failed to produce a summary; prior history must be retained. */
   text: Schema.optional(Schema.NullOr(Schema.String)),
+  signature: Schema.optional(Schema.String),
 })
   .pipe(
     Schema.refine(

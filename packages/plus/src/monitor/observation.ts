@@ -17,6 +17,7 @@ export const Observation = Schema.Struct({
   invocationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   operationID: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   exchangeCount: Schema.optional(Schema.Number),
+  historyEpoch: Schema.optional(Schema.String),
   compaction: Schema.optional(CompactionObservation),
   promptCacheDiagnostic: Schema.optional(PromptCacheDiagnostic),
   inputTokens: Schema.optional(token),

@@ -6,7 +6,7 @@ import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
-test.each(["none", "error", "running"] as const)("compaction labels only the first completed request after %s, preserving subsequent cache verdicts", async (status) => {
+test.each(["none", "error", "running"] as const)("compaction facts cannot hide measured misses after %s", async (status) => {
   const db = await ledger()
   db.session({ id: "synthetic" }, 1)
   for (const [id, at, input, read] of [
@@ -17,7 +17,7 @@ test.each(["none", "error", "running"] as const)("compaction labels only the fir
   ] as const) {
     db.requestStarted({ id, sessionID: "synthetic", started: at, kind: "step", model: "fixture", provider: "fixture" })
     db.requestEnded(id, { ended: at + 1, status: "completed" })
-    db.requestObserved(id, { version: 1, completeness: "final", inputTokens: input, cacheReadInputTokens: read })
+    db.requestObserved(id, { version: 1, completeness: "final", inputTokens: input, cacheReadInputTokens: read, cacheWriteInputTokens: 0 })
     db.requestFingerprint({ requestID: id, sessionID: "synthetic", ...fingerprintWireBody({ input: id === "before" ? "old context" : "compacted context" }, { protocol: "openai-responses" }) })
   }
   if (status !== "none") {
@@ -26,10 +26,14 @@ test.each(["none", "error", "running"] as const)("compaction labels only the fir
   }
   db.contextFact({ sessionID: "synthetic", at: 20, kind: "compaction" })
   const report = queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache" }, { now: 100 })
-  expect(report.requests?.map((request) => request.verdict)).toEqual(["hit", ...(status === "none" ? [] : [status === "error" ? "error" : "none"] as const), "compacted", "hit", "miss"])
-  expect(report.requests?.find((request) => request.id === "compacted")).toMatchObject({ cause: "compacted", missTokens: 0, measurement: { read: 2176 } })
-  expect(queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache", id: "compacted" }, { now: 100 }).detail?.request.verdict).toBe("compacted")
-  expect(report.totals.misses).toBe(1)
+  expect(report.requests?.map((request) => request.verdict)).toEqual(["cold", ...(status === "none" ? [] : [status === "error" ? "error" : "none"] as const), "partial", "hit", "miss"])
+  expect(report.requests?.find((request) => request.id === "compacted")).toMatchObject({ missTokens: 79544, measurement: { read: 2176 } })
+  expect(queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache", id: "compacted" }, { now: 100 }).detail?.request.verdict).toBe("partial")
+  expect(report.totals.misses).toBe(2)
+  expect(report.totals.missTokens).toBe(79544 + 81536)
+  const misses = queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache", missesOnly: true }, { now: 100 })
+  expect(misses.requests?.map((r) => r.id)).toEqual(["compacted", "miss"])
+  expect(misses.totals).toEqual(report.totals)
 })
 
 test("persisted explicit, missing and legacy reads stay distinct through report/RPC population", async () => {
@@ -48,7 +52,7 @@ test("persisted explicit, missing and legacy reads stay distinct through report/
   expect(queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "sessions" }, { now: 10 }).sessions?.[0]?.hitRate).toBe(0.1)
 })
 
-test("persisted compatible explicit zero alerts; late fingerprint correction retracts it and append stays incremental", async () => {
+test("persisted explicit zero alerts survive late fingerprint corrections and append stays incremental", async () => {
   const db = await ledger()
   db.session({ id: "synthetic" }, 1)
   const fingerprint = (id: string, text: string) => db.requestFingerprint({
@@ -68,6 +72,6 @@ test("persisted compatible explicit zero alerts; late fingerprint correction ret
   query()
   expect(sessionFoldResumeFrom(db, "synthetic")).toBe(2)
   fingerprint("b", "synthetic corrected final request")
-  expect(query().requests?.[1]).toMatchObject({ verdict: "none", missTokens: 0 })
+  expect(query().requests?.[1]).toMatchObject({ verdict: "miss", missTokens: 10000 })
   expect(sessionFoldResumeFrom(db, "synthetic")).toBe(1)
 })

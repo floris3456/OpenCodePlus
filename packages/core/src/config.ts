@@ -50,6 +50,7 @@ export interface Interface {
   readonly reload: (options?: { readonly force?: boolean }) => Effect.Effect<void>
   /** Updates supported global config fields while preserving unrelated JSONC content. */
   readonly update?: (patch: Patch) => Effect.Effect<void, FSUtil.Error>
+  readonly compactionWarnings?: () => readonly string[]
 }
 
 export const Options = Schema.Struct({
@@ -110,6 +111,7 @@ export const layer = (options?: Options) =>
       const wellknown = yield* WellKnown.Service
       const environment = yield* Effect.serviceOption(Environment.Service).pipe(Effect.map(Option.getOrUndefined))
       const reloadLock = Semaphore.makeUnsafe(1)
+      const compactionWarnings = new Map<string, readonly string[]>()
       const updateLock = Semaphore.makeUnsafe(1)
       const decodeOptions = { errors: "all", onExcessProperty: "ignore" } as const
       const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
@@ -126,6 +128,8 @@ export const layer = (options?: Options) =>
           return
         }
         const result = ConfigNormalize.normalize(input)
+        compactionWarnings.set(source, result.diagnostics.filter((diagnostic) => diagnostic.path.includes("compaction"))
+          .map((diagnostic) => `${diagnostic.path.join(".")}: ${diagnostic.message}`))
         yield* Effect.forEach(result.diagnostics, (diagnostic) =>
           Effect.logWarning("configuration normalization diagnostic", {
             source,
@@ -420,6 +424,7 @@ export const layer = (options?: Options) =>
       )
 
       return Service.of({
+        compactionWarnings: () => [...compactionWarnings.values()].flat(),
         entries: Effect.fnUntraced(function* () {
           if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
           return configs

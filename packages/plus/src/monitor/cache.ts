@@ -5,6 +5,7 @@ import { Option, Schema } from "effect"
 import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION, type CacheControlMarker } from "./fingerprint.js"
 import type { ContextFactRow, Ledger, RequestFingerprintData, RequestRow } from "./ledger.js"
 import { measurement } from "./measurement.js"
+import { detectCache } from "./detection.js"
 import { estimateTokens } from "./attribution.js"
 import { foldUnread, unreadGain, type UnreadIndex, type UnreadKey, type UnreadKeyWork, type UnreadRead, type UnreadWrite } from "./unread-index.js"
 
@@ -30,6 +31,8 @@ export function causeWords(cause: string | undefined, changedPart?: string): str
   if (cause === "cache-expired") return "cache expired"
   if (cause === "account-changed") return "account changed"
   if (cause === "account-changed-compacted-first") return "account changed · compacted first"
+  if (cause === "revert") return "history reverted"
+  if (cause === "instruction-update") return "instructions updated"
   return "unknown"
 }
 
@@ -294,7 +297,7 @@ function tailReplaced(
 }
 
 /** `prefixDiff(before, after).reusable`, without building the change list. */
-function reusableOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): boolean {
+export function reusableOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): boolean {
   if (!before || !after) return false
   const full = diffCache.get(before)?.get(after)
   if (full) return full.reusable
@@ -420,26 +423,24 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
   const changes: MonitorRequestDetail["segments"][number][] = []
   const value = (s: Segment) => ({ hash: s.hash, chars: s.chars, tokens: s.tokens })
 
-  // Parts before the first difference are equal.
-  for (let i = commonIdx; i < a.length; i++) {
-    const p = a[i]!
-    const next = b[i]
-    if (p.name === next?.name && p.hash === next.hash) continue
+  // Align by identity, not position: inserting one option must not shift tools/history.
+  const identity = (p: Segment) => p.index === undefined ? p.name : `message:${p.index}`
+  const beforeParts = new Map(a.map((p) => [identity(p), p]))
+  const afterParts = new Map(b.map((p) => [identity(p), p]))
+  for (const p of a) {
+    const next = afterParts.get(identity(p))
+    if (next && p.hash === next.hash) continue
     changes.push({
       name: p.name,
       kind: p.kind,
-      change: next?.name === p.name ? "changed" : "removed",
+      change: next ? "changed" : "removed",
       ...(detail ? { before: value(p) } : {}),
-      ...(detail && next?.name === p.name ? { after: value(next) } : {}),
+      ...(detail && next ? { after: value(next) } : {}),
     })
-    if (next && next.name !== p.name) {
-      changes.push({ name: next.name, kind: next.kind, change: "added", ...(detail ? { after: value(next) } : {}) })
-    }
   }
 
-  for (let i = a.length; i < b.length; i++) {
-    const p = b[i]!
-    if (p.kind !== "message") {
+  for (const p of b) {
+    if (!beforeParts.has(identity(p))) {
       changes.push({
         name: p.name,
         kind: p.kind,
@@ -448,6 +449,8 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
       })
     }
   }
+  const order = new Map([...b, ...a.filter((p) => !afterParts.has(identity(p)))].map((p, i) => [p.name, i]))
+  changes.sort((a, b) => order.get(a.name)! - order.get(b.name)!)
 
   return {
     known: true,
@@ -456,6 +459,24 @@ export function prefixDiff(before: RequestFingerprintData | undefined, after: Re
     common,
     changes,
   }
+}
+
+/** Strict compaction contract, deliberately stricter than ordinary cache reuse. */
+export function compactionAppend(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined, strategy: "native" | "text-summary") {
+  if (!before || !after || !supportedFingerprint(before) || !supportedFingerprint(after))
+    return { valid: false, segment: "unavailable fingerprint" }
+  const options = (fp: RequestFingerprintData) => Object.fromEntries(Object.entries(fp.optionsKeys).filter(([key, hash]) =>
+    key !== "max_tokens" && key !== "compaction" && !(key === "context_management" && hash === sha256("null"))))
+  const left = { ...before, optionsKeys: options(before) }
+  const right = { ...after, optionsKeys: options(after) }
+  const a = getSegmentInfo(left).segments
+  const b = getSegmentInfo(right).segments
+  const mismatch = a.find((part, i) => part.name !== b[i]?.name || part.hash !== b[i]?.hash)
+  if (mismatch) return { valid: false, segment: prefixDiff(left, right).changes[0]?.name ?? mismatch.name }
+  const added = b.slice(a.length)
+  if (strategy === "native" ? added.length !== 0 : added.length !== 1 || added[0]?.kind !== "message" || after.messagePrefixes.at(-1)?.role !== "user")
+    return { valid: false, segment: "history length" }
+  return { valid: true }
 }
 
 /** Conservative idle lifetime, per README; unknown/disk-cache TTL stays unknown. */
@@ -592,10 +613,11 @@ function diffStep(
   const measured = previous && measurement(previous)
   // Common characters are not a lower bound in tokens. Only the selected,
   // compatible measured anchor can support a local shortfall estimate.
-  const warm = measured?.state === "reported" ? (measured.read || measured.write) : undefined
+  const warm = measured?.state === "reported" && measured.read !== undefined && measured.write !== undefined
+    ? measured.read + measured.write : undefined
   // Interior marked content can match while the private tail is replaced.
   // Aggregate usage does not locate a measured size at that interior boundary.
-  const expected = diff.append && warm !== undefined && warm > 0 ? warm : undefined
+  const expected = warm
   return { diff, expected, changed: reusablePrefixChanged(diff.changes, previousFp, fp) }
 }
 
@@ -619,7 +641,7 @@ function timingStep(
   const pings = earlier.slice(lastRealIndex + 1).filter((p) => p.kind === "ping")
   // Age and size use the same basis. Completion is a conservative local
   // timing boundary, not a measurement of provider cache readiness.
-  const gap = previous?.ended !== undefined && reusableOf(fingerprints.get(previous.id), fp)
+  const gap = previous?.ended !== undefined
     ? r.started - previous.ended
     : undefined
   const lifetime = cacheLifetime(r, fp)
@@ -666,6 +688,7 @@ function causeStep(
   diff: ReturnType<typeof prefixDiff>,
   changed: boolean,
   expected: number | undefined,
+  lifetime?: number,
 ): CauseStep {
   const accounts = between
     .filter((f) => f.kind === "account_switch" || f.kind === "quota_handoff")
@@ -685,7 +708,7 @@ function causeStep(
     }))
   const reverts = between.filter((f) => f.kind === "revert").map((f) => ({ at: f.at }))
   const compactions = between.filter((f) => f.kind === "compaction")
-  const compacted = compactions.length > 0
+  const compacted = r.kind !== "compaction" && ((!previous && last?.kind === "compaction") || compactions.length > 0)
   const quotaSwitchCompacted = compacted && compactions.some((f) => f.detail?.["quota.switch"] === true)
   const switched =
     last !== undefined && (last.provider !== r.provider || last.model !== r.model || last.variant !== r.variant)
@@ -707,7 +730,7 @@ function causeStep(
   // An errored request carries an error and no usage: it is neither a hit nor
   // a cache verdict. Give it its own outcome so it is excluded from the hit
   // rate and never counted as a cache win.
-  if (r.status === "error")
+  if (r.status === "error" && measurement(r).state !== "reported")
     return {
       accounts,
       instructions,
@@ -723,19 +746,14 @@ function causeStep(
   const usable = measured.state === "reported" && measured.input !== undefined && measured.read !== undefined
   const bounded = usable && expected !== undefined ? Math.min(expected, measured.input!) : undefined
   const shortfall = bounded === undefined ? 0 : Math.max(0, bounded - measured.read!)
-  const verdict: MonitorRequest["verdict"] = compacted
-    ? "compacted"
-    : !usable
-    ? "none"
-    : shortfall >= 1024
-      ? measured.read === 0 ? "miss" : "partial"
-      : measured.read! > 0 ? "hit" : "none"
+  const verdict = detectCache({ reported: measured.state === "reported", input: measured.input, read: measured.read, predecessor: previous !== undefined, frontier: expected }).verdict
+  const expired = previous?.ended !== undefined && lifetime !== undefined && r.started - previous.ended > lifetime
 
-  const cause: MonitorRequest["cause"] = quotaSwitchCompacted
+  const cause: MonitorRequest["cause"] = expired ? "cache-expired" : accounts.length || r.observation?.compaction?.trigger === "handoff" ? "account-changed" : reverts.length ? "revert" : quotaSwitchCompacted
     ? "account-changed-compacted-first"
     : compacted
       ? "compacted"
-      : switched
+      : instructions.length ? "instruction-update" : switched
         ? "model-switch"
         : agent
           ? "agent-switch"
@@ -773,7 +791,7 @@ function causeStep(
     reverts,
     verdict,
     cause,
-    causeText: cause === "unknown" ? "provider cause unknown" : `observed: ${causeWords(cause)}`,
+      causeText: cause === "unknown" ? "provider cause unknown" : `observed: ${causeWords(cause, diff.changes[0]?.name)}`,
     confidence: "unknown",
     evidence,
   }
@@ -808,7 +826,7 @@ function costStep(
       : undefined
   // Keep the legacy numeric counter, but never present its unknown zero as a priced scenario.
   if (shortfall === undefined) return { missing: 0, missCost: undefined, pricing: { state: "unknown-shortfall", reason: "No complete comparable shortfall measurement" } }
-  if (shortfall === 0) return { missing: 0, missCost: 0, pricing: { state: "zero-shortfall", shortfall } }
+  if (shortfall < 1024) return { missing: 0, missCost: 0, pricing: { state: "zero-shortfall", shortfall: 0 } }
   const pricing = lastFact(
     facts,
     r.started,
@@ -825,7 +843,7 @@ function costStep(
   }
   const refuse = (reason: string): CostStep => ({ missing: shortfall, missCost: undefined, pricing: { ...provenance, state: "unpriced", reason } })
   if (!rates?.length) return refuse("Applicable rates were not recorded")
-  if (r.variant !== pricing?.detail?.variant) return refuse("Recorded rates do not identify the request variant")
+  if (pricing?.detail?.variant !== undefined && r.variant !== pricing.detail.variant) return refuse("Recorded rates do not identify the request variant")
   // Model.Cost records one write rate, not duration buckets. Full mixed-TTL pricing is deferred.
   if (pricing?.detail?.writeDurationBuckets !== undefined || pricing?.detail?.mixedTTL === true) return refuse("Write-duration pricing is unsupported")
   if (measured.write === undefined) return refuse("Complete cache-write measurement unavailable")
@@ -1076,15 +1094,17 @@ export function foldSession(
 
   for (const r of rows.slice(from)) {
     const fp = fingerprints.get(r.id)
-    const eligible = (p: RequestRow) => p.provider === r.provider && p.model === r.model &&
+    const lastCheckpoint = earlier.findLast((p) => p.kind === "compaction" && p.status === "completed" && p.ended !== undefined && p.ended <= r.started)
+    // New observations carry the actual history epoch. Legacy rows can identify the
+    // first useful step following a completed compaction without a fact-time join.
+    const boundary = r.observation?.historyEpoch === undefined && r.kind !== "compaction" ? lastCheckpoint?.ended : undefined
+    const eligible = (p: RequestRow) => p.sessionID === r.sessionID && p.provider === r.provider && p.model === r.model &&
+      p.observation?.historyEpoch === r.observation?.historyEpoch && (boundary === undefined || p.started >= boundary) &&
       p.status === "completed" && p.ended !== undefined && p.ended <= r.started && !p.isTitle &&
       (p.kind !== "generate" || r.kind === "generate")
-    const linked = fp?.previousResponseId ? responses.get(fp.previousResponseId) : undefined
     // An explicit branch link never falls back to its sibling. Unlinked
     // lookup is deliberately bounded; missing older context remains unknown.
-    const previous = fp?.previousResponseId
-      ? linked && eligible(linked) ? linked : undefined
-      : earlier.slice(-64).findLast(eligible)
+    const previous = earlier.filter(eligible).reduce<RequestRow | undefined>((latest, p) => !latest || p.ended! > latest.ended! ? p : latest, undefined)
     const lastRealIndex = earlier.findLastIndex((p) => p.kind !== "ping" && !p.isTitle)
     const lastReal = earlier[lastRealIndex]
     const last = contextBaseline(earlier, r)
@@ -1097,15 +1117,15 @@ export function foldSession(
       fp,
     )
     const measured = measurement(r)
-    const compatible = previous?.variant === r.variant && previous?.agent === r.agent &&
-      !factsBetween(ordered, previous?.started ?? r.started, r.started).some((fact) =>
-        fact.kind === "compaction" || fact.kind === "account_switch" || fact.kind === "quota_handoff")
-    const expected = compatible && anchor !== undefined
+    const expected = anchor !== undefined
       ? measured.input === undefined ? anchor : Math.min(anchor, measured.input)
       : undefined
 
     // 3. Cause: determine cache verdict, root cause, confidence and evidence
-    const cause = causeStep(r, previous, last, between, diff, changed, expected)
+    const cause = causeStep(r, previous, last, between, diff, changed, expected, cacheLifetime(r, fp))
+    const compactionBase = r.kind === "compaction" ? earlier.findLast((p) => eligible(p) && p.kind === "step") : undefined
+    const invariant = r.kind === "compaction" ? compactionAppend(compactionBase && fingerprints.get(compactionBase.id), fp,
+      r.observation?.compaction?.selectedStrategy ?? (fp?.optionsKeys.compaction ? "native" : "text-summary")) : undefined
 
     // 4. Cost: compute miss tokens and re-read cost from recorded pricing
     const cost = costStep(r, expected, ordered)
@@ -1137,7 +1157,7 @@ export function foldSession(
       ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
       confidence: cause.confidence,
-      evidence: cause.evidence,
+      evidence: invariant && !invariant.valid ? `${cause.evidence}; Compaction append invariant violated: ${invariant.segment}` : cause.evidence,
       ...(expected === undefined ? {} : { expected }),
       missTokens: cost.missing,
       ...(cost.missCost === undefined ? {} : { missCost: cost.missCost }),
@@ -1240,6 +1260,7 @@ function requestDetail(
         `Provider comparison estimates (not actual usage or billing): reusable prefix ${request.promptCacheDiagnostic.comparisonReusableTokens ?? "unknown"}; missed ${request.promptCacheDiagnostic.cacheMissedTokens ?? "unknown"}; comparison baseline unrecorded. Best effort; first classified reason only; does not prove physical eviction or deployment support. Local facts remain independent.`,
       ] : []),
       ...(request.compaction ? [
+        ...(request.compaction.configurationWarnings ?? []).map((warning) => `Compaction configuration warning: ${warning}`),
         `Compaction decision at execution: trigger ${request.compaction.trigger}; configured ${request.compaction.configuredStrategy} (${request.compaction.strategySource}); selected ${request.compaction.selectedStrategy}; reason ${request.compaction.selectionReason}; model source ${request.compaction.modelSource ?? "unrecorded"}; model policy ${request.compaction.modelPolicy ?? "unconfigured"}`,
       ] : []),
       ...(measured.scope ? [`Observation scope: ${measured.scope}; invocation ${measured.invocationID}; operation ${measured.operationID}; outcome ${r.status}`] : []),
@@ -1277,6 +1298,10 @@ export interface WindowedPings {
   readonly cost: number
   readonly followedByHit: number
   readonly followedByMiss: number
+  readonly followedByCold: number
+  readonly unused: number
+  readonly unknown: number
+  readonly unknownReasons: Readonly<Record<string, number>>
 }
 
 // Windowed signals over a cached session analysis: which pings this window sent
@@ -1321,19 +1346,26 @@ export function windowedSessionSignals(
   const pings = inWindow.filter((d) => d.request.kind === "ping")
   let followedByHit = 0
   let followedByMiss = 0
+  let followedByCold = 0
+  let unused = 0
+  let unknown = 0
+  const unknownReasons: Record<string, number> = {}
   let cost = 0
   for (const ping of pings) {
     cost += ping.request.cost
-    if (ping.request.verdict === "error" || ping.request.measurement?.state !== "reported" ||
-      ((ping.request.measurement.read ?? 0) + (ping.request.measurement.write ?? 0)) === 0) continue
     // Only a next request inside this window under the same selection describes
     // the ping's effect; an excluded request belongs to another query.
     const next = inWindow.find(
       (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
     )
-    if (!next || next.request.provider !== ping.request.provider || next.request.model !== ping.request.model ||
-      next.request.variant !== ping.request.variant ||
-      !reusableOf(analysis.fingerprints.get(ping.request.id), analysis.fingerprints.get(next.request.id))) continue
+    if (!next) { unused++; continue }
+    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "error") {
+      unknown++
+      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : "follow-up-unmeasured"
+      unknownReasons[reason] = (unknownReasons[reason] ?? 0) + 1
+      continue
+    }
+    if (next.request.verdict === "cold") { followedByCold++; continue }
     if (next.request.verdict === "hit") followedByHit++
     else if (next && isMiss(next.request)) followedByMiss++
   }
@@ -1355,6 +1387,6 @@ export function windowedSessionSignals(
   return {
     unread,
     unstable: [...latestUnstable.values()].map((entry) => ({ segment: entry.segment, streak: entry.streak })),
-    pings: { sent: pings.length, cost, followedByHit, followedByMiss },
+    pings: { sent: pings.length, cost, followedByHit, followedByMiss, followedByCold, unused, unknown, unknownReasons },
   }
 }

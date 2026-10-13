@@ -1,4 +1,6 @@
 export * as SessionModelRequest from "./model-request.js"
+import { isDeepStrictEqual } from "node:util"
+import { applyCachePolicy } from "@opencode/ai/cache-policy"
 
 import {
   GenerationOptions,
@@ -83,6 +85,7 @@ export interface Prepared<Event = SessionRequest> {
 }
 
 export interface Input {
+  readonly historyEpoch?: string
   readonly session: SessionSchema.Info
   readonly agent: Agent.ID
   readonly model: SessionRunnerModel.Resolved
@@ -136,6 +139,7 @@ export const baseTranscript = (input: {
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
   return {
     providerMetadataKey,
+    historyEpoch: input.messages.findLast((message) => message.type === "compaction" && message.status === "completed")?.id ?? "initial",
     system: [
       input.agent.system
         ? SystemPart.make(input.agent.system)
@@ -310,6 +314,9 @@ export const layer = Layer.effect(
     const hooks = yield* PluginHooks.Service
     const transport = yield* SessionModelTransport.Service
     const app = yield* App.Metadata
+    // Reuse the completed primary/warming context, including inline cache markers.
+    // Warming's private prompt is appended outside prepare and is never retained here.
+    const completed = new Map<string, { request: LLMRequest; model: Model.Ref; epoch?: string }>()
     const prepare = Effect.fn("SessionModelRequest.prepare")(function* <
       S extends SessionRequest & { tools?: Definitions },
     >(kind: SessionRequestKind, input: Input, shape: (draft: SessionRequest, tools: Definitions) => Effect.Effect<S>) {
@@ -402,12 +409,28 @@ export const layer = Layer.effect(
         modelHook.baseURL !== undefined && modelHook.baseURL !== baseURL
           ? base.model.route.with({ endpoint: { baseURL: modelHook.baseURL } })
           : base.model.route
-      const request = LLMRequest.update(base, {
+      const fresh = LLMRequest.update(base, {
         model: route === base.model.route ? base.model : LanguageModel.update(base.model, { route }),
         http: new HttpOptions({
           ...base.http,
           headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
         }),
+      })
+      const prior = completed.get(session.id)
+      const reusable = kind === "compaction" && prior && prior.epoch === input.historyEpoch &&
+        isDeepStrictEqual(prior.model, model.ref) && prior.request.model.route.endpoint.baseURL === fresh.model.route.endpoint.baseURL &&
+        prior.request.messages.length <= fresh.messages.length &&
+        prior.request.messages.every((message, index) => isDeepStrictEqual(message, fresh.messages[index]))
+      const pinned = reusable ? applyCachePolicy(prior.request) : undefined
+      const request = pinned ? LLMRequest.update(pinned, {
+        // Keep authentication/session routing current; prompt content remains pinned.
+        http: fresh.http,
+        generation: new GenerationOptions({ ...pinned.generation, maxTokens: fresh.generation?.maxTokens }),
+        messages: [...pinned.messages, ...fresh.messages.slice(pinned.messages.length)],
+      }) : fresh
+      if (kind === "compaction" && !pinned) yield* Effect.logWarning("Compaction cache prefix could not be pinned", {
+        sessionID: session.id,
+        cause: !prior ? "snapshot-unavailable" : !isDeepStrictEqual(prior.model, model.ref) ? "model-switch" : "history-or-epoch-changed",
       })
       // History selects native windows against the catalog route before hooks run. A newly installed
       // routing hook must not send an existing opaque window to another deployment; `prepare` has no
@@ -517,8 +540,15 @@ export const layer = Layer.effect(
             )
           : undefined
 
+      const observer = SessionModelObservation.make(hooks, { ...scope, historyEpoch: input.historyEpoch }, model.cost)
+      const remember: SessionModelObservation.Observer = (effect, identity) => observer(effect.pipe(Effect.tap(() => Effect.sync(() => {
+          if (kind !== "primary") return
+          completed.delete(session.id)
+          completed.set(session.id, { request, model: model.ref, epoch: input.historyEpoch })
+          if (completed.size > 32) completed.delete(completed.keys().next().value!)
+        }))), identity)
       return {
-        observer: SessionModelObservation.make(hooks, scope, model.cost),
+        observer: remember,
         event: { ...shaped, messages: checked.messages },
         request,
         options: {

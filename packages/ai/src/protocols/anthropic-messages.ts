@@ -6,7 +6,7 @@ import { Auth } from "../route/auth.js"
 import { Endpoint } from "../route/endpoint.js"
 import { Framing } from "../route/framing.js"
 import { Protocol } from "../route/protocol.js"
-import { Headers } from "effect/http"
+import { Headers, HttpClientRequest } from "effect/http"
 import { HttpTransport } from "../route/transport/index.js"
 import {
   AIError,
@@ -16,10 +16,9 @@ import {
   LLMRequest,
   LLMResponse,
   LLMEvent,
-  Message,
   mergeJsonRecords,
   Usage,
-  type CacheHint,
+  CacheHint,
   type FinishReasonDetails,
   type FinishReason,
   type MediaPart,
@@ -41,7 +40,7 @@ const ADAPTER = "anthropic-messages"
 export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 export const PATH = "/messages"
 export const DEFAULT_MAX_TOKENS = 32_000
-export const MIN_COMPACTION_TOKENS = 50_000
+const MIN_THRESHOLD_COMPACTION_TOKENS = 50_000
 // Replaying a `compaction` block requires its strategy in `context_management`,
 // but an edit that actually fires summarizes in-band during an ordinary step and
 // rewrites the latest assistant message, thinking blocks included, which the API
@@ -78,7 +77,7 @@ export const ContextManagement = Schema.Struct({
       trigger: Schema.optional(
         Schema.Struct({
           type: Schema.Literal("input_tokens"),
-          value: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_COMPACTION_TOKENS)),
+          value: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_THRESHOLD_COMPACTION_TOKENS)),
         }),
       ),
       pauseAfterCompaction: Schema.optional(Schema.Boolean),
@@ -239,6 +238,8 @@ type AnthropicUserBlock = Schema.Schema.Type<typeof AnthropicUserBlock>
 const AnthropicCompactionBlock = Schema.Struct({
   type: Schema.Literal("compaction"),
   content: Schema.NullOr(Schema.String),
+  signature: Schema.optional(Schema.String),
+  cache_control: Schema.optional(AnthropicCacheControl),
 })
 const AnthropicAssistantBlock = Schema.Union([
   AnthropicCompactionBlock,
@@ -371,8 +372,9 @@ const Options = Schema.Struct({
 const decodeOptions = ProviderShared.validateWith(Schema.decodeUnknownEffect(Options))
 
 const AnthropicBodyFields = {
+  compaction: Schema.optional(Schema.Struct({ type: Schema.Literal("summarize"), instructions: Schema.optional(Schema.String) })),
   context_management: Schema.optional(
-    Schema.Struct({
+    Schema.NullOr(Schema.Struct({
       edits: Schema.Array(
         Schema.Struct({
           type: Schema.Literal("compact_20260112"),
@@ -381,7 +383,7 @@ const AnthropicBodyFields = {
           instructions: Schema.optional(Schema.String),
         }),
       ),
-    }),
+    })),
   ),
   model: Schema.String,
   system: optionalArray(AnthropicTextBlock),
@@ -511,7 +513,7 @@ type AnthropicEvent = Schema.Schema.Type<typeof AnthropicEvent>
 
 interface ParserState {
   readonly provider: LLMRequest["model"]["provider"]
-  readonly compactions: Readonly<Record<number, string | null>>
+  readonly compactions: Readonly<Record<number, typeof AnthropicCompactionBlock.Type>>
   readonly providerMetadataKey: string
   readonly tools: ToolStream.State<number>
   readonly reasoningSignatures: Readonly<Record<number, string>>
@@ -939,7 +941,7 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, breakpoi
         if (part.type === "compaction") {
           if (part.provider !== request.model.provider || part.text === undefined)
             return yield* invalid("Compaction state must be replayed to its originating provider and API")
-          content.push({ type: "compaction", content: part.text })
+          content.push({ type: "compaction", content: part.text, ...(part.signature === undefined ? {} : { signature: part.signature, cache_control: cacheControl(breakpoints, new CacheHint({ type: "ephemeral" })) }) })
           continue
         }
         if (part.type === "text") {
@@ -1106,12 +1108,13 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
     metadata: options.metadata,
     service_tier: options.service_tier ?? options.serviceTier,
   }
+  if (messages.some((message) => message.content.some((block) => block.type === "compaction" && block.signature))) return body
   if (!management) {
     // A replayed compaction block is only accepted alongside the strategy that
     // produced it; a normal request after a native checkpoint carries no
     // context-management option of its own, so add the strategy with a trigger
     // that cannot fire in-band before Core's own compaction.
-    const replays = messages.some((message) => message.content.some((block) => block.type === "compaction"))
+    const replays = messages.some((message) => message.content.some((block) => block.type === "compaction" && !block.signature))
     if (!replays) return body
     return {
       ...body,
@@ -1477,7 +1480,7 @@ const onContentBlockDelta = Effect.fnUntraced(function* (
     if (event.index === undefined || !(event.index in state.compactions) || delta.content === undefined)
       return yield* ProviderShared.eventError(ADAPTER, "Compaction delta is missing its block or content")
     return [
-      { ...state, compactions: { ...state.compactions, [event.index]: delta.content } },
+      { ...state, compactions: { ...state.compactions, [event.index]: { ...state.compactions[event.index]!, content: delta.content } } },
       NO_EVENTS,
     ] satisfies StepResult
   }
@@ -1547,7 +1550,8 @@ const onContentBlockStop = Effect.fnUntraced(function* (
     events.push(
       LLMEvent.compaction({
         provider: state.provider,
-        text: content,
+        text: content!.content,
+        ...(content!.signature === undefined ? {} : { signature: content!.signature }),
       }),
     )
     return [{ ...state, compactions, lifecycle }, events] satisfies StepResult
@@ -1700,7 +1704,7 @@ const step = (state: ParserState, event: AnthropicEvent) => {
       const decoded = Schema.decodeUnknownOption(AnthropicCompactionBlock)(event.content_block)
       if (event.index === undefined || Option.isNone(decoded)) return invalidStreamEvent(event)
       return Effect.succeed<StepResult>([
-        { ...state, compactions: { ...state.compactions, [event.index]: decoded.value.content } },
+        { ...state, compactions: { ...state.compactions, [event.index]: decoded.value } },
         NO_EVENTS,
       ])
     }
@@ -1766,7 +1770,7 @@ export const protocol = Protocol.make({
 })
 
 export const transport = <
-  Body extends Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking">,
+  Body extends Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking" | "compaction">,
 >() => {
   const http = HttpTransport.httpJson<Body, string>({ framing })
   return {
@@ -1793,7 +1797,7 @@ export const transport = <
   }
 }
 
-function requiredBetaHeaders(body: Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking">) {
+function requiredBetaHeaders(body: Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking" | "compaction">) {
   // Always request interleaved thinking. The API accepts the header on any
   // model and ignores it where unsupported, while manual-thinking models need
   // it for thinking between tool calls.
@@ -1802,7 +1806,9 @@ function requiredBetaHeaders(body: Pick<AnthropicMessagesBody, "messages" | "con
   const replaysCompaction = body.messages.some((message) =>
     message.content.some((block) => block.type === "compaction"),
   )
-  if (requestsCompaction || replaysCompaction) betas.push("compact-2026-01-12")
+  const signed = body.messages.some((message) => message.content.some((block) => block.type === "compaction" && block.signature !== undefined))
+  if (body.compaction || signed) betas.push("compact-2026-09-04")
+  else if (requestsCompaction || replaysCompaction) betas.push("compact-2026-01-12")
 
   if (body.messages.some((message) => message.role === "system" && message.output_config !== undefined))
     betas.push("mid-conversation-output-config-2026-07-01")
@@ -1821,36 +1827,47 @@ const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(
   if (overlay?.stream !== undefined && overlay.stream !== true)
     return yield* ProviderShared.invalidRequest("Trigger compaction requires a streamed response")
   const source = request.model.route
-  const compacting = LLMRequest.update(request, {
-    providerOptions: {
-      ...request.providerOptions,
-      contextManagement: {
-        edits: [
-          {
-            type: "compact_20260112",
-            trigger: { type: "input_tokens", value: MIN_COMPACTION_TOKENS },
-            pauseAfterCompaction: true,
-            // With tools present, calling one while summarizing can return a null checkpoint.
-            instructions:
-              "Summarize the conversation for an assistant continuing the task. Preserve the objective, constraints, decisions, current work, next steps, and important references. Return only the summary. Do not continue the task or call tools.",
-          },
-        ],
-      },
-    },
-  })
-  // Anthropic rejects assistant-message prefill: the conversation must end with a
-  // user message. A trigger request carries canonical history as-is, which often
-  // ends with the assistant reply being compacted, so append a short user turn.
-  const continuation =
-    (yield* fromRequest(compacting)).messages.at(-1)?.role === "user"
-      ? compacting
-      : LLMRequest.update(compacting, {
-          messages: [...compacting.messages, Message.user("Summarize the conversation so far.")],
-        })
-  const body = yield* fromRequest(continuation)
-  const prepared = yield* source.prepareTransport(body, continuation, options)
+  const ordinary = yield* fromRequest(request)
+  const body = {
+    ...ordinary,
+    compaction: { type: "summarize" as const },
+    // CLIProxyAPI treats explicit null as caller-owned and skips keep:all injection.
+    context_management: null,
+    stop_sequences: undefined,
+    tool_choice: ordinary.tool_choice?.type === "any" || ordinary.tool_choice?.type === "tool" ? undefined : ordinary.tool_choice,
+    output_config: ordinary.output_config ? { ...ordinary.output_config, format: undefined } : undefined,
+  }
+  const rawOutput = overlay && ProviderShared.isRecord(overlay.output_config) ? overlay.output_config : undefined
+  const rawBudget = rawOutput && ProviderShared.isRecord(rawOutput.task_budget) ? rawOutput.task_budget : undefined
+  const compacting = overlay ? LLMRequest.update(request, {
+    http: new HttpOptions({ ...request.http, body: {
+      ...Object.fromEntries(Object.entries(overlay).filter(([key]) => !["stop_sequences", "tool_choice", "output_config", "compaction"].includes(key))),
+      ...(rawOutput ? { output_config: {
+        ...Object.fromEntries(Object.entries(rawOutput).filter(([key]) => key !== "format" && key !== "task_budget")),
+        ...(rawBudget ? { task_budget: Object.fromEntries(Object.entries(rawBudget).filter(([key]) => key !== "remaining")) } : {}),
+      } } : {}),
+    } }),
+  }) : request
+  const prepared = yield* source.prepareTransport(body, compacting, options)
+  const capabilityURL = new URL(prepared.request.url)
+  capabilityURL.pathname = capabilityURL.pathname.replace(/\/messages$/, `/models/${encodeURIComponent(request.model.id)}`)
+  capabilityURL.search = ""
+  const support = yield* executor.execute(HttpClientRequest.get(capabilityURL.toString(), {
+    headers: prepared.request.headers,
+  })).pipe(
+    Effect.flatMap((response) => response.json),
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ capabilities: Schema.Struct({ compaction: Schema.Struct({ supported: Schema.Boolean }) }) }))),
+    Effect.timeoutOption("10 seconds"),
+    Effect.catch(() => Effect.succeed(Option.none())),
+  )
+  if (Option.isNone(support) || !support.value.capabilities.compaction.supported)
+    return yield* ProviderShared.unsupportedOperation({ operation: "compaction", route: ADAPTER, message: "On-demand compaction capability is unsupported or unavailable from the Models API; use local compaction" })
+  // Legacy unsigned blocks use different placement/strategy rules. Until a provider
+  // acceptance test establishes interoperability, preserve their text locally.
+  if (ordinary.messages.some((message) => message.content.some((block) => block.type === "compaction" && !block.signature)))
+    return yield* ProviderShared.unsupportedOperation({ operation: "compaction", route: ADAPTER, message: "Legacy threshold compaction block requires local summary conversion" })
   const state = yield* source
-    .streamPrepared(prepared, continuation, { http: executor }, options)
+    .streamPrepared(prepared, request, { http: executor }, options)
     .pipe(Stream.runFold(LLMResponse.empty, LLMResponse.reduce))
   const response = LLMResponse.complete(state)
   if (!response)
@@ -1861,8 +1878,10 @@ const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(
   if (response.finishReason.raw !== "compaction")
     return yield* compactionFailure(
       response.usage,
-      "not-triggered",
-      "Anthropic compaction did not pause with stop_reason compaction",
+      "unusable",
+      response.finishReason.raw === "max_tokens" ? "Anthropic compaction exhausted max_tokens; retry with a larger output limit; history retained"
+        : response.finishReason.raw === "model_context_window_exceeded" ? "Anthropic compaction has no room for summarization; use shorter instructions; history retained"
+        : `Anthropic compaction returned ${response.finishReason.raw ?? "no stop reason"} without a summary; history retained`,
     )
   if (response.message.content.length !== 1 || checkpoint?.type !== "compaction" || !checkpoint.text?.trim())
     return yield* compactionFailure(

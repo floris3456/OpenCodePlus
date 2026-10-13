@@ -8,7 +8,7 @@ import type { PluginHooks } from "../plugin/hooks.js"
 import type { Model } from "@opencode/schema/model"
 import { SessionUsage } from "./usage.js"
 
-type Scope = Pick<SessionModelObserved, "sessionID" | "agent" | "model" | "kind">
+type Scope = Pick<SessionModelObserved, "sessionID" | "agent" | "model" | "kind" | "historyEpoch">
 type Exchange = {
   requestID: string
   transport: "http" | "websocket"

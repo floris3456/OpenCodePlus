@@ -116,7 +116,7 @@ test("a legacy prefix change remains an observed fact, not a supported miss", as
     expect(result.miss).toBe(false)
     expect(result.cause).toBe("prefix-changed")
     expect(result.changedPart).toBeDefined()
-    expect(result.causeText).toBe("observed: prompt changed")
+    expect(result.causeText).toBe("observed: prompt changed · system wire")
     expect(result.notReused).toBe(0)
   }
 })

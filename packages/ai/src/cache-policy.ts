@@ -92,11 +92,11 @@ const countToolHints = (tools: ReadonlyArray<ToolEntry>): number =>
     0,
   )
 
-const markSystemBoundaries = (system: LLMRequest["system"], hint: CacheHint, budget: Budget): LLMRequest["system"] => {
+const markSystemBoundaries = (system: LLMRequest["system"], hint: CacheHint, budget: Budget, lastOnly = false): LLMRequest["system"] => {
   if (system.length === 0) return system
   let changed = false
   const next = system.map((part, index) => {
-    if ((index !== 0 && index !== system.length - 1) || part.cache || budget.remaining === 0) return part
+    if (((lastOnly || index !== 0) && index !== system.length - 1) || part.cache || budget.remaining === 0) return part
     budget.remaining -= 1
     changed = true
     return { ...part, cache: hint }
@@ -164,7 +164,7 @@ const countHints = (request: LLMRequest) =>
     (count, message) =>
       count +
       message.content.reduce(
-        (contentCount, part) => contentCount + ("cache" in part && part.cache !== undefined ? 1 : 0),
+        (contentCount, part) => contentCount + (("cache" in part && part.cache !== undefined) || (part.type === "compaction" && part.signature !== undefined) ? 1 : 0),
         0,
       ),
     0,
@@ -187,7 +187,9 @@ export const applyCachePolicy = (request: LLMRequest): LLMRequest => {
   const hint = makeHint(policy.ttlSeconds)
   const budget = { remaining: Math.max(0, BREAKPOINT_CAP - countHints(request)) }
   const tools = policy.tools ? markLastTool(request.tools, hint, budget) : request.tools
-  const system = policy.system ? markSystemBoundaries(request.system, hint, budget) : request.system
+  const signed = request.messages.some((message) => message.content.some((part) => part.type === "compaction" && part.signature !== undefined))
+  // tools + system + signed summary + current tail fit Anthropic's four markers.
+  const system = policy.system ? markSystemBoundaries(request.system, hint, budget, signed) : request.system
   const messages = policy.messages ? markMessages(request.messages, policy.messages, hint, budget) : request.messages
 
   if (tools === request.tools && system === request.system && messages === request.messages) return request

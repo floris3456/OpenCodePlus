@@ -589,6 +589,13 @@ export function requestReport(
       sent: pingRows.length,
       cost: sum(pingRows, "cost"),
       followedByHit: analyses.reduce((n, a) => n + a.pings.followedByHit, 0),
+      followedByCold: analyses.reduce((n, a) => n + a.pings.followedByCold, 0),
+      unused: analyses.reduce((n, a) => n + a.pings.unused, 0),
+      unknown: analyses.reduce((n, a) => n + a.pings.unknown, 0),
+      unknownReasons: analyses.reduce<Record<string, number>>((result, a) => {
+        Object.entries(a.pings.unknownReasons).forEach(([reason, count]) => { result[reason] = (result[reason] ?? 0) + count })
+        return result
+      }, {}),
       followedByMiss: analyses.reduce((n, a) => n + a.pings.followedByMiss, 0),
     }
     sections.unread = analyses.reduce((total, a) => total + a.unread, 0)

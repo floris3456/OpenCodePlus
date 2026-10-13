@@ -1,4 +1,5 @@
 export * as SessionCompaction from "./compaction.js"
+import { Config } from "../config.js"
 
 import {
   AIError,
@@ -14,7 +15,6 @@ import {
   UnknownProviderError,
   type Usage,
 } from "@opencode/ai"
-import { AnthropicMessages } from "@opencode/ai/protocols/anthropic-messages"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import type { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import type { SessionError } from "@opencode/schema/session-error"
@@ -214,6 +214,7 @@ export const layer = Layer.effect(
     const requests = yield* SessionModelRequest.Service
     const agents = yield* Agent.Service
     const modelCatalog = yield* Model.Service
+    const config = yield* Effect.serviceOption(Config.Service)
     const models = yield* SessionRunnerModel.Service
 
     const state = State.create<Settings, Editor>({
@@ -257,6 +258,15 @@ export const layer = Layer.effect(
       }
       const decision = decided.value
       if (decision.refusal) return { status: "failed", error: decision.refusal }
+      // Anthropic checkpoints already contain portable text. Converting an otherwise
+      // unchanged checkpoint must never reload and re-summarize the archived epoch.
+      const checkpoint = previousCompaction(context.messages)
+      if (decision.portable && checkpoint && SessionProviderContext.isCheckpoint(checkpoint) &&
+        !context.messages.slice(context.messages.indexOf(checkpoint) + 1).some((message) => message.type === "user" || message.type === "assistant")) {
+        const text = SessionProviderContext.decode(checkpoint.providerContext).flatMap((message) =>
+          message.content.flatMap((part) => part.type === "compaction" && part.text ? [part.text] : [])).join("\n")
+        if (text.trim()) return yield* publish(trigger, { text, recent: checkpoint.recent, metadata: decision.metadata })
+      }
       // Plugins may request earlier compaction, but cannot override this preference.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
       if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact) return { status: "skipped" }
@@ -303,25 +313,15 @@ export const layer = Layer.effect(
         })
       // Native compaction cannot run below Anthropic's input-token trigger. The request is shrunk to `budget`
       // when the context exceeds it, so the effective size is the smaller of the estimate and that target.
-      const belowMinimum =
-        context.model.model.route.protocol === AnthropicMessages.protocol.id &&
-        Math.min(estimateContext(context), budget) < AnthropicMessages.MIN_COMPACTION_TOKENS
-      if (strategy === "remote" && belowMinimum)
-        return yield* publish(trigger, {
-          error: {
-            type: "compaction.unavailable",
-            message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
-          },
-        })
       const operations = context.model.model.route.compact
       const native =
         strategy === "remote" ||
         (strategy === "auto" &&
-          !belowMinimum &&
           context.model.compaction?.type !== "summary" &&
           (operations?.trigger !== undefined || operations?.endpoint !== undefined))
       const observation: CompactionObservation = {
         version: 1,
+        configurationWarnings: Option.isSome(config) ? config.value.compactionWarnings?.() : undefined,
         trigger:
           trigger.reason === "manual" || trigger.reason === "overflow"
             ? trigger.reason
@@ -349,7 +349,7 @@ export const layer = Layer.effect(
             : strategy === "local" ? "explicit-local"
             : strategy === "remote" ? "explicit-remote"
             : native ? "auto-native"
-            : belowMinimum ? "anthropic-below-minimum" : "auto-text",
+             : "auto-text",
       }
       const completed = (owner: Trigger, result: Result) => {
         const checkpoint = SessionMessage.CompactionCompleted.make({
@@ -391,7 +391,7 @@ export const layer = Layer.effect(
           return yield* settle({
             error: {
               type: "compaction.unavailable",
-              message: "Anthropic compaction needs at least 50 000 input tokens; select auto or local compaction",
+              message: "Anthropic compaction returned no summary; the existing history was retained",
             },
           })
         fallbackReason = failure.error.type === NATIVE_UNAVAILABLE ? "native-unavailable" : "native-not-triggered"
@@ -494,6 +494,13 @@ export const layer = Layer.effect(
       )
         return { status: "skipped" }
 
+      const portable = SessionProviderContext.decode(previous.providerContext).flatMap((message) =>
+        message.content.flatMap((part) => part.type === "compaction" && part.text ? [part.text] : [])).join("\n")
+      if (portable.trim()) return yield* publish(trigger, {
+        text: portable,
+        recent: [previous.recent, ...context.messages.slice(context.messages.indexOf(previous) + 1).map(messageToText)].filter(Boolean).join("\n\n"),
+      })
+
       const attempt = yield* Effect.gen(function* () {
         if (!previous.model)
           return yield* Effect.fail<Failure>({
@@ -588,10 +595,7 @@ export const layer = Layer.effect(
       const model = ref
         ? yield* models.resolve({ ...context.session, model: ref }, modelCatalog.available)
         : context.model
-      const messages =
-        trigger.reason === "overflow" || context.messages.some(SessionProviderContext.isCheckpoint)
-          ? yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
-          : context.messages
+      const messages = context.messages
       // The decision may replace the agent's compaction system text for this compaction.
       const compactionSystem = system ?? config?.system ?? fallback?.system
       const sameModel =
@@ -666,13 +670,13 @@ export const layer = Layer.effect(
       const prompt = instruction === undefined ? summaryPrompt : `${instruction}\n\n${summaryPrompt}`
       const headings = SUMMARY_TEMPLATE.split("\n").filter((line) => line.startsWith("##"))
       const filled = (text: string) => text.split("\n").some((line) => headings.includes(line.trim()))
-      const prepared = yield* prepare(context, split.older, budget, undefined, retained?.checkpointHandoff)
+      const prepared = yield* prepare(context, context.messages, budget, undefined, retained?.checkpointHandoff)
 
       // Hooks saw the request without the summary prompt, so it is appended here. A reply that ignores the
       // template gets one reminder before it counts as a failure.
       const send = (request: LLMRequest) =>
         Effect.gen(function* () {
-          const prompted = LLMRequest.update(request, { messages: [...request.messages, Message.user(prompt)] })
+          const prompted = LLMRequest.update(request, { cache: { tools: true, system: true, messages: { tail: 2 } }, messages: [...request.messages, Message.user(prompt)] })
           const reply = yield* stream(context, prompted, prepared)
           if (filled(reply.text)) return { ...reply, recent: split.recent }
 
@@ -723,13 +727,7 @@ export const layer = Layer.effect(
       // new conversation. A tail aged out by newer messages MUST enter the checkpoint instead.
       const prepared = yield* prepare(
         context,
-        context.messages.map((message) =>
-          message.type === "compaction" &&
-          message.status === "completed" &&
-          (recent === message.recent || recent.startsWith(`${message.recent}\n\n`))
-            ? { ...message, recent: "" }
-            : message,
-        ),
+        context.messages,
         budget,
         "session",
       )
@@ -769,7 +767,7 @@ export const layer = Layer.effect(
       const toResult = (window: ReadonlyArray<Message>, usage: Usage | undefined) =>
         spend(context.session.id, usage && SessionUsage.record(usage, context.model.cost)).pipe(
           Effect.as<Result>({
-            text: "",
+            text: window.flatMap((message) => message.content.flatMap((part) => part.type === "compaction" && part.text ? [part.text] : [])).join("\n"),
             recent,
             providerContext: SessionProviderContext.encode(provenance, window),
           }),
@@ -778,8 +776,6 @@ export const layer = Layer.effect(
       const send = (request: LLMRequest) => {
         if (LLMClient.canCompact(request, { mechanism: "trigger" })) {
           return Effect.gen(function* () {
-            const history = yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie)
-            const retained = recentUserMessages(history, context.model, keep)
             const response = yield* SessionModelObservation.run(prepared.observer, llm.compact(request, { ...prepared.options, mechanism: "trigger" }).pipe(
               Effect.tap((response) => SessionModelObservation.captureUsage(response.usage)),
               Effect.tapError((cause) => { const usage = compactionUsage(cause); return usage ? SessionModelObservation.captureUsage(usage) : Effect.void }),
@@ -798,7 +794,7 @@ export const layer = Layer.effect(
                     : Effect.fail(cause),
               ),
             )
-            return yield* toResult([...retained, Message.assistant(response.checkpoint)], response.usage)
+            return yield* toResult([Message.assistant(response.checkpoint)], response.usage)
           })
         }
         if (LLMClient.canCompact(request)) {
@@ -863,7 +859,8 @@ export const layer = Layer.effect(
       let asText = false
 
       while (true) {
-        const fits = !asText && estimateRequest(prepared.request) <= target
+        // A local estimate must never rewrite warm history before the provider rejects it.
+        const fits = !asText && (rejections === 0 || estimateRequest(prepared.request) <= target)
         const request = fits
           ? prepared.request
           : (flattenConversation(prepared.request, context, target) ??
@@ -1041,6 +1038,7 @@ export const layer = Layer.effect(
         model: context.model,
         tools: context.tools,
         system: base.system,
+        historyEpoch: context.messages.findLast((message) => message.type === "compaction" && message.status === "completed")?.id ?? "initial",
         messages: base.messages,
         webSocket,
         checkpointHandoff,
@@ -1149,6 +1147,7 @@ export const node = makeLocationNode({
   layer,
   deps: [
     PluginHooks.node,
+    Config.node,
     Bus.node,
     Database.node,
     llmClient,
