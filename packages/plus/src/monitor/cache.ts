@@ -63,7 +63,7 @@ function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
   const cached = segmentCache.get(fp)
   if (cached) return cached
 
-  const segs = segments(fp)
+  const segs = fingerprintSegments(fp)
   let totalTokens = 0
   for (let i = 0; i < segs.length; i++) {
     totalTokens += segs[i]!.tokens
@@ -81,7 +81,7 @@ function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
   return info
 }
 
-function segments(fp: RequestFingerprintData): Segment[] {
+export function fingerprintSegments(fp: RequestFingerprintData): Segment[] {
   const systemChars = fp.systemParts.reduce((sum, p) => sum + p.chars, 0)
   const system = [{
     name: "system wire",
@@ -294,42 +294,6 @@ function tailReplaced(
     reusableMarkerSignature(before, boundary) === reusableMarkerSignature(after, boundary) &&
     reusablePrefixEqual(aInfo.segments, bInfo.segments, boundary)
   )
-}
-
-/** `prefixDiff(before, after).reusable`, without building the change list. */
-export function reusableOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): boolean {
-  if (!before || !after) return false
-  const full = diffCache.get(before)?.get(after)
-  if (full) return full.reusable
-  const known = reuseCache.get(before) ?? new WeakMap<RequestFingerprintData, boolean>()
-  reuseCache.set(before, known)
-  const cached = known.get(after)
-  if (cached !== undefined) return cached
-  const reusable = decideReusable(before, after)
-  known.set(after, reusable)
-  return reusable
-}
-
-// The same decisions as prefixDiff, in its order.
-function decideReusable(before: RequestFingerprintData, after: RequestFingerprintData): boolean {
-  if (!supportedFingerprint(before) || !supportedFingerprint(after) || before.protocol !== after.protocol) return false
-  const aInfo = getSegmentInfo(before)
-  const bInfo = getSegmentInfo(after)
-  if (before.previousResponseId && !after.previousResponseId) return false
-  if (after.protocol === "openai-responses" && after.previousResponseId) {
-    if (before.responseId !== after.previousResponseId) return false
-    if (samePrefix(aInfo, bInfo)) return true
-  }
-  if (tailReplaced(before, after, aInfo, bInfo)) return true
-  // A pure append: every part of `before` sits unchanged at the same place in
-  // `after`. Its last part is checked first; with rolling breakpoints that part
-  // carried the marker and differs, which settles most comparisons at once.
-  const a = aInfo.segments
-  const b = bInfo.segments
-  if (a.length > b.length || before.protocol !== after.protocol) return false
-  const last = a.length - 1
-  if (last >= 0 && ((a[last]!.prefixHash ?? a[last]!.hash) !== (b[last]!.prefixHash ?? b[last]!.hash) || a[last]!.name !== b[last]!.name)) return false
-  return a.every((part, i) => (part.prefixHash ?? part.hash) === (b[i]!.prefixHash ?? b[i]!.hash) && part.name === b[i]!.name)
 }
 
 /** Version/policy are independent of storage schema. Legacy missing fields cannot
@@ -547,7 +511,6 @@ type Diff = ReturnType<typeof prefixDiff>
 // incremental analyses, so their diffs are reused too.
 const diffCache = new WeakMap<RequestFingerprintData, WeakMap<RequestFingerprintData, Diff>>()
 // Where only reuse matters (a refreshing request, a write's later reads), the verdict alone.
-const reuseCache = new WeakMap<RequestFingerprintData, WeakMap<RequestFingerprintData, boolean>>()
 
 function diffOf(before: RequestFingerprintData | undefined, after: RequestFingerprintData | undefined): Diff {
   if (!before || !after) return prefixDiff(before, after, false)
@@ -600,25 +563,15 @@ function lastFact(facts: Facts, to: number, match: (fact: ContextFactRow) => boo
 
 interface DiffStep {
   readonly diff: Diff
-  readonly expected: number | undefined
   readonly changed: boolean
 }
 
 function diffStep(
-  previous: RequestRow | undefined,
   previousFp: RequestFingerprintData | undefined,
   fp: RequestFingerprintData | undefined,
 ): DiffStep {
-  const diff = diffOf(previous && previousFp, fp)
-  const measured = previous && measurement(previous)
-  // Common characters are not a lower bound in tokens. Only the selected,
-  // compatible measured anchor can support a local shortfall estimate.
-  const warm = measured?.state === "reported" && measured.read !== undefined && measured.write !== undefined
-    ? measured.read + measured.write : undefined
-  // Interior marked content can match while the private tail is replaced.
-  // Aggregate usage does not locate a measured size at that interior boundary.
-  const expected = warm
-  return { diff, expected, changed: reusablePrefixChanged(diff.changes, previousFp, fp) }
+  const diff = diffOf(previousFp, fp)
+  return { diff, changed: reusablePrefixChanged(diff.changes, previousFp, fp) }
 }
 
 interface TimingStep {
@@ -673,7 +626,6 @@ interface CauseStep {
   readonly accounts: MonitorRequestDetail["accounts"]
   readonly instructions: MonitorRequestDetail["instructions"]
   readonly reverts: MonitorRequestDetail["reverts"]
-  readonly verdict: MonitorRequest["verdict"]
   readonly cause: MonitorRequest["cause"]
   readonly causeText: string
   readonly confidence: MonitorRequest["confidence"]
@@ -721,7 +673,6 @@ function causeStep(
       accounts,
       instructions,
       reverts,
-      verdict: "none",
       cause: "unknown",
       causeText: "unknown",
       confidence: "unknown",
@@ -735,7 +686,6 @@ function causeStep(
       accounts,
       instructions,
       reverts,
-      verdict: "error",
       cause: undefined,
       causeText: "unknown",
       confidence: "unknown",
@@ -746,10 +696,9 @@ function causeStep(
   const usable = measured.state === "reported" && measured.input !== undefined && measured.read !== undefined
   const bounded = usable && expected !== undefined ? Math.min(expected, measured.input!) : undefined
   const shortfall = bounded === undefined ? 0 : Math.max(0, bounded - measured.read!)
-  const verdict = detectCache({ reported: measured.state === "reported", input: measured.input, read: measured.read, predecessor: previous !== undefined, frontier: expected }).verdict
   const expired = previous?.ended !== undefined && lifetime !== undefined && r.started - previous.ended > lifetime
 
-  const cause: MonitorRequest["cause"] = expired ? "cache-expired" : accounts.length || r.observation?.compaction?.trigger === "handoff" ? "account-changed" : reverts.length ? "revert" : quotaSwitchCompacted
+  const cause: MonitorRequest["cause"] = expired ? "cache-expired" : accounts.length || r.observation?.compaction?.trigger === "handoff" ? "account-changed" : r.observation?.compaction?.cacheColdCause === "model-switch" ? "model-switch" : reverts.length ? "revert" : quotaSwitchCompacted
     ? "account-changed-compacted-first"
     : compacted
       ? "compacted"
@@ -765,6 +714,7 @@ function causeStep(
   // These are co-occurring local facts, not a proved provider cause. Do not
   // choose the first differing option as an explanation of provider behavior.
   const observed = [
+    ...(r.observation?.compaction?.cacheColdCause ? [`Compaction cache cold cause: ${r.observation.compaction.cacheColdCause}`] : []),
     ...(compacted ? ["Compaction occurred"] : []),
     ...(switched ? ["Model / variant switched"] : []),
     ...(agent ? ["Agent switched"] : []),
@@ -789,7 +739,6 @@ function causeStep(
     accounts,
     instructions,
     reverts,
-    verdict,
     cause,
       causeText: cause === "unknown" ? "provider cause unknown" : `observed: ${causeWords(cause, diff.changes[0]?.name)}`,
     confidence: "unknown",
@@ -805,28 +754,19 @@ function contextBaseline(rows: readonly RequestRow[], current: RequestRow) {
 }
 
 interface CostStep {
-  readonly missing: number
   readonly missCost: number | undefined
   readonly pricing: NonNullable<MonitorRequest["pricing"]>
 }
 
 function costStep(
   r: RequestRow,
-  expected: number | undefined,
+  shortfall: number | undefined,
   facts: Facts,
 ): CostStep {
   const measured = measurement(r)
-  const shortfall =
-    measured.state === "reported" && measured.input !== undefined && measured.read !== undefined
-      ? measured.read === measured.input
-        ? 0
-        : expected === undefined
-          ? undefined
-          : Math.max(0, Math.min(expected, measured.input) - measured.read)
-      : undefined
   // Keep the legacy numeric counter, but never present its unknown zero as a priced scenario.
-  if (shortfall === undefined) return { missing: 0, missCost: undefined, pricing: { state: "unknown-shortfall", reason: "No complete comparable shortfall measurement" } }
-  if (shortfall < 1024) return { missing: 0, missCost: 0, pricing: { state: "zero-shortfall", shortfall: 0 } }
+  if (shortfall === undefined) return { missCost: undefined, pricing: { state: "unknown-shortfall", reason: "No complete comparable shortfall measurement" } }
+  if (shortfall === 0) return { missCost: 0, pricing: { state: "zero-shortfall", shortfall: 0 } }
   const pricing = lastFact(
     facts,
     r.started,
@@ -841,7 +781,7 @@ function costStep(
     ...(r.model ? { model: r.model } : {}),
     inputBasis: "inclusive-measured" as const,
   }
-  const refuse = (reason: string): CostStep => ({ missing: shortfall, missCost: undefined, pricing: { ...provenance, state: "unpriced", reason } })
+  const refuse = (reason: string): CostStep => ({ missCost: undefined, pricing: { ...provenance, state: "unpriced", reason } })
   if (!rates?.length) return refuse("Applicable rates were not recorded")
   if (pricing?.detail?.variant !== undefined && r.variant !== pricing.detail.variant) return refuse("Recorded rates do not identify the request variant")
   // Model.Cost records one write rate, not duration buckets. Full mixed-TTL pricing is deferred.
@@ -855,7 +795,6 @@ function costStep(
   const written = Math.min(shortfall, measured.write)
   const missCost = (written * (rate.cache.write - rate.cache.read) + (shortfall - written) * (rate.input - rate.cache.read)) / 1_000_000
   return {
-    missing: shortfall,
     missCost,
     pricing: {
       ...provenance,
@@ -1087,10 +1026,6 @@ export function foldSession(
   let streaks: ReadonlyMap<string, number> = point?.streaks ?? new Map()
   const ordered = factsOf(facts)
   const earlier = rows.slice(0, from)
-  const responses = new Map(earlier.flatMap((row) => {
-    const id = fingerprints.get(row.id)?.responseId
-    return id ? [[id, row] as const] : []
-  }))
 
   for (const r of rows.slice(from)) {
     const fp = fingerprints.get(r.id)
@@ -1102,17 +1037,18 @@ export function foldSession(
       p.observation?.historyEpoch === r.observation?.historyEpoch && (boundary === undefined || p.started >= boundary) &&
       p.status === "completed" && p.ended !== undefined && p.ended <= r.started && !p.isTitle &&
       (p.kind !== "generate" || r.kind === "generate")
-    // An explicit branch link never falls back to its sibling. Unlinked
-    // lookup is deliberately bounded; missing older context remains unknown.
+    // Content links and fingerprint compatibility never gate numeric detection.
     const previous = earlier.filter(eligible).reduce<RequestRow | undefined>((latest, p) => !latest || p.ended! > latest.ended! ? p : latest, undefined)
     const lastRealIndex = earlier.findLastIndex((p) => p.kind !== "ping" && !p.isTitle)
     const lastReal = earlier[lastRealIndex]
     const last = contextBaseline(earlier, r)
     const between = factsBetween(ordered, last?.started ?? 0, r.started)
 
-    // 1. Diff: calculate prefix diff and expected tokens
-    const { diff, expected: anchor, changed } = diffStep(
-      previous,
+    const predecessor = previous && measurement(previous)
+    const anchor = predecessor?.state === "reported" && predecessor.read !== undefined && predecessor.write !== undefined
+      ? predecessor.read + predecessor.write : undefined
+    // Fingerprints explain differences; they never supply or gate a token frontier.
+    const { diff, changed } = diffStep(
       previous ? fingerprints.get(previous.id) : undefined,
       fp,
     )
@@ -1120,15 +1056,23 @@ export function foldSession(
     const expected = anchor !== undefined
       ? measured.input === undefined ? anchor : Math.min(anchor, measured.input)
       : undefined
+    const detected = detectCache({ reported: measured.state === "reported", input: measured.input, read: measured.read, predecessor: previous !== undefined, frontier: expected })
+    const verdict = r.status === "error" && measured.state !== "reported" ? "error" : detected.verdict
 
     // 3. Cause: determine cache verdict, root cause, confidence and evidence
     const cause = causeStep(r, previous, last, between, diff, changed, expected, cacheLifetime(r, fp))
-    const compactionBase = r.kind === "compaction" ? earlier.findLast((p) => eligible(p) && p.kind === "step") : undefined
-    const invariant = r.kind === "compaction" ? compactionAppend(compactionBase && fingerprints.get(compactionBase.id), fp,
+    const compactionBase = r.kind === "compaction" ? previous && fingerprints.get(previous.id) : undefined
+    // Warming's final user prompt is private and uncached; compaction summarizes
+    // the completed conversation preceding it, not that keep-alive prompt.
+    const warmedBase = previous?.kind === "ping" && compactionBase?.messagePrefixes.at(-1)?.role === "user" &&
+      markedMessageBoundary(compactionBase) < compactionBase.messagePrefixes.length - 1
+      ? { ...compactionBase, messagePrefixes: compactionBase.messagePrefixes.slice(0, -1) } : compactionBase
+    const invariant = r.kind === "compaction" ? compactionAppend(warmedBase, fp,
       r.observation?.compaction?.selectedStrategy ?? (fp?.optionsKeys.compaction ? "native" : "text-summary")) : undefined
 
     // 4. Cost: compute miss tokens and re-read cost from recorded pricing
-    const cost = costStep(r, expected, ordered)
+    const cost = costStep(r, measured.state === "reported" && measured.read !== undefined &&
+      (detected.baseline !== undefined || measured.read === measured.input) ? detected.missTokens : undefined, ordered)
 
     const request: MonitorRequest = {
       id: r.id,
@@ -1149,17 +1093,17 @@ export function foldSession(
       cacheRead: r.cacheReadTokens,
       cacheWrite: r.cacheWriteTokens,
       cost: r.cost,
-      verdict: cause.verdict,
+      verdict,
       outcome: r.status,
       ...(r.observation?.version === 1 && r.observation.compaction ? { compaction: r.observation.compaction } : {}),
       ...(r.observation?.version === 1 && r.observation.promptCacheDiagnostic ? { promptCacheDiagnostic: r.observation.promptCacheDiagnostic } : {}),
       measurement: measured,
-      ...(cause.cause === undefined || (cause.verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
+      ...(cause.cause === undefined || (verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
       confidence: cause.confidence,
       evidence: invariant && !invariant.valid ? `${cause.evidence}; Compaction append invariant violated: ${invariant.segment}` : cause.evidence,
       ...(expected === undefined ? {} : { expected }),
-      missTokens: cost.missing,
+      missTokens: detected.missTokens,
       ...(cost.missCost === undefined ? {} : { missCost: cost.missCost }),
       pricing: cost.pricing,
     }
@@ -1204,7 +1148,6 @@ export function foldSession(
     points.push({ streaks, named: names.size, unstable: unstable.length })
 
     earlier.push(r)
-    if (fp?.responseId) responses.set(fp.responseId, r)
   }
 
   const unread = foldUnread(rows, fingerprints, cacheLifetime, unreadFingerprintKeys, resume?.previous.analysis, from)
@@ -1359,9 +1302,9 @@ export function windowedSessionSignals(
       (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
     )
     if (!next) { unused++; continue }
-    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "error") {
+    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "unknown" || next.request.verdict === "error") {
       unknown++
-      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : "follow-up-unmeasured"
+      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : next.request.verdict === "unknown" ? "follow-up-incomplete" : "follow-up-unmeasured"
       unknownReasons[reason] = (unknownReasons[reason] ?? 0) + 1
       continue
     }

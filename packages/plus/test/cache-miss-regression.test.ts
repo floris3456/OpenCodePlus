@@ -1,11 +1,22 @@
 import { afterEach, expect, test } from "bun:test"
-import { foldSession, isMiss, prefixDiff, windowedSessionSignals } from "../src/monitor/cache.js"
+import { fingerprintSegments, foldSession, isMiss, prefixDiff, windowedSessionSignals } from "../src/monitor/cache.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import type { ContextFactRow, RequestRow } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
+import { auditCacheMisses } from "../src/monitor/audit.js"
 
 afterEach(cleanupLedgers)
+
+test("B7 audit rejects hidden losses even when the analyzer omits its predecessor", () => {
+  const rows = [row("a", 10, 12000, 10000, 2000), row("b", 20, 13000, 100, 12000)]
+  const summaries = foldSession(rows, [], new Map()).analysis.summaries
+  expect(auditCacheMisses(rows, summaries)).toEqual([])
+  for (const verdict of ["hit", "none", "unknown"] as const) {
+    const broken = summaries.map((s) => ({ request: { ...s.request, verdict } }))
+    expect(auditCacheMisses(rows, broken)).toEqual([{ requestID: "b", verdict, shortfall: 11900 }])
+  }
+})
 
 // Minimal sanitized corpus: only measured frontiers, input, timings and kinds.
 // IDs, prompts, fingerprints, accounts and absolute timestamps are synthetic.
@@ -69,13 +80,24 @@ test("B5 one inserted option is one change, not a positional cascade", () => {
 
 test("B2 explanations and B4 fact timing cannot erase measured loss", () => {
   const rows = [row("a", 10, 12000, 10000, 2000), row("b", 20, 13000, 100, 12000)]
-  const mutations = [body(), { ...body(), context_management: {} }, { ...body(), max_tokens: 5 }, { ...body(), tools: [] }, { ...body(), system: [] }, { ...body(), messages: [] }]
+  const mutationsByKind: Record<ReturnType<typeof fingerprintSegments>[number]["kind"], unknown[]> = {
+    option: [{ ...body(), context_management: {} }, { ...body(), max_tokens: 5 }, { ...body(), max_tokens: undefined }],
+    marker: [{ ...body(), messages: [{ role: "user", content: [{ type: "text", text: "synthetic history", cache_control: { type: "ephemeral", ttl: "1h" } }] }] }],
+    tool: [{ ...body(), tools: [] }, { ...body(), tools: [...body().tools, { name: "new_tool", input_schema: {} }] }, { ...body(), tools: [{ ...body().tools[0], description: "changed" }] }],
+    system: [{ ...body(), system: [] }, { ...body(), system: [{ type: "text", text: "changed" }] }],
+    message: [{ ...body(), messages: [] }, { ...body(), messages: [{ role: "user", content: "reverted" }] }],
+  }
+  const mutations = [body(), ...[...new Set(fingerprintSegments(fp("a")).map((s) => s.kind))].flatMap((kind) => mutationsByKind[kind])]
   for (const value of mutations) for (const kind of ["compaction", "compaction_started", "revert", "instruction_update", "warming", "quota_handoff"]) {
     for (const at of [11, 15, 21 - 0.01, 21 + 0.01, 5021]) {
       const result = foldSession(rows, [fact(kind, at)], new Map([["a", fp("a")], ["b", fp("b", value)]])).analysis.summaries[1]!.request
       expect(result).toMatchObject({ verdict: "partial", missTokens: 11900 })
     }
   }
+  expect(foldSession([rows[0]!, { ...rows[1]!, variant: "changed" }], [], new Map()).analysis.summaries[1]?.request).toMatchObject({ verdict: "partial", missTokens: 11900 })
+  const warm = [rows[0]!, row("b", 20, 13000, 12000, 0)]
+  const reordered = Object.fromEntries(Object.entries(body()).reverse())
+  expect(foldSession(warm, [fact("warming", 15)], new Map([["a", fp("a")], ["b", fp("b", reordered)]])).analysis.summaries[1]?.request.verdict).toBe("hit")
 })
 
 test("B3 deterministic random sequences obey detection and ping partition invariants", () => {

@@ -1470,6 +1470,8 @@ export const MonitorPricing = Schema.Struct({
 
 export interface MonitorTotals extends Schema.Schema.Type<typeof MonitorTotals> {}
 export const MonitorTotals = Schema.Struct({
+  coldRequests: Schema.optionalKey(Schema.Number),
+  coldTokens: Schema.optionalKey(Schema.Number),
   requests: Schema.optionalKey(Schema.Number),
   exchangeRows: Schema.optionalKey(Schema.Number),
   pings: Schema.optionalKey(Schema.Number),
@@ -1576,7 +1578,7 @@ export const MonitorRequest = Schema.Struct({
   cacheRead: Schema.Number,
   cacheWrite: Schema.Number,
   cost: Schema.Number,
-  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "compacted", "none", "error"]),
+  verdict: Schema.Literals(["hit", "partial", "miss", "cold", "compacted", "none", "unknown", "error"]),
   outcome: Schema.optionalKey(Schema.String),
   compaction: Schema.optionalKey(CompactionObservation),
   promptCacheDiagnostic: Schema.optionalKey(PromptCacheDiagnostic),

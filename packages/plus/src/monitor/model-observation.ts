@@ -20,10 +20,6 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
   const id = single?.requestID ?? event.invocationID
   ledger.db.transaction(() => {
     if (ledger.getRequest(id)?.observation) return
-    if (event.compaction?.trigger === "handoff") ledger.contextFact({
-      sessionID: event.sessionID, at: event.started, kind: "quota_handoff",
-      detail: { requestID: id, operationID: event.operationID },
-    })
     if (!single)
       event.exchanges.forEach((exchange) => {
         ledger.requestStarted({ ...start, id: exchange.requestID, started: exchange.started })

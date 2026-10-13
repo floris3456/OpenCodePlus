@@ -298,7 +298,7 @@ test("missesOnly narrows the request list to the miss without changing totals", 
   }
   const all = queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache" }, { now })
   expect(all.requests?.map((entry) => entry.id)).toEqual(["req_seed", "req_hit", "req_miss"])
-  expect(all.requests?.map((entry) => entry.verdict)).toEqual(["none", "hit", "miss"])
+  expect(all.requests?.map((entry) => entry.verdict)).toEqual(["cold", "hit", "miss"])
   const missesOnly = queryMonitor(db, { scope: "session", sessionID: "ses_m", view: "cache", missesOnly: true }, { now })
   expect(missesOnly.totals).toEqual(all.totals)
   expect(missesOnly.requests?.map((entry) => entry.id)).toEqual(["req_miss"])

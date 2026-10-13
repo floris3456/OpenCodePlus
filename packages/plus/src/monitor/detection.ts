@@ -10,6 +10,8 @@ export function detectCache(input: {
   if (!input.predecessor) return { verdict: "cold" as const, missTokens: 0 }
   const baseline = input.frontier === undefined || input.input === undefined
     ? undefined : Math.min(input.frontier, input.input)
+  if (input.read === undefined || (baseline === undefined && (input.input === undefined || input.read <= input.input - 1024)))
+    return { verdict: "unknown" as const, baseline, missTokens: 0 }
   const shortfall = baseline === undefined || input.read === undefined ? 0 : Math.max(0, baseline - input.read)
   return {
     verdict: shortfall >= 1024 ? input.read === 0 ? "miss" as const : "partial" as const : "hit" as const,

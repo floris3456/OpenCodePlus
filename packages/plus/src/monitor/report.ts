@@ -386,6 +386,8 @@ export function requestReport(
     pings: pingRows.length,
     pingCost: sum(pingRows, "cost"),
     missTokens: sum(misses, "missTokens"),
+    coldRequests: invocations.filter((r) => r.verdict === "cold").length,
+    coldTokens: invocations.filter((r) => r.verdict === "cold").reduce((sum, r) => sum + (r.measurement?.input ?? 0), 0),
     // A priced subset is explanatory, never a complete total or recorded accounting.
     ...(pricingComplete ? { missCost: sum(priced, "missCost") } : {}),
     pricingCoverage: {

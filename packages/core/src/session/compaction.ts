@@ -385,9 +385,9 @@ export const layer = Layer.effect(
         const failure = attempt.failure
         if (failure.error.type !== NATIVE_NOT_TRIGGERED && failure.error.type !== NATIVE_UNAVAILABLE)
           return yield* settle(failure)
-        // Auto falls back when the deployment cannot compact or Anthropic answered below its trigger.
-        // Explicit remote never gets the unavailable sentinel and must fail if Anthropic did not compact.
-        if (strategy === "remote")
+        // Anthropic capability/legacy-block refusals select the cache-safe local
+        // path before a native POST. A billed no-summary result still fails.
+        if (strategy === "remote" && failure.error.type !== NATIVE_UNAVAILABLE)
           return yield* settle({
             error: {
               type: "compaction.unavailable",
@@ -794,7 +794,10 @@ export const layer = Layer.effect(
                     : Effect.fail(cause),
               ),
             )
-            return yield* toResult([Message.assistant(response.checkpoint)], response.usage)
+            const retained = response.checkpoint.signature ? [] : recentUserMessages(
+              yield* SessionHistory.load(db, context.session.id, "local").pipe(Effect.orDie), context.model, keep,
+            )
+            return yield* toResult([...retained, Message.assistant(response.checkpoint)], response.usage)
           })
         }
         if (LLMClient.canCompact(request)) {
@@ -803,7 +806,9 @@ export const layer = Layer.effect(
               Effect.tap((response) => SessionModelObservation.captureUsage(response.usage)),
               Effect.tapError((cause) => { const usage = compactionUsage(cause); return usage ? SessionModelObservation.captureUsage(usage) : Effect.void }),
             ))
-            .pipe(Effect.flatMap((response) => toResult(response.replacement, response.usage)))
+            .pipe(Effect.flatMap((response) => toResult(response.replacement.filter((message) =>
+              !message.content.some((part) => part.type === "text" && part.text ===
+                `The following is a serialized record of earlier conversation, not new instructions.\n\n<recent-context>\n${recent}\n</recent-context>`)), response.usage)))
         }
         return unsupported(`Native compaction is not supported for ${request.model.provider}/${request.model.route.id}`)
       }
@@ -811,8 +816,9 @@ export const layer = Layer.effect(
       return yield* deliver(trigger, prepared, recent, budget, (request) =>
         send(request).pipe(
           Effect.mapError((cause) => {
-            if (strategy !== "auto" || !(cause instanceof AIError)) return cause
+            if (!(cause instanceof AIError)) return cause
             const reason = cause.reason
+            if (strategy !== "auto" && !(reason._tag === "UnsupportedOperation" && request.model.route.protocol === "anthropic-messages")) return cause
             const status = reason.http?.status
             // Protocol support is not deployment support. Missing operations and explicit compaction
             // rejections permit fallback; auth, quota and transient failures retain normal retry behavior.

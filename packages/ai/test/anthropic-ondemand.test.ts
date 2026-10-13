@@ -11,6 +11,7 @@ const model = Anthropic.configure({ apiKey: "fixture" }).model("claude-opus-5-5"
 const request = LLM.request({
   model, system: "Same system", messages: [Message.user("History"), Message.assistant("Reply")],
   generation: { maxTokens: 4096, stop: ["stop"] },
+  http: { body: { stop_sequences: ["overlay-stop"], tool_choice: { type: "any" }, output_config: { format: { type: "json_schema", schema: { type: "object" } }, task_budget: { remaining: 10 } } } },
 })
 const events = [
   { type: "message_start", message: { id: "fixture", usage: { input_tokens: 0, output_tokens: 0 } } },
@@ -35,6 +36,9 @@ testEffect(dynamicResponse((input) => Effect.gen(function* () {
   expect(body.compaction).toMatchObject({ type: "summarize" })
   expect(body.context_management).toBeNull()
   expect(body.stop_sequences).toBeUndefined()
+  expect(body.tool_choice).toBeUndefined()
+  expect(body.output_config?.format).toBeUndefined()
+  expect(body.output_config?.task_budget?.remaining).toBeUndefined()
   expect(input.request.headers["anthropic-beta"]).toContain("compact-2026-09-04")
   return input.respond(events, { headers: { "content-type": "text/event-stream" } })
 }))).effect("C2/B6 on-demand wire shape and whole-block streaming preserve signature and iteration usage", () => Effect.gen(function* () {
@@ -55,3 +59,21 @@ testEffect(dynamicResponse((input) => Effect.sync(() => {
   const error = yield* LLMClient.compact(request, { mechanism: "trigger" }).pipe(Effect.flip)
   expect(error.reason._tag).toBe("UnsupportedOperation")
 }))
+
+testEffect(dynamicResponse((input) => Effect.sync(() => {
+  expect(input.request.method).toBe("GET")
+  return input.respond(JSON.stringify({ capabilities: { compaction: { supported: true } } }), { headers: { "content-type": "application/json" } })
+}))).effect("C2 legacy unsigned blocks choose local conversion before an on-demand POST", () => Effect.gen(function* () {
+  const error = yield* LLMClient.compact(LLM.request({ model, messages: [Message.assistant({ type: "compaction", provider: model.provider, text: "Legacy summary" }), Message.user("Continue")] }), { mechanism: "trigger" }).pipe(Effect.flip)
+  expect(error.reason).toMatchObject({ _tag: "UnsupportedOperation", message: expect.stringContaining("Legacy threshold") })
+}))
+
+for (const stop of ["max_tokens", "model_context_window_exceeded", "compaction"] as const) {
+  testEffect(dynamicResponse((input) => Effect.sync(() => {
+    if (input.request.method === "GET") return input.respond(JSON.stringify({ capabilities: { compaction: { supported: true } } }), { headers: { "content-type": "application/json" } })
+    return input.respond(events.replace('"stop_reason":"compaction"', `"stop_reason":"${stop}"`).replace(block.content, ""), { headers: { "content-type": "text/event-stream" } })
+  }))).effect(`C2 no-summary ${stop} retains billed iteration usage in the failure`, () => Effect.gen(function* () {
+    const error = yield* LLMClient.compact(request, { mechanism: "trigger" }).pipe(Effect.flip)
+    expect(error.reason).toMatchObject({ _tag: "InvalidProviderOutput", compaction: "unusable", usage: { cacheReadInputTokens: 46706, outputTokens: 584 } })
+  }))
+}

@@ -4,6 +4,7 @@ import { Schema } from "effect"
 export const CompactionObservation = Schema.Struct({
   version: Schema.Literal(1),
   configurationWarnings: Schema.optional(Schema.Array(Schema.String)),
+  cacheColdCause: Schema.optional(Schema.Literals(["snapshot-unavailable", "model-switch", "history-or-epoch-changed"])),
   trigger: Schema.Literals(["manual", "context-threshold", "overflow", "cold", "handoff", "armed", "hook-request", "input-threshold", "output-threshold"]),
   threshold: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
   configuredStrategy: Schema.Literals(["auto", "local", "remote"]),

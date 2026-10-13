@@ -256,6 +256,7 @@ export const layer = (options?: Options) =>
       })
 
       const load = Effect.fn("Config.load")(function* (sources: ConfigDiscovery.Sources) {
+        compactionWarnings.clear()
         const direct = yield* Effect.forEach(sources.direct, (filepath) => loadFile(filepath)).pipe(
           Effect.orDie,
           Effect.map((entries) => entries.filter((entry): entry is Document => entry !== undefined)),

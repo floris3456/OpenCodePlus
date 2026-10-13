@@ -111,6 +111,11 @@ export function watchMonitor(
       }),
     ))
 
+    yield* hook("compaction.decide", (event) => Effect.sync(() => {
+      if (event.compact && event.metadata?.["quota.switch"] === true)
+        open().contextFact({ sessionID: event.sessionID, at: Date.now(), kind: "quota_handoff" })
+    }))
+
     yield* hook("context", (event) =>
       Effect.sync(() => {
         const parts: NamedSystemPart[] = (event.system ?? []).map((part, index) => {

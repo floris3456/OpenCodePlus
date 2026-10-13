@@ -25,15 +25,26 @@ function fp(id: string, text = "synthetic unchanged prompt", previous?: string):
 }
 const fold = (rows: RequestRow[], fps: RequestFingerprintData[]) => foldSession(rows, [], new Map(fps.map((p) => [p.requestID, p]))).analysis.details
 
+test("reported writes are measurements; incomplete numeric data is never invented as a hit", () => {
+  const first = row("a", 10, usage(10000, 10000))
+  const written = row("b", 20, { version: 1, completeness: "final", inputTokens: 12000, cacheWriteInputTokens: 12000 })
+  expect(measurement(written).state).toBe("reported")
+  expect(fold([first, written], [])[1]?.request).toMatchObject({ verdict: "miss", missTokens: 10000 })
+  const incomplete = row("b", 20, { version: 1, completeness: "final", inputTokens: 12000, cacheWriteInputTokens: 1000 })
+  expect(fold([first, incomplete], [])[1]?.request.verdict).toBe("unknown")
+  const missing = row("b", 20, { version: 1, completeness: "final", inputTokens: 12000 })
+  expect(fold([first, missing], [])[1]?.request.verdict).toBe("none")
+})
+
 test("changed fingerprints cannot hide a measured loss; the frontier is capped by current input", () => {
   const first = row("old", 10, usage(169496, 168832))
   const observations = [usage(15025, 0), usage(15025), usage(15025, 15025), undefined]
   const results = observations.map((observation) => fold([first, row("now", 20, observation)], [fp("old"), fp("now", "contracted prompt")])[1]!.request)
-  expect(results.map((r) => r.measurement?.state)).toEqual(["reported", "not-reported", "reported", "legacy-unknown"])
+  expect(results.map((r) => r.measurement?.state)).toEqual(["reported", "reported", "reported", "legacy-unknown"])
   expect(results[0]?.measurement?.read).toBe(0)
   expect(results[1]?.measurement?.read).toBeUndefined()
   expect(results[2]?.measurement?.share).toBe(1)
-  expect(results.map((r) => r.verdict)).toEqual(["miss", "none", "hit", "none"])
+  expect(results.map((r) => r.verdict)).toEqual(["miss", "unknown", "hit", "none"])
   expect(results.map((r) => r.missTokens)).toEqual([15025, 0, 0, 0])
 })
 
@@ -130,12 +141,13 @@ test("auxiliary requests cannot hide invalidating facts after the selected ancho
 
 test("partial components in a final envelope are not exact read shares or measured write anchors", () => {
   const read = row("read", 10, { ...usage(5000, 5000), provenance: { cacheReadInputTokens: { source: "derived", completeness: "partial" } } })
-  expect(measurement(read)).toMatchObject({ state: "unavailable", input: 5000 })
+  expect(measurement(read)).toMatchObject({ state: "reported", input: 5000, write: 0 })
   expect(measurement(read).read).toBeUndefined()
   expect(measurement(read).share).toBeUndefined()
   expect(reuseRate(fold([read], []).map((d) => d.request)).measuredRequests).toBe(0)
   const write = row("a", 10, { ...usage(5000, 0, 5000), provenance: { cacheWriteInputTokens: { source: "derived", completeness: "partial" } } })
   const result = fold([write, row("b", 20, usage(5000, 0))], [fp("a"), fp("b")])[1]!.request
   expect(result.expected).toBeUndefined()
+  expect(result.verdict).toBe("unknown")
   expect(isMiss(result)).toBe(false)
 })

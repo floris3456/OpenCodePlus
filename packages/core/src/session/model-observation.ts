@@ -43,7 +43,7 @@ export const operation = <A, E, R>(effect: Effect.Effect<A, E, R>, id?: string) 
 type Identity = { operationID?: string; messageID?: string; onStart?: (invocationID: string) => void }
 export type Observer = <A, E, R>(effect: Effect.Effect<A, E, R>, identity?: Identity) => Effect.Effect<A, E, R>
 
-export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.Info["cost"]): Observer {
+export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.Info["cost"], cacheColdCause?: CompactionObservation["cacheColdCause"]): Observer {
   const operationID = crypto.randomUUID()
   return (effect, identity) =>
     Effect.flatMap(Operation, (operation) =>
@@ -72,7 +72,7 @@ export function make(hooks: PluginHooks.Interface, scope: Scope, costs?: Model.I
               const event: SessionModelObserved = Object.freeze({
                 ...scope,
                 purpose,
-                compaction: compaction ? Object.freeze({ ...compaction }) : undefined,
+                compaction: compaction ? Object.freeze({ ...compaction, ...(cacheColdCause ? { cacheColdCause } : {}) }) : undefined,
                 model: Object.freeze({ ...scope.model }),
                 invocationID: invocation.id,
                 operationID: identity?.operationID ?? operation ?? operationID,

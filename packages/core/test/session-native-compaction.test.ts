@@ -35,6 +35,7 @@ import { context } from "../../plus/test/harness.js"
 import type { SessionModelObserved } from "@opencode/plugin/effect/session"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
+import { queryMonitor } from "../../plus/src/monitor/query.js"
 import { decideCompaction } from "../../plus/src/compaction/decide.js"
 import { decideCompactionTriggers } from "../../plus/src/compaction/triggers.js"
 
@@ -97,7 +98,9 @@ const setup = Effect.fnUntraced(function* (options: {
   unsupported?: { status: number; message: string }
   noCompaction?: boolean
   anthropic?: "direct" | "compatible"
+  onDemand?: boolean
   quota?: boolean
+  iterationUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 } = {}) {
   const endpoint = options.endpoint ?? false
   const db = (yield* Database.Service).db
@@ -132,7 +135,7 @@ const setup = Effect.fnUntraced(function* (options: {
         hostname: "127.0.0.1",
         port: 0,
         async fetch(request) {
-          if (options.anthropic && request.method === "GET") return Response.json({ capabilities: { compaction: { supported: true } } })
+          if (options.anthropic && request.method === "GET") return Response.json({ capabilities: { compaction: { supported: options.onDemand !== false } } })
           if (options.quota && request.method === "GET")
             return Response.json({
               protocol: 1,
@@ -172,14 +175,14 @@ const setup = Effect.fnUntraced(function* (options: {
               headers: { "x-should-retry": "false" },
             })
           if (options.anthropic) {
-            const native = bodies.at(-1)?.context_management !== undefined
+            const native = bodies.at(-1)?.compaction !== undefined
             // A not-triggered request is a native attempt that Anthropic answered normally, so it returns
             // ordinary text even though the body carried the compaction trigger.
             const compacting = native && !state.notTriggered
             const events = [
               { type: "message_start", message: { usage: { input_tokens: 0, output_tokens: 0 } } },
-              { type: "content_block_start", index: 0, content_block: compacting ? { type: "compaction", content: null } : { type: "text", text: "" } },
-              { type: "content_block_delta", index: 0, delta: compacting ? { type: "compaction_delta", content: state.unusable ? null : "Native summary" } : { type: "text_delta", text: "## Objective\n- Local summary" } },
+              { type: "content_block_start", index: 0, content_block: compacting ? { type: "compaction", content: state.unusable ? null : "Native summary", signature: "fixture-signature" } : { type: "text", text: "" } },
+              ...(!compacting ? [{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "## Objective\n- Local summary" } }] : []),
               { type: "content_block_stop", index: 0 },
               {
                 type: "message_delta",
@@ -195,6 +198,7 @@ const setup = Effect.fnUntraced(function* (options: {
                           input_tokens: state.unusable ? 51000 : 55000,
                           output_tokens: 400,
                           ...(state.unusable ? { cache_read_input_tokens: 2000 } : {}),
+                          ...options.iterationUsage,
                         },
                       ],
                     }
@@ -684,6 +688,31 @@ it.live("a throwing compaction decision observer cannot mutate the snapshot or r
   }).pipe(Effect.provide(Logger.layer([Logger.make((entry) => { logs.push(entry.message) })])))
 })
 
+it.live("unsupported on-demand capability selects local append even for requested remote", () => Effect.gen(function* () {
+  const fixture = yield* setup({ anthropic: "direct", onDemand: false, config: { strategy: "remote" } })
+  yield* fixture.prompt("Synthetic conversation")
+  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  expect(fixture.bodies).toHaveLength(1)
+  expect(fixture.bodies[0]).not.toHaveProperty("compaction")
+  expect(fixture.observations.at(-1)?.compaction).toMatchObject({ selectedStrategy: "text-summary", selectionReason: "native-unavailable" })
+}))
+
+it.live("B6 iteration-only on-demand usage reaches the persisted monitor as a measured hit", () => Effect.gen(function* () {
+  const fixture = yield* setup({ anthropic: "direct", iterationUsage: { input_tokens: 60, output_tokens: 584, cache_read_input_tokens: 46706, cache_creation_input_tokens: 0 } })
+  const ledger = yield* Effect.acquireRelease(Effect.sync(() => createLedger(":memory:")), (db) => Effect.sync(() => db.close()))
+  yield* watchMonitor(context({ session: { hook: (name, callback, options) => fixture.hooks.register("session", name, callback, options) } }), () => undefined, () => ledger)
+  ledger.session({ id: fixture.sessionID }, 1)
+  ledger.requestStarted({ id: "warm", sessionID: fixture.sessionID, kind: "ping", provider: fixture.model.ref.providerID, model: fixture.model.ref.id, started: 1 })
+  ledger.requestEnded("warm", { ended: 2, status: "completed" })
+  ledger.requestObserved("warm", { version: 1, completeness: "final", inputTokens: 46723, cacheReadInputTokens: 46706, cacheWriteInputTokens: 0, historyEpoch: "initial" })
+  yield* fixture.prompt("Synthetic conversation")
+  expect(yield* fixture.compact).toEqual({ status: "completed" })
+  const report = queryMonitor(ledger, { scope: "session", sessionID: fixture.sessionID, view: "cache" }, { now: Date.now() + 1 })
+  expect(report.requests?.find((r) => r.kind === "compaction")).toMatchObject({ verdict: "hit", missTokens: 0, measurement: { state: "reported", input: 46766, read: 46706, write: 0 } })
+  expect(report.totals.cacheRead).toBe(46706)
+  expect(report.totals.output).toBe(584)
+}))
+
 for (const anthropic of ["direct", "compatible"] as const) {
   it.live(`Anthropic ${anthropic}: Auto persists a native checkpoint and compaction iteration usage`, () =>
     Effect.gen(function* () {
@@ -691,40 +720,40 @@ for (const anthropic of ["direct", "compatible"] as const) {
       yield* fixture.prompt("Conversation ".repeat(20_000))
       expect(yield* fixture.compact).toEqual({ status: "completed" })
       const last = (yield* fixture.load).messages.at(-1)
-      expect(last).toMatchObject({ status: "completed", summary: "", tokens: { input: 55000, output: 400 } })
+      expect(last).toMatchObject({ status: "completed", summary: "Native summary", tokens: { input: 55000, output: 400 } })
       if (last?.type !== "compaction" || last.status !== "completed" || !last.providerContext)
         return yield* Effect.die("Missing persisted Anthropic checkpoint")
       expect(last.providerContext.messages).toContainEqual({
         role: "assistant",
-        content: [{ type: "compaction", provider: fixture.model.model.provider, text: "Native summary" }],
+        content: [{ type: "compaction", provider: fixture.model.model.provider, text: "Native summary", signature: "fixture-signature" }],
       })
       expect(fixture.bodies).toHaveLength(1)
-      expect(fixture.headers[0].get("anthropic-beta")).toContain("compact-2026-01-12")
-      expect(fixture.bodies[0]).toMatchObject({ context_management: { edits: [{ trigger: { value: 50000 }, pause_after_compaction: true }] } })
+      expect(fixture.headers[0].get("anthropic-beta")).toContain("compact-2026-09-04")
+      expect(fixture.bodies[0]).toMatchObject({ context_management: null, compaction: { type: "summarize" } })
     }),
   )
 
-  it.live(`Anthropic ${anthropic}: Auto below 50 000 tokens uses a local summary`, () =>
+  it.live(`Anthropic ${anthropic}: Auto on-demand works below 50 000 tokens`, () =>
     Effect.gen(function* () {
       const fixture = yield* setup({ anthropic })
       yield* fixture.prompt("Short conversation")
       expect(yield* fixture.compact).toEqual({ status: "completed" })
       expect(fixture.bodies).toHaveLength(1)
-      expect(fixture.bodies[0].context_management).toBeUndefined()
-      expect(fixture.observations[0]?.compaction).toMatchObject({ selectedStrategy: "text-summary", selectionReason: "anthropic-below-minimum" })
+      expect(fixture.bodies[0].context_management).toBeNull()
+      expect(fixture.observations[0]?.compaction).toMatchObject({ selectedStrategy: "native", selectionReason: "auto-native" })
       const last = (yield* fixture.load).messages.at(-1)
-      expect(last).toMatchObject({ status: "completed", summary: "## Objective\n- Local summary" })
-      expect(last).not.toHaveProperty("providerContext", expect.anything())
+      expect(last).toMatchObject({ status: "completed", summary: "Native summary" })
+      expect(last).toHaveProperty("providerContext", expect.anything())
     }),
   )
 
-  it.live(`Anthropic ${anthropic}: Remote below 50 000 tokens fails without sending HTTP`, () =>
+  it.live(`Anthropic ${anthropic}: Remote on-demand works below 50 000 tokens`, () =>
     Effect.gen(function* () {
       const fixture = yield* setup({ anthropic, config: { strategy: "remote" } })
       yield* fixture.prompt("Short conversation")
-      expect(yield* fixture.compact).toMatchObject({ status: "failed", error: { type: "compaction.unavailable", message: expect.stringContaining("at least 50 000 input tokens") } })
-      expect(fixture.bodies).toHaveLength(0)
-      expect((yield* fixture.load).messages.at(-1)).toMatchObject({ status: "failed" })
+      expect(yield* fixture.compact).toMatchObject({ status: "completed" })
+      expect(fixture.bodies).toHaveLength(1)
+      expect((yield* fixture.load).messages.at(-1)).toMatchObject({ status: "completed", summary: "Native summary" })
     }),
   )
 }
@@ -750,35 +779,30 @@ it.live("Anthropic records a completed but unusable compaction's usage on the fa
   }),
 )
 
-it.live("Anthropic Auto falls back to a local summary when it does not trigger compaction", () =>
+it.live("Anthropic Auto retains history and billed usage when on-demand returns no block", () =>
   Effect.gen(function* () {
     const fixture = yield* setup({ anthropic: "direct" })
     fixture.state.notTriggered = true
     yield* fixture.prompt("Conversation ".repeat(20_000))
-    expect(yield* fixture.compact).toEqual({ status: "completed" })
-    // The native attempt is billed, then the local fallback summarizes in a second, non-trigger request.
-    expect(fixture.state.calls).toBe(2)
-    expect(fixture.observations).toHaveLength(2)
-    expect(new Set(fixture.observations.map((event) => event.operationID)).size).toBe(1)
-    expect(fixture.observations.map((event) => event.usage.outputTokens)).toEqual([40, 40])
-    expect(fixture.observations.map((event) => event.compaction?.selectionReason)).toEqual(["auto-native", "native-not-triggered"])
-    expect(fixture.observations.map((event) => event.compaction?.selectedStrategy)).toEqual(["native", "text-summary"])
+    expect(yield* fixture.compact).toMatchObject({ status: "failed", error: { type: "provider.invalid-output" } })
+    expect(fixture.state.calls).toBe(1)
+    expect(fixture.observations).toHaveLength(1)
+    expect(fixture.observations[0]?.usage.outputTokens).toBe(40)
     expect(fixture.bodies[0]).toHaveProperty("context_management")
-    expect(fixture.bodies[1]).not.toHaveProperty("context_management")
     const last = (yield* fixture.load).messages.at(-1)
-    expect(last).toMatchObject({ status: "completed", summary: "## Objective\n- Local summary" })
+    expect(last).toMatchObject({ status: "failed", tokens: { input: 200, output: 40 } })
     expect(last).not.toHaveProperty("providerContext", expect.anything())
   }),
 )
 
-it.live("Anthropic Remote fails with the minimum message when it does not trigger compaction", () =>
+it.live("Anthropic Remote records no-summary failure without a fictitious minimum", () =>
   Effect.gen(function* () {
     const fixture = yield* setup({ anthropic: "direct", config: { strategy: "remote" } })
     fixture.state.notTriggered = true
     yield* fixture.prompt("Conversation ".repeat(20_000))
     expect(yield* fixture.compact).toMatchObject({
       status: "failed",
-      error: { type: "compaction.unavailable", message: expect.stringContaining("at least 50 000 input tokens") },
+      error: { type: "provider.invalid-output", message: "Anthropic compaction returned end_turn without a summary; history retained" },
     })
     expect(fixture.state.calls).toBe(1)
     expect((yield* fixture.load).messages.at(-1)).toMatchObject({
@@ -980,7 +1004,7 @@ it.live("repeated endpoints which retain user messages do not accumulate tail wr
       expect(JSON.stringify(yield* fixture.checkpoint)).not.toContain("<recent-context>")
       const replay = SessionModelRequest.baseTranscript({ ...context, agent: context.agent.info })
       expect(JSON.stringify(replay.messages).match(/<recent-context>/g)).toHaveLength(1)
-      expect(JSON.stringify(fixture.bodies[index].input)).not.toContain("<recent-context>")
+      expect(JSON.stringify(fixture.bodies[index].input).match(/<recent-context>/g) ?? []).toHaveLength(index === 0 ? 0 : 1)
     }
   }),
 )
@@ -1057,7 +1081,7 @@ it.live("native to forced-local compaction preserves its whole saved tail with n
     fixture.state.config = { strategy: "local" }
     expect(yield* fixture.compact).toEqual({ status: "completed" })
     expect((yield* fixture.load).messages[0]).toMatchObject({ recent: saved.recent })
-    expect(JSON.stringify(fixture.bodies[1].input)).not.toContain("encrypted_")
+    expect(JSON.stringify(fixture.bodies[1].input)).toContain("encrypted_")
     fixture.state.config = { strategy: "remote" }
     expect(yield* fixture.compact).toEqual({ status: "completed" })
     expect((yield* fixture.load).messages[0]).toMatchObject({ recent: saved.recent })
@@ -1140,7 +1164,7 @@ it.live(
     }),
 )
 
-it.live("forced local agent compaction bypasses remote and re-expands existing provider checkpoints", () =>
+it.live("forced local agent compaction appends to existing provider checkpoints", () =>
   Effect.gen(function* () {
     const fixture = yield* setup()
     yield* fixture.prompt("Original durable request")
@@ -1153,7 +1177,7 @@ it.live("forced local agent compaction bypasses remote and re-expands existing p
     expect(JSON.stringify(fixture.bodies[1])).toContain("Original durable request")
     expect(JSON.stringify(fixture.bodies[1])).toContain("Custom local instructions")
     expect(JSON.stringify(fixture.bodies[1])).not.toContain("compaction_trigger")
-    expect(JSON.stringify(fixture.bodies[1])).not.toContain("encrypted_1")
+    expect(JSON.stringify(fixture.bodies[1])).toContain("encrypted_1")
     expect((yield* fixture.load).messages.at(-1)).toMatchObject({
       status: "completed",
       summary: "## Objective\n- Recovered locally",

@@ -428,9 +428,12 @@ export const layer = Layer.effect(
         generation: new GenerationOptions({ ...pinned.generation, maxTokens: fresh.generation?.maxTokens }),
         messages: [...pinned.messages, ...fresh.messages.slice(pinned.messages.length)],
       }) : fresh
-      if (kind === "compaction" && !pinned) yield* Effect.logWarning("Compaction cache prefix could not be pinned", {
+      const cacheColdCause = kind !== "compaction" || pinned ? undefined :
+        (session.model && !isDeepStrictEqual(session.model, model.ref)) || (prior && !isDeepStrictEqual(prior.model, model.ref)) ? "model-switch" :
+        !prior ? "snapshot-unavailable" : "history-or-epoch-changed"
+      if (cacheColdCause) yield* Effect.logWarning("Compaction cache prefix could not be pinned", {
         sessionID: session.id,
-        cause: !prior ? "snapshot-unavailable" : !isDeepStrictEqual(prior.model, model.ref) ? "model-switch" : "history-or-epoch-changed",
+        cause: cacheColdCause,
       })
       // History selects native windows against the catalog route before hooks run. A newly installed
       // routing hook must not send an existing opaque window to another deployment; `prepare` has no
@@ -540,12 +543,10 @@ export const layer = Layer.effect(
             )
           : undefined
 
-      const observer = SessionModelObservation.make(hooks, { ...scope, historyEpoch: input.historyEpoch }, model.cost)
+      const observer = SessionModelObservation.make(hooks, { ...scope, historyEpoch: input.historyEpoch }, model.cost, cacheColdCause)
       const remember: SessionModelObservation.Observer = (effect, identity) => observer(effect.pipe(Effect.tap(() => Effect.sync(() => {
           if (kind !== "primary") return
-          completed.delete(session.id)
           completed.set(session.id, { request, model: model.ref, epoch: input.historyEpoch })
-          if (completed.size > 32) completed.delete(completed.keys().next().value!)
         }))), identity)
       return {
         observer: remember,

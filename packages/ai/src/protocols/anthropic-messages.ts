@@ -1873,8 +1873,8 @@ const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(
   if (!response)
     return yield* ProviderShared.eventError(ADAPTER, "Anthropic compaction response ended without a result")
   const checkpoint = response.message.content[0]
-  // A normal answer means Anthropic did not reach its compaction threshold; the caller decides whether to
-  // fall back locally. The completed call is still billable, so both failures carry its usage.
+  // A no-summary response must retain history. Completed unsuccessful calls are
+  // still billable, so failures carry the iteration usage too.
   if (response.finishReason.raw !== "compaction")
     return yield* compactionFailure(
       response.usage,
