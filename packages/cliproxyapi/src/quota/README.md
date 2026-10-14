@@ -105,6 +105,11 @@ seconds while it is shown; nothing polls while no usage view is mounted.
   request while idle; CPA may choose another credential next time. Title
   generation and compaction do not overwrite that identity. Fresh chats show
   neither marker.
+- With Pacer routing on, **NEXT USE** marks the account Pacer moves this chat to
+  once its prompt cache is cold (shown while it is still warm), and **FORCE USE**
+  (warning colour) the account a forced move will send it to: when its account is
+  at a 5-hour or 7-day floor, or within the Pacer page's forced-move warning of one.
+  Neither marks the chat's own account; FORCE USE wins when both name one account.
 - Each credential shows its alias and `provider · exact auth ID`; long aliases and
   IDs wrap rather than truncate. **Shared quota with …** labels aliases sharing one
   account so their bars are not mistaken for additional capacity.

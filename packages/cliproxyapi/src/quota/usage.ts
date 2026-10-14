@@ -40,9 +40,16 @@ export const UsageSnapshot = Schema.Struct({
       provider: Schema.String,
       model: Schema.String,
       reason: Schema.String,
+      /** Pacer's view of the chat's cache: NEXT USE takes over once it is cold. */
+      warm: Schema.optional(Schema.Boolean),
+      /** NEXT USE: where the chat moves once its cache is cold. */
       auth: Schema.optional(Schema.String),
       alias: Schema.optional(Schema.String),
       forced: Schema.Boolean,
+      /** FORCE USE: where a forced move sends the chat, now or soon (a meter near its floor). */
+      force_auth: Schema.optional(Schema.String),
+      force_alias: Schema.optional(Schema.String),
+      force_reason: Schema.optional(Schema.Literals(["now", "soon"])),
     }),
   ),
   credentials: Schema.Array(

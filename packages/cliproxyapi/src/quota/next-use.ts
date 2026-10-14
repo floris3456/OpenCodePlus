@@ -34,6 +34,9 @@ export function createNextUse(io: { read(key: string): Promise<unknown>; fetch: 
         ...(next.candidates_at_ms === undefined ? {} : { candidates_at_ms: next.candidates_at_ms }),
         ...(next.auth === undefined ? {} : { auth: next.auth }),
         ...(next.alias === undefined ? {} : { alias: next.alias }),
+        ...(next.warm === undefined ? {} : { warm: next.warm }),
+        ...(next.force_auth === undefined ? {} : { force_auth: next.force_auth, force_reason: next.force_reason }),
+        ...(next.force_alias === undefined ? {} : { force_alias: next.force_alias }),
       }
     })().catch(() => undefined)
     cache.set(key, { at: io.now(), result })

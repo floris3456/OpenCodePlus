@@ -184,6 +184,41 @@ test("live IN USE replaces LAST USED, and NEXT USE remains an independent expiri
   expect(text).toContain("LAST USED")
 })
 
+test("FORCE USE marks where a forced move sends the chat and wins over NEXT USE; the chat's own credential has none", async () => {
+  const f = fixture()
+  const preview = (next: Partial<NonNullable<UsageSnapshot["next_use"]>>) => {
+    f.state.result = {
+      status: "ready",
+      snapshot: {
+        ...snapshot(),
+        providers: ["claude", "codex"],
+        next_use: {
+          v: 1,
+          at_ms: Date.now(),
+          expires_ms: Date.now() + 30000,
+          model: "claude-sonnet",
+          provider: "codex",
+          mode: "active",
+          reason: "cold_move",
+          forced: false,
+          ...next,
+        },
+      },
+    }
+  }
+  preview({ auth: "account-1", warm: true, force_auth: "account-2", force_reason: "soon" })
+  const output = await mount(f, 80, 40)
+  let lines = (await frame(output)).split("\n")
+  expect(lines.find((line) => line.includes("Account 1"))).toContain("NEXT USE")
+  expect(lines.find((line) => line.includes("Account 2"))).toContain("FORCE USE")
+  preview({ auth: "account-2", force_auth: "account-2", force_reason: "now", reason: "forced_move", forced: true })
+  f.setModel({ providerID: "cliproxyapi", modelID: "claude-sonnet-x" })
+  f.setModel({ providerID: "cliproxyapi", modelID: "claude-sonnet" })
+  lines = (await frame(output)).split("\n")
+  expect(lines.find((line) => line.includes("Account 2"))).toContain("FORCE USE")
+  expect(lines.join("\n")).not.toContain("NEXT USE")
+})
+
 test("sidebar only shows the selected model's providers, never unrelated credentials", async () => {
   const f = fixture()
   const output = await mount(f)

@@ -21,12 +21,16 @@ test("Plus preview reuses its own private capability, coalesces reads and clears
           v: 1,
           at_ms: now,
           expires_ms: now + 30000,
-          mode: "dry-run",
+          mode: "active",
           provider: "claude",
           model: "claude-opus",
           auth: "b",
           reason: "cold_move",
           forced: false,
+          warm: true,
+          force_auth: "c",
+          force_alias: "C",
+          force_reason: "soon",
         },
       })
     },
@@ -45,6 +49,8 @@ test("Plus preview reuses its own private capability, coalesces reads and clears
     expect(calls).toBe(0)
     const results = await Promise.all([read(server.url.href, input), read(server.url.href, input)])
     expect(results.map((value) => value?.auth)).toEqual(["b", "b"])
+    // The preview passes on Pacer's view of the chat's cache and its forced-move target.
+    expect(results[0]).toMatchObject({ warm: true, force_auth: "c", force_alias: "C", force_reason: "soon" })
     expect(calls).toBe(1)
     now += 16000
     unavailable = true
