@@ -61,13 +61,17 @@ export function CacheScreen(props: {
   })
   const choose = async (offset = 0) => {
     const value = await rpc["monitor.cache"]({ scope: "all", view: "sessions", pages: { sessions: { cursor: { offset, revision: "cache-sessions-v1" } } } }, { location: location() })
+    const sessions = new Map([
+      ...(value.sessions ?? []).map((row) => [row.sessionID, { title: row.title ?? row.sessionID, value: row.sessionID }] as const),
+      ...(props.context.data.session.list() ?? []).map((row) => [row.id, { title: row.title ?? row.id, value: row.id }] as const),
+    ])
+    const chat = props.sessionID()
+    const own = chat ? sessions.get(chat) : undefined
+    if (chat) sessions.delete(chat)
     const picked = await props.context.ui.dialog.select<string>({ title: "Cache monitor — session", options: [
       { title: "All sessions", value: "\0all" },
-      ...(props.sessionID() ? [{ title: "This chat", value: props.sessionID()! }] : []),
-      ...[...new Map([
-        ...(value.sessions ?? []).map((row) => [row.sessionID, { title: row.title ?? row.sessionID, value: row.sessionID }] as const),
-        ...(props.context.data.session.list() ?? []).map((row) => [row.id, { title: row.title ?? row.id, value: row.id }] as const),
-      ]).values()],
+      ...(chat ? [{ title: `This chat · ${own?.title ?? props.context.data.session.get(chat)?.title ?? chat}`, value: chat }] : []),
+      ...sessions.values(),
       ...(value.pages?.sessions?.previous ? [{ title: "Previous sessions", value: "\0previous" }] : []),
       ...(value.pages?.sessions?.next ? [{ title: "More sessions", value: "\0next" }] : []),
     ] })
