@@ -250,7 +250,7 @@ const layer = Layer.effect(
       Effect.forkScoped({ startImmediately: true }),
     )
     return Service.of({
-      transform: (update) => prepare.pipe(Effect.andThen(state.transform(update))),
+      transform: (update, options) => prepare.pipe(Effect.andThen(state.transform(update, options))),
       reload,
       get: Effect.fn("Model.get")((providerID, modelID) =>
         read().pipe(Effect.map((value) => value.byProvider.get(providerID)?.get(modelID))),

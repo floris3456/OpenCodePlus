@@ -11,6 +11,7 @@ import { Definition } from "./quota/rpc.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { pacerSnapshot } from "./quota/pacer-snapshot.js"
 import { createNextUse } from "./quota/next-use.js"
+import { normalizeLegacyReasoning } from "./model-compatibility.js"
 
 export const ID = "opencode-pacer"
 
@@ -30,6 +31,9 @@ export default Plugin.define({
     if (options.compactionModel) Model.Ref.parse(options.compactionModel)
     if (options.compactionFallback) Model.Ref.parse(options.compactionFallback)
     const stop = await Pacer.setup({ ...ctx, options: { ...ctx.options, accountSwitch: false } })
+    // Config is registered later than Pacer and can reload independently. The
+    // final phase makes compatibility part of every coherent model snapshot.
+    await ctx.model.transform(normalizeLegacyReasoning, { phase: "final" })
     const state = {
       routes: {} as Record<string, string>,
       pacer: false,

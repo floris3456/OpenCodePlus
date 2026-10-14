@@ -103,7 +103,10 @@
         "test/workspace.test.ts",
         "test/config/config.test.ts",
         "test/config/reload.test.ts",
-        "test/location-layer.test.ts"
+        "test/location-layer.test.ts",
+        "test/state.test.ts",
+        "test/plugin/pacer.test.ts",
+        "test/plugin/pacer-compatibility.test.ts"
       ],
       "cwd": "packages/core"
     },

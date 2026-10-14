@@ -21,6 +21,7 @@ export interface Registration {
  */
 export type Transform<Editor> = (
   transform: TransformCallback<Editor>,
+  options?: { readonly phase?: "final" },
 ) => Effect.Effect<Registration, never, Scope.Scope>
 
 /** Invalidates the current value after captured inputs change and notifies like a registration would. */
@@ -159,7 +160,11 @@ export interface Interface<State, Editor> extends Transformable<Editor> {
 
 export function create<State, Editor>(options: Options<State, Editor>): Interface<State, Editor> {
   let state = options.initial()
-  const transforms = new Set<{ run: TransformCallback<Editor>; group: RegistrationGroup | undefined }>()
+  const transforms = new Set<{
+    run: TransformCallback<Editor>
+    group: RegistrationGroup | undefined
+    final: boolean
+  }>()
   let dirty = false
   let closed = false
   let version = 0
@@ -175,7 +180,9 @@ export function create<State, Editor>(options: Options<State, Editor>): Interfac
       const started = version
       const next = options.initial()
       const editor = options.editor(next)
-      for (const transform of transforms) {
+      // Final normalization sees every ordinary override, including registrations
+      // added later by configuration reload. Ordering within each phase is stable.
+      for (const transform of Array.from(transforms).sort((a, b) => Number(a.final) - Number(b.final))) {
         try {
           transform.run(editor)
         } catch (cause) {
@@ -221,14 +228,14 @@ export function create<State, Editor>(options: Options<State, Editor>): Interfac
     get,
     invalidate,
     revision: () => version,
-    transform: Effect.fn("State.transform")(function* (update) {
+    transform: Effect.fn("State.transform")(function* (update, input) {
       yield* Effect.annotateCurrentSpan("state", options.name ?? "anonymous")
       const scope = yield* Scope.Scope
       const group = yield* CurrentGroup
       if (group?.failed) return { dispose: Effect.void }
       return yield* Effect.uninterruptible(
         Effect.gen(function* () {
-          const transform = { run: update, group }
+          const transform = { run: update, group, final: input?.phase === "final" }
           const registration: GroupedRegistration = {
             remove: () => {
               if (!transforms.delete(transform)) return false

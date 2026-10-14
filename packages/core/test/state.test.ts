@@ -4,6 +4,33 @@ import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect"
 import { it } from "./lib/effect"
 
 describe("State", () => {
+  it.effect("final transforms run after later overrides and disappear with their scope", () =>
+    Effect.gen(function* () {
+      const observed: string[][] = []
+      const state = State.create({
+        initial: () => ({ values: [] as string[] }),
+        editor: (editor) => ({ add: (item: string) => editor.values.push(item) }),
+        notify: (value) => Effect.sync(() => { observed.push([...value.values]) }),
+      })
+      const scope = yield* Scope.make()
+      yield* state.transform((editor) => editor.add("final-a"), { phase: "final" }).pipe(Scope.provide(scope))
+      const first = yield* state.transform((editor) => editor.add("config-a"))
+      yield* state.transform((editor) => editor.add("final-b"), { phase: "final" }).pipe(Scope.provide(scope))
+      yield* state.transform((editor) => editor.add("config-b"))
+      const previous = state.get()
+      expect(previous.values).toEqual(["config-a", "config-b", "final-a", "final-b"])
+      expect(observed.at(-1)).toEqual(previous.values)
+      yield* first.dispose
+      yield* state.transform((editor) => editor.add("config-reloaded"))
+      yield* state.reload()
+      expect(state.get().values).toEqual(["config-b", "config-reloaded", "final-a", "final-b"])
+      expect(previous.values).toEqual(["config-a", "config-b", "final-a", "final-b"])
+      yield* Scope.close(scope, Exit.void)
+      expect(state.get().values).toEqual(["config-b", "config-reloaded"])
+      expect(observed.at(-1)).toEqual(["config-b", "config-reloaded"])
+    }),
+  )
+
   it.effect("commits a transform atomically when its updater is interrupted", () =>
     Effect.gen(function* () {
       const rebuilding = yield* Deferred.make<void>()

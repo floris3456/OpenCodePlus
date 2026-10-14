@@ -8,6 +8,12 @@ The bundled code stays in the executable when removed from the enabled plugins.
 
 - Connect through `/connect` → CLIProxyAPI. No `cliproxyapi.json` is read.
 - Pacer owns model discovery, Claude relay, pricing and quota observations.
+- The Plus adapter normalizes legacy `body.reasoning: { effort }` overrides for
+  models whose final package uses Anthropic Messages, after ordinary config
+  transforms. This runs on startup, catalogue refresh and config/plugin reload;
+  it preserves the requested effort and unrelated settings without rewriting
+  the config file. Explicit OpenAI/custom packages keep their original bodies.
+  Unknown `reasoning` shapes are left intact rather than silently discarded.
 - Replies update the meter immediately. A shared Pacer change subscription also
   updates idle viewers when any caller uses the credential. Older servers fall
   back to cached-view reads every five seconds; provider polling stays in Pacer.
@@ -50,6 +56,16 @@ Summary preferences now live in the ordinary global `opencode.json`:
 meter. Existing provider-specific model settings remain ordinary OpenCode
 configuration. New Fast aliases and the legacy CPA image tool are not registered
 by the standalone Pacer plugin.
+
+The mandatory `core-contracts` release gate covers the **shipped Pacer adapter**
+with legacy configuration, including real HTTP request bodies, reloads and a
+rejection control (`test/plugin/pacer-compatibility.test.ts`). Legacy relay tests
+alone do not verify the currently bundled integration.
+
+The adapter uses `ctx.model.transform(normalizeLegacyReasoning, { phase: "final" })`.
+Both Promise and Effect plugins support this model-only option. Ordinary
+transforms run first; final transforms run in registration order before the
+snapshot is published, and retain normal scope disposal and failure handling.
 
 ## Historical implementation (through Plus 1.3.1)
 

@@ -362,7 +362,7 @@ export function fromPromise(plugin: Plugin) {
           model: {
             list: adaptApiMethod(ModelEndpoints["model.list"], host.model.list),
             default: adaptApiMethod(ModelEndpoints["model.default"], host.model.default),
-            transform: transform(host.model),
+            transform: (callback, options) => register(host.model.transform(callback, options)),
             reload: () => run(host.model.reload()),
           },
           provider: {

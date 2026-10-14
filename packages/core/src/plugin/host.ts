@@ -260,7 +260,7 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
       list: () => response(models.available()),
       default: () => response(models.default()),
       reload: models.reload,
-      transform: (callback) =>
+      transform: (callback, options) =>
         models.transform((editor) =>
           callback({
             list: (providerID) => editor.list(providerID === undefined ? undefined : Provider.ID.make(providerID)),
@@ -277,6 +277,7 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
               get: (id) => editor.provider.get(Provider.ID.make(id)),
             },
           }),
+          options,
         ),
     },
     command: {

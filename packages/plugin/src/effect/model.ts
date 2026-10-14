@@ -23,6 +23,10 @@ export interface ModelEditor {
 }
 
 export interface ModelDomain extends ModelApi<unknown> {
-  readonly transform: Transform<ModelEditor>
+  /** Final transforms normalize the selected protocol after all ordinary transforms, including config. */
+  readonly transform: (
+    callback: Parameters<Transform<ModelEditor>>[0],
+    options?: { readonly phase?: "final" },
+  ) => ReturnType<Transform<ModelEditor>>
   readonly reload: () => Effect.Effect<void>
 }
