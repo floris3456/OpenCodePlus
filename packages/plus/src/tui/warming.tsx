@@ -33,26 +33,20 @@ export function warmingLabel(
   if (status === undefined) return undefined
   if (status.compacted) return { text: "compacted", tone: "muted" }
 
-  // Compact before cold names its source ("· this chat" / "· model setting"),
-  // and, when cold arming applies, the model it compacts with first.
-  const source = status.compactSource === "chat" ? " · this chat" : status.compactSource === "model" ? " · model setting" : ""
   const coldFirst = status.coldModels?.[0]
   const coldArms = (cold: string) => (coldFirst === undefined ? cold : `cache cold · compacts with ${coldFirst} first`)
 
   if (status.compact) {
     const deadline = status.compactAt ?? (status.active && status.expires !== undefined ? status.expires : undefined)
     if (deadline !== undefined) {
-      if (deadline > now) return { text: `compact cache warm · ${formatRemaining(deadline - now)} left${source}`, tone: "muted" }
-      return { text: `${coldArms("compact cache cold")}${source}`, tone: "warning" }
+      if (deadline > now) return { text: `compact cache warm · ${formatRemaining(deadline - now)} left`, tone: "muted" }
+      return { text: coldArms("compact cache cold"), tone: "warning" }
     }
-    if (status.expires !== undefined) return { text: `${coldArms("compact cache cold")}${source}`, tone: "warning" }
+    if (status.expires !== undefined) return { text: coldArms("compact cache cold"), tone: "warning" }
     if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
-    if (status.chat === "on") return { text: `cache warming on · starts after the next reply${source}`, tone: "muted" }
-    return { text: `compact before cold on · starts after the next reply${source}`, tone: "muted" }
+    if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
+    return { text: "compact before cold on · starts after the next reply", tone: "muted" }
   }
-
-  // Off for this chat alone: say so, so the switch's state is visible.
-  if (status.compactSource === "chat") return { text: "compact before cold off · this chat", tone: "muted" }
 
   if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
   if (status.active && status.expires !== undefined && status.expires > now)

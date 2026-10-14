@@ -339,28 +339,26 @@ test("warmingLabel formats the compact before cold single label and compacted st
   ).toEqual({ text: "compacted", tone: "muted" })
 })
 
-test("the footer names the compact before cold source and the cold-arming model", () => {
+test("the footer keeps warming visible regardless of compaction source and names the cold-arming model", () => {
   const now = 1_000_000
   const base = { sessionID: "s", chat: "default" as const, compact: true, active: true, expires: now + 5_000, now }
-  // A chat override reads "· this chat"; a model setting "· model setting".
   expect(warmingLabel({ ...base, compactSource: "chat" }, now)).toEqual({
-    text: "compact cache warm · 0:05 left · this chat",
+    text: "compact cache warm · 0:05 left",
     tone: "muted",
   })
   expect(warmingLabel({ ...base, compactSource: "model" }, now)).toEqual({
-    text: "compact cache warm · 0:05 left · model setting",
+    text: "compact cache warm · 0:05 left",
     tone: "muted",
   })
   // When cold arming applies, the footer names the model it compacts with first.
   expect(warmingLabel({ ...base, compactSource: "model", coldModels: ["a/b", "c/d"] }, now)).toEqual({
-    text: "compact cache warm · 0:05 left · model setting",
+    text: "compact cache warm · 0:05 left",
     tone: "muted",
   })
   const cold = { ...base, compactSource: "model" as const, active: false, expires: now - 5_000, coldModels: ["a/b", "c/d"] }
-  expect(warmingLabel(cold, now)).toEqual({ text: "cache cold · compacts with a/b first · model setting", tone: "warning" })
-  // Off for this chat alone is named, so the switch's state is visible.
-  expect(warmingLabel({ sessionID: "s", chat: "default", compact: false, compactSource: "chat", active: false, now }, now)).toEqual({
-    text: "compact before cold off · this chat",
+  expect(warmingLabel(cold, now)).toEqual({ text: "cache cold · compacts with a/b first", tone: "warning" })
+  expect(warmingLabel({ ...base, compact: false, compactSource: "chat" }, now)).toEqual({
+    text: "cache warm · 0:05 left",
     tone: "muted",
   })
   // The model's off (no chat override) leaves the ordinary warming label.
