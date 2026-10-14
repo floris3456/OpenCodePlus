@@ -6,7 +6,7 @@ import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/paths.js"
-import type { MonitorMark, MonitorQueryInput, MonitorReport, MonitorRequestDetail, MonitorStepInput, MonitorStepResult } from "../rpc.js"
+import type { MonitorMark, MonitorPrompt, MonitorPromptInput, MonitorQueryInput, MonitorReport, MonitorRequestDetail, MonitorStepInput, MonitorStepResult } from "../rpc.js"
 import { bySession, inferRunTeam, loadRun } from "../teams/run.js"
 import { causeWords, isMiss } from "./cache.js"
 import { createCollector, MonitorEvents, type Collector } from "./collector.js"
@@ -15,6 +15,7 @@ import { endRequestWindow, ledgerAt, RETENTION_DAYS, type ContextFact, type Ledg
 import { queryMonitor } from "./query.js"
 import { recordModelObservation } from "./model-observation.js"
 import { captureWire, queryCacheResults, scheduleCacheBackfill } from "./snapshot.js"
+import { pruneWire, queryPrompt, scheduleArchiveImport } from "./wire.js"
 
 const DAY = 86_400_000
 
@@ -43,12 +44,14 @@ export function watchMonitor(
     lazy.failed = true
     const ledger = open()
     scheduleCacheBackfill(ledger)
+    scheduleArchiveImport(ledger)
     if (!pruned.has(ledger.path)) {
       pruned.add(ledger.path)
       // Retention is a synchronous scan; keep it off the first monitored prompt.
       setTimeout(() => {
         try {
           ledger.prune(Date.now() - RETENTION_DAYS * DAY)
+          pruneWire(ledger, Date.now() - RETENTION_DAYS * DAY)
         } catch (cause) {
           Effect.runFork(Effect.logWarning("plus monitor prune failed", { cause }))
         }
@@ -190,7 +193,7 @@ export function watchMonitor(
           httpRequests.set(request, requestID)
           const body = await request.clone().text()
           l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(body, { url: request.url, namedSystemParts: parts }) })
-          await captureWire(l, requestID, body)
+          await captureWire(l, requestID, body, { sessionID, url: request.url, at: started })
         }).pipe(Effect.catchCause(() => failedHook("http.request"))))
         await pricing(l, sessionID, provider, model, started)
       }),
@@ -238,7 +241,7 @@ export function watchMonitor(
         event.observers ??= []
         event.observers.push((frame) => Effect.promise(async () => {
           l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(frame, { namedSystemParts: parts }) })
-          await captureWire(l, requestID, typeof frame === "string" ? frame : JSON.stringify(frame))
+          await captureWire(l, requestID, typeof frame === "string" ? frame : JSON.stringify(frame), { sessionID, at: started })
         }).pipe(Effect.catchCause(() => failedHook("experimental.ws.send"))))
         await pricing(l, sessionID, provider, model, started)
       }),
@@ -356,10 +359,35 @@ export function watchMonitor(
   )
 }
 
+const TEAM_RESOLVE_MS = 60_000
+const teamsResolved = new WeakMap<Ledger, number>()
+
 export async function monitorQuery(ctx: Context, input: MonitorQueryInput, ledger: Ledger = ledgerAt()): Promise<MonitorReport> {
   if (input.view === "cache") return monitorCache(ctx, input, ledger)
   // Older, idle runs may never produce another event. Resolve their membership
-  // for historical queries as well, retaining only unambiguous answers.
+  // for historical queries as well, retaining only unambiguous answers. Run
+  // files change rarely, so a polling screen re-reads them at most once a minute.
+  if (Date.now() - (teamsResolved.get(ledger) ?? 0) > TEAM_RESOLVE_MS) {
+    teamsResolved.set(ledger, Date.now())
+    await resolveTeams(ctx, ledger)
+  }
+  const report = queryMonitor(ledger, input, { directory: ctx.location.directory })
+  // Saved results back Tools and Sessions totals; a historical backlog fills in behind.
+  scheduleCacheBackfill(ledger)
+  if (input.view !== "sessions" || !report.sessions?.length) return report
+  // Host facts only for the rows on this page, never for the whole ledger.
+  const facts = await hostSessionFacts(ctx, ledger, report.sessions.map((row) => row.sessionID))
+  return {
+    ...report,
+    sessions: report.sessions.map((row) => ({
+      ...row,
+      ...(facts.agents.has(row.sessionID) ? { agent: facts.agents.get(row.sessionID)! } : {}),
+      ...(facts.states.has(row.sessionID) ? { state: facts.states.get(row.sessionID)! } : {}),
+    })),
+  }
+}
+
+async function resolveTeams(ctx: Context, ledger: Ledger) {
   const older = ledger.db.query<{ id: string; run_id: string | null; role: string; directory: string | null }, []>("select id, run_id, role, directory from session where team is null and role is not null").all()
   await Promise.all(older.map(async (row) => {
     const run = row.run_id === null ? undefined : await loadRun(teamsDataDir(), row.run_id).catch(() => undefined)
@@ -371,17 +399,16 @@ export async function monitorQuery(ctx: Context, input: MonitorQueryInput, ledge
     union select s.id, i.team from session s join inherited i on s.parent_id = i.id where s.team is null
   ) update session set team = (select team from inherited where inherited.id = session.id)
     where team is null and id in (select id from inherited)`)
-  const facts = input.view === "sessions" ? await hostSessionFacts(ctx, ledger) : undefined
-  return queryMonitor(ledger, input, {
-    directory: ctx.location.directory,
-    ...(facts === undefined ? {} : { states: facts.states, agents: facts.agents }),
-  })
 }
 
 export function monitorCache(ctx: Context, input: MonitorQueryInput, ledger: Ledger = ledgerAt()): MonitorReport {
   const report = queryCacheResults(ledger, input, { directory: ctx.location.directory })
   if (report.cachePending) scheduleCacheBackfill(ledger)
   return report
+}
+
+export function monitorPrompt(input: MonitorPromptInput, ledger: Ledger = ledgerAt()): MonitorPrompt {
+  return queryPrompt(ledger, input)
 }
 
 export async function monitorStep(
@@ -429,18 +456,18 @@ interface HostSessionFacts {
 // host reports it active, else the last execution's recorded outcome; its agent
 // comes from the host's session info, because a title or generate call's
 // identity must not overwrite the chat's shown primary agent.
-async function hostSessionFacts(ctx: Context, ledger: Ledger): Promise<HostSessionFacts> {
-  const ids = ledger.db.query<{ id: string }, []>("select id from session").all().map((row) => row.id)
+async function hostSessionFacts(ctx: Context, ledger: Ledger, ids: readonly string[]): Promise<HostSessionFacts> {
   const states = new Map<string, string>()
   const agents = new Map<string, string>()
   // A session is running while the host reports it active, or—when that read
   // fails—while it has an open request of its own. Both are current facts and
   // must beat the last completed execution's outcome.
   const running = await Effect.runPromise(Effect.suspend(() => ctx.session.active())).catch(() => undefined)
-  for (const id of Object.keys(running ?? {})) states.set(id, "running")
-  for (const id of ids) {
-    if (!states.has(id) && ledger.getRequests(id).some((row) => row.ended === undefined)) states.set(id, "running")
-  }
+  const shown = new Set(ids)
+  for (const id of Object.keys(running ?? {})) if (shown.has(id)) states.set(id, "running")
+  ledger.db.query<{ session_id: string }, [string]>("select distinct session_id from request where ended is null and session_id in (select value from json_each(?))")
+    .all(JSON.stringify(ids))
+    .forEach((row) => { if (!states.has(row.session_id)) states.set(row.session_id, "running") })
   // The outcome vocabulary is the host's; show its meaning plainly.
   const label = (outcome: string) =>
     outcome === "succeeded" ? "completed" : outcome === "failed" ? "error" : outcome

@@ -24,6 +24,7 @@ import type {
 import { HOUR, type Ledger } from "./ledger.js"
 import { requestReport } from "./report.js"
 import { QueryCache, type QueryBoundary } from "./query-cache.js"
+import { legacySteps, savedSessionSums, savedSessions, savedTotals, settleRecentResults } from "./snapshot.js"
 
 const DEFAULT_TOP = 20
 const DEFAULT_FEED = 12
@@ -65,6 +66,7 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   const window = { since: input.since ?? 0, until: input.until ?? now + 1 }
   const comparison =
     input.compare === undefined ? undefined : { since: input.compare.since ?? 0, until: input.compare.until ?? now + 1 }
+  if (input.view === "tools" || input.view === "sessions") settleRecentResults(ledger)
   const cache = queryCaches.get(ledger) ?? new QueryCache()
   queryCaches.set(ledger, cache)
   const key = JSON.stringify([
@@ -78,13 +80,17 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   if (cached) return { ...cached, now }
   const group = input.group ?? "tool"
   const top = clamp(input.top ?? DEFAULT_TOP)
-  const requests = requestReport(ledger, input, context, window)
+  // Tools and Sessions read saved per-request results; only the agent tool's
+  // overview and steps views still fold session histories.
+  const saved = input.view === "tools" || input.view === "sessions"
+  const reportOf = (target: Window) => saved ? savedReport(ledger, input, context, target) : requestReport(ledger, input, context, target)
+  const requests = reportOf(window)
   const bounds: QueryBoundary[] = []
   // One grouped pass answers both: the totals sum every group, the table keeps the top ones.
   const read = (target: Window) => {
     const groups = groupsOf(db, input, context, target, group)
     const totals = totalsOf(db, input, context, target, groups)
-    const analyzed: typeof requests = target === window ? requests : requestReport(ledger, input, context, target)
+    const analyzed = target === window ? requests : reportOf(target)
     const analysis = analyzed.totals
     bounds.push({
       until: target.until,
@@ -141,6 +147,37 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   }
   cache.set(key, revision, bounds, report)
   return report
+}
+
+/** Request totals (and the Sessions list) from saved results and v1 steps, without history folds. */
+function savedReport(ledger: Ledger, input: MonitorQueryInput, context: QueryContext, window: Window) {
+  const bySession = input.view === "sessions" ? savedSessionSums(ledger, input, context, window) : undefined
+  const saved = savedTotals(ledger, input, context, window, bySession)
+  const legacy = legacySteps(ledger, input, context, window)
+  const old = (key: "steps" | "input" | "output" | "reasoning" | "cacheRead" | "cacheWrite" | "cost") =>
+    [...legacy.values()].reduce((sum, row) => sum + row[key], 0)
+  const totals: Partial<MonitorTotals> = {
+    ...saved.totals,
+    input: saved.totals.input + old("input"),
+    output: saved.totals.output + old("output"),
+    reasoning: saved.totals.reasoning + old("reasoning"),
+    cacheRead: saved.totals.cacheRead + old("cacheRead"),
+    cacheWrite: saved.totals.cacheWrite + old("cacheWrite"),
+    cost: saved.totals.cost + old("cost"),
+    unknownRequests: saved.totals.unknownRequests + old("steps"),
+  }
+  const teams = reportPage(
+    ledger.db.query<{ team: string }, []>("select distinct team from session where team is not null order by team").all().map((row) => row.team),
+    input.pages?.teams,
+  )
+  const sessions = bySession ? reportPage(savedSessions(ledger, input, context, window, legacy, bySession), input.pages?.sessions) : undefined
+  const sections: Partial<MonitorReport> = {
+    teams: teams.rows,
+    pings: saved.pings,
+    ...(sessions ? { sessions: sessions.rows } : {}),
+    pages: { teams: teams.metadata, ...(sessions ? { sessions: sessions.metadata } : {}) },
+  }
+  return { totals, sections, nextExpiry: Infinity }
 }
 
 function clamp(value: number): number {

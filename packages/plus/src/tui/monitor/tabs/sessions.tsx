@@ -48,7 +48,7 @@ export function SessionsTab(props: SessionsTabProps) {
   const showRead = () => available() >= 82
 
   return (
-    <box flexDirection="column" flexGrow={1} minWidth={0}>
+    <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
       <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
         <text fg={theme().text.muted} width={34} attributes={TextAttributes.BOLD}>
           Session / Role
@@ -105,6 +105,7 @@ export function SessionsTab(props: SessionsTabProps) {
       >
         <scrollbox
           flexGrow={1}
+          minHeight={0}
           id="monitor-scroll"
           ref={(next: ScrollBoxRenderable) => {
             window.ref(next)

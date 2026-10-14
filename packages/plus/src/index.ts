@@ -86,7 +86,7 @@ import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-b
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./warming.js"
-import { monitorCache, monitorFact, monitorMark, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
+import { monitorCache, monitorFact, monitorMark, monitorPrompt, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { compactColdNow } from "./compaction/cold-now.js"
@@ -3726,6 +3726,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "monitor.query": (input) => Effect.promise(() => monitorQuery(ctx, input)),
     "monitor.cache": (input) => Effect.sync(() => monitorCache(ctx, input)),
+    "monitor.prompt": (input) => Effect.sync(() => monitorPrompt(input)),
     "monitor.step": (input) => Effect.promise(() => monitorStep(ctx, input)),
     "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
     "checks.suggest": () =>

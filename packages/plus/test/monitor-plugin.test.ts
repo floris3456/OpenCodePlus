@@ -125,7 +125,6 @@ test("the ledger opens only when a monitored event arrives, and a broken one is 
 })
 
 test("the monitor tools answer for the calling chat and record marks", async () => {
-  const { backfillCacheBatch } = await import("../src/monitor/snapshot.js")
   const root = await dataHome()
   const tools = toolHarness()
   const ctx = fullContext({
@@ -173,10 +172,9 @@ test("the monitor tools answer for the calling chat and record marks", async () 
   expect(own.totals.calls).toBe(1)
   expect(own.requests?.find((r) => r.id === "cache-b")).toMatchObject({ verdict: "miss", cause: "unknown", confidence: "unknown" })
   expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("Provider cause unavailable")
-  const detail = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
-  expect(detail.cachePending).toBeGreaterThan(0)
-  backfillCacheBatch(ledgerAt(), 100)
+  // Two just-ended requests are saved by the read itself; a large backlog stays with the backfill.
   const ready = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
+  expect(ready.cachePending).toBe(0)
   expect(ready.detail?.previous?.id).toBe("cache-a")
   expect(ready.detail?.expectedTokens).toBe(4000)
   expect((await call("monitor_query", { view: "cache", id: "cache-b" }, "ses_other") as MonitorReport).detail).toBeUndefined()

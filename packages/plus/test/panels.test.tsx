@@ -34,8 +34,10 @@ async function fixture() {
           ...report.requests![0],
           id: `req_${index}`,
           model: `model-${String(index + 1).padStart(2, "0")}`,
+          causeText: `cause-${String(index + 1).padStart(2, "0")}`,
         })),
       }),
+      "monitor.cache": async () => report,
     },
     render: (base) => {
       const context: Plugin.Context = {
@@ -134,10 +136,10 @@ test("Monitor uses a session panel, keeps filters and selection across fullscree
     expect(test.navigations).toEqual([])
     dispatch(test.output, "3")
     dispatch(test.output, "g")
-    dispatch(test.output, "5")
+    dispatch(test.output, "1")
     await test.output.waitForFrame((frame) => frame.includes("row 1 of"))
     Array.from({ length: 25 }).forEach(() => dispatch(test.output, "down"))
-    await test.output.waitForFrame((frame) => frame.includes("model-26"))
+    await test.output.waitForFrame((frame) => frame.includes("cause-15"))
     await test.output.flush()
     const settings = structuredClone(test.output.storeValue("monitor"))
     const mounts = test.mounts()
@@ -148,13 +150,13 @@ test("Monitor uses a session panel, keeps filters and selection across fullscree
     expect(test.unmounts()).toBe(0)
     expect(test.output.storeValue("monitor")).toEqual(settings)
     expect(test.output.captureCharFrame()).toContain("row 26 of")
-    expect(test.output.captureCharFrame()).toContain("model-26")
+    expect(test.output.captureCharFrame()).toContain("cause-15")
     dispatch(test.output, "shift+m")
     expect(test.panels.presentation()).toBe("panel")
     await test.output.flush()
     expect(test.unmounts()).toBe(0)
     expect(test.output.captureCharFrame()).toContain("row 26 of")
-    expect(test.output.captureCharFrame()).toContain("model-26")
+    expect(test.output.captureCharFrame()).toContain("cause-15")
     dispatch(test.output, "escape")
     await test.output.flush()
     expect(test.panels.current()).toBeUndefined()

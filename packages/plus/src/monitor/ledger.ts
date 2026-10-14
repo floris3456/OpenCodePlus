@@ -293,8 +293,9 @@ create index if not exists request_started on request(started);
 create index if not exists request_kind on request(kind);
 create index if not exists request_predecessor on request(session_id, provider, model, ended desc);
 
--- Cache-screen read model. Full wire bodies live in private compressed files;
--- opening the screen reads only these compact, completed-request results.
+-- Cache-screen read model. Full wire bodies live in the private wire store
+-- (wire.ts); a body it cannot rebuild exactly keeps a compressed file here.
+-- Opening the screen reads only these compact, completed-request results.
 create table if not exists cache_wire (
   request_id text primary key,
   path text not null
@@ -307,8 +308,6 @@ create table if not exists cache_result (
   summary text not null,
   detail text not null
 );
-create index if not exists cache_result_session on cache_result(session_id, started, request_id);
-create index if not exists cache_result_started on cache_result(started, request_id);
 create index if not exists cache_result_verdict on cache_result(verdict, started, request_id);
 
 create table if not exists request_fingerprint (
@@ -602,6 +601,54 @@ export interface Ledger {
   getContextFacts(sessionID: string): readonly ContextFactRow[]
 }
 
+/**
+ * The numbers the monitor sums, copied out of each saved result's JSON. Two
+ * covering indexes carry them, so totals, per-session sums and request pages
+ * are index-only reads instead of parsing every result's JSON.
+ */
+export const CACHE_COLUMNS = [
+  ["kind", "text", "$.kind"],
+  ["agent", "text", "$.agent"],
+  ["model", "text", "$.provider || '/' || $.model"],
+  ["outcome", "text", "$.outcome"],
+  ["exchange", "integer", "coalesce($.measurement.scope, '') = 'exchange'"],
+  ["input", "integer", "coalesce($.input, 0)"],
+  ["output", "integer", "coalesce($.output, 0)"],
+  ["reasoning", "integer", "coalesce($.reasoning, 0)"],
+  ["cache_read", "integer", "coalesce($.cacheRead, 0)"],
+  ["cache_write", "integer", "coalesce($.cacheWrite, 0)"],
+  ["cost", "real", "coalesce($.cost, 0)"],
+  ["miss_tokens", "integer", "coalesce($.missTokens, 0)"],
+  ["miss_cost", "real", "$.missCost"],
+  ["measured_state", "text", "$.measurement.state"],
+  ["measured_input", "integer", "$.measurement.input"],
+  ["measured_read", "integer", "$.measurement.read"],
+] as const
+
+/** The SQL that computes every cache column from a `summary` JSON value. */
+export function cacheColumnValues(summary: string) {
+  return CACHE_COLUMNS.map(([, , value]) => value.replace(/\$\.([\w.]+)/g, (_, field: string) => `json_extract(${summary}, '$.${field}')`))
+}
+
+function migrateCacheColumns(db: Database) {
+  const existing = new Set(db.query<{ name: string }, []>("pragma table_info(cache_result)").all().map((column) => column.name))
+  const missing = CACHE_COLUMNS.filter(([name]) => !existing.has(name))
+  if (missing.length) {
+    db.transaction(() => {
+      missing.forEach(([name, type]) => db.exec(`alter table cache_result add column ${name} ${type}`))
+      const values = cacheColumnValues("summary")
+      db.exec(`update cache_result set ${CACHE_COLUMNS.map(([name], index) => `${name} = ${values[index]}`).join(", ")}`)
+    })()
+  }
+  const columns = CACHE_COLUMNS.map(([name]) => name).join(", ")
+  db.exec(`create index if not exists cache_result_time_totals on cache_result(started, request_id, session_id, verdict, ${columns})`)
+  db.exec(`create index if not exists cache_result_session_totals on cache_result(session_id, started, request_id, verdict, ${columns})`)
+  db.exec("drop index if exists cache_result_session")
+  db.exec("drop index if exists cache_result_started")
+  // Ended requests minus saved results is the backlog still to analyze.
+  db.exec("create index if not exists request_ended on request(session_id) where ended is not null")
+}
+
 /** `monitor.db` next to the teams data, under the XDG data directory. */
 // Freed pages are reused in place, so pruning stops the file growing but does
 // not shrink it; only a manual `VACUUM` reclaims the space. 1.2.0 deliberately
@@ -667,6 +714,7 @@ export function createLedger(file: string): Ledger {
     if (!fingerprintColumns.some((column) => column.name === name)) db.exec(`alter table request_fingerprint add column ${name} ${type}`)
   }
   db.exec("create index if not exists request_fingerprint_base on request_fingerprint(prefix_base)")
+  migrateCacheColumns(db)
   if (
     !db
       .query<{ name: string }, []>("pragma table_info(session)")

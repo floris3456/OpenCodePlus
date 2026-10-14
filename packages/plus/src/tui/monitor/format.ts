@@ -2,8 +2,13 @@
 // and the words and numbers the table prints.
 import type { Plus } from "../../rpc.js"
 
-export const TABS = ["overview", "cache", "tools", "sessions", "steps"] as const
+export const TABS = ["cache", "prompt", "tools", "sessions"] as const
 export type TabName = (typeof TABS)[number]
+
+/** Settings saved by releases with other tabs open on Cache. */
+export function knownTab(tab: string | undefined): TabName {
+  return TABS.find((name) => name === tab) ?? "cache"
+}
 
 export const WINDOWS = ["all", "compaction", "15m", "1h", "24h", "7d", "30d"] as const
 export type WindowName = (typeof WINDOWS)[number]
@@ -51,7 +56,7 @@ export interface MonitorSettings {
 }
 
 export const defaultSettings: MonitorSettings = {
-  tab: "overview",
+  tab: "cache",
   scope: "session",
   window: "all",
   group: "tool",
@@ -63,7 +68,7 @@ export const defaultSettings: MonitorSettings = {
 
 /** A drill-down step: a group row or detail view turned into a filter, remembered so it can be undone. */
 export interface Drill {
-  readonly kind?: "tools" | "cache" | "steps"
+  readonly kind?: "tools" | "cache"
   readonly settings: MonitorSettings
   readonly sessionID?: string
   readonly requestID?: string
@@ -110,7 +115,8 @@ export function queryOf(
     ...(settings.window === "compaction" ? { sinceCompaction: true } : {}),
     ...(window.since === undefined ? {} : { since: window.since }),
     ...(window.until === undefined ? {} : { until: window.until }),
-    view: settings.tab,
+    // The Prompt tab reads its own RPC; its header totals are the cache totals.
+    view: settings.tab === "prompt" ? "cache" : settings.tab,
     ...(context.id !== undefined ? { id: context.id } : {}),
     ...(settings.missesOnly ? { missesOnly: true } : {}),
     ...(settings.agent === undefined ? {} : { agents: [settings.agent] }),

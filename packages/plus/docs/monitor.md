@@ -6,10 +6,15 @@ file records why it is built this way and what was measured.
 
 ## Session filters
 
-Opening `/monitor` from a chat explicitly selects that chat; saved filters do
-not apply. `s` selects a session or all sessions. The picker merges the host's
-live session list with the ledger index, so an active chat is selectable even
-before its first completed request. Escape closes evidence first, then the screen.
+Opening `/monitor` from a chat starts with that chat selected (`filters 1`);
+saved preferences are preserved underneath and Backspace reveals them. `s` is
+one picker for the scope: this chat (`This chat · <title>`, one row), its tree,
+the project, everything, or any session. `S` adds a session to a combined
+report. Both pickers open at once from the last loaded list (refreshed in the
+background on every opening) merged with the host's live sessions, so an active
+chat is selectable before its first completed request. Every choice is a
+temporary drill step; Backspace undoes it, Escape closes item content first,
+then the screen.
 
 The RPC and tool accept `sessionIDs` for combined `session` or `tree` scopes.
 It takes precedence over `sessionID`; an explicit empty list reads no sessions.
@@ -27,10 +32,11 @@ capped at current inclusive input; a shortfall >= 128 is miss/partial. A new
 epoch is cold. Compaction remains an annotation. Iteration-only Anthropic usage
 arrives through the same core usage parser.
 
-Final HTTP/WS observers archive the full post-transform body in
-`monitor.db.transcripts/<request-hash>.json.gz` (directory 0700, file 0600).
-Completion compares full JSON fields with the predecessor, retaining only
-bounded changed-field descriptions and usage comparisons in the database.
+Final HTTP/WS observers store the full post-transform body in the item store
+`monitor.db.transcripts/wire.db` (directory 0700, file 0600; see *Sent-body item
+store* below). Completion compares full JSON fields with the predecessor,
+retaining only bounded changed-field descriptions and usage comparisons in the
+database.
 Output budgets, on-demand controls and cache hints are distinguished from prompt
 text changes. Linked Responses continuations are identified from the recorded
 response ID; expanded server-held history is not claimed to be in the wire body.
@@ -51,6 +57,55 @@ be inferred from an unchanged body; the cause remains explicitly unknown.
 
 Measured focused first-load fixture: 3,001 saved request results, 100 returned,
 13–31 ms on the development machine. This is not a production-database benchmark.
+
+### Read speed
+
+`cache_result` carries the summed numbers as columns (`CACHE_COLUMNS`, filled
+from each result's JSON at insert and once by migration), covered by two
+indexes keyed by time and by session. Totals, per-session sums and request
+pages are index-only reads instead of `json_extract` over every result. A read
+with no explicit end at an unchanged ledger revision returns the previous
+answer. Tools and Sessions take their request totals from these results (plus
+v1 steps that have no request row) instead of folding every session's history;
+only the agent tool's overview/steps views still fold. Host session facts are
+looked up for the rows on the returned page only, and team inference from run
+files runs at most once a minute.
+
+Measured on a copy of a live 2.5 GB ledger (32,657 requests, 364 sessions;
+first read after a change / repeated read):
+
+| Read | Before | After |
+|---|---|---|
+| Cache, all sessions | 370 ms every poll | 30–67 ms / ~1 ms |
+| Cache, one 2,292-request chat | 23 ms | 4 ms / ~1 ms |
+| Session picker list | 370 ms | ~50 ms, shown instantly from the last list |
+| Tools, all sessions, all time | 7.1 s first, 86 ms after | 120 ms |
+| Sessions, all, all time | ~1 s | ~105 ms |
+| Prompt rows, 1 MB body (483 items) | — | 1–3 ms |
+| Prompt poll, nothing new | — | < 0.1 ms |
+
+The remaining all-scope cost is dominated by v1 steps (pre-request ledger rows,
+~25 ms); they leave the 90-day window in early 2027.
+
+### Sent-body item store
+
+Each top-level field and each element of `system`, `tools`, `messages`,
+`input` and `contents` is one item, keyed by the SHA-256 of its role and
+compact JSON; a request is an ordered list of item hashes. Measured on 167
+archived bodies: 33,954 item rows, 639 distinct items; 86.7 MB of bodies held
+1.6 MB of distinct content (29 MB as whole-file gzip). Each item also stores a
+hash with `cache_control` removed, so the Prompt tab tells a moved cache hint
+(`*`) from changed content (`~`). Summaries are computed once per distinct item
+from fixed rules (kind by role/type; a call shows its tool and first recognized
+argument; a result its tool, size and first line; a `<system-reminder>` user
+part is its own kind). They contain prompt text, so they stay in the private
+store, never in `monitor.db`.
+
+A body rebuilds byte-for-byte when it was compact JSON (every observed body
+was); otherwise an exact gzip copy is kept beside it. Older whole-file archives
+are imported in background batches; an archive that rebuilds exactly is then
+deleted. Multi-exchange invocations alias the body of their final exchange.
+Retention deletes requests older than 90 days, then items no request uses.
 
 ### General tool/accounting event ledger
 

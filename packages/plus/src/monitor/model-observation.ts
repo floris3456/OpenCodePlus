@@ -1,6 +1,7 @@
 import type { SessionModelObserved } from "@opencode/plugin/effect/session"
 import type { Ledger } from "./ledger.js"
 import { projectCacheResult } from "./snapshot.js"
+import { aliasWire } from "./wire.js"
 
 /** No temporal joins and no Session aggregates. Multiple exchanges share one invocation usage row. */
 export function recordModelObservation(ledger: Ledger, event: SessionModelObserved, directory?: string) {
@@ -69,8 +70,11 @@ export function recordModelObservation(ledger: Ledger, event: SessionModelObserv
     const response = !single ? event.exchanges.findLast((exchange) => exchange.outcome === "response") : undefined
     const fingerprint = response ? ledger.getFingerprint(response.requestID) : undefined
     if (fingerprint) ledger.requestFingerprint({ ...fingerprint, requestID: id })
-    if (response) ledger.db.query(`insert or ignore into cache_wire(request_id, path)
-      select ?, path from cache_wire where request_id = ?`).run(id, response.requestID)
+    if (response) {
+      ledger.db.query(`insert or ignore into cache_wire(request_id, path)
+        select ?, path from cache_wire where request_id = ?`).run(id, response.requestID)
+      aliasWire(ledger, id, response.requestID)
+    }
     if (event.exchangeCount !== event.exchanges.length)
       ledger.contextFact({
         sessionID: event.sessionID,

@@ -694,13 +694,32 @@ Plugin RPC: `compaction.triggers` takes `{ sessionID }`; `compaction.triggers.se
 
 ## Monitor
 
-`/monitor` opens the cache screen, automatically filtered to the invoking chat.
-From Home it shows all sessions. It reads saved results; opening it does not
-replay or diff session history.
+`/monitor` opens four tabs — **Cache · Prompt · Tools · Sessions** — filtered to
+the invoking chat (`filters 1`, Backspace undoes it). From Home it reads the
+project. Every tab reads saved per-request results and indexed rollups; opening
+or polling it never replays or diffs session history.
 
-- Each row shows time, request kind, **hit / cold / partial / miss**, reported
-  reads, lost reuse, and the actual changed field or an explicit unknown cause.
-  Compaction is a request-kind annotation, never a replacement for its verdict.
+- **Scope and filters** apply to every tab: `s` one picker for this chat, this
+  chat with its subagents, the project, everything or any session (one row per
+  session); `S` adds a session to a combined report; `T` team; `t` window;
+  `a`/`f`/`F` agent/tool/model; `/` text; `x` the tab's own filter. Selections
+  are temporary drill steps; `?` lists every key.
+- **Cache**: each row shows time, request kind, **hit / cold / partial / miss**,
+  reported reads, lost reuse, and the actual changed field or an explicit unknown
+  cause. Compaction is a request-kind annotation, never a replacement for its
+  verdict. Enter opens evidence; `P` opens that request on the Prompt tab.
+- **Prompt**: one row per item Plus sent to the provider — each request option,
+  system block, tool definition and message part (prompt, system reminder,
+  assistant text, thinking, tool call, tool result, image/file) — with a fixed,
+  deterministic kind and summary (a call shows its tool and main argument, a
+  result its tool, size and first line). `+` new, `~` changed and `*` cache-hint
+  moved mark changes against the session's previous request; `◆` marks a cache
+  breakpoint. Enter shows the item readable (JSON-string arguments expanded),
+  `v` its exact JSON. It follows the latest request live; `[`/`]` step through
+  earlier ones, `l` returns, `x` shows only what changed.
+- **Tools** and **Sessions** are the tool-call groups/feed and the session tree
+  with their token totals, as before; their request totals now come from the
+  saved results instead of folding every session's history.
 - Detection uses reported provider usage (including streamed usage iterations).
   The baseline is the latest completed predecessor's read + write, capped at the
   current inclusive input, in the same session/provider/model/history epoch.
@@ -709,18 +728,27 @@ replay or diff session history.
 - Final post-transform request bodies are compared at completion. Output-budget
   changes and cache-hint movement are identified separately from changed prompt
   content. A difference is evidence, not proof of the upstream cause.
-- `s` selects a session; `m` shows misses/partials and cold starts; arrows select;
-  Enter opens evidence; `[` / `]` page; `l` returns to latest; `f` toggles full
-  screen; Escape closes evidence or the monitor. Filters are temporary.
-- Full sent bodies are private gzip transcripts next to `monitor.db`, retained
-  with its 90-day window. SQLite stores compact results and archive references.
-  Evidence compares measured net input growth with uncached input. Per-field
+- Sent bodies live in a private item store, `monitor.db.transcripts/wire.db`
+  (directory 0700, file 0600): each top-level field and each system/tools/
+  messages/input element is stored once by hash, and a request is its ordered
+  list of hashes. Consecutive requests repeat nearly all of their history, so
+  this stores each item once (measured on a live ledger: 86.7 MB of bodies, 1.6
+  MB of distinct items) and a request's rows, its changes and any single item
+  are indexed lookups. A body is rebuilt byte-for-byte from its items; one that
+  cannot be (not compact JSON) also keeps an exact gzip copy. Older whole-file
+  archives are moved into the store in the background. Retention follows the
+  90-day window. Headers/credentials are not archived.
+- Evidence compares measured net input growth with uncached input. Per-field
   provider token attribution is unavailable; serialized character counts are
-  labelled as such. Headers/credentials are not archived.
-- `monitor.cache` is the compact RPC. `monitor.query({view: "cache"})` uses it;
-  other `monitor.query` views retain the general tool/accounting reports.
-  Historical rows are indexed in the background, with a visible pending count;
-  old sent bodies cannot be reconstructed from fingerprints.
+  labelled as such.
+- RPCs: `monitor.cache` (cache results), `monitor.prompt` (a request's rows; a
+  poll naming the request already shown answers `unchanged` without rows) and
+  `monitor.query` (Tools/Sessions; the agent tool's overview/steps views still
+  use the history analysis). Totals are index-only reads of numeric columns on
+  `cache_result`; an unchanged ledger answers a repeated read from memory. A
+  read first saves the few results of just-ended requests; a larger historical
+  backlog is filled in the background with a visible pending count. Old sent
+  bodies cannot be reconstructed from fingerprints.
 
 <details>
 <summary>Historical five-tab monitor and attribution design (superseded cache UI and classifier)</summary>

@@ -42,13 +42,12 @@ export function CacheTab(props: CacheTabProps) {
   // distinguishable), verdict, cause and evidence; the agent/model column goes
   // first, then input and cost.
   const available = () => (props.width ?? dimensions().width) - 2
-  const showInput = () => available() >= 96
-  const showCost = () => available() >= 110
-  const showAgent = () => available() >= 84
+  const showAgent = () => available() >= 100
+  const showInput = () => available() >= 112
+  const showCost = () => available() >= 124
   const compact = () => available() < 86
-  const causeWidth = () => (compact() ? 16 : 18)
-  const kindWidth = () => 10
-  const kindLabel = (kind: Plus.MonitorRequest["kind"]) => kind
+  const kindWidth = () => (compact() ? 8 : 11)
+  const kindLabel = (kind: Plus.MonitorRequest["kind"]) => (kind === "compaction" ? (compact() ? "[comp]" : "[compact]") : kind)
 
   const requests = () => cacheRequests(props.report, props.missesOnly)
 
@@ -84,7 +83,7 @@ export function CacheTab(props: CacheTabProps) {
   }
 
   return (
-    <box flexDirection="column" flexGrow={1} minWidth={0}>
+    <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
       <Show
         when={
           props.detailID !== undefined &&
@@ -96,7 +95,7 @@ export function CacheTab(props: CacheTabProps) {
           <Show
             when={props.detailID !== undefined && detail() !== undefined}
             fallback={
-              <box flexDirection="column" flexGrow={1} minWidth={0}>
+              <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
                 {/* Header row */}
                 <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
                   <text fg={theme().text.muted} width={9} attributes={TextAttributes.BOLD}>
@@ -105,15 +104,18 @@ export function CacheTab(props: CacheTabProps) {
                   <text fg={theme().text.muted} width={kindWidth()} attributes={TextAttributes.BOLD}>
                     Kind
                   </text>
-                  <text fg={theme().text.muted} width={12} attributes={TextAttributes.BOLD}>
+                  <text fg={theme().text.muted} width={9} attributes={TextAttributes.BOLD}>
                     Verdict
                   </text>
-                  <text fg={theme().text.muted} width={causeWidth()} attributes={TextAttributes.BOLD}>
-                    Cause
+                  <text fg={theme().text.muted} width={8} attributes={TextAttributes.BOLD}>
+                    Read
+                  </text>
+                  <text fg={theme().text.muted} width={8} attributes={TextAttributes.BOLD}>
+                    Lost
                   </text>
                   <Show when={showAgent()}>
                     <text fg={theme().text.muted} width={16} attributes={TextAttributes.BOLD}>
-                      Agent/Model
+                      Model
                     </text>
                   </Show>
                   <Show when={showInput()}>
@@ -121,16 +123,13 @@ export function CacheTab(props: CacheTabProps) {
                       In
                     </text>
                   </Show>
-                  <text fg={theme().text.muted} width={9} attributes={TextAttributes.BOLD}>
-                    Read
-                  </text>
                   <Show when={showCost()}>
                     <text fg={theme().text.muted} width={9} attributes={TextAttributes.BOLD}>
                       Cost
                     </text>
                   </Show>
                   <text fg={theme().text.muted} flexGrow={1} attributes={TextAttributes.BOLD}>
-                    Evidence
+                    What changed
                   </text>
                 </box>
 
@@ -154,6 +153,7 @@ export function CacheTab(props: CacheTabProps) {
                 >
                   <scrollbox
                     flexGrow={1}
+                    minHeight={0}
                     id="monitor-scroll"
                     ref={(next: ScrollBoxRenderable) => {
                       window.ref(next)
@@ -194,23 +194,17 @@ export function CacheTab(props: CacheTabProps) {
                             >
                               {kindLabel(req.kind)}
                             </text>
-                            <text
-                              fg={isSelected() ? fg() : verdictFg(req.verdict)}
-                              width={12}
-                              attributes={TextAttributes.BOLD}
-                            >
-                              {`[${req.verdict.toUpperCase()}]`}
+                            <text fg={isSelected() ? fg() : verdictFg(req.verdict)} width={9} attributes={TextAttributes.BOLD}>
+                              {req.verdict}
                             </text>
-                            <text
-                              fg={req.cause ? theme().text.feedback.warning.base : theme().text.muted}
-                              width={causeWidth()}
-                              wrapMode="none"
-                              truncate
-                            >
-                              {req.causeText ?? req.cause ?? "—"}
+                            <text fg={fg()} width={8}>
+                              {formatReportedRead(req)}
+                            </text>
+                            <text fg={isSelected() ? fg() : verdictFg(req.verdict)} width={8}>
+                              {formatTokens(req.missTokens ?? 0)}
                             </text>
                             <Show when={showAgent()}>
-                              {/* One column short of the header: a truncated model name never runs into In. */}
+                              {/* One column short of the header: a truncated model name never runs into the next column. */}
                               <text fg={fg()} width={15} wrapMode="none" truncate>
                                 {req.model ?? req.agent ?? "—"}
                               </text>
@@ -221,16 +215,13 @@ export function CacheTab(props: CacheTabProps) {
                                 {formatTokens(req.input)}
                               </text>
                             </Show>
-                            <text fg={fg()} width={9}>
-                              {formatReportedRead(req)}
-                            </text>
                             <Show when={showCost()}>
                               <text fg={fg()} width={9}>
                                 {formatCost(req.cost) ?? "$0.00"}
                               </text>
                             </Show>
-                            <text fg={req.evidence ? fg() : theme().text.muted} flexGrow={1} wrapMode="none" truncate>
-                              {req.evidence ?? "—"}
+                            <text fg={req.causeText ? fg() : theme().text.muted} flexGrow={1} wrapMode="none">
+                              {req.causeText ?? req.cause ?? "—"}
                             </text>
                           </box>
                         )
@@ -255,7 +246,7 @@ export function CacheTab(props: CacheTabProps) {
                       <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
                         {`Request Detail: ${req.id} · ${req.kind} at ${formatClock(req.at)}`}
                       </text>
-                      <text fg={theme().text.muted}>Press ⌫ to return to list · esc closes monitor</text>
+                      <text fg={theme().text.muted}>P prompt · ⌫ list · esc closes monitor</text>
                     </box>
 
                     <Show when={req.measurement?.state === "legacy-unknown" || req.measurement === undefined}>

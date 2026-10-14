@@ -703,6 +703,46 @@ export function createFixtureReport(
   }
 }
 
+/** Two sent requests of one chat; the second appends a tool call and its result. */
+function createFixturePrompt(input: Plus.MonitorPromptInput, now: number): Plus.MonitorPrompt {
+  const second = input.requestID !== "req_prompt_1" || input.direction === "newer"
+  const requestID = input.direction === "older" ? "req_prompt_1" : second ? "req_prompt_2" : "req_prompt_1"
+  if (input.known === requestID && input.row === undefined) return { requestID, unchanged: true }
+  const latest = requestID === "req_prompt_2"
+  const rows: Plus.MonitorPromptRow[] = [
+    { path: "model", kind: "option", summary: 'model = "fixture-model"', chars: 15, change: latest ? "same" : "first" },
+    { path: "system[0]", kind: "system", summary: "You are a fixture agent working in a story.", chars: 18_400, change: latest ? "same" : "first", marker: true },
+    { path: "tools[0]", kind: "tool", summary: "read — Read the contents of a file.", chars: 900, change: latest ? "same" : "first" },
+    { path: "messages[0].content[0]", kind: "prompt", summary: "Find where the cache screen polls and make it faster", chars: 52, change: latest ? "same" : "first" },
+    ...(latest
+      ? [
+          { path: "messages[1].content[0]", kind: "thinking", summary: "The poll runs every two seconds; check the query first.", chars: 300, change: "new" as const },
+          { path: "messages[1].content[1]", kind: "call", summary: "read packages/plus/src/monitor/snapshot.ts", chars: 120, change: "new" as const },
+          { path: "messages[2].content[0]", kind: "result", summary: "read · 14,210 chars · import fs from \"node:fs\"", chars: 14_300, change: "new" as const, marker: true },
+        ]
+      : []),
+  ]
+  const row = input.row === undefined ? undefined : rows[input.row]
+  return {
+    requestID,
+    sessionID: "ses_lead",
+    at: now - (latest ? 1_000 : 60_000),
+    kind: "step",
+    model: "fixture/fixture-model",
+    verdict: latest ? "hit" : "cold",
+    protocol: "anthropic-messages",
+    bytes: latest ? 34_500 : 19_400,
+    exact: true,
+    position: latest ? 1 : 0,
+    count: 2,
+    ...(latest ? { older: "req_prompt_1" } : { newer: "req_prompt_2" }),
+    rows,
+    ...(row && input.row !== undefined
+      ? { detail: { row: input.row, path: row.path, json: JSON.stringify({ type: row.kind, text: row.summary }, null, 2), text: `type: ${row.kind}\ntext: ${row.summary}` } }
+      : {}),
+  }
+}
+
 export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; payloads?: boolean }) {
   const [missVariant, setMissVariant] = createSignal<MissVariant>("prefix")
   const dimensions = useTerminalDimensions()
@@ -717,6 +757,9 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
       ? {
           "monitor.query": async (input: Plus.MonitorQueryInput) =>
             createFixtureReport(input, missVariant(), now, props.paged, props.payloads),
+          "monitor.cache": async (input: Plus.MonitorQueryInput) =>
+            createFixtureReport(input, missVariant(), now, props.paged, props.payloads),
+          "monitor.prompt": async (input: Plus.MonitorPromptInput) => createFixturePrompt(input, now),
           "monitor.mark": async (input: Plus.MonitorMarkInput) => ({
             id: 99,
             at: Date.now(),
@@ -782,7 +825,9 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
                 { shortcut: "v", label: "full text" },
               ]
             : []),
+          { shortcut: "1-4", label: "cache · prompt · tools · sessions" },
           { shortcut: "ctrl+m", label: "toggle miss cause" },
+          { shortcut: "s", label: "scope or session" },
           { shortcut: "S", label: "add session filter" },
           { shortcut: "⌫", label: "undo filter" },
           { shortcut: "esc", label: "close monitor" },
@@ -794,7 +839,7 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
 
 export const monitorStory: Story = {
   id: "monitor",
-  title: "Monitor: tokens, cache and tools",
+  title: "Monitor: cache, prompt, tools and sessions",
   render: (context) => <MonitorStory context={context} />,
 }
 

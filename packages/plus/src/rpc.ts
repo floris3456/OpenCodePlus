@@ -1750,6 +1750,53 @@ export const MonitorSessionRow = Schema.Struct({
   misses: Schema.Number,
 }).annotate({ identifier: "Plus.MonitorSessionRow" })
 
+export interface MonitorPromptInput extends Schema.Schema.Type<typeof MonitorPromptInput> {}
+export const MonitorPromptInput = Schema.Struct({
+  /** The latest sent body of this session; absent: the latest of any session. */
+  sessionID: Schema.optionalKey(Schema.String),
+  requestID: Schema.optionalKey(Schema.String),
+  /** Step from `requestID` to the session's previous or next sent body. */
+  direction: Schema.optionalKey(Schema.Literals(["older", "newer"])),
+  /** The request already shown; an unchanged target answers `unchanged` without rows. */
+  known: Schema.optionalKey(Schema.String),
+  /** Include this row's full content. */
+  row: Schema.optionalKey(Schema.Number),
+}).annotate({ identifier: "Plus.MonitorPromptInput" })
+
+export interface MonitorPromptRow extends Schema.Schema.Type<typeof MonitorPromptRow> {}
+export const MonitorPromptRow = Schema.Struct({
+  path: Schema.String,
+  kind: Schema.String,
+  summary: Schema.String,
+  chars: Schema.Number,
+  /** Against the session's previous sent body: first (none), new, same, marker (only cache hints moved), changed. */
+  change: Schema.Literals(["first", "new", "same", "marker", "changed"]),
+  marker: Schema.optionalKey(Schema.Boolean),
+}).annotate({ identifier: "Plus.MonitorPromptRow" })
+
+export interface MonitorPrompt extends Schema.Schema.Type<typeof MonitorPrompt> {}
+export const MonitorPrompt = Schema.Struct({
+  requestID: Schema.optionalKey(Schema.String),
+  unchanged: Schema.optionalKey(Schema.Boolean),
+  sessionID: Schema.optionalKey(Schema.String),
+  at: Schema.optionalKey(Schema.Number),
+  kind: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(Schema.String),
+  verdict: Schema.optionalKey(Schema.String),
+  protocol: Schema.optionalKey(Schema.String),
+  bytes: Schema.optionalKey(Schema.Number),
+  exact: Schema.optionalKey(Schema.Boolean),
+  position: Schema.optionalKey(Schema.Number),
+  count: Schema.optionalKey(Schema.Number),
+  older: Schema.optionalKey(Schema.String),
+  newer: Schema.optionalKey(Schema.String),
+  rows: Schema.optionalKey(Schema.Array(MonitorPromptRow)),
+  detail: Schema.optionalKey(
+    Schema.Struct({ row: Schema.Number, path: Schema.String, json: Schema.String, text: Schema.String }),
+  ),
+}).annotate({ identifier: "Plus.MonitorPrompt" })
+
 export interface MonitorReport extends Schema.Schema.Type<typeof MonitorReport> {}
 export const MonitorReport = Schema.Struct({
   cachePending: Schema.optionalKey(Schema.Number),
@@ -2342,6 +2389,8 @@ const PortableMonitorStepResult = Schema.toStandardSchemaV1(
   MonitorStepResult.annotate({ identifier: "Plus.MonitorStepResult" }),
 )
 const PortableMonitorReport = Schema.toStandardSchemaV1(MonitorReport.annotate({ identifier: "Plus.MonitorReport" }))
+const PortableMonitorPromptInput = Schema.toStandardSchemaV1(MonitorPromptInput)
+const PortableMonitorPrompt = Schema.toStandardSchemaV1(MonitorPrompt)
 const PortableMonitorMarkInput = Schema.toStandardSchemaV1(
   MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }),
 )
@@ -2790,6 +2839,11 @@ export const Definition = Rpc.define({
     "monitor.step": {
       input: PortableMonitorStepInput,
       output: PortableMonitorStepResult,
+      errors: {},
+    },
+    "monitor.prompt": {
+      input: PortableMonitorPromptInput,
+      output: PortableMonitorPrompt,
       errors: {},
     },
     "monitor.mark": {

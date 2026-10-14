@@ -28,6 +28,7 @@ function request(index: number, overrides: Partial<Plus.MonitorRequest> = {}): P
     cost: 0.001,
     verdict: index % 2 === 0 ? "hit" : "miss",
     evidence: `row-${String(index).padStart(4, "0")}`,
+    causeText: `row-${String(index).padStart(4, "0")}`,
     ...overrides,
   }
 }
@@ -119,6 +120,7 @@ async function render(
         queries.push(input)
         return (options.report ?? makeReport)(input)
       },
+      "monitor.cache": async (input: Plus.MonitorQueryInput) => (options.report ?? makeReport)(input),
       "monitor.mark": async () => ({ id: 1, at: NOW, label: "m" }),
     },
     render: (context) => (
@@ -332,41 +334,29 @@ test("last-row navigation through a filtered list reaches and drills the last it
   }
 })
 
-test("a same-id Steps row updates agent/model/tokens/tools without being remounted", async () => {
-  const settings: MonitorSettings = { ...defaultSettings, tab: "steps", scope: "all" }
+test("a same-id Cache row updates model, tokens and cause without being remounted", async () => {
+  const settings: MonitorSettings = { ...defaultSettings, tab: "cache", scope: "all" }
+  const newest = COUNT - 1
   let baseline = true
   const { fixture } = await render(settings, {
     report: (input) => {
       const base = makeReport(input)
-      if (baseline) {
-        return {
-          ...base,
-          requests: [
-            request(0, { agent: "build", model: "claude-3-7-sonnet", tools: ["read"] }),
-            ...base.requests!.slice(1),
-          ],
-        }
-      }
-      return {
-        ...base,
-        requests: [
-          request(0, { agent: "explore", model: "gpt-5", tools: ["grep", "glob"], input: 999_000 }),
-          ...base.requests!.slice(1),
-        ],
-      }
+      const changed = baseline
+        ? request(newest, { model: "claude-3-7-sonnet", causeText: "Sent prefix unchanged" })
+        : request(newest, { model: "gpt-5", input: 999_000, causeText: "Sent content changed: tools[read]" })
+      return { ...base, requests: [...base.requests!.slice(0, -1), changed] }
     },
   })
   try {
-    await fixture.waitForFrame((text) => text.includes("row 1 of 5000"))
-    const before = fixture.renderer.root.findDescendantById("monitor-row-req_0")
+    await fixture.waitForFrame((text) => text.includes("Sent prefix unchanged"))
+    const before = fixture.renderer.root.findDescendantById(`monitor-row-req_${newest}`)
     expect(before).toBeDefined()
-    expect(fixture.captureCharFrame()).toContain("read")
 
     baseline = false
     await sleep(2_500)
     await fixture.flush()
 
-    const after = fixture.renderer.root.findDescendantById("monitor-row-req_0")
+    const after = fixture.renderer.root.findDescendantById(`monitor-row-req_${newest}`)
     // The row renderable is reused, not remounted, and its cells carry the
     // changed fields.
     expect(after).toBe(before)
@@ -374,15 +364,15 @@ test("a same-id Steps row updates agent/model/tokens/tools without being remount
       .getChildren()
       .map((c) => c.plainText)
     expect(cells.join(" ")).toContain("gpt-5")
-    expect(cells.join(" ")).toContain("grep, glob")
     expect(cells.join(" ")).toContain("999k")
+    expect(cells.join(" ")).toContain("Sent content changed: tools[read]")
   } finally {
     fixture.destroy()
   }
 })
 
-test("the Steps and Sessions tabs window their rows the same way", async () => {
-  for (const tab of ["steps", "sessions"] as const) {
+test("the Cache and Sessions tabs window their rows the same way", async () => {
+  for (const tab of ["cache", "sessions"] as const) {
     const { fixture } = await render({ ...defaultSettings, tab, scope: "all" })
     try {
       await fixture.waitForFrame((text) => text.includes(`of ${COUNT}`))

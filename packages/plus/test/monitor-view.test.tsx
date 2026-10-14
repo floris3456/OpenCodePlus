@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
+import { captureWire, queryCacheResults } from "../src/monitor/snapshot.js"
+import { queryPrompt } from "../src/monitor/wire.js"
 import type { Plus } from "../src/rpc.js"
 import {
   defaultSettings,
@@ -77,7 +79,63 @@ test("undoing the automatic chat filter exposes the project rather than implicit
   }
 })
 
-test.each(["cache", "steps"] as const)("%s repeated Enter opens a request detail only once", async (tab) => {
+test("the Prompt tab lists every sent item, opens one verbatim, steps between requests, and P jumps from Cache", async () => {
+  const db = await seeded()
+  const body = (messages: unknown[]) => JSON.stringify({ model: "fixture-model", system: [{ type: "text", text: "Fixture system prompt" }], messages })
+  const asked = { role: "user", content: [{ type: "text", text: "Read the fixture file" }] }
+  const called = { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "read", input: { filePath: "src/a.ts" } }] }
+  const answered = { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "export const a = 1" }] }
+  const sent = db.db.query<{ id: string; started: number }, []>("select id, started from request where session_id = 'ses_chat' order by started").all()
+  await captureWire(db, sent[0]!.id, body([asked]), { sessionID: "ses_chat", at: sent[0]!.started })
+  await captureWire(db, sent[1]!.id, body([asked, called, answered]), { sessionID: "ses_chat", at: sent[1]!.started })
+  const { fixture } = await render(db, { settings: { ...defaultSettings, tab: "cache" } })
+  try {
+    await fixture.waitForFrame((text) => text.includes("reqs: 2"))
+    dispatch(fixture, "2")
+    const list = await fixture.waitForFrame((text) => text.includes("request 2/2") && text.includes("export const a = 1"))
+    expect(list).toContain("Fixture system prompt")
+    expect(list).toContain("Read the fixture file")
+    expect(list).toMatch(/\+ +call +\S+ +read src\/a\.ts/)
+    expect(list).toMatch(/result +\S+ +read · 18 chars · export const a = 1/)
+    expect(list).toContain("2 new")
+    expect(list).toContain("live")
+
+    // The last item is selected; Enter shows it readable, v the exact JSON, ⌫ goes back.
+    dispatch(fixture, "return")
+    await sleep(300)
+    await fixture.waitForFrame((text) => text.includes("messages[2].content[0] · readable") && text.includes("tool_use_id: toolu_1"))
+    dispatch(fixture, "v")
+    await fixture.waitForFrame((text) => text.includes('"tool_use_id": "toolu_1"'))
+    dispatch(fixture, "backspace")
+    await fixture.waitForFrame((text) => text.includes("request 2/2") && !text.includes("⌫ back"))
+
+    // x keeps only what changed against the previous request.
+    dispatch(fixture, "x")
+    const changed = await fixture.waitForFrame((text) => text.includes("export const a = 1") && !text.includes("Fixture system prompt"))
+    expect(changed).not.toContain("Read the fixture file")
+    dispatch(fixture, "x")
+
+    dispatch(fixture, "[")
+    await sleep(300)
+    const older = await fixture.waitForFrame((text) => text.includes("request 1/2"))
+    expect(older).not.toContain("export const a = 1")
+    expect(older).toContain("[l] latest")
+    dispatch(fixture, "l")
+    await sleep(300)
+    await fixture.waitForFrame((text) => text.includes("request 2/2") && text.includes("live"))
+
+    // From the Cache tab, P opens the selected (newest) request's prompt.
+    dispatch(fixture, "1")
+    await fixture.waitForFrame((text) => text.includes("What changed"))
+    dispatch(fixture, "shift+p")
+    await sleep(300)
+    await fixture.waitForFrame((text) => text.includes("request 2/2") && text.includes("[l] latest"))
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test.each(["cache"] as const)("%s repeated Enter opens a request detail only once", async (tab) => {
   const { fixture } = await render(await seeded(), { settings: { ...defaultSettings, tab } })
   try {
     await fixture.waitForFrame((text) => text.includes("reqs: 2"))
@@ -370,6 +428,9 @@ async function render(
         }
         return queryMonitor(db, input, { directory: "/work/project", now: NOW })
       },
+      // The session pickers' list and the Prompt tab have their own RPCs.
+      "monitor.cache": async (input: Plus.MonitorQueryInput) => queryCacheResults(db, input, { directory: "/work/project", now: NOW }),
+      "monitor.prompt": async (input: Plus.MonitorPromptInput) => queryPrompt(db, input),
       "monitor.mark": async (input: Plus.MonitorMarkInput) => ({
         id: db.mark(input.label, NOW),
         at: NOW,
@@ -419,26 +480,29 @@ function groupRows(frame: string): string[] {
     .map((line) => line.split(/\s+/)[0]!)
 }
 
-test("the monitor opens on the session, shows totals line, and s reaches the tree", async () => {
+test("the monitor opens on the session, shows totals line, and s chooses the tree in one picker", async () => {
   const db = await seeded()
-  const { fixture, queries } = await render(db)
+  const { fixture, queries } = await render(db, { dialogs: { selects: ["tree\0ses_chat"] } })
   try {
     const frame = await fixture.waitForFrame((text) => text.includes("Scope: This session"))
     expect(queries[0]).toMatchObject({ scope: "session", sessionID: "ses_chat" })
-    expect(frame).toContain("Scope: This session (ses_chat)")
+    expect(frame).toContain("Scope: This session: ")
     expect(frame).toContain("When: All")
     expect(frame).toContain("reqs: 2")
     expect(frame).toContain("steps: 2")
     expect(frame).toContain("hit rate: —")
-    expect(frame).toContain("[1 Overview]")
-    expect(frame).toContain("[2 Cache]")
+    expect(frame).toContain("[1 Cache]")
+    expect(frame).toContain("[2 Prompt]")
     expect(frame).toContain("[3 Tools]")
     expect(frame).toContain("[4 Sessions]")
-    expect(frame).toContain("[5 Steps]")
     dispatch(fixture, "s")
     const treeFrame = await fixture.waitForFrame((text) => text.includes("Scope: Team tree"))
     expect(treeFrame).toContain("Scope: Team tree")
     expect(queries.at(-1)?.scope).toBe("tree")
+    // The current chat is one row, never a bare "This chat" followed by its name.
+    const options = fixture.fake.selectInputs.at(-1)?.options.map((option) => option.title) ?? []
+    expect(options.slice(0, 4)).toEqual([expect.stringMatching(/^This chat · /), "This chat with its subagents", "This project", "All sessions"])
+    expect(options.filter((title) => title === "This chat")).toEqual([])
   } finally {
     fixture.destroy()
   }
@@ -467,13 +531,11 @@ test("the Cache tab shows legacy changes without a confident miss, and detail op
   })
   try {
     await fixture.waitForFrame((text) => text.includes("Scope: This session"))
-    dispatch(fixture, "2")
-    const cacheFrame = await fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("[NONE]"))
-    expect(cacheFrame).not.toContain("[MISS]")
-    expect(cacheFrame).toContain("observe")
-    expect(cacheFrame).toContain("system part AGENTS.md changed")
-    expect(cacheFrame).not.toContain("[HIT]")
-    expect(cacheFrame).not.toContain("[COLD]")
+    dispatch(fixture, "1")
+    const cacheFrame = await fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("observed: prefix-changed"))
+    const rows = cacheFrame.split("\n").filter((line) => /\d\d:\d\d:\d\d/.test(line))
+    expect(rows.length).toBeGreaterThan(0)
+    rows.forEach((line) => expect(line).toMatch(/ none /))
 
     // The changed request is the newest, so it is the first row: open its
     // detail with return, without moving the selection.
@@ -491,7 +553,7 @@ test("the Cache tab shows legacy changes without a confident miss, and detail op
     // Close detail with backspace
     dispatch(fixture, "backspace")
     const closedFrame = await fixture.waitForFrame((text) => !text.includes("Request Detail:"))
-    expect(closedFrame).toContain("[NONE]")
+    expect(closedFrame).toContain("observed: prefix-changed")
   } finally {
     fixture.destroy()
   }
@@ -524,30 +586,7 @@ test("narrow and wide layouts format totals line without horizontal scroll", asy
   }
 })
 
-test("the narrow Overview lays its sections out without garbled overdraw", async () => {
-  const db = await seeded()
-  const { fixture } = await render(db, {
-    width: 80,
-    height: 40,
-    settings: { ...defaultSettings, tab: "overview" },
-    customReport: () => contractFixtureReport(NOW),
-  })
-  try {
-    const frame = await fixture.waitForFrame(
-      (text) => text.includes("Token Mix") && text.includes("Top") && text.includes("Agents in Scope"),
-    )
-    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
-    // The agents table drops its model column at 80 and stays a clean row.
-    expect(frame).not.toContain("Model")
-    const agentRow = frame.split("\n").find((line) => line.trim().startsWith("build "))
-    expect(agentRow).toContain("build")
-    expect(agentRow).not.toMatch(/[a-z][A-Z][a-z]/)
-  } finally {
-    fixture.destroy()
-  }
-})
-
-test("the narrow Cache keeps the ping kind and the agents table fits 80 columns", async () => {
+test("the narrow Cache keeps the kind column and fits 80 columns", async () => {
   const db = await seeded()
   const { fixture } = await render(db, {
     width: 80,
@@ -556,28 +595,14 @@ test("the narrow Cache keeps the ping kind and the agents table fits 80 columns"
     customReport: () => contractFixtureReport(NOW),
   })
   try {
-    const frame = await fixture.waitForFrame((text) => text.includes("[MISS]"))
-    // The kind column survives at 80 columns so pings stay distinguishable.
+    const frame = await fixture.waitForFrame((text) => text.includes("What changed") && / miss /.test(text))
+    // The kind column survives at 80 columns so pings and compactions stay distinguishable.
     expect(frame).toContain("Kind")
-    expect(frame).toContain("compaction")
-    frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
-  } finally {
-    fixture.destroy()
-  }
-
-  const overview = await render(db, {
-    width: 80,
-    height: 40,
-    settings: { ...defaultSettings, tab: "overview" },
-    customReport: () => contractFixtureReport(NOW),
-  })
-  try {
-    const frame = await overview.fixture.waitForFrame((text) => text.includes("Agents in Scope"))
-    // The model column is gone, so the table width fits without clipping.
+    expect(frame).toContain("[comp]")
     expect(frame).not.toContain("Model")
     frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(80))
   } finally {
-    overview.fixture.destroy()
+    fixture.destroy()
   }
 })
 
@@ -615,7 +640,7 @@ test("the Sessions tab shows a token total that includes cache and reasoning", a
 test("S opens a session picker over every session from any tab", async () => {
   const db = await seeded()
   const { fixture, queries } = await render(db, {
-    settings: { ...defaultSettings, scope: "project", tab: "overview" },
+    settings: { ...defaultSettings, scope: "project", tab: "tools" },
     customReport: () => contractFixtureReport(NOW),
     dialogs: { selects: ["ses_chat"] },
   })
@@ -623,9 +648,8 @@ test("S opens a session picker over every session from any tab", async () => {
     await fixture.waitForFrame((text) => text.includes("Scope: Project"))
     dispatch(fixture, "shift+s")
     await fixture.waitForFrame((text) => text.includes("filters 1"))
-    // The picker asks the ledger for every session, not just the current tab's.
-    expect(queries.some((query) => query.scope === "all" && query.view === "sessions")).toBe(true)
-    expect(fixture.fake.selectInputs.at(-1)?.options.map((option) => option.value)).toEqual(["ses_chat"])
+    // The picker lists every ledger session (subagents too), not just the current tab's.
+    expect(fixture.fake.selectInputs.at(-1)?.options.map((option) => option.value).toSorted()).toEqual(["ses_chat", "ses_child"])
     expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"] })
   } finally {
     fixture.destroy()
@@ -721,7 +745,7 @@ test("the monitor shows this chat's totals, tools and latest calls on Tools tab"
   try {
     const frame = await fixture.waitForFrame((text) => text.includes("latest calls"))
     expect(queries[0]).toMatchObject({ scope: "session", sessionID: "ses_chat", group: "tool", sort: "tokens" })
-    expect(frame).toContain("Scope: This session (ses_chat)")
+    expect(frame).toContain("Scope: This session: ")
     expect(frame).toContain("tools: call")
     // Groups, largest first: read (1.2k measured) above shell.
     const rows = frame.split("\n").map((line) => line.trim())
@@ -742,7 +766,7 @@ test("keys change grouping, scope, window and filters, and the choice persists",
   const db = await seeded()
   const { fixture, queries } = await render(db, {
     settings: { ...defaultSettings, tab: "tools", scope: "tree" },
-    dialogs: { selects: ["explore"] },
+    dialogs: { selects: ["explore", "project\0"] },
   })
   try {
     await fixture.waitForFrame((text) => text.includes("latest calls"))
@@ -765,11 +789,10 @@ test("keys change grouping, scope, window and filters, and the choice persists",
     await fixture.waitForFrame((text) => text.includes("failed only"))
     expect(queries.at(-1)).toMatchObject({ agents: ["explore"], errors: true })
     dispatch(fixture, "s")
-    await fixture.waitForFrame((text) => text.includes("Scope: Team"))
-    expect(queries.at(-1)?.scope).toBe("team")
-    dispatch(fixture, "s")
     await fixture.waitForFrame((text) => text.includes("Scope: Project"))
     expect(queries.at(-1)?.scope).toBe("project")
+    // The scope choice keeps the filters chosen before it.
+    expect(queries.at(-1)).toMatchObject({ agents: ["explore"], errors: true })
     dispatch(fixture, "t")
     await fixture.waitForFrame((text) => text.includes("When: Since last compaction"))
     expect(queries.at(-1)?.sinceCompaction).toBe(true)
@@ -812,17 +835,17 @@ test("the composer M opens the full page on this chat's session", async () => {
   }
 })
 
-test("the composer defaults to the tree scope and drills Tools even when its stored tab is Overview", async () => {
+test("the composer defaults to the tree scope and drills Tools even when its stored tab is Prompt", async () => {
   const db = await seeded()
   const { fixture, queries } = await render(db, {
     full: false,
     width: 90,
     height: 30,
-    settings: { ...defaultSettings, tab: "overview" },
+    settings: { ...defaultSettings, tab: "prompt" },
   })
   try {
     await fixture.waitForFrame((text) => text.split("\n").some((line) => /^tool\s+calls/.test(line.trim())))
-    // The compact body renders Tools, not the stored Overview tab.
+    // The compact body renders Tools, not the stored Prompt tab.
     expect(queries[0]?.view).toBe("tools")
     dispatch(fixture, "return")
     const drilled = await fixture.waitForFrame((text) => text.includes("tool read"))
@@ -854,7 +877,7 @@ test("full and compact keep separate persisted settings", async () => {
     settingsKey: "monitor",
   })
   try {
-    await full.fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("[NONE]"))
+    await full.fixture.waitForFrame((text) => text.includes("Verdict") && text.includes("What changed"))
     expect(full.queries[0]?.view).toBe("cache")
     expect((full.fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.tab).toBe("cache")
     expect(full.fixture.storeValue("monitor-composer")).toBeUndefined()
@@ -895,7 +918,7 @@ test("the Cache selection scrolls its full row into view", async () => {
     cacheWrite: index % 2 === 0 ? 0 : 900,
     cost: 0.001,
     verdict: index % 2 === 0 ? "hit" : "miss",
-    evidence: `row-${String(index).padStart(2, "0")}`,
+    causeText: `row-${String(index).padStart(2, "0")}`,
   }))
   const { fixture } = await render(db, {
     width: 100,
@@ -956,7 +979,7 @@ test("every total metric stays visible and labelled at 80, 100 and 160 columns",
     const { fixture } = await render(db, {
       width,
       height: 40,
-      settings: { ...defaultSettings, tab: "overview" },
+      settings: { ...defaultSettings, tab: "tools" },
       customReport: () => ({ ...contractFixtureReport(NOW), totals }),
     })
     try {
@@ -993,7 +1016,7 @@ test("known zero, known positive and omitted miss cost each render distinctly", 
     const { fixture } = await render(db, {
       width: 140,
       height: 40,
-      settings: { ...defaultSettings, tab: "overview" },
+      settings: { ...defaultSettings, tab: "tools" },
       customReport: () => ({ ...base, totals: item.totals }),
     })
     try {
@@ -1003,34 +1026,6 @@ test("known zero, known positive and omitted miss cost each render distinctly", 
     } finally {
       fixture.destroy()
     }
-  }
-})
-
-test("the overview top miss shows an unknown miss cost as — and never the request cost", async () => {
-  const db = await seeded()
-  const base = contractFixtureReport(NOW)
-  const request = {
-    ...base.topMisses![0]!,
-    missCost: undefined,
-    missTokens: 18_000,
-    cost: 0.035,
-  } as unknown as Plus.MonitorRequest
-  delete (request as { missCost?: number }).missCost
-  const { fixture } = await render(db, {
-    width: 140,
-    height: 40,
-    settings: { ...defaultSettings, tab: "overview" },
-    customReport: () => ({ ...base, topMisses: [request], requests: [request] }),
-  })
-  try {
-    const frame = await fixture.waitForFrame((text) => text.includes("Top Cache Misses"))
-    const missLine = frame.split("\n").find((line) => line.includes("missed"))
-    expect(missLine).toBeDefined()
-    expect(missLine).toContain("—")
-    expect(missLine).not.toContain("$0.04")
-    expect(missLine).not.toContain("$0.00")
-  } finally {
-    fixture.destroy()
   }
 })
 
@@ -1050,7 +1045,7 @@ test("omitted requests/pings totals render — while known zero stays 0", async 
       const { fixture } = await render(db, {
         width,
         height: 40,
-        settings: { ...defaultSettings, tab: "overview" },
+        settings: { ...defaultSettings, tab: "tools" },
         customReport: () => ({ ...base, totals: item.totals }),
       })
       try {
@@ -1094,96 +1089,11 @@ test("Cache detail labels omitted timings — and keeps a real zero as 0ms", asy
       })
       try {
         // Drill into the first request to open the detail.
-        await fixture.waitForFrame((text) => text.includes("[MISS]") || text.includes("[COLD]"))
+        await fixture.waitForFrame((text) => / (miss|cold) /.test(text))
         dispatch(fixture, "return")
         const frame = await fixture.waitForFrame((text) => text.includes("Request Detail:"))
         expect(frame).toContain(item.gap)
         expect(frame).toContain(item.lifetime)
-        frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
-      } finally {
-        fixture.destroy()
-      }
-    }
-  }
-})
-
-test("Steps detail is honest about duration and a missing/empty fingerprint diff", async () => {
-  const db = await seeded()
-  const base = contractFixtureReport(NOW)
-  const step = base.requests!.find((entry) => entry.kind === "step")!
-  const cases: {
-    name: string
-    request: Plus.MonitorRequest
-    detail: Plus.MonitorRequestDetail
-    list: string
-    expect: string[]
-    absent: string[]
-  }[] = [
-    {
-      name: "missing duration and no earlier request",
-      request: { ...step, durationMs: undefined } as unknown as Plus.MonitorRequest,
-      detail: {
-        request: step,
-        lines: [],
-        segments: [],
-        timing: { warming: "off" },
-        pings: [],
-        accounts: [],
-        instructions: [],
-        reverts: [],
-        actualCacheRead: 0,
-      },
-      list: "—",
-      expect: ["No earlier request to compare."],
-      absent: ["Prefix is identical to previous request."],
-    },
-    {
-      name: "existing previous with no fingerprint changes",
-      request: { ...step, durationMs: 0 },
-      detail: {
-        request: step,
-        previous: { id: "req_prev", at: NOW - 420_000 },
-        lines: [],
-        segments: [],
-        timing: { warming: "off" },
-        pings: [],
-        accounts: [],
-        instructions: [],
-        reverts: [],
-        actualCacheRead: 0,
-      },
-      list: "0ms",
-      expect: ["No segment changes recorded."],
-      absent: ["Prefix is identical to previous request."],
-    },
-  ]
-  for (const width of [80, 160]) {
-    for (const item of cases) {
-      const { fixture } = await render(db, {
-        width,
-        height: 40,
-        settings: { ...defaultSettings, tab: "steps" },
-        customReport: () => ({
-          ...base,
-          requests: [item.request],
-          detail: { ...item.detail, request: item.request },
-        }),
-      })
-      try {
-        // The list row shows the duration cell (— omitted, 0ms real zero).
-        const list = await fixture.waitForFrame((text) =>
-          /^(Time|Kind)\b/.test(
-            text
-              .split("\n")
-              .map((l) => l.trim())
-              .find((l) => /^Time\b/.test(l)) ?? "",
-          ),
-        )
-        expect(list).toContain(item.list)
-        dispatch(fixture, "return")
-        const frame = await fixture.waitForFrame((text) => text.includes("Step Detail:"))
-        item.expect.forEach((value) => expect(frame).toContain(value))
-        item.absent.forEach((value) => expect(frame).not.toContain(value))
         frame.split("\n").forEach((line) => expect(line.length).toBeLessThanOrEqual(width))
       } finally {
         fixture.destroy()
@@ -1213,7 +1123,7 @@ test("the / text filter narrows every table but leaves the totals", async () => 
     // Totals still describe the real query.
     expect(filtered).toContain("reqs: 2")
 
-    dispatch(fixture, "2")
+    dispatch(fixture, "1")
     await fixture.waitForFrame((text) => text.includes("Verdict") || text.includes("Kind"))
     expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings.filterText).toBe("shell")
   } finally {

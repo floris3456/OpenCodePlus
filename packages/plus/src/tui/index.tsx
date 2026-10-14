@@ -67,7 +67,7 @@ export default Plugin.define({
             },
             {
               id: "plus.monitor.open",
-              title: "Monitor: cache reads and misses",
+              title: "Monitor: cache, prompt, tools and sessions",
               group: "OpenCodePlus",
               palette: true,
               slash: { name: "monitor", aliases: ["tools"] },

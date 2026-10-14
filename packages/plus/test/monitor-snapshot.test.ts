@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
-import { readFileSync, statSync } from "node:fs"
-import { gunzipSync } from "node:zlib"
-import { captureWire, compareWire, projectCacheResult, queryCacheResults } from "../src/monitor/snapshot.js"
+import { statSync } from "node:fs"
+import { backfillCacheBatch, captureWire, compareWire, projectCacheResult, queryCacheResults } from "../src/monitor/snapshot.js"
+import { wireBody } from "../src/monitor/wire.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
-import { createLedger } from "../src/monitor/ledger.js"
+import { CACHE_COLUMNS, createLedger } from "../src/monitor/ledger.js"
 import { Schema } from "effect"
 import { MonitorReport } from "../src/rpc.js"
 import { fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
@@ -48,12 +48,14 @@ test("saved results survive reopening; reads never load fingerprints or full tra
   expect(report.totals).toMatchObject({ misses: 2, missTokens: 13000, coldRequests: 2 })
   expect(Schema.toStandardSchemaV1(MonitorReport)["~standard"].validate(report)).toHaveProperty("value")
   expect(report.requests?.[1]?.causeText).toContain("input[0].content")
-  expect(report.sessions?.[0]?.title).toBe("Current chat")
+  expect(queryCacheResults(reader, { scope: "all", view: "sessions" }, { now: 100 }).sessions?.[0]?.title).toBe("Current chat")
   const detail = queryCacheResults(reader, { scope: "session", sessionID: "chat", id: "b" }, { now: 100 }).detail
-  expect(detail?.lines.join("\n")).toContain("transcript")
-  const archive = db.db.query<{ path: string }, []>("select path from cache_wire where request_id = 'b'").get()!
-  expect(gunzipSync(readFileSync(archive.path)).toString()).toBe(body("rewritten"))
-  expect(statSync(archive.path).mode & 0o777).toBe(0o600)
+  expect(detail?.lines.join("\n")).toContain("Current sent body: b (Prompt tab)")
+  // Bodies live once per item in the private store and rebuild byte-for-byte; no whole-file copy is kept.
+  expect(wireBody(db, "b")).toBe(body("rewritten"))
+  expect(db.db.query("select * from cache_wire").all()).toEqual([])
+  expect(statSync(`${db.path}.transcripts/wire.db`).mode & 0o777).toBe(0o600)
+  expect(statSync(`${db.path}.transcripts`).mode & 0o777).toBe(0o700)
   const reopened = createLedger(db.path)
   try {
     expect(queryCacheResults(reopened, { scope: "all" }, { now: 100 }).requests).toEqual(report.requests)
@@ -96,7 +98,8 @@ test("first load of 3000 saved requests does not rebuild histories", async () =>
   projectCacheResult(db, "seed")
   db.db.exec(`with recursive n(x) as (values(1) union all select x+1 from n where x < 3000)
     insert into cache_result select 'r-' || x, 'chat', x + 10, verdict,
-      json_set(summary, '$.id', 'r-' || x, '$.at', x + 10), detail from n, cache_result where request_id = 'seed'`)
+      json_set(summary, '$.id', 'r-' || x, '$.at', x + 10), detail, ${CACHE_COLUMNS.map(([name]) => name).join(", ")}
+      from n, cache_result where request_id = 'seed'`)
   const start = performance.now()
   const report = queryCacheResults(db, { scope: "session", sessionID: "chat" }, { now: 10000 })
   const elapsed = performance.now() - start
@@ -120,6 +123,26 @@ test("archive failure cannot hide a miss; zero-duration requests cannot select t
   db.prune(100)
   expect(db.db.query("select * from cache_result").all()).toEqual([])
   expect(db.db.query("select * from cache_wire").all()).toEqual([])
+})
+
+test("a read saves a few just-ended results but leaves a historical backlog to the backfill", async () => {
+  const db = await ledger()
+  db.session({ id: "chat" }, 1)
+  const end = (count: number, from: number) => Array.from({ length: count }, (_, index) => {
+    const id = `r-${from + index}`
+    db.requestStarted({ id, sessionID: "chat", kind: "step", started: from + index })
+    db.requestEnded(id, { status: "completed", ended: from + index })
+    db.requestObserved(id, { version: 1, completeness: "final", inputTokens: 10000, cacheReadInputTokens: 10000, cacheWriteInputTokens: 0 })
+  })
+  end(17, 10)
+  const backlog = queryCacheResults(db, { scope: "all" }, { now: 1000 })
+  expect(backlog.cachePending).toBe(17)
+  expect(backlog.requests).toEqual([])
+  backfillCacheBatch(db, 100)
+  end(2, 100)
+  const recent = queryCacheResults(db, { scope: "all" }, { now: 1000 })
+  expect(recent.cachePending).toBe(0)
+  expect(recent.requests).toHaveLength(19)
 })
 
 test("every saved ping has exactly one follow-up bucket", async () => {

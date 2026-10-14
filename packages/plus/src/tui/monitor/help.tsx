@@ -19,9 +19,9 @@ export function MonitorHelp(props: HelpProps) {
     {
       title: "Navigation & Scope",
       entries: [
-        { key: "1 – 5", desc: "Switch tab (Overview, Cache, Tools, Sessions, Steps)" },
+        { key: "1 – 4", desc: "Switch tab (Cache, Prompt, Tools, Sessions)" },
         { key: "tab / shift+tab", desc: "Next / previous tab" },
-        { key: "s", desc: "Step scope (This session · Team tree · Team · Project · Everything)" },
+        { key: "s", desc: "Choose scope: this chat, its subagents, the project, everything, or any session" },
         { key: "S", desc: "Add another session to the combined report (selected sessions are omitted)" },
         { key: "T", desc: "Pick team (scope to a chosen Plus team)" },
         { key: "t", desc: "Step window (All · Since last compaction · 15m · 1h · 24h · 7d · 30d)" },
@@ -35,8 +35,22 @@ export function MonitorHelp(props: HelpProps) {
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select request" },
         { key: "Enter", desc: "Open request detail (cause, evidence, segment diff, timing)" },
-        { key: "x", desc: "Toggle misses only" },
+        { key: "P (shift+p)", desc: "Show what this request sent (Prompt tab)" },
+        { key: "x", desc: "Toggle misses and cold starts only" },
+        { key: "[ / ] · l", desc: "Older / newer page · latest" },
         { key: "⌫", desc: "Back out of detail" },
+      ],
+    },
+    {
+      title: "Prompt Tab",
+      entries: [
+        { key: "↑ / ↓ · PgUp/PgDn", desc: "Select item (one row per item sent: options, system, tools, message parts)" },
+        { key: "Enter", desc: "Show the item readable; v toggles its exact JSON" },
+        { key: "[ / ]", desc: "Previous / next sent request of this session" },
+        { key: "l", desc: "Follow the latest request live" },
+        { key: "x", desc: "Only items new or changed since the previous request (+ new, ~ changed, * cache hint moved)" },
+        { key: "/", desc: "Filter items by text" },
+        { key: "⌫ / esc", desc: "Back out of the item" },
       ],
     },
     {
@@ -61,14 +75,6 @@ export function MonitorHelp(props: HelpProps) {
         { key: "↑ / ↓ (j / k)", desc: "Select session in delegation tree" },
         { key: "Enter", desc: "Add this session to the report (no duplicates; ⌫ undoes)" },
         { key: "space", desc: "Add this session's tree to the report (no duplicates; ⌫ undoes)" },
-      ],
-    },
-    {
-      title: "Steps Tab",
-      entries: [
-        { key: "↑ / ↓ (j / k)", desc: "Select step" },
-        { key: "Enter", desc: "View step calls with attributed tokens & fingerprint diff" },
-        { key: "⌫", desc: "Back out of step detail" },
       ],
     },
   ]

@@ -13,7 +13,9 @@ import {
   drillInto,
   filterReport,
   formatClock,
+  formatTokens,
   GROUPS,
+  knownTab,
   queryOf,
   SCOPES,
   scopeWords,
@@ -31,9 +33,8 @@ import {
 import { MonitorHelp } from "./help.js"
 import { openSessionPicker } from "./session-picker.js"
 import { CacheTab } from "./tabs/cache.js"
-import { OverviewTab } from "./tabs/overview.js"
+import { PromptTab, type PromptController } from "./tabs/prompt.js"
 import { SessionsTab } from "./tabs/sessions.js"
-import { StepsTab } from "./tabs/steps.js"
 import { groupMountLog, resetGroupMountLog, stopGroupMountLog, ToolsTab } from "./tabs/tools.js"
 
 export { groupMountLog, resetGroupMountLog, stopGroupMountLog }
@@ -86,6 +87,7 @@ export function createMonitorSettings(
     ...defaultSettings,
     ...stored.settings,
     scope: stored.settings?.scope ?? defaultScope,
+    tab: knownTab(stored.settings?.tab),
   })
   createEffect(() => {
     const s = stored.settings
@@ -94,6 +96,7 @@ export function createMonitorSettings(
         ...defaultSettings,
         ...s,
         scope: s.scope ?? defaultScope,
+        tab: knownTab(s.tab),
       })
     }
   })
@@ -157,9 +160,15 @@ export function MonitorView(props: MonitorViewProps) {
       ? "detail.segments"
       : tab() === "sessions"
         ? "sessions"
-        : tab() === "overview"
-          ? "agents"
-          : undefined)
+        : undefined)
+  const [promptTarget, setPromptTarget] = createSignal<string>()
+  const prompt: { controller?: PromptController } = {}
+  // Prompt shows one session's sent bodies: the selected one, else the latest of any.
+  const promptSession = () => {
+    const current = settings()
+    if (current.scope !== "session" && current.scope !== "tree") return undefined
+    return current.sessionIDs?.at(-1) ?? sessionID()
+  }
   const metadata = () => {
     const target = pageTarget()
     return target ? (report()?.pages?.[target] ?? report()?.facets.pages?.[target]) : undefined
@@ -238,26 +247,15 @@ export function MonitorView(props: MonitorViewProps) {
           // at an actually-visible row; the text filter drops rows independently
           // of the server query and must not leave the selector past the end.
           const filtered = filterReport(next, settings().filterText)
-          const maxIdx = Math.max(
-            0,
-            (!props.full || tab() === "tools"
-              ? filtered.groups.length
-              : tab() === "cache"
-                ? (filtered.requests?.length ?? 0)
-                : tab() === "sessions"
-                  ? (filtered.sessions?.length ?? 0)
-                  : (filtered.requests?.length ?? 0)) - 1,
-          )
+          const maxIdx = Math.max(0, rowCount(filtered) - 1)
           // The Cache tab shows newest first, so a new request arrives at the
           // top and shifts every row down. Remember the selected request's id
           // so the selection follows the same request instead of its old row.
           const previousID =
-            props.full && (tab() === "cache" || tab() === "steps" || tab() === "sessions")
+            props.full && (tab() === "cache" || tab() === "sessions")
               ? tab() === "sessions"
                 ? shown()?.sessions?.[selected()]?.sessionID
-                : (tab() === "cache" ? cacheRequests(shown(), settings().missesOnly) : (shown()?.requests ?? []))[
-                    selected()
-                  ]?.id
+                : cacheRequests(shown(), settings().missesOnly)[selected()]?.id
               : undefined
           setReport(next)
           setFailure(undefined)
@@ -266,10 +264,7 @@ export function MonitorView(props: MonitorViewProps) {
               const at =
                 tab() === "sessions"
                   ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
-                  : (tab() === "cache"
-                      ? cacheRequests(filtered, settings().missesOnly)
-                      : (filtered.requests ?? [])
-                    ).findIndex((request) => request.id === previousID)
+                  : cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
               if (at !== -1) return at
             }
             return Math.min(index, maxIdx)
@@ -283,6 +278,14 @@ export function MonitorView(props: MonitorViewProps) {
         flight.again = false
         refresh()
       })
+  }
+
+  /** Rows the selection runs over on the current tab. */
+  function rowCount(report: Plus.MonitorReport | undefined) {
+    if (!props.full || tab() === "tools") return report?.groups.length ?? 0
+    if (tab() === "cache") return cacheRequests(report, settings().missesOnly).length
+    if (tab() === "sessions") return report?.sessions?.length ?? 0
+    return 0
   }
 
   createEffect(() => {
@@ -316,6 +319,8 @@ export function MonitorView(props: MonitorViewProps) {
 
   const setTab = (next: TabName) => {
     if (!props.full) return
+    // Opening Prompt by its key follows the latest request; P pins one afterwards.
+    setPromptTarget(undefined)
     setSelected(0)
     change({ ...settings(), tab: next })
   }
@@ -354,25 +359,29 @@ export function MonitorView(props: MonitorViewProps) {
   // moved — a poll returns a fresh report every second and must not yank a
   // user who scrolled the list away from the selection.
   let lastFollowed: { tab: TabName; index: number } | undefined
+  const [laidOut, setLaidOut] = createSignal(0)
   createEffect(() => {
+    laidOut()
     const current = tab()
-    const count =
-      current === "tools"
-        ? rows.groups.length
-        : current === "cache" || current === "steps"
-          ? (shown()?.requests?.length ?? 0)
-          : current === "sessions"
-            ? (shown()?.sessions?.length ?? 0)
-            : 0
+    const count = current === "tools" ? rows.groups.length : rowCount(shown())
     const index = Math.min(selected(), Math.max(0, count - 1))
     if (count === 0) {
       lastFollowed = undefined
       return
     }
     if (lastFollowed?.tab === current && lastFollowed.index === index) return
-    lastFollowed = { tab: current, index }
     const scroll = scrolls[current]
     if (scroll === undefined) return
+    // A list shown moments ago has no height until its first frame; follow then.
+    if (scroll.viewport.height === 0) {
+      const retry = () => {
+        props.context.renderer.off("frame", retry)
+        setLaidOut((value) => value + 1)
+      }
+      props.context.renderer.on("frame", retry)
+      return
+    }
+    lastFollowed = { tab: current, index }
     if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
     if (index < scroll.scrollTop) scroll.scrollTo(index)
   })
@@ -459,29 +468,105 @@ export function MonitorView(props: MonitorViewProps) {
     }
   }
 
-  // The picker always lists every session in the project, grouped by team
-  // tree, no matter which tab opened it or what the page is scoped to.
+  // Both pickers open at once from the last loaded session list (plus the
+  // host's live chats, which may not have a completed request yet); every
+  // opening refreshes the list in the background for the next one.
+  type SessionList = { sessions: readonly Plus.MonitorSessionRow[]; page?: Plus.MonitorPage }
+  const [knownSessions, setKnownSessions] = createSignal<SessionList>()
+  const loadSessions = (cursor?: NonNullable<Plus.MonitorPage["next"]>): Promise<SessionList> =>
+    plus["monitor.cache"](
+      { scope: "all", view: "sessions", ...(cursor ? { pages: { sessions: { cursor } } } : {}) },
+      { location: location() },
+    ).then((value) => ({ sessions: withHostSessions(value.sessions ?? [], cursor === undefined), ...(value.pages?.sessions ? { page: value.pages.sessions } : {}) }))
+  const refreshSessions = () => loadSessions().then(setKnownSessions, () => undefined)
+  const currentSessions = async () => {
+    const known = knownSessions()
+    void refreshSessions()
+    if (known) return known
+    const loaded = await loadSessions()
+    setKnownSessions(loaded)
+    return loaded
+  }
+  onMount(() => {
+    if (props.full) void refreshSessions()
+  })
+  const withHostSessions = (rows: readonly Plus.MonitorSessionRow[], first: boolean) => {
+    if (!first) return rows
+    const listed = new Set(rows.map((row) => row.sessionID))
+    const live = (props.context.data.session.list() ?? [])
+      .filter((row) => !listed.has(row.id))
+      .map((row): Plus.MonitorSessionRow => ({
+        sessionID: row.id, rootID: row.id, depth: 0, ...(row.title ? { title: row.title } : {}),
+        lastActive: 0, requests: 0, steps: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, cost: 0, misses: 0,
+      }))
+    return [...live, ...rows]
+  }
+  const sessionTitle = (id: string, rows: readonly Plus.MonitorSessionRow[]) =>
+    props.context.data.session.get(id)?.title ?? rows.find((row) => row.sessionID === id)?.title ?? id
+  const sessionLabel = (row: Plus.MonitorSessionRow) =>
+    [
+      `${row.depth > 0 ? "└─ " : ""}${row.title ?? row.role ?? row.agent ?? row.sessionID.slice(0, 12)}`,
+      ...(row.lastActive ? [formatClock(row.lastActive)] : []),
+      ...(row.steps ? [`${row.steps} steps`, `${formatTokens(row.input + row.cacheRead)} in`] : []),
+    ].join(" · ")
+
+  /** `s`: one picker for what the monitor reads — this chat, its tree, the project, everything, or any session. */
+  const chooseScope = async () => {
+    const chat = props.sessionID()
+    let list = await currentSessions()
+    while (true) {
+      const rows = list.sessions
+      const picked = await props.context.ui.dialog.select<string>({
+        title: "Monitor scope",
+        placeholder: "Search sessions…",
+        options: [
+          ...(chat
+            ? [
+                { title: `This chat · ${sessionTitle(chat, rows)}`, value: `session\0${chat}` },
+                { title: "This chat with its subagents", value: `tree\0${chat}` },
+              ]
+            : []),
+          { title: "This project", value: "project\0" },
+          { title: "All sessions", value: "all\0" },
+          ...rows.filter((row) => row.sessionID !== chat).map((row) => ({ title: sessionLabel(row), value: `session\0${row.sessionID}` })),
+          ...(list.page?.previous ? [{ title: "Previous sessions", value: "previous\0" }] : []),
+          ...(list.page?.next ? [{ title: "More sessions", value: "next\0" }] : []),
+        ],
+      })
+      props.context.ui.dialog.clear()
+      if (picked === undefined) return
+      const [kind, id] = picked.split("\0") as [string, string]
+      if (kind === "next" || kind === "previous") {
+        const cursor = kind === "next" ? list.page?.next : list.page?.previous
+        if (!cursor) return
+        list = await loadSessions(cursor)
+        continue
+      }
+      const scope = kind as Plus.MonitorScope
+      const next: MonitorSettings = id ? { ...settings(), scope, sessionIDs: [id] } : { ...settings(), scope, sessionIDs: undefined }
+      if (next.scope === settings().scope && JSON.stringify(next.sessionIDs) === JSON.stringify(settings().sessionIDs)) return
+      setSelected(0)
+      setDrills((stack) => [...stack, { settings: next, ...(id ? { sessionID: id } : {}) }])
+      return
+    }
+  }
+
+  // `S` adds a session to a combined report; already-selected sessions are omitted.
   const openPicker = () => {
-    void plus["monitor.query"]({ scope: "all", view: "sessions" }, { location: location() }).then(
-      (all) =>
+    void currentSessions().then(
+      (list) =>
         openSessionPicker(
           props.context,
-          all.sessions,
+          list.sessions,
           (picked) => {
             addSession(picked)
           },
           {
-            page: all.pages?.sessions,
+            page: list.page,
             selected: settings().scope === "session"
               ? settings().sessionIDs ?? (sessionID() ? [sessionID()!] : [])
               : [],
-            load: async (cursor) => {
-              const next = await plus["monitor.query"](
-                { scope: "all", view: "sessions", pages: { sessions: { cursor } }, fullText: true },
-                { location: location() },
-              )
-              return { sessions: next.sessions ?? [], page: next.pages?.sessions }
-            },
+            load: (cursor) => loadSessions(cursor).then((next) => ({ sessions: next.sessions, page: next.page })),
           },
         ),
       (error: unknown) =>
@@ -551,11 +636,8 @@ export function MonitorView(props: MonitorViewProps) {
       setDrills((stack) => [...stack, { kind: "cache", settings: settings(), requestID: req.id }])
       return
     }
-    if (current === "steps") {
-      const requests = shown()?.requests ?? []
-      const req = requests[selected()]
-      if (req === undefined || activeDrill()?.requestID === req.id) return
-      setDrills((stack) => [...stack, { kind: "steps", settings: settings(), requestID: req.id }])
+    if (current === "prompt") {
+      prompt.controller?.open()
       return
     }
     if (current === "sessions") {
@@ -573,6 +655,7 @@ export function MonitorView(props: MonitorViewProps) {
       setHelpOpen(false)
       return
     }
+    if (tab() === "prompt" && prompt.controller?.back()) return
     if (drills().length > 0) {
       setSelected(0)
       setDrills((stack) => stack.slice(0, -1))
@@ -592,19 +675,13 @@ export function MonitorView(props: MonitorViewProps) {
         group: "Monitor",
         run: () => {
           const names = Object.keys(report()?.pages ?? {}).filter((name) =>
-            activeDrill()?.requestID
-              ? name.startsWith("detail.")
-              : tab() === "sessions"
-                ? name === "sessions"
-                : tab() === "overview"
-                  ? ["agents", "context", "unstable"].includes(name)
-                  : false,
+            activeDrill()?.requestID ? name.startsWith("detail.") : tab() === "sessions" && name === "sessions",
           )
           void props.context.ui.dialog
             .select<Plus.MonitorPageSection | "requests">({
               title: "Page report collection (text search is page-local)",
               options: [
-                ...(tab() === "cache" || tab() === "steps" ? [{ title: "requests", value: "requests" as const }] : []),
+                ...(tab() === "cache" ? [{ title: "requests", value: "requests" as const }] : []),
                 ...names.map((name) => ({
                   title: `${name}: ${(report()?.pages?.[name] ?? report()?.facets.pages?.[name])?.total ?? 0} rows`,
                   value: name as Plus.MonitorPageSection,
@@ -620,15 +697,19 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "v",
-        title: "Toggle unabridged selected-page text",
+        title: "Toggle unabridged text / exact JSON",
         group: "Monitor",
-        run: () => setFullText((value) => !value),
+        run: () => {
+          if (tab() === "prompt") return prompt.controller?.toggleRaw()
+          setFullText((value) => !value)
+        },
       },
       ...(["older", "newer"] as const).map((direction) => ({
         bind: direction === "older" ? "[" : "]",
         title: `${direction} request page`,
         group: "Monitor",
         run: () => {
+          if (tab() === "prompt") return prompt.controller?.step(direction)
           const target = pageTarget()
           if (target) {
             const cursor = direction === "older" ? metadata()?.previous : metadata()?.next
@@ -637,7 +718,7 @@ export function MonitorView(props: MonitorViewProps) {
             setPages((current) => ({ ...current, [target]: { cursor } }))
             return
           }
-          if ((tab() !== "cache" && tab() !== "steps") || activeDrill()?.requestID) return
+          if (tab() !== "cache" || activeDrill()?.requestID) return
           const cursor = report()?.requestPage?.[direction]
           if (!cursor) return
           setSelected(0)
@@ -649,13 +730,14 @@ export function MonitorView(props: MonitorViewProps) {
         title: "Reset selected page",
         group: "Monitor",
         run: () => {
+          if (tab() === "prompt") return prompt.controller?.latest()
           if (pageTarget()) {
             const target = pageTarget()!
             setSelected(0)
             setPages((current) => ({ ...current, [target]: undefined }))
             return
           }
-          if (tab() !== "cache" && tab() !== "steps") return
+          if (tab() !== "cache") return
           setSelected(0)
           setRequestPage(undefined)
         },
@@ -665,6 +747,7 @@ export function MonitorView(props: MonitorViewProps) {
         title: "Previous row",
         group: "Monitor",
         run: () => {
+          if (tab() === "prompt" && props.full) return prompt.controller?.move(-1)
           if (selected() === 0 && !props.full) return props.onClose()
           setSelected((index) => Math.max(0, index - 1))
         },
@@ -674,52 +757,69 @@ export function MonitorView(props: MonitorViewProps) {
         title: "Next row",
         group: "Monitor",
         run: () => {
-          const maxIdx = Math.max(
-            0,
-            (!props.full || tab() === "tools"
-              ? groups().length
-              : tab() === "cache"
-                ? (shown()?.requests?.length ?? 0)
-                : tab() === "sessions"
-                  ? (shown()?.sessions?.length ?? 0)
-                  : (shown()?.requests?.length ?? 0)) - 1,
-          )
-          setSelected((index) => Math.min(maxIdx, index + 1))
+          if (tab() === "prompt" && props.full) return prompt.controller?.move(1)
+          setSelected((index) => Math.min(Math.max(0, rowCount(shown()) - 1), index + 1))
         },
+      },
+      {
+        bind: "pageup",
+        title: "Previous page of rows",
+        group: "Monitor",
+        run: () => {
+          if (tab() === "prompt") return prompt.controller?.move(-2)
+          setSelected((index) => Math.max(0, index - Math.max(1, dimensions().height - 14)))
+        },
+      },
+      {
+        bind: "pagedown",
+        title: "Next page of rows",
+        group: "Monitor",
+        run: () => {
+          if (tab() === "prompt") return prompt.controller?.move(2)
+          setSelected((index) => Math.min(Math.max(0, rowCount(shown()) - 1), index + Math.max(1, dimensions().height - 14)))
+        },
+      },
+      {
+        bind: "home",
+        title: "First row",
+        group: "Monitor",
+        run: () => (tab() === "prompt" ? prompt.controller?.edge("first") : setSelected(0)),
+      },
+      {
+        bind: "end",
+        title: "Last row",
+        group: "Monitor",
+        run: () => (tab() === "prompt" ? prompt.controller?.edge("last") : setSelected(Math.max(0, rowCount(shown()) - 1))),
       },
       { bind: "return", title: "Filter by row / open detail", group: "Monitor", run: drill },
       { bind: "backspace", title: "Back", group: "Monitor", run: back },
-      { bind: "escape", title: "Close monitor", group: "Monitor", run: () => props.onClose() },
       {
-        bind: "1",
-        title: "Overview tab",
+        bind: "escape",
+        title: "Close monitor",
         group: "Monitor",
-        run: () => setTab("overview"),
+        run: () => {
+          if (tab() === "prompt" && prompt.controller?.back()) return
+          props.onClose()
+        },
       },
       {
-        bind: "2",
-        title: "Cache tab",
+        bind: "shift+p",
+        title: "This request's prompt",
         group: "Monitor",
-        run: () => setTab("cache"),
+        run: () => {
+          if (tab() !== "cache") return
+          const id = activeDrill()?.requestID ?? cacheRequests(shown(), settings().missesOnly)[selected()]?.id
+          if (!id) return
+          setTab("prompt")
+          setPromptTarget(id)
+        },
       },
-      {
-        bind: "3",
-        title: "Tools tab",
+      ...TABS.map((name, index) => ({
+        bind: String(index + 1),
+        title: `${name.charAt(0).toUpperCase()}${name.slice(1)} tab`,
         group: "Monitor",
-        run: () => setTab("tools"),
-      },
-      {
-        bind: "4",
-        title: "Sessions tab",
-        group: "Monitor",
-        run: () => setTab("sessions"),
-      },
-      {
-        bind: "5",
-        title: "Steps tab",
-        group: "Monitor",
-        run: () => setTab("steps"),
-      },
+        run: () => setTab(name),
+      })),
       {
         bind: "tab",
         title: "Next tab",
@@ -734,9 +834,15 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "s",
-        title: "Scope",
+        title: "Choose scope or session",
         group: "Monitor",
-        run: () => change({ ...settings(), scope: cycle(SCOPES, settings().scope) }),
+        run: () => {
+          // The compact composer body has no room for a picker; it steps the scope.
+          if (!props.full) return change({ ...settings(), scope: cycle(SCOPES, settings().scope) })
+          void chooseScope().catch((error: unknown) =>
+            props.context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) }),
+          )
+        },
       },
       {
         bind: "shift+s",
@@ -779,11 +885,9 @@ export function MonitorView(props: MonitorViewProps) {
         title: "Toggle filter",
         group: "Monitor",
         run: () => {
-          if (tab() === "cache") {
-            change({ ...settings(), missesOnly: !settings().missesOnly })
-          } else {
-            change({ ...settings(), errors: !settings().errors })
-          }
+          if (tab() === "prompt") return prompt.controller?.toggleChanged()
+          if (tab() === "cache") return change({ ...settings(), missesOnly: !settings().missesOnly })
+          change({ ...settings(), errors: !settings().errors })
         },
       },
       {
@@ -845,8 +949,10 @@ export function MonitorView(props: MonitorViewProps) {
     if ((effective === "session" || effective === "tree") && ids !== undefined && ids.length > 1) {
       return `${ids.length} ${effective === "tree" ? "session trees" : "sessions"} (${ids.map((id) => id.slice(0, 10)).join(", ")})`
     }
-    if (effective === "session" && sessionID() !== undefined) {
-      return `${name} (${sessionID()!.slice(0, 10)})`
+    if ((effective === "session" || effective === "tree") && sessionID() !== undefined) {
+      const id = ids?.[0] ?? sessionID()!
+      const title = props.context.data.session.get(id)?.title ?? knownSessions()?.sessions.find((row) => row.sessionID === id)?.title
+      return `${name}: ${title ?? id.slice(0, 10)}`
     }
     if (effective === "team" && settings().team !== undefined) {
       return `${name}: ${settings().team}`
@@ -861,14 +967,14 @@ export function MonitorView(props: MonitorViewProps) {
     // so narrow terminals get shorter labels instead of a truncated line.
     const narrow = width < 100
     switch (settings().tab) {
-      case "overview":
-        return narrow
-          ? "[1-5] tabs · [s] scope · [t] window · [S] [T] · [?] help · [esc]"
-          : "[1-5] tabs · [s] scope · [t] window · [S] session · [T] team · [?] help · [esc] close"
       case "cache":
         return narrow
-          ? "[↑↓] select · [⏎] detail · [x] misses · [s] scope · [t] window · [?] help · [esc]"
-          : "[↑↓] select · [⏎] detail · [x] misses only · [s] scope · [t] window · [?] help · [esc] close"
+          ? "[↑↓] · [⏎] detail · [P] prompt · [x] misses · [s] scope · [?] help · [esc]"
+          : "[↑↓] select · [⏎] detail · [P] prompt · [x] misses only · [s] scope · [t] window · [?] help · [esc] close"
+      case "prompt":
+        return narrow
+          ? "[↑↓] · [⏎] content · [ ] request · [l] live · [x] changed · [/] · [esc]"
+          : "[↑↓] select · [⏎] content · [v] exact JSON · [ ] older/newer · [l] live · [x] changed only · [/] filter · [s] session"
       case "tools":
         return narrow
           ? "[↑↓] · [⏎] filter · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] [m] [?]"
@@ -877,10 +983,6 @@ export function MonitorView(props: MonitorViewProps) {
         return narrow
           ? "[↑↓] · [⏎] session · [space] tree · [s] scope · [t] window · [?] help · [esc]"
           : "[↑↓] select · [⏎] add session · [space] add tree · [S] add session · [s] scope · [?] help · [esc] close"
-      case "steps":
-        return narrow
-          ? "[↑↓] · [⏎] calls & diff · [s] scope · [t] window · [?] help · [esc]"
-          : "[↑↓] select · [⏎] step calls & diff · [s] scope · [t] window · [?] help · [esc] close"
     }
   }
 
@@ -953,7 +1055,7 @@ export function MonitorView(props: MonitorViewProps) {
         <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
           Monitor
         </text>
-        <text fg={theme().text.muted}>tokens, cache and tools</text>
+        <text fg={theme().text.muted}>cache, prompt, tools and sessions</text>
       </box>
 
       {/* Scope Line */}
@@ -965,7 +1067,7 @@ export function MonitorView(props: MonitorViewProps) {
           {scopeLabel()}
         </text>
         <Show when={width() >= 80}>
-          <text fg={theme().text.muted}> [s] step · [S] add session · [T] team</text>
+          <text fg={theme().text.muted}> [s] choose · [S] add session · [T] team</text>
         </Show>
       </box>
 
@@ -999,14 +1101,14 @@ export function MonitorView(props: MonitorViewProps) {
           </text>
         )}
       </Show>
-      <Show when={(report()?.presentation?.truncated.length ?? 0) > 0 || fullText()}>
+      <Show when={tab() !== "prompt" && ((report()?.presentation?.truncated.length ?? 0) > 0 || fullText())}>
         <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
           {fullText()
             ? "Unabridged selected-page text · v preview"
             : "Text preview truncated · v unabridged selected-page facts"}
         </text>
       </Show>
-      <Show when={(tab() === "cache" || tab() === "steps") && report()?.requestPage}>
+      <Show when={tab() === "cache" && report()?.requestPage}>
         {(page) => (
           <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
             {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
@@ -1074,10 +1176,17 @@ export function MonitorView(props: MonitorViewProps) {
         >
           {(_current) => (
             <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
-              <Show when={tab() === "overview"}>
-                <scrollbox flexGrow={1} minWidth={0}>
-                  <OverviewTab context={props.context} report={shown()} full={true} collection={collection()} width={width()} />
-                </scrollbox>
+              <Show when={tab() === "prompt"}>
+                <PromptTab
+                  context={props.context}
+                  sessionID={promptSession}
+                  target={promptTarget}
+                  active={() => props.active() && tab() === "prompt" && !helpOpen()}
+                  filterText={() => settings().filterText}
+                  width={width()}
+                  location={location}
+                  onController={(controller) => (prompt.controller = controller)}
+                />
               </Show>
               <Show when={tab() === "cache"}>
                 <CacheTab
@@ -1120,19 +1229,6 @@ export function MonitorView(props: MonitorViewProps) {
                   }
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.sessions = ref)}
-                />
-              </Show>
-              <Show when={tab() === "steps"}>
-                <StepsTab
-                  width={width()}
-                  context={props.context}
-                  report={shown()}
-                  selectedIndex={selected()}
-                  onSelect={setSelected}
-                  detailID={activeDrill()?.requestID}
-                  collection={pageTarget()}
-                  active={props.active()}
-                  onScrollRef={(ref) => (scrolls.steps = ref)}
                 />
               </Show>
             </box>
