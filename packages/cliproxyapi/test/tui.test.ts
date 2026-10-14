@@ -6,6 +6,9 @@ import CliproxyapiTui, { REPROBE } from "../src/tui.js"
 const cleanups: (() => void)[] = []
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()))
 
+// /usage is registered at once so it is never sent as a prompt; its sidebar renders nothing until quota is on.
+const USAGE = ["sidebar.content", "app"]
+
 function host(enabled: () => Promise<{ enabled: boolean }>) {
   const [route] = createSignal({ type: "session" as const, sessionID: "ses_a" })
   const [model] = createSignal({ providerID: "cpa", modelID: "m" })
@@ -47,7 +50,7 @@ test("shows quota and usage UI only when the server half reports CLIProxyAPI con
 
   const off = host(async () => ({ enabled: false }))
   await Bun.sleep(5)
-  expect(off.state.slots).toEqual([])
+  expect(off.state.slots).toEqual(USAGE)
   expect(off.state.probes).toBe(1)
 })
 
@@ -64,7 +67,7 @@ test("Usage appears without a restart once quota turns on, and asking stops on d
   jest.advanceTimersByTime(1)
   await flush()
   expect(later.state.probes).toBe(2)
-  expect(later.state.slots).toEqual([])
+  expect(later.state.slots).toEqual(USAGE)
 
   // CPA's quota-handoff is detected: the next answer mounts quota and Usage.
   answer.enabled = true
@@ -93,7 +96,8 @@ async function flush() {
 test("a missing server half (plugin removed) shows nothing and stops probing on dispose", async () => {
   const missing = host(() => Promise.reject(new Error("unknown rpc")))
   await Bun.sleep(5)
-  expect(missing.state.slots).toEqual([])
+  expect(missing.state.slots).toEqual(USAGE)
   missing.dispose()
+  expect(missing.state.slots).toEqual([])
   expect(missing.state.probes).toBe(1)
 })
