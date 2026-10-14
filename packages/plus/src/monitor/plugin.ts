@@ -15,7 +15,7 @@ import { endRequestWindow, ledgerAt, RETENTION_DAYS, type ContextFact, type Ledg
 import { queryMonitor } from "./query.js"
 import { recordModelObservation } from "./model-observation.js"
 import { captureWire, queryCacheResults, scheduleCacheBackfill } from "./snapshot.js"
-import { pruneWire, queryPrompt, scheduleArchiveImport } from "./wire.js"
+import { pruneWire, queryPrompt } from "./wire.js"
 
 const DAY = 86_400_000
 
@@ -44,7 +44,6 @@ export function watchMonitor(
     lazy.failed = true
     const ledger = open()
     scheduleCacheBackfill(ledger)
-    scheduleArchiveImport(ledger)
     if (!pruned.has(ledger.path)) {
       pruned.add(ledger.path)
       // Retention is a synchronous scan; keep it off the first monitored prompt.

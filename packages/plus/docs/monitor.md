@@ -102,9 +102,10 @@ part is its own kind). They contain prompt text, so they stay in the private
 store, never in `monitor.db`.
 
 A body rebuilds byte-for-byte when it was compact JSON (every observed body
-was); otherwise an exact gzip copy is kept beside it. Older whole-file archives
-are imported in background batches; an archive that rebuilds exactly is then
-deleted. Multi-exchange invocations alias the body of their final exchange.
+was); otherwise an exact gzip copy is kept beside it. Whole-file archives from
+1.3.11 are not imported: only one ledger ever wrote them, their cache results
+were already saved, and retention removes them. Multi-exchange invocations
+alias the body of their final exchange.
 Retention deletes requests older than 90 days, then items no request uses.
 
 ### General tool/accounting event ledger

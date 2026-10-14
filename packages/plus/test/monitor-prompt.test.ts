@@ -1,8 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import fs from "node:fs"
-import path from "node:path"
 import { captureWire } from "../src/monitor/snapshot.js"
-import { importArchivesBatch, pruneWire, queryPrompt, wireBody, wireStore } from "../src/monitor/wire.js"
+import { aliasWire, pruneWire, queryPrompt, wireBody, wireStore } from "../src/monitor/wire.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
@@ -99,23 +97,20 @@ test("Responses items: function calls, outputs, reasoning and JSON-string argume
   expect(queryPrompt(db, { requestID: "r", row: 4 }).detail?.text).toContain("arguments:\n  command:\n    bun test\n    more")
 })
 
-test("old whole-file archives move into the store, and retention removes items no request uses", async () => {
+test("an invocation shares its final exchange's body, and retention removes items no request uses", async () => {
   const db = await ledger()
-  const directory = `${db.path}.transcripts`
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const file = path.join(directory, "old.json.gz")
-  fs.writeFileSync(file, Bun.gzipSync(anthropic(first)), { mode: 0o600 })
   db.requestStarted({ id: "old", sessionID: "chat", kind: "step", started: 5 })
-  db.requestStarted({ id: "invocation", sessionID: "chat", kind: "step", started: 6 })
-  db.db.query("insert into cache_wire values (?, ?), (?, ?)").run("old", file, "invocation", file)
-  while (importArchivesBatch(db) > 0);
-  expect(fs.existsSync(file)).toBe(false)
-  expect(db.db.query("select * from cache_wire").all()).toEqual([])
-  expect(wireBody(db, "old")).toBe(anthropic(first))
+  db.requestStarted({ id: "kept", sessionID: "chat", kind: "step", started: 500 })
+  await captureWire(db, "old", anthropic(first), { sessionID: "chat", at: 5 })
+  await captureWire(db, "kept", anthropic(second, 2), { sessionID: "chat", at: 500 })
+  aliasWire(db, "invocation", "old")
   expect(wireBody(db, "invocation")).toBe(anthropic(first))
   pruneWire(db, 100)
-  expect(wireStore(db).query<{ n: number }, []>("select count(*) n from element").get()!.n).toBe(0)
   expect(wireBody(db, "old")).toBeUndefined()
+  expect(wireBody(db, "invocation")).toBeUndefined()
+  expect(wireBody(db, "kept")).toBe(anthropic(second, 2))
+  // Only the surviving request's items remain.
+  expect(wireStore(db).query<{ n: number }, []>("select count(*) n from element").get()!.n).toBe(8)
 })
 
 test("a body that cannot be rebuilt exactly keeps its compressed copy", async () => {

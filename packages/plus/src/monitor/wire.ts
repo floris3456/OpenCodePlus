@@ -11,8 +11,6 @@
 import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import path from "node:path"
-import { gunzipSync } from "node:zlib"
-import { Effect } from "effect"
 import type { MonitorPrompt, MonitorPromptInput, MonitorPromptRow } from "../rpc.js"
 import { detectProtocol, sha256 } from "./fingerprint.js"
 import type { Ledger } from "./ledger.js"
@@ -150,60 +148,6 @@ export function pruneWire(ledger: Ledger, before: number) {
     db.query("delete from wire_row where source not in (select source from wire)").run()
     db.query("delete from element where hash not in (select hash from wire_row)").run()
   })()
-}
-
-/** Older releases archived every body as a whole gzip file; move them into the store. */
-export function importArchivesBatch(ledger: Ledger, limit = 1) {
-  const db = wireStore(ledger)
-  const has = db.query<{ found: number }, [string]>("select 1 found from wire where request_id = ?")
-  const archives = ledger.db.query<{ path: string }, []>("select distinct path from cache_wire order by path").all()
-  const pending = archives.filter((archive) => {
-    const ids = ledger.db.query<{ request_id: string }, [string]>("select request_id from cache_wire where path = ?").all(archive.path)
-    return ids.some((row) => !has.get(row.request_id))
-  }).slice(0, limit)
-  pending.forEach((archive) => {
-    const ids = ledger.db.query<{ request_id: string; session_id: string | null; started: number | null }, [string]>(`
-      select w.request_id, r.session_id, r.started from cache_wire w left join request r on r.id = w.request_id
-      where w.path = ? order by r.started, w.request_id`).all(archive.path)
-    const owner = ids[0]!
-    if (!fs.existsSync(archive.path)) {
-      ledger.db.query("delete from cache_wire where path = ?").run(archive.path)
-      return
-    }
-    const exact = storeWire(ledger, {
-      requestID: owner.request_id,
-      sessionID: owner.session_id ?? "",
-      at: owner.started ?? fs.statSync(archive.path).mtimeMs,
-      body: gunzipSync(fs.readFileSync(archive.path)).toString(),
-    })
-    ids.slice(1).forEach((row) => aliasWire(ledger, row.request_id, owner.request_id))
-    if (!exact) return
-    // The store rebuilds this body byte-for-byte; the whole-file copy is redundant.
-    ledger.db.query("delete from cache_wire where path = ?").run(archive.path)
-    fs.rmSync(archive.path, { force: true })
-  })
-  return pending.length
-}
-
-const imports = new WeakMap<Ledger, ReturnType<typeof setTimeout>>()
-
-export function scheduleArchiveImport(ledger: Ledger) {
-  if (imports.has(ledger)) return
-  const batch = () => {
-    Effect.runSync(Effect.sync(() => {
-      if (importArchivesBatch(ledger) > 0) imports.set(ledger, setTimeout(batch, 25).unref())
-      else imports.delete(ledger)
-    }).pipe(Effect.catchCause(() => {
-      imports.delete(ledger)
-      return Effect.logWarning("Monitor transcript import failed; whole-file archives remain readable")
-    })))
-  }
-  imports.set(ledger, setTimeout(batch, 0).unref())
-}
-
-export function stopArchiveImport(ledger: Ledger) {
-  clearTimeout(imports.get(ledger))
-  imports.delete(ledger)
 }
 
 /**

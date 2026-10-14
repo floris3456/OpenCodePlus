@@ -735,9 +735,10 @@ or polling it never replays or diffs session history.
   this stores each item once (measured on a live ledger: 86.7 MB of bodies, 1.6
   MB of distinct items) and a request's rows, its changes and any single item
   are indexed lookups. A body is rebuilt byte-for-byte from its items; one that
-  cannot be (not compact JSON) also keeps an exact gzip copy. Older whole-file
-  archives are moved into the store in the background. Retention follows the
-  90-day window. Headers/credentials are not archived.
+  cannot be (not compact JSON) also keeps an exact gzip copy. Whole-file
+  archives written by 1.3.11 stay readable for cache comparisons, are not shown
+  on the Prompt tab, and expire with the 90-day window like everything else.
+  Headers/credentials are not archived.
 - Evidence compares measured net input growth with uncached input. Per-field
   provider token attribution is unavailable; serialized character counts are
   labelled as such.
