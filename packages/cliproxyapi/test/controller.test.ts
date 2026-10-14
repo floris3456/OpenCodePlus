@@ -725,9 +725,9 @@ test("an account-switch refusal compacts once with the configured model, then th
     },
   ])
   expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(true)
-  // Nothing entered the model's context; the next run clears the notice.
+  // Nothing entered the model's context; the end of the continuing run clears the notice.
   expect(f.notices.size).toBe(0)
-  await f.controller.activity("ses_test", true)
+  await f.controller.activity("ses_test", false)
   expect(await f.controller.status("ses_test")).toEqual([])
   const later = f.event()
   await f.controller.decide(later)

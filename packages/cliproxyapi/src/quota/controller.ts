@@ -582,8 +582,8 @@ export class QuotaController {
       .forEach((route) => {
         route.active = active
         if (!active) route.budgetWaits = 0
-        // The switch notice stays until the next run of this chat starts.
-        if (active) route.notices = route.notices.filter((notice) => notice.kind !== "switched")
+        // The switch notice is set during the run that continues on the new account; it ends with that run.
+        route.notices = route.notices.filter((notice) => notice.kind !== "switched")
       })
   }
   async tick() {

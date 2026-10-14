@@ -57,7 +57,7 @@ With CPA's `quota-handoff` plugin **0.1.5-local.1 or newer** and its
    the step that was refused simply runs again from the checkpoint.
 
 The composer shows "… Compacting with … first." while this happens and "Continuing on …
-after compacting." afterwards (until the next run); nothing is added to the model's
+after compacting." while the chat continues (until that run ends); nothing is added to the model's
 context. A pending switch survives a restart. If CPA refuses again after that compaction,
 or a switch is retried more than three times, the refusal reaches the chat as an error
 instead of compacting in a loop. A chat with automatic compaction off is switched without
