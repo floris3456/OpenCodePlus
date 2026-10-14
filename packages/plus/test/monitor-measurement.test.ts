@@ -61,7 +61,7 @@ test("request links explain content but the latest completed lineage request sup
     row("a", 10, usage(10000, 10000)), row("b", 20, usage(18000, 18000)), row("c", 30, usage(11000, 10000)),
   ], [fp("a"), fp("b", "B", "a"), fp("c", "C", "a")])[2]!
   expect(result.previous?.id).toBe("b")
-  expect(result.request).toMatchObject({ verdict: "hit", expected: 11000, missTokens: 0 })
+  expect(result.request).toMatchObject({ verdict: "partial", expected: 11000, missTokens: 1000 })
 })
 
 test("running first and post-compaction rows remain pending; positive reads are not cold", () => {
@@ -98,9 +98,9 @@ test("warming is excluded from useful-work ratio; final usage on a failed reques
     { ...row("failed", 30, usage(1000, 0)), status: "error" },
   ], []).map((d) => d.request)
   expect(reuseRate(requests)).toEqual({ hitRate: 0.05, measuredRequests: 2, unknownRequests: 0, measuredInput: 2000 })
-  expect(requests[2]?.verdict).toBe("hit")
+  expect(requests[2]?.verdict).toBe("miss")
   expect(requests[2]?.outcome).toBe("error")
-  expect(isMiss(requests[2]!)).toBe(false)
+  expect(isMiss(requests[2]!)).toBe(true)
 })
 
 test("failed and incompatible pings receive no followed-by-hit credit", () => {

@@ -109,7 +109,7 @@ test("B3 deterministic random sequences obey detection and ping partition invari
   })
   const analysis = foldSession(rows, [], new Map()).analysis
   for (const { request } of analysis.summaries) {
-    if (request.verdict === "hit") expect(request.cacheRead).toBeGreaterThan((request.expected ?? 0) - 1024)
+    if (request.verdict === "hit") expect(request.cacheRead).toBeGreaterThan((request.expected ?? 0) - 128)
     if (request.verdict === "none") expect(request.measurement?.state).not.toBe("reported")
     if (isMiss(request)) expect(request.missTokens).toBeGreaterThan(0)
   }
