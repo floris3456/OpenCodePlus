@@ -203,6 +203,10 @@ export const make = Effect.gen(function* () {
    * pointer does not move; the result is `<prefix>/releases/<version>`.
    */
   const stage = Effect.fnUntraced(function* (install: Install, version: string, progress: Progress = () => {}) {
+    const executable = path.join(install.prefix, "releases", version, "bin", BINARY)
+    // Already installed beside the incumbent, e.g. a local release: its installer checked it
+    // then, and an installed release is read-only.
+    if (yield* fs.exists(executable)) return yield* checkStarts(executable, version)
     const target = yield* releaseTarget()
     progress(`Downloading ${describe(version)}…`)
     const manifestBytes = yield* download(assetURL(version, "release.json"))
@@ -240,7 +244,6 @@ export const make = Effect.gen(function* () {
       )
 
     yield* fs.makeDirectory(global.cache, { recursive: true })
-    const executable = path.join(install.prefix, "releases", version, "bin", BINARY)
     yield* Effect.scoped(
       Effect.gen(function* () {
         const directory = yield* fs.makeTempDirectoryScoped({ directory: global.cache, prefix: "plus-update-" })
@@ -265,7 +268,11 @@ export const make = Effect.gen(function* () {
     )
     if (sha256(yield* fs.readFile(executable)) !== artifact.binarySha256)
       return yield* Effect.fail(new UpdateError(`${executable} does not match the binary ${describe(version)} records`))
-    // A binary that cannot start on this machine is refused before anything stops.
+    return yield* checkStarts(executable, version)
+  })
+
+  /** A binary that cannot start on this machine is refused before anything stops. */
+  const checkStarts = Effect.fnUntraced(function* (executable: string, version: string) {
     const started = yield* run(executable, ["--version"])
     if (started.exitCode !== 0)
       return yield* Effect.fail(new UpdateError(`${describe(version)} does not start on this machine: ${started.stderr}`))

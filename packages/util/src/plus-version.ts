@@ -6,27 +6,34 @@ export * as PlusVersion from "./plus-version.js"
 // digits so every consumer, including the publication workflow's bash, compares
 // them as plain integers.
 //
+// A local release adds a fourth number, `2.0.18-plus-1.0.0.3`: the third local
+// preview of 1.0.0. Previews order after the release before 1.0.0 and before
+// 1.0.0 itself, and are never published.
+//
 // Semver would treat everything after the first "-" as a prerelease and compare
 // `plus-1.0.10` as text, before `plus-1.0.9`; `compare` orders numerically instead.
 
 const part = "(0|[1-9][0-9]{0,8})"
-const pattern = new RegExp(`^${part}\\.${part}\\.${part}-plus-${part}\\.${part}\\.${part}$`)
+const pattern = new RegExp(`^${part}\\.${part}\\.${part}-plus-${part}\\.${part}\\.${part}(?:\\.([1-9][0-9]{0,8}))?$`)
 
 export type Triple = readonly [number, number, number]
 
 export interface Info {
   readonly opencode: Triple
   readonly plus: Triple
+  /** The local preview number; absent on a release that can be published. */
+  readonly preview?: number
 }
 
 export function parse(version: string): Info | undefined {
   const match = pattern.exec(version)
   if (!match) return
-  const numbers = match.slice(1).map(Number)
-  return {
-    opencode: [numbers[0], numbers[1], numbers[2]],
-    plus: [numbers[3], numbers[4], numbers[5]],
+  const numbers = match.slice(1, 7).map(Number)
+  const info = {
+    opencode: [numbers[0], numbers[1], numbers[2]] as const,
+    plus: [numbers[3], numbers[4], numbers[5]] as const,
   }
+  return match[7] === undefined ? info : { ...info, preview: Number(match[7]) }
 }
 
 export function fromTag(tag: string) {
@@ -35,21 +42,30 @@ export function fromTag(tag: string) {
 }
 
 export function format(info: Info) {
-  return `${info.opencode.join(".")}-plus-${info.plus.join(".")}`
+  return `${info.opencode.join(".")}-plus-${plusNumber(info)}`
 }
 
 export function tag(info: Info) {
   return `v${format(info)}`
 }
 
-/** "OpenCodePlus 1.0.0 (opencode 2.0.18)" */
+/** "OpenCodePlus 1.0.0 (opencode 2.0.18)"; a preview is "OpenCodePlus 1.0.0.3 (local, opencode 2.0.18)". */
 export function display(info: Info) {
-  return `OpenCodePlus ${info.plus.join(".")} (opencode ${info.opencode.join(".")})`
+  return `OpenCodePlus ${plusNumber(info)} (${info.preview === undefined ? "" : "local, "}opencode ${info.opencode.join(".")})`
 }
 
-/** Negative when `a` is older than `b`: the Plus part decides, then the opencode part. */
+/** The release a preview leads up to; a release is its own. */
+export function final(info: Info): Info {
+  return { opencode: info.opencode, plus: info.plus }
+}
+
+/** Negative when `a` is older than `b`: the Plus part decides, then the preview, then the opencode part. */
 export function compare(a: Info, b: Info) {
-  return compareTriple(a.plus, b.plus) || compareTriple(a.opencode, b.opencode)
+  return (
+    compareTriple(a.plus, b.plus) ||
+    (a.preview ?? Infinity) - (b.preview ?? Infinity) ||
+    compareTriple(a.opencode, b.opencode)
+  )
 }
 
 export function compareTriple(a: Triple, b: Triple) {
@@ -65,4 +81,8 @@ export function refuseNext(previous: Info, next: Info, options: { readonly allow
   if (compare(next, previous) <= 0) return `${format(next)} is not newer than ${format(previous)}`
   if (compareTriple(next.opencode, previous.opencode) < 0 && !options.allowOlderOpencode)
     return `${format(next)} contains an older opencode (${next.opencode.join(".")}) than ${format(previous)} (${previous.opencode.join(".")})`
+}
+
+function plusNumber(info: Info) {
+  return info.preview === undefined ? info.plus.join(".") : `${info.plus.join(".")}.${info.preview}`
 }

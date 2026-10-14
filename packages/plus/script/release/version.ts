@@ -12,6 +12,8 @@ export function refuseReleaseVersion(version: string, opencode: string) {
   const parsed = PlusVersion.parse(version)
   if (!parsed)
     return `release version '${version}' must look like ${opencode}-plus-1.0.0: the opencode version this source contains, then the OpenCodePlus version, both three numbers`
+  if (parsed.preview !== undefined)
+    return `release version '${version}' is a local preview; publish ${PlusVersion.format(PlusVersion.final(parsed))} instead`
   if (parsed.opencode.join(".") !== opencode)
     return `release version '${version}' names opencode ${parsed.opencode.join(".")}, but this source contains opencode ${opencode} (packages/cli/package.json)`
 }

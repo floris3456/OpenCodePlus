@@ -55,6 +55,21 @@ describe("PlusVersion", () => {
     expect(PlusVersion.compare(info("2.0.18-plus-1.0.0"), info("2.0.18-plus-1.0.0"))).toBe(0)
   })
 
+  test("a local preview adds a fourth number and orders between the release before and its own release", () => {
+    const preview = info("2.0.26-plus-1.3.11.2")
+    expect(preview).toEqual({ opencode: [2, 0, 26], plus: [1, 3, 11], preview: 2 })
+    expect(PlusVersion.format(preview)).toBe("2.0.26-plus-1.3.11.2")
+    expect(PlusVersion.display(preview)).toBe("OpenCodePlus 1.3.11.2 (local, opencode 2.0.26)")
+    expect(PlusVersion.format(PlusVersion.final(preview))).toBe("2.0.26-plus-1.3.11")
+    expect(["2.0.26-plus-1.3.11.0", "2.0.26-plus-1.3.11.01", "2.0.26-plus-1.3.11.1.1"].map(PlusVersion.parse)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ])
+    const ordered = ["2.0.26-plus-1.3.10", "2.0.26-plus-1.3.11.1", "2.0.26-plus-1.3.11.2", "2.0.26-plus-1.3.11.10", "2.0.26-plus-1.3.11", "2.0.26-plus-1.3.12.1"]
+    expect([...ordered].reverse().sort((a, b) => PlusVersion.compare(info(a), info(b)))).toEqual(ordered)
+  })
+
   test("accepts a release that follows the numbering rules", () => {
     const previous = info("2.0.18-plus-1.0.3")
     // Fixes, a new feature, a big change, and a newer opencode with no Plus changes.
