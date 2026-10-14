@@ -176,7 +176,7 @@ export function fingerprintSegments(fp: RequestFingerprintData): Segment[] {
 // The cache-breakpoint message boundary named by the wire body's markers. The
 // part of a request up to (and including) this message is the reusable prefix
 // the provider was told to cache; whatever follows is the uncached tail.
-function markedMessageBoundary(fp: RequestFingerprintData): number {
+export function markedMessageBoundary(fp: RequestFingerprintData): number {
   let max = -1
   for (const marker of fp.cacheControl ?? []) {
     const match = /messages\[(\d+)\]/.exec(marker.target)

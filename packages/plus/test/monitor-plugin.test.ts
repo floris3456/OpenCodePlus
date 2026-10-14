@@ -125,6 +125,7 @@ test("the ledger opens only when a monitored event arrives, and a broken one is 
 })
 
 test("the monitor tools answer for the calling chat and record marks", async () => {
+  const { backfillCacheBatch } = await import("../src/monitor/snapshot.js")
   const root = await dataHome()
   const tools = toolHarness()
   const ctx = fullContext({
@@ -173,8 +174,11 @@ test("the monitor tools answer for the calling chat and record marks", async () 
   expect(own.requests?.find((r) => r.id === "cache-b")).toMatchObject({ verdict: "miss", cause: "unknown", confidence: "unknown" })
   expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("Provider cause unavailable")
   const detail = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
-  expect(detail.detail?.previous?.id).toBe("cache-a")
-  expect(detail.detail?.expectedTokens).toBe(4000)
+  expect(detail.cachePending).toBeGreaterThan(0)
+  backfillCacheBatch(ledgerAt(), 100)
+  const ready = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
+  expect(ready.detail?.previous?.id).toBe("cache-a")
+  expect(ready.detail?.expectedTokens).toBe(4000)
   expect((await call("monitor_query", { view: "cache", id: "cache-b" }, "ses_other") as MonitorReport).detail).toBeUndefined()
   ledgerAt().contextFact({ sessionID: "ses_live", kind: "compaction", at: ledgerAt().getRequest("cache-b")!.started - 1 })
   expect((await call("monitor_query", { since: "compaction", view: "cache" }) as MonitorReport).requests?.map((r) => r.id)).toEqual(["cache-b"])

@@ -5,12 +5,18 @@ const directory = process.argv[2]
 if (!directory) throw new Error("Supply an owned evidence directory")
 const cached = new Map<string, number>()
 const records: unknown[] = []
+const eviction = { marker: process.env.CACHE_STUB_DROP_ON, done: false }
 const server = Bun.serve({
   hostname: "127.0.0.1", port: 0,
   async fetch(request) {
     const url = new URL(request.url)
     if (request.method === "GET") return Response.json({ id: "fixture-model", capabilities: { compaction: { supported: true } } })
     const body = await request.json() as Record<string, unknown>
+    // Deterministic upstream-loss control for the cache screen's live acceptance.
+    if (!eviction.done && eviction.marker && JSON.stringify(body.messages).includes(eviction.marker)) {
+      cached.clear()
+      eviction.done = true
+    }
     const messages = body.messages as { role: string; content: { type: string; text?: string; content?: string; signature?: string; cache_control?: unknown }[] }[]
     const management = body.context_management as { edits?: { type: string; trigger?: { value: number } }[] } | null | undefined
     const threshold = management?.edits?.find((edit) => edit.type === "compact_20260112")

@@ -6,13 +6,10 @@ file records why it is built this way and what was measured.
 
 ## Session filters
 
-Opening `/monitor` from a chat starts with that chat selected (`filters 1`),
-regardless of the saved scope. `S` adds another session to the combined report;
-already-selected sessions are omitted. Enter on a Sessions row adds that session,
-and Space selects its tree. Repeated selections do not add duplicate filters or
-count data twice. Backspace undoes the last filter change; Esc closes the monitor
-immediately. Saved preferences
-are preserved. Tool, agent, model and request-detail selections also reject repeats.
+Opening `/monitor` from a chat explicitly selects that chat; saved filters do
+not apply. `s` selects a session or all sessions. The picker merges the host's
+live session list with the ledger index, so an active chat is selectable even
+before its first completed request. Escape closes evidence first, then the screen.
 
 The RPC and tool accept `sessionIDs` for combined `session` or `tree` scopes.
 It takes precedence over `sessionID`; an explicit empty list reads no sessions.
@@ -20,6 +17,42 @@ Tree scope unions the selected sessions' complete delegation trees, without
 double-counting overlapping roots or descendants.
 
 ## Data source
+
+### Completion-time cache results
+
+`model.observed` persists reported measurements and builds `cache_result` once.
+The numeric detector is independent of explanations: read + write from the
+latest completed predecessor in the same session/provider/model/history epoch,
+capped at current inclusive input; a shortfall >= 128 is miss/partial. A new
+epoch is cold. Compaction remains an annotation. Iteration-only Anthropic usage
+arrives through the same core usage parser.
+
+Final HTTP/WS observers archive the full post-transform body in
+`monitor.db.transcripts/<request-hash>.json.gz` (directory 0700, file 0600).
+Completion compares full JSON fields with the predecessor, retaining only
+bounded changed-field descriptions and usage comparisons in the database.
+Output budgets, on-demand controls and cache hints are distinguished from prompt
+text changes. Linked Responses continuations are identified from the recorded
+response ID; expanded server-held history is not claimed to be in the wire body.
+Transcripts include thinking blocks and tool definitions; they are local runtime
+data, never source/evidence fixtures. Retention removes their references and files
+with the corresponding requests. HTTP authorization headers are not recorded.
+
+`monitor.cache`, `monitor.query(view: cache)` and miss notifications read compact
+saved results. They never load transcripts/fingerprints or fold session history.
+Historical backfill runs in separate bounded batches; pending rows are counted,
+not silently treated as hits. An unavailable diagnostic archive cannot suppress
+a measured miss. General tool/accounting views retain the older analysis below.
+
+The display compares inclusive input growth and uncached input. Providers do not
+expose exact token attribution to each added field, so character counts are not
+presented as measured tokens. Neither same-account routing nor cache eviction can
+be inferred from an unchanged body; the cause remains explicitly unknown.
+
+Measured focused first-load fixture: 3,001 saved request results, 100 returned,
+13–31 ms on the development machine. This is not a production-database benchmark.
+
+### General tool/accounting event ledger
 
 One assistant message is one step (one LLM call). Core publishes every fact
 the monitor needs as durable session events, which the Plus server plugin

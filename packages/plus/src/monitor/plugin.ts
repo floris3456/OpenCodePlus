@@ -6,15 +6,15 @@ import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/paths.js"
-import type { MonitorMark, MonitorQueryInput, MonitorReport, MonitorStepInput, MonitorStepResult } from "../rpc.js"
+import type { MonitorMark, MonitorQueryInput, MonitorReport, MonitorRequestDetail, MonitorStepInput, MonitorStepResult } from "../rpc.js"
 import { bySession, inferRunTeam, loadRun } from "../teams/run.js"
 import { causeWords, isMiss } from "./cache.js"
 import { createCollector, MonitorEvents, type Collector } from "./collector.js"
 import { fingerprintWireBody, sha256, type NamedSystemPart } from "./fingerprint.js"
 import { endRequestWindow, ledgerAt, RETENTION_DAYS, type ContextFact, type Ledger, type SessionFacts } from "./ledger.js"
 import { queryMonitor } from "./query.js"
-import { sessionFold } from "./report.js"
 import { recordModelObservation } from "./model-observation.js"
+import { captureWire, queryCacheResults, scheduleCacheBackfill } from "./snapshot.js"
 
 const DAY = 86_400_000
 
@@ -42,6 +42,7 @@ export function watchMonitor(
     if (lazy.collector !== undefined || lazy.failed) return lazy.collector
     lazy.failed = true
     const ledger = open()
+    scheduleCacheBackfill(ledger)
     if (!pruned.has(ledger.path)) {
       pruned.add(ledger.path)
       // Retention is a synchronous scan; keep it off the first monitored prompt.
@@ -187,7 +188,9 @@ export function watchMonitor(
         event.observers ??= []
         event.observers.push((request) => Effect.promise(async () => {
           httpRequests.set(request, requestID)
-          l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(await request.clone().text(), { url: request.url, namedSystemParts: parts }) })
+          const body = await request.clone().text()
+          l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(body, { url: request.url, namedSystemParts: parts }) })
+          await captureWire(l, requestID, body)
         }).pipe(Effect.catchCause(() => failedHook("http.request"))))
         await pricing(l, sessionID, provider, model, started)
       }),
@@ -233,8 +236,9 @@ export function watchMonitor(
         })
         wsRequests.set(sessionID, requestID)
         event.observers ??= []
-        event.observers.push((frame) => Effect.sync(() => {
+        event.observers.push((frame) => Effect.promise(async () => {
           l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(frame, { namedSystemParts: parts }) })
+          await captureWire(l, requestID, typeof frame === "string" ? frame : JSON.stringify(frame))
         }).pipe(Effect.catchCause(() => failedHook("experimental.ws.send"))))
         await pricing(l, sessionID, provider, model, started)
       }),
@@ -353,6 +357,7 @@ export function watchMonitor(
 }
 
 export async function monitorQuery(ctx: Context, input: MonitorQueryInput, ledger: Ledger = ledgerAt()): Promise<MonitorReport> {
+  if (input.view === "cache") return monitorCache(ctx, input, ledger)
   // Older, idle runs may never produce another event. Resolve their membership
   // for historical queries as well, retaining only unambiguous answers.
   const older = ledger.db.query<{ id: string; run_id: string | null; role: string; directory: string | null }, []>("select id, run_id, role, directory from session where team is null and role is not null").all()
@@ -373,20 +378,28 @@ export async function monitorQuery(ctx: Context, input: MonitorQueryInput, ledge
   })
 }
 
+export function monitorCache(ctx: Context, input: MonitorQueryInput, ledger: Ledger = ledgerAt()): MonitorReport {
+  const report = queryCacheResults(ledger, input, { directory: ctx.location.directory })
+  if (report.cachePending) scheduleCacheBackfill(ledger)
+  return report
+}
+
 export async function monitorStep(
   ctx: Context,
   input: MonitorStepInput,
   ledger: Ledger = ledgerAt(),
 ): Promise<MonitorStepResult> {
-  const fold = sessionFold(ledger, input.sessionID)
-  if (!fold.rows.length) return { status: "pending" }
-  const index = fold.rows.findLastIndex((r) => r.kind !== "ping" && !r.isTitle)
-  if (index < 0) return { status: "pending" }
-  const row = fold.rows[index]!
-  if (row.ended === undefined || row.status === "running") return { status: "pending" }
-  const summary = fold.analysis.summaries[index]
-  const detail = summary && fold.analysis.detail(summary.request.id)
-  if (!detail) return { status: "pending" }
+  const row = ledger.db.query<{ ended: number | null; detail: string | null }, [string]>(`
+    select r.ended, c.detail from request r left join cache_result c on c.request_id = r.id
+    where r.session_id = ? and r.kind != 'ping' and r.is_title = 0
+      and coalesce(json_extract(r.observation, '$.scope'), '') != 'exchange'
+    order by r.started desc, r.id desc limit 1`).get(input.sessionID)
+  if (!row || row.ended === null) return { status: "pending" }
+  if (!row.detail) {
+    scheduleCacheBackfill(ledger)
+    return { status: "pending" }
+  }
+  const detail: MonitorRequestDetail = JSON.parse(row.detail)
   const req = detail.request
   const changedPart =
     detail.segments.find((c) => c.name !== "cache markers")?.name ?? detail.firstDivergence

@@ -1752,6 +1752,7 @@ export const MonitorSessionRow = Schema.Struct({
 
 export interface MonitorReport extends Schema.Schema.Type<typeof MonitorReport> {}
 export const MonitorReport = Schema.Struct({
+  cachePending: Schema.optionalKey(Schema.Number),
   now: Schema.Number,
   totals: MonitorTotals,
   groups: Schema.Array(MonitorGroup),
@@ -2777,6 +2778,11 @@ export const Definition = Rpc.define({
       errors: { "compaction.triggers.failed": PortableCompactionTriggersFailure },
     },
     "monitor.query": {
+      input: PortableMonitorQueryInput,
+      output: PortableMonitorReport,
+      errors: {},
+    },
+    "monitor.cache": {
       input: PortableMonitorQueryInput,
       output: PortableMonitorReport,
       errors: {},

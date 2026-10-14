@@ -1,11 +1,10 @@
 // The monitor's durable ledger: one SQLite file shared by every Plus instance
 // in the process (and any other process pointed at the same data directory).
 //
-// It stores irreducible facts only: steps (one LLM call each) with their
-// token usage, tool calls with their sizes and attributed tokens, sessions
-// with their parent links, compaction epochs and user marks. Everything the
-// monitor shows (carried tokens, groupings, comparisons) is derived at query
-// time. Tool outputs, file contents and full commands are never stored.
+// It stores usage/events plus a rebuildable cache-screen projection. Tool
+// accounting still derives carried tokens and groupings at query time. Full
+// sent bodies live in private transcript files; this database stores references
+// and compact cache diagnostics, not those bodies.
 import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import path from "node:path"
@@ -13,6 +12,7 @@ import { Schema } from "effect"
 import { inconsistentObservation, Observation, readObservation, type RequestObservation } from "./observation.js"
 import { errorFingerprint } from "./fingerprint.js"
 import { teamsDataDir } from "../instructions/paths.js"
+import { stopCacheBackfill } from "./snapshot.js"
 import type {
   CacheControlMarker,
   MessagePrefixFingerprint,
@@ -291,6 +291,25 @@ create index if not exists request_session on request(session_id, started);
 create index if not exists request_message on request(session_id, message_id);
 create index if not exists request_started on request(started);
 create index if not exists request_kind on request(kind);
+create index if not exists request_predecessor on request(session_id, provider, model, ended desc);
+
+-- Cache-screen read model. Full wire bodies live in private compressed files;
+-- opening the screen reads only these compact, completed-request results.
+create table if not exists cache_wire (
+  request_id text primary key,
+  path text not null
+);
+create table if not exists cache_result (
+  request_id text primary key,
+  session_id text not null,
+  started integer not null,
+  verdict text not null,
+  summary text not null,
+  detail text not null
+);
+create index if not exists cache_result_session on cache_result(session_id, started, request_id);
+create index if not exists cache_result_started on cache_result(started, request_id);
+create index if not exists cache_result_verdict on cache_result(verdict, started, request_id);
 
 create table if not exists request_fingerprint (
   request_id text primary key,
@@ -1078,7 +1097,7 @@ export function createLedger(file: string): Ledger {
     })
   })
 
-  return {
+  const ledger: Ledger = {
     db,
     path: file,
     session: (facts, now) =>
@@ -1144,6 +1163,8 @@ export function createLedger(file: string): Ledger {
     },
     mark: (label, at) => insertMark.get(at, label)?.id ?? 0,
     prune: (before) => {
+      const archives = db.query<{ path: string }, [number]>(`select distinct path from cache_wire where request_id in
+        (select id from request where started < ?)`).all(before)
       db.transaction(() => {
         // Before rows go, the first surviving row of each affected session
         // becomes a keyframe, so no chain points at a deleted base. Decode it
@@ -1163,6 +1184,8 @@ export function createLedger(file: string): Ledger {
         })
         db.query("delete from call where started < ?").run(before)
         db.query("delete from step where started < ?").run(before)
+        db.query("delete from cache_wire where request_id in (select id from request where started < ?)").run(before)
+        db.query("delete from cache_result where started < ?").run(before)
         db.query("delete from request where started < ?").run(before)
         db.query("delete from request_fingerprint where created < ?").run(before)
         db.query("delete from context_fact where at < ?").run(before)
@@ -1178,6 +1201,9 @@ export function createLedger(file: string): Ledger {
           "delete from fingerprint_change where request_id not in (select request_id from request_fingerprint) and request_id not in (select id from request)",
         ).run()
       })()
+      archives.forEach((archive) => {
+        if (!db.query("select 1 from cache_wire where path = ? limit 1").get(archive.path)) fs.rmSync(archive.path, { force: true })
+      })
     },
     requestStarted: (req) =>
       upsertRequest.run({
@@ -1259,10 +1285,12 @@ export function createLedger(file: string): Ledger {
     changedContextFacts: (sessionID, since) => (analysisReset.get(sessionID, "context_fact")?.rev ?? 0) > since
       ? undefined : changedContextFacts.all(sessionID, since).map(toContextFactRow),
     close: () => {
+      stopCacheBackfill(ledger)
       open.delete(file)
       db.close()
     },
   }
+  return ledger
 }
 
 function toRequestRow(row: Record<string, unknown>): RequestRow {

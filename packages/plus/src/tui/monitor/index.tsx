@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal, Show } from "solid-js"
-import { MonitorView } from "./view.js"
+import { CacheScreen } from "./cache-screen.js"
 
 // Sessions use the host's panel, including its in-place fullscreen toggle.
 // The route also makes Monitor available from Home, where panels cannot open.
@@ -27,15 +27,13 @@ export function createMonitor(context: Plugin.Context) {
   const disposeRoute = context.ui.router.register({
     name: "monitor",
     render: (route) => (
-      <MonitorView
+      <CacheScreen
         context={context}
         sessionID={() => (route?.data as { sessionID?: string } | undefined)?.sessionID ?? chat()}
         active={() => {
           const current = context.ui.router.current()
           return current.type === "plugin" && current.name === "monitor"
         }}
-        full
-        initialSession
         onClose={() => context.ui.router.navigate(previous())}
       />
     ),
@@ -45,11 +43,10 @@ export function createMonitor(context: Plugin.Context) {
     append: "session.panel",
     render: (panel) => (
       <Show when={panel.name === "plus.monitor"}>
-        <MonitorView
+        <CacheScreen
           context={context}
           sessionID={() => panel.sessionID}
           active={() => panel.focused}
-          full
           width={panel.width}
           focus={panel.focus}
           onClose={panel.close}

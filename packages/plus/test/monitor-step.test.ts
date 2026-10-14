@@ -4,6 +4,7 @@ import type { Ledger } from "../src/monitor/ledger.js"
 import { monitorStep } from "../src/monitor/plugin.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import { sessionFoldResumeFrom } from "../src/monitor/report.js"
+import { projectCacheResult } from "../src/monitor/snapshot.js"
 import { context } from "./harness.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
@@ -81,6 +82,7 @@ function record(db: Ledger, session: string, row: Row): string {
       },
     })
   }
+  projectCacheResult(db, id)
   return id
 }
 
@@ -116,16 +118,16 @@ test("a legacy prefix change remains an observed fact, not a supported miss", as
     expect(result.miss).toBe(false)
     expect(result.cause).toBe("prefix-changed")
     expect(result.changedPart).toBeDefined()
-    expect(result.causeText).toBe("observed: prompt changed · system wire")
+    expect(result.causeText).toBe("Recorded prefix change: system wire (body unavailable)")
     expect(result.notReused).toBe(0)
   }
 })
 
-test("a drop under 1,024 -> miss:false", async () => {
+test("legacy stored reads without a reported measurement cannot fabricate a miss", async () => {
   const db = await ledger()
   const ctx = context()
   record(db, "ses_drop", { id: "1", at: 1000, count: 2, read: 5000, write: 0 })
-  // Drop of 500 tokens is under 1,024 threshold
+  // Neither row has a reported usage observation.
   record(db, "ses_drop", { id: "2", at: 2000, count: 3, read: 4500, write: 500 })
 
   const result = await monitorStep(ctx, { sessionID: "ses_drop" }, db)
@@ -148,22 +150,21 @@ test("unrecorded step -> pending", async () => {
   expect(running).toEqual({ status: "pending" })
 })
 
-test("a second call after one more row folds only from the new row", async () => {
+test("step notifications read saved results without building a session fold", async () => {
   const db = await ledger()
   const ctx = context()
   record(db, "ses_inc", { id: "1", at: 1000, count: 2, read: 0, write: 4000 })
 
   const first = await monitorStep(ctx, { sessionID: "ses_inc" }, db)
   expect(first.status).toBe("ready")
-  expect(sessionFoldResumeFrom(db, "ses_inc")).toBe(0)
+  expect(sessionFoldResumeFrom(db, "ses_inc")).toBeUndefined()
 
   // Append one more row
   record(db, "ses_inc", { id: "2", at: 2000, count: 3, read: 4000, write: 100 })
 
   const second = await monitorStep(ctx, { sessionID: "ses_inc" }, db)
   expect(second.status).toBe("ready")
-  // Fold resumed from index 1, folding only the new row
-  expect(sessionFoldResumeFrom(db, "ses_inc")).toBe(1)
+  expect(sessionFoldResumeFrom(db, "ses_inc")).toBeUndefined()
 })
 
 test("quota.switch compaction -> account changed · compacted first and /monitor report shows the same", async () => {

@@ -556,6 +556,8 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     },
     data: {
       session: {
+        list: () => [],
+        get: () => undefined,
         status: (sessionID: string) => options.sessionStatus?.[sessionID] ?? "idle",
       },
       location: {

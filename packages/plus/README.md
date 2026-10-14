@@ -694,6 +694,37 @@ Plugin RPC: `compaction.triggers` takes `{ sessionID }`; `compaction.triggers.se
 
 ## Monitor
 
+`/monitor` opens the cache screen, automatically filtered to the invoking chat.
+From Home it shows all sessions. It reads saved results; opening it does not
+replay or diff session history.
+
+- Each row shows time, request kind, **hit / cold / partial / miss**, reported
+  reads, lost reuse, and the actual changed field or an explicit unknown cause.
+  Compaction is a request-kind annotation, never a replacement for its verdict.
+- Detection uses reported provider usage (including streamed usage iterations).
+  The baseline is the latest completed predecessor's read + write, capped at the
+  current inclusive input, in the same session/provider/model/history epoch.
+  Shortfalls of **128 tokens or more** are miss (zero read) or partial. A new
+  epoch has no predecessor and is cold. Missing measurements remain unavailable.
+- Final post-transform request bodies are compared at completion. Output-budget
+  changes and cache-hint movement are identified separately from changed prompt
+  content. A difference is evidence, not proof of the upstream cause.
+- `s` selects a session; `m` shows misses/partials and cold starts; arrows select;
+  Enter opens evidence; `[` / `]` page; `l` returns to latest; `f` toggles full
+  screen; Escape closes evidence or the monitor. Filters are temporary.
+- Full sent bodies are private gzip transcripts next to `monitor.db`, retained
+  with its 90-day window. SQLite stores compact results and archive references.
+  Evidence compares measured net input growth with uncached input. Per-field
+  provider token attribution is unavailable; serialized character counts are
+  labelled as such. Headers/credentials are not archived.
+- `monitor.cache` is the compact RPC. `monitor.query({view: "cache"})` uses it;
+  other `monitor.query` views retain the general tool/accounting reports.
+  Historical rows are indexed in the background, with a visible pending count;
+  old sent bodies cannot be reconstructed from fingerprints.
+
+<details>
+<summary>Historical five-tab monitor and attribution design (superseded cache UI and classifier)</summary>
+
 One page for chat metrics: reasoning, cache reads and writes, uncached input, output, cost, steps and tools with their token attribution, with heavy emphasis on cache misses.
 
 - **Where**:
@@ -729,6 +760,8 @@ One page for chat metrics: reasoning, cache reads and writes, uncached input, ou
 - **Signals**: overview includes top misses, agents by last activity (their token total counts input, cache read, cache write, output and reasoning), named segments changing on three consecutive requests, ping cost and the next real request's outcome, writes never read before expiry, and current context versus the first request after compaction. Every signal honors the selected scope, window, agent and model filters, and the as-of cutoff: a ping's next-request outcome only counts a next request inside the window and under the same selection, unread writes enter only once their cache lifetime has passed by the cutoff, and a later request at or past the cutoff never changes a historical report. The expensive analysis fold is window-independent and cached on the ledger revision (including writes from another handle), so advancing-now polling reuses it while expiry and window signals are applied at report time. Miss cost is processing cost for re-written/uncached tokens using recorded model pricing, not net savings; absent pricing stays omitted everywhere, never a free zero. Historical normalized zero cache counters cannot distinguish unreported fields from reported zeroes: a prior positive counter establishes cache support, otherwise the analyzer reports no cache reported instead of inventing misses.
 - **Storage**: `monitor.db` (SQLite) next to the teams data in the XDG data directory, shared by every directory's Plus instance. It keeps request usage and fingerprints, context facts and pricing, steps, attributed calls, session parent/team links, compaction epochs and marks; tool calls also have an hourly rollup. Cache explanations are derived at query time. Retention is 90 days. It records from the moment this release runs; earlier sessions are not imported.
 - **Limits**: title requests are recorded but excluded by default (`titles: true` includes them); a result's tokens are measured against the next prompt of the same session, so parallel results of one step share that growth by size. Fingerprints contain only hashes, sizes, names and ids, never prompt/tool contents. Old v1 step records remain readable without invented fingerprints. A call's target likewise stores only a recognized identifier: a file path, glob pattern, host, program (with a recognized subcommand, so `git diff` survives but `echo <text>`, `curl <payload>` and `git <arbitrary-word>` do not), agent/tool/skill id or team/instruction address. A content search (`grep` pattern, `websearch` query) is stored as its short hash plus character size; an unrecognized Code Mode inner call stores no target at all. A call's failure is stored as the same `{type, hash, chars}` fingerprint as a request error, so a tool error's message, output and secrets never persist.
+
+</details>
 
 ## Development notes
 
