@@ -50,7 +50,10 @@ With CPA's `quota-handoff` plugin **0.1.5-local.1 or newer** and its
    (`409 quota_compact_required`). Every request of this client declares that it
    handles this (`compact_on_switch` in the claim); older clients are switched as before.
 2. The chat compacts at once, like an automatic compaction, but the summary is written
-   by `compactionModel` from `cliproxyapi.json` (else the agent's compaction model).
+   by the models CPA's Pacer names with the refusal (`compaction_models`, set on its page; the
+   first, then each next one if the previous fails), else by `compactionModel` from
+   `cliproxyapi.json` (else the agent's compaction model). Plus's cold-cache models, when set
+   for the chat's model, take precedence over both.
    The summary is portable text, so no account-bound reasoning reaches the new account.
 3. The same step continues on the chat's own model; CPA admits it on the new account
    because it carries the new checkpoint. No separate "continue" message is needed:

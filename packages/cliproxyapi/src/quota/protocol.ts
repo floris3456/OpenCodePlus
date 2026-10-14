@@ -40,6 +40,11 @@ export const Stored = Schema.Struct({
    * refused request carried ("" for none): a newer checkpoint is the compaction CPA waits for.
    */
   switching: Schema.optional(Schema.String),
+  /**
+   * The summary models CPA's Pacer names with that refusal, in order, as `provider/model` on this chat's
+   * provider. They replace `compactionModel` and `compactionFallback` for this switch.
+   */
+  switchModels: Schema.optional(Schema.Array(Schema.String)),
 })
 export type Stored = typeof Stored.Type
 export const Config = Schema.Struct({

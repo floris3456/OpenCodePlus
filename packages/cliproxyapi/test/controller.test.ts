@@ -832,6 +832,58 @@ test("the account-switch decision carries the fallback model; a malformed one is
   )
 })
 
+test("summary models Pacer names with the refusal replace the configured ones, in order, across a restart", async () => {
+  const f = fixture("proxy/cheap-model", "proxy/wide-model")
+  f.state.known = true
+  await f.controller.decide(f.event())
+  const refusal = Response.json(
+    {
+      error: {
+        code: "quota_compact_required",
+        message: "Pacer moves this chat from jan to ilse.",
+        type: "quota_handoff",
+        compaction_models: ["claude-sonnet-4-6", "gemini-3.8-flash-high", "bad#"],
+      },
+    },
+    { status: 409 },
+  )
+  await f.controller.response("ses_test", "proxy", "model", refusal)
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  expect((await f.controller.status("ses_test"))[0]?.text).toBe(
+    "Pacer moves this chat from jan to ilse. Compacting with proxy/claude-sonnet-4-6 (fallback proxy/gemini-3.8-flash-high) first.",
+  )
+  const restarted = new QuotaController(
+    () => ({ routes: { proxy: f.server.url.href }, compactionModel: "proxy/cheap-model" }),
+    "installation",
+    {
+      read: async (key) => f.store.get(key),
+      write: async (key, value) => {
+        f.store.set(key, value)
+      },
+      notify: async () => {},
+      fetch,
+      now: Date.now,
+    },
+  )
+  const event = f.event()
+  await restarted.decide(event)
+  expect(event).toMatchObject({ compact: true, portable: true })
+  expect(event.compactionModel).toEqual(Model.Ref.parse("proxy/claude-sonnet-4-6"))
+  expect(event.compactionFallbacks).toEqual([Model.Ref.parse("proxy/gemini-3.8-flash-high")])
+  expect(event.compactionFallback).toBeUndefined()
+  // Without names in the refusal, the configured models write the summary as before.
+  const g = fixture("proxy/cheap-model", "proxy/wide-model")
+  g.state.known = true
+  await g.controller.decide(g.event())
+  await g.controller.response("ses_test", "proxy", "model", switchRefusal())
+  expect(await g.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  const plain = g.event()
+  await g.controller.decide(plain)
+  expect(plain.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model"))
+  expect(plain.compactionFallback).toEqual(Model.Ref.parse("proxy/wide-model"))
+  expect(plain.compactionFallbacks).toBeUndefined()
+})
+
 test("the compaction start notice names the models the final decision armed, not CPA's list", async () => {
   const f = fixture("proxy/cpa-model")
   f.state.known = true

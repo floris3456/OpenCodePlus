@@ -38,6 +38,8 @@ type Route = {
   unenrolledUntil?: number
   /** CPA's explanation with its latest `quota_compact_required` refusal. */
   switchText?: string
+  /** The summary models named with that refusal, as `provider/model`; stored when the switch is armed. */
+  switchModels?: string[]
   /** Immediate retries of one account switch; bounds a refusal loop. */
   switchRetries?: number
   /** While refused: when tick() polls again, idle or not. */
@@ -279,8 +281,15 @@ export class QuotaController {
       if ((event.boundary.checkpoint ?? "") === switching) {
         event.compact = true
         event.portable = true
-        if (this.summary.ref) event.compactionModel = this.summary.ref
-        if (this.fallback.ref) event.compactionFallback = this.fallback.ref
+        // Models Pacer named with the refusal win over this client's configured ones.
+        const named = (route.stored.switchModels ?? []).map((model) => Model.Ref.parse(model))
+        if (named.length > 0) {
+          event.compactionModel = named[0]
+          event.compactionFallbacks = named.slice(1)
+          delete event.compactionFallback
+        }
+        if (named.length === 0 && this.summary.ref) event.compactionModel = this.summary.ref
+        if (named.length === 0 && this.fallback.ref) event.compactionFallback = this.fallback.ref
         event.metadata = { ...event.metadata, "quota.switch": true }
       }
       return
@@ -384,6 +393,7 @@ export class QuotaController {
             error: Schema.Struct({
               code: Schema.optionalKey(Schema.String),
               message: Schema.optionalKey(Schema.String),
+              compaction_models: Schema.optionalKey(Schema.Array(Schema.String)),
             }),
           }),
         ),
@@ -394,10 +404,27 @@ export class QuotaController {
       const detail = parsed._tag === "Some" ? parsed.value.error : undefined
       const code = detail?.code?.startsWith("quota_") ? detail.code : detail?.message?.match(/^(quota_[a-z_]+): /)?.[1]
       route.retryCode = code?.startsWith("quota_") ? code : undefined
-      if (route.retryCode === "quota_compact_required") route.switchText = detail?.message
+      if (route.retryCode === "quota_compact_required") {
+        route.switchText = detail?.message
+        // CPA model names on this chat's provider; a name that cannot form a model reference is skipped.
+        route.switchModels = (detail?.compaction_models ?? [])
+          .map((model) => `${provider}/${model}`)
+          .filter((model) => {
+            try {
+              Model.Ref.parse(model)
+              return true
+            } catch {
+              return false
+            }
+          })
+      }
       // A refused warming ping arms the same switch gate, but never starts a summary itself.
       if (this.config().reactive && kind === "generate" && route.retryCode === "quota_compact_required") {
-        route.stored = { ...route.stored, switching: route.decision?.boundary.checkpoint ?? "" }
+        route.stored = {
+          ...route.stored,
+          switching: route.decision?.boundary.checkpoint ?? "",
+          switchModels: route.switchModels,
+        }
         await this.save(route)
       }
       return
@@ -434,7 +461,7 @@ export class QuotaController {
     route.unenrolledUntil = undefined
     if (kind === "primary" && route.stored.switching !== undefined) {
       // CPA admitted the compacted chat: on the new account, or on the old one if it recovered meanwhile.
-      route.stored = { ...route.stored, switching: undefined }
+      route.stored = { ...route.stored, switching: undefined, switchModels: undefined }
       route.switchRetries = 0
       route.notices = [
         {
@@ -488,20 +515,23 @@ export class QuotaController {
       // A checkpoint made for this switch was refused as well, or retries keep failing: stop here so the
       // refusal reaches the chat instead of compacting in a loop.
       if ((pending !== undefined && carried !== pending) || route.switchRetries > SWITCH_RETRIES) {
-        route.stored = { ...route.stored, switching: undefined }
+        route.stored = { ...route.stored, switching: undefined, switchModels: undefined }
         route.switchRetries = 0
         await this.save(route)
         return false
       }
       if (pending === undefined) {
-        route.stored = { ...route.stored, switching: carried }
+        route.stored = { ...route.stored, switching: carried, switchModels: route.switchModels }
         await this.save(route)
       }
+      const [named, ...fallbacks] = route.stored.switchModels ?? []
       route.notices = [
         {
           sessionID: session,
           kind: "switching",
-          text: `${route.switchText ?? "CPA is moving this chat to another account."} ${this.summary.problem ?? ""}${this.fallback.problem ?? ""}Compacting with ${this.summary.label ?? "the agent's compaction model"}${this.fallback.label ? ` (fallback ${this.fallback.label})` : ""} first.`,
+          text: named
+            ? `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${named}${fallbacks.length > 0 ? ` (fallback ${fallbacks.join(", ")})` : ""} first.`
+            : `${route.switchText ?? "CPA is moving this chat to another account."} ${this.summary.problem ?? ""}${this.fallback.problem ?? ""}Compacting with ${this.summary.label ?? "the agent's compaction model"}${this.fallback.label ? ` (fallback ${this.fallback.label})` : ""} first.`,
         },
       ]
       // Core runs its compaction decision before rebuilding the request; decide() asks for the summary.
