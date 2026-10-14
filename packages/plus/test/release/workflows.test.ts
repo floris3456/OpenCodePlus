@@ -680,6 +680,10 @@ describe("native build workflow (ocp-build.yml)", () => {
     expect(namesOther.exitCode).not.toBe(0)
     expect(namesOther.output).toContain(`this source contains opencode ${opencode}`)
 
+    const preview = run(`${opencode}-plus-1.0.0.2`)
+    expect(preview.exitCode).not.toBe(0)
+    expect(preview.output).toContain(`is a local preview; publish ${opencode}-plus-1.0.0 instead`)
+
     for (const version of ["0.0.0-plus-r5.3", `${opencode}-plus-1.0`, `v${opencode}-plus-1.0.0`, ""]) {
       const refused = run(version)
       expect(refused.exitCode).not.toBe(0)

@@ -23,7 +23,9 @@ export default Runtime.handler(
       log.info(`Using method: ${method}`)
       const target = Option.getOrUndefined(input.target) ?? (yield* updater.latest(method))
       const version = target.trim().replace(/^v/, "")
-      if (version === OPENCODE_VERSION) {
+      // OpenCodePlus compares with the install's active release instead: a local release is
+      // switched to by running its own, already installed binary.
+      if (version === OPENCODE_VERSION && method !== "opencodeplus") {
         log.warn(`${Product.displayName} upgrade skipped: ${version} is already installed`)
         outro("Done")
         return

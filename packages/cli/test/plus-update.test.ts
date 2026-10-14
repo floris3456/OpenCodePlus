@@ -304,7 +304,38 @@ describe("PlusUpdate", () => {
     expect(await pointer(install.prefix)).toBe("../releases/2.0.18-plus-1.0.0/bin/opencodeplus")
   })
 
+  test("switches to a local release already installed beside the incumbent without downloading anything", async () => {
+    const install = await installed("2.0.18-plus-1.0.0")
+    const version = "2.0.18-plus-1.0.1.1"
+    const { archiveName } = await publish(version)
+    // A local release is staged by its own installer from files on disk, never published.
+    const assets = path.join(root, "assets")
+    await fs.mkdir(assets)
+    await Promise.all(
+      [...site.releases.get(version)!].map(([name, bytes]) => fs.writeFile(path.join(assets, name), bytes)),
+    )
+    site.releases.clear()
+    await Bun.$`bash ${path.join(assets, "install.sh")} --manifest ${path.join(assets, "release.json")} --archive ${path.join(assets, archiveName)} --prefix ${install.prefix} --version v${version} --stage --no-modify-path`.quiet()
+    expect(await pointer(install.prefix)).toBe("../releases/2.0.18-plus-1.0.0/bin/opencodeplus")
+
+    const steps: string[] = []
+    await run((updater) =>
+      Effect.gen(function* () {
+        const found = yield* updater.detect(install.executable)
+        if (!found) return yield* Effect.die("not detected")
+        yield* updater.update(found, version, (message) => steps.push(message))
+      }),
+    )
+    expect(await pointer(install.prefix)).toBe(`../releases/${version}/bin/opencodeplus`)
+    expect(steps).toEqual([])
+    expect(site.requests).toEqual([])
+  })
+
   test("orders and names versions for people", () => {
+    // A local preview leads up to its release: newer than the one before, older than its own.
+    expect(PlusUpdate.newer("2.0.18-plus-1.0.1.1", "2.0.18-plus-1.0.0")).toBe(true)
+    expect(PlusUpdate.newer("2.0.18-plus-1.0.1", "2.0.18-plus-1.0.1.3")).toBe(true)
+    expect(PlusUpdate.describe("2.0.18-plus-1.0.1.3")).toBe("OpenCodePlus 1.0.1.3 (local, opencode 2.0.18)")
     expect(PlusUpdate.newer("2.0.18-plus-1.0.10", "2.0.18-plus-1.0.9")).toBe(true)
     expect(PlusUpdate.newer("2.0.18-plus-1.0.9", "2.0.18-plus-1.0.9")).toBe(false)
     // Every release of the scheme is newer than the releases before it, and nothing outside it is offered.
