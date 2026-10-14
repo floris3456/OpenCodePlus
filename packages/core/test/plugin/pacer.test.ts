@@ -7,10 +7,12 @@ import { PluginHost } from "@opencode/core/plugin/host"
 import { PluginPromise } from "@opencode/core/plugin/promise"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Agent } from "@opencode/schema/agent"
-import { Session } from "@opencode/schema/session"
 import { Provider } from "@opencode/core/provider"
 import Pacer from "@opencodeplus/cliproxyapi/pacer"
 import { UsageDefinition } from "../../../cliproxyapi/src/quota/usage"
+import { Definition } from "../../../cliproxyapi/src/quota/rpc"
+import { Bus } from "@opencode/core/bus"
+import { SessionEvent } from "@opencode/core/session/event"
 import { PluginTestLayer } from "./fixture"
 import { testEffect } from "../lib/effect"
 
@@ -162,7 +164,8 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         expect(paths.length).toBe(before)
         expect(paths.some((path) => path.includes("quota-handoff"))).toBe(false)
         const hooks = yield* PluginHooks.Service
-        const sessionID = Session.ID.make("ses_pacer_switch")
+        // A real session: its run events are durable.
+        const sessionID = (yield* host.session.create({ title: "Pacer switch" })).id
         const agent = Agent.ID.make("build")
         const ref = Model.Ref.make({
           providerID: Provider.ID.make("cliproxyapi"),
@@ -269,6 +272,30 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         const decision = yield* hooks.trigger("session", "compaction.decide", boundary)
         expect(decision.compact).toBe(true)
         expect(decision.portable).toBe(true)
+        // CPA admits the compacted chat on the new account: the composer says so until that run ends.
+        yield* hooks.trigger("session", "http.response", {
+          sessionID,
+          agent,
+          model: ref,
+          kind: "primary",
+          request: new Request(`${server.url.origin}/v1/messages`, { headers: request.headers }),
+          response: new Response("ok", {
+            headers: {
+              "X-Quota-Protocol": "1",
+              "X-Quota-Binding": Buffer.from(
+                JSON.stringify({ protocol: 1, generation: 2, alias: "jan@informatix.nl" }),
+              ).toString("base64url"),
+            },
+          }),
+        })
+        const notices = host.rpc(Definition).status({ sessionID })
+        expect((yield* notices).map((notice) => notice.text)).toEqual(["Continuing on jan@informatix.nl after compacting."])
+        const bus = yield* Bus.Service
+        yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID })
+        const ended = yield* notices.pipe(
+          Effect.repeat({ while: (list) => list.length > 0, times: 100, schedule: Schedule.spaced("20 millis") }),
+        )
+        expect(ended).toEqual([])
 
         // A different caller's quota observation wakes the held subscription. An idle
         // viewer sees it through the cached RPC without acquiring a serving identity.

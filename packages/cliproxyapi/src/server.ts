@@ -137,6 +137,17 @@ export default Plugin.define({
         if (kind === "compaction") await controller.compacting(event.sessionID, handoff)
       })
     }
+    // A chat's runs start and end its notices: "Continuing on … after compacting." lasts as long as
+    // the run that continues on the new account.
+    const events = new AbortController()
+    void (async () => {
+      for await (const event of ctx.event.subscribe({ signal: events.signal })) {
+        const type = (event as { type?: string }).type ?? ""
+        const session = (event as { data?: { sessionID?: unknown } }).data?.sessionID
+        if (!type.startsWith("session.execution.") || typeof session !== "string") continue
+        await controller.activity(session, type === "session.execution.started")
+      }
+    })().catch(() => {})
     // Percentages/catalogue are cached. The separate read-only routing preview
     // uses Plus's existing capability and is coalesced across visible clients.
     const meter = new Meter()
@@ -168,6 +179,9 @@ export default Plugin.define({
         return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }
       },
     })
-    return stop
+    return () => {
+      events.abort()
+      return stop?.()
+    }
   },
 })
