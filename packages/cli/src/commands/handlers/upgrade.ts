@@ -31,7 +31,7 @@ export default Runtime.handler(
         return
       }
 
-      log.info(`From ${OPENCODE_VERSION} → ${version}`)
+      log.info(method === "opencodeplus" ? `To ${version}` : `From ${OPENCODE_VERSION} → ${version}`)
       const progress = spinner()
       progress.start("Upgrading...")
       yield* updater.upgrade(method, target, (message) => progress.message(message)).pipe(
