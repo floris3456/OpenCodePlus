@@ -134,7 +134,7 @@ test("the Monitor command exposes /monitor with the lowercase /tools alias", asy
     // The old spelling remains an alias of the same command, not a duplicate.
     expect(open?.slash?.name).toBe("monitor")
     expect(open?.slash?.aliases).toEqual(["tools"])
-    expect(open?.title).toBe("Monitor: tokens, cache and tools")
+    expect(open?.title).toBe("Monitor: cache, prompt, tools and sessions")
     expect(open?.palette).toBe(true)
     // The command id stays stable so existing configs keep binding it.
     expect(commands.filter((command) => command.id === "plus.monitor.open")).toHaveLength(1)

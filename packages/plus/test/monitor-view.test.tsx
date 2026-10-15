@@ -202,11 +202,12 @@ test("Cache read cells distinguish stored legacy/absent/running from reported ze
   try {
     const frame = await fixture.waitForFrame((text) => text.includes("row 1 of 4"))
     const lines = frame.split("\n")
-    const column = lines.find((line) => line.includes("Verdict") && line.includes("Read"))!.indexOf("Read")
+    const header = lines.find((line) => line.includes("Verdict") && line.includes("Read"))!
+    // Request rows start with their time; the verdict differs per row ("none", "unknown").
     expect(
       lines
-        .filter((line) => line.includes("step") && line.includes("[NONE]"))
-        .map((line) => line.slice(column, column + 9).trim()),
+        .filter((line) => /^\s*\d\d:\d\d:\d\d step /.test(line))
+        .map((line) => line.slice(header.indexOf("Read"), header.indexOf("Lost")).trim()),
     ).toEqual(["—", "—", "0", "—"])
   } finally {
     fixture.destroy()
