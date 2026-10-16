@@ -212,7 +212,7 @@
         "@opencode/util": "workspace:*",
         "@opentui/solid": "catalog:",
         "effect": "catalog:",
-        "opencode-pacer": "github:floris3456/opencode-pacer#cb827c1202f8be0d426064c67b5e398b01f8b29c",
+        "opencode-pacer": "github:floris3456/opencode-pacer#493706ce19e8446247aa8d3e279d7ad2b53f0470",
         "solid-js": "catalog:",
       },
       "devDependencies": {
@@ -5010,7 +5010,7 @@
 
     "openapi-types": ["openapi-types@12.1.3", "", {}, "sha512-N4YtSYJqghVu4iek2ZUvcN/0aqH1kRDuNqzcycDxhOUpg7GdvLa2F3DgS6yBNhInhv2r/6I0Flkn7CqL8+nIcw=="],
 
-    "opencode-pacer": ["opencode-pacer@github:floris3456/opencode-pacer#cb827c1", { "dependencies": { "@opencode/plugin": "^2.0.26" }, "peerDependencies": { "@opentui/core": ">=0.4.5", "@opentui/solid": ">=0.4.5", "solid-js": "^1.9" }, "optionalPeers": ["@opentui/core", "@opentui/solid", "solid-js"] }, "floris3456-opencode-pacer-cb827c1", "sha512-DS4906eA2y3P266sGa9BmYMwMTwOgm311KCHkZ54TF+x4w4DiRPgNLqeiLzUcdS43hIsRGxmb/mjd6tDdyXehQ=="],
+    "opencode-pacer": ["opencode-pacer@github:floris3456/opencode-pacer#493706c", { "dependencies": { "@opencode/plugin": "^2.0.26" }, "peerDependencies": { "@opentui/core": ">=0.4.5", "@opentui/solid": ">=0.4.5", "solid-js": "^1.9" }, "optionalPeers": ["@opentui/core", "@opentui/solid", "solid-js"] }, "floris3456-opencode-pacer-493706c", "sha512-ysVkgvd9t5umBNqilrEo4mhi0/ToSrZ99sMNGSdnhPXRX3gs/JchNR3Sl03LqdqOhjc44f+19HOs4EOx0hehag=="],
 
     "openid-client": ["openid-client@5.6.4", "", { "dependencies": { "jose": "^4.15.4", "lru-cache": "^6.0.0", "object-hash": "^2.2.0", "oidc-token-hash": "^5.0.3" } }, "sha512-T1h3B10BRPKfcObdBklX639tVz+xh34O7GjofqrqiAQdm7eHsQ00ih18x6wuJ/E6FxdtS2u3FmUGPDeEcMwzNA=="],
 
