@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "files": {
+    "test/embedded.test.ts": 48903,
+    "test/instructions-agent-controls.test.ts": 19481,
+    "test/instances.test.ts": 4800,
+    "test/instances-effect.test.ts": 3271,
+    "test/worktree.test.ts": 1703,
+    "test/instances-lifecycle.test.ts": 1614,
+    "test/contract-identity.test.ts": 1211,
+    "test/request-retention.test.ts": 1210,
+    "test/promise.test.ts": 1034,
+    "test/transport.test.ts": 930,
+    "test/import-boundaries.test.ts": 737,
+    "test/logging.test.ts": 191
+  }
+}

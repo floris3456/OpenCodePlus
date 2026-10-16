@@ -22,7 +22,7 @@
   "scripts": {
     "build": "bun run script/build.ts",
     "typecheck": "tsgo --noEmit",
-    "test": "bun test"
+    "test": "bun test --parallel"
   },
   "dependencies": {
     "acorn": "8.15.0",

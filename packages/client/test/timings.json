@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "files": {
+    "test/service.test.ts": 15603,
+    "test/promise-service.test.ts": 14178,
+    "test/solid-connection.test.ts": 4449,
+    "test/solid-refresh.test.ts": 1094,
+    "test/service-reconnect.test.ts": 633,
+    "test/service-contender-pool.test.ts": 621,
+    "test/solid-data.test.ts": 473,
+    "test/promise.test.ts": 319,
+    "test/effect.test.ts": 270,
+    "test/contract-identity.test.ts": 250,
+    "test/import-boundaries.test.ts": 219,
+    "test/solid-compaction.test.ts": 176,
+    "test/solid-pending-status.test.ts": 104,
+    "test/solid-eviction.test.ts": 97,
+    "test/solid-pty.test.ts": 50,
+    "test/worktree.test.ts": 47,
+    "test/solid-inbox-race.test.ts": 46,
+    "test/service-contender.test.ts": 38,
+    "test/shared-events.test.ts": 13,
+    "test/session-parent-create.test.ts": 5,
+    "test/service-decision.test.ts": 3
+  }
+}

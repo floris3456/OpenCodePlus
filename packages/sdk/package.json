@@ -23,7 +23,8 @@
   },
   "scripts": {
     "build": "bun run script/build.ts",
-    "test": "bun test --timeout 5000",
+    "test": "bun test --parallel --timings=test/timings.json --timeout 5000",
+    "test:timings": "bun test --parallel --timings=test/timings.json --update-timings --timeout 5000",
     "typecheck": "tsgo -b",
     "verify:package": "bun run script/verify-package.ts"
   },

@@ -15,7 +15,7 @@
   },
   "scripts": {
     "typecheck": "tsgo -b",
-    "test": "bun test"
+    "test": "bun test --parallel"
   },
   "dependencies": {
     "@betteroffice/docx": "0.4.3",

@@ -9,7 +9,7 @@
     "./plugin": "./src/plugin.ts"
   },
   "scripts": {
-    "test": "bun test --timeout 30000 --only-failures",
+    "test": "bun test --parallel --timeout 30000 --only-failures",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {

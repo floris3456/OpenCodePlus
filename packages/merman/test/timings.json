@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "files": {
+    "src/layout-audit.test.ts": 14968,
+    "src/state/diagram.test.ts": 4711,
+    "src/flowchart/flowchart.test.ts": 1434,
+    "src/test/markdown.test.ts": 371,
+    "src/state/routing.test.ts": 238,
+    "src/sequence/diagram.test.ts": 106,
+    "src/gantt/diagram.test.ts": 97,
+    "src/core/drawing.test.ts": 72,
+    "src/test/diagnostics.test.ts": 71,
+    "src/core/color/style.test.ts": 65,
+    "src/state/layout.test.ts": 58,
+    "src/gitgraph/diagram.test.ts": 49,
+    "src/state/style.test.ts": 46,
+    "src/palette.test.ts": 43,
+    "src/timeline/diagram.test.ts": 32,
+    "src/sequence/placement.test.ts": 22,
+    "src/state/visible-model.test.ts": 18,
+    "src/core/canvas.test.ts": 13,
+    "src/core/text.test.ts": 11,
+    "src/flowchart/routing.test.ts": 9,
+    "src/flowchart/labels.test.ts": 7,
+    "src/core/spatial.test.ts": 4,
+    "src/core/geometry.test.ts": 3
+  }
+}

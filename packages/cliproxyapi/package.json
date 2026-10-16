@@ -21,7 +21,7 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit -p tsconfig.test.json",
-    "test": "bun test"
+    "test": "bun test --parallel"
   },
   "dependencies": {
     "opencode-pacer": "github:floris3456/opencode-pacer#cb827c1202f8be0d426064c67b5e398b01f8b29c",

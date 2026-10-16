@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 /**
  * The full test suite a public release runs: `bun run check` at the root, then every package's
- * own `test` script, one package at a time (concurrent suites make timing-sensitive tests flaky).
+ * own `test` script, one package at a time. Each script already runs its files in parallel on
+ * every core; running packages side by side would overload the machine and make
+ * timing-sensitive tests flaky.
  *
  *   bun packages/plus/script/release/suite.ts --out <dir> [--baseline <previous suite.json>]
  *

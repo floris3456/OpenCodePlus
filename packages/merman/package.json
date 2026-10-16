@@ -11,7 +11,8 @@
   },
   "scripts": {
     "audit:layouts": "bun run script/layout-audit.ts",
-    "test": "bun test --timeout 30000 --only-failures",
+    "test": "bun test --parallel --timings=test/timings.json --timeout 30000 --only-failures",
+    "test:timings": "bun test --parallel --timings=test/timings.json --update-timings --timeout 30000 --only-failures",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
