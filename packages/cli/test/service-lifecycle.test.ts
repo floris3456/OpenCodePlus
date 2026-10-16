@@ -14,7 +14,8 @@ import { isolatedEnv } from "./fixture/environment"
 // the configured port, which a stop removes without leftovers.
 
 const entry = path.join(import.meta.dir, "../src/index.ts")
-const serviceTest = process.platform === "win32" ? test.skip : test
+// Each case has its own home, port and process filter, so the cases run concurrently.
+const serviceTest = process.platform === "win32" ? test.skip : test.concurrent
 
 serviceTest(
   "concurrent CLI and client starts converge on one server",

@@ -34,19 +34,37 @@ const environment = {
   ...(process.platform === "win32" ? { USERPROFILE: home, TMP: temporary, TEMP: temporary } : {}),
 }
 
-const child = Bun.spawn({
-  cmd: [process.execPath, "test", "--only-failures", ...process.argv.slice(2)],
-  env: environment,
-  stdin: "inherit",
-  stdout: "inherit",
-  stderr: "inherit",
-})
-const interrupt = () => child.kill("SIGINT")
-const terminate = () => child.kill("SIGTERM")
-process.once("SIGINT", interrupt)
-process.once("SIGTERM", terminate)
-const result = await child.exited
-process.off("SIGINT", interrupt)
-process.off("SIGTERM", terminate)
+// Without arguments: every file in parallel workers, slowest first (test/timings.json), then the
+// files that wait on real time in a quiet phase, so their waits measure the code rather than the
+// other workers. With arguments: plain `bun test <arguments>`.
+const QUIET = ["test/plugin/supervisor-reload.test.ts", "test/session-model-move.test.ts"]
+const args = process.argv.slice(2)
+const runs =
+  args.length > 0
+    ? [args]
+    : [
+        ["--parallel", "--timings=test/timings.json", ...QUIET.map((file) => `--path-ignore-patterns=${file}`)],
+        ["--parallel=2", ...QUIET],
+      ]
 
-process.exitCode = result
+const results: number[] = []
+for (const argv of runs) results.push(await run(argv))
+process.exitCode = results.find((code) => code !== 0) ?? 0
+
+async function run(argv: string[]) {
+  const child = Bun.spawn({
+    cmd: [process.execPath, "test", "--only-failures", ...argv],
+    env: environment,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  })
+  const interrupt = () => child.kill("SIGINT")
+  const terminate = () => child.kill("SIGTERM")
+  process.once("SIGINT", interrupt)
+  process.once("SIGTERM", terminate)
+  const result = await child.exited
+  process.off("SIGINT", interrupt)
+  process.off("SIGTERM", terminate)
+  return result
+}

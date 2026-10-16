@@ -32,6 +32,9 @@ test("selecting a variant completes exactly one pick with the chosen variant", a
   setup.local.model.onPick((pick) => picks.push(pick))
   setup.dialog.replace(() => <DialogVariant />)
   await setup.waitForFrame((frame) => frame.includes("Select variant"))
+  // The dialog paints before its deferred filter focus is ready for typing.
+  if (!(setup.renderer.currentFocusedRenderable instanceof InputRenderable))
+    await once(setup.renderer, CliRenderEvents.FOCUSED_RENDERABLE)
   await setup.mockInput.typeText("low")
   await setup.renderOnce()
   setup.mockInput.pressEnter()
