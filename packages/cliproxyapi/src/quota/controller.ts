@@ -298,7 +298,8 @@ export class QuotaController {
     // Shadow enrollment observes the existing route without forcing a portable
     // checkpoint. Native context-length/manual compaction remains unchanged.
     if (route.mode === "shadow") return
-    if (!snapshot?.primary_used && !event.boundary.portable) {
+    const primaryUsed = this.primaryUsed(route)
+    if (!primaryUsed && !event.boundary.portable) {
       if (event.auto || event.reason === "manual") {
         event.compact = true
         event.portable = true
@@ -313,7 +314,7 @@ export class QuotaController {
       route.stored = { ...route.stored, replay: false }
       await this.save(route)
     }
-    if (!snapshot?.primary_used && !event.boundary.fresh && !event.boundary.checkpoint) {
+    if (!primaryUsed && !event.boundary.fresh && !event.boundary.checkpoint) {
       route.stored = { ...route.stored, replay: true }
       await this.save(route)
     }
@@ -552,7 +553,8 @@ export class QuotaController {
     const route = await this.route(session, provider, model)
     if (kind === "compaction") {
       route.checkpointHandoff = checkpointHandoff
-      if (!checkpointHandoff) return this.decisions.get(session)?.portable === true
+      // A summary sent in another form than the chat's own requests misses the prompt cache they built.
+      if (!checkpointHandoff) return this.decisions.get(session)?.portable === true || this.replays(route)
       // Mandatory checkpoint conversion has no new decision. Poll the actual source route instead of
       // borrowing a stale target decision, even when that target chose the source as its summary model.
       await this.poll(route).catch((error: unknown) => this.refuse(route, error))
@@ -561,10 +563,17 @@ export class QuotaController {
         route.stored.replay ||
         route.stored.switching !== undefined ||
         !!route.snapshot?.intent ||
-        (route.mode !== "shadow" && !route.snapshot?.primary_used)
+        (route.mode !== "shadow" && !this.primaryUsed(route))
       )
     }
+    return this.replays(route)
+  }
+  private replays(route: Route) {
     return route.stored.replay || !!route.decision?.boundary.checkpoint
+  }
+  /** Pacer's replies rebuild the snapshot in memory only: after a restart, a binding CPA acknowledged still counts. */
+  private primaryUsed(route: Route) {
+    return route.snapshot?.primary_used === true || (this.config().reactive === true && route.stored.generation > 0)
   }
   /**
    * The compaction has started, after every plugin's `compaction.decide` ran: when CPA armed this

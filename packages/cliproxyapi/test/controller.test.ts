@@ -143,6 +143,44 @@ test("Pacer keeps opaque checkpoints local and a warming refusal blocks further 
   )
   expect(f.state.reads).toBe(0)
 })
+test("a restart keeps a chat Pacer already served on its signed history", async () => {
+  const f = fixture(undefined, undefined, true)
+  await f.controller.decide({ ...f.event(), boundary: { fresh: true, portable: true } })
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(2))
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(false)
+  // The service restarts: same storage, no reply seen yet by the new process.
+  const restarted = new QuotaController(() => ({ routes: f.live.routes, reactive: true }), "installation", {
+    read: async (key) => f.store.get(key),
+    write: async (key, value) => {
+      f.store.set(key, value)
+    },
+    notify: async () => {},
+    fetch,
+    now: Date.now,
+  })
+  const event = f.event()
+  await restarted.decide(event)
+  expect(event.compact).toBeUndefined()
+  expect(await restarted.requiresPortable("ses_test", "proxy", "model", "context")).toBe(false)
+  const native = { ...f.event(), boundary: { fresh: false, portable: false } }
+  await restarted.decide(native)
+  expect(native.compact).toBeUndefined()
+  expect(f.state.reads).toBe(0)
+})
+test("a compaction sends the history in the form the chat's own requests use", async () => {
+  const f = fixture(undefined, undefined, true)
+  // History from before Pacer served this chat replays portably.
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(true)
+  const manual: SessionCompactionDecision = { ...f.event(), reason: "manual" }
+  await f.controller.decide(manual)
+  expect(manual.compact).toBeUndefined()
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "compaction")).toBe(true)
+  const other = { ...f.event(), sessionID: Session.ID.make("ses_other"), boundary: { fresh: true, portable: true } }
+  await f.controller.decide(other)
+  expect(await f.controller.requiresPortable("ses_other", "proxy", "model", "compaction")).toBe(false)
+})
 test("shadow enrollment and reminders never request compaction or a checkpoint", async () => {
   const f = fixture()
   f.state.snapshot = { ...f.state.snapshot, mode: "shadow", primary_used: false, available: false }
