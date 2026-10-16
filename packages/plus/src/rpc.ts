@@ -1262,18 +1262,18 @@ export const WarmingCompactInput = Schema.Struct({
   on: Schema.Union([Schema.Boolean, Schema.Literal("default")]),
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
 
-// `/compact-cold`: compact now with the chat's cold-cache list, written by #1
-// with #2… as fallbacks. `no-list` names the Instructions row that adds one.
-export interface CompactColdInput extends Schema.Schema.Type<typeof CompactColdInput> {}
-export const CompactColdInput = Schema.Struct({
-  sessionID: Schema.String,
-}).annotate({ identifier: "Plus.CompactColdInput" })
+// Plus's global switches, the Settings › OpenCodePlus rows the server acts on.
+// `coldCompact`: a message sent into a cold chat is first summarized by the
+// cold-cache models its model resolves in Instructions.
+export interface PlusSettings extends Schema.Schema.Type<typeof PlusSettings> {}
+export const PlusSettings = Schema.Struct({
+  coldCompact: Schema.Boolean,
+}).annotate({ identifier: "Plus.Settings" })
 
-export type CompactColdResult = Schema.Schema.Type<typeof CompactColdResult>
-export const CompactColdResult = Schema.Union([
-  Schema.Struct({ ok: Schema.Literal(true), models: Schema.Array(Schema.String) }),
-  Schema.Struct({ ok: Schema.Literal(false), reason: Schema.Literal("no-list"), where: Schema.String }),
-]).annotate({ identifier: "Plus.CompactColdResult" })
+export interface PlusSettingsInput extends Schema.Schema.Type<typeof PlusSettingsInput> {}
+export const PlusSettingsInput = Schema.Struct({
+  coldCompact: Schema.optionalKey(Schema.Boolean),
+}).annotate({ identifier: "Plus.SettingsInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
 // Project checks (.opencodeplus/checks.json in the main checkout): what a team
@@ -2375,8 +2375,8 @@ const PortableWarmingSetInput = Schema.toStandardSchemaV1(
 const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
   WarmingCompactInput.annotate({ identifier: "Plus.WarmingCompactInput" }),
 )
-const PortableCompactColdInput = Schema.toStandardSchemaV1(CompactColdInput)
-const PortableCompactColdResult = Schema.toStandardSchemaV1(CompactColdResult)
+const PortablePlusSettings = Schema.toStandardSchemaV1(PlusSettings)
+const PortablePlusSettingsInput = Schema.toStandardSchemaV1(PlusSettingsInput)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(
@@ -2811,9 +2811,14 @@ export const Definition = Rpc.define({
       output: PortableWarmingStatus,
       errors: {},
     },
-    "compaction.cold": {
-      input: PortableCompactColdInput,
-      output: PortableCompactColdResult,
+    "settings.get": {
+      input: Empty,
+      output: PortablePlusSettings,
+      errors: {},
+    },
+    "settings.set": {
+      input: PortablePlusSettingsInput,
+      output: PortablePlusSettings,
       errors: {},
     },
     "compaction.triggers": {

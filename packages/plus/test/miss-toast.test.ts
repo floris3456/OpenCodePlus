@@ -50,6 +50,7 @@ function createHarness(): MissToastHarness {
     client: {
       rpc: () => ({
         "team.list": async () => ({ teams: [] }),
+        "settings.get": async () => ({ coldCompact: false }),
         "monitor.step": async (input: { sessionID: string }) => {
           stepCalls.push(input)
           return currentStepResult
@@ -174,7 +175,7 @@ test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off swi
   const cleanup = await plusPlugin.setup(harness.context)
   // Cache-miss notices is a global Settings row, registered at setup, and must
   // not appear in the command list.
-  expect(harness.settings().map((setting) => setting.id)).toEqual(["plus.miss-notices"])
+  expect(harness.settings().map((setting) => setting.id)).toEqual(["plus.miss-notices", "plus.cold-compact"])
   expect(harness.commands().filter((command) => command.id?.startsWith("plus.miss-notices"))).toHaveLength(0)
   harness.mountSlot()
 

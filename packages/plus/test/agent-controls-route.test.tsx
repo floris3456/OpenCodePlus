@@ -240,9 +240,9 @@ test("m, arrows and Enter reorder the cold-cache list with one write; Esc writes
   await sleep(80)
   await moveTo(fixture, "Warming")
   await expand(fixture)
-  await moveTo(fixture, "other model")
+  await moveTo(fixture, "Cold-cache models")
   await expand(fixture)
-  await moveTo(fixture, "a/one")
+  await moveTo(fixture, "1 a/one")
   // m pick up, ↓ move down one, Enter drops: one write with the new order.
   dispatch(fixture, "m")
   await sleep(150)
@@ -254,7 +254,7 @@ test("m, arrows and Enter reorder the cold-cache list with one write; Esc writes
   expect(written?.coldModels).toEqual(["b/two", "a/one", "c/three"])
   await fixture.waitForFrame((frame) => listText(frame).includes("2 a/one"))
   // m, ↓, Esc restores: no second write, order untouched.
-  await moveTo(fixture, "a/one")
+  await moveTo(fixture, "2 a/one")
   await sleep(80)
   dispatch(fixture, "m")
   await sleep(150)

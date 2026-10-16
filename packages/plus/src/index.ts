@@ -89,7 +89,7 @@ import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./w
 import { monitorCache, monitorFact, monitorMark, monitorPrompt, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
-import { compactColdNow } from "./compaction/cold-now.js"
+import { plusSettings } from "./plus-settings.js"
 import { getCompactionTriggers, setCompactionTriggers } from "./compaction/triggers.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
@@ -3780,7 +3780,9 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         yield* emitWarmingChanged(state, input.sessionID)
         return status
       }),
-    "compaction.cold": (input) => Effect.promise(() => compactColdNow(ctx, state, input.sessionID)),
+    "settings.get": () => Effect.promise(() => plusSettings.read()),
+    "settings.set": (input) =>
+      Effect.promise(() => plusSettings.update(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact })),
     "compaction.triggers": (input, context) =>
       Effect.gen(function* () {
         yield* ctx.session.get({ sessionID: Session.ID.make(input.sessionID) })
@@ -3863,6 +3865,7 @@ export function compactDefaultsOf(
   state: Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">,
   agentID: string,
   model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+  coldCompact: boolean,
 ): ChatCompactionDefaults {
   const modelRow = settingsFor(state.cachedModelSettings, { providerID: model.providerID, modelID: model.id })
   const everyRow = everySettings(state.cachedModelSettings)
@@ -3874,8 +3877,8 @@ export function compactDefaultsOf(
   return {
     compactWarm: effective.compactWarm.value,
     compactWarmFrom: effective.compactWarm.from === "built-in" ? "built-in" : "model",
-    // Cold arming only fires while "Compact cold caches with another model" is on.
-    coldModels: effective.coldCompact.value ? effective.coldModels.value : [],
+    // Cold arming only fires while the global "Compact cold chats first" is on.
+    coldModels: coldCompact ? effective.coldModels.value : [],
   }
 }
 
@@ -3888,11 +3891,12 @@ export async function sessionCompactDefaults(
   const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
   if (session?.agent === undefined || session.model === undefined) return undefined
   const model = session.model
-  return compactDefaultsOf(state, session.agent, {
-    providerID: model.providerID,
-    id: model.id,
-    ...(model.variant === undefined ? {} : { variant: model.variant }),
-  })
+  return compactDefaultsOf(
+    state,
+    session.agent,
+    { providerID: model.providerID, id: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) },
+    (await plusSettings.read()).coldCompact,
+  )
 }
 
 // Plus's `compaction.decide`: the per-model settings for (agent, chat model),
@@ -3912,11 +3916,12 @@ export function decideCompactionFor(
       decideCompaction(event, { armed })
       return
     }
-    // Cold is consulted only at the first auto decision after a prompt: the
-    // mark is consumed whatever the outcome, so later steps of the same turn
-    // never consult it. A manual or overflow decision leaves it for the next
-    // auto step.
-    const cold = event.reason === "auto" && consumePromptAdmitted(event.sessionID) ? await coldFor(ctx, event, ledger) : undefined
+    // Cold is consulted only at the first auto decision after a prompt, and
+    // only while the global switch is on: the mark is consumed whatever the
+    // outcome, so later steps of the same turn never consult it. A manual or
+    // overflow decision leaves it for the next auto step.
+    const fresh = event.reason === "auto" && consumePromptAdmitted(event.sessionID)
+    const cold = fresh && (await plusSettings.read()).coldCompact ? await coldFor(ctx, event, ledger) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)

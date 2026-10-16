@@ -18,11 +18,11 @@ import {
 //   1. the per-model settings Plus owns (strategy, summary model and system
 //      text), resolved agent model row → agent-wide `compaction:*` rows →
 //      Defaults › Models › this model → Every model;
-//   2. cold-cache arming: at the first step of a new prompt in a cold chat
-//      whose model has "Compact cold caches with another model" on and a
-//      non-empty list, arm a portable summary written by #1 with #2… as
-//      fallbacks and `optional` so the step continues uncompacted when every
-//      model fails;
+//   2. cold-cache arming: at the first step of a new prompt in a cold chat,
+//      while the global "Compact cold chats first" setting is on and the
+//      chat's model resolves a non-empty cold-cache list, arm a portable
+//      summary written by #1 with #2… as fallbacks and `optional` so the step
+//      continues uncompacted when every model fails;
 //   3. the CPA account-switch case: CPA has already armed a summary with its
 //      own models and marked the decision `metadata["quota.switch"]`; when the
 //      chat model's cold list is not empty, its models replace CPA's.
@@ -30,10 +30,9 @@ import {
 //      chain → Defaults › Models › this model → Every model. Cold/armed/quota
 //      decisions and core's automatic-compaction preference retain precedence.
 //
-// An armed list (a team `compactWith`, or `/compact-cold`; the in-memory
-// consumeColdCompaction) takes priority over all of it: it is the user's
-// explicit instruction for one chat, and it has no `optional`: a manual
-// compaction reports its failure.
+// An armed list (a team `compactWith`; the in-memory consumeColdCompaction)
+// takes priority over all of it: it is an explicit instruction for one chat,
+// and it has no `optional`: a manual compaction reports its failure.
 
 // "First step of a new prompt": core's decision boundary cannot say it (its
 // `fresh` is only a brand-new epoch, which is never cold), so Plus's own
@@ -89,7 +88,7 @@ export interface CompactionDecisionContext {
   readonly agents?: CompactionDefaults
   /** The models armed for this chat's next compaction (#1 writes, #2… fall back), when some were armed. */
   readonly armed?: readonly string[]
-  /** Absent when cold compacting is not consulted for this decision. */
+  /** Absent when cold compacting is not consulted: a later step, or the global setting is off. */
   readonly cold?: ColdCompactionState
 }
 
@@ -126,7 +125,7 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
     event.explanation = { ...event.explanation, trigger: "handoff" }
     return
   }
-  if (coldFires(effective.coldCompact.value, coldModels, context.cold)) {
+  if (context.cold !== undefined && coldModels.length > 0 && isCold(context.cold)) {
     armModels(event, coldModels)
     event.optional = true
     event.metadata = { ...event.metadata, "plus.cold": { models: [...coldModels] } }
@@ -146,20 +145,6 @@ function armModels(event: SessionCompactionDecision, models: readonly string[]):
   event.compactionModel = Model.Ref.parse(models[0]!)
   if (models.length > 1) event.compactionFallbacks = models.slice(1).map((model) => Model.Ref.parse(model))
   delete event.compactionFallback
-}
-
-/**
- * Cold arming fires when the caller consulted cold for this decision — the
- * first step of a new prompt — with the setting on, a non-empty list and a
- * cold chat. `cold` is absent for every later step of the turn.
- */
-function coldFires(
-  coldCompact: boolean,
-  coldModels: readonly string[],
-  cold: ColdCompactionState | undefined,
-): boolean {
-  if (cold === undefined || !coldCompact || coldModels.length === 0) return false
-  return isCold(cold)
 }
 
 /** A running, kept-warm or just-compacted chat is not cold; an unknown lifetime never is. */

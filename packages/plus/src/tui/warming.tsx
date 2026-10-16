@@ -5,8 +5,8 @@ import { Definition, type Plus } from "../rpc.js"
 
 // Cache warming in the TUI: a countdown under the prompt to when warming stops
 // for this chat, a per-chat on/off switch (<leader>k), a confirmation before a
-// message goes into a cold cache, and the per-chat compact before cold switch
-// (<leader>j, /compact-warm).
+// message goes into a cold cache (none when the cold-cache models summarize it
+// first), and the per-chat compact before cold switch (<leader>j, /compact-warm).
 
 /** How long a held send waits for the confirming second submit, as interrupting a running chat does. */
 export const CONFIRM_MS = 5000
@@ -108,6 +108,7 @@ export function createWarming(context: Plugin.Context) {
   // submit holds it and the footer asks for a second, like interrupting a
   // running chat; a second submit within CONFIRM_MS sends. A running chat is
   // using its cache, and a chat that never warmed shows nothing to confirm.
+  // When the cold-cache models will summarize the chat first, it sends at once.
   const [armed, setArmed] = createSignal<string | undefined>()
   const [flash, setFlash] = createSignal(false)
   const timers = { disarm: undefined as ReturnType<typeof setTimeout> | undefined, flash: undefined as ReturnType<typeof setTimeout> | undefined }
@@ -115,6 +116,7 @@ export function createWarming(context: Plugin.Context) {
     const sessionID = input.sessionID
     if (sessionID === undefined || input.mode !== "normal" || sessionID !== tracked.sessionID) return true
     if (label()?.tone !== "warning" || context.data.session.status(sessionID) === "running") return true
+    if ((status()?.coldModels?.length ?? 0) > 0) return true
     clearTimeout(timers.disarm)
     clearTimeout(timers.flash)
     if (armed() === sessionID) {
@@ -180,61 +182,6 @@ export function createWarming(context: Plugin.Context) {
     })
   }
 
-  // Compacts this chat now with its cold-cache list; the chat's compaction line
-  // then names the model that wrote the summary.
-  async function compactCold(): Promise<void> {
-    const route = context.ui.router.current()
-    if (route.type !== "session") {
-      context.ui.toast.show({ variant: "warning", message: "Open a chat to compact it with the cold-cache model" })
-      return
-    }
-    const next = await plus["compaction.cold"]({ sessionID: route.sessionID }).catch((error: unknown) => {
-      context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
-      return undefined
-    })
-    if (next === undefined) return
-    if (!next.ok) {
-      context.ui.toast.show({ variant: "warning", message: next.where })
-      return
-    }
-    const [first, ...fallbacks] = next.models
-    context.ui.toast.show({
-      variant: "info",
-      message: `Compacting with ${first}${fallbacks.length === 0 ? "" : ` (fallback ${fallbacks.join(", ")})`}`,
-    })
-  }
-
-  async function followCompact(): Promise<void> {
-    const route = context.ui.router.current()
-    if (route.type !== "session") {
-      context.ui.toast.show({ variant: "warning", message: "Open a chat to follow the model settings" })
-      return
-    }
-    const next = await plus["warming.compact"]({ sessionID: route.sessionID, on: "default" }).catch((error: unknown) => {
-      context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
-      return undefined
-    })
-    if (next === undefined) return
-    if (tracked.sessionID === route.sessionID) setStatus(next)
-    context.ui.toast.show({ variant: "info", message: "Compact before cold for this chat follows the model settings" })
-  }
-
-  async function follow(): Promise<void> {
-    const route = context.ui.router.current()
-    if (route.type !== "session") return
-    // Following model settings resets both chat overrides, not just warming.
-    // Otherwise a previous /compact-warm flip silently keeps shadowing the model.
-    const next = await plus["warming.set"]({ sessionID: route.sessionID, chat: "default" })
-      .then(() => plus["warming.compact"]({ sessionID: route.sessionID, on: "default" }))
-      .catch((error: unknown) => {
-        context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
-        return undefined
-      })
-    if (next === undefined) return
-    if (tracked.sessionID === route.sessionID) setStatus(next)
-    context.ui.toast.show({ variant: "info", message: "Cache warming for this chat follows the model settings" })
-  }
-
   // The footer follows the prompt it sits under. A remount (dialogs, route
   // changes) may mount the new prompt before the old one cleans up, so the
   // last session stays tracked instead of being dropped on cleanup.
@@ -266,9 +213,8 @@ export function createWarming(context: Plugin.Context) {
   return {
     toggle,
     toggleCompact,
-    compactCold,
-    followCompact,
-    follow,
+    /** Reread the tracked chat's status, after a setting it depends on changed. */
+    refresh: () => (tracked.sessionID === undefined ? Promise.resolve() : load(tracked.sessionID)),
     Footer,
     dispose() {
       clearInterval(tick)

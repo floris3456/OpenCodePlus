@@ -1073,16 +1073,16 @@ function lazyDefaultColdGroup(
       reviewCount: () => 0,
       children: () => [],
     }))
-  const own = record?.coldCompact !== undefined
+  const own = record?.coldCompact !== undefined || record?.coldModels !== undefined
   return {
     id,
     kind: "group",
     label: COLD_COMPACT_LABEL,
     depth,
     address: { level: "defaults", agent: null, item: modelSettingItemId(key, "coldCompact"), section: null },
-    actions: { toggle: true, edit: false, reset: own, remove: false, split: false, pin: false },
+    actions: { toggle: false, edit: false, reset: own, remove: false, split: false, pin: false },
     selfReview: () => false,
-    partial: () => ({ value: coldCompactSummary(effective().coldCompact.value, effective().coldModels.value) }),
+    partial: () => ({ value: coldCompactSummary(effective().coldModels.value) }),
     reviewCount: () => cachedReviewCount(memo, id, () => rollup(kids())),
     children: kids,
   }
@@ -2337,8 +2337,8 @@ function modelGroup(
   }
 }
 
-// The cold-cache group: the switch itself (Space toggles `coldCompact`, `r`
-// inherits) plus the numbered list of models that compact a cold cache.
+// The cold-cache group: the numbered list of models that compact a cold cache
+// (`r` inherits). Whether they do is the global Settings switch.
 function coldListGroup(
   memo: Memo,
   ctx: BuildContext,
@@ -2355,7 +2355,6 @@ function coldListGroup(
   const itemId = modelFieldItemId(targetOf(candidate), "coldCompact")
   const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
   const rows = (): readonly string[] => coldListOf(memo, ctx, level, owner, candidate, teamRef, catalogue).value
-  const on = (): boolean => coldCompactOf(memo, ctx, level, owner, candidate, teamRef, catalogue)
   const own = (): boolean => coldOwnAt(ctx, level, owner, candidate, teamRef, catalogue)
   const kids = (): readonly Lazy[] =>
     rows().map((model, index): Lazy => ({
@@ -2376,9 +2375,9 @@ function coldListGroup(
     label: COLD_COMPACT_LABEL,
     depth,
     address,
-    actions: { toggle: true, edit: false, reset: own(), remove: false, split: false, pin: false },
+    actions: { toggle: false, edit: false, reset: own(), remove: false, split: false, pin: false },
     selfReview: () => false,
-    partial: () => ({ value: coldCompactSummary(on(), rows()) }),
+    partial: () => ({ value: coldCompactSummary(rows()) }),
     reviewCount: () => cachedReviewCount(memo, id, () => rollup(kids())),
     children: kids,
   }
@@ -2492,18 +2491,6 @@ function agentWideCompaction(
   }
 }
 
-function coldCompactOf(
-  memo: Memo,
-  ctx: BuildContext,
-  level: Level,
-  owner: string | null,
-  candidate: { providerID: string; modelID: string; variant?: string; source: Level | "upstream"; from: From },
-  teamRef?: RowTeam,
-  catalogue?: Catalogue,
-): boolean {
-  return effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue).coldCompact.value
-}
-
 function coldListOf(
   memo: Memo,
   ctx: BuildContext,
@@ -2516,7 +2503,7 @@ function coldListOf(
   return effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue).coldModels
 }
 
-// Whether this level's own model row sets the coldCompact switch or the list.
+// Whether this level's own model row sets the list (or the retired switch, so a reset clears it).
 function coldOwnAt(
   ctx: BuildContext,
   level: Level,
@@ -2528,7 +2515,11 @@ function coldOwnAt(
   const target = targetOf(candidate)
   const scope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }
   return ctx.models.some(
-    (record) => record.removed !== true && scopedTo(record, scope) && sameModelCandidate(record, target) && record.coldCompact !== undefined,
+    (record) =>
+      record.removed !== true &&
+      scopedTo(record, scope) &&
+      sameModelCandidate(record, target) &&
+      (record.coldCompact !== undefined || record.coldModels !== undefined),
   )
 }
 

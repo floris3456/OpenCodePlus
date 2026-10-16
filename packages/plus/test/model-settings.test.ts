@@ -631,7 +631,7 @@ test("a Defaults › Models row opens into one field row per field", async () =>
   expect([warmingField("interval")?.depth, warmingField("interval")?.badges.value]).toEqual([4, "4m"])
   expect(warmingField("prompt")?.badges.value).toBe(`${BUILT_IN_WARMING.prompt.slice(0, 23)}… · built-in`)
   expect([warmingField("compactWarm")?.depth, warmingField("compactWarm")?.badges.value]).toEqual([4, "off · built-in"])
-  expect(find("group:defaults:/models:modeldefault:*:cold")?.badges.value).toBe("off")
+  expect(find("group:defaults:/models:modeldefault:*:cold")?.badges.value).toBe("none · a adds one")
   expect([warmingField("warming")?.actions, warmingField("interval")?.actions]).toEqual([
     { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },
     { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },

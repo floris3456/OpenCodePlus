@@ -1,7 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
 import { Definition } from "../rpc.js"
-import { createAgentActions } from "./agents/create.js"
 import { InstructionsRoute } from "./instructions/route.js"
 import { createActiveTeam } from "./active-team.js"
 import { createSnapshotCache } from "./snapshot-cache.js"
@@ -11,7 +10,6 @@ import { createMonitor } from "./monitor/index.js"
 import { openProjectChecks } from "./project-checks.js"
 import { createChatRefresh } from "./refresh.js"
 import { createMissToast } from "./miss-toast.js"
-import { editCompactionTriggers } from "./compaction-triggers.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -22,7 +20,6 @@ export default Plugin.define({
     const snapshots = createSnapshotCache({
       events: context.client.rpc(Definition).events,
     })
-    const agents = createAgentActions(context, snapshots)
     const warming = createWarming(context)
     const modelPick = createModelPick(context)
     const monitor = createMonitor(context)
@@ -35,6 +32,31 @@ export default Plugin.define({
       keywords: ["cache miss", "notices", "shortfall toast"],
       value: () => (missToast.enabled() ? "on" : "off"),
       run: () => missToast.toggle(),
+    })
+    // The server acts on this one: a message sent into a cold chat is first
+    // summarized by the cold-cache models its model has in Instructions.
+    const plus = context.client.rpc(Definition)
+    const [coldCompact, setColdCompact] = createSignal<boolean>()
+    void plus["settings.get"](undefined).then((settings) => setColdCompact(settings.coldCompact), () => {})
+    context.ui.settings.register({
+      id: "plus.cold-compact",
+      title: "Compact cold chats first",
+      category: "OpenCodePlus",
+      keywords: ["cold cache", "cold-cache models", "compaction", "summary"],
+      value: () => {
+        const on = coldCompact()
+        if (on === undefined) return undefined
+        return on ? "on" : "off"
+      },
+      run: async () => {
+        const next = await plus["settings.set"]({ coldCompact: coldCompact() !== true }).catch((error: unknown) => {
+          context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) })
+          return undefined
+        })
+        if (next === undefined) return
+        setColdCompact(next.coldCompact)
+        await warming.refresh()
+      },
     })
     const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
@@ -50,7 +72,7 @@ export default Plugin.define({
           commands: [
             {
               id: "plus.instructions.open",
-              title: "Instructions",
+              title: "Open instructions",
               group: "OpenCodePlus",
               palette: true,
               bind: "<leader>p",
@@ -65,43 +87,26 @@ export default Plugin.define({
               },
             },
             {
-              id: "plus.team.open",
-              title: "Team: runs and members",
-              group: "OpenCodePlus",
-              palette: true,
-              slash: { name: "team" },
-              enabled: () => context.ui.router.current().type === "session",
-              run: () => { context.ui.panel.open("plus.team") },
-            },
-            {
               id: "plus.monitor.open",
-              title: "Monitor: cache, prompt, tools and sessions",
+              title: "Open monitor",
               group: "OpenCodePlus",
               palette: true,
+              bind: "<leader>o",
               slash: { name: "monitor", aliases: ["tools"] },
               run: () => monitor.open(),
             },
             {
               id: "plus.chat.refresh",
-              title: "Refresh: rebuild this chat from current settings and files",
-              description:
-                "Reload this folder's config, agents, skills, commands and MCP servers, and apply pending Instructions changes. It names the re-read cost first; normal use never needs it.",
+              title: "Refresh",
+              description: "Reload settings and files",
               group: "OpenCodePlus",
               palette: true,
               slash: { name: "refresh" },
               run: () => refresh.run(),
             },
             {
-              id: "plus.checks.open",
-              title: "Project checks: what team runs may be given",
-              group: "OpenCodePlus",
-              palette: true,
-              slash: { name: "checks" },
-              run: () => void openProjectChecks(context),
-            },
-            {
               id: "plus.warming.toggle",
-              title: "Cache warming on/off for this chat",
+              title: "Toggle cache warming",
               group: "OpenCodePlus",
               palette: true,
               bind: "<leader>k",
@@ -109,76 +114,26 @@ export default Plugin.define({
             },
             {
               id: "plus.compact.cold",
-              title: "Compact before cold on/off for this chat",
-              description: "Compact this chat right before its cache goes cold, while the summary still reads a warm cache",
+              title: "Toggle compact before cold",
               group: "OpenCodePlus",
               palette: true,
               bind: "<leader>j",
               slash: { name: "compact-warm" },
               run: () => warming.toggleCompact(),
             },
+            // Slash-only until they find their place in the Monitor.
             {
-              id: "plus.compact.triggers",
-              title: "Compaction triggers for this chat",
-              description: "Set early input/output token thresholds without sending the agent a message",
-              group: "OpenCodePlus",
-              palette: true,
-              slash: { name: "compact-triggers" },
-              run: () => void editCompactionTriggers(context),
+              id: "plus.team.open",
+              title: "Team panel",
+              slash: { name: "team" },
+              enabled: () => context.ui.router.current().type === "session",
+              run: () => { context.ui.panel.open("plus.team") },
             },
             {
-              id: "plus.compact.cold-now",
-              title: "Compact now with the cold-cache model",
-              description: "Compact this chat now with the models under Compact cold caches with another model; #1 writes the summary, the rest fall back",
-              group: "OpenCodePlus",
-              palette: true,
-              slash: { name: "compact-cold" },
-              run: () => void warming.compactCold(),
-            },
-            {
-              id: "plus.compact.follow",
-              title: "Compact before cold: follow the model settings",
-              description: "Drop this chat's on/off override; its model's Compact before cold setting decides again",
-              group: "OpenCodePlus",
-              palette: true,
-              run: () => warming.followCompact(),
-            },
-            {
-              id: "plus.warming.follow",
-              title: "Cache warming: follow the model settings for this chat",
-              group: "OpenCodePlus",
-              palette: true,
-              run: () => warming.follow(),
-            },
-            {
-              id: "plus.agent.create",
-              title: "Create agent",
-              group: "OpenCodePlus",
-              palette: true,
-              run: () => agents.createAgent(),
-            },
-            {
-              id: "plus.agent.rename",
-              title: "Rename agent",
-              group: "OpenCodePlus",
-              palette: true,
-              run: () => agents.renameAgent(),
-            },
-            {
-              id: "plus.agent.delete",
-              title: "Delete agent",
-              group: "OpenCodePlus",
-              palette: true,
-              run: () => agents.deleteAgent(),
-            },
-            {
-              id: "plus.team.select",
-              title: "Select team",
-              group: "OpenCodePlus",
-              palette: true,
-              run: () => {
-                context.ui.agents.open({ filter: "Team:" })
-              },
+              id: "plus.checks.open",
+              title: "Project checks",
+              slash: { name: "checks" },
+              run: () => void openProjectChecks(context),
             },
           ],
         }))
@@ -196,7 +151,6 @@ export default Plugin.define({
       warming.dispose()
       modelPick.dispose()
       monitor.dispose()
-      agents.dispose()
       activeTeam.dispose()
       missToast.dispose()
       snapshots.dispose()

@@ -1,6 +1,7 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
 import {
+  COLD_SWITCH_MOVED,
   coldModelItemId,
   compactionFieldsOf,
   effectiveCompaction,
@@ -3197,13 +3198,14 @@ export function setModelCompactionRow(
   return { models: next, status: `Updated "${node.label}"`, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
 }
 
-// Space on an agent model row's compaction switch (`compactWarm` field or the
-// cold-cache group): writes the inverse of the effective value.
+// Space on an agent model row's `compactWarm` field: writes the inverse of the
+// effective value. The cold-cache group has no switch of its own any more.
 export function toggleModelCompactionSwitch(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
   const node = found.node
   const address = node.address
+  if (address !== undefined && parseModelFieldItemId(address.item)?.field === "coldCompact") return { refusal: COLD_SWITCH_MOVED }
   if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
   const parsed = parseModuleCompactionSwitch(node)
   if ("refusal" in parsed) return parsed
@@ -3211,14 +3213,13 @@ export function toggleModelCompactionSwitch(input: MemoInput, rowId: string, sha
   return setModelCompactionRow(input, rowId, { [parsed.field]: on ? "off" : "on" } as ModelCompactionFieldValues, sharedMemo)
 }
 
-function parseModuleCompactionSwitch(node: { readonly address?: Address; readonly label: string }): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly field: "compactWarm" | "coldCompact" } | { readonly refusal: string } {
+function parseModuleCompactionSwitch(node: { readonly address?: Address; readonly label: string }): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly field: "compactWarm" } | { readonly refusal: string } {
   const parsed = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
-  const field = parsed?.field === "compactWarm" || parsed?.field === "coldCompact" ? parsed.field : undefined
-  if (parsed === undefined || field === undefined) return { refusal: `"${node.label}" is not a compaction switch` }
-  return { target: parsed.target, field }
+  if (parsed === undefined || parsed.field !== "compactWarm") return { refusal: `"${node.label}" is not a compaction switch` }
+  return { target: parsed.target, field: parsed.field }
 }
 
-// The effective value of compactWarm/coldCompact for one model row's chain,
+// The effective value of compactWarm for one model row's chain,
 // from the model rows and Defaults › Models (the agent-wide switch has no
 // agent-wide seat: C1 resolves these two from the model row and below only).
 function effectiveSwitch(
@@ -3226,7 +3227,7 @@ function effectiveSwitch(
   scopes: Scopes,
   scope: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
-  field: "compactWarm" | "coldCompact",
+  field: "compactWarm",
 ): boolean {
   const row = resolveModelCompactionFields(
     { models: input.records.filter((record): record is ModelRecord => record.type === "model"), scopes, ...scope },

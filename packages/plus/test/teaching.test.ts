@@ -318,10 +318,11 @@ test("documented merge kinds, defaults and B41 match the real engine", async () 
   expect(mergeUnits("One. Two.", "One. Two. Three.", "One. Two.").filter((entry) => entry.type === "change")).toHaveLength(1)
 })
 
-test("the skill documents the compact-warm follow and compact-cold commands", async () => {
-  for (const phrase of ["/compact-warm", "<leader>j", "follow the model settings", "/compact-cold", 'resolve: "merge"']) {
+test("the skill documents the compact-warm switch and the global cold-chat setting", async () => {
+  for (const phrase of ["/compact-warm", "<leader>j", "Settings › OpenCodePlus › Compact cold chats first", "`coldCompact` is refused", 'resolve: "merge"']) {
     expect(teachingSkillContent).toContain(phrase)
   }
+  for (const gone of ["/compact-cold", "follow the model settings"]) expect(teachingSkillContent).not.toContain(gone)
 })
 
 test("the release workflow is listed under Plus skills without relabeling unrelated skills", async () => {

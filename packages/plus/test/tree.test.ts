@@ -1393,16 +1393,17 @@ test("a model row opens into Model, Effort, Warming and Compaction groups with t
   const warming = "group:project:alpha:modelgroup:acme/nova:warming"
   expect(nodes.find((node) => node.id === warming)?.badges.value).toBe("off")
   expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
-    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Compact cold caches with another model",
+    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Cold-cache models",
   ])
   const cold = "group:project:alpha:modelgroup:acme/nova:cold"
-  expect(nodes.find((node) => node.id === cold)?.badges.value).toBe("on · a/one → b/two")
+  expect(nodes.find((node) => node.id === cold)?.badges.value).toBe("a/one → b/two")
   expect(childrenOf(nodes, cold).map((node) => node.badges.value)).toEqual(["1 a/one", "2 b/two"])
   const compaction = "group:project:alpha:modelgroup:acme/nova:compaction"
   expect(nodes.find((node) => node.id === compaction)?.badges.value).toBe("Auto")
   expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions"])
-  // The group rows carry no toggle: Space on them does nothing.
-  for (const id of [warming, compaction]) expect(nodes.find((node) => node.id === id)?.actions?.toggle).toBe(false)
+  // The group rows carry no toggle: Space on them does nothing. The cold-cache
+  // group lost its switch to Settings › OpenCodePlus.
+  for (const id of [warming, compaction, cold]) expect(nodes.find((node) => node.id === id)?.actions?.toggle).toBe(false)
 })
 
 test("a Defaults › Models row has the same groups minus Model", () => {
@@ -1419,7 +1420,7 @@ test("a Defaults › Models row has the same groups minus Model", () => {
   expect(childrenOf(nodes, row).map((node) => node.label)).toEqual(["Effort", "Warming", "Compaction"])
   const warming = "group:defaults:/models:modeldefault:acme/nova:warming"
   expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
-    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Compact cold caches with another model",
+    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Cold-cache models",
   ])
   const compaction = "group:defaults:/models:modeldefault:acme/nova:compaction"
   expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions"])

@@ -426,7 +426,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     const window = entry?.window
     const active = !compacted && window !== undefined && now < window.expires && chat !== "off"
     const override = (await loadCompact()).get(sessionID)
-    const defaults = override === undefined ? await compactDefaultsOf(sessionID) : undefined
+    // Read even under a chat override: the cold-cache list does not depend on it.
+    const defaults = await compactDefaultsOf(sessionID)
     const compact = override !== undefined ? override === "on" : defaults?.compactWarm === true
     const compactSource: CompactSource | undefined =
       override !== undefined ? "chat" : defaults?.compactWarmFrom === "model" ? "model" : undefined

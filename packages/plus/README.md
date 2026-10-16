@@ -156,7 +156,7 @@ RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/as
 
 ## Team panel
 
-In a session, `/team` (palette: "Team: runs and members") opens the Team panel. It defaults to listing runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
+In a session, `/team` opens the Team panel. It defaults to listing runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
 - One row per run showing `id`, `role`, `state`, and `task`.
 - Default view shows active runs in the current team tree.
 - `ctrl+t` toggles between the current chat's team tree and all runs in the namespace; hint bar indicates the current view (`tree` / `all`).
@@ -634,13 +634,19 @@ Only what is provably impossible, with what was tried:
 
 ## Shortcut
 
-- `ctrl+x p` (`<leader>p`) opens the Instructions screen (the `plus.instructions.open` command).
-- Commands live in the `Project` group and are reachable from the command palette:
-  - `plus.instructions.open` ("Instructions", `<leader>p`, slash `/instructions`): opens the Instructions screen; pressed while it is already open it is a no-op.
-  - `plus.agent.create` / `plus.agent.rename` / `plus.agent.delete`: agent file actions.
-  - `plus.team.select`: opens the agent picker filtered to teams.
-- `ctrl+x k` (`<leader>k`, `plus.warming.toggle`, group `Session`) switches cache warming on or off for the current chat; `plus.warming.follow` (palette only) returns the chat to its model settings.
-- `ctrl+x j` (`<leader>j`, `plus.compact.cold`, slash `/compact-warm`) switches compact before cold on or off for the current chat.
+The Commands window's **OpenCodePlus** category holds five commands:
+
+| Command | Key | Slash | Does |
+| --- | --- | --- | --- |
+| Open instructions (`plus.instructions.open`) | `ctrl+x p` | `/instructions` | opens the Instructions screen; a no-op while it is open |
+| Open monitor (`plus.monitor.open`) | `ctrl+x o` | `/monitor`, `/tools` | opens the Monitor (a panel in a chat, a screen elsewhere) |
+| Refresh (`plus.chat.refresh`) | | `/refresh` | reloads settings and files for this chat |
+| Toggle cache warming (`plus.warming.toggle`) | `ctrl+x k` | | switches cache warming on or off for the current chat |
+| Toggle compact before cold (`plus.compact.cold`) | `ctrl+x j` | `/compact-warm` | switches compact before cold on or off for the current chat |
+
+Agents are created, renamed (`shift+r`) and deleted (`d`) in the Instructions screen, and teams picked in the agent picker (`ctrl+x a`). `/team` (the Team panel) and `/checks` (Project checks) remain slash commands.
+
+The **Settings** window's OpenCodePlus category holds **Cache-miss notices** and **Compact cold chats first** (see [Cache warming](#cache-warming)); both apply to every chat.
 
 ## Cache warming
 
@@ -654,7 +660,8 @@ Core can keep a chat's provider prompt cache warm with keep-alive requests after
 - **Countdown**: under the prompt, `cache warm · 23:41 left` counts down to when warming stops (the total time after the latest reply). When it runs out the footer stays and shows `cache cold` in the warning colour until the next reply starts a new window.
 - **Compact before cold**: `ctrl+x j` (`<leader>j`, `plus.compact.cold`) or `/compact-warm` switches it per chat; it is off in every new chat. While on, the warming label itself carries it as one label: `compact cache warm · 23:41 left` counts down to the moment the chat will compact — at `compactAt` when scheduled (the end of its warming window, or one ping interval after the last request when warming is off) — so the summary request still reads a warm cache and the next message starts from the compacted context. If that moment passes without a compaction, it reads `compact cache cold`. That compaction's own request neither starts a new warming window nor schedules another compaction; the next real request does. A running chat is never compacted from here, and the switch survives restarts.
 - **Compactions**: after any compaction (compact before cold, `/compact`, or automatic/overflow compaction), the footer reads `compacted` in muted text, warming keep-alive pings stop, and the first Enter sends with no cold confirmation until the next real request opens a normal window.
-- **Sending into a cold cache**: while the footer shows `cache cold` or `compact cache cold`, the first Enter holds the message and the footer asks `cache cold · enter again to send`; a second Enter within 5 seconds sends it, since the reply rebuilds the whole prompt cache. Compacted chats never require a second Enter.
+- **Compact cold chats first** (Settings › OpenCodePlus, global, off by default): the first message sent into a cold chat is first summarized by the chat model's **Cold-cache models** (Instructions › agent › model › Warming, or Defaults › Models; #1 writes the summary, #2… fall back), then the chat's own model answers that message from the summary. The footer reads `cache cold · compacts with <model> first`. A model with no cold-cache models never does this; when every listed model fails, the message is answered uncompacted. The setting replaced the per-model "Compact cold caches with another model" switch; a stored per-model value is ignored.
+- **Sending into a cold cache**: while the footer shows `cache cold` or `compact cache cold`, the first Enter holds the message and the footer asks `cache cold · enter again to send`; a second Enter within 5 seconds sends it, since the reply rebuilds the whole prompt cache. Compacted chats, and cold chats that Compact cold chats first will summarize, never require a second Enter.
 
 One field resolves down, most specific first: the agent's model row → Defaults › Models › that model → Defaults › Models › Every model → opencode.json for that model or its provider → the built-in defaults (off). The chat switch wins over all of them. Nothing Plus-side set leaves opencode.json unchanged; `25m`/`90m` there still applies, and a Plus row setting only the interval keeps the configured total time.
 
@@ -681,7 +688,7 @@ Every model's **Compaction** group has **Input token threshold** and **Output to
 
 Instructions tools expose `compactionInput` and `compactionOutput` on model rows and Defaults model rows as strings, for example `"120000"`, `"30000"`, or `"off"`; `null` clears an override. Each emitted field row also supports text editing and reset.
 
-Use `/compact-triggers` in the current chat to override either inherited **input** or **output** threshold. Each is an absolute positive whole number, not a percentage. Leave a field blank to restore model inheritance; both chat overrides are unset by default. Cancelling either prompt saves nothing.
+A chat can also carry its own **input** or **output** threshold (the `compaction.triggers.set` RPC; unset by default), which overrides the inherited one field by field. The TUI no longer edits them: set thresholds on the model rows.
 
 - **Input** compares against Core's estimated size of the next prompt, including its existing measured-context estimate, instructions, tools and newer history.
 - **Output** compares against cumulative primary assistant output **plus reasoning** since the latest completed compaction. This is not lifetime output or a billing total: summary/title requests, warming pings and rebilled attempts do not add to it. A failed compaction does not reset it.

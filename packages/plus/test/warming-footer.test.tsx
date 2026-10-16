@@ -5,41 +5,6 @@ import { createTestTheme, renderPlusFixture } from "./tui.js"
 
 const MINUTE = 60_000
 
-test("follow model settings clears both chat switches and refuses a success toast when resetting fails", async () => {
-  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
-  const calls: unknown[] = []
-  const state = { fail: false }
-  const status = { sessionID: "ses_follow", chat: "default" as const, compact: true, compactSource: "model" as const, active: false, now: Date.now() }
-  await using fixture = await renderPlusFixture({
-    snapshots: [],
-    route: { type: "session", sessionID: "ses_follow" },
-    rpc: {
-      "warming.status": async () => status,
-      "warming.set": async (input: unknown) => { calls.push(input); return status },
-      "warming.compact": async (input: unknown) => {
-        calls.push(input)
-        if (state.fail) throw new Error("compact reset failed")
-        return status
-      },
-    },
-    render: (context) => {
-      warming.current = createWarming(context)
-      return <warming.current.Footer sessionID="ses_follow" />
-    },
-  })
-  try {
-    await warming.current!.follow()
-    expect(calls).toEqual([{ sessionID: "ses_follow", chat: "default" }, { sessionID: "ses_follow", on: "default" }])
-    expect(fixture.fake.toasts.at(-1)?.message).toBe("Cache warming for this chat follows the model settings")
-    state.fail = true
-    await warming.current!.follow()
-    expect(fixture.fake.toasts.at(-1)?.variant).toBe("error")
-    expect(fixture.fake.toasts.at(-1)?.message).toBe("compact reset failed")
-  } finally {
-    warming.current?.dispose()
-  }
-})
-
 test("the real footer turns from the countdown to a yellow cache cold when the window runs out, and stays", async () => {
   const opened = Date.now()
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
@@ -154,6 +119,40 @@ test("a send into a cold cache is held until a second submit, and the footer ask
     warming.current?.dispose()
   }
 }, 15_000)
+
+// With Compact cold chats first on and a cold-cache list, the server summarizes
+// the chat before the model answers: nothing to confirm, the first Enter sends.
+test("a send into a cold cache that the cold-cache models will summarize first goes on the first submit", async () => {
+  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
+  const cold = {
+    sessionID: "ses_cold",
+    chat: "default",
+    active: false,
+    since: Date.now() - 40 * MINUTE,
+    expires: Date.now() - 5 * MINUTE,
+    interval: 4 * MINUTE,
+    coldModels: ["proxy/summary", "proxy/fallback"],
+    now: Date.now(),
+  }
+  await using fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 80,
+    height: 4,
+    rpc: { "warming.status": async () => cold },
+    render: (context) => {
+      warming.current = createWarming(context)
+      return <warming.current.Footer sessionID="ses_cold" />
+    },
+  })
+  try {
+    await fixture.waitForFrame((next) => next.includes("cache cold · compacts with proxy/summary first"))
+    expect(fixture.send({ sessionID: "ses_cold", mode: "normal", delivery: "steer" })).toBe(true)
+    await fixture.flush()
+    expect(fixture.captureCharFrame()).not.toContain("again to send")
+  } finally {
+    warming.current?.dispose()
+  }
+})
 
 test("a warm cache, a chat with warming off, a running chat and a compacted chat send at once", async () => {
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }

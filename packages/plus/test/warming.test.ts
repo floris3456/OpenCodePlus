@@ -869,17 +869,19 @@ test("warming.status reports the cold-arming models only when cold compact is on
 test("compactDefaultsOf resolves the model row's compactWarm and cold list for the chat's agent and model", () => {
   const state = {
     cachedAgents: [{ id: "alpha", scope: "project" as const }],
-    cachedModels: [record({ agent: "alpha", compactWarm: "on", coldCompact: "on", coldModels: ["a/b", "c/d#x"] })],
+    cachedModels: [record({ agent: "alpha", compactWarm: "on", coldModels: ["a/b", "c/d#x"] })],
     cachedModelSettings: [],
     cachedScopes: scopes,
   }
   const model = { providerID: "anthropic", id: "claude" }
-  expect(compactDefaultsOf(state, "alpha", model)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: ["a/b", "c/d#x"] })
-  // Cold compact off: the list is not what arming would use, so it is empty.
-  const off = { ...state, cachedModels: [record({ agent: "alpha", compactWarm: "on", coldCompact: "off", coldModels: ["a/b"] })] }
-  expect(compactDefaultsOf(off, "alpha", model)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: [] })
+  expect(compactDefaultsOf(state, "alpha", model, true)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: ["a/b", "c/d#x"] })
+  // The global Compact cold chats first is off: arming would not use the list, so it is empty.
+  expect(compactDefaultsOf(state, "alpha", model, false)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: [] })
+  // A stored per-model switch (retired) changes nothing.
+  const legacy = { ...state, cachedModels: [record({ agent: "alpha", compactWarm: "on", coldCompact: "off", coldModels: ["a/b"] })] }
+  expect(compactDefaultsOf(legacy, "alpha", model, true)).toEqual({ compactWarm: true, compactWarmFrom: "model", coldModels: ["a/b"] })
   // Nothing set: the built-in default, off, with no source.
-  expect(compactDefaultsOf({ ...state, cachedModels: [] }, "alpha", model)).toEqual({ compactWarm: false, compactWarmFrom: "built-in", coldModels: [] })
+  expect(compactDefaultsOf({ ...state, cachedModels: [] }, "alpha", model, true)).toEqual({ compactWarm: false, compactWarmFrom: "built-in", coldModels: [] })
 })
 
 test("warming recognises every compaction: external compaction, restart, primary activity restores window, and guard lets first Enter send", async () => {

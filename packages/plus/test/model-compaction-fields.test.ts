@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { setModelSettings, type ModelRecord, type Scopes } from "../src/instructions/model.js"
 import {
+  COLD_SWITCH_MOVED,
   compactionFieldsOf,
   compactionFromWords,
   effectiveCompaction,
@@ -58,7 +59,6 @@ test("compaction fields validate into canonical stored values", () => {
   expect(
     compactionFieldsOf({
       compactWarm: " ON ",
-      coldCompact: "off",
       coldModels: "cliproxyapi/gemini-3.8-flash#high, deepseek/v4-flash",
       compactionStrategy: "Local",
       compactionModel: " openai/gpt-5#low ",
@@ -69,7 +69,6 @@ test("compaction fields validate into canonical stored values", () => {
   ).toEqual({
     fields: {
       compactWarm: "on",
-      coldCompact: "off",
       coldModels: ["cliproxyapi/gemini-3.8-flash#high", "deepseek/v4-flash"],
       compactionStrategy: "local",
       compactionModel: "openai/gpt-5#low",
@@ -95,7 +94,10 @@ test("compaction fields validate into canonical stored values", () => {
 test("bad compaction values refuse with the field named", () => {
   const error = (result: ReturnType<typeof compactionFieldsOf>) => ("error" in result ? result.error : undefined)
   expect(error(compactionFieldsOf({ compactWarm: "yes" }))).toContain("Compact before cold must be on or off")
-  expect(error(compactionFieldsOf({ coldCompact: "maybe" }))).toContain("Compact cold caches with another model must be on or off")
+  // The per-model cold switch is retired: setting it names the global Settings row.
+  for (const value of ["on", "off", "maybe"])
+    expect(error(compactionFieldsOf({ coldCompact: value }))).toBe(COLD_SWITCH_MOVED)
+  expect(COLD_SWITCH_MOVED).toContain("Settings › OpenCodePlus › Compact cold chats first")
   expect(error(compactionFieldsOf({ compactionStrategy: "native" }))).toContain("auto, local or remote")
   expect(error(compactionFieldsOf({ compactionModel: "gpt-5" }))).toContain("provider/model")
   expect(error(compactionFieldsOf({ coldModels: "a/b, nope" }))).toContain('"nope"')
@@ -187,7 +189,6 @@ test("compact before cold and the cold-cache list resolve row, this model, Every
     compactionInput: { value: undefined, from: "built-in" },
     compactionOutput: { value: undefined, from: "built-in" },
     compactWarm: { value: false, from: "built-in" },
-    coldCompact: { value: false, from: "built-in" },
     coldModels: { value: [], from: "built-in" },
     strategy: { value: "auto", from: "built-in" },
     model: { value: undefined, from: "built-in" },
@@ -197,7 +198,6 @@ test("compact before cold and the cold-cache list resolve row, this model, Every
   const model = settings({ providerID: "anthropic", modelID: "claude", coldModels: ["m/one", "m/two"] })
   const resolved = effectiveCompaction({ every, model })
   expect(resolved.compactWarm).toEqual({ value: true, from: "every" })
-  expect(resolved.coldCompact).toEqual({ value: true, from: "every" })
   expect(resolved.coldModels).toEqual({ value: ["m/one", "m/two"], from: "model" })
   const row = effectiveCompaction({
     row: { compactWarm: { value: "off", level: "global" }, coldModels: { value: [], level: "project" } },

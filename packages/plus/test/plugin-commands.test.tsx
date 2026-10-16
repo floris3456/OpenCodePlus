@@ -3,11 +3,16 @@ import type { Plugin } from "@opencode/plugin/tui"
 import plusPlugin from "../src/tui/index.js"
 import type { TestKeymapCommand } from "./tui.js"
 
+type Setting = Parameters<Plugin.Context["ui"]["settings"]["register"]>[0]
+
 interface CommandsHarness {
   readonly context: Plugin.Context
   /** Run the plugin slot's render callback, which registers the keymap layer. */
   readonly mountSlot: () => void
   readonly commands: () => readonly TestKeymapCommand[]
+  readonly settings: () => readonly Setting[]
+  /** What `settings.set` received; the fake server keeps the last value. */
+  readonly settingWrites: unknown[]
   readonly navigations: unknown[]
   readonly setCurrent: (route: unknown) => void
 }
@@ -17,6 +22,9 @@ interface CommandsHarness {
 function createHarness(): CommandsHarness {
   const layers: (Parameters<Plugin.Context["keymap"]["layer"]>[0])[] = []
   const navigations: unknown[] = []
+  const settings: Setting[] = []
+  const settingWrites: unknown[] = []
+  const server = { coldCompact: false }
   // Slot renders receive the slot's input; the prompt footer's carries no session here.
   const slotRenders: ((props: object) => unknown)[] = []
   let current: unknown = { type: "session", sessionID: "ses_1" }
@@ -27,6 +35,12 @@ function createHarness(): CommandsHarness {
     client: {
       rpc: () => ({
         "team.list": async () => ({ teams: [] }),
+        "settings.get": async () => ({ ...server }),
+        "settings.set": async (input: { coldCompact?: boolean }) => {
+          settingWrites.push(input)
+          if (input.coldCompact !== undefined) server.coldCompact = input.coldCompact
+          return { ...server }
+        },
         events: { on: () => () => {} },
       }),
     },
@@ -76,7 +90,12 @@ function createHarness(): CommandsHarness {
         current: () => undefined,
         set: () => {},
       },
-      settings: { register: () => () => {} },
+      settings: {
+        register: (setting: Setting) => {
+          settings.push(setting)
+          return () => {}
+        },
+      },
       panel: { open: () => false, close: () => {} },
       tabs: { enabled: () => false },
     },
@@ -90,6 +109,8 @@ function createHarness(): CommandsHarness {
       for (const render of slotRenders) render({})
     },
     commands: () => layers.flatMap((fn) => fn().commands ?? []),
+    settings: () => settings,
+    settingWrites,
     navigations,
     setCurrent: (route) => {
       current = route
@@ -135,10 +156,55 @@ test("the Monitor command exposes /monitor with the lowercase /tools alias", asy
     // The old spelling remains an alias of the same command, not a duplicate.
     expect(open?.slash?.name).toBe("monitor")
     expect(open?.slash?.aliases).toEqual(["tools"])
-    expect(open?.title).toBe("Monitor: cache, prompt, tools and sessions")
+    expect(open?.title).toBe("Open monitor")
+    expect(open?.bind).toBe("<leader>o")
     expect(open?.palette).toBe(true)
     // The command id stays stable so existing configs keep binding it.
     expect(commands.filter((command) => command.id === "plus.monitor.open")).toHaveLength(1)
+  } finally {
+    await cleanup?.()
+  }
+})
+
+test("Compact cold chats first is a global OpenCodePlus setting that reads and writes the server switch", async () => {
+  const harness = createHarness()
+  const cleanup = await plusPlugin.setup(harness.context)
+  try {
+    const row = harness.settings().find((setting) => setting.id === "plus.cold-compact")
+    expect(row).toMatchObject({ title: "Compact cold chats first", category: "OpenCodePlus" })
+    await Bun.sleep(0)
+    expect(row?.value?.()).toBe("off")
+    await row?.run()
+    expect(harness.settingWrites).toEqual([{ coldCompact: true }])
+    expect(row?.value?.()).toBe("on")
+    await row?.run()
+    expect(harness.settingWrites.at(-1)).toEqual({ coldCompact: false })
+    expect(row?.value?.()).toBe("off")
+  } finally {
+    await cleanup?.()
+  }
+})
+
+test("the Commands window lists five short OpenCodePlus commands; team and checks stay slash-only", async () => {
+  const harness = createHarness()
+  const cleanup = await plusPlugin.setup(harness.context)
+  harness.mountSlot()
+  try {
+    const commands = harness.commands()
+    const palette = commands
+      .filter((command) => command.palette)
+      .map((command) => [command.title, command.bind ?? command.description, command.group])
+    expect(palette).toEqual([
+      ["Open instructions", "<leader>p", "OpenCodePlus"],
+      ["Open monitor", "<leader>o", "OpenCodePlus"],
+      ["Refresh", "Reload settings and files", "OpenCodePlus"],
+      ["Toggle cache warming", "<leader>k", "OpenCodePlus"],
+      ["Toggle compact before cold", "<leader>j", "OpenCodePlus"],
+    ])
+    expect(commands.filter((command) => !command.palette).map((command) => command.slash?.name)).toEqual(["team", "checks"])
+    // The settings, agent and one-off compaction commands are gone, slash forms included.
+    for (const name of ["compact-triggers", "compact-cold"])
+      expect(commands.some((command) => command.slash?.name === name)).toBe(false)
   } finally {
     await cleanup?.()
   }

@@ -9,6 +9,7 @@ import {
   setModelCompactionRow,
   toggleModelCompactionSwitch,
 } from "../src/instructions/ops.js"
+import { COLD_SWITCH_MOVED } from "../src/instructions/model-settings.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
@@ -47,14 +48,16 @@ test("Space on Compact before cold writes compactWarm at the row's level", () =>
   expect(off.models.find((entry) => entry.agent === "alpha")?.compactWarm).toBe("off")
 })
 
-test("Space on the cold-cache group inverts coldCompact and keeps the list", () => {
+test("the cold-cache group has no switch: Space names the global Settings row and writes nothing", () => {
   const base = input([model({ coldCompact: "off", coldModels: ["a/one"] })])
   const group = "group:project:alpha:modelgroup:acme/nova:cold"
-  const on = toggleModelCompactionSwitch(base, group)
-  if ("refusal" in on) throw new Error(on.refusal)
-  const written = on.models.find((entry) => entry.agent === "alpha")!
-  expect(written.coldCompact).toBe("on")
-  expect(written.coldModels).toEqual(["a/one"])
+  expect(toggleModelCompactionSwitch(base, group)).toEqual({ refusal: COLD_SWITCH_MOVED })
+  const rows = expandedTree(base)
+  const node = rows.find((row) => row.id === group)
+  expect(node?.label).toBe("Cold-cache models")
+  expect(node?.actions?.toggle).toBe(false)
+  // The stored per-model "off" no longer shows; the list does.
+  expect(node?.badges.value).toBe("a/one")
 })
 
 test("Strategy cycles and writes compactionStrategy at the row's level", () => {
@@ -123,7 +126,7 @@ test("clearing coldModels at this level drops the list so the level below wins a
   // No Project list survives; the Global list applies again.
   expect(dropped.models.some((entry) => entry.level === "project" && entry.agent === "alpha" && entry.coldModels !== undefined)).toBe(false)
   const rows = expandedTree({ ...project, records: dropped.models })
-  expect(rows.find((row) => row.id === "group:project:alpha:modelgroup:acme/nova:cold")?.badges.value).toBe("on · g/one → g/two")
+  expect(rows.find((row) => row.id === "group:project:alpha:modelgroup:acme/nova:cold")?.badges.value).toBe("g/one → g/two")
 })
 
 test("Compact before cold shows off · built-in when nothing sets it", () => {

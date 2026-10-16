@@ -16,7 +16,9 @@ import {
   markPromptAdmitted,
   type ColdCompactionState,
 } from "../src/compaction/decide.js"
-import { compactColdNow } from "../src/compaction/cold-now.js"
+import { coldPlanOf } from "../src/compaction/cold-now.js"
+import { plusSettings } from "../src/plus-settings.js"
+import { armColdCompaction } from "../src/teams/cold-compaction.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
 import { createState, decideCompactionFor, type PlusState } from "../src/index.js"
 import type { ModelRecord } from "../src/instructions/model.js"
@@ -123,7 +125,7 @@ test("per-model strategy, model and instructions apply at each level with the ri
 test("cold arming fires on a cold fresh step with #1, #2… and optional", () => {
   const event = decision()
   decideCompaction(event, {
-    every: settings({ coldCompact: "on", coldModels: ["proxy/one#high", "proxy/two", "proxy/three"] }),
+    every: settings({ coldModels: ["proxy/one#high", "proxy/two", "proxy/three"] }),
     cold: cold(),
   })
   expect(event.compact).toBe(true)
@@ -135,11 +137,11 @@ test("cold arming fires on a cold fresh step with #1, #2… and optional", () =>
   expect(event.metadata).toEqual({ "plus.cold": { models: ["proxy/one#high", "proxy/two", "proxy/three"] } })
 })
 
-test("cold arming does not fire when the chat is warm, running, unknown-lifetime, compacted, off/gated, or empty", () => {
+test("cold arming does not fire when the chat is warm, running, unknown-lifetime, compacted, not consulted, or empty", () => {
   const fires = (state: ColdCompactionState | undefined) => {
     const event = decision()
     decideCompaction(event, {
-      every: settings({ coldCompact: "on", coldModels: ["proxy/one"] }),
+      every: settings({ coldModels: ["proxy/one"] }),
       ...(state === undefined ? {} : { cold: state }),
     })
     return event.compact === true
@@ -154,19 +156,19 @@ test("cold arming does not fire when the chat is warm, running, unknown-lifetime
   expect(fires(cold({ ready: false, idleMs: 10_000_000 }))).toBe(false)
   // compacted since its last request.
   expect(fires(cold({ compacted: true }))).toBe(false)
-  // the prompt mark was not consumed for this decision (a later step of the
-  // turn, or a chat that has not been prompted): cold is not consulted.
+  // cold is not consulted: a later step of the turn, a chat that has not been
+  // prompted, or the global Compact cold chats first is off.
   expect(fires(undefined)).toBe(false)
-  // the setting is off.
+  // the retired per-model switch, still stored as off, no longer gates it.
   {
     const event = decision()
     decideCompaction(event, { every: settings({ coldCompact: "off", coldModels: ["proxy/one"] }), cold: cold() })
-    expect(event.compact).toBeUndefined()
+    expect(event.compact).toBe(true)
   }
   // an empty list does nothing.
   {
     const event = decision()
-    decideCompaction(event, { every: settings({ coldCompact: "on" }), cold: cold() })
+    decideCompaction(event, { every: settings({}), cold: cold() })
     expect(event.compact).toBeUndefined()
   }
   // a window-less chat past its cache lifetime is cold.
@@ -187,7 +189,7 @@ test("the team compactWith arming takes priority over per-model settings and col
   decideCompaction(event, {
     armed: ["team/summary#high"],
     rows: { compactionStrategy: { value: "local", level: "project" } },
-    every: settings({ coldCompact: "on", coldModels: ["proxy/one", "proxy/two"] }),
+    every: settings({ coldModels: ["proxy/one", "proxy/two"] }),
     cold: cold(),
   })
   expect(event.compact).toBe(true)
@@ -208,46 +210,32 @@ test("an armed list of three: #1 writes, #2 and #3 fall back, and no optional (a
   expect(event.optional).toBeUndefined()
 })
 
-// The `compaction.cold` RPC's logic: a chat on build and proxy/chat-model whose
-// session records each manual compaction it is asked for.
-function wiringSession(sessionID: string, onCompact: (input: unknown) => void) {
+// A chat on build and proxy/chat-model, as a team followup reads it.
+function wiringSession(sessionID: string) {
   return context({
     session: {
       get: () => Effect.succeed({ id: Session.ID.make(sessionID), agent: "build", model: { providerID: "proxy", id: "chat-model" } }),
-      compact: (input: unknown) => {
-        onCompact(input)
-        return Effect.succeed(undefined)
-      },
     } as unknown as SessionDomain,
   })
 }
 
-test("compaction.cold arms the chat's list and asks core for one manual compaction", async () => {
-  const sessionID = "ses_cold_now"
-  const asked: unknown[] = []
-  const result = await compactColdNow(wiringSession(sessionID, (input) => asked.push(input)), coldState(["proxy/one", "proxy/two"]), sessionID)
-  expect(result).toEqual({ ok: true, models: ["proxy/one", "proxy/two"] })
-  expect(asked).toEqual([{ sessionID: Session.ID.make(sessionID) }])
-})
-
-test("compaction.cold with no list says where to add one and asks core for nothing", async () => {
-  const sessionID = "ses_cold_none"
-  const asked: unknown[] = []
-  const result = await compactColdNow(wiringSession(sessionID, (input) => asked.push(input)), coldState([]), sessionID)
-  expect(result).toEqual({
-    ok: false,
-    reason: "no-list",
-    where: "Instructions › build › proxy/chat-model › Warming › Compact cold caches with another model (a adds one)",
+test("the cold plan names the chat's list, or the Instructions row that adds one", async () => {
+  const sessionID = "ses_cold_plan"
+  expect(await coldPlanOf(wiringSession(sessionID), coldState(["proxy/one", "proxy/two"]), sessionID)).toMatchObject({
+    models: ["proxy/one", "proxy/two"],
   })
-  expect(asked).toEqual([])
+  expect(await coldPlanOf(wiringSession(sessionID), coldState([]), sessionID)).toEqual({
+    models: [],
+    where: "Instructions › build › proxy/chat-model › Warming › Cold-cache models (a adds one)",
+  })
 })
 
 test("an armed list is consumed by the next decision: only that one compacts", async () => {
   const sessionID = "ses_armed_once"
   const state = coldState(["proxy/one", "proxy/two", "proxy/three"])
   const ledger = fakeLedger(requestRow(Date.now()))
-  const ctx = wiringSession(sessionID, () => {})
-  await compactColdNow(ctx, state, sessionID)
+  const ctx = wiringSession(sessionID)
+  armColdCompaction(sessionID, ["proxy/one", "proxy/two", "proxy/three"])
   const first = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
   await Effect.runPromise(decideCompactionFor(ctx, state, first, ledger))
   expect(first.compactionModel).toEqual(Model.Ref.parse("proxy/one"))
@@ -379,11 +367,33 @@ function coldState(coldModels: string[]): PlusState {
     ...createState(),
     cachedAgents: [{ id: "build", scope: "project" as const }],
     cachedModels: [],
-    cachedModelSettings: [settings({ providerID: "proxy", modelID: "chat-model", coldCompact: "on", coldModels })],
+    cachedModelSettings: [settings({ providerID: "proxy", modelID: "chat-model", coldModels })],
   }
 }
 
-test("cold arming fires for a chat with earlier output once a prompt was admitted and it is cold", async () => {
+// The global Settings switch lives in a file (the test process's own data
+// home); these wiring tests turn it on and leave it off for the next test.
+async function withColdSwitch(run: () => Promise<void>) {
+  await plusSettings.update({ coldCompact: true })
+  try {
+    await run()
+  } finally {
+    await plusSettings.update({ coldCompact: false })
+  }
+}
+
+test("with Compact cold chats first off, a cold fresh prompt does not arm, and the mark is still consumed", async () => {
+  const sessionID = "ses_wire_off"
+  markPromptAdmitted(sessionID)
+  const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
+  await Effect.runPromise(
+    decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, fakeLedger(requestRow(Date.now() - 70 * 60_000), oneHourFingerprint())),
+  )
+  expect(event.compact).toBeUndefined()
+  expect(consumePromptAdmitted(sessionID)).toBe(false)
+})
+
+test("cold arming fires for a chat with earlier output once a prompt was admitted and it is cold", () => withColdSwitch(async () => {
   const sessionID = "ses_wire"
   markPromptAdmitted(sessionID)
   const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
@@ -417,9 +427,9 @@ test("cold arming fires for a chat with earlier output once a prompt was admitte
   expect(coldEvent.compactionModel).toEqual(Model.Ref.parse("proxy/one"))
   expect(coldEvent.compactionFallbacks).toEqual([Model.Ref.parse("proxy/two")])
   expect(coldEvent.optional).toBe(true)
-})
+}))
 
-test("the second auto decision without a new prompt does not consult cold and does not arm", async () => {
+test("the second auto decision without a new prompt does not consult cold and does not arm", () => withColdSwitch(async () => {
   const sessionID = "ses_wire2"
   markPromptAdmitted(sessionID)
   const ctx = wiringContext()
@@ -433,7 +443,7 @@ test("the second auto decision without a new prompt does not consult cold and do
   const second = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
   await Effect.runPromise(decideCompactionFor(ctx, state, second, ledger))
   expect(second.compact).toBeUndefined()
-})
+}))
 
 test("a 1h-TTL fingerprint is cold only past an hour, not after ten minutes", () => {
   const status = { active: false }

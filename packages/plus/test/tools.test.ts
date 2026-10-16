@@ -326,12 +326,16 @@ test("C1 registered model set and emitted field reset persist atomically without
   const resetTool = need(tools, "instructions_reset")
   const created = await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" }) as { id: string }
   await runOk(set, decoded(set, { id: created.id, prompt: "keep alive" }))
-  const values = { compactWarm: "on", coldCompact: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
-  // Bind the taught six typed fields to the registered schema and real write,
+  const values = { compactWarm: "on", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
+  // Bind the taught typed fields to the registered schema and real write,
   // not just the permissive field-id parser.
   for (const field of Object.keys(values)) expect(teachingSkillContent).toContain(`\`${field}\``)
   const input = decoded(set, { id: created.id, ...values })
   expect(input).toMatchObject(values)
+  // The per-model cold switch is retired: setting it names the Settings row and writes nothing.
+  const unset = await load(project)
+  expect((await runFail(set, decoded(set, { id: created.id, coldCompact: "on" }))).message).toContain("Settings › OpenCodePlus › Compact cold chats first")
+  expect(await load(project)).toEqual(unset)
   await runOk(set, input)
   const own = () => load(project).then((store) => store.records.find((record) => record.type === "model" && record.agent === "alpha"))
   expect(await own()).toMatchObject({ ...values, providerID: "acme", modelID: "nova-2", prompt: "keep alive", active: true })
@@ -378,9 +382,9 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
   const rows = expandedTree(memoInputOf(await snapshotOf(api)))
   const row = rows.find((node) => node.address?.item.startsWith("modeldefault:"))
   if (row === undefined) throw new Error("missing Defaults model row")
-  await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", coldCompact: "off", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
+  await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
   const stored = (await load(project)).records.find((record) => record.type === "modelSettings")
-  expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", coldCompact: "off", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
+  expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
   await runOk(set, decoded(set, { id: row.id, compactionInput: "90000", compactionOutput: "off" }))
   expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ compactionInput: "90000", compactionOutput: "off" })
   const before = await load(project)

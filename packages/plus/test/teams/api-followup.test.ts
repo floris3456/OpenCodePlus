@@ -455,7 +455,7 @@ test("followup on a cold child the caller stopped fails E_STOPPED naming compact
     const error = rejected(result)
     expect(error.code).toBe("E_STOPPED")
     expect(error.message).toContain("compactWith")
-    expect(error.message).toContain("Compact cold caches with another model (a adds one)")
+    expect(error.message).toContain("Cold-cache models (a adds one)")
   })
 })
 

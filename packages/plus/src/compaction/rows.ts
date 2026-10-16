@@ -5,8 +5,8 @@ import { dedupeAgents } from "../instructions/teams-apply.js"
 
 // The (agent, model) resolution inputs that compaction and warming decisions
 // walk: the agent's model rows down its runtime chain plus Defaults › Models.
-// Kept out of index.ts so the team followup and `compaction.cold` read the same
-// rows the decision hook does.
+// Kept out of index.ts so the team followup reads the same rows the decision
+// hook does.
 
 export type RowsState = Pick<PlusState, "cachedAgents" | "cachedModels" | "cachedModelSettings" | "cachedScopes">
 
@@ -49,9 +49,9 @@ export function compactionRowsOf(
 }
 
 /**
- * The cold-cache list the agent and model resolve, whether or not "Compact cold
- * caches with another model" is on: a manual `compaction.cold` uses the list
- * it names; the switch only decides the automatic cold arming.
+ * The cold-cache list the agent and model resolve, whether or not the global
+ * "Compact cold chats first" is on: a team followup to a stopped, cold child
+ * uses it; the switch only decides the automatic cold arming.
  */
 export function coldListOf(
   state: RowsState,

@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test"
 import { createComponent } from "solid-js"
-import { createAgentActions } from "../src/tui/agents/create.js"
 import { createInstructionsDialogs } from "../src/tui/instructions/dialogs.js"
 import type { InstructionsState } from "../src/tui/instructions/state.js"
 import { createSnapshotCache, type SnapshotCache } from "../src/tui/snapshot-cache.js"
@@ -101,47 +100,6 @@ test("P6: closed screen marks the cache stale without fetching; the next open fe
     expect(reopened.fake.snapshotCalls).toBe(1)
   } finally {
     reopened.destroy()
-  }
-})
-
-// The palette's agent actions read a fresh cache without an RPC and refill it
-// once when it is stale.
-test("P6: createAgentActions reads a fresh cache and fetches once when stale", async () => {
-  async function renameWith(cache: SnapshotCache) {
-    let actions: ReturnType<typeof createAgentActions> | undefined
-    const fixture = await renderPlusFixture({
-      snapshots: [createSnapshot()],
-      cache,
-      render: (context, fixtureCache) => {
-        actions = createAgentActions(context, fixtureCache)
-        return createComponent(() => <text>actions</text>, {})
-      },
-    })
-    await actions?.renameAgent()
-    await actions?.renameAgent()
-    return fixture
-  }
-
-  const fresh = createSnapshotCache()
-  fresh.put(undefined, createSnapshot())
-  const freshFixture = await renameWith(fresh)
-  try {
-    expect(freshFixture.fake.snapshotCalls).toBe(0)
-    expect(freshFixture.fake.toasts.some((toast) => toast.message === "No agents found")).toBe(true)
-  } finally {
-    freshFixture.destroy()
-  }
-
-  const stale = createSnapshotCache()
-  stale.put(undefined, createSnapshot())
-  stale.markStale()
-  const staleFixture = await renameWith(stale)
-  try {
-    // One fetch refilled the cache; the second read used it.
-    expect(staleFixture.fake.snapshotCalls).toBe(1)
-    expect(stale.fresh(undefined)).toBeDefined()
-  } finally {
-    staleFixture.destroy()
   }
 })
 
