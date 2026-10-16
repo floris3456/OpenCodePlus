@@ -249,6 +249,41 @@ test("FORCE USE marks where a forced move sends the chat and wins over NEXT USE;
   expect(lines.join("\n")).not.toContain("NEXT USE")
 })
 
+test("NEXT USE marks the chat's own credential when Pacer keeps it there once cold", async () => {
+  const f = fixture()
+  const preview = (reason: string) => {
+    f.state.result = {
+      status: "ready",
+      snapshot: {
+        ...snapshot(),
+        next_use: {
+          v: 1,
+          at_ms: Date.now(),
+          expires_ms: Date.now() + 30000,
+          model: "claude-sonnet",
+          provider: "claude",
+          mode: "active",
+          reason,
+          warm: true,
+          forced: false,
+        },
+      },
+    }
+  }
+  preview("cold_stay")
+  const output = await mount(f)
+  // The alias gives way to the markers in the narrow sidebar.
+  let text = await frame(output)
+  expect(text.split("\n").find((line) => line.includes("LAST USED"))).toContain("NEXT USE")
+  // No decision (here: no usable meters) names no account.
+  preview("no_usable_meters")
+  f.setModel({ providerID: "cliproxyapi", modelID: "claude-sonnet-x" })
+  f.setModel({ providerID: "cliproxyapi", modelID: "claude-sonnet" })
+  text = await frame(output)
+  expect(text).toContain("LAST USED")
+  expect(text).not.toContain("NEXT USE")
+})
+
 test("sidebar only shows the selected model's providers, never unrelated credentials", async () => {
   const f = fixture()
   const output = await mount(f)
