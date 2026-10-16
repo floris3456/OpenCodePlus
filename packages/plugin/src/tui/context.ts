@@ -495,6 +495,27 @@ export interface Keymap {
   }
 }
 
+/**
+ * One row a plugin adds to the Settings window. The host lists it beside the
+ * built-in settings, groups it by `category`, and runs `run` on select, so a
+ * row may toggle a value or open a picker. It owns its own storage; the host
+ * only renders and dispatches it.
+ */
+export interface PluginSetting {
+  /** Stable identifier, unique among registered settings. */
+  readonly id: string
+  /** Row label. */
+  readonly title: string
+  /** Section the row is listed under, for example "Pacer". */
+  readonly category: string
+  /** Extra search terms matched alongside the title. */
+  readonly keywords?: readonly string[]
+  /** Footer text for the row's current value. Reactive when read in a Solid computation. */
+  readonly value?: () => string | undefined
+  /** Runs when the row is selected: toggle a value, or open a picker. */
+  readonly run: () => void | Promise<void>
+}
+
 export interface AgentGroup {
   readonly id: string
   readonly label: string
@@ -516,6 +537,10 @@ export interface UI {
   readonly dialog: Dialog
   readonly toast: Toast
   readonly agents: AgentsUI
+  /** Adds rows to the Settings window; they are removed on plugin deactivation. */
+  readonly settings: {
+    register(setting: PluginSetting): () => void
+  }
   readonly format: {
     path(value: string): string
   }
@@ -595,6 +620,12 @@ export interface Context {
   readonly renderer: CliRenderer
   readonly client: OpenCodeClient
   readonly data: Data
+  /** The user's global configuration: read `data`, or `update` a draft to write it back. */
+  readonly config: {
+    readonly data: Readonly<Record<string, any>>
+    readonly path?: string
+    update(mutate: (draft: any) => void): Promise<unknown>
+  }
   readonly attention: Attention
   readonly theme: ResolvedTheme
   readonly themeMode: "dark" | "light"

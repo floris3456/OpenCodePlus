@@ -76,6 +76,7 @@ function createHarness(): CommandsHarness {
         current: () => undefined,
         set: () => {},
       },
+      settings: { register: () => () => {} },
       panel: { open: () => false, close: () => {} },
       tabs: { enabled: () => false },
     },

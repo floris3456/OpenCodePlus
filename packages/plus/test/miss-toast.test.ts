@@ -8,6 +8,7 @@ interface MissToastHarness {
   readonly context: Plugin.Context
   readonly mountSlot: () => void
   readonly commands: () => readonly TestKeymapCommand[]
+  readonly settings: () => readonly TestSetting[]
   readonly toasts: Array<{ variant?: string; message: string }>
   readonly emit: (event: { type: string; data?: Record<string, unknown> }) => Promise<void>
   readonly setRoute: (route: unknown) => void
@@ -15,9 +16,18 @@ interface MissToastHarness {
   readonly stepCalls: Array<{ sessionID: string }>
 }
 
+type TestSetting = {
+  readonly id: string
+  readonly title: string
+  readonly category: string
+  readonly value?: () => string | undefined
+  readonly run: () => void | Promise<void>
+}
+
 function createHarness(): MissToastHarness {
   const layers: ((() => { commands?: readonly TestKeymapCommand[] }))[] = []
   const slotRenders: ((props: object) => unknown)[] = []
+  const settingsRows: TestSetting[] = []
   const toasts: Array<{ variant?: string; message: string }> = []
   const onHandlers = new Map<string, Set<(event: any) => void>>()
   const listeners = new Set<(event: { details: { type: string; data?: Record<string, unknown> } }) => void>()
@@ -114,6 +124,15 @@ function createHarness(): MissToastHarness {
       },
       panel: { open: () => false, close: () => {} },
       tabs: { enabled: () => false },
+      settings: {
+        register: (setting: TestSetting) => {
+          settingsRows.push(setting)
+          return () => {
+            const at = settingsRows.indexOf(setting)
+            if (at >= 0) settingsRows.splice(at, 1)
+          }
+        },
+      },
     },
     theme: {},
   }
@@ -125,6 +144,7 @@ function createHarness(): MissToastHarness {
       for (const render of slotRenders) render({})
     },
     commands: () => layers.flatMap((fn) => fn().commands ?? []),
+    settings: () => settingsRows,
     toasts,
     emit: async (event) => {
       const handlers = onHandlers.get(event.type)
@@ -149,14 +169,14 @@ function createHarness(): MissToastHarness {
   }
 }
 
-test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off switch, and command toggle", async () => {
+test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off switch, and settings toggle", async () => {
   const harness = createHarness()
   const cleanup = await plusPlugin.setup(harness.context)
-  // The off switch is a keymap command owned by the mounted plugin slot: without
-  // a rendered slot it is not reachable, so it appears only after mountSlot.
-  expect(harness.commands().find((c) => c.slash?.name === "miss-notices")).toBeUndefined()
+  // Cache-miss notices is a global Settings row, registered at setup, and must
+  // not appear in the command list.
+  expect(harness.settings().map((setting) => setting.id)).toEqual(["plus.miss-notices"])
+  expect(harness.commands().filter((command) => command.id?.startsWith("plus.miss-notices"))).toHaveLength(0)
   harness.mountSlot()
-  expect(harness.commands().find((c) => c.slash?.name === "miss-notices")).toBeDefined()
 
   // 1. A step-end event for the chat on screen with a miss shows exactly one toast with the exact text
   await harness.emit({
@@ -171,7 +191,7 @@ test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off swi
   expect(harness.toasts.length).toBe(1)
   expect(harness.toasts[0]).toEqual({
     variant: "warning",
-    message: "Cache miss · 384,815 tokens not reused · account changed · type /monitor for details",
+    message: "Cache shortfall estimate · 384,815 tokens · account changed · type /monitor for details",
   })
 
   // 2. The same step twice shows only one toast (remember last toasted id per session)
@@ -224,13 +244,12 @@ test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off swi
   })
   expect(harness.toasts.length).toBe(1)
 
-  // 5. The palette entry and /miss-notices toggle the switch off
-  const toggleCmd = () => harness.commands().find((c) => c.slash?.name === "miss-notices")
-  expect(toggleCmd()).toBeDefined()
-  expect(toggleCmd()?.title).toBe("Cache-miss notices: turn off")
+  // 5. The Settings row reflects and toggles the global switch
+  const notices = () => harness.settings().find((setting) => setting.id === "plus.miss-notices")!
+  expect(notices().value?.()).toBe("on")
 
-  await toggleCmd()?.run()
-  expect(toggleCmd()?.title).toBe("Cache-miss notices: turn on")
+  await notices().run()
+  expect(notices().value?.()).toBe("off")
 
   // 6. With the switch off, no miss toast is shown
   harness.setStepResult({
@@ -255,8 +274,8 @@ test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off swi
   expect(warningToasts.length).toBe(1)
 
   // Toggle back on
-  await toggleCmd()?.run()
-  expect(toggleCmd()?.title).toBe("Cache-miss notices: turn off")
+  await notices().run()
+  expect(notices().value?.()).toBe("on")
 
   // Now a new miss shows a warning toast again
   harness.setStepResult({
@@ -278,7 +297,7 @@ test("cache-miss toast lifecycle: miss toast, hits, dedup, route filter, off swi
   })
   const updatedWarnings = harness.toasts.filter((t) => t.variant === "warning")
   expect(updatedWarnings.length).toBe(2)
-  expect(updatedWarnings[1].message).toBe("Cache miss · 12,345 tokens not reused · cache expired · type /monitor for details")
+  expect(updatedWarnings[1].message).toBe("Cache shortfall estimate · 12,345 tokens · cache expired · type /monitor for details")
 
   cleanup?.()
 })
@@ -322,7 +341,7 @@ test("on pending, ask once more on the next session event", async () => {
 
   expect(harness.stepCalls.length).toBe(2)
   expect(harness.toasts.length).toBe(1)
-  expect(harness.toasts[0].message).toBe("Cache miss · 99,000 tokens not reused · agent switched · type /monitor for details")
+  expect(harness.toasts[0].message).toBe("Cache shortfall estimate · 99,000 tokens · agent switched · type /monitor for details")
 
   // Another session event arrives: since retry already settled, do not poll while idle
   await harness.emit({

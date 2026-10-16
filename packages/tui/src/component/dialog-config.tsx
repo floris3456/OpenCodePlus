@@ -1,8 +1,26 @@
+import type { PluginSetting } from "@opencode/plugin/tui/context"
 import { createMemo, createSignal } from "solid-js"
 import { useConfig } from "../config"
 import { useThemes } from "../context/theme"
 import { DialogSelect } from "../ui/dialog-select"
 import { useToast } from "../ui/toast"
+
+/** The prefix a plugin setting's row id carries in the Settings window. */
+const PLUGIN = "plugin."
+
+// Settings a plugin contributes while it is active. The host only lists and
+// dispatches them; each plugin owns its own storage and picker.
+const [contributed, setContributed] = createSignal<readonly PluginSetting[]>([])
+
+/** Adds a plugin setting row; the returned function removes it. */
+export function registerSetting(setting: PluginSetting) {
+  setContributed((list) => [...list, setting])
+  return () => setContributed((list) => list.filter((entry) => entry !== setting))
+}
+
+export function useContributedSettings() {
+  return contributed
+}
 
 type Setting = {
   title: string
@@ -321,13 +339,22 @@ export function settingID(setting: Setting) {
   return setting.path.join(".")
 }
 
+type Row =
+  | { readonly kind: "config"; readonly setting: Setting }
+  | { readonly kind: "plugin"; readonly setting: PluginSetting }
+
 export function DialogConfig(props: { current?: string }) {
   const config = useConfig()
   const toast = useToast()
   const themes = useThemes()
+  const rows = createMemo<readonly Row[]>(() => [
+    ...settings.map((setting): Row => ({ kind: "config", setting })),
+    ...contributed().map((setting): Row => ({ kind: "plugin", setting })),
+  ])
+  const rowID = (row: Row) => (row.kind === "config" ? settingID(row.setting) : `${PLUGIN}${row.setting.id}`)
   const current = Math.max(
     0,
-    settings.findIndex((setting) => settingID(setting) === props.current),
+    rows().findIndex((row) => rowID(row) === props.current),
   )
   const [selected, setSelected] = createSignal(current)
   const [saving, setSaving] = createSignal(false)
@@ -351,18 +378,20 @@ export function DialogConfig(props: { current?: string }) {
     return index === undefined || index < 0 ? String(current) : (setting.labels?.[index] ?? String(current))
   }
   const options = createMemo(() =>
-    settings.map((setting, index) => ({
-      title: setting.title,
-      category: setting.category,
-      searchText: setting.keywords?.join(" "),
-      footer: display(setting),
+    rows().map((row, index) => ({
+      title: row.setting.title,
+      category: row.setting.category,
+      searchText: row.setting.keywords?.join(" "),
+      footer: row.kind === "config" ? display(row.setting) : row.setting.value?.(),
       value: index,
     })),
   )
 
   async function change(direction: number, index = selected()) {
     if (saving()) return
-    const setting = settings[index]
+    const row = rows()[index]
+    if (row?.kind !== "config") return
+    const setting = row.setting
     const current = value(setting)
     const choices = values(setting)
     const next = choices
@@ -382,6 +411,12 @@ export function DialogConfig(props: { current?: string }) {
       .finally(() => setSaving(false))
   }
 
+  function select(index = selected()) {
+    const row = rows()[index]
+    if (row?.kind === "plugin") return void row.setting.run()
+    return void change(1, index)
+  }
+
   return (
     <DialogSelect
       title="Settings"
@@ -389,7 +424,7 @@ export function DialogConfig(props: { current?: string }) {
       current={current}
       filterThreshold={0.7}
       onMove={(option) => setSelected(option.value)}
-      onSelect={(option) => void change(1, option.value)}
+      onSelect={(option) => select(option.value)}
       footerHints={[{ title: "←/→", label: "change" }]}
       bindings={[
         {

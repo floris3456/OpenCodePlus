@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal } from "solid-js"
 import { createQuota } from "./quota/tui.js"
+import { createSettings } from "./settings.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { createUsage } from "./quota/usage-view.js"
 
@@ -17,7 +18,7 @@ export default Plugin.define({
   setup(context) {
     const [enabled, setEnabled] = createSignal(false)
     // Register /usage immediately, before discovery, so it is never submitted as a model prompt.
-    const disposers = [createUsage(context, { enabled })]
+    const disposers = [createUsage(context, { enabled }), createSettings(context)]
     const state = { disposed: false }
     const rpc = context.client.rpc(UsageDefinition)
     const probe = async (attempt: number): Promise<void> => {

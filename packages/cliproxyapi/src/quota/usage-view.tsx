@@ -44,7 +44,7 @@ export function createUsage(context: Plugin.Context, options: { interval?: numbe
             {
               id: "plus.usage.open",
               title: "Credential usage",
-              group: "OpenCodePlus",
+              group: "Pacer",
               palette: true,
               slash: { name: "usage", arguments: "optional" },
               run: open,

@@ -33,6 +33,7 @@ function host(enabled: () => Promise<{ enabled: boolean }>) {
       },
       model: { current: model },
       router: { current: route },
+      settings: { register: () => () => {} },
     },
   } as unknown as Plugin.Context
   const dispose = CliproxyapiTui.setup!(context) as () => void

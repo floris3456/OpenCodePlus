@@ -28,6 +28,14 @@ export default Plugin.define({
     const monitor = createMonitor(context)
     const refresh = createChatRefresh(context)
     const missToast = createMissToast(context)
+    context.ui.settings.register({
+      id: "plus.miss-notices",
+      title: "Cache-miss notices",
+      category: "OpenCodePlus",
+      keywords: ["cache miss", "notices", "shortfall toast"],
+      value: () => (missToast.enabled() ? "on" : "off"),
+      run: () => missToast.toggle(),
+    })
     const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
@@ -90,14 +98,6 @@ export default Plugin.define({
               palette: true,
               slash: { name: "checks" },
               run: () => void openProjectChecks(context),
-            },
-            {
-              id: "plus.miss-notices.toggle",
-              title: `Cache-miss notices: turn ${missToast.enabled() ? "off" : "on"}`,
-              group: "OpenCodePlus",
-              palette: true,
-              slash: { name: "miss-notices" },
-              run: () => void missToast.toggle(),
             },
             {
               id: "plus.warming.toggle",

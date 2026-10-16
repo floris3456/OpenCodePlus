@@ -31,6 +31,8 @@ import { useStorage } from "../context/storage"
 import { useSessionTabs } from "../context/session-tabs"
 import { useOptionalPanel } from "../context/panel"
 import { useLocal } from "../context/local"
+import { useConfig } from "../config"
+import { registerSetting } from "../component/dialog-config"
 import { abbreviateHome } from "../util/path-format"
 import { DialogAgent } from "../component/dialog-agent"
 import { promptSendGuards } from "../component/prompt/send-guard"
@@ -84,6 +86,7 @@ export function usePluginHost() {
     sessionTabs: useSessionTabs(),
     panel: useOptionalPanel(),
     local: useLocal(),
+    config: useConfig(),
   }
 }
 
@@ -160,6 +163,17 @@ export function createPluginContext(input: {
     renderer: host.renderer,
     client: host.client.api,
     data: host.data,
+    config: {
+      get data() {
+        return host.config.data
+      },
+      get path() {
+        return host.config.path
+      },
+      update(mutate) {
+        return host.config.update(mutate)
+      },
+    },
     attention: host.attention,
     get theme() {
       return host.themes.currentTokens()
@@ -224,6 +238,19 @@ export function createPluginContext(input: {
         },
         current: () => host.local.agent.current()?.id,
         set: (id: string) => host.local.agent.set(id),
+      },
+      settings: {
+        register(setting) {
+          const unregister = registerSetting(setting)
+          let cleaned = false
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unregister()
+          }
+          input.owned.push(async () => cleanup())
+          return cleanup
+        },
       },
       format: {
         path: (value) => abbreviateHome(value, host.paths.home),

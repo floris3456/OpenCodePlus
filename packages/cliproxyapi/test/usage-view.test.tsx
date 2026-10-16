@@ -403,3 +403,13 @@ test("changing models aborts and discards an older selection's read", async () =
   first.resolve(f.state.result)
   expect(await frame(output)).not.toContain("Account 0")
 })
+
+// Pacer owns its own command category: the Usage command is listed under
+// "Pacer", not under the Plus plugin's "OpenCodePlus".
+test("the usage command is grouped under Pacer", () => {
+  const f = fixture()
+  const open = f.command("plus.usage.open")
+  expect(open.group).toBe("Pacer")
+  expect(open.title).toBe("Credential usage")
+  expect(open.palette).toBe(true)
+})

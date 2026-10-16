@@ -660,6 +660,7 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
           fake.agentSelects.push(id)
         },
       },
+      settings: { register: () => () => {} },
       format: {
         path: (p: string) => p,
       },

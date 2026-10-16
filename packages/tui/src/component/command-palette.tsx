@@ -2,7 +2,7 @@ import { createMemo } from "solid-js"
 import { DialogSelect, type DialogSelectRef } from "../ui/dialog-select"
 import { type DialogContext } from "../ui/dialog"
 import { COMMAND_PALETTE_COMMAND, Keymap, type KeymapCommand } from "../context/keymap"
-import { DialogConfig, settingID, settings } from "./dialog-config"
+import { DialogConfig, settingID, settings, useContributedSettings } from "./dialog-config"
 
 function isSuggestedPaletteCommand(command: KeymapCommand) {
   const suggested = command.suggested
@@ -34,20 +34,33 @@ export function CommandPaletteDialog() {
       }
     }),
   )
-  const settingOptions = settings.map((setting) => ({
-    title: setting.title,
-    category: setting.category,
-    searchText: setting.keywords?.join(" "),
-    searchFooter: `Settings · ${setting.category}`,
-    value: `setting:${settingID(setting)}`,
-    onSelect: (dialog: DialogContext) => {
-      dialog.replace(() => <DialogConfig current={settingID(setting)} />)
-    },
-  }))
+  const contributed = useContributedSettings()
+  const settingOptions = () => [
+    ...settings.map((setting) => ({
+      title: setting.title,
+      category: setting.category,
+      searchText: setting.keywords?.join(" "),
+      searchFooter: `Settings · ${setting.category}`,
+      value: `setting:${settingID(setting)}`,
+      onSelect: (dialog: DialogContext) => {
+        dialog.replace(() => <DialogConfig current={settingID(setting)} />)
+      },
+    })),
+    ...contributed().map((setting) => ({
+      title: setting.title,
+      category: setting.category,
+      searchText: setting.keywords?.join(" "),
+      searchFooter: `Settings · ${setting.category}`,
+      value: `setting:plugin.${setting.id}`,
+      onSelect: (dialog: DialogContext) => {
+        dialog.replace(() => <DialogConfig current={`plugin.${setting.id}`} />)
+      },
+    })),
+  ]
 
   let ref: DialogSelectRef<string>
   const list = () => {
-    if (ref?.filter) return [...options(), ...settingOptions]
+    if (ref?.filter) return [...options(), ...settingOptions()]
     return [
       ...options()
         .filter((option) => option.suggested)
