@@ -259,19 +259,20 @@ function CredentialView(props: {
     if (props.snapshot.current === props.credential.id) return "LAST USED"
   }
   // Pacer's preview: FORCE USE where a forced move will send the chat, else NEXT USE where it goes once
-  // its cache is cold. Never the chat's own credential: it stays there.
+  // its cache is cold: another account (auth), or its own when Pacer keeps it there (cold_stay, no auth).
   const next = () => {
     const value = props.snapshot.next_use
     if (
       !value ||
       value.expires_ms <= props.store.now() * 1000 ||
       value.model !== props.snapshot.model ||
-      value.provider !== props.credential.provider ||
-      props.credential.id === props.snapshot.current
+      value.provider !== props.credential.provider
     )
       return
-    if (value.force_auth === props.credential.id) return { label: "FORCE USE", mode: value.mode }
-    if (value.auth === props.credential.id) return { label: "NEXT USE", mode: value.mode }
+    const own = props.credential.id === props.snapshot.current
+    if (!own && value.force_auth === props.credential.id) return { label: "FORCE USE", mode: value.mode }
+    if (!own && value.auth === props.credential.id) return { label: "NEXT USE", mode: value.mode }
+    if (own && !value.auth && value.reason === "cold_stay") return { label: "NEXT USE", mode: value.mode }
   }
   return (
     <box flexShrink={0}>

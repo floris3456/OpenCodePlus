@@ -48,10 +48,18 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
       undefined,
       { equals: (left, right) => selectionKey(left) === selectionKey(right) },
     )
+    // Pacer keeps one meter per location and only the chat's own location sees its replies. Another
+    // location's meter (the service's working directory when none is given) knows only what was
+    // persisted when it started, so its LAST USED names an earlier account.
+    const directory = createMemo(() => {
+      const sessionID = input()?.sessionID
+      return sessionID ? context.data.session.get(sessionID)?.location.directory : undefined
+    })
 
     createEffect(() => {
       const value = input()
       if (views() === 0 || !value) return
+      const location = directory()
       const key = selectionKey(value)
       // A changed selection starts empty instead of showing another chat's identity.
       untrack(() => {
@@ -82,10 +90,12 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
         if (state.pending) return
         state.pending = true
         const pushed = state.pushed
-        const next = await rpc.read(value, { signal: controller.signal }).then(
-          (result) => ({ result }),
-          () => ({ result: undefined }),
-        )
+        const next = await rpc
+          .read(value, { signal: controller.signal, location: location ? { directory: location } : undefined })
+          .then(
+            (result) => ({ result }),
+            () => ({ result: undefined }),
+          )
         state.pending = false
         if (controller.signal.aborted) return
         const now = Date.now()

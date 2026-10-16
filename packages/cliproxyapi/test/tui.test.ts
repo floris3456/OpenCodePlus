@@ -25,6 +25,7 @@ function host(enabled: () => Promise<{ enabled: boolean }>) {
       }),
     },
     keymap: { layer: () => state.layers++ },
+    data: { session: { get: () => undefined } },
     ui: {
       slot: (claim: Record<string, unknown>) => {
         const key = ["append", "prepend", "before", "after", "replace"].find((name) => claim[name] !== undefined)!
