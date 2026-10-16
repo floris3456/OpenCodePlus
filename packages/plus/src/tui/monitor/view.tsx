@@ -35,7 +35,9 @@ import { openSessionPicker } from "./session-picker.js"
 import { CacheTab } from "./tabs/cache.js"
 import { PromptTab, type PromptController } from "./tabs/prompt.js"
 import { SessionsTab } from "./tabs/sessions.js"
+import { TeamTab } from "./tabs/team.js"
 import { groupMountLog, resetGroupMountLog, stopGroupMountLog, ToolsTab } from "./tabs/tools.js"
+import type { ActiveTeamInfo } from "../active-team.js"
 
 export { groupMountLog, resetGroupMountLog, stopGroupMountLog }
 export const TOOLS_BODY_ROWS = 10
@@ -72,6 +74,8 @@ export interface MonitorViewProps {
   readonly onToggleFullscreen?: () => void
   readonly width?: number
   readonly focus?: () => void
+  /** The active team; the Team tab is shown only while there is one. */
+  readonly team?: () => ActiveTeamInfo | undefined
 }
 
 export function createMonitorSettings(
@@ -139,8 +143,15 @@ export function MonitorView(props: MonitorViewProps) {
   const activeDrill = () => drills().at(-1)
 
   // The compact composer body always renders Tools, whatever tab the shared
-  // full-page settings happen to hold.
-  const tab = () => (props.full ? settings().tab : "tools")
+  // full-page settings happen to hold. A stored Team tab with no active team
+  // opens on Cache.
+  const teamOn = () => props.team?.() !== undefined
+  const tabs = (): readonly TabName[] => (teamOn() ? TABS : TABS.filter((name) => name !== "team"))
+  const tab = (): TabName => {
+    if (!props.full) return "tools"
+    const stored = settings().tab
+    return stored === "team" && !teamOn() ? "cache" : stored
+  }
 
   const sessionID = () => {
     const drilled = drills().findLast((drill) => drill.sessionID !== undefined)
@@ -318,7 +329,7 @@ export function MonitorView(props: MonitorViewProps) {
   }
 
   const setTab = (next: TabName) => {
-    if (!props.full) return
+    if (!props.full || !tabs().includes(next)) return
     // Opening Prompt by its key follows the latest request; P pins one afterwards.
     setPromptTarget(undefined)
     setSelected(0)
@@ -824,13 +835,13 @@ export function MonitorView(props: MonitorViewProps) {
         bind: "tab",
         title: "Next tab",
         group: "Monitor",
-        run: () => setTab(cycle(TABS, settings().tab, 1)),
+        run: () => setTab(cycle(tabs(), tab(), 1)),
       },
       {
         bind: "shift+tab",
         title: "Previous tab",
         group: "Monitor",
-        run: () => setTab(cycle(TABS, settings().tab, -1)),
+        run: () => setTab(cycle(tabs(), tab(), -1)),
       },
       {
         bind: "s",
@@ -966,7 +977,7 @@ export function MonitorView(props: MonitorViewProps) {
     // The hint bar is always one line and must stay readable at 80 columns,
     // so narrow terminals get shorter labels instead of a truncated line.
     const narrow = width < 100
-    switch (settings().tab) {
+    switch (tab()) {
       case "cache":
         return narrow
           ? "[↑↓] · [⏎] detail · [P] prompt · [x] misses · [s] scope · [?] help · [esc]"
@@ -983,6 +994,10 @@ export function MonitorView(props: MonitorViewProps) {
         return narrow
           ? "[↑↓] · [⏎] session · [space] tree · [s] scope · [t] window · [?] help · [esc]"
           : "[↑↓] select · [⏎] add session · [space] add tree · [S] add session · [s] scope · [?] help · [esc] close"
+      case "team":
+        return narrow
+          ? "[↑↓] · [⏎] open · [ctrl+a/t] inactive/tree · [ctrl+d] stop · [e] checks"
+          : "[↑↓] select · [⏎] open run · [ctrl+a] active/inactive · [ctrl+t] tree/all · [ctrl+d] stop/resume · [e] edit checks · [esc] close"
     }
   }
 
@@ -1055,7 +1070,7 @@ export function MonitorView(props: MonitorViewProps) {
         <text fg={theme().text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
           Monitor
         </text>
-        <text fg={theme().text.muted}>cache, prompt, tools and sessions</text>
+        <text fg={theme().text.muted}>{teamOn() ? "cache, prompt, tools, sessions and team" : "cache, prompt, tools and sessions"}</text>
       </box>
 
       {/* Scope Line */}
@@ -1131,17 +1146,17 @@ export function MonitorView(props: MonitorViewProps) {
 
       {/* Tab bar */}
       <box flexDirection="row" flexShrink={0} marginTop={1} marginBottom={1}>
-        <For each={TABS}>
-          {(tab, index) => {
-            const isActive = () => settings().tab === tab
+        <For each={tabs()}>
+          {(name, index) => {
+            const isActive = () => tab() === name
             const label = () => width() < 60
-              ? `[${index() + 1} ${tab.slice(0, 3)}]`
-              : `[${index() + 1} ${tab.charAt(0).toUpperCase() + tab.slice(1)}]`
+              ? `[${index() + 1} ${name.slice(0, 3)}]`
+              : `[${index() + 1} ${name.charAt(0).toUpperCase() + name.slice(1)}]`
             return (
               <box
                 backgroundColor={isActive() ? theme().background.action.primary.focused : undefined}
                 marginRight={1}
-                onMouseUp={() => setTab(tab)}
+                onMouseUp={() => setTab(name)}
               >
                 <text
                   fg={isActive() ? theme().text.action.primary.focused : theme().text.muted}
@@ -1229,6 +1244,15 @@ export function MonitorView(props: MonitorViewProps) {
                   }
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.sessions = ref)}
+                />
+              </Show>
+              <Show when={tab() === "team"}>
+                <TeamTab
+                  context={props.context}
+                  sessionID={sessionID}
+                  active={() => props.active() && tab() === "team" && !helpOpen()}
+                  close={props.onClose}
+                  location={location}
                 />
               </Show>
             </box>

@@ -16,6 +16,8 @@ function Panels(props: { context: Plugin.Context }) {
   const panels = usePanel()
   const [focused, setFocused] = createSignal(true)
   const [message, setMessage] = createSignal("Fixture only: actions never start or stop real runs")
+  // A team as the active agent group shows the Monitor's Team tab.
+  const [group, setGroup] = createSignal<string | undefined>("team:project:fixture")
   const runs: TeamRunEntry[] = Array.from({ length: 40 }, (_, index) => ({
     id: `run-${String(index + 1).padStart(2, "0")}`,
     role: "worker",
@@ -36,13 +38,27 @@ function Panels(props: { context: Plugin.Context }) {
       rpc: ((definition: unknown) => {
         if (definition !== Definition) throw new Error("Unexpected fixture RPC")
         return {
-          "team.list": async () => ({ teams: [] }),
+          "team.list": async () => ({ teams: [{ level: "project", team: "fixture", enabled: true, members: [{ id: "lead" }] }] }),
           "team.runs.list": async () => ({ runs }),
+          "checks.suggest": async () => ({
+            root: "/fixture",
+            current: [
+              { id: "check", argv: ["bun", "run", "check"] },
+              { id: "core", argv: ["bun", "test"], cwd: "packages/core" },
+            ],
+            setup: { id: "setup", argv: ["bun", "install"] },
+            suggested: [],
+          }),
+          "checks.save": async () => {
+            setMessage("Saved checks (fixture only)")
+            return { path: "/fixture/.opencodeplus/checks.json", checks: [] }
+          },
           "team.runs.stop": async (input: { run: string }) => {
             setMessage(`Stopped ${input.run} (fixture only)`)
             return { run: input.run, state: "stopped" }
           },
           "monitor.query": async (input: Plus.MonitorQueryInput) => createFixtureReport(input, "prefix", now),
+          "monitor.cache": async (input: Plus.MonitorQueryInput) => createFixtureReport(input, "prefix", now),
           "monitor.mark": async (input: Plus.MonitorMarkInput) => ({ id: 1, at: now, label: input.label }),
           events: { on: () => () => {} },
         }
@@ -61,7 +77,7 @@ function Panels(props: { context: Plugin.Context }) {
       agents: {
         ...props.context.ui.agents,
         groups: () => () => {},
-        activeGroup: { current: () => undefined, set: () => {} },
+        activeGroup: { current: group, set: setGroup },
       },
       router: {
         register: () => () => {},
@@ -88,18 +104,22 @@ function Panels(props: { context: Plugin.Context }) {
       },
     },
   }
-  const monitor = createMonitor(context)
-  const team = createActiveTeam(context, { openMonitor: monitor.open })
+  const team = createActiveTeam(context)
+  const monitor = createMonitor(context, { team: team.activeTeam })
   onCleanup(() => { team.dispose(); monitor.dispose() })
   createEffect(() => panels.setWidth(dimensions().width))
-  context.ui.panel.open("plus.team")
+  monitor.open()
   const fullscreen = () => panels.presentation() === "fullscreen"
   const width = () => fullscreen() ? dimensions().width : Math.floor(dimensions().width / 2)
   context.keymap.layer(() => ({
     priority: 10,
     commands: [
-      { bind: "f1", title: "Open Team fixture", run: () => { context.ui.panel.open("plus.team") } },
-      { bind: "f2", title: "Open Monitor fixture", run: () => monitor.open() },
+      { bind: "f1", title: "Open Monitor fixture", run: () => monitor.open() },
+      {
+        bind: "f2",
+        title: "Toggle the active team",
+        run: () => setGroup((value) => (value === undefined ? "team:project:fixture" : undefined)),
+      },
       { bind: "f3", title: "Toggle panel focus", run: () => setFocused((value) => !value) },
     ],
   }))
@@ -118,12 +138,13 @@ function Panels(props: { context: Plugin.Context }) {
         </Show>
       </box>
       <StoryFooter context={context} title="Plus panels" message={message()} controls={[
-        { shortcut: "F1", label: "Team" },
-        { shortcut: "F2", label: "Monitor" },
+        { shortcut: "F1", label: "Monitor" },
+        { shortcut: "F2", label: group() === undefined ? "team off" : "team on" },
         { shortcut: "F3", label: "focus" },
         { shortcut: "F4", label: "reset" },
+        { shortcut: "5", label: "Team tab" },
         { shortcut: "↑↓", label: "select/scroll" },
-        { shortcut: "f / M", label: "fullscreen" },
+        { shortcut: "M", label: "fullscreen" },
       ]} />
     </box>
   )
@@ -131,7 +152,7 @@ function Panels(props: { context: Plugin.Context }) {
 
 export const plusPanelsStory: Story = {
   id: "plus-panels",
-  title: "Plus Team and Monitor panels",
+  title: "Plus Monitor panel and its Team tab",
   render: (context) => {
     const [generation, setGeneration] = createSignal(1)
     context.keymap.layer(() => ({ commands: [

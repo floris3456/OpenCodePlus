@@ -14,6 +14,8 @@ async function fixture() {
   panels.setWidth(160)
   const [focused, setFocused] = createSignal(true)
   const [route, setRoute] = createSignal<ReturnType<Plugin.Context["ui"]["router"]["current"]>>({ type: "session", sessionID: "ses_chat" })
+  // The agent picker's active group: a team id makes that team active.
+  const [group, setGroup] = createSignal<string | undefined>()
   const navigations: Parameters<Plugin.Context["ui"]["router"]["navigate"]>[0][] = []
   const claims: SlotClaim<"session.panel">["render"][] = []
   let monitor!: ReturnType<typeof createMonitor>
@@ -23,7 +25,13 @@ async function fixture() {
   const output = await renderPlusFixture({
     snapshots: [], width: 160, height: 24,
     rpc: {
-      "team.list": async () => ({ teams: [] }),
+      "team.list": async () => ({ teams: [{ level: "project", team: "alpha", enabled: true, members: [{ id: "lead" }] }] }),
+      "checks.suggest": async () => ({
+        root: "/repo",
+        current: [{ id: "check", argv: ["bun", "run", "check"] }],
+        setup: { id: "setup", argv: ["bun", "install"] },
+        suggested: [],
+      }),
       "team.runs.list": async () => ({ runs: Array.from({ length: 40 }, (_, index) => ({
         id: `run-${String(index + 1).padStart(2, "0")}`, role: "worker", state: "idle",
         sessionID: `ses_${index}`, task: null, head: "fixture", worktree: "present", lastUsed: "", parent: null,
@@ -58,6 +66,7 @@ async function fixture() {
         ui: {
           ...base.ui,
           router: { ...base.ui.router, current: route, navigate: (destination) => { navigations.push(destination) } },
+          agents: { ...base.ui.agents, groups: () => () => {}, activeGroup: { current: group, set: setGroup } },
           panel: {
             open: (name, options) => {
               if (route().type !== "session") return false
@@ -73,8 +82,8 @@ async function fixture() {
           },
         },
       }
-      monitor = createMonitor(context)
-      const team = createActiveTeam(context, { openMonitor: monitor.open })
+      const team = createActiveTeam(context)
+      monitor = createMonitor(context, { team: team.activeTeam })
       onCleanup(() => { team.dispose(); monitor.dispose() })
       const input: PanelInput = {
         get name() { return panels.current()?.name ?? "" },
@@ -95,35 +104,48 @@ async function fixture() {
       }}</Show>
     },
   })
-  return { output, panels, monitor: () => monitor, setFocused, setRoute, navigations, mounts: () => mounts, unmounts: () => unmounts }
+  return { output, panels, monitor: () => monitor, setFocused, setRoute, setGroup, navigations, mounts: () => mounts, unmounts: () => unmounts }
 }
 
-test("Team arrows reveal off-screen rows in both directions, wrap, resize, and retain selection on reopen", async () => {
+test("the Monitor's Team tab shows only with an active team: runs reveal off-screen rows, wrap and open, project checks list", async () => {
   const test = await fixture()
   try {
-    test.panels.open({ name: "plus.team", plugin: "plus", sessionID: "ses_chat" })
-    await test.output.waitForFrame((frame) => frame.includes("run-01"))
-    expect(test.output.captureCharFrame()).not.toContain("run-26")
+    test.monitor().open()
+    await test.output.waitForFrame((frame) => frame.includes("[4 Sessions]"))
+    // No active team: no Team tab, and 5 does nothing.
+    expect(test.output.captureCharFrame()).not.toContain("Team]")
+    dispatch(test.output, "5")
+    await test.output.flush()
+    expect(test.output.captureCharFrame()).not.toContain("Project checks")
+    test.setGroup("team:project:alpha")
+    await test.output.waitForFrame((frame) => frame.includes("[5 Team]"))
+    dispatch(test.output, "5")
+    await test.output.waitForFrame((frame) => frame.includes("run-01") && frame.includes("Project checks"))
+    const opened = test.output.captureCharFrame()
+    expect(opened).toContain("bun run check")
+    expect(opened).toContain("bun install · fresh worktrees")
+    // The 80-column panel gets the short hint line, whole.
+    expect(opened.split("\n").find((line) => line.includes("[↑↓]"))?.trim()).toBe("[↑↓] · [⏎] open · [ctrl+a/t] inactive/tree · [ctrl+d] stop · [e] checks")
+    expect(opened).not.toContain("run-26")
+    // e opens the Project checks editor (the dialog the old /checks opened).
+    dispatch(test.output, "e")
+    await test.output.waitForFrame(() => test.output.fake.selectInputs.some((input) => input.title === "Project checks"))
     Array.from({ length: 25 }).forEach(() => dispatch(test.output, "down"))
     await test.output.waitForFrame((frame) => frame.includes("run-26"))
     expect(test.output.captureCharFrame()).not.toContain("run-01")
-    dispatch(test.output, "return")
-    expect(test.navigations.at(-1)).toEqual({ type: "session", sessionID: "ses_25" })
-    test.panels.open({ name: "plus.team", plugin: "plus", sessionID: "ses_chat" })
-    await test.output.waitForFrame((frame) => frame.includes("run-26"))
-    dispatch(test.output, "f")
-    expect(test.panels.presentation()).toBe("fullscreen")
-    await test.output.waitForFrame((frame) => frame.includes("run-26"))
-    test.setFocused(false)
-    expect(dispatch(test.output, "down")).toBe(false)
-    test.setFocused(true)
-    Array.from({ length: 25 }).forEach(() => dispatch(test.output, "up"))
-    await test.output.waitForFrame((frame) => frame.includes("run-01"))
-    Array.from({ length: 39 }).forEach(() => dispatch(test.output, "down"))
+    Array.from({ length: 14 }).forEach(() => dispatch(test.output, "down"))
     await test.output.waitForFrame((frame) => frame.includes("run-40"))
     dispatch(test.output, "down")
     await test.output.waitForFrame((frame) => frame.includes("run-01"))
-    expect(test.output.captureCharFrame()).not.toContain("run-40")
+    // Enter opens the run's chat and closes the Monitor first.
+    dispatch(test.output, "return")
+    expect(test.navigations.at(-1)).toEqual({ type: "session", sessionID: "ses_0" })
+    expect(test.panels.current()).toBeUndefined()
+    // The team stops being active: the stored Team tab opens on Cache.
+    test.setGroup(undefined)
+    test.monitor().open()
+    await test.output.waitForFrame((frame) => frame.includes("[4 Sessions]") && !frame.includes("Team]"))
+    expect(test.output.captureCharFrame()).not.toContain("Project checks")
   } finally { test.output.destroy() }
 })
 

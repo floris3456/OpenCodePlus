@@ -19,7 +19,7 @@ export function MonitorHelp(props: HelpProps) {
     {
       title: "Navigation & Scope",
       entries: [
-        { key: "1 – 4", desc: "Switch tab (Cache, Prompt, Tools, Sessions)" },
+        { key: "1 – 5", desc: "Switch tab (Cache, Prompt, Tools, Sessions; Team while a team is active)" },
         { key: "tab / shift+tab", desc: "Next / previous tab" },
         { key: "s", desc: "Choose scope: this chat, its subagents, the project, everything, or any session" },
         { key: "S", desc: "Add another session to the combined report (selected sessions are omitted)" },
@@ -75,6 +75,16 @@ export function MonitorHelp(props: HelpProps) {
         { key: "↑ / ↓ (j / k)", desc: "Select session in delegation tree" },
         { key: "Enter", desc: "Add this session to the report (no duplicates; ⌫ undoes)" },
         { key: "space", desc: "Add this session's tree to the report (no duplicates; ⌫ undoes)" },
+      ],
+    },
+    {
+      title: "Team Tab",
+      entries: [
+        { key: "↑ / ↓", desc: "Select run" },
+        { key: "Enter", desc: "Open the run's chat (closes the monitor)" },
+        { key: "ctrl+a / ctrl+t", desc: "Active or inactive runs · this chat's tree or all runs" },
+        { key: "ctrl+d", desc: "Stop an idle run, resume a stopped one" },
+        { key: "e", desc: "Edit the project checks (.opencodeplus/checks.json)" },
       ],
     },
   ]

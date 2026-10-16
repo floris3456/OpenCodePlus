@@ -427,9 +427,9 @@ test("enabling a team from the server side does not change the agent when a sess
   manager.dispose()
 })
 
-test("createActiveTeam registers the session panel and cleans up on dispose", async () => {
-  let registeredTab: any = undefined
-  let tabUnregistered = false
+test("createActiveTeam no longer opens a side panel; its footer slot unwinds on dispose", async () => {
+  const claims: string[] = []
+  let unregistered = 0
 
   const context: any = {
     location: { directory: "/my/project" },
@@ -448,17 +448,13 @@ test("createActiveTeam registers the session panel and cleans up on dispose", as
     storage: {
       store: () => [{ activeTeamByProject: {} }, async () => {}],
     },
-    keymap: {
-      shortcuts: (cmd: string) => (cmd === "composer.team.select" ? ["return"] : []),
-      layer: () => {},
-    },
+    keymap: { layer: () => {} },
     theme: { text: { subdued: "gray" } },
     ui: {
       toast: { show: () => {} },
-      slot: (claim: { append?: string }) => {
-        if (claim.append !== "session.panel") return () => {}
-        registeredTab = claim
-        return () => { tabUnregistered = true }
+      slot: (claim: { append: string }) => {
+        claims.push(claim.append)
+        return () => { unregistered++ }
       },
       agents: {
         groups: () => () => {},
@@ -468,70 +464,10 @@ test("createActiveTeam registers the session panel and cleans up on dispose", as
   }
 
   const manager = createActiveTeam(context)
-  expect(registeredTab).toBeDefined()
-  expect(registeredTab.append).toBe("session.panel")
-
+  // The runs live in the Monitor's Team tab now.
+  expect(claims).toEqual(["prompt.footer.status"])
   manager.dispose()
-  expect(tabUnregistered).toBe(true)
-})
-
-test("Team M routes through the remembered Monitor open and closes the composer", async () => {
-  let commands: any[] = []
-  let closeCalled = 0
-  const opened: string[] = []
-
-  const white = RGBA.fromHex("#ffffff")
-  const gray = RGBA.fromHex("#888888")
-  const black = RGBA.fromHex("#000000")
-  const testTheme = {
-    text: { base: white, muted: gray, action: { primary: { base: white, selected: white, focused: white } } },
-    background: { base: black, action: { primary: { base: black, selected: black, focused: black } } },
-  }
-
-  const context: any = {
-    location: { directory: "/my/project" },
-    theme: testTheme,
-    data: {
-      location: { default: () => ({ directory: "/my/project" }) },
-      listen: () => () => {},
-    },
-    client: {
-      rpc: () => ({
-        "team.runs.list": async () => ({ runs: [] }),
-        events: { on: () => () => {} },
-      }),
-    },
-    keymap: {
-      layer: (factory: any) => {
-        const layer = factory()
-        if (layer.commands) commands = layer.commands
-      },
-    },
-    ui: { toast: { show: () => {} }, router: { navigate: () => {} } },
-  }
-
-  const output = await createTestRenderer({ width: 100, height: 20 })
-  render(
-    () => (
-      <TeamMonitorTab
-        sessionID="ses_root"
-        active={() => true}
-        close={() => closeCalled++}
-        context={context}
-        onOpenMonitor={(sessionID) => opened.push(sessionID)}
-      />
-    ),
-    output.renderer,
-  )
-  await output.renderOnce()
-  const monitor = commands.find((c) => c.id === "composer.team.monitor")
-  expect(monitor).toBeDefined()
-  expect(monitor?.bind).toBe("shift+m,M")
-  monitor.run()
-  // The callback owns the route memory; the tab hands it the session and closes.
-  expect(opened).toEqual(["ses_root"])
-  expect(closeCalled).toBe(1)
-  output.renderer.destroy()
+  expect(unregistered).toBe(1)
 })
 
 test("TeamMonitorTab renders active runs by default, toggles to inactive with ctrl+a, and navigates with select", async () => {
@@ -668,26 +604,23 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   expect(defaultFrame).not.toContain("w-run-stopped")
   expect(defaultFrame).not.toContain("w-run-dead")
 
-  expect(commands.length).toBe(9)
+  // The Monitor owns Esc, tabs and fullscreen; the tab adds only its own keys.
+  expect(commands.length).toBe(6)
   const upCmd = commands.find((c) => c.id === "composer.team.up")
   const downCmd = commands.find((c) => c.id === "composer.team.down")
   const selectCmd = commands.find((c) => c.id === "composer.team.select")
   const toggleCmd = commands.find((c) => c.id === "composer.team.toggle_activity")
   const toggleTreeCmd = commands.find((c) => c.id === "composer.team.toggle_tree")
   const actionCmd = commands.find((c) => c.id === "composer.team.action")
-  const monitorCmd = commands.find((c) => c.id === "composer.team.monitor")
   expect(toggleTreeCmd).toBeDefined()
-  expect(monitorCmd?.bind).toBe("shift+m,M")
+  // At the top row, up stays put instead of closing anything.
+  upCmd.run()
+  expect(closeCalled).toBe(0)
 
   // Enter on index 0 (w-run-active) navigates to its sessionID
   selectCmd.run()
   expect(navigated).toEqual({ type: "session", sessionID: "ses_active" })
   expect(closeCalled).toBe(1)
-
-  // M closes the composer and opens the page on this session's route.
-  monitorCmd.run()
-  expect(navigated).toEqual({ type: "plugin", name: "monitor", data: { sessionID: "ses_root" } })
-  expect(closeCalled).toBe(2)
 
   // 2. Toggle to inactive runs with ctrl+a
   toggleCmd.run()
@@ -703,7 +636,7 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   // Enter on inactive row (w-run-stopped) attaches to its session
   selectCmd.run()
   expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
-  expect(closeCalled).toBe(3)
+  expect(closeCalled).toBe(2)
 
   // 3. Toggle back to active
   toggleCmd.run()
@@ -831,20 +764,20 @@ test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working s
   actionCmd.run()
   expect(stopCalled).toEqual(["w-run-idle"])
 
-  // Up when at index 0 closes the composer
+  // Up past index 0 stays on the first run; nothing closes
   upCmd.run()
   await output.renderOnce()
   upCmd.run()
-  expect(closeCalled).toBe(1)
+  expect(closeCalled).toBe(0)
 
-  // Toggle to inactive (w-run-stopped): ctrl+d attaches/resumes
+  // Toggle to inactive (w-run-stopped): ctrl+d attaches/resumes, closing the Monitor first
   toggleCmd.run()
   await new Promise((r) => setTimeout(r, 10))
   await output.renderOnce()
 
   actionCmd.run()
   expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
-  expect(closeCalled).toBe(2)
+  expect(closeCalled).toBe(1)
 
   output.renderer.destroy()
 })

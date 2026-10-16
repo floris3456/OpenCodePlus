@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createRoot, createSignal, For, onCleanup, Show } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
@@ -13,10 +13,7 @@ export interface ActiveTeamInfo {
   readonly members: readonly string[]
 }
 
-export function createActiveTeam(
-  context: Plugin.Context,
-  options: { readonly openMonitor?: (sessionID: string) => void } = {},
-) {
+export function createActiveTeam(context: Plugin.Context) {
   const plus = context.client.rpc(Definition)
 
   return createRoot((disposeRoot) => {
@@ -224,41 +221,12 @@ export function createActiveTeam(
       },
     })
 
-    const [showInactiveSignal, setShowInactiveSignal] = createSignal(false)
-    const [treeViewSignal, setTreeViewSignal] = createSignal(true)
-
-    const [selection, setSelection] = createStore<Record<string, number>>({})
-    const disposePanel = context.ui.slot({
-      append: "session.panel",
-      render: (panel) => (
-        <Show when={panel.name === "plus.team"}>
-          <TeamMonitorTab
-            sessionID={panel.sessionID}
-            active={() => panel.focused}
-            close={panel.close}
-            toggleFullscreen={panel.toggleFullscreen}
-            focus={panel.focus}
-            selected={() => selection[panel.sessionID] ?? 0}
-            onSelect={(index) => setSelection(panel.sessionID, index)}
-            activeTeam={activeTeam}
-            context={context}
-            showInactive={showInactiveSignal}
-            setShowInactive={setShowInactiveSignal}
-            treeView={treeViewSignal}
-            setTreeView={setTreeViewSignal}
-            {...(options.openMonitor === undefined ? {} : { onOpenMonitor: options.openMonitor })}
-          />
-        </Show>
-      ),
-    })
-
     function dispose() {
       disposed = true
       unsubscribe()
       unsubscribeInstructions()
       unregisterGroups()
       disposeSlot()
-      disposePanel()
       disposeRoot()
     }
 
@@ -270,22 +238,24 @@ export function createActiveTeam(
   })
 }
 
+/**
+ * The Monitor's Team tab body: the runs the chat's team tree started. Its keys
+ * sit one priority above the Monitor's while the tab is shown; Esc, tabs and
+ * the rest stay the Monitor's.
+ */
 export interface TeamMonitorTabProps {
-  sessionID: string
+  /** The chat whose team tree the tree view follows; absent outside a chat. */
+  sessionID?: string
   active: () => boolean
+  /** Closes the Monitor, before a run's chat opens. */
   close: () => void
-  toggleFullscreen?: () => void
-  focus?: () => void
   selected?: () => number
   onSelect?: (index: number) => void
-  activeTeam?: () => ActiveTeamInfo | undefined
   context: Plugin.Context
   showInactive?: () => boolean
   setShowInactive?: (val: boolean | ((prev: boolean) => boolean)) => void
   treeView?: () => boolean
   setTreeView?: (val: boolean | ((prev: boolean) => boolean)) => void
-  /** Opens the full Monitor page remembering how to return; defaults to a direct navigate. */
-  onOpenMonitor?: (sessionID: string) => void
 }
 
 /**
@@ -302,7 +272,6 @@ export function stopRunMountLog(): void {
 }
 
 export function TeamMonitorTab(props: TeamMonitorTabProps) {
-  onMount(() => props.focus?.())
   const plus = props.context.client.rpc(Definition)
   const [store, setStore] = createStore({ selected: 0, loaded: false, runs: [] as readonly TeamRunEntry[] })
   const renderer = useRenderer()
@@ -446,10 +415,11 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     revealSelection()
   })
 
+  // Close first: the Monitor's own close navigates back to where it opened from.
   function attachRun(run: TeamRunEntry) {
     if (run.sessionID) {
-      props.context.ui.router.navigate({ type: "session", sessionID: run.sessionID })
       props.close()
+      props.context.ui.router.navigate({ type: "session", sessionID: run.sessionID })
     }
   }
 
@@ -488,7 +458,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
 
   props.context.keymap.layer(() => ({
     enabled: () => props.active(),
-    priority: 1,
+    priority: 2,
     commands: [
       {
         id: "composer.team.up",
@@ -496,11 +466,7 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
         title: "Previous run",
         group: "Team",
         run() {
-          if (selected() === 0) {
-            props.close()
-            return
-          }
-          select(selected() - 1)
+          if (selected() > 0) select(selected() - 1)
         },
       },
       {
@@ -558,45 +524,11 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
           if (run) void handleAction(run)
         },
       },
-      {
-        bind: "escape",
-        title: "Close Team",
-        group: "Team",
-        run: props.close,
-      },
-      {
-        bind: "f",
-        title: "Toggle Team fullscreen",
-        group: "Team",
-        run: () => props.toggleFullscreen?.(),
-      },
-      {
-        id: "composer.team.monitor",
-        title: "Open Monitor",
-        group: "Team",
-        bind: "shift+m,M",
-        run() {
-          props.close()
-          if (props.onOpenMonitor) {
-            props.onOpenMonitor(props.sessionID)
-            return
-          }
-          props.context.ui.dialog.clear()
-          props.context.ui.router.navigate({
-            type: "plugin",
-            name: "monitor",
-            data: { sessionID: props.sessionID },
-          })
-        },
-      },
     ],
   }))
 
   return (
-    <box flexDirection="column" flexGrow={1} minHeight={0} minWidth={0} paddingLeft={1} paddingRight={1}>
-      <text fg={props.context.theme.text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
-        Team
-      </text>
+    <box flexDirection="column" flexGrow={1} minHeight={0} minWidth={0}>
       <Show
         when={visibleRuns().length > 0}
         fallback={
@@ -674,9 +606,6 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
           </For>
         </scrollbox>
       </Show>
-      <text fg={props.context.theme.text.muted} flexShrink={0}>
-        {`↑↓ move · ⏎ attach · ctrl+a ${showInactive() ? "inactive" : "active"} · ctrl+t ${treeView() ? "tree" : "all"} · ctrl+d stop/resume · M monitor · f fullscreen · esc close`}
-      </text>
     </box>
   )
 }

@@ -7,7 +7,6 @@ import { createSnapshotCache } from "./snapshot-cache.js"
 import { createWarming } from "./warming.js"
 import { createModelPick } from "./model-pick.js"
 import { createMonitor } from "./monitor/index.js"
-import { openProjectChecks } from "./project-checks.js"
 import { createChatRefresh } from "./refresh.js"
 import { createMissToast } from "./miss-toast.js"
 
@@ -22,7 +21,8 @@ export default Plugin.define({
     })
     const warming = createWarming(context)
     const modelPick = createModelPick(context)
-    const monitor = createMonitor(context)
+    const activeTeam = createActiveTeam(context)
+    const monitor = createMonitor(context, { team: activeTeam.activeTeam })
     const refresh = createChatRefresh(context)
     const missToast = createMissToast(context)
     context.ui.settings.register({
@@ -58,7 +58,6 @@ export default Plugin.define({
         await warming.refresh()
       },
     })
-    const activeTeam = createActiveTeam(context, { openMonitor: (sessionID) => monitor.open(sessionID) })
     const [previous, setPrevious] = createSignal({ ...context.ui.router.current() })
     const disposeRoute = context.ui.router.register({
       name: "instructions",
@@ -120,20 +119,6 @@ export default Plugin.define({
               bind: "<leader>j",
               slash: { name: "compact-warm" },
               run: () => warming.toggleCompact(),
-            },
-            // Slash-only until they find their place in the Monitor.
-            {
-              id: "plus.team.open",
-              title: "Team panel",
-              slash: { name: "team" },
-              enabled: () => context.ui.router.current().type === "session",
-              run: () => { context.ui.panel.open("plus.team") },
-            },
-            {
-              id: "plus.checks.open",
-              title: "Project checks",
-              slash: { name: "checks" },
-              run: () => void openProjectChecks(context),
             },
           ],
         }))

@@ -1279,6 +1279,7 @@ export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> 
 // Project checks (.opencodeplus/checks.json in the main checkout): what a team
 // run may be given as checks. `suggest` reads what the project's manifests
 // name; `save` writes the entries the person confirmed (teams/project-checks.ts).
+export interface ProjectCheckEntry extends Schema.Schema.Type<typeof ProjectCheckEntry> {}
 export const ProjectCheckEntry = Schema.Struct({
   id: Schema.String,
   argv: Schema.Array(Schema.String),
@@ -1287,6 +1288,7 @@ export const ProjectCheckEntry = Schema.Struct({
   source: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.ProjectCheckEntry" })
 
+export interface ChecksSuggestion extends Schema.Schema.Type<typeof ChecksSuggestion> {}
 export const ChecksSuggestion = Schema.Struct({
   /** The main checkout the file belongs to; absent outside a git repository. */
   root: Schema.optionalKey(Schema.String),

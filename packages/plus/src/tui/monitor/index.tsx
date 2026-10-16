@@ -1,10 +1,12 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal, Show } from "solid-js"
+import type { ActiveTeamInfo } from "../active-team.js"
 import { MonitorView } from "./view.js"
 
 // Sessions use the host's panel, including its in-place fullscreen toggle.
 // The route also makes Monitor available from Home, where panels cannot open.
-export function createMonitor(context: Plugin.Context) {
+// With a team active, both show its Team tab.
+export function createMonitor(context: Plugin.Context, options: { readonly team?: () => ActiveTeamInfo | undefined } = {}) {
   const [previous, setPrevious] = createSignal<ReturnType<Plugin.Context["ui"]["router"]["current"]>>({
     ...context.ui.router.current(),
   })
@@ -37,6 +39,7 @@ export function createMonitor(context: Plugin.Context) {
         full
         initialSession
         onClose={() => context.ui.router.navigate(previous())}
+        {...(options.team === undefined ? {} : { team: options.team })}
       />
     ),
   })
@@ -55,6 +58,7 @@ export function createMonitor(context: Plugin.Context) {
           focus={panel.focus}
           onClose={panel.close}
           onToggleFullscreen={panel.toggleFullscreen}
+          {...(options.team === undefined ? {} : { team: options.team })}
         />
       </Show>
     ),

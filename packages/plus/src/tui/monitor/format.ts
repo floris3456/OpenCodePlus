@@ -2,7 +2,8 @@
 // and the words and numbers the table prints.
 import type { Plus } from "../../rpc.js"
 
-export const TABS = ["cache", "prompt", "tools", "sessions"] as const
+/** Team is shown only while a team is the active agent group. */
+export const TABS = ["cache", "prompt", "tools", "sessions", "team"] as const
 export type TabName = (typeof TABS)[number]
 
 /** Settings saved by releases with other tabs open on Cache. */
@@ -115,8 +116,8 @@ export function queryOf(
     ...(settings.window === "compaction" ? { sinceCompaction: true } : {}),
     ...(window.since === undefined ? {} : { since: window.since }),
     ...(window.until === undefined ? {} : { until: window.until }),
-    // The Prompt tab reads its own RPC; its header totals are the cache totals.
-    view: settings.tab === "prompt" ? "cache" : settings.tab,
+    // The Prompt and Team tabs read their own RPCs; their header totals are the cache totals.
+    view: settings.tab === "prompt" || settings.tab === "team" ? "cache" : settings.tab,
     ...(context.id !== undefined ? { id: context.id } : {}),
     ...(settings.missesOnly ? { missesOnly: true } : {}),
     ...(settings.agent === undefined ? {} : { agents: [settings.agent] }),

@@ -154,18 +154,21 @@ Teams: project teams in `<project>/.opencodeplus/teams/<team>/<id>.md`, global t
 
 RPC (`src/rpc.ts`, id `opencode.plus`): `instructions.snapshot/refresh/mutate/assembled`, `agent.create/rename/delete`, `skill.create/import/delete`, `base.create/delete`, `instruction.create/delete`, `mcp.add/remove`, `model.add/remove`, `catalog.models`, `rule.add/remove/update`, `team.create/setEnabled/addAgent/removeAgent/delete/rename/list`, `team.runs.list/stop`, `modelSettings.set`, `warming.status/set` (`team.create` accepts optional `template`; `team.addAgent` adds a member at any tier with optional `template` and optional `fields` overriding template defaults, writing `<teamdir>/<id>.md` or the Defaults overlay; `team.removeAgent` deletes a member at any tier, unlinking `<teamdir>/<id>.md` or the Defaults overlay; `team.delete` deletes a team at project or global scope, removing its directory and record; `team.list` lists discovered teams and member modes; `team.runs.list` returns runs in this namespace sorted by `lastUsed` desc; `team.runs.stop` stops any run in the namespace without ownership checks, returning `E_BUSY` when working); events `instructions.changed`, `teams.changed`, `warming.changed`. The binding contract is `SPEC.md`.
 
-## Team panel
+## Team tab
 
-In a session, `/team` opens the Team panel. It defaults to listing runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
+While a team is the active agent group (picked in `ctrl+x a`), the Monitor (`ctrl+x o`) has a fifth tab, **Team** (`5`). Without an active team the tab is hidden, and a Monitor last left on it opens on Cache.
+
+**Runs** lists the runs of the current chat's team tree: the root run above the chat's run and every descendant at any depth, shown as a tree (indented by depth).
 - One row per run showing `id`, `role`, `state`, and `task`.
 - Default view shows active runs in the current team tree.
-- `ctrl+t` toggles between the current chat's team tree and all runs in the namespace; hint bar indicates the current view (`tree` / `all`).
-- `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`); hint bar indicates which view is active (`active` / `inactive`).
-- `Enter` attaches by navigating to that run's session (`sessionID`).
-- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. Both `ctrl+a`, `Enter`, and `ctrl+d` keep working in both views.
+- `ctrl+t` toggles between the current chat's team tree and all runs in the namespace.
+- `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`).
+- `Enter` closes the Monitor and opens that run's session (`sessionID`).
+- `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. `ctrl+a`, `Enter` and `ctrl+d` work in both views.
 - A chat in no team tree shows `No team runs from this chat · ctrl+t shows all`.
-- Arrow keys keep the selected run visible, including beyond the last visible row and when wrapping back to the top. Selection is retained per session while reopening the panel; active/inactive and tree/all filters survive closing it.
-- `f` toggles full-screen presentation, `M` opens Monitor, and `Esc` closes the panel. Narrow terminals use full screen automatically. Keys belong to the panel only while it has focus.
+- Arrow keys keep the selected run visible, including beyond the last visible row and when wrapping back to the top. `Esc`, the tab keys and `M` (fullscreen in a chat) stay the Monitor's.
+
+**Project checks** lists `.opencodeplus/checks.json`, the named commands a run may be given as checks plus the setup step for fresh worktrees (see [Integration checks](#integration-checks)); `e` edits it. An orchestrator can also give a worker any `bun test <file>` or `bun run <script>` check itself, within its Permissions › Checks it may assign.
 
 ## Tools
 
@@ -320,7 +323,7 @@ project's checks on the `checks` field of `team_delegate` and
 the first call names a real check. `setup` prepares each fresh worktree once,
 before its first check, in place of the built-in Bun install.
 
-The TUI command **Project checks** (`/checks`) suggests entries from what the
+The Monitor's Team tab lists them; `e` there suggests entries from what the
 project's manifests already name (package.json scripts with the package
 manager its lockfile shows, Makefile/justfile targets, pytest with uv or
 poetry, cargo, go) plus a matching setup; you pick and save. Nothing is
@@ -644,7 +647,7 @@ The Commands window's **OpenCodePlus** category holds five commands:
 | Toggle cache warming (`plus.warming.toggle`) | `ctrl+x k` | | switches cache warming on or off for the current chat |
 | Toggle compact before cold (`plus.compact.cold`) | `ctrl+x j` | `/compact-warm` | switches compact before cold on or off for the current chat |
 
-Agents are created, renamed (`shift+r`) and deleted (`d`) in the Instructions screen, and teams picked in the agent picker (`ctrl+x a`). `/team` (the Team panel) and `/checks` (Project checks) remain slash commands.
+Agents are created, renamed (`shift+r`) and deleted (`d`) in the Instructions screen, and teams picked in the agent picker (`ctrl+x a`). A team's runs and its project checks are in the Monitor's [Team tab](#team-tab).
 
 The **Settings** window's OpenCodePlus category holds **Cache-miss notices** and **Compact cold chats first** (see [Cache warming](#cache-warming)); both apply to every chat.
 
@@ -701,7 +704,7 @@ Plugin RPC: `compaction.triggers` takes `{ sessionID }`; `compaction.triggers.se
 
 ## Monitor
 
-`/monitor` opens four tabs — **Cache · Prompt · Tools · Sessions** — filtered to
+`/monitor` (`ctrl+x o`) opens four tabs — **Cache · Prompt · Tools · Sessions**, plus **Team** while a team is active ([Team tab](#team-tab)) — filtered to
 the invoking chat (`filters 1`, Backspace undoes it). From Home it reads the
 project. Every tab reads saved per-request results and indexed rollups; opening
 or polling it never replays or diffs session history.

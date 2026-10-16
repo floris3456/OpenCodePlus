@@ -185,7 +185,7 @@ test("Compact cold chats first is a global OpenCodePlus setting that reads and w
   }
 })
 
-test("the Commands window lists five short OpenCodePlus commands; team and checks stay slash-only", async () => {
+test("the Commands window lists five short OpenCodePlus commands and nothing else", async () => {
   const harness = createHarness()
   const cleanup = await plusPlugin.setup(harness.context)
   harness.mountSlot()
@@ -201,9 +201,10 @@ test("the Commands window lists five short OpenCodePlus commands; team and check
       ["Toggle cache warming", "<leader>k", "OpenCodePlus"],
       ["Toggle compact before cold", "<leader>j", "OpenCodePlus"],
     ])
-    expect(commands.filter((command) => !command.palette).map((command) => command.slash?.name)).toEqual(["team", "checks"])
-    // The settings, agent and one-off compaction commands are gone, slash forms included.
-    for (const name of ["compact-triggers", "compact-cold"])
+    expect(commands.filter((command) => !command.palette)).toEqual([])
+    // The settings, agent and one-off compaction commands are gone, slash forms
+    // included; the team runs and project checks live in the Monitor's Team tab.
+    for (const name of ["compact-triggers", "compact-cold", "team", "checks"])
       expect(commands.some((command) => command.slash?.name === name)).toBe(false)
   } finally {
     await cleanup?.()
