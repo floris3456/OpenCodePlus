@@ -28,7 +28,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsgo --noEmit -p tsconfig.test.json",
     "release:typecheck": "bun run script/release-typecheck.ts",
-    "test": "bun test"
+    "test": "bun run script/test.ts",
+    "test:timings": "bun test --parallel --timings=test/timings.json --update-timings"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

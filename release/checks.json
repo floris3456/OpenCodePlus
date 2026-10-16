@@ -154,8 +154,12 @@
       "argv": [
         "bun",
         "test",
+        "--parallel",
         "test/active-team.test.tsx",
-        "test/route.test.tsx"
+        "test/route.test.tsx",
+        "test/route-reviews.test.tsx",
+        "test/route-teams-rules.test.tsx",
+        "test/route-presets-models.test.tsx"
       ],
       "cwd": "packages/plus"
     }

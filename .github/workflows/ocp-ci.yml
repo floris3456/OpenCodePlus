@@ -86,4 +86,4 @@ jobs:
       - name: tui-regressions
         id: tui-regressions
         working-directory: packages/plus
-        run: bun test test/active-team.test.tsx test/route.test.tsx
+        run: bun test --parallel test/active-team.test.tsx test/route.test.tsx test/route-reviews.test.tsx test/route-teams-rules.test.tsx test/route-presets-models.test.tsx
