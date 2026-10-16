@@ -760,6 +760,31 @@ describe("WarmingPlugin", () => {
     }),
   )
 
+  it.effect("resumes a window only once its Location's plugins have activated", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const first = yield* run([], config.service)
+      const sessions = yield* makeSessions()
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* advance(2)
+      yield* first.stop
+
+      // The model catalog and the plugins' warming hooks come from plugins that activate later.
+      const plugin = yield* Plugin.Service
+      const release = yield* plugin.hold()
+      const after: WarmCall[] = []
+      yield* run(after, config.service)
+      yield* advance(3)
+      expect(callsFor(after, sessions.parent)).toEqual([])
+      yield* release
+      yield* advance(3)
+      expect(callsFor(after, sessions.parent).length).toBeGreaterThan(0)
+    }),
+  )
+
   it.effect("leaves a window cold when a warming request was missed while the host was down", () =>
     Effect.gen(function* () {
       const config = yield* makeConfig([

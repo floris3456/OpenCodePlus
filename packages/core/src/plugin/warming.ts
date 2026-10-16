@@ -13,6 +13,7 @@ import { Model } from "../model.js"
 import { Provider } from "../provider.js"
 import { AgentNotFoundError } from "../session/error.js"
 import { PluginHooks } from "./hooks.js"
+import { awaitActivation } from "./service.js"
 
 /**
  * A failed warming ping is tried again this soon instead of a whole interval
@@ -346,9 +347,10 @@ export const Plugin = define({
       Effect.forkIn(scope),
     )
 
-    // Resume this Location's windows that outlived the host. Plugins decide again (`resume`)
-    // from the configured settings, as at activity. A window whose ping was missed while the
-    // host was down has a cold cache; warming it again would pay for the whole prompt.
+    // Resume this Location's windows that outlived the host, once its plugins have activated: the
+    // model catalog and the plugins' warming hooks come from later plugins. Plugins decide again
+    // (`resume`) from the configured settings, as at activity. A window whose ping was missed while
+    // the host was down has a cold cache; warming it again would pay for the whole prompt.
     const resume = Effect.fn("WarmingPlugin.resume")(function* (sessionID: Session.ID, value: Schema.Json) {
       if (sessions.has(sessionID)) return
       const stored = Schema.decodeUnknownOption(Stored)(value)
@@ -389,6 +391,7 @@ export const Plugin = define({
       yield* reschedule(sessionID, resumed)
     })
     yield* Effect.gen(function* () {
+      yield* awaitActivation
       const page = (after?: string): Effect.Effect<void> =>
         ctx.storage.scan({ prefix: "window/", after, limit: 100 }).pipe(
           Effect.flatMap((result) =>
