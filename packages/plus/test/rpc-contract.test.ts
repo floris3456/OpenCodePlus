@@ -64,8 +64,6 @@ test("every method and event is declared", () => {
     "warming.compact",
     "settings.get",
     "settings.set",
-    "compaction.triggers",
-    "compaction.triggers.set",
     "modelSettings.set",
     "layout.write",
     "monitor.query",

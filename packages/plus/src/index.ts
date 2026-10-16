@@ -90,7 +90,6 @@ import { monitorCache, monitorFact, monitorMark, monitorPrompt, monitorQuery, mo
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { plusSettings } from "./plus-settings.js"
-import { getCompactionTriggers, setCompactionTriggers } from "./compaction/triggers.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
@@ -3783,13 +3782,6 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
     "settings.get": () => Effect.promise(() => plusSettings.read()),
     "settings.set": (input) =>
       Effect.promise(() => plusSettings.update(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact })),
-    "compaction.triggers": (input, context) =>
-      Effect.gen(function* () {
-        yield* ctx.session.get({ sessionID: Session.ID.make(input.sessionID) })
-        return yield* getCompactionTriggers(ctx, input.sessionID)
-      }).pipe(Effect.catchCause(() => Effect.fail(context.error("compaction.triggers.failed", "Could not read compaction triggers for this Session", { sessionID: input.sessionID })))),
-    "compaction.triggers.set": (input, context) =>
-      setCompactionTriggers(ctx, input).pipe(Effect.catchCause(() => Effect.fail(context.error("compaction.triggers.failed", "Could not save compaction triggers for this Session", { sessionID: input.sessionID })))),
   }
 }
 
@@ -3925,11 +3917,7 @@ export function decideCompactionFor(
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)
-    const triggers = event.reason === "auto" && event.auto && !event.due && !event.compact && !event.refusal && event.metrics?.advanced
-      ? await Effect.runPromise(getCompactionTriggers(ctx, event.sessionID))
-      : undefined
     decideCompaction(event, {
-      ...(triggers === undefined ? {} : { triggers }),
       rows: compactionRowsOf(state, event.agent, event.model),
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),

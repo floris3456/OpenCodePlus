@@ -224,7 +224,7 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
   const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
   if (setting?.field === "compactionInput" || setting?.field === "compactionOutput")
     return [
-      "Chat overrides win, then the agent's model row chain, then this model's Defaults, then Every model. Unset means no extra early trigger.",
+      "The agent's model row chain wins, then this model's Defaults, then Every model. Unset means no extra early trigger.",
       setting.field === "compactionInput"
         ? "Input measures the estimated next-prompt tokens."
         : "Output counts primary assistant output + reasoning since the latest completed compaction.",

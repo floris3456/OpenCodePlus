@@ -688,9 +688,10 @@ test("an agent's model row opens into field rows and one field edits and resets 
   const at = rows.findIndex((row) => row.id === "item:project:build:model:anthropic/claude")
   expect(at).toBeGreaterThanOrEqual(0)
   const fields = rows.filter((row) => row.id.startsWith("item:project:build:modelfield:"))
+  // Compaction holds the early token thresholds: the only place they are set.
   expect(fields.map((row) => row.label)).toEqual([
     "Model", "Effort", "Warming", "Ping every", "Keep-alive prompt",
-    "Compact before cold", "Strategy", "Model", "Instructions",
+    "Compact before cold", "Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions",
   ])
   // The row is inherited (the agent's upstream model), so Model and Warming
   // name where they came from; none of the fields is local yet.
@@ -752,6 +753,14 @@ test("an agent's model row opens into field rows and one field edits and resets 
   const plain = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)
   expect(plain).not.toHaveProperty("variant")
   expect(plain).toMatchObject({ warming: "30m" })
+  // Compaction › Input token threshold writes the agent's model row; r inherits again.
+  await runOk(set, { id: fieldRow("compactionInput"), text: "120000" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)).toMatchObject({
+    compactionInput: "120000",
+    warming: "30m",
+  })
+  await runOk(reset, { id: fieldRow("compactionInput") })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build" && entry.removed !== true)).not.toHaveProperty("compactionInput")
 })
 
 // T7 issue #6: every field edits and resets individually at the real tool

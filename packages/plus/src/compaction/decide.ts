@@ -26,9 +26,9 @@ import {
 //   3. the CPA account-switch case: CPA has already armed a summary with its
 //      own models and marked the decision `metadata["quota.switch"]`; when the
 //      chat model's cold list is not empty, its models replace CPA's.
-//   4. early input/output thresholds: explicit chat values → agent model row
-//      chain → Defaults › Models › this model → Every model. Cold/armed/quota
-//      decisions and core's automatic-compaction preference retain precedence.
+//   4. early input/output thresholds: agent model row chain → Defaults ›
+//      Models › this model → Every model. Cold/armed/quota decisions and
+//      core's automatic-compaction preference retain precedence.
 //
 // An armed list (a team `compactWith`; the in-memory consumeColdCompaction)
 // takes priority over all of it: it is an explicit instruction for one chat,
@@ -74,8 +74,6 @@ export interface ColdCompactionState {
 }
 
 export interface CompactionDecisionContext {
-  /** Explicit per-chat thresholds override inherited model thresholds field by field. */
-  readonly triggers?: { readonly input?: number; readonly output?: number }
   /** The agent's model rows for this chat's model, each field with its level. */
   readonly rows?: ResolvedCompactionFields
   /** Defaults › Models › this model. */
@@ -132,9 +130,8 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
     event.explanation = { ...event.explanation, trigger: "cold" }
   }
   decideCompactionTriggers(event, {
-    sessionID: event.sessionID,
-    input: context.triggers?.input ?? effective.compactionInput.value,
-    output: context.triggers?.output ?? effective.compactionOutput.value,
+    input: effective.compactionInput.value,
+    output: effective.compactionOutput.value,
   })
 }
 

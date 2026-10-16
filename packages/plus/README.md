@@ -685,22 +685,20 @@ Anthropic refreshes a 5-minute cache on read, which is why the round trips here 
 
 Keep-alive requests are real provider requests and cost tokens (cache reads are cheap, cache writes are not).
 
-## Inherited and per-chat early compaction triggers
+## Early compaction triggers
 
 Every model's **Compaction** group has **Input token threshold** and **Output token threshold**, including agent/member/preset model rows and Defaults › Models › **Every model**. Enter a positive whole token count (not a percentage), `off` to suppress an inherited early trigger, or leave blank/reset to inherit. The fields resolve independently through the agent's existing Project/Global/Defaults/preset model chain, then Defaults › Models › this model, then Every model. Both are unset by default. These thresholds apply to the model currently executing the chat, and changes are read at the next safe boundary.
 
 Instructions tools expose `compactionInput` and `compactionOutput` on model rows and Defaults model rows as strings, for example `"120000"`, `"30000"`, or `"off"`; `null` clears an override. Each emitted field row also supports text editing and reset.
 
-A chat can also carry its own **input** or **output** threshold (the `compaction.triggers.set` RPC; unset by default), which overrides the inherited one field by field. The TUI no longer edits them: set thresholds on the model rows.
+These model rows are the only place thresholds are set; there is no per-chat override (thresholds a chat stored before 1.3.13 are no longer read).
 
 - **Input** compares against Core's estimated size of the next prompt, including its existing measured-context estimate, instructions, tools and newer history.
 - **Output** compares against cumulative primary assistant output **plus reasoning** since the latest completed compaction. This is not lifetime output or a billing total: summary/title requests, warming pings and rebilled attempts do not add to it. A failed compaction does not reset it.
-- Either threshold can request compaction **earlier** at the next safe step boundary. Saving applies live to the same Session, but does not interrupt an in-flight request or rewrite a dispatched request.
+- Either threshold can request compaction **earlier** at the next safe step boundary. Saving applies live to running chats, but does not interrupt an in-flight request or rewrite a dispatched request.
 - The normal context-safety threshold remains in place. `compaction.auto: false` still disables automatic compaction, including these triggers; manual and overflow behavior is unchanged.
 - After a completed text or native checkpoint, early triggers wait for new primary assistant history before firing again. A low input threshold cannot repeatedly compact the fresh checkpoint before the model resumes; new user input alone does not rearm it.
-- These are persistent, isolated per-Session plugin preferences. Setting or clearing them sends no agent message, changes no instructions or model settings, and resets no output counter. Only actual completed compaction changes the checkpoint/history epoch. Strategy, model routing, maximum output, quota handling and warming defaults are unchanged.
-
-Plugin RPC: `compaction.triggers` takes `{ sessionID }`; `compaction.triggers.set` takes `{ sessionID, input?, output? }`. Both return `{ sessionID, input?, output? }`. In the setter an absent field preserves its value and `null` clears it. Unknown Sessions, invalid counts and storage failures are refused rather than reported as applied.
+- Setting or clearing a threshold sends no agent message and resets no output counter. Only actual completed compaction changes the checkpoint/history epoch. Strategy, model routing, maximum output, quota handling and warming defaults are unchanged.
 
 ## Monitor
 
