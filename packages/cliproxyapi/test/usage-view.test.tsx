@@ -53,6 +53,7 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
   const [model, setModel] = createSignal({ providerID: "cliproxyapi", modelID: "claude-sonnet" })
   const [dialog, setDialog] = createSignal<() => JSX.Element>()
   const [status, setStatus] = createSignal<"idle" | "running">("idle")
+  const [sessions, setSessions] = createSignal<Record<string, { location: { directory: string } }>>({})
   const [route, setRoute] = createSignal<{ type: "home" } | { type: "session"; sessionID: string }>({
     type: "session",
     sessionID: "ses_a",
@@ -60,7 +61,12 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
   const state = {
     slots: new Map<string, (input: { sessionID: string }) => JSX.Element>(),
     layers: [] as Layer[],
-    reads: [] as { input: UsageInput; resolve: (result: UsageResult) => void; signal?: AbortSignal }[],
+    reads: [] as {
+      input: UsageInput
+      resolve: (result: UsageResult) => void
+      signal?: AbortSignal
+      location?: { directory?: string }
+    }[],
     listeners: new Set<(event: { data: PacerMeterEvent }) => void>(),
     result: {
       status: "ready",
@@ -70,7 +76,7 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
   const color = RGBA.fromHex("#cccccc")
   const token = { base: color, selected: color, hovered: color }
   const context = {
-    data: { session: { status } },
+    data: { session: { status, get: (sessionID: string) => sessions()[sessionID] } },
     theme: {
       text: {
         base: color,
@@ -96,9 +102,9 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
           }
         expect(definition).toBe(UsageDefinition)
         return {
-          read: (input: UsageInput, request?: { signal?: AbortSignal }) =>
+          read: (input: UsageInput, request?: { signal?: AbortSignal; location?: { directory?: string } }) =>
             new Promise<UsageResult>((resolve) => {
-              state.reads.push({ input, resolve, signal: request?.signal })
+              state.reads.push({ input, resolve, signal: request?.signal, location: request?.location })
               if (!options.manual) resolve(state.result)
             }),
         }
@@ -127,7 +133,7 @@ function fixture(options: { manual?: boolean; interval?: number; current?: strin
   })
   const command = (id: string) =>
     state.layers.flatMap((layer) => layer.commands ?? []).findLast((command) => command.id === id)!
-  return { state, context, dialog, setModel, setRoute, setStatus, command }
+  return { state, context, dialog, setModel, setRoute, setStatus, setSessions, command }
 }
 
 async function mount(f: ReturnType<typeof fixture>, width = 80, height = 24) {
@@ -182,6 +188,30 @@ test("live IN USE replaces LAST USED, and NEXT USE remains an independent expiri
   text = await frame(output)
   expect(text).not.toContain("IN USE")
   expect(text).toContain("LAST USED")
+})
+
+test("usage reads the chat's own location, so LAST USED names the account that served it last", async () => {
+  const f = fixture({ manual: true })
+  const answer = (index: number, current: string) =>
+    f.state.reads[index]!.resolve({
+      status: "ready",
+      snapshot: { ...snapshot(), providers: ["claude", "codex"], current },
+    })
+  const output = await mount(f, 80, 40)
+  await frame(output)
+  expect(f.state.reads[0]!.location).toBeUndefined()
+  // Before the chat's data arrives, the service's own location answers with an older account.
+  answer(0, "account-1")
+  let lines = (await frame(output)).split("\n")
+  expect(lines.find((line) => line.includes("Account 1"))).toContain("LAST USED")
+  f.setSessions({ ses_a: { location: { directory: "/work/chat" } } })
+  await frame(output)
+  expect(f.state.reads).toHaveLength(2)
+  expect(f.state.reads[1]!.location).toEqual({ directory: "/work/chat" })
+  answer(1, "account-2")
+  lines = (await frame(output)).split("\n")
+  expect(lines.find((line) => line.includes("Account 2"))).toContain("LAST USED")
+  expect(lines.find((line) => line.includes("Account 1"))).not.toContain("LAST USED")
 })
 
 test("FORCE USE marks where a forced move sends the chat and wins over NEXT USE; the chat's own credential has none", async () => {

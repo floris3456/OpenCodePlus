@@ -216,6 +216,7 @@ test("registered HTTP hooks feed response quota through the Usage RPC into the s
   const store = createUsageStore(
     {
       client: { rpc: () => ({ read, events: { on: () => () => {} } }) },
+      data: { session: { get: () => undefined } },
       ui: {
         model: { current: () => ({ providerID: "proxy", modelID: "sonnet" }) },
         router: { current: () => ({ type: "session", sessionID: "ses_pacer" }) },
