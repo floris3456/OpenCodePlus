@@ -611,7 +611,7 @@ it.live("a low input threshold selects normal native Auto once, then waits for p
   yield* fixture.prompt("Synthetic native threshold fixture")
   const thresholds: { input?: number; output?: number } = { input: 1 }
   yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
-    decideCompactionTriggers(event, { sessionID: event.sessionID, ...thresholds })
+    decideCompactionTriggers(event, thresholds)
   }))
   expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({ status: "completed" })
   expect(fixture.observations[0]?.compaction).toMatchObject({ trigger: "input-threshold", threshold: 1, configuredStrategy: "auto", selectedStrategy: "native" })
