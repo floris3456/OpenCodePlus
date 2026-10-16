@@ -470,6 +470,69 @@ test("when a turn ends, the chat and the chats that started it show the configur
   expect(await expires()).toBe(1_000_000 + 30 * MINUTE)
 })
 
+test("a turn that ends long after its last request restarts a window that still runs, like core", async () => {
+  const clock = { now: 1_000_000 }
+  const running = new Set<string>()
+  const store = createWarmingStore(await tempFile(), { now: () => clock.now, activeSessions: async () => running })
+  const decide = decider(store)
+  // A question waits on the user; it times out after an hour and the turn ends without another request.
+  store.running("ses_warm", true)
+  running.add("ses_warm")
+  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  clock.now = 1_000_000 + 60 * MINUTE
+  store.running("ses_warm", false)
+  running.delete("ses_warm")
+  expect(await store.settle("ses_warm")).toEqual(["ses_warm"])
+  // The full 30 minutes follow the end of the turn, not the request an hour ago.
+  expect(await store.status("ses_warm", clock.now + MINUTE)).toMatchObject({
+    active: true,
+    since: clock.now,
+    expires: clock.now + 30 * MINUTE,
+  })
+  // Core's next keep-alive carries the restarted window's start and keeps it.
+  const warm = event({
+    phase: "warm",
+    since: clock.now,
+    now: clock.now + 2 * MINUTE,
+    settings: { ...configured, duration: WAITING_WARMING_MS },
+  })
+  await store.decide(warm, {})
+  expect(warm.settings?.duration).toBe(30 * MINUTE)
+  expect((await store.status("ses_warm", clock.now + 29 * MINUTE)).active).toBe(true)
+
+  // A window that already ended stays cold when the turn ends.
+  expect(await decide("activity", 0, "ses_cold")).toBe(30 * MINUTE)
+  clock.now = 1_000_000 + 45 * MINUTE
+  expect(await store.settle("ses_cold")).toEqual([])
+  expect(await store.status("ses_cold", clock.now)).toMatchObject({ active: false, expires: 1_000_000 + 30 * MINUTE })
+})
+
+test("a window resumed after a restart is decided from the configured settings and what runs now", async () => {
+  const running = new Set<string>()
+  const restarted = createWarmingStore(await tempFile(), { activeSessions: async () => running })
+  const resume = (now: number) => event({ phase: "resume", since: 1_000_000, now, settings: { ...configured } })
+  // Nothing remembered survived the restart; the resumed window shows at once.
+  const resumed = resume(1_000_000 + 10 * MINUTE)
+  await restarted.decide(resumed, {})
+  expect(resumed.settings?.duration).toBe(30 * MINUTE)
+  expect(await restarted.status("ses_warm", 1_000_000 + 11 * MINUTE)).toMatchObject({
+    active: true,
+    since: 1_000_000,
+    expires: 1_000_000 + 30 * MINUTE,
+  })
+  expect((await restarted.status("ses_warm", 1_000_000 + 11 * MINUTE)).lastWarm).toBeUndefined()
+  // A chat core reports running (recovered after the restart) keeps its waiting window,
+  // and the configured duration it resumed with still stands in once it ends.
+  running.add("ses_warm")
+  const waiting = resume(1_000_000 + 12 * MINUTE)
+  await restarted.decide(waiting, {})
+  expect(waiting.settings?.duration).toBe(WAITING_WARMING_MS)
+  running.delete("ses_warm")
+  const warm = event({ phase: "warm", now: 1_000_000 + 16 * MINUTE, settings: waiting.settings })
+  await restarted.decide(warm, {})
+  expect(warm.settings?.duration).toBe(30 * MINUTE)
+})
+
 test("a turn's end event re-decides the chat's window through the host events", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-warming-settle-"))
   temps.push(dir)

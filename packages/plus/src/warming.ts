@@ -197,8 +197,9 @@ export interface WarmingStore {
   running(sessionID: string, running: boolean): void
   /**
    * A turn of this chat ended: re-decide its window and its parents' at once,
-   * so they show the configured window instead of the waiting one. Returns the
-   * chats whose window changed.
+   * so they show the configured window instead of the waiting one. The chat's
+   * own window, while it still runs, restarts from the end of the turn.
+   * Returns the chats whose window changed.
    */
   settle(sessionID: string): Promise<string[]>
   /** Configure the host's read of the chats running now (core's active set). */
@@ -452,6 +453,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     async decide(event, rows, compact) {
       const chat = (await load()).get(event.sessionID)
       const activity = event.phase === "activity"
+      // Core proposes the configured settings at activity and when a window resumes after a restart.
+      const proposesConfigured = activity || event.phase === "resume"
       const isCompactionActivity = activity && event.kind === "compaction"
 
       if (isCompactionActivity) {
@@ -461,21 +464,24 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       }
 
       const compacted = isCompactionActivity || (await isCompacted(event.sessionID, event.since))
-      if (activity && event.settings !== undefined) {
+      if (proposesConfigured && event.settings !== undefined) {
         configuredDuration.delete(event.sessionID)
         configuredDuration.set(event.sessionID, event.settings.duration)
         const oldest = configuredDuration.keys().next().value
         if (configuredDuration.size > MAX_PARENTS && oldest !== undefined) configuredDuration.delete(oldest)
       }
       const own = configuredDuration.get(event.sessionID)
-      const configured = activity || event.settings === undefined || own === undefined ? event.settings : { ...event.settings, duration: own }
+      const configured =
+        proposesConfigured || event.settings === undefined || own === undefined
+          ? event.settings
+          : { ...event.settings, duration: own }
       const decided = decideWarming({ configured, rows, chat })
       // A real request starts while its chat runs: the events' busy set answers.
-      // Before a keep-alive the host is asked what runs now.
+      // Before a keep-alive, or when a window resumes, the host is asked what runs now.
       const waits =
         !compacted &&
         decided.settings !== undefined &&
-        (event.phase === "warm" ? await waitingAtKeepAlive(event.sessionID) : waiting(event.sessionID))
+        (activity ? waiting(event.sessionID) : await waitingAtKeepAlive(event.sessionID))
       const decision = compacted
         ? { ...decided, settings: undefined }
         : waits && decided.settings !== undefined
@@ -558,18 +564,33 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     },
     async settle(sessionID) {
       const changed: string[] = []
+      const at = now()
       for (const chat of ancestry(sessionID)) {
         const entry = tracked.get(chat)
         const window = entry?.window
         if (window === undefined || entry?.configured === undefined) continue
+        const configured = entry.configured.duration
         // Core applies the same window at its next keep-alive, which always
-        // comes before either window ends.
-        const expires = window.since + entry.configured.duration
-        if (expires === window.expires || (await waitingAfterTurn(chat, sessionID))) continue
-        tracked.set(chat, { ...entry, window: { ...window, expires } })
+        // comes before either window ends. The chat whose turn ended restarts a
+        // window that still runs, as core does: the full duration follows the
+        // turn, however long it waited on its own work.
+        const next =
+          chat === sessionID && at < window.expires
+            ? {
+                ...window,
+                since: at,
+                expires:
+                  at +
+                  ((await waitingAfterTurn(chat, sessionID)) ? Math.max(configured, WAITING_WARMING_MS) : configured),
+              }
+            : window.since + configured === window.expires || (await waitingAfterTurn(chat, sessionID))
+              ? window
+              : { ...window, expires: window.since + configured }
+        if (next === window) continue
+        tracked.set(chat, { ...entry, window: next })
         if (coldAt.has(chat)) {
-          coldAt.set(chat, expires)
-          if (await effectiveCompact(chat)) schedule(chat, now())
+          coldAt.set(chat, next.expires)
+          if (await effectiveCompact(chat)) schedule(chat, at)
           else unschedule(chat)
         }
         changed.push(chat)

@@ -183,19 +183,23 @@ export interface SessionWarmingSettings {
 
 /**
  * Decides cache warming for one Session. Runs when a non-warming request (re)starts the warming
- * window (`activity`) and again before each warming request (`warm`). `settings` starts as the
- * configured value (for `warm`, the settings in force); set it to undefined to stop warming, or
- * change it. At `warm` a changed duration re-times the window from `since`.
+ * window (`activity`), when a window that outlived the host resumes (`resume`), and again before
+ * each warming request (`warm`). `settings` starts as the configured value (for `warm`, the
+ * settings in force); set it to undefined to stop warming, or change it. At `warm` and `resume` a
+ * changed duration re-times the window from `since`.
  * `warmed` is an outcome notification only; changes to its settings are ignored.
  */
 export interface SessionWarming {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
-  readonly phase: "activity" | "warm" | "warmed"
+  readonly phase: "activity" | "resume" | "warm" | "warmed"
   /** At `activity`, the request that (re)started the window: an agent step, a compaction or a generate call. */
   readonly kind?: "primary" | "compaction" | "generate"
-  /** Epoch ms of the latest non-warming request: the start of the warming window. */
+  /**
+   * Epoch ms of the start of the warming window: the latest non-warming request, or the end of
+   * the turn when that turn ended while the window still ran.
+   */
   readonly since: number
   /** Epoch ms of this decision. */
   readonly now: number

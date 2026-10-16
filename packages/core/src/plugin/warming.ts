@@ -3,9 +3,10 @@ export * as WarmingPlugin from "./warming.js"
 import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@opencode/plugin/effect/session"
 import { SessionModelObservation } from "../session/model-observation.js"
-import type { Agent } from "@opencode/schema/agent"
-import type { Session } from "@opencode/schema/session"
-import { Cause, Clock, Duration, Effect, Fiber, Option, Scope, Semaphore } from "effect"
+import { Agent } from "@opencode/schema/agent"
+import { Session } from "@opencode/schema/session"
+import type { SessionEvent } from "@opencode/schema/session-event"
+import { Cause, Clock, Duration, Effect, Fiber, Option, Schema, Scope, Semaphore, Stream } from "effect"
 import { Config } from "../config.js"
 import { ConfigWarming } from "../config/warming.js"
 import { Model } from "../model.js"
@@ -20,9 +21,22 @@ import { PluginHooks } from "./hooks.js"
  */
 export const WARMING_RETRY_MS = 30_000
 
+/**
+ * A window as stored, so it resumes when the host restarts or its Location loads again,
+ * while its cache is still warm by its own schedule.
+ */
+const Stored = Schema.Struct({
+  since: Schema.Number,
+  last: Schema.Number,
+  expires: Schema.Number,
+  agent: Agent.ID,
+  model: Model.Ref,
+  settings: Schema.Struct({ prompt: Schema.String, interval: Schema.Number, duration: Schema.Number }),
+})
+
 type ActiveSession = {
   last: number
-  /** Start of the warming window: the latest non-warming request. */
+  /** Start of the warming window: the latest non-warming request, or the end of the turn after it. */
   since: number
   expires: number
   agent: Agent.ID
@@ -84,6 +98,30 @@ export const Plugin = define({
 
     const scope = yield* Scope.Scope
     const sessions = new Map<Session.ID, ActiveSession>()
+    // Storage is shared by every Location; each window is stored under its own session.
+    const persist = (sessionID: Session.ID, active: ActiveSession) =>
+      ctx.storage
+        .set(
+          `window/${sessionID}`,
+          Schema.encodeSync(Stored)({
+            since: active.since,
+            last: active.last,
+            expires: active.expires,
+            agent: active.agent,
+            model: active.model,
+            settings: active.settings,
+          }),
+        )
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to store session warming", { sessionID, cause })))
+    const forget = (sessionID: Session.ID) =>
+      ctx.storage
+        .remove(`window/${sessionID}`)
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("failed to forget session warming", { sessionID, cause })))
+    const drop = Effect.fn("WarmingPlugin.drop")(function* (sessionID: Session.ID, current: ActiveSession) {
+      if (sessions.get(sessionID) !== current) return
+      sessions.delete(sessionID)
+      yield* forget(sessionID)
+    })
     const loop: (sessionID: Session.ID, epoch: number) => Effect.Effect<void> = Effect.fn("WarmingPlugin.loop")(
       function* (sessionID, epoch) {
         const current = sessions.get(sessionID)
@@ -96,10 +134,7 @@ export const Plugin = define({
           yield* Effect.sleep(Duration.millis(next - now))
           return yield* loop(sessionID, epoch)
         }
-        if (now >= current.expires) {
-          if (sessions.get(sessionID) === current) sessions.delete(sessionID)
-          return
-        }
+        if (now >= current.expires) return yield* drop(sessionID, current)
 
         // Plugins may stop warming or re-time the window right before each warming request.
         const settings = yield* decide(
@@ -107,10 +142,7 @@ export const Plugin = define({
           current.settings,
         )
         if (current.epoch !== epoch) return
-        if (!settings) {
-          if (sessions.get(sessionID) === current) sessions.delete(sessionID)
-          return
-        }
+        if (!settings) return yield* drop(sessionID, current)
         current.settings = settings
         current.expires = current.since + settings.duration
         const decided = yield* Clock.currentTimeMillis
@@ -162,7 +194,7 @@ export const Plugin = define({
         // on the next ping, as an expired window ends. One transient miss
         // followed by a success keeps warming.
         if (pingMissingAgent && current.missingAgent) {
-          if (sessions.get(sessionID) === current) sessions.delete(sessionID)
+          yield* drop(sessionID, current)
           yield* Effect.logInfo("stopping session warming: agent not found", {
             sessionID,
             agent: current.agent,
@@ -183,6 +215,7 @@ export const Plugin = define({
               pingError !== undefined && again < latest.last + latest.settings.interval && again < latest.expires
                 ? again
                 : undefined
+            yield* persist(sessionID, latest)
           }
         }
         return yield* loop(sessionID, epoch)
@@ -239,7 +272,7 @@ export const Plugin = define({
         )
         if (!settings) {
           if (active) {
-            sessions.delete(event.sessionID)
+            yield* drop(event.sessionID, active)
             if (active.fiber) yield* Fiber.interrupt(active.fiber)
           }
           return
@@ -254,6 +287,7 @@ export const Plugin = define({
           active.settings = settings
           active.missingAgent = false
           active.retryAt = undefined
+          yield* persist(event.sessionID, active)
           yield* reschedule(event.sessionID, active)
           return
         }
@@ -273,10 +307,106 @@ export const Plugin = define({
           interval: settings.interval,
           expires: scheduled.expires,
         })
+        yield* persist(event.sessionID, scheduled)
         yield* reschedule(event.sessionID, scheduled)
       })
     yield* ctx.session.hook("context", (event) => hook(event, "primary"))
     yield* ctx.session.hook("compaction", (event) => hook(event, "compaction"))
     yield* ctx.session.hook("generate", (event) => hook(event, "generate"))
+
+    // A turn that ends while its window still runs (it waited long on its own work, such as a
+    // question or a command) restarts the window: the full duration follows the end of the turn.
+    // A shutdown is no end of the turn; startup recovery resumes it.
+    const idle = Effect.fn("WarmingPlugin.idle")(function* (sessionID: Session.ID) {
+      const active = sessions.get(sessionID)
+      const now = yield* Clock.currentTimeMillis
+      if (!active || now >= active.expires) return
+      active.since = now
+      active.expires = now + active.settings.duration
+      yield* persist(sessionID, active)
+    })
+    yield* ctx.event.subscribe().pipe(
+      Stream.filter(
+        (
+          event,
+        ): event is
+          | SessionEvent.Execution.Succeeded
+          | SessionEvent.Execution.Failed
+          | SessionEvent.Execution.Interrupted =>
+          event.type === "session.execution.succeeded" ||
+          event.type === "session.execution.failed" ||
+          (event.type === "session.execution.interrupted" && event.data.reason !== "shutdown"),
+      ),
+      Stream.runForEach((event) =>
+        idle(event.data.sessionID).pipe(
+          scheduling.withPermit,
+          Effect.catchCause((cause) => Effect.logError("session warming turn end failed", { cause })),
+        ),
+      ),
+      Effect.forkIn(scope),
+    )
+
+    // Resume this Location's windows that outlived the host. Plugins decide again (`resume`)
+    // from the configured settings, as at activity. A window whose ping was missed while the
+    // host was down has a cold cache; warming it again would pay for the whole prompt.
+    const resume = Effect.fn("WarmingPlugin.resume")(function* (sessionID: Session.ID, value: Schema.Json) {
+      if (sessions.has(sessionID)) return
+      const stored = Schema.decodeUnknownOption(Stored)(value)
+      const now = yield* Clock.currentTimeMillis
+      if (
+        Option.isNone(stored) ||
+        now >= stored.value.expires ||
+        now > stored.value.last + stored.value.settings.interval + WARMING_RETRY_MS
+      )
+        return yield* forget(sessionID)
+      const session = yield* ctx.session.get({ sessionID }).pipe(Effect.option)
+      if (Option.isNone(session) || session.value.parentID) return yield* forget(sessionID)
+      // Another Location runs this session and resumes its window.
+      if (
+        session.value.location.directory !== ctx.location.directory ||
+        session.value.location.workspaceID !== ctx.location.workspaceID
+      )
+        return
+      const window = stored.value
+      const settings = yield* decide(
+        { sessionID, agent: window.agent, model: window.model, phase: "resume", since: window.since, now },
+        yield* loadSettings(window.model),
+      )
+      if (!settings || now >= window.since + settings.duration) return yield* forget(sessionID)
+      const resumed: ActiveSession = {
+        last: window.last,
+        since: window.since,
+        expires: window.since + settings.duration,
+        agent: window.agent,
+        model: window.model,
+        settings,
+        missingAgent: false,
+        epoch: 0,
+      }
+      sessions.set(sessionID, resumed)
+      yield* Effect.logInfo("resumed session warming", { sessionID, last: window.last, expires: resumed.expires })
+      yield* persist(sessionID, resumed)
+      yield* reschedule(sessionID, resumed)
+    })
+    yield* Effect.gen(function* () {
+      const page = (after?: string): Effect.Effect<void> =>
+        ctx.storage.scan({ prefix: "window/", after, limit: 100 }).pipe(
+          Effect.flatMap((result) =>
+            Effect.forEach(
+              result.entries,
+              (entry) =>
+                resume(Session.ID.make(entry.key.slice("window/".length)), entry.value).pipe(
+                  scheduling.withPermit,
+                  Effect.catchCause((cause) => Effect.logWarning("failed to resume session warming", { cause })),
+                ),
+              { discard: true },
+            ).pipe(Effect.andThen(result.next === undefined ? Effect.void : page(result.next))),
+          ),
+        )
+      yield* page()
+    }).pipe(
+      Effect.catchCause((cause) => Effect.logError("session warming resume failed", { cause })),
+      Effect.forkIn(scope),
+    )
   }),
 })

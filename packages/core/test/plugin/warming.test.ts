@@ -1,5 +1,6 @@
 import { Message } from "@opencode/ai"
 import { describe, expect } from "bun:test"
+import { Bus } from "@opencode/core/bus"
 import { Config } from "@opencode/core/config"
 import { ConfigProviderPlugin } from "@opencode/core/config/plugin/provider"
 import { Location } from "@opencode/core/location"
@@ -11,11 +12,12 @@ import { WarmingPlugin } from "@opencode/core/plugin/warming"
 import { AgentNotFoundError } from "@opencode/core/session/error"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
+import { SessionEvent } from "@opencode/core/session/event"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
 import { Document, Info, type Entry } from "@opencode/schema/config"
 import { ConfigWarming } from "@opencode/schema/config/warming"
-import { Duration, Effect, Ref, Schema, Stream } from "effect"
+import { Duration, Effect, Exit, Ref, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
@@ -212,6 +214,22 @@ const cross = Effect.fn("cross")(function* (duration: Duration.Input) {
 
 const callsFor = (calls: readonly WarmCall[], sessionID: Session.ID) =>
   calls.filter((call) => call.sessionID === sessionID)
+
+/** The session's turn ends: it succeeded, or it was interrupted for `reason`. */
+const endTurn = Effect.fn("endTurn")(function* (sessionID: Session.ID, reason?: "user" | "shutdown") {
+  const bus = yield* Bus.Service
+  if (reason === undefined) yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID })
+  else yield* bus.publish(SessionEvent.Execution.Interrupted, { sessionID, reason })
+  yield* settle
+})
+
+/** One host run of the plugin: closing its scope stops it as a shutdown does. */
+const run = Effect.fn("runWarming")(function* (calls: WarmCall[], config: Config.Interface) {
+  const scope = yield* Scope.make()
+  yield* activate(calls, config).pipe(Effect.provideService(Scope.Scope, scope))
+  yield* settle
+  return { stop: Scope.close(scope, Exit.void) }
+})
 
 describe("WarmingPlugin", () => {
   it.effect("warms a session from global settings and drops it when global warming is disabled", () =>
@@ -687,6 +705,87 @@ describe("WarmingPlugin", () => {
     }),
   )
 
+  it.effect("restarts a window that still runs when its turn ends, but not for a shutdown", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "5 seconds" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const ended = yield* makeSessions()
+      const shutdown = yield* makeSessions()
+
+      yield* trigger(ended.parent, ref("alpha", "m1"))
+      yield* trigger(shutdown.parent, ref("alpha", "m1"))
+      yield* advance(3)
+      // Three seconds into the five-second windows: one turn ends, the other is shut down.
+      yield* endTurn(ended.parent)
+      yield* endTurn(shutdown.parent, "shutdown")
+      const atEnd = callsFor(calls, ended.parent).length
+      const atShutdown = callsFor(calls, shutdown.parent).length
+      yield* advance(4)
+      // Past the first window's end, the restarted one still warms; five seconds after the turn it stops.
+      expect(callsFor(calls, ended.parent).length).toBeGreaterThanOrEqual(atEnd + 3)
+      expect(callsFor(calls, shutdown.parent).length).toBeLessThanOrEqual(atShutdown + 2)
+      yield* advance(2)
+      const stopped = callsFor(calls, ended.parent).length
+      yield* cross("1 minute")
+      expect(callsFor(calls, ended.parent).length).toBe(stopped)
+      expect(stopped).toBeLessThanOrEqual(atEnd + 5)
+    }),
+  )
+
+  it.effect("resumes a window after the host restarts, on its own schedule", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const before: WarmCall[] = []
+      const first = yield* run(before, config.service)
+      const sessions = yield* makeSessions()
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* advance(2)
+      expect(callsFor(before, sessions.parent).length).toBeGreaterThan(0)
+
+      yield* first.stop
+      const stopped = before.length
+      const after: WarmCall[] = []
+      yield* run(after, config.service)
+      yield* advance(3)
+      expect(before.length).toBe(stopped)
+      expect(callsFor(after, sessions.parent).length).toBeGreaterThanOrEqual(2)
+      expect(callsFor(after, sessions.parent).every((call) => call.prompt === "global")).toBe(true)
+    }),
+  )
+
+  it.effect("leaves a window cold when a warming request was missed while the host was down", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const first = yield* run([], config.service)
+      const sessions = yield* makeSessions()
+      yield* trigger(sessions.parent, ref("alpha", "m1"))
+      yield* advance(2)
+      yield* first.stop
+      // Down past the next warming request and its retry window: the cache is cold by now.
+      yield* cross("2 minutes")
+      const after: WarmCall[] = []
+      const second = yield* run(after, config.service)
+      yield* advance(3)
+      expect(callsFor(after, sessions.parent)).toEqual([])
+      // The stale window is gone: a third run does not resume it either.
+      yield* second.stop
+      const third: WarmCall[] = []
+      yield* run(third, config.service)
+      yield* advance(3)
+      expect(callsFor(third, sessions.parent)).toEqual([])
+    }),
+  )
+
   describe("warming hook", () => {
     const setup = Effect.fn("setupHook")(function* (
       decide: (event: SessionHooks["warming"]) => void,
@@ -809,6 +908,52 @@ describe("WarmingPlugin", () => {
         expect(test.seen.every((event) => event.sessionID === test.sessions.parent)).toBe(true)
         expect(test.seen.every((event) => event.agent === Agent.ID.make("build"))).toBe(true)
         expect(test.seen.every((event) => event.model.providerID === "alpha" && event.model.id === "m1")).toBe(true)
+      }),
+    )
+
+    it.effect("decides a resumed window again from the configured settings and its own start", () =>
+      Effect.gen(function* () {
+        const config = yield* makeConfig([
+          document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
+        ])
+        yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+        const hooks = yield* PluginHooks.Service
+        const seen: Array<SessionHooks["warming"]> = []
+        const state = { stop: false }
+        yield* hooks.register("session", "warming", (event) =>
+          Effect.sync(() => {
+            seen.push({ ...event, settings: event.settings && { ...event.settings } })
+            // Raised past the configured hour: a resume must not propose this back as configured.
+            if (event.phase === "activity" && event.settings) event.settings.duration = 7_200_000
+            if (event.phase === "resume" && state.stop) event.settings = undefined
+          }),
+        )
+        const first = yield* run([], config.service)
+        const sessions = yield* makeSessions()
+        yield* trigger(sessions.parent, ref("alpha", "m1"))
+        yield* advance(2)
+        yield* first.stop
+
+        const second = yield* run([], config.service)
+        const activity = seen.find((event) => event.phase === "activity")
+        const resumed = seen.filter((event) => event.phase === "resume")
+        expect(resumed.length).toBe(1)
+        expect(resumed[0]?.since).toBe(activity?.since ?? -1)
+        expect(resumed[0]?.settings).toEqual({ prompt: "global", interval: 1_000, duration: 3_600_000 })
+
+        // A plugin that stops a resumed window ends it for good.
+        yield* second.stop
+        state.stop = true
+        const stopped: WarmCall[] = []
+        const third = yield* run(stopped, config.service)
+        yield* advance(3)
+        expect(callsFor(stopped, sessions.parent)).toEqual([])
+        yield* third.stop
+        state.stop = false
+        const later: WarmCall[] = []
+        yield* run(later, config.service)
+        yield* advance(3)
+        expect(callsFor(later, sessions.parent)).toEqual([])
       }),
     )
 
