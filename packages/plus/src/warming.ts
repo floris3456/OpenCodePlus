@@ -30,7 +30,7 @@ import {
 // most one interval earlier, and the interval is kept under the provider's
 // cache lifetime); without warming, one interval after the last request.
 // Warming switched off mid-window, core stops at its next keep-alive moment,
-// one interval after the last keep-alive (or the window's start).
+// one interval after the last request or keep-alive.
 //
 // The switch has three states: the chat's own on/off override, or "default"
 // (no entry) which follows the model's effective `compactWarm`. Existing
@@ -437,7 +437,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     const compactSource: CompactSource | undefined =
       override !== undefined ? "chat" : defaults?.compactWarmFrom === "model" ? "model" : undefined
     const compactAt = compact && !compacted ? scheduled.get(sessionID)?.at : undefined
-    const cold = chat === "off" && window !== undefined && !compacted ? coldMoment(chat, window) : undefined
+    const cold =
+      chat === "off" && window !== undefined && !compacted ? coldMoment(chat, window, lastReal.get(sessionID)) : undefined
     return {
       sessionID,
       chat: chat ?? "default",
@@ -524,10 +525,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         coldAt.delete(event.sessionID)
         unschedule(event.sessionID)
       } else {
-        coldAt.set(
-          event.sessionID,
-          window === undefined ? (activity ? event.now + coldInterval(decided, rows) : event.now) : coldMoment(chat, window),
-        )
+        coldAt.set(event.sessionID, window?.expires ?? (activity ? event.now + coldInterval(decided, rows) : event.now))
         if (await effectiveCompact(event.sessionID)) schedule(event.sessionID, event.now)
         else unschedule(event.sessionID)
       }
@@ -555,7 +553,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       // same window simply continues to its end.
       const window = tracked.get(sessionID)?.window
       if (window !== undefined && coldAt.has(sessionID) && !(await isCompacted(sessionID))) {
-        coldAt.set(sessionID, coldMoment(map.get(sessionID), window))
+        coldAt.set(sessionID, coldMoment(map.get(sessionID), window, lastReal.get(sessionID)))
         if (await effectiveCompact(sessionID)) schedule(sessionID, now())
         else unschedule(sessionID)
       }
@@ -606,7 +604,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         if (next === window) continue
         tracked.set(chat, { ...entry, window: next })
         if (coldAt.has(chat)) {
-          coldAt.set(chat, coldMoment(switches.get(chat), next))
+          coldAt.set(chat, coldMoment(switches.get(chat), next, lastReal.get(chat)))
           if (await effectiveCompact(chat)) schedule(chat, at)
           else unschedule(chat)
         }
@@ -645,10 +643,13 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
 }
 
 // When a chat's cache goes cold: its warming window's end, or, with warming
-// switched off, core's next keep-alive moment, where it stops pinging.
-function coldMoment(chat: ChatSwitch | undefined, window: WarmingWindow): number {
+// switched off, core's next keep-alive moment, where it stops pinging. Core
+// times that from the last request or keep-alive: the end of a turn moves the
+// window's start but not that. Without the last request (a window resumed
+// after a restart), the window's start stands in for it.
+function coldMoment(chat: ChatSwitch | undefined, window: WarmingWindow, lastRequest: number | undefined): number {
   if (chat !== "off") return window.expires
-  return Math.min(Math.max(window.since, window.lastWarm ?? window.since) + window.interval, window.expires)
+  return Math.min(Math.max(lastRequest ?? window.since, window.lastWarm ?? 0) + window.interval, window.expires)
 }
 
 // How long a cache stays warm after a request when no warming window says so:

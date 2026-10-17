@@ -924,16 +924,23 @@ test("a turn that ends while warming is switched off keeps the next keep-alive m
   clock.now = 1_000_000 + MINUTE
   await store.setChat("ses_warm", "off")
   expect(clock.pending()).toEqual([1_000_000 + 2 * MINUTE])
-  // The turn ends: the window restarts from its end, as core's does.
+  // The turn ends: the window restarts from its end, as core's does, but core
+  // still times its next keep-alive from the last request.
   clock.now = 1_000_000 + 1.5 * MINUTE
   store.running("ses_warm", false)
   expect(await store.settle("ses_warm")).toEqual(["ses_warm"])
-  expect(clock.pending()).toEqual([1_000_000 + 3.5 * MINUTE])
+  expect(clock.pending()).toEqual([1_000_000 + 2 * MINUTE])
   expect(await store.status("ses_warm")).toMatchObject({
-    compactAt: 1_000_000 + 3.5 * MINUTE,
-    coldAt: 1_000_000 + 3.5 * MINUTE,
+    compactAt: 1_000_000 + 2 * MINUTE,
+    coldAt: 1_000_000 + 2 * MINUTE,
+    since: 1_000_000 + 1.5 * MINUTE,
     expires: 1_000_000 + 31.5 * MINUTE,
   })
+  // A window resumed after a restart has no last request: its start stands in for it.
+  const restarted = createWarmingStore(await tempFile(), clock.options)
+  await restarted.decide(event({ phase: "resume", since: 1_000_000 + 1.5 * MINUTE, now: clock.now }), {})
+  expect((await restarted.setChat("ses_warm", "off")).coldAt).toBe(1_000_000 + 3.5 * MINUTE)
+  restarted.dispose()
   store.dispose()
 })
 

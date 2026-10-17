@@ -1340,7 +1340,7 @@ last decision; the TUI shows `cache warm · 23:41 left` under the prompt,
 `cache warming off` while switched off, and `cache warming on · starts after
 the next reply` while switched on with no window running. Switched off while a
 window runs, core stops at its next keep-alive (one interval after the last
-keep-alive or the window's start, at most the window's end): the cache goes
+request or keep-alive, at most the window's end): the cache goes
 cold then (`coldAt`), a scheduled compaction before cold moves there, and the
 footer counts down to it (`cache warming off · warm 2:41 left`, or
 `compact cache warm · 2:41 left`); switched back on, the window's end applies
