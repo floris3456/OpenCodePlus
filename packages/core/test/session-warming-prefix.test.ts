@@ -1,6 +1,6 @@
 import { expect } from "bun:test"
-import { LanguageModel, Message, SystemPart, ToolDefinition, type LLMRequest } from "@opencode/ai"
-import { OpenAIChat } from "@opencode/ai/protocols"
+import { GenerationOptions, LanguageModel, Message, SystemPart, ToolDefinition, type LLMRequest } from "@opencode/ai"
+import { AnthropicMessages, OpenAIChat } from "@opencode/ai/protocols"
 import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/core/agent"
 import { Bus } from "@opencode/core/bus"
@@ -48,7 +48,12 @@ import { testEffect } from "./lib/effect"
 
 class Fixture extends Context.Service<Fixture, { instruction: string }>()("test/WarmingPrefix") {}
 const fixtureLayer = Layer.sync(Fixture, () => ({ instruction: "Initial instructions" }))
-const model = LanguageModel.make({ id: "warming-model", provider: "fake", route: OpenAIChat.route })
+const models = {
+  openai: LanguageModel.make({ id: "warming-model", provider: "fake", route: OpenAIChat.route }),
+  // The Anthropic route accepts a zero-token pre-warm.
+  anthropic: LanguageModel.make({ id: "claude-opus-5-5", provider: "fake", route: AnthropicMessages.route }),
+}
+const selected = { model: models.openai }
 const scripted = TestLLM.layer({ fallback: [] })
 const it = testEffect(
   AppNodeBuilder.build(
@@ -71,7 +76,7 @@ const it = testEffect(
         Layer.mock(SessionRunnerModel.Service, {
           resolve: () =>
             Effect.succeed(
-              SessionRunnerModel.resolved(model, {
+              SessionRunnerModel.resolved(selected.model, {
                 capabilities: { tools: true, input: ["text"], output: ["text"] },
                 cost: [],
                 limit: { context: 200_000, output: 32_000 },
@@ -134,7 +139,7 @@ const it = testEffect(
 )
 
 // Compare in wire-prefix order and name the first differing part, not just the whole request.
-function expectPrefix(ping: LLMRequest, primary: LLMRequest) {
+function expectPrefix(ping: LLMRequest, primary: LLMRequest, prewarmed: boolean) {
   expect(ping.tools, "tools (first prefix section)").toEqual(primary.tools)
   expect(ping.system, "system parts").toEqual(primary.system)
   const history = ping.messages.slice(0, -1)
@@ -145,10 +150,14 @@ function expectPrefix(ping: LLMRequest, primary: LLMRequest) {
   )
   expect(ping.messages.at(-1), "ping is appended after preparation").toEqual(Message.user("Keep this cache warm."))
   expect(primary.messages.at(-1)?.content).toEqual([Message.text("Primary: Continue with a new user message")])
-  expect(ping.generation, "primary output budgeting").toEqual(primary.generation)
+  if (prewarmed)
+    expect(ping.generation, "a pre-warm asks for no output").toEqual(
+      GenerationOptions.make({ ...primary.generation, maxTokens: 0 }),
+    )
+  else expect(ping.generation, "primary output budgeting").toEqual(primary.generation)
 }
 
-for (const scenario of ["plain", "compaction checkpoint", "instruction update"] as const) {
+for (const scenario of ["plain", "compaction checkpoint", "instruction update", "anthropic pre-warm"] as const) {
   it.effect(
     `warming preserves the next primary prefix: ${scenario}`,
     () =>
@@ -163,6 +172,7 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update"] 
         const llm = yield* TestLLM.Service
         const fixture = yield* Fixture
         const hooks = yield* PluginHooks.Service
+        selected.model = scenario === "anthropic pre-warm" ? models.anthropic : models.openai
         const sessionID = SessionSchema.ID.create()
         yield* agents.transform((editor) =>
           editor.update(Agent.ID.make("build"), (agent) => {
@@ -250,7 +260,12 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update"] 
         const session = yield* store.get(sessionID)
         if (!session) return yield* Effect.die("Missing test session")
         yield* llm.push(TestLLM.text("Warm", "warm"), TestLLM.text("Next answer", "next"))
-        yield* SessionGenerate.generate({ session, prompt: "Keep this cache warm." }).pipe(
+        // The plain scenario asks for a pre-warm on a route without one: the request stays as it is.
+        yield* SessionGenerate.generate({
+          session,
+          prompt: "Keep this cache warm.",
+          prewarm: scenario === "plain" || scenario === "anthropic pre-warm",
+        }).pipe(
           Effect.provideService(
             Instance.Service,
             Instance.Service.of({
@@ -267,7 +282,7 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update"] 
         expect(yield* durable(), "warming must not mutate any durable state").toEqual(before)
         yield* prompt("Continue with a new user message")
         expect(llm.requests).toHaveLength(4)
-        expectPrefix(llm.requests[2], llm.requests[3])
+        expectPrefix(llm.requests[2], llm.requests[3], scenario === "anthropic pre-warm")
         expect(generates, "warming must not use a different content hook").toBe(0)
         expect(
           llm.requests[2].cache,

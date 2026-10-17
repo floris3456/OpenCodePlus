@@ -34,6 +34,7 @@ export function createMissToast(context: Plugin.Context): MissToast {
   }
 
   const lastToastedBySession = new Map<string, string>()
+  const droppedBySession = new Map<string, string>()
   const pendingRetry = new Set<string>()
 
   async function checkStep(sessionID: string) {
@@ -45,15 +46,31 @@ export function createMissToast(context: Plugin.Context): MissToast {
       return
     }
     pendingRetry.delete(sessionID)
-    if (!res.miss) return
+    // Dropped thinking stays dropped on every later step, so it alerts once per first dropped block.
+    // This alert does not follow the cache-miss notice switch.
+    const dropped =
+      res.droppedThinking && droppedBySession.get(sessionID) !== (res.droppedThinking.first ?? "")
+        ? res.droppedThinking
+        : undefined
+    if (dropped) droppedBySession.set(sessionID, dropped.first ?? "")
     const stepID = res.stepID ?? res.requestID
-    if (lastToastedBySession.get(sessionID) === stepID) return
-    lastToastedBySession.set(sessionID, stepID)
-    if (!enabled()) return
+    const miss = res.miss && lastToastedBySession.get(sessionID) !== stepID
+    if (miss) lastToastedBySession.set(sessionID, stepID)
     if (screenSessionID() !== sessionID) return
+    const notices = [
+      ...(dropped
+        ? [
+            `Claude dropped ${dropped.blocks.toLocaleString("en-US")} earlier thinking block${dropped.blocks === 1 ? "" : "s"} and answered without them`,
+          ]
+        : []),
+      ...(miss && enabled()
+        ? [`Cache shortfall estimate · ${res.notReused.toLocaleString("en-US")} tokens · ${res.causeText}`]
+        : []),
+    ]
+    if (notices.length === 0) return
     context.ui.toast.show({
       variant: "warning",
-      message: `Cache shortfall estimate · ${res.notReused.toLocaleString("en-US")} tokens · ${res.causeText} · type /monitor for details`,
+      message: `${notices.join(" · ")} · type /monitor for details`,
     })
   }
 

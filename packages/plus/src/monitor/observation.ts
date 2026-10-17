@@ -1,6 +1,7 @@
 import { Option, Schema } from "effect"
 import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import { PromptCacheDiagnostic } from "@opencode/plugin/prompt-cache-diagnostic"
+import { DroppedThinking } from "@opencode/plugin/dropped-thinking"
 
 const field = Schema.Struct({
   source: Schema.Literals(["reported", "derived"]),
@@ -20,6 +21,7 @@ export const Observation = Schema.Struct({
   historyEpoch: Schema.optional(Schema.String),
   compaction: Schema.optional(CompactionObservation),
   promptCacheDiagnostic: Schema.optional(PromptCacheDiagnostic),
+  droppedThinking: Schema.optional(DroppedThinking),
   inputTokens: Schema.optional(token),
   cacheReadInputTokens: Schema.optional(token),
   cacheWriteInputTokens: Schema.optional(token),

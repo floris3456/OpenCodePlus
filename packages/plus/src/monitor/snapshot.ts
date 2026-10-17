@@ -23,7 +23,7 @@ function toolName(value: Schema.Json) {
 }
 
 /** Compare every supplied field, including thinking/signatures and cache markers.
- * Only top-level generation budgets are separated from prompt changes. Object
+ * Only top-level generation budgets and streaming are separated from prompt changes. Object
  * key order is JSON noise; array order and string bytes are never normalized.
  */
 export function compareWire(before: string, after: string): WireDiff {
@@ -67,7 +67,7 @@ export function compareWire(before: string, after: string): WireDiff {
   }
   for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
     const onDemand = jsonObject(b.compaction) && b.compaction.type === "summarize"
-    if (["max_tokens", "max_output_tokens", "max_completion_tokens"].includes(key) ||
+    if (["max_tokens", "max_output_tokens", "max_completion_tokens", "stream"].includes(key) ||
       (onDemand && (key === "compaction" || (key === "context_management" && a[key] == null && b[key] === null)))) {
       if (a[key] !== b[key]) options.push(key)
       continue

@@ -442,6 +442,7 @@ export async function monitorStep(
     ...(cause === undefined ? {} : { cause }),
     causeText,
     ...(changedPart === undefined ? {} : { changedPart }),
+    ...(req.droppedThinking === undefined ? {} : { droppedThinking: req.droppedThinking }),
   }
 }
 

@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { ProviderMetadata } from "./options.js"
 import { PromptCacheDiagnostic } from "./prompt-cache-diagnostic.js"
+import { DroppedThinking } from "./dropped-thinking.js"
 
 const fieldProvenance = Schema.Struct({
   source: Schema.Literals(["reported", "derived"]),
@@ -71,6 +72,8 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
   totalTokens: Schema.optional(Schema.Number),
   /** Best-effort comparison estimates, separate from all actual token counters. */
   promptCacheDiagnostic: Schema.optional(PromptCacheDiagnostic),
+  /** Provider-reported thinking blocks removed from this request before the model read it. */
+  droppedThinking: Schema.optional(DroppedThinking),
   /** Measurement provenance, independent of the compatibility accounting values above.
    * Absence is unknown; in particular it must not turn a partial sum into a complete total.
    */
@@ -144,6 +147,7 @@ export class Usage extends Schema.Class<Usage>("AI.Usage")({
       version: 1 as const,
       completeness,
       ...(this.promptCacheDiagnostic ? { promptCacheDiagnostic: this.promptCacheDiagnostic } : {}),
+      ...(this.droppedThinking ? { droppedThinking: this.droppedThinking } : {}),
       inputTokens: valueOf("inputTokens"),
       cacheReadInputTokens: valueOf("cacheReadInputTokens"),
       cacheWriteInputTokens: valueOf("cacheWriteInputTokens"),

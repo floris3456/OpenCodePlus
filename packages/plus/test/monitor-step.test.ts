@@ -44,6 +44,10 @@ interface Row {
   readonly system?: string
   readonly count?: number
   readonly lastText?: string
+  readonly marker?: number
+  /** A zero-token warming ping: unstreamed, max_tokens 0. */
+  readonly prewarm?: boolean
+  readonly droppedThinking?: { blocks: number; first?: string; reasons: string[] }
 }
 
 function record(db: Ledger, session: string, row: Row): string {
@@ -64,9 +68,13 @@ function record(db: Ledger, session: string, row: Row): string {
     requestID: id,
     sessionID: session,
     created: row.at,
-    ...fingerprintWireBody(anthropicBody(row.system ?? "sys".repeat(4000), row.count ?? 1, row.lastText), {
-      protocol: "anthropic-messages",
-    }),
+    ...fingerprintWireBody(
+      {
+        ...anthropicBody(row.system ?? "sys".repeat(4000), row.count ?? 1, row.lastText, row.marker),
+        ...(row.prewarm ? { max_tokens: 0, stream: false } : { stream: true }),
+      },
+      { protocol: "anthropic-messages" },
+    ),
   })
   if (row.status !== "running") {
     db.requestEnded(id, {
@@ -82,6 +90,8 @@ function record(db: Ledger, session: string, row: Row): string {
       },
     })
   }
+  if (row.droppedThinking)
+    db.requestObserved(id, { version: 1, completeness: "final", droppedThinking: row.droppedThinking })
   projectCacheResult(db, id)
   return id
 }
@@ -197,4 +207,30 @@ test("quota.switch compaction -> account changed · compacted first and /monitor
   expect(report.detail?.request.cause).toBe("account-changed-compacted-first")
   expect(report.detail?.request.causeText).toBe("observed: account changed · compacted first")
   expect(report.detail?.request.measurement?.state).toBe("legacy-unknown")
+})
+
+test("the step alert carries provider-reported dropped thinking", async () => {
+  const db = await ledger()
+  const ctx = context()
+  const droppedThinking = { blocks: 3, first: "messages.1.content.0", reasons: ["prefix_binding_mismatch"] }
+  record(db, "ses_dropped", { id: "1", at: 1000, count: 2, read: 0, write: 5000 })
+  record(db, "ses_dropped", { id: "2", at: 2000, count: 3, read: 5000, write: 200, droppedThinking })
+  const result = await monitorStep(ctx, { sessionID: "ses_dropped" }, db)
+  expect(result.status === "ready" && result.droppedThinking).toEqual(droppedThinking)
+})
+
+test("a zero-token unstreamed warming ping reads like a streamed one for the next step", async () => {
+  const db = await ledger()
+  const ctx = context()
+  const run = async (session: string, prewarm: boolean) => {
+    record(db, session, { id: "1", at: 1000, count: 2, read: 0, write: 5000 })
+    record(db, session, { id: "ping", at: 2000, kind: "ping", count: 3, lastText: "Keep this cache warm.", marker: 1, prewarm, read: 5000, write: 0 })
+    record(db, session, { id: "2", at: 3000, count: 3, lastText: "Next question", read: 5000, write: 200 })
+    const result = await monitorStep(ctx, { sessionID: session }, db)
+    if (result.status !== "ready") throw new Error("step not analysed")
+    return { miss: result.miss, notReused: result.notReused, cause: result.cause, causeText: result.causeText, changedPart: result.changedPart }
+  }
+  const prewarmed = await run("ses_prewarm", true)
+  expect(prewarmed).toEqual(await run("ses_streamed", false))
+  expect(`${prewarmed.causeText} ${prewarmed.changedPart ?? ""}`).not.toContain("option")
 })

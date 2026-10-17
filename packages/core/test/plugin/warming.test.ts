@@ -101,6 +101,8 @@ const activate = Effect.fn("activateWarming")(function* (
         ...sessions,
         generate: (input) =>
           Effect.gen(function* () {
+            // Every warming ping only refreshes the cache.
+            if (input.prewarm !== true) return yield* Effect.die(new Error("warming ping without prewarm"))
             const record: WarmCall = {
               sessionID: input.sessionID,
               prompt: input.prompt,

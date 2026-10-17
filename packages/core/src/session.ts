@@ -193,6 +193,8 @@ export interface Interface {
     /** Pins the request to the last real request's agent and model; used by warming. */
     agent?: Agent.ID
     model?: Model.Ref
+    /** Only refresh the prompt cache; used by warming. */
+    prewarm?: boolean
   }) => Effect.Effect<string, NotFoundError | SessionGenerate.Error>
   readonly command: (input: {
     sessionID: SessionSchema.ID
@@ -424,6 +426,7 @@ const layer = Layer.effect(
           prompt: input.prompt,
           ...(input.agent === undefined ? {} : { agent: input.agent }),
           ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.prewarm === undefined ? {} : { prewarm: input.prewarm }),
         }).pipe(
           Effect.provideService(Instance.Service, instances),
           Effect.provideService(Database.Service, database),

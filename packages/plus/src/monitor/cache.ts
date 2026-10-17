@@ -1,5 +1,6 @@
 // Query-time explanations, not another durable model. No prompt content is read.
 import type { MonitorRequest, MonitorRequestDetail } from "../rpc.js"
+import type { DroppedThinking } from "@opencode/plugin/dropped-thinking"
 import { Model } from "@opencode/schema/model"
 import { Option, Schema } from "effect"
 import { canonicalJson, sha256, FINGERPRINT_VERSION, FINGERPRINT_POLICY_VERSION, type CacheControlMarker } from "./fingerprint.js"
@@ -58,6 +59,10 @@ const segmentCache = new WeakMap<RequestFingerprintData, SegmentInfo>()
 export const UNREAD_METADATA_CACHE_LIMIT = { entries: 4096, bytes: 1024 * 1024 } as const
 const messageSegmentCache = new Map<string, { segment: Segment; bytes: number }>()
 const unreadMetadataBytes = { segments: 2, append: 2 }
+
+// Anthropic's prompt cache covers neither the output limit nor streaming, so a zero-token
+// warming ping (sent unstreamed) shares its prefix with the real steps around it.
+const uncachedAnthropicOptions = new Set(["max_tokens", `unknown[${sha256("stream")}]`])
 
 function getSegmentInfo(fp: RequestFingerprintData): SegmentInfo {
   const cached = segmentCache.get(fp)
@@ -120,6 +125,7 @@ export function fingerprintSegments(fp: RequestFingerprintData): Segment[] {
 
   const optionEntries = Object.entries(fp.optionsKeys)
     .filter(([name]) => !Object.keys(fp.optionsKeys).some((key) => key.startsWith(`${name}.`)))
+    .filter(([name]) => fp.protocol !== "anthropic-messages" || !uncachedAnthropicOptions.has(name))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, hash]) => ({
       name: `option ${name}`,
@@ -1097,6 +1103,7 @@ export function foldSession(
       outcome: r.status,
       ...(r.observation?.version === 1 && r.observation.compaction ? { compaction: r.observation.compaction } : {}),
       ...(r.observation?.version === 1 && r.observation.promptCacheDiagnostic ? { promptCacheDiagnostic: r.observation.promptCacheDiagnostic } : {}),
+      ...(r.observation?.version === 1 && r.observation.droppedThinking ? { droppedThinking: r.observation.droppedThinking } : {}),
       measurement: measured,
       ...(cause.cause === undefined || (verdict === "hit" && cause.cause === "unknown") ? {} : { cause: cause.cause }),
       causeText: cause.causeText,
@@ -1198,6 +1205,7 @@ function requestDetail(
   return {
     ...summary,
     lines: [
+      ...(request.droppedThinking ? [droppedThinkingLine(request.droppedThinking)] : []),
       ...(request.promptCacheDiagnostic ? [
         `Provider-reported cache diagnostic (OpenAI Responses v1): ${request.promptCacheDiagnostic.outcome}; reported outcome ${request.promptCacheDiagnostic.reportedOutcome}; reason ${request.promptCacheDiagnostic.reason ?? "unknown"}`,
         `Provider comparison estimates (not actual usage or billing): reusable prefix ${request.promptCacheDiagnostic.comparisonReusableTokens ?? "unknown"}; missed ${request.promptCacheDiagnostic.cacheMissedTokens ?? "unknown"}; comparison baseline unrecorded. Best effort; first classified reason only; does not prove physical eviction or deployment support. Local facts remain independent.`,
@@ -1234,6 +1242,18 @@ function requestDetail(
     ...(request.expected === undefined ? {} : { expectedTokens: request.expected }),
     actualCacheRead: r.cacheReadTokens,
   }
+}
+
+const droppedThinkingReasons: Record<string, string> = {
+  prefix_binding_mismatch: "the request before them changed since they were written",
+  model_binding_mismatch: "another model wrote them",
+  organization_binding_mismatch: "another account wrote them",
+}
+
+/** Provider-reported, never inferred: the model answered this request without the dropped reasoning. */
+export function droppedThinkingLine(dropped: DroppedThinking) {
+  const why = dropped.reasons.map((reason) => droppedThinkingReasons[reason] ?? reason).join("; ")
+  return `Provider dropped ${dropped.blocks} earlier thinking block${dropped.blocks === 1 ? "" : "s"} before the model read this request${dropped.first ? `, from ${dropped.first} on` : ""}; the answer was made without that reasoning. Reported reason: ${why || "not given"}`
 }
 
 export interface WindowedPings {

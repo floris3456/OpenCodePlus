@@ -19,6 +19,7 @@ import {
   mergeJsonRecords,
   Usage,
   CacheHint,
+  type DroppedThinking,
   type FinishReasonDetails,
   type FinishReason,
   type MediaPart,
@@ -390,7 +391,7 @@ const AnthropicBodyFields = {
   messages: Schema.Array(AnthropicMessage),
   tools: optionalArray(AnthropicTool),
   tool_choice: Schema.optional(AnthropicToolChoice),
-  stream: Schema.Literal(true),
+  stream: Schema.Boolean,
   max_tokens: Schema.Number,
   temperature: Schema.optional(Schema.Number),
   top_p: Schema.optional(Schema.Number),
@@ -511,6 +512,32 @@ const AnthropicEvent = Schema.StructWithRest(
 )
 type AnthropicEvent = Schema.Schema.Type<typeof AnthropicEvent>
 
+// `message.input_transformations`: what Anthropic changed in the request before the model read it.
+const AnthropicInputTransformations = Schema.Array(
+  Schema.StructWithRest(
+    Schema.Struct({
+      type: Schema.String,
+      path: Schema.optional(Schema.String),
+      reason: Schema.optional(Schema.String),
+    }),
+    [JsonObject],
+  ),
+)
+const decodeInputTransformations = Schema.decodeUnknownOption(AnthropicInputTransformations)
+
+// The single Message a non-streamed request returns.
+const AnthropicMessageDocument = Schema.StructWithRest(
+  Schema.Struct({
+    type: Schema.String,
+    content: Schema.optional(Schema.Array(Schema.Unknown)),
+    stop_reason: optionalNull(Schema.String),
+    stop_sequence: optionalNull(Schema.String),
+    stop_details: Schema.optional(Schema.Unknown),
+  }),
+  [JsonObject],
+)
+const decodeMessageDocument = Schema.decodeUnknownOption(Schema.fromJsonString(AnthropicMessageDocument))
+
 interface ParserState {
   readonly provider: LLMRequest["model"]["provider"]
   readonly compactions: Readonly<Record<number, typeof AnthropicCompactionBlock.Type>>
@@ -518,6 +545,7 @@ interface ParserState {
   readonly tools: ToolStream.State<number>
   readonly reasoningSignatures: Readonly<Record<number, string>>
   readonly usage?: Usage
+  readonly droppedThinking?: DroppedThinking
   readonly pendingFinish?: {
     readonly reason: FinishReasonDetails
     readonly providerMetadata?: ProviderMetadata
@@ -1033,6 +1061,19 @@ const supportsEffortUpdates = (request: LLMRequest) => {
   return version.major > 5 || (version.major === 5 && version.minor >= 1)
 }
 
+// A zero-token request writes or refreshes the prompt cache without generating output. Anthropic refuses
+// it with budgeted (`enabled`) thinking, a forced tool choice and structured output.
+const supportsPrewarm = (request: LLMRequest) => {
+  const options = request.providerOptions ?? {}
+  const output = options.output_config ?? options.outputConfig
+  return (
+    !(ProviderShared.isRecord(options.thinking) && options.thinking.type === "enabled") &&
+    !(ProviderShared.isRecord(output) && output.format != null) &&
+    request.toolChoice?.type !== "required" &&
+    request.toolChoice?.type !== "tool"
+  )
+}
+
 const applyThinkingBindingDefault = (model: LLMRequest["model"], thinking: AnthropicThinking | undefined) => {
   if (isThinkingOff(thinking)) return thinking
   if (!supportsThinkingBlockBinding(model)) return thinking
@@ -1093,7 +1134,8 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
     messages,
     tools,
     tool_choice: toolChoice,
-    stream: true as const,
+    // Anthropic refuses a zero-token request (a prompt-cache pre-warm) when it is streamed.
+    stream: maxTokens > 0,
     max_tokens: maxTokens,
     temperature: generation?.temperature,
     top_p: generation?.topP,
@@ -1374,7 +1416,29 @@ const NO_EVENTS: StepResult["1"] = []
 
 const onMessageStart = (state: ParserState, event: AnthropicEvent): StepResult => {
   const usage = mapUsage(event.message?.usage, state.providerMetadataKey)
-  return [usage ? { ...state, usage: mergeUsage(state.usage, usage, state.providerMetadataKey) } : state, NO_EVENTS]
+  const dropped = droppedThinking(event.message?.input_transformations)
+  return [
+    {
+      ...state,
+      ...(usage ? { usage: mergeUsage(state.usage, usage, state.providerMetadataKey) } : {}),
+      ...(dropped ? { droppedThinking: dropped } : {}),
+    },
+    NO_EVENTS,
+  ]
+}
+
+// Anthropic lists each thinking block it dropped before the model read the request. The report is a
+// measurement, not content: a malformed one must not fail model work.
+const droppedThinking = (value: unknown): DroppedThinking | undefined => {
+  const dropped = Option.getOrElse(decodeInputTransformations(value), () => []).filter(
+    (item) => item.type === "thinking_dropped",
+  )
+  if (dropped.length === 0) return undefined
+  return {
+    blocks: dropped.length,
+    first: dropped[0]?.path,
+    reasons: [...new Set(dropped.flatMap((item) => (item.reason === undefined ? [] : [item.reason])))],
+  }
 }
 
 const onContentBlockStart = (
@@ -1632,7 +1696,7 @@ const onMessageStop = Effect.fnUntraced(function* (state: ParserState) {
       normalized: "unknown",
       raw: undefined,
     },
-    usage: state.usage,
+    usage: state.droppedThinking ? new Usage({ ...state.usage, droppedThinking: state.droppedThinking }) : state.usage,
     providerMetadata: state.pendingFinish?.providerMetadata,
   })
   return [{ ...state, lifecycle: finished, tools: result.tools }, events] satisfies StepResult
@@ -1770,31 +1834,66 @@ export const protocol = Protocol.make({
 })
 
 export const transport = <
-  Body extends Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking" | "compaction">,
+  Body extends Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking" | "compaction" | "stream">,
 >() => {
   const http = HttpTransport.httpJson<Body, string>({ framing })
+  const prepareWithBetas = (input: Parameters<typeof http.prepare>[0]) => {
+    const requiredBetas = requiredBetaHeaders(input.body)
+    if (requiredBetas.length === 0) return http.prepare(input)
+    const headers = Headers.fromInput(input.request.http?.headers)
+    const existingBetas = (headers["anthropic-beta"] ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+    const betas = new Set([...existingBetas, ...requiredBetas])
+    return http.prepare({
+      ...input,
+      request: LLMRequest.update(input.request, {
+        http: new HttpOptions({
+          ...input.request.http,
+          headers: { ...headers, "anthropic-beta": [...betas].join(",") },
+        }),
+      }),
+    })
+  }
   return {
     ...http,
-    prepare: (input: Parameters<typeof http.prepare>[0]) => {
-      const requiredBetas = requiredBetaHeaders(input.body)
-      if (requiredBetas.length === 0) return http.prepare(input)
-      const headers = Headers.fromInput(input.request.http?.headers)
-      const existingBetas = (headers["anthropic-beta"] ?? "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean)
-      const betas = new Set([...existingBetas, ...requiredBetas])
-      return http.prepare({
-        ...input,
-        request: LLMRequest.update(input.request, {
-          http: new HttpOptions({
-            ...input.request.http,
-            headers: { ...headers, "anthropic-beta": [...betas].join(",") },
-          }),
-        }),
-      })
-    },
+    prepare: (input: Parameters<typeof http.prepare>[0]) =>
+      input.body.stream
+        ? prepareWithBetas(input)
+        : prepareWithBetas(input).pipe(Effect.map((prepared) => ({ ...prepared, framing: messageFraming }))),
   }
+}
+
+// A non-streamed request (only a zero-token pre-warm) returns one Message. It has no content blocks, so
+// it replays as the message events a stream carries.
+const messageFraming: Framing.Definition<string> = {
+  id: "anthropic-message",
+  frame: (bytes) =>
+    Framing.document.frame(bytes).pipe(
+      Stream.flatMap((text) => {
+        const message = Option.getOrUndefined(decodeMessageDocument(text))
+        // An error document is not a Message; the stream step reports it.
+        if (message?.type !== "message") return Stream.make(text)
+        if (message.content?.length)
+          return Stream.fail(ProviderShared.eventError(ADAPTER, "Anthropic returned content to a zero-token request", text))
+        return Stream.make(
+          ProviderShared.encodeJson({
+            type: "message_start",
+            message: { ...message, content: [], stop_reason: null, stop_sequence: null, stop_details: undefined },
+          }),
+          ProviderShared.encodeJson({
+            type: "message_delta",
+            delta: {
+              stop_reason: message.stop_reason,
+              stop_sequence: message.stop_sequence,
+              stop_details: message.stop_details,
+            },
+          }),
+          ProviderShared.encodeJson({ type: "message_stop" }),
+        )
+      }),
+    ),
 }
 
 function requiredBetaHeaders(body: Pick<AnthropicMessagesBody, "messages" | "context_management" | "thinking" | "compaction">) {
@@ -1908,6 +2007,7 @@ export const route = Route.make({
   }),
   auth: Auth.none,
   transport: transport<AnthropicMessagesBody>(),
+  supportsPrewarm,
   headers: () => ({ "anthropic-version": "2023-06-01" }),
 })
 

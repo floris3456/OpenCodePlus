@@ -4,6 +4,7 @@ import { Schema } from "effect"
 import { Rpc } from "@opencode/schema/rpc"
 import { CompactionObservation } from "@opencode/plugin/compaction-observation"
 import { PromptCacheDiagnostic } from "@opencode/plugin/prompt-cache-diagnostic"
+import { DroppedThinking } from "@opencode/plugin/dropped-thinking"
 
 export type Level = typeof Level.Type
 export const Level = Schema.Union([
@@ -1430,6 +1431,8 @@ export const MonitorStepResult = Schema.Union([
     cause: Schema.optionalKey(Schema.String),
     causeText: Schema.String,
     changedPart: Schema.optionalKey(Schema.String),
+    /** Provider-reported thinking blocks the model did not read on this step. */
+    droppedThinking: Schema.optionalKey(DroppedThinking),
   }),
 ]).annotate({ identifier: "Plus.MonitorStepResult" })
 
@@ -1566,6 +1569,7 @@ export const MonitorRequest = Schema.Struct({
   outcome: Schema.optionalKey(Schema.String),
   compaction: Schema.optionalKey(CompactionObservation),
   promptCacheDiagnostic: Schema.optionalKey(PromptCacheDiagnostic),
+  droppedThinking: Schema.optionalKey(DroppedThinking),
   measurement: Schema.optionalKey(
     Schema.Struct({
       state: Schema.Literals([
