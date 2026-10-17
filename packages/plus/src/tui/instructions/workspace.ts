@@ -26,7 +26,7 @@ export function isLevelId(value: unknown): value is LevelId {
   return LEVELS.some((level) => level.id === value)
 }
 
-export const CATEGORY = /:(settings|models|compaction|tools|base|system|mcp)$/
+export const CATEGORY = /:(settings|models|compaction|tools|skills|base|system|mcp)$/
 
 /** A folder's name when `node` is one of its group rows (S1a), else undefined. */
 export function folderName(node: TreeNode | undefined): string | undefined {
@@ -420,6 +420,6 @@ export function toolWords(count: ToolCount): string {
  * fuller account (total rows, why it cannot act).
  */
 export function toolHint(count: ToolCount): string {
-  if (count.on === 0) return "no tools on · link a preset (l) or turn tools on (4)"
+  if (count.on === 0) return "no tools on · link a preset (l) or turn tools on (3)"
   return toolWords(count)
 }

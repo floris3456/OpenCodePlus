@@ -1101,8 +1101,8 @@ function permItems(input: {
     ...input.fileRows.map((item) => ({ item: item.id, text: item.text })),
     ...input.teachingRows.map((item) => ({ item: item.id, text: item.text })),
   ]
-  // Skills are not rule rows: each skill item is its own on/off, listed under
-  // the skill tool's Skills category (tree.ts toolPermissions).
+  // Skills are not rule rows: each skill item is its own on/off, listed in the
+  // owner's Skills tab (tree.ts lazySkills).
   const mined = mineDiscoveredRules({ texts, agents: agentIds })
   const byId = new Map<string, Item>()
   for (const row of input.toolRows) {

@@ -212,8 +212,8 @@ test("tool subgroups describe origins, MCP servers, Code Mode and Other permissi
 })
 
 test("skill subgroups describe where each skill came from", () => {
-  // The one place skills live: the skill tool's Permissions › Skills category.
-  const skills = "group:project:alice:tool:skill:permissions:skills"
+  // The one place skills live: the owner's Skills tab.
+  const skills = "group:project:alice:skills"
   expect(detail(skills)).toContain("one switch per skill")
   expect(detail(skills)).toContain("`a` adds a skill here")
   expect(detail(`${skills}:native`)).toBe("Skills that ship with OpenCode.")

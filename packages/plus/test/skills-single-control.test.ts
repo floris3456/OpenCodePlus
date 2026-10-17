@@ -11,9 +11,9 @@ import { presetInput, resolvedStates } from "./teams/preset-table.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
-// Skills have one switch per agent: the skill row itself, listed under the
-// skill tool's Permissions › Skills category. There is no Skills category
-// beside Tools and no per-skill "skill" permission row any more.
+// Skills have one switch per agent: the skill row itself, listed in the
+// owner's Skills tab beside Tools. The skill tool no longer lists them, and
+// there is no per-skill "skill" permission row any more.
 
 async function fixture() {
   const skills = skillHarness([skillInfo("notes", "Take notes."), skillInfo("lint", "Lint the code.")])
@@ -52,13 +52,13 @@ function applyInput(items: ApplyInput["items"], records: readonly CustomizationR
   }
 }
 
-test("the skill tool's Skills category is the only place skills are listed and switched", async () => {
+test("the Skills tab is the only place skills are listed and switched", async () => {
   const { discovered } = await fixture()
   // No per-skill permission rows: the skill itself is the switch.
   expect(discovered.items.filter((item) => item.id.startsWith("perm:skill:") && !item.id.startsWith("perm:skill:approval")).map((item) => item.id)).toEqual([])
   const nodes = expandedTree(memoInput(discovered.items, []))
-  expect(nodes.some((node) => /^group:project:alpha:skills/.test(node.id))).toBe(false)
-  const category = "group:project:alpha:tool:skill:permissions:skills"
+  expect(nodes.some((node) => node.id.includes(":tool:skill:permissions:skills"))).toBe(false)
+  const category = "group:project:alpha:skills"
   const listed = nodes.filter((node) => node.kind === "item" && node.address?.item.startsWith("skill:") && node.id.startsWith("item:project:alpha:"))
   expect(listed.map((node) => node.address?.item).toSorted()).toEqual(["skill:lint", "skill:notes"])
   // Every listed skill hangs under that category (through its origin group).

@@ -51,8 +51,8 @@ test("roots render with agents and subtree groups", async () => {
     expect(expanded).toContain("Implementer")
     expect(expanded).toContain("Tools")
     expect(expanded).toContain("System")
-    // Skills are no category tab: they live under Tools › skill › Permissions.
-    expect(expanded.split("\n").find((line) => line.includes("Settings") && line.includes("System"))).not.toContain("Skills")
+    // Skills have their own tab, between Tools and System.
+    expect(expanded.split("\n").find((line) => line.includes("Settings") && line.includes("System"))).toMatch(/Tools.*Skills.*System/)
     dispatch(fixture, "right")
     await category(fixture, "System")
     expect(fixture.captureCharFrame()).toContain("Base")
@@ -663,7 +663,7 @@ test("defaults agent row offers no d delete", async () => {
 test("delete project skill calls skill.delete and the row disappears", async () => {
   const before = createSnapshot({
     items: [
-      // Skills are listed under the skill tool, which core always registers.
+      // Core always registers the skill tool beside the skills.
       { id: "tool:skill", kind: "tool" as const, group: "native" as const, title: "skill", text: "Load a skill", enabled: true, fingerprint: "fp-skill" },
       {
         id: "skill:proj-one",
@@ -687,7 +687,7 @@ test("delete project skill calls skill.delete and the row disappears", async () 
   })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // Defaults › Every agent › Tools › skill › Permissions › Skills › Project › the item.
+    // Defaults › Every agent › Skills › Project › the item.
     await reach(fixture, "item:defaults::skill:proj-one", "proj-one")
     await fixture.waitForFrame((frame) => frame.includes("project skill"))
     expect(binds(fixture)).toContain("d")
@@ -706,7 +706,7 @@ test("delete project skill calls skill.delete and the row disappears", async () 
 test("delete upstream skill refuses without calling skill.delete", async () => {
   const snapshot = createSnapshot({
     items: [
-      // Skills are listed under the skill tool, which core always registers.
+      // Core always registers the skill tool beside the skills.
       { id: "tool:skill", kind: "tool" as const, group: "native" as const, title: "skill", text: "Load a skill", enabled: true, fingerprint: "fp-skill" },
       {
         id: "skill:native-one",
@@ -722,7 +722,7 @@ test("delete upstream skill refuses without calling skill.delete", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
-    // OpenCode skills hang under Defaults → Every agent → Tools → skill → Permissions → Skills → OpenCode.
+    // OpenCode skills hang under Defaults → Every agent → Skills → OpenCode.
     await reach(fixture, "item:defaults::skill:native-one", "native-one")
     await fixture.waitForFrame((frame) => frame.includes("upstream skill"))
     expect(binds(fixture)).toContain("d")

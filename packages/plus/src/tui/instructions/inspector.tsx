@@ -315,7 +315,7 @@ export function Inspector(props: InspectorProps) {
                     {(count) => (
                       <Fact
                         context={props.context}
-                        fact={["tools", `${toolWords(count())} · ${count().total} in all${count().on === 0 ? " · this agent cannot act: link a preset (l) or turn tools on (4)" : ""}`]}
+                        fact={["tools", `${toolWords(count())} · ${count().total} in all${count().on === 0 ? " · this agent cannot act: link a preset (l) or turn tools on (3)" : ""}`]}
                         color={count().on === 0 ? theme().text.feedback.warning.base : theme().text.base}
                       />
                     )}

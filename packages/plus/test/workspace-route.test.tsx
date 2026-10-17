@@ -94,7 +94,7 @@ test("Base sits in the flat System list right after Role/persona, and a reveal l
   })
   await reach(fixture, "item:project:build:base:gpt", "GPT base")
   const frame = fixture.captureCharFrame()
-  expect(frame).toContain("4 System")
+  expect(frame).toContain("5 System")
   expect(frame).not.toContain("4 Base")
   expect(frame).not.toContain("switch tab")
   expect(breadcrumb(frame)).toContain("System › Base")
@@ -285,7 +285,7 @@ test("an owner with nothing switched on warns no tools and says how to turn some
     width: 130,
     height: 45,
   })
-  await fixture.waitForFrame((frame) => frame.includes("no tools on · link a preset (l) or turn tools on (4)"))
+  await fixture.waitForFrame((frame) => frame.includes("no tools on · link a preset (l) or turn tools on (3)"))
   const spans = fixture.captureSpans().lines.flatMap((line) => line.spans)
   const sidebar = spans.find((span) => span.text === "no tools ")
   expect(sidebar).toBeDefined()

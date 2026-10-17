@@ -333,17 +333,17 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
         tool === undefined || tool.kind !== "tool"
           ? []
           : item?.kind === "param"
-            ? toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id.replace(`param:${item.paramTool}:${item.title}`, tool.id), lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath, null, item.title)
+            ? toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath, item.title)
           : [
               ...state.memo.ctx.items.filter((entry) => entry.id === `toolmode:${tool.id.slice("tool:".length)}`)
                 .map((entry) => lazyControl(state.memo, address.level, address.agent, entry, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath)),
               ...toolParameters(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
-              ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
+              ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
             ]
       const walk = (node: Lazy) => {
-        // A skill row under the skill tool's Skills category is a full item
-        // (its own text and sections), not a permission row: visit it.
-        if (node.kind === "item" && (node.address?.item.startsWith("skill:") === true || node.address?.item.startsWith("param:") === true)) return visit(node)
+        // A parameter row is a full item (its own text and sections), not a
+        // permission row: visit it.
+        if (node.kind === "item" && node.address?.item.startsWith("param:") === true) return visit(node)
         push({ id: node.id, kind: node.kind, label: node.label, depth: node.depth, orphan: false, lazy: node, parent: undefined, address: node.address, sectionIds: [] })
         if (node.kind === "group") for (const child of node.children()) walk(child)
       }
