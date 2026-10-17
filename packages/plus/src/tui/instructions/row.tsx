@@ -33,6 +33,7 @@ export function rowTags(node: TreeNode, sidebar: boolean): string[] {
     ...(node.badges.warming !== undefined ? [`warm ${node.badges.warming}`] : []),
     ...(node.badges.interval !== undefined ? [`every ${node.badges.interval}`] : []),
     ...(node.badges.inactive === true ? ["inactive"] : []),
+    ...(node.badges.slotNote !== undefined ? [node.badges.slotNote] : []),
     ...(node.badges.pinned === true ? ["pinned"] : []),
     ...(node.badges.disabled !== undefined ? ["Remote"] : []),
   ]

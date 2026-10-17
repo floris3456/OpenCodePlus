@@ -58,6 +58,8 @@ import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
 import { runPublish } from "./publish-runtime.js"
+import type { OrderRecord } from "./folders.js"
+import { arrangeBySlot, effectiveSystemOrder, slotOfPart, storedSystemOrder } from "./system-order.js"
 import {
   checkAndEmitChangeNote,
   createPlanSet,
@@ -106,6 +108,8 @@ export interface ApplyInput {
   readonly enforcementDeps?: EnforcementDeps
   /** publishFresh installs controls after team transforms as the final writer. */
   readonly deferAgentControls?: boolean
+  /** Stored layout orders: one stored for a System group reorders its agents' system parts (system-order.ts). */
+  readonly orders?: readonly OrderRecord[]
 }
 
 export interface ToolPlan {
@@ -220,7 +224,8 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     models.length === 0 &&
     !teamRules &&
     teamNamespaceDenials(input).length === 0 &&
-    input.agents.every((agent) => plain(input.scopes, agent.id))
+    input.agents.every((agent) => plain(input.scopes, agent.id)) &&
+    systemOrders(input).length === 0
   )
     return { registrations: [], tools: [], permissions }
 
@@ -382,6 +387,7 @@ export async function applyPublishParts(
     needsNarrowing: session.needsNarrowing,
     permissions,
     customByAgent,
+    orders: new Map(session.orders),
   })
 
   if (sessionFp !== prevSession?.fingerprint) {
@@ -1397,6 +1403,8 @@ function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
     return input.items.flatMap((item) => {
       if (item.kind !== "system") return []
       if (item.id === "system:role") return []
+      // OpenCode builds its own parts per request; their rows only show where they go.
+      if (item.opencodePart !== undefined) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input, gate)
       const text = resolved.assembled
@@ -1448,6 +1456,8 @@ export interface SessionPlans {
   readonly scrubByAgent: readonly [string, string[]][]
   readonly needsNarrowing: boolean
   readonly tools: readonly ToolPlan[]
+  /** Each agent with a stored System order: the complete slot order its system parts are sent in. */
+  readonly orders: readonly (readonly [string, readonly string[]])[]
 }
 
 export function sessionPlans(
@@ -1506,7 +1516,25 @@ export function sessionPlans(
     scrubByAgent: Array.from(scrubByAgent.entries()),
     needsNarrowing,
     tools: [...native, ...catalogPlans],
+    orders: systemOrders(input),
   }
+}
+
+// Each agent's stored System order, found down the chain its rows resolve
+// through (runtimeScope): its own levels, its preset, the Defaults entries
+// matching it, then Defaults' every agent (a team member: its team's chain and
+// the Teams catalogue). An agent with none keeps the request's own order.
+export function systemOrders(input: ApplyInput): (readonly [string, readonly string[]])[] {
+  if ((input.orders ?? []).length === 0) return []
+  return input.agents.flatMap((agent) => {
+    const runtime = runtimeScope(agent, input.scopes)
+    const chain = resolutionChain(
+      { level: runtime.level, agent: agent.id, item: "system:role", section: null, ...(agent.team === undefined ? {} : { team: agent.team }) },
+      runtime.scopes,
+    )
+    const order = effectiveSystemOrder(storedSystemOrder(input.orders ?? [], chain), input.items)
+    return order === undefined ? [] : [[agent.id, order] as const]
+  })
 }
 
 export async function installSessionPlans(
@@ -1541,6 +1569,7 @@ export async function installSessionPlans(
       plans.native.length > 0 ||
       instructions.length > 0 ||
       needsScrub ||
+      plans.orders.length > 0 ||
       state !== undefined
 
     if (plans.denials.length > 0) {
@@ -1585,8 +1614,10 @@ export async function installSessionPlans(
           needsNarrowing: plans.needsNarrowing,
           permissions,
           customByAgent,
+          orders: new Map(plans.orders),
         })
       })()
+      const orders = new Map(plans.orders)
       const registration = await runHook(ctx.session.hook, "context", (event) => {
         if (state === undefined) {
           applyBasePlan(event, plans.base, classifier, customByAgent)
@@ -1594,6 +1625,7 @@ export async function installSessionPlans(
           applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
           applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
           if (plans.needsNarrowing) narrowTools(event, permissions)
+          applySystemOrder(event, orders.get(String(event.agent)))
           return plans.needsNarrowing ? describeChecks(ctx, event) : Effect.void
         }
         return Effect.gen(function* () {
@@ -1613,6 +1645,7 @@ export async function installSessionPlans(
             pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
             pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
             pin.lastRequestAt = Date.now()
+            applySystemOrder(event, activePlanSet.orders.get(agent))
             if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
             return
           }
@@ -1628,6 +1661,7 @@ export async function installSessionPlans(
             pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
             pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
             pin.lastRequestAt = Date.now()
+            applySystemOrder(event, activePlanSet.orders.get(agent))
             if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
             return
           }
@@ -1741,8 +1775,17 @@ function applyPinnedPlans(
   applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent))
   applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
   if (pin.planSet.needsNarrowing) narrowTools(event, pin.planSet.permissions)
+  applySystemOrder(event, pin.planSet.orders.get(agent))
   if (pin.planSet.needsNarrowing) return describeChecks(ctx, event)
   return Effect.void
+}
+
+// The last step of every path: everything above finds the first part at index
+// 0 and Plus's own parts by their file, so the parts move only once those are
+// in place. No stored order leaves the array exactly as it is.
+export function applySystemOrder(event: Pick<SessionContext, "system">, order: readonly string[] | undefined): void {
+  if (order === undefined) return
+  event.system.splice(0, event.system.length, ...arrangeBySlot(event.system, slotOfPart, order))
 }
 
 // The one host-sourced classification: mirror the core optimize plugin

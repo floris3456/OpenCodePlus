@@ -111,6 +111,7 @@ export const SnapshotItem = Schema.Struct({
   order: Schema.optionalKey(Schema.Number),
   userBase: Schema.optionalKey(Schema.Boolean),
   userSystem: Schema.optionalKey(Schema.Boolean),
+  opencodePart: Schema.optionalKey(Schema.String),
   codemode: Schema.optionalKey(Schema.Boolean),
   namespace: Schema.optionalKey(Schema.String),
   pinned: Schema.optionalKey(Schema.Boolean),

@@ -29,6 +29,13 @@ export interface OrderRecord {
 export const tabKeys = ["settings", "models", "compaction", "tools", "base", "system", "mcp"] as const
 
 /**
+ * The owner segment of the Teams catalogue's shared inventory rows; the
+ * Agents catalogue's is empty. Agent ids forbid `:` and never start with `/`,
+ * so it can never collide with one.
+ */
+export const teamsOwnerSegment = "/teams"
+
+/**
  * The order scope of one non-tab list: the direct children of a tree group that
  * is neither a tab nor a folder. S1b uses it for a tab's origin subgroups
  * (Tools › OpenCode, Tools › MCP) and for the sidebar's owner lists (agents,

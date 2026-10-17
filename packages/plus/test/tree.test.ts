@@ -164,8 +164,9 @@ test("Implementer subtree shape under the project root", () => {
     "MCP",
     "Project",
   ])
-  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)).toEqual(["Instructions", "Base"])
-  expect(childrenOf(nodes, "group:project:Implementer:system:instructions").map((node) => node.label)[0]).toBe("Role/persona")
+  // One flat list in request order: the first part (Role/persona, Base), then
+  // the instruction file row in the AGENTS.md place.
+  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)).toEqual(["Role/persona", "Base", "guide"])
 })
 
 test("identical subtree under each of the three roots", () => {
@@ -178,7 +179,7 @@ test("identical subtree under each of the three roots", () => {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
     expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "System"])
-    expect(childrenOf(nodes, `group:${level}:${agent}:system`).map((node) => node.label)).toEqual(["Instructions", "Base"])
+    expect(childrenOf(nodes, `group:${level}:${agent}:system`).map((node) => node.label).slice(0, 2)).toEqual(["Role/persona", "Base"])
   }
 })
 
@@ -514,7 +515,7 @@ test("registered team member yields its Role/persona under System", () => {
   const systemGroup = nodes.find((node) => node.id === "group:project:crew/:CrewMate:system")
   expect(systemGroup).toBeDefined()
   expect(
-    childrenOf(nodes, "group:project:crew/:CrewMate:system:instructions").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
+    childrenOf(nodes, "group:project:crew/:CrewMate:system").some((node) => node.id === "item:project:crew/:CrewMate:system:role"),
   ).toBe(true)
 })
 
@@ -733,7 +734,7 @@ test("MCP tools group by item.server, never the tool name", () => {
 
 test("Role/persona is first under System", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
-  const labels = childrenOf(nodes, "group:project:Implementer:system:instructions").map((node) => node.label)
+  const labels = childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)
   expect(labels[0]).toBe("Role/persona")
   expect(labels).toContain("guide")
 })
@@ -750,6 +751,24 @@ test("active badge marks exactly one base template per agent", () => {
   expect(helper.map((node) => node.id)).toEqual(["item:global:Helper:base:claude"])
 })
 
+test("a set Role/persona marks Base and its active prompt as not sent; an unset one says the base prompt is sent", () => {
+  const owned = items().map((item) => (item.id === "system:role" ? { ...item, agents: ["Implementer"] } : item))
+  const nodes = expandAll({ items: owned, records: [], agents: agents() })
+  expect(nodes.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBe("not sent: replaced by Role/persona")
+  expect(nodes.find((node) => node.id === "item:project:Implementer:base:gpt")?.badges.slotNote).toBe("not sent")
+  expect(nodes.find((node) => node.id === "item:project:Implementer:base:claude")?.badges.slotNote).toBeUndefined()
+  expect(nodes.find((node) => node.id === "item:project:Implementer:system:role")?.badges.slotNote).toBeUndefined()
+  // An agent with no prompt body of its own and an empty Role/persona gets the base prompt.
+  const empty = items().map((item) => (item.id === "system:role" ? { ...item, agents: ["Implementer"], text: "", fingerprint: fingerprint("") } : item))
+  const unset = expandAll({ items: empty, records: [], agents: agents() })
+  expect(unset.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBeUndefined()
+  expect(unset.find((node) => node.id === "item:project:Implementer:base:gpt")?.badges.slotNote).toBeUndefined()
+  expect(unset.find((node) => node.id === "item:project:Implementer:system:role")?.badges.slotNote).toBe("base prompt sent instead")
+  // Its own body stays in place even with an emptied Role/persona.
+  const emptied = expandAll({ items: owned, records: [makeRecord({ item: "system:role", text: "" })], agents: agents() })
+  expect(emptied.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBe("not sent: replaced by Role/persona")
+})
+
 test("section rows carry section addresses, stable ids, and nested depths", () => {
   // A Role/persona item belongs to its agent (discovery sets `agents`), and an
   // agent's own prompt falls back to its upstream state (DESIGN §3.3).
@@ -764,7 +783,7 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
     { level: "project", agent: "Implementer", item: "system:role", section: "purpose" },
     { level: "project", agent: "Implementer", item: "system:role", section: "usage" },
   ])
-  expect(sections.map((node) => node.depth)).toEqual([8, 8])
+  expect(sections.map((node) => node.depth)).toEqual([7, 7])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
   expect(sections.every((node) => node.add === "section")).toBe(true)
@@ -968,8 +987,8 @@ test("add affordances land on exactly the listed groups", () => {
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:global")).toBe("skill")
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:defaults")).toBe("skill")
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills:preset")).toBe("skill")
-  expect(adds.get("group:project:Implementer:system:instructions")).toBe("system")
-  expect(adds.get("group:defaults::system:instructions")).toBe("system")
+  expect(adds.get("group:project:Implementer:system")).toBe("system")
+  expect(adds.get("group:defaults::system")).toBe("system")
   expect(adds.get("group:defaults::mcp")).toBe("mcp")
   expect(adds.get("group:project:Implementer:tools")).toBeUndefined()
   expect(adds.get("group:project:Implementer:tool:skill:permissions:skills")).toBe("skill")

@@ -11,6 +11,7 @@ import os from "node:os"
 import path from "node:path"
 import { idFromPath, parseAgentModel } from "../agents/files.js"
 import { readUserSystemRowsSync } from "../agents/system.js"
+import { opencodePartItemId, opencodeParts } from "./system-order.js"
 import { controlItems } from "./agent-controls.js"
 import { unmaskModel, unmaskText, upstreamEnabled, type ModelBaseline, type ModelRefLike, type PromptBaseline } from "./inventory.js"
 import {
@@ -192,6 +193,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const teachingRows = teachingItems(teaching, instructions.length)
   const guidanceRows = guidanceItems(instructions.length + teachingRows.length)
   const userSystemRows = userSystemItems(instructions.length + teachingRows.length + guidanceRows.length)
+  const opencodeRows = opencodePartItems(instructions.length + teachingRows.length + guidanceRows.length + userSystemRows.length)
   const modelRows = modelItems(modelRecords, upstream)
   const permRows = permItems({
     tools,
@@ -217,6 +219,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...teachingRows,
     ...guidanceRows,
     ...userSystemRows,
+    ...opencodeRows,
     ...mcp.items,
     ...modelRows,
     ...parameterApprovals(permRows, paramRows),
@@ -1041,6 +1044,23 @@ function userSystemItems(order: number): Item[] {
     fingerprint: fingerprint(row.text),
     order: order + index,
     userSystem: true,
+  }))
+}
+
+// OpenCode's own system parts, read-only: the rows let the System list show
+// and move every part the model receives. Their text says what OpenCode puts
+// there; apply plans nothing for them and rules never mine them.
+function opencodePartItems(order: number): Item[] {
+  return opencodeParts.map((part, index): Item => ({
+    id: opencodePartItemId(part.name),
+    kind: "system",
+    group: "native",
+    title: part.title,
+    text: part.text,
+    enabled: true,
+    fingerprint: fingerprint(part.text),
+    order: order + index,
+    opencodePart: part.slot,
   }))
 }
 

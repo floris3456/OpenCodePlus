@@ -229,6 +229,42 @@ function tool(id: string, title: string, text: string) {
   return { id, kind: "tool" as const, group: "native" as const, title, text, enabled: true, fingerprint: fingerprint(text) }
 }
 
+// A System row moves a part of the request: arrows step over whole parts
+// (Role/persona and Base are one), there is no folder step, and Enter writes the
+// owner's complete System order.
+test("m on a System row moves its part in the request with one layout write", async () => {
+  const middleLine = (frame: string, label: string) => frame.split("\n").findIndex((line) => line.split("│")[1]?.includes(label))
+  const items = [
+    { ...tool("system:role", "Role/persona", ""), kind: "system" as const, group: "none" as const },
+    { ...tool("base:gpt", "GPT base", "base instructions"), kind: "base" as const, group: "none" as const },
+    { ...tool("system:opencode/date", "Date", "OpenCode adds today's date."), kind: "system" as const, opencodePart: "core/date" },
+  ]
+  const fixture = await renderInstructionsRoute({ snapshots: [createSnapshot({ agents: [build], items })], width: 130, height: 45 })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("Instructions"))
+    await goto(fixture, "agent:defaults:build", "build")
+    dispatch(fixture, "right")
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
+    await category(fixture, "System")
+    await fixture.waitForFrame((frame) => middleLine(frame, "Role/persona") < middleLine(frame, "Date"))
+    await moveTo(fixture, "Date")
+    dispatch(fixture, "m")
+    await fixture.waitForFrame((frame) => footer(frame).includes("move in the request") && !footer(frame).includes("into folder"))
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => middleLine(frame, "Date") < middleLine(frame, "Role/persona") && middleLine(frame, "Role/persona") < middleLine(frame, "GPT base"))
+    expect(fixture.fake.layoutWrites).toHaveLength(0)
+    dispatch(fixture, "return")
+    await until(fixture, () => fixture.fake.layoutWrites.length === 1)
+    expect(fixture.fake.layoutWrites[0]?.orders.find((record) => record.scope === "group:group:defaults:build:system")?.items.slice(0, 3)).toEqual([
+      "core/date",
+      "first",
+      "core/identity",
+    ])
+  } finally {
+    fixture.destroy()
+  }
+})
+
 // A tool row's display order is durable: after Enter writes the order, the
 // reloaded snapshot (which carries it) shows the same order with no further
 // write. The row stays selected across the reload.

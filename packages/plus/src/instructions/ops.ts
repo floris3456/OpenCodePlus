@@ -86,6 +86,7 @@ import {
   folderOf,
   folderRef,
   groupScope,
+  layoutLevel,
   ownerLayout,
   renameFolderRecord,
   reparent,
@@ -102,7 +103,8 @@ import { linksTouching, switchedOff } from "./rowlinks.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
-import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf } from "./tree.js"
+import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf, systemOrderAt, systemSlotOf } from "./tree.js"
+import { firstSlot } from "./system-order.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, parentIndexes, relocateHeadingSpan, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -275,6 +277,7 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
   const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
+  if (inSystemList(path)) return planSystemMove(memo, layout, rowId, target, updated, active)
   const token = rowToken(node)
   if (token === undefined || token.startsWith("tab:")) return { refusal: `"${node.label}" is built-in structure and cannot move` }
   const tab = path.slice(0, -1).findLast((row) => rowToken(row)?.startsWith("tab:"))
@@ -323,6 +326,66 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
           : ""
   return { target: local.token(token), status: `Moved "${node.label}" ${where}`, layout: local.finish(plan, updated) }
 }
+
+const NO_SYSTEM_FOLDERS = "System has no folders: its list is the order the model receives the parts"
+
+function isSystemGroupId(id: string): boolean {
+  return id.startsWith("group:") && id.endsWith(":system")
+}
+
+// A row inside an owner's System list (the Base group's prompts included).
+function inSystemList(path: readonly { readonly id: string }[]): boolean {
+  return path.slice(0, -1).some((row) => isSystemGroupId(row.id))
+}
+
+/**
+ * A move inside a System list: the row's part goes before or after another
+ * row's part, and the owner's complete order is stored for its System group
+ * (system-order.ts), which reorders its requests. Role/persona and the Base
+ * group are one part and move together; a base prompt does not move on its own.
+ */
+export function planSystemMove(memo: MemoInput, layout: LayoutRecords, rowId: string, target: RowTarget, updated: string, sharedMemo?: Memo): LayoutChange {
+  const active = sharedMemo ?? buildTreeMemo(memo)
+  const path = lazyPath(active, rowId)
+  const node = path.at(-1)
+  if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const list = path.at(-2)
+  if (list === undefined || !isSystemGroupId(list.id))
+    return { refusal: node.address?.item.startsWith("base:") === true ? baseMoveRefusal : `"${node.label}" is not in a System list` }
+  if (target.into !== undefined) return { refusal: NO_SYSTEM_FOLDERS }
+  if (target.before !== undefined && target.after !== undefined) return { refusal: "give before or after, not both" }
+  const rows = list.children()
+  const sibling = rows.find((row) => row.id === (target.before ?? target.after))
+  if (sibling === undefined) return { refusal: `say where "${node.label}" goes: before or after a row of the same System list` }
+  const slot = systemSlotOf(active, node)
+  const anchor = systemSlotOf(active, sibling)
+  const address = rows.flatMap((row) => (row.address === undefined ? [] : [row.address]))[0]
+  if (slot === undefined || anchor === undefined || address === undefined) return { refusal: `"${node.label}" cannot move here` }
+  if (slot === anchor) return { refusal: `"${node.label}" and "${sibling.label}" are one part of the request and move together` }
+  const after = target.after !== undefined
+  const without = systemOrderAt(active, address).filter((entry) => entry !== slot)
+  const at = without.indexOf(anchor)
+  if (at === -1) return { refusal: `"${sibling.label}" is not in the same System list` }
+  const items = [...without.slice(0, at + (after ? 1 : 0)), slot, ...without.slice(at + (after ? 1 : 0))]
+  const neighbour = anchor === firstSlot ? (after ? "Base" : "Role/persona") : sibling.label
+  return {
+    target: slot,
+    status: `Moved "${node.label}" ${after ? "after" : "before"} "${neighbour}": the model receives it there`,
+    layout: {
+      folders: layout.folders,
+      orders: [
+        ...layout.orders.filter((order) => order.scope !== groupScope(list.id)),
+        { type: "order", level: layoutLevel(list.id), scope: groupScope(list.id), items, updated },
+      ],
+    },
+  }
+}
+
+function opencodePartRefusal(label: string): string {
+  return `"${label}" cannot be deleted: OpenCode builds this part for each request; move it to change where the model receives it`
+}
+
+export const baseMoveRefusal = `A base prompt does not move on its own: Role/persona and Base are one part of the request; move "Base" or "Role/persona"`
 
 // A section move (plus-1.2.0 B42). It reorders one section before or after a
 // sibling under the same parent, inside the same item. A heading-derived move
@@ -533,6 +596,7 @@ export function planGroupMove(
   const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   if (node.address !== undefined && node.address.section !== null) return { refusal: `"${node.label}" is a section; moving sections is not supported yet` }
+  if (inSystemList(path)) return planSystemMove(memo, layout, rowId, target, updated, active)
   const token = listToken(node)
   if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }
   if (target.into !== undefined) return { refusal: `"${node.label}" reorders in its own list; it cannot enter a folder here` }
@@ -570,9 +634,10 @@ export function planGroupMove(
 export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string, sharedMemo?: Memo): LayoutChange {
   const trimmed = name.trim()
   if (trimmed === "") return { refusal: "a folder needs a name" }
-  const path = lazyPath(sharedMemo ?? buildTreeMemo(memo), rowId.endsWith(":system") ? `${rowId}:instructions` : rowId)
+  const path = lazyPath(sharedMemo ?? buildTreeMemo(memo), rowId)
   const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
+  if (path.some((row) => isSystemGroupId(row.id))) return { refusal: NO_SYSTEM_FOLDERS }
   // Origin subgroups are presentation headings; Add Folder belongs to their tab.
   const tabRow = path.slice(0, -1).findLast((row) => rowToken(row)?.startsWith("tab:"))
   const container = node.kind === "group" && rowToken(node) === undefined && tabRow !== undefined ? tabRow : node
@@ -2328,6 +2393,7 @@ export function removalPlan(input: MemoInput, rowId: string, sharedMemo?: Memo):
       successStatus: `Deleted System row ${node.label}`,
     }
   }
+  if (item.opencodePart !== undefined) return { refusal: opencodePartRefusal(node.label) }
   if (item.kind === "system" && itemId.startsWith("system:") && itemId !== "system:role") {
     const relative = itemId.slice("system:".length)
     if (node.actions?.remove !== true)
@@ -2392,6 +2458,7 @@ export function refusalFor(input: MemoInput, rowId: string, sharedMemo?: Memo): 
     if (node.kind === "section") return `"${node.label}" cannot be deleted: sections are toggled or split, not deleted`
     return undefined
   }
+  if (item.opencodePart !== undefined) return opencodePartRefusal(node.label)
   if (item.kind === "system" && item.id !== "system:role") {
     const relative = address.item.startsWith("system:") ? address.item.slice("system:".length) : address.item
     return `"${node.label}" cannot be deleted: instruction "${relative}" is not project-owned`

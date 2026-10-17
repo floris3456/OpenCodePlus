@@ -95,8 +95,10 @@ function sharedDetail(catalogue: Catalogue, category: string): string {
   if (category === "compaction")
     return `How every ${noun} compacts a long session by default: strategy, local model and instructions. A more specific row overrides these.`
   if (category === "tools") return `Tools every ${noun} may call, grouped by origin; each row expands to its Description and Permissions.`
-  if (category === "base") return `Base prompt templates every ${noun} can follow; the one matching its active Plus model is used automatically.`
-  if (category === "system") return `System instructions every ${noun} receives, headed by Role/persona.`
+  if (category === "base")
+    return `Base prompt templates every ${noun} can follow; the one matching its active Plus model is sent, unless Role/persona is set: then Role/persona is sent in its place.`
+  if (category === "system")
+    return `Every part of the system prompt each ${noun} receives, in the order the model receives it: Role/persona or the base prompt, OpenCode's own parts and the System rows. m moves a part, and the requests change with it.`
   return `MCP servers every ${noun} can call. \`a\` adds one; \`d\` removes it everywhere.`
 }
 
@@ -171,8 +173,10 @@ function ownerCategoryDetail(part: OwnerGroup): string | undefined {
   if (part.category === "compaction")
     return `How ${subject} compacts a long session: strategy, local model and instructions. Remote uses the provider instead and locks the local fields.`
   if (part.category === "tools") return `Tools ${subject} may call, grouped by origin; each row expands to its Description and Permissions.`
-  if (part.category === "base") return `Base prompt templates ${subject} can follow. The one matching its active Plus model is used automatically.`
-  if (part.category === "system") return `System instructions ${subject} receives. Role/persona is always first; sections can be excluded.`
+  if (part.category === "base")
+    return `Base prompt templates ${subject} can follow. The one matching its active Plus model is sent, unless Role/persona is set: then Role/persona is sent in its place.`
+  if (part.category === "system")
+    return `Every part of ${subject}'s system prompt, in the order the model receives it. Role/persona replaces the base prompt when set; OpenCode's own parts move but are not edited here. m moves a part, and the requests change with it.`
   return undefined
 }
 

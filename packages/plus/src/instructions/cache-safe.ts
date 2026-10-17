@@ -21,6 +21,8 @@ export interface PlanSet {
   readonly needsNarrowing: boolean
   readonly permissions: PermissionTable
   readonly customByAgent: ReadonlySet<string>
+  /** Per agent with a stored System order: the slot order its system parts are sent in (system-order.ts). */
+  readonly orders: ReadonlyMap<string, readonly string[]>
   readonly version: number
 }
 
@@ -35,6 +37,7 @@ export function createPlanSet(options: {
   readonly needsNarrowing: boolean
   readonly permissions: PermissionTable
   readonly customByAgent: ReadonlySet<string>
+  readonly orders?: ReadonlyMap<string, readonly string[]>
 }): PlanSet {
   planSetSeq += 1
   return {
@@ -46,6 +49,7 @@ export function createPlanSet(options: {
     needsNarrowing: options.needsNarrowing,
     permissions: options.permissions,
     customByAgent: options.customByAgent,
+    orders: options.orders ?? new Map(),
     version: planSetSeq,
   }
 }

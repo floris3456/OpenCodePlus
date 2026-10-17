@@ -71,6 +71,7 @@ export function kindWord(node: TreeNode): string {
   if (item?.startsWith("tool:") === true) return "tool"
   if (item?.startsWith("skill:") === true) return "skill"
   if (item?.startsWith("base:") === true) return "base prompt"
+  if (item?.startsWith("system:opencode/") === true) return "OpenCode part"
   if (controlKind(item) !== undefined) return "setting"
   return "item"
 }
@@ -139,7 +140,11 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     ])
   const guidance = node.badges.guidance
   if (guidance !== undefined && guidance.length > 0) facts.push(["instructions", `System › Tools and rules › ${guidance.join(", ")}`])
-  const provenance = provenanceLine(node, snapshot, memo)
+  if (node.badges.slotNote !== undefined) facts.push(["request", node.badges.slotNote])
+  // OpenCode's own parts are built per request: nothing resolves or overrides them here.
+  const opencode = node.address?.item.startsWith("system:opencode/") === true
+  if (opencode) facts.push(["source", "OpenCode builds it for each request · m moves it, nothing here edits it"])
+  const provenance = opencode ? undefined : provenanceLine(node, snapshot, memo)
   if (provenance !== undefined) facts.push(["source", BASELINE.test(provenance) ? "default (nothing overrides it)" : provenance.replace(/^(state and text|value|enabled): /, "")])
   const link = linkLine(node, snapshot)
   if (link !== undefined) facts.push(["preset", link.replace(/^Created from preset: /, ""), node.owner?.linkMissing === true ? "warning" : undefined])
@@ -194,7 +199,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   const address = addressLine(node)
   if (address !== undefined) facts.push(["address", address, "subdued"])
   const item = node.address?.item
-  if (item !== undefined && node.address?.section === null) {
+  // System (Base included) has no folders; an older one may still name its rows.
+  if (item !== undefined && node.address?.section === null && !item.startsWith("system:") && !item.startsWith("base:")) {
     const holding = folderHolding(snapshot.folders ?? [], item)
     if (holding !== undefined) facts.push(["folder", holding.name])
   }

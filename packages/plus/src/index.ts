@@ -1056,6 +1056,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         splits: splitsOf(loaded.records),
         scopes: chain.publishScopes,
         installedTools: state.installedTools,
+        orders: loaded.records.filter((record): record is OrderRecord => record.type === "order"),
       })
       if ("ok" in result)
         return {
@@ -5806,6 +5807,7 @@ function publishFresh(
         rules: rulesOf(stored.records),
         catalog,
         teamAgents: view.teamAgents.map((agent) => agent.id),
+        orders: stored.records.filter((record): record is OrderRecord => record.type === "order"),
         enforcement: state.enforcement,
         enforcementDeps: {
           headless: async (sessionID) => (await bySession(teamsDataDir(), sessionID))?.kind === "w",
@@ -6880,6 +6882,7 @@ function toSnapshot(
         ...(item.order === undefined ? {} : { order: item.order }),
         ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
         ...(item.userSystem === undefined ? {} : { userSystem: item.userSystem }),
+        ...(item.opencodePart === undefined ? {} : { opencodePart: item.opencodePart }),
         ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
         ...(item.controlTeam === undefined ? {} : { controlTeam: item.controlTeam }),
         ...(item.namespace === undefined ? {} : { namespace: item.namespace }),

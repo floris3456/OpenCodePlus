@@ -12,10 +12,10 @@ import type {
   TeamRef,
 } from "./model.js"
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { lazyControl, materialize, skeletonOf, teamsOwnerSegment, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { lazyControl, materialize, skeletonOf, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
-import { groupScope, orderOf, tabOfItem } from "./folders.js"
+import { groupScope, orderOf, tabOfItem, teamsOwnerSegment } from "./folders.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -1261,7 +1261,9 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
         const address = candidate.address
         if (address === undefined || address.section !== null) return false
         const tab = tabOfItem(address.item)
-        const owner = `group:${candidate.id.slice(candidate.id.indexOf(":") + 1, candidate.id.indexOf(`:${address.item}`))}:${tab === "system" ? "system:instructions" : tab}`
+        // System (Base included) lists the request's parts in order and has no folders.
+        if (tab === "system" || tab === "base") return false
+        const owner = `group:${candidate.id.slice(candidate.id.indexOf(":") + 1, candidate.id.indexOf(`:${address.item}`))}:${tab}`
         const own = orderOf(state.memo.ctx.orders, groupScope(owner)) !== undefined || state.memo.ctx.folders.some((folder) => folder.owner === owner)
         const name = state.memo.ctx.folders.find((folder) => folder.owner === (own ? owner : undefined) && folder.items.includes(address.item))?.name
         return name !== undefined && alts.some((alt) => lower(name) === lower(alt))

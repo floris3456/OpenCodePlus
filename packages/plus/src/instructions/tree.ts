@@ -17,9 +17,11 @@ import {
   parseModelItemId,
   presetKey,
   resolveActiveModel,
+  resolutionChain,
   sameModelCandidate,
   scopedTo,
 } from "./model.js"
+import { completeOrder, defaultSystemOrder, firstSlot, slotOfItem, storedSystemOrder, userSystemRows } from "./system-order.js"
 import type {
   Address,
   AgentSource,
@@ -34,7 +36,7 @@ import type {
   ReviewPart,
   TeamRef,
 } from "./model.js"
-import { folderIdOfRef, folderRef, groupScope, orderOf, tabOfGroupId, type FolderRecord } from "./folders.js"
+import { folderIdOfRef, folderRef, groupScope, orderOf, tabOfGroupId, teamsOwnerSegment, type FolderRecord } from "./folders.js"
 import { fromLabel } from "./from-label.js"
 import {
   COLD_ITEM_SEGMENT,
@@ -216,6 +218,8 @@ export interface TreeNodeBadges {
   readonly effective?: string
   /** User base template that can never be the host active answer. */
   readonly inactive?: boolean
+  /** System list: which of the first part's alternatives the request carries ("not sent: replaced by Role/persona", "base prompt sent instead"). */
+  readonly slotNote?: string
   /** Registry or user pin state for Code Mode tool rows. */
   readonly pinned?: boolean
   /** Whole Role/persona or whole base row: apply keeps the original text live, so the row cannot be toggled off. */
@@ -1245,6 +1249,8 @@ function lazyListToken(lazy: Lazy): string | undefined {
 // tokens first in that order, the rest as they were. A group with no such record
 // is returned untouched (S1b).
 function arrangeList(memo: Memo, id: string, home: readonly Lazy[]): readonly Lazy[] {
+  // A System group's order record holds slot ids, already applied by lazySystem.
+  if (id.endsWith(":system")) return home
   const listed = orderOf(memo.ctx.orders, groupScope(id))?.items
   if (listed === undefined || listed.length === 0) return home
   return [
@@ -1368,8 +1374,6 @@ function ownerSegment(owner: string | null, catalogue?: Catalogue): string {
   if (owner !== null) return owner
   return catalogueOf(catalogue) === "teams" ? teamsOwnerSegment : ""
 }
-
-export const teamsOwnerSegment = "/teams"
 
 function addressOf(
   level: Level,
@@ -2919,6 +2923,9 @@ function straySkills(
     .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth, teamRef, catalogue, ownerPath))
 }
 
+// The Base group is the first slot together with Role/persona: an enabled,
+// non-empty Role/persona replaces the base prompt in the request, so the group says so,
+// and the base prompt matching the model ("active") then reads "not sent" too.
 function lazyBase(
   ctx: BuildContext,
   memo: Memo,
@@ -2926,25 +2933,37 @@ function lazyBase(
   owner: string | null,
   agent: AgentSource | null,
   depth: number,
-  groupId?: string,
-  teamRef?: RowTeam,
-  catalogue?: Catalogue,
-  ownerPath?: string,
+  groupId: string,
+  teamRef: RowTeam | undefined,
+  catalogue: Catalogue | undefined,
+  ownerPath: string | undefined,
+  replaced: () => boolean,
 ): Lazy {
   return branch(memo, {
     kind: "group",
-    id: groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:base`,
+    id: groupId,
     label: "Base",
     depth,
     add: "base",
     actions: noActions(),
+    partial: () => (replaced() ? { slotNote: "not sent: replaced by Role/persona" } : {}),
     children: () =>
-      sortedKind(ctx, "base", owner).map((item) =>
-        lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath),
-      ),
+      sortedKind(ctx, "base", owner).map((item) => {
+        const row = lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath)
+        return { ...row, partial: () => {
+          const badges = row.partial()
+          return badges.active === true && replaced() ? { ...badges, slotNote: "not sent" } : badges
+        } }
+      }),
   })
 }
 
+// System lists every part of the owner's system prompt in the order the model
+// receives it (system-order.ts): Role/persona and the Base group first (one
+// slot: the base prompt is sent only while Role/persona is empty), OpenCode's
+// own parts (movable, not editable), OpenCodePlus, Tools and rules and the
+// user's System rows. Moving a row stores the order, which reorders the
+// request; it has no folders.
 function lazySystem(
   ctx: BuildContext,
   memo: Memo,
@@ -2959,46 +2978,78 @@ function lazySystem(
 ): Lazy {
   const id = groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`
   return branch(memo, {
-    kind: "group", id, label: "System", depth, actions: noActions(),
-    children: () => withFolders(memo, [
-      lazySystemInstructions(ctx, memo, level, owner, agent, depth + 1, `${id}:instructions`, teamRef, catalogue, ownerPath),
-      lazyBase(ctx, memo, level, owner, agent, depth + 1, id.replace(/:system$/, ":base"), teamRef, catalogue, ownerPath),
-    ]),
+    kind: "group", id, label: "System", depth, add: "system", actions: noActions(),
+    children: () => {
+      const systems = sortedKind(ctx, "system", owner)
+      const role = systems.find((item) => item.id === "system:role")
+      // As apply's roleCandidates: an enabled, non-empty Role/persona replaces the
+      // base prompt, and an agent's own prompt body stays in its place when
+      // Role/persona is off or empty (the shared row has no body of its own).
+      const replaced = () => {
+        if (role === undefined) return false
+        if (owner !== null && role.text.trim().length > 0) return true
+        const resolved = wholeOf(memo, level, owner, role, catalogue, teamRef)
+        return resolved.enabled && resolved.assembled.trim().length > 0
+      }
+      const row = (item: Item) =>
+        item.opencodePart === undefined
+          ? lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath)
+          : lazyOpencodePart(level, owner, item, depth + 1, teamRef, catalogue, ownerPath)
+      const rowsOf = (slot: string): Lazy[] => {
+        if (slot !== firstSlot)
+          return systems
+            .filter((item) => item.id !== "system:role" && slotOfItem(item) === slot)
+            .toSorted((left, right) => Number(right.opencodePart !== undefined) - Number(left.opencodePart !== undefined))
+            .map(row)
+        const head = role === undefined ? undefined : row(role)
+        return [
+          ...(head === undefined ? [] : [{ ...head, partial: () => (replaced() ? head.partial() : { ...head.partial(), slotNote: "base prompt sent instead" }) }]),
+          lazyBase(ctx, memo, level, owner, agent, depth + 1, id.replace(/:system$/, ":base"), teamRef, catalogue, ownerPath, replaced),
+        ]
+      }
+      return systemOrderAt(memo, addressOf(level, owner, "system:role", null, teamRef, catalogue)).flatMap(rowsOf)
+    },
   })
 }
 
-function lazySystemInstructions(
-  ctx: BuildContext,
-  memo: Memo,
+// One of OpenCode's own parts: it moves with the System order, but OpenCode
+// builds its content per request, so nothing here edits, toggles or splits it.
+function lazyOpencodePart(
   level: Level,
   owner: string | null,
-  agent: AgentSource | null,
+  item: Item,
   depth: number,
-  groupId?: string,
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
 ): Lazy {
-  return branch(memo, {
-    kind: "group",
-    id: groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`,
-    label: "Instructions",
+  return {
+    id: rowIdOf("item", level, owner, item.id, catalogue, ownerPath),
+    kind: "item",
+    label: item.title,
     depth,
-    add: "system",
+    expandable: false,
+    address: addressOf(level, owner, item.id, null, teamRef, catalogue),
     actions: noActions(),
-    children: () => {
-      const systems = sortedKind(ctx, "system", owner)
-      const role = systems.find((item) => item.id === "system:role")
-      const head =
-        role === undefined ? [] : [lazyItem(ctx, memo, level, owner, agent, role, depth + 1, teamRef, catalogue, ownerPath)]
-      return [
-        ...head,
-        ...systems
-          .filter((item) => item.id !== "system:role")
-          .map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath)),
-      ]
-    },
-  })
+    selfReview: () => false,
+    partial: () => ({ fromLabel: "OpenCode" }),
+    reviewCount: () => 0,
+    children: () => [],
+  }
+}
+
+/** The owner's complete System order: the first one stored down its chain, else the request's default order. */
+export function systemOrderAt(memo: Memo, address: Address): string[] {
+  const stored = storedSystemOrder(memo.ctx.orders, resolutionChain(address, memo.ctx.scopes))
+  return completeOrder(stored ?? [], defaultSystemOrder(userSystemRows(memo.ctx.items)))
+}
+
+/** The slot a System list row stands for: Role/persona and the Base group share the first one. */
+export function systemSlotOf(memo: Memo, row: Pick<Lazy, "id" | "kind" | "address">): string | undefined {
+  if (row.kind === "group") return row.id.endsWith(":base") ? firstSlot : undefined
+  const id = row.address?.section === null ? row.address.item : undefined
+  const item = id === undefined ? undefined : memo.ctx.items.find((entry) => entry.id === id)
+  return item === undefined ? undefined : slotOfItem(item)
 }
 
 function leafGroup(

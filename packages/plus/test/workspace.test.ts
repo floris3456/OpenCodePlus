@@ -53,14 +53,13 @@ test("the sidebar lists catalogues, origins, owners and teams with their members
   expect(ws.category?.label).toBe("Settings")
 })
 
-test("System lists Instructions and Base as open sections of one list and restores old sub-tab selections", () => {
+test("System is one flat list in request order, Base open in it, and restores old sub-tab selections", () => {
   const source = rowsOf()
   const known = new Set<string>()
   const system = workspaceOf(input(source.rows, { category: "group:project:build:system" }), known)
   expect(system.categories.map((node) => node.label)).not.toContain("Base")
   expect(system.list.map((row) => `${row.depth} ${row.label}${row.expandable ? (row.expanded ? " -" : " +") : ""}`)).toEqual([
-    "0 Instructions -",
-    "1 Role/persona +",
+    "0 Role/persona +",
     "0 Base -",
     "1 gpt.txt +",
   ])

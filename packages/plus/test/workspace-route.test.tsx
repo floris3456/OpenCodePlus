@@ -80,9 +80,16 @@ test("selected tools keep their marks across navigation and Space applies one re
   await fixture.waitForFrame((frame) => !frame.includes("2 selected"))
 })
 
-test("Base is a section of the System list, below Instructions, and a reveal lands on its row", async () => {
+test("Base sits in the flat System list right after Role/persona, and a reveal lands on its row", async () => {
   await using fixture = await renderInstructionsRoute({
-    snapshots: [createSnapshot({ agents: [build], items: [{ ...tool("base:gpt", "GPT base", "base instructions"), kind: "base", group: "none" }] })],
+    snapshots: [createSnapshot({
+      agents: [build],
+      items: [
+        { ...tool("system:role", "Role/persona", ""), kind: "system", group: "none" },
+        { ...tool("base:gpt", "GPT base", "base instructions"), kind: "base", group: "none" },
+        { ...tool("system:opencode/date", "Date", "OpenCode adds today's date."), kind: "system", opencodePart: "core/date" },
+      ],
+    })],
     width: 130, height: 40,
   })
   await reach(fixture, "item:project:build:base:gpt", "GPT base")
@@ -91,11 +98,16 @@ test("Base is a section of the System list, below Instructions, and a reveal lan
   expect(frame).not.toContain("4 Base")
   expect(frame).not.toContain("switch tab")
   expect(breadcrumb(frame)).toContain("System › Base")
-  // One list: up from the base prompt is the Base heading, then the Instructions rows above it.
+  // One list in request order: up from the base prompt is the Base heading,
+  // then Role/persona; below it the next part, OpenCode's date.
   expect(dispatch(fixture, "up")).toBe(true)
   await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Base"))
   expect(dispatch(fixture, "up")).toBe(true)
-  await fixture.waitForFrame((next) => breadcrumb(next).includes("System › Instructions"))
+  await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Role/persona"))
+  expect(dispatch(fixture, "down")).toBe(true)
+  expect(dispatch(fixture, "down")).toBe(true)
+  expect(dispatch(fixture, "down")).toBe(true)
+  await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Date"))
 })
 
 test("successful paste reveals its nested destination row instead of the paste target", async () => {

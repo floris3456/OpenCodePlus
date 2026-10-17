@@ -57,6 +57,7 @@ export function badgeLabels(node: TreeNode): string[] {
   if (node.badges.modified === true) labels.push("modified")
   if (node.badges.active === true) labels.push(node.badges.activeFrom === undefined ? "active" : `active (${node.badges.activeFrom})`)
   if (node.badges.inactive === true) labels.push("inactive")
+  if (node.badges.slotNote !== undefined) labels.push(node.badges.slotNote)
   if (node.badges.pinned === true) labels.push("pinned")
   if (node.badges.unsupported === true) labels.push("unsupported")
   if (node.owner?.linkMissing === true) labels.push("missing preset")

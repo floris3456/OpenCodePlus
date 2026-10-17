@@ -3,11 +3,13 @@ import type { Transform } from "@opencode/plugin/effect/registration"
 import type { Agent } from "@opencode/schema/agent"
 import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
-import { copyName, isSkillCopy, resolvedFor, type ApplyAgent, type ToolPlan } from "./apply.js"
+import { copyName, isSkillCopy, resolvedFor, systemOrders, type ApplyAgent, type ToolPlan } from "./apply.js"
 import { applies, catalogPath, isCodeModeToolEntry, type CustomizationRecord, type Item, type Scopes, type SplitRecord } from "./model.js"
 import { scrubLines } from "./tool-permissions.js"
 import { guidanceItemId } from "./paths.js"
 import { gateOf } from "./requires.js"
+import type { OrderRecord } from "./folders.js"
+import { arrangeBySlot, firstSlot } from "./system-order.js"
 import type { Plus } from "../rpc.js"
 
 interface AssembledInput {
@@ -20,6 +22,8 @@ interface AssembledInput {
   readonly splits: readonly SplitRecord[]
   readonly scopes: Scopes
   readonly installedTools?: readonly ToolPlan[] | undefined
+  /** Stored layout orders: the agent's System order lists the system parts in request order. */
+  readonly orders?: readonly OrderRecord[]
 }
 
 // Assembled view for one agent: the agent's installed system text read back
@@ -51,19 +55,21 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   const resolved = new Map(input.items.map((item) => [item.id, resolvedFor(item, owner, input)]))
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
   const scrubbed = scrubKeywords(input.items, resolved)
-  const system = systemEntry?.system === undefined ? [] : [preserveScrub(systemEntry.system, scrubbed)]
   // The Tools and rules row and user System rows as this agent receives them:
   // only the sections whose rows it has as they require (requires.ts), like
   // apply plans them.
   const has = (id: string) => input.items.some((item) => item.id === id && applies(item, owner.id))
   const gate = gateOf((id) => (has(id) ? resolved.get(id)?.enabled : undefined))
-  system.push(
+  const parts = [
+    ...(systemEntry?.system === undefined ? [] : [{ slot: firstSlot, text: systemEntry.system }]),
     ...input.items
       .filter((row) => (row.id === guidanceItemId || row.userSystem === true) && applies(row, owner.id) && resolved.get(row.id)?.enabled === true)
-      .map((row) => resolvedFor(row, owner, input, gate).assembled)
-      .filter((text) => text.trim().length > 0)
-      .map((text) => preserveScrub(text, scrubbed)),
-  )
+      .map((row) => ({ slot: row.id, text: resolvedFor(row, owner, input, gate).assembled }))
+      .filter((part) => part.text.trim().length > 0),
+  ]
+  // Listed in the order the agent's requests carry them (its System order).
+  const order = systemOrders({ ...input, agents: [owner] })[0]?.[1]
+  const system = (order === undefined ? parts : arrangeBySlot(parts, (part) => part.slot, order)).map((part) => preserveScrub(part.text, scrubbed))
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])

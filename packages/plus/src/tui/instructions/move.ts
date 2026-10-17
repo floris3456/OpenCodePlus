@@ -8,17 +8,20 @@
 // carry the B42 planner's text records and split boundaries instead of layout.
 import { folderIdOfRef, folderRef, type FolderRecord } from "../../instructions/folders.js"
 import {
+  baseMoveRefusal,
   listToken,
   planGroupMove,
   planRowMove,
   planSectionMove,
+  planSystemMove,
   type OpResult,
   rowToken,
   type LayoutChange,
   type LayoutRecords,
   type RowTarget,
 } from "../../instructions/ops.js"
-import { buildTreeMemo, lazyPath, type Lazy, type Memo, type MemoInput, type TreeNode } from "../../instructions/tree.js"
+import { firstSlot } from "../../instructions/system-order.js"
+import { buildTreeMemo, lazyPath, systemSlotOf, type Lazy, type Memo, type MemoInput, type TreeNode } from "../../instructions/tree.js"
 
 export interface MoveState {
   /** Tree row id of the row being moved; its token is stable while it moves. */
@@ -29,6 +32,8 @@ export interface MoveState {
   readonly status: string
   readonly section?: Exclude<OpResult, { refusal: string }>
   readonly isSection?: boolean
+  /** A System list row: it moves up and down only (System has no folders). */
+  readonly inSystem?: boolean
 }
 
 export type MoveStep = "up" | "down" | "in" | "out"
@@ -44,13 +49,18 @@ function folderTokenOf(node: Pick<TreeNode, "id" | "kind" | "address"> | undefin
   return token !== undefined && folderIdOfRef(token) !== undefined ? token : undefined
 }
 
-// Pick a row up. Refuses structural rows (level tabs and group headings).
+// Pick a row up. Refuses structural rows (level tabs and group headings), except
+// System's Base group, which moves with Role/persona as the request's first part.
 export function startMove(node: TreeNode, layout: LayoutRecords): MoveStart {
   if (node.address !== undefined && node.address.section !== null)
     return { state: { rowId: node.id, layout, target: node.id, isSection: true, status: `Moving "${node.label}"` } }
-  const token = listToken(node)
+  // Base prompts only live inside System, where they are alternatives for one part.
+  if (node.address?.item.startsWith("base:") === true) return { refusal: baseMoveRefusal }
+  const base = node.kind === "group" && node.id.endsWith(":base")
+  const token = base ? firstSlot : listToken(node)
   if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }
-  return { state: { rowId: node.id, layout, target: token, status: `Moving "${node.label}"` } }
+  const inSystem = base || node.address?.item.startsWith("system:") === true
+  return { state: { rowId: node.id, layout, target: token, status: `Moving "${node.label}"`, ...(inSystem ? { inSystem } : {}) } }
 }
 
 // One arrow press. `input` already carries the draft layout (the screen's
@@ -73,6 +83,16 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep, 
     const change = planSectionMove(input, node.id, step === "up" ? { before: neighbour.id } : { after: neighbour.id }, new Date().toISOString(), memo)
     if ("refusal" in change) return change
     return { state: { ...state, section: change, status: change.status }, expand: [] }
+  }
+  // A System list moves whole parts: the neighbour is the next row of another
+  // part, so Role/persona and Base pass each other's rows as one.
+  if (parent !== undefined && parent.id.startsWith("group:") && parent.id.endsWith(":system")) {
+    if (step === "in" || step === "out") return { refusal: "System has no folders: its list is the order the model receives the parts" }
+    const slot = systemSlotOf(memo, node)
+    const ahead = step === "up" ? siblings.slice(0, position).reverse() : siblings.slice(position + 1)
+    const neighbour = ahead.find((entry) => systemSlotOf(memo, entry) !== slot)
+    if (neighbour === undefined) return { refusal: step === "up" ? "Already at the top of its list" : "Already at the bottom of its list" }
+    return apply(state, planSystemMove(input, state.layout, node.id, step === "up" ? { before: neighbour.id } : { after: neighbour.id }, new Date().toISOString(), memo))
   }
   switch (step) {
     case "up":

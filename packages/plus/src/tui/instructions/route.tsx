@@ -1246,8 +1246,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node === undefined || node.badges.disabled !== undefined) return false
     if (isColdListRow(node)) return true
     if (node.address?.section !== undefined && node.address.section !== null) return true
-    if (node.kind === "item") return node.address !== undefined && node.address.section === null
+    // A base prompt moves only as System's Base group, together with Role/persona.
+    if (node.kind === "item") return node.address !== undefined && node.address.section === null && !node.address.item.startsWith("base:")
     if (node.kind === "agent" || node.kind === "team") return true
+    if (node.kind === "group" && node.id.endsWith(":base")) return true
     return folderName(node) !== undefined
   }
 
@@ -1534,6 +1536,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (filtering()) return [["type", "to filter"], ["↑↓", "move"], ["enter", "go to"], ["ctrl+space", "toggle"], ["esc", "clear filter"]]
     if (state.coldMove() !== undefined) return [["↑↓", "move in try order"], ["enter", "drop"], ["esc", "cancel"]]
     if (state.move()?.isSection) return [["↑↓", "reorder siblings"], ["←→", "cross-parent unsupported"], ["enter", "drop"], ["esc", "cancel"]]
+    if (state.move()?.inSystem) return [["↑↓", "move in the request"], ["enter", "drop"], ["esc", "cancel"]]
     if (state.move() !== undefined) return [["↑↓", "move"], ["→", "into folder"], ["←", "out"], ["enter", "drop"], ["esc", "cancel"]]
     const node = current()
     const row = currentRow()

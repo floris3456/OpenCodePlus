@@ -869,6 +869,38 @@ test("an all-matching scrub preserves the original in assembled, matching the li
   expect(result.tools.find((entry) => entry.id === "shell")?.description).toBe("git push")
 })
 
+// The readback lists the system parts in the order the agent's requests carry
+// them: a stored System order moves them there too.
+test("assembled lists the system parts in the agent's System order", async () => {
+  const { project } = await tempRoot()
+  const location = fullContext({ directory: project }).location
+  const ctx = context({ location, agent: agentHarness([agentInfo("alpha", "agent prompt")]).domain })
+  const items = [
+    { id: "system:rules", kind: "system" as const, group: "none" as const, title: "Rules", text: "rules", enabled: true, fingerprint: fingerprint("rules"), userSystem: true },
+  ]
+  const records = [
+    { type: "customization" as const, level: "project" as const, agent: "alpha", item: "system:rules", section: null, state: "on" as const, basedOn: fingerprint("rules"), updated: UPDATED },
+  ]
+  const input = {
+    ctx,
+    agent: "alpha",
+    items,
+    agents: [{ id: "alpha", level: "project" as const }],
+    records,
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: new Set<string>() },
+  }
+  const unordered = await assembled(input)
+  if ("ok" in unordered) throw new Error("expected assembled result")
+  expect(unordered.system).toEqual(["agent prompt", "rules"])
+  const ordered = await assembled({
+    ...input,
+    orders: [{ type: "order", level: "project", scope: "group:group:project:alpha:system", items: ["system:rules", "first"], updated: UPDATED }],
+  })
+  if ("ok" in ordered) throw new Error("expected assembled result")
+  expect(ordered.system).toEqual(["rules", "agent prompt"])
+})
+
 // A team member's runtime chain is its team's: `project/m@crew` beats the
 // per-agent `project/m` its Agents row reads. The readback resolves the
 // member with the team and the publish context apply ran it with, so a

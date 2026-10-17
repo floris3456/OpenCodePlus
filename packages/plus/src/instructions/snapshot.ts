@@ -43,6 +43,7 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.order === undefined ? {} : { order: item.order }),
     ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
     ...(item.userSystem === undefined ? {} : { userSystem: item.userSystem }),
+    ...(item.opencodePart === undefined ? {} : { opencodePart: item.opencodePart }),
     ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
     ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
     ...(item.pinned === undefined ? {} : { pinned: item.pinned }),

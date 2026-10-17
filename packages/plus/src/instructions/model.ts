@@ -93,6 +93,12 @@ export interface Item {
   readonly userBase?: boolean
   /** True for user-created System rows: a global file Plus plans per agent (deletable). */
   readonly userSystem?: boolean
+  /**
+   * OpenCode's own system parts (read-only System rows): the request slot the
+   * part fills (system-order.ts). Its text only says what OpenCode puts there;
+   * the real content is built per request.
+   */
+  readonly opencodePart?: string
   /** True for Code Mode tools: applied through deny rules and the catalog hook. */
   readonly codemode?: boolean
   /** The Code Mode namespace the tool is grouped under (`tool.options.namespace`). */

@@ -150,6 +150,7 @@ const MoveDescription =
   "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
   "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
   "A section moves before or after a sibling under the same parent inside its own item; the item's text is rewritten so the request order changes (a heading-derived move folds the consumed same-level child texts into the parent).\n" +
+  "A System list is the order the model receives the owner's system parts: moving a row there (before/after only; System has no folders) moves that part in the owner's requests. Role/persona and the Base group are one part and move together; a base prompt does not move alone; OpenCode's own parts (system:opencode/*) move but are not edited. An agent without its own System order uses the first one down its chain (preset, Defaults entries, Defaults for every agent).\n" +
   "Category membership is saved for this owner and shared with the TUI. Ordinary category moves retain the row's execution settings."
 
 const ResetDescription =
