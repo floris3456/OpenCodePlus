@@ -24,6 +24,8 @@ export interface RowWindow<T> {
   /** The index one past the last rendered row. */
   readonly end: number
   readonly total: number
+  /** One past the viewport's last row; beyond total when the list scrolls past its rows. */
+  readonly viewEnd: number
   readonly ref: (scroll: ScrollBoxRenderable) => void
 }
 
@@ -35,16 +37,21 @@ export interface RowWindow<T> {
  * keyboard moves the selection outside the mounted window, the window also
  * follows the selection (centred) so the selected row exists before the list
  * scrolls it into view. Its length always stays `viewport + 2 * margin`.
+ *
+ * With `key`, only a selection on another row counts as a step: when a poll
+ * adds rows above, the selection keeps its row at a new index and the window
+ * stays with the viewport.
  */
 export function createRowWindow<T>(options: {
   readonly context: Plugin.Context
   readonly items: () => readonly T[]
   readonly selectedIndex: () => number
+  readonly key?: (item: T) => string
 }): RowWindow<T> {
   let scroll: ScrollBoxRenderable | undefined
   // The selection that the last window was built for: a change means the
   // keyboard moved, not the viewport, and the window must follow it.
-  let lastSelected = options.selectedIndex()
+  let lastSelected: number | string = options.selectedIndex()
   const [view, setView] = createSignal({ top: 0, height: DEFAULT_VIEWPORT })
 
   const sync = () => {
@@ -56,16 +63,22 @@ export function createRowWindow<T>(options: {
   options.context.renderer.on("frame", sync)
   onCleanup(() => options.context.renderer.off("frame", sync))
 
-  const frame = createMemo((): { rows: readonly T[]; start: number; end: number; total: number } => {
+  const frame = createMemo((): { rows: readonly T[]; start: number; end: number; total: number; viewEnd: number } => {
     const items = options.items()
     const total = items.length
-    if (total === 0) return { rows: [], start: 0, end: 0, total: 0 }
-    const size = Math.max(1, view().height)
+    if (total === 0) return { rows: [], start: 0, end: 0, total: 0, viewEnd: 0 }
+    // view() wakes the memo when the viewport moved, but it lags a frame behind
+    // a scroll made since; when the rows change in between (older rows loaded
+    // after a key step), the scrollbox's own position is the one to cover.
+    const synced = view()
+    const live = scroll !== undefined && !scroll.isDestroyed && scroll.viewport.height > 0 ? scroll : undefined
+    const size = Math.max(1, live?.viewport.height ?? synced.height)
     const span = size + LIST_WINDOW_MARGIN * 2
     const selected = Math.max(0, Math.min(total - 1, options.selectedIndex()))
-    const top = view().top
-    const moved = selected !== lastSelected
-    lastSelected = selected
+    const top = live?.scrollTop ?? synced.top
+    const identity = options.key ? options.key(items[selected]!) : selected
+    const moved = identity !== lastSelected
+    lastSelected = identity
     const near = selected >= top - LIST_WINDOW_MARGIN && selected < top + size + LIST_WINDOW_MARGIN
     // While the viewport holds the selection, follow the viewport. When the
     // selection moved outside it, centre the selection instead — this is a key
@@ -73,7 +86,7 @@ export function createRowWindow<T>(options: {
     const anchor = near || !moved ? top - LIST_WINDOW_MARGIN : selected - Math.floor(size / 2)
     const start = Math.max(0, Math.min(anchor, Math.max(0, total - span)))
     const end = Math.min(total, start + span)
-    return { rows: items.slice(start, end), start, end, total }
+    return { rows: items.slice(start, end), start, end, total, viewEnd: top + size }
   })
 
   return {
@@ -88,6 +101,9 @@ export function createRowWindow<T>(options: {
     },
     get total() {
       return frame().total
+    },
+    get viewEnd() {
+      return frame().viewEnd
     },
     ref: (next: ScrollBoxRenderable) => {
       scroll = next

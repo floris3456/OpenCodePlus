@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { Definition, type Plus } from "../../rpc.js"
 import {
@@ -228,15 +228,8 @@ export function MonitorView(props: MonitorViewProps) {
     return fallback === undefined ? undefined : { directory: fallback.directory, workspace: fallback.workspaceID }
   }
 
-  const flight = { busy: false, again: false, generation: 0 }
-  const refresh = () => {
-    if (flight.busy) {
-      flight.again = true
-      return
-    }
-    flight.busy = true
-    const generation = ++flight.generation
-    const query = queryOf(
+  const currentQuery = () =>
+    queryOf(
       { ...settings(), tab: tab() },
       {
         sessionID: sessionID(),
@@ -247,13 +240,100 @@ export function MonitorView(props: MonitorViewProps) {
         id: activeDrill()?.requestID,
       },
     )
+
+  // The latest Cache page grows into one list: older requests load a page at a
+  // time ahead of the scroll position (loadOlder). Once a page has loaded,
+  // every row a poll returns is kept as well, so rows that slide off the
+  // newest page stay in the list. Paging with [ ] or another scope starts over.
+  const older = {
+    rows: new Map<string, Plus.MonitorRequest>(),
+    cursor: undefined as NonNullable<Plus.MonitorReport["requestPage"]>["older"],
+    busy: false,
+    scope: 0,
+  }
+  createEffect(() => {
+    pageScope()
+    requestPage()
+    older.rows = new Map()
+    older.cursor = undefined
+    older.busy = false
+    older.scope++
+  })
+  const withOlder = (next: Plus.MonitorReport, since: Plus.MonitorQueryInput["since"]) => {
+    if (older.rows.size === 0 || next.requests === undefined || next.requestPage === undefined) return next
+    for (const request of next.requests) older.rows.set(request.id, request)
+    // A moving window (last hour, …) drops what fell out of it.
+    if (typeof since === "number")
+      older.rows.forEach((request, id) => {
+        if (request.at < since) older.rows.delete(id)
+      })
+    const requests = [...older.rows.values()].toSorted((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1))
+    return {
+      ...next,
+      requests,
+      requestPage: {
+        total: next.requestPage.total,
+        returned: requests.length,
+        limit: next.requestPage.limit,
+        complete: older.cursor === undefined,
+        ...(older.cursor === undefined ? {} : { older: older.cursor }),
+      },
+    }
+  }
+  // Rows of the scope not loaded yet, in the latest view; a text filter can't
+  // tell how many of them it would keep.
+  const pending = () => {
+    const page = report()?.requestPage
+    if (page?.older === undefined || requestPage() !== undefined || settings().filterText) return 0
+    return Math.max(0, page.total - page.returned)
+  }
+  // A page of 100, or up to the server's 500 to reach a viewport dragged further.
+  const loadOlder = (rows: number) => {
+    const current = report()
+    const cursor = current?.requestPage?.older
+    if (older.busy || current === undefined || cursor === undefined) return
+    if (tab() !== "cache" || requestPage() !== undefined || activeDrill()?.requestID) return
+    older.busy = true
+    const scope = older.scope
+    const query = currentQuery()
+    const limit = Math.min(500, Math.ceil(Math.max(rows, 100) / 100) * 100)
+    void plus["monitor.query"](
+      { ...query, requestPage: { cursor, direction: "older", limit }, fullText: fullText() },
+      { location: location() },
+    )
+      .then(
+        (page) => {
+          if (scope !== older.scope) return
+          // Free before the rows land: they can ask for the next page at once.
+          older.busy = false
+          for (const request of [...(page.requests ?? []), ...(report()?.requests ?? [])]) older.rows.set(request.id, request)
+          older.cursor = page.requestPage?.older
+          setReport(withOlder(report()!, query.since))
+        },
+        (error: unknown) => {
+          if (scope === older.scope) older.busy = false
+          setFailure(error instanceof Error ? error.message : String(error))
+        },
+      )
+  }
+
+  const flight = { busy: false, again: false, generation: 0 }
+  const refresh = () => {
+    if (flight.busy) {
+      flight.again = true
+      return
+    }
+    flight.busy = true
+    const generation = ++flight.generation
+    const query = currentQuery()
     void plus["monitor.query"](
       { ...query, requestPage: requestPage(), pages: pages(), fullText: fullText() },
       { location: location() },
     )
       .then(
-        (next) => {
+        (raw) => {
           if (generation !== flight.generation) return
+          const next = withOlder(raw, query.since)
           // Compute maxIdx from the FILTERED view so the selection always points
           // at an actually-visible row; the text filter drops rows independently
           // of the server query and must not leave the selector past the end.
@@ -268,17 +348,21 @@ export function MonitorView(props: MonitorViewProps) {
                 ? shown()?.sessions?.[selected()]?.sessionID
                 : cacheRequests(shown(), settings().missesOnly)[selected()]?.id
               : undefined
-          setReport(next)
-          setFailure(undefined)
-          setSelected((index) => {
-            if (previousID !== undefined) {
-              const at =
-                tab() === "sessions"
-                  ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
-                  : cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
-              if (at !== -1) return at
-            }
-            return Math.min(index, maxIdx)
+          // One update: the rows and the selection that keeps its row change
+          // together, so no effect sees the new rows under the old index.
+          batch(() => {
+            setReport(next)
+            setFailure(undefined)
+            setSelected((index) => {
+              if (previousID !== undefined) {
+                const at =
+                  tab() === "sessions"
+                    ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
+                    : cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
+                if (at !== -1) return at
+              }
+              return Math.min(index, maxIdx)
+            })
           })
         },
         (error: unknown) => setFailure(error instanceof Error ? error.message : String(error)),
@@ -366,10 +450,12 @@ export function MonitorView(props: MonitorViewProps) {
   createEffect(() => setRows("groups", reconcile(groups(), { key: "key" })))
   createEffect(() => setRows("feed", reconcile(shown()?.feed ?? [], { key: "callID" })))
 
-  // Scroll the selected row into view, but only when the selection (or tab)
-  // moved — a poll returns a fresh report every second and must not yank a
-  // user who scrolled the list away from the selection.
-  let lastFollowed: { tab: TabName; index: number } | undefined
+  // Scroll the selected row into view, but only when the selection moved to
+  // another row (or tab) — a poll returns a fresh report every second and must
+  // not yank a user who scrolled the list away from the selection. When a poll
+  // adds rows above, the selection keeps its row at a new index; a list
+  // scrolled down moves by as many rows, so the rows on screen stay put.
+  let lastFollowed: { tab: TabName; row: string | undefined; index: number } | undefined
   const [laidOut, setLaidOut] = createSignal(0)
   createEffect(() => {
     laidOut()
@@ -380,6 +466,12 @@ export function MonitorView(props: MonitorViewProps) {
       lastFollowed = undefined
       return
     }
+    const row =
+      current === "tools"
+        ? rows.groups[index]?.key
+        : current === "sessions"
+          ? shown()?.sessions?.[index]?.sessionID
+          : cacheRequests(shown(), settings().missesOnly)[index]?.id
     if (lastFollowed?.tab === current && lastFollowed.index === index) return
     const scroll = scrolls[current]
     if (scroll === undefined) return
@@ -392,7 +484,13 @@ export function MonitorView(props: MonitorViewProps) {
       props.context.renderer.on("frame", retry)
       return
     }
-    lastFollowed = { tab: current, index }
+    const shift = lastFollowed?.tab === current && row !== undefined && lastFollowed.row === row
+    const previous = lastFollowed?.index ?? index
+    lastFollowed = { tab: current, row, index }
+    if (shift) {
+      if (scroll.scrollTop > 0) scroll.scrollTo(scroll.scrollTop + index - previous)
+      return
+    }
     if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
     if (index < scroll.scrollTop) scroll.scrollTo(index)
   })
@@ -751,6 +849,7 @@ export function MonitorView(props: MonitorViewProps) {
           if (tab() !== "cache") return
           setSelected(0)
           setRequestPage(undefined)
+          scrolls.cache?.scrollTo(0)
         },
       },
       {
@@ -1215,6 +1314,8 @@ export function MonitorView(props: MonitorViewProps) {
                   missesOnly={settings().missesOnly}
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.cache = ref)}
+                  pending={pending()}
+                  onNearEnd={loadOlder}
                 />
               </Show>
               <Show when={tab() === "tools"}>

@@ -356,3 +356,37 @@ test("on pending, ask once more on the next session event", async () => {
 
   cleanup?.()
 })
+
+test("dropped thinking alerts once per first dropped block, with the miss switch off too", async () => {
+  const harness = createHarness()
+  const cleanup = await plusPlugin.setup(harness.context)
+  harness.mountSlot()
+  const step = async (stepID: string, result: Record<string, unknown>) => {
+    harness.setStepResult({ status: "ready", stepID, requestID: `req_${stepID}`, notReused: 0, causeText: "unknown", miss: false, ...result })
+    await harness.emit({ type: "session.step.ended", data: { sessionID: "ses_1", assistantMessageID: stepID, tokens: { input: 100, output: 20 } } })
+  }
+  const dropped = { blocks: 12, first: "messages.1.content.0", reasons: ["prefix_binding_mismatch"] }
+
+  // With a miss on the same step, one toast names both.
+  await step("msg_a", { miss: true, notReused: 433_771, cause: "unknown", causeText: "sent prefix unchanged", droppedThinking: dropped })
+  expect(harness.toasts).toEqual([
+    {
+      variant: "warning",
+      message: "Claude dropped 12 earlier thinking blocks and answered without them · Cache shortfall estimate · 433,771 tokens · sent prefix unchanged · type /monitor for details",
+    },
+  ])
+
+  // The same blocks stay dropped on the next steps: no repeat, even as the count grows.
+  await step("msg_b", { droppedThinking: { ...dropped, blocks: 13 } })
+  expect(harness.toasts).toHaveLength(1)
+
+  // A drop from an earlier block is new; it alerts with cache-miss notices off.
+  await harness.settings().find((setting) => setting.id === "plus.miss-notices")!.run()
+  harness.toasts.length = 0
+  await step("msg_c", { miss: true, notReused: 5_000, causeText: "cache expired", droppedThinking: { blocks: 1, first: "messages.0.content.1", reasons: [] } })
+  expect(harness.toasts).toEqual([
+    { variant: "warning", message: "Claude dropped 1 earlier thinking block and answered without them · type /monitor for details" },
+  ])
+
+  cleanup?.()
+})

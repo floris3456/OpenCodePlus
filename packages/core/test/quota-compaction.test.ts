@@ -21,6 +21,7 @@ import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Money } from "@opencode/schema/money"
 import { Model } from "@opencode/core/model"
+import { Location } from "@opencode/core/location"
 import { DateTime, Effect, Layer, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
@@ -115,6 +116,7 @@ const it = testEffect(
         Agent.node.replace(agents),
         Model.node.replace(catalog),
         SessionRunnerModel.node.replace(models),
+        Location.node.replace(Location.boundNode({ directory: AbsolutePath.make("/project") })),
       ],
     },
   ),
@@ -601,5 +603,88 @@ it.effect("typed refusal and failed compaction cannot fabricate a checkpoint", (
       status: "failed",
     })
     expect(compactionBoundary(yield* store.context(session.id)).checkpoint).toBeUndefined()
+  }),
+)
+
+const summarized = (recent = "") =>
+  SessionMessage.CompactionCompleted.make({
+    id: SessionMessage.ID.create(),
+    type: "compaction",
+    status: "completed",
+    reason: "auto",
+    summary: "## Objective\n- Keep this task",
+    recent,
+    time: { created: DateTime.makeUnsafe(0) },
+  })
+const said = (text: string): SessionMessage.Info => ({
+  id: SessionMessage.ID.create(),
+  type: "user",
+  text,
+  time: { created: DateTime.makeUnsafe(0) },
+})
+
+it.effect("an empty assistant held for a retry does not move the chat past its checkpoint", () =>
+  Effect.sync(() => {
+    const checkpoint = summarized()
+    const replied = (fields: { error?: boolean; completed?: boolean }): SessionMessage.Info => ({
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      agent: Agent.defaultID,
+      model: resolved.ref,
+      content: [],
+      ...(fields.error ? { error: { type: "provider.internal", message: "CPA moves this chat" } } : {}),
+      time: { created: DateTime.makeUnsafe(0), ...(fields.completed ? { completed: DateTime.makeUnsafe(1) } : {}) },
+    })
+    // A refused request, and the placeholder of the retry after it, leave the checkpoint unconsumed.
+    expect(compactionBoundary([checkpoint, said("continue"), replied({ error: true, completed: true })]).checkpoint).toBe(
+      checkpoint.id,
+    )
+    expect(compactionBoundary([checkpoint, said("continue"), replied({})]).checkpoint).toBe(checkpoint.id)
+    // A reply that finished consumed it.
+    expect(compactionBoundary([checkpoint, said("continue"), replied({ completed: true })]).checkpoint).toBeUndefined()
+  }),
+)
+
+it.effect("an account switch reissues a recent summary instead of writing another", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.compact = true
+        event.portable = true
+        event.compactionModel = cheap.ref
+        event.metadata = { ...event.metadata, "quota.switch": true }
+      }),
+    )
+    const checkpoint = summarized("Earlier exchange")
+    const recent = yield* insertSession(Session.ID.make("ses_quota_switch_recent"))
+    requests = []
+    const outcome = yield* compaction.compact({
+      reason: "auto",
+      context: loaded(recent, [checkpoint, said("continue")]),
+    })
+    expect(outcome.status).toBe("completed")
+    expect(requests).toEqual([])
+    const [reissued] = yield* store.context(recent.id)
+    expect(reissued).toMatchObject({
+      type: "compaction",
+      status: "completed",
+      summary: checkpoint.summary,
+      metadata: { "quota.switch": true, "compaction.reused": true },
+    })
+    expect(reissued?.id).not.toBe(checkpoint.id)
+    const tail = reissued?.type === "compaction" && reissued.status === "completed" ? reissued.recent : undefined
+    expect(tail).toContain("Earlier exchange")
+    expect(tail).toContain("continue")
+    // More than 10k tokens since the summary: the switch writes a new one.
+    const grown = yield* insertSession(Session.ID.make("ses_quota_switch_grown"))
+    requests = []
+    yield* compaction.compact({
+      reason: "auto",
+      context: loaded(grown, [checkpoint, said("long paste ".repeat(5_000))]),
+    })
+    expect(requests.map((request) => String(request.model.id))).toEqual(["cheap-summary"])
   }),
 )

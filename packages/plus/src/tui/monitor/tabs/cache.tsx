@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, For, Show } from "solid-js"
+import { createEffect, For, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import type { Plus } from "../../../rpc.js"
 import {
@@ -27,7 +27,15 @@ export interface CacheTabProps {
   readonly active: boolean
   readonly onScrollRef?: (ref: ScrollBoxRenderable) => void
   readonly collection?: Plus.MonitorPageSection
+  /** Older rows not loaded yet. The list keeps room for them below its rows,
+   * so the scrollbar spans the whole list from the start. */
+  readonly pending?: number
+  /** The viewport is within LOAD_AHEAD rows of the last row: load at least this many older rows. */
+  readonly onNearEnd?: (rows: number) => void
 }
+
+/** Older rows load while this many rows are still below the viewport. */
+const LOAD_AHEAD = 60
 
 export function CacheTab(props: CacheTabProps) {
   const theme = () => props.context.theme
@@ -57,8 +65,17 @@ export function CacheTab(props: CacheTabProps) {
     context: props.context,
     items: requests,
     selectedIndex: () => props.selectedIndex,
+    key: (request) => request.id,
   })
   const rows = createRowStore(() => window, "id")
+
+  // A viewport dragged into the room kept for pending rows asks for every row
+  // down to it, not just the next page.
+  createEffect(() => {
+    const rows = window.viewEnd + LOAD_AHEAD - window.total
+    if (window.total > 0 && rows > 0) untrack(() => props.onNearEnd?.(rows))
+  })
+  const below = () => window.total - window.end + (props.pending ?? 0)
 
   const position = () => {
     const total = window.total
@@ -227,8 +244,8 @@ export function CacheTab(props: CacheTabProps) {
                         )
                       }}
                     </For>
-                    <Show when={window.end < window.total}>
-                      <box height={window.total - window.end} flexShrink={0} />
+                    <Show when={below() > 0}>
+                      <box height={below()} flexShrink={0} />
                     </Show>
                   </scrollbox>
                 </Show>

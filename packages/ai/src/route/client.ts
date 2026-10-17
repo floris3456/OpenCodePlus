@@ -58,6 +58,7 @@ export interface Route<
   readonly defaults: RouteDefaults
   readonly body: RouteBody<Body>
   readonly supportsEffortUpdates?: (request: LLMRequest) => boolean
+  readonly supportsPrewarm?: (request: LLMRequest) => boolean
   readonly sanitizer?: LanguageModelSanitizerCompatibility
   readonly with: {
     <Next extends CompactionOperations | undefined>(
@@ -320,6 +321,9 @@ export interface MakeTransportInput<Body, Prepared, Frame, Event, State> {
   readonly headers?: (input: { readonly request: LLMRequest }) => Record<string, string>
   /** Runnable transport route. */
   readonly transport: Transport<Body, Prepared, Frame>
+  /** Whether this request with `generation.maxTokens: 0` refreshes the prompt cache without generating
+   * output. The protocol must lower that request and the transport must read its reply. */
+  readonly supportsPrewarm?: (request: LLMRequest) => boolean
   /** Route/request defaults used when compiling requests for this route. */
   readonly defaults?: RouteDefaultsInput
 }
@@ -390,6 +394,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
       defaults: routeInput.defaults ?? {},
       body: protocol.body,
       supportsEffortUpdates: protocol.supportsEffortUpdates,
+      supportsPrewarm: routeInput.supportsPrewarm,
       sanitizer: protocol.sanitizer,
       with: (patch: RoutePatch<Body, Prepared>) => {
         const { compact, id, provider, providerMetadataKey, auth, transport, endpoint, ...defaults } = patch

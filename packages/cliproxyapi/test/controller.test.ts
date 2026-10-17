@@ -116,7 +116,9 @@ test("Pacer switches use per-chat summaries and warming gates without a coordina
   expect(disabled.refusal?.type).toBe("quota.context-unavailable")
   await f.controller.decide({ ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "summary-new" } })
   await f.controller.response("ses_test", "proxy", "model", refusal())
-  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(false)
+  // Refused again for another move: the new checkpoint is the one the next switch replaces.
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  expect([...f.store.values()][0]?.switching).toBe("summary-new")
   await f.controller.tick()
   expect(f.state.reads).toBe(0)
 })
@@ -142,6 +144,44 @@ test("Pacer keeps opaque checkpoints local and a warming refusal blocks further 
     "compaction",
   )
   expect(f.state.reads).toBe(0)
+})
+test("a restart keeps a chat Pacer already served on its signed history", async () => {
+  const f = fixture(undefined, undefined, true)
+  await f.controller.decide({ ...f.event(), boundary: { fresh: true, portable: true } })
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(2))
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(false)
+  // The service restarts: same storage, no reply seen yet by the new process.
+  const restarted = new QuotaController(() => ({ routes: f.live.routes, reactive: true }), "installation", {
+    read: async (key) => f.store.get(key),
+    write: async (key, value) => {
+      f.store.set(key, value)
+    },
+    notify: async () => {},
+    fetch,
+    now: Date.now,
+  })
+  const event = f.event()
+  await restarted.decide(event)
+  expect(event.compact).toBeUndefined()
+  expect(await restarted.requiresPortable("ses_test", "proxy", "model", "context")).toBe(false)
+  const native = { ...f.event(), boundary: { fresh: false, portable: false } }
+  await restarted.decide(native)
+  expect(native.compact).toBeUndefined()
+  expect(f.state.reads).toBe(0)
+})
+test("a compaction sends the history in the form the chat's own requests use", async () => {
+  const f = fixture(undefined, undefined, true)
+  // History from before Pacer served this chat replays portably.
+  await f.controller.decide(f.event())
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(true)
+  const manual: SessionCompactionDecision = { ...f.event(), reason: "manual" }
+  await f.controller.decide(manual)
+  expect(manual.compact).toBeUndefined()
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "compaction")).toBe(true)
+  const other = { ...f.event(), sessionID: Session.ID.make("ses_other"), boundary: { fresh: true, portable: true } }
+  await f.controller.decide(other)
+  expect(await f.controller.requiresPortable("ses_other", "proxy", "model", "compaction")).toBe(false)
 })
 test("shadow enrollment and reminders never request compaction or a checkpoint", async () => {
   const f = fixture()
@@ -734,7 +774,7 @@ test("an account-switch refusal compacts once with the configured model, then th
   expect(later.compact).toBeUndefined()
 })
 
-test("a switch refused again after its compaction surfaces instead of compacting in a loop", async () => {
+test("a switch refused again after its compaction moves on from that checkpoint, a bounded number of times", async () => {
   const f = fixture("proxy/cheap-model")
   f.state.known = true
   f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
@@ -742,9 +782,24 @@ test("a switch refused again after its compaction surfaces instead of compacting
   await f.controller.response("ses_test", "proxy", "model", switchRefusal())
   expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
   await f.controller.decide(f.event())
-  await f.controller.decide({ ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new" } })
-  await f.controller.response("ses_test", "proxy", "model", switchRefusal())
-  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(false)
+  // CPA sent the new checkpoint to the used-up account, which failed, and moves the chat once more.
+  const checkpoints = ["cmp_1", "cmp_2", "cmp_3"]
+  const retried = []
+  for (const checkpoint of checkpoints) {
+    await f.controller.decide({ ...f.event(), boundary: { fresh: false, portable: true, checkpoint } })
+    await f.controller.response("ses_test", "proxy", "model", switchRefusal())
+    retried.push(await f.controller.retry("ses_test", "proxy", "model"))
+    if (checkpoint !== "cmp_1") continue
+    expect([...f.store.values()][0]?.switching).toBe("cmp_1")
+    expect((await f.controller.status("ses_test"))[0]?.text).toBe(
+      "Small is used up; this chat compacts before it continues on Large. This chat was just summarized, so it continues with that summary.",
+    )
+    // The decision before the rebuilt request asks to replace that checkpoint; core reissues it.
+    const again = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint } }
+    await f.controller.decide(again)
+    expect(again).toMatchObject({ compact: true, portable: true, metadata: { "quota.switch": true } })
+  }
+  expect(retried).toEqual([true, true, false])
   expect([...f.store.values()][0]?.switching).toBeUndefined()
   // Repeated refusals without a new checkpoint (a compaction that never ran) are bounded too.
   const g = fixture("proxy/cheap-model")

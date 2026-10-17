@@ -210,3 +210,20 @@ test("partial and nonfinite inclusive totals are refused at the persistence boun
   db.requestObserved("r", { version: 1, completeness: "partial", inputTokens: 10, cacheReadInputTokens: 11, cacheWriteInputTokens: -1 })
   expect(db.getRequest("r")?.observation).toMatchObject({ inconsistent: true, cacheWriteInputTokens: -1 })
 })
+
+test("provider-reported dropped thinking reaches the request, its detail and the step alert", async () => {
+  const db = await ledger()
+  db.requestStarted({ id: "dropped", sessionID: "s", kind: "step", started: 100 })
+  db.requestEnded("dropped", { ended: 200, status: "completed" })
+  const droppedThinking = { blocks: 2, first: "messages.1.content.0", reasons: ["prefix_binding_mismatch"] }
+  db.requestObserved("dropped", { version: 1, completeness: "final", droppedThinking })
+  expect(db.getRequest("dropped")?.observation?.droppedThinking).toEqual(droppedThinking)
+  const reopened = createLedger(db.path)
+  expect(reopened.getRequest("dropped")?.observation?.droppedThinking).toEqual(droppedThinking)
+  reopened.close()
+  const report = queryMonitor(db, { scope: "session", sessionID: "s", view: "cache", id: "dropped" }, { now: 300 })
+  expect(report.detail?.request.droppedThinking).toEqual(droppedThinking)
+  expect(report.detail?.lines).toContain(
+    "Provider dropped 2 earlier thinking blocks before the model read this request, from messages.1.content.0 on; the answer was made without that reasoning. Reported reason: the request before them changed since they were written",
+  )
+})

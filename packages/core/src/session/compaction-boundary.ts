@@ -7,9 +7,14 @@ export function compactionBoundary(messages: ReadonlyArray<SessionMessage.Info>)
   const portable = !messages.some(
     (message) => message.type === "compaction" && message.status === "completed" && !!message.providerContext,
   )
+  // A step held for a retry leaves an empty, unfinished assistant behind; it consumed nothing.
   const advanced = messages
     .slice(index + 1)
-    .some((message) => message.type === "assistant" && (!message.error || message.content.length > 0))
+    .some(
+      (message) =>
+        message.type === "assistant" &&
+        (message.content.length > 0 || (message.time.completed !== undefined && !message.error)),
+    )
   return {
     fresh: index < 0 && !advanced,
     portable,

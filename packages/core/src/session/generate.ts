@@ -1,6 +1,6 @@
 export * as SessionGenerate from "./generate.js"
 
-import { LLMClient, LLMRequest, Message, type AIError, type Usage } from "@opencode/ai"
+import { GenerationOptions, LLMClient, LLMRequest, Message, type AIError, type Usage } from "@opencode/ai"
 import type { Model } from "@opencode/schema/model"
 import type { FileSystem } from "../filesystem.js"
 import { Effect } from "effect"
@@ -32,6 +32,8 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
   agent?: Agent.ID
   /** Pins the request to an earlier selection; used by warming to reuse the last real request's model. */
   model?: Model.Ref
+  /** Only refresh the prompt cache: where the route supports a zero-token request, nothing is generated. */
+  prewarm?: boolean
 }) {
   const instances = yield* Instance.Service
   const llm = yield* LLMClient.Service
@@ -75,9 +77,13 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
     // cache policy keeps the last history boundary marked so the provider caches the
     // prefix just before the prompt; a real step after a pause then reads it, instead
     // of only the previous turn's boundary.
+    // The output limit is not part of the cached prefix, so a pre-warm reads and writes the same cache.
     const request = LLMRequest.update(prepared.request, {
       cache: { tools: true, system: true, messages: { tail: 2 } },
       messages: [...prepared.request.messages, Message.user(input.prompt)],
+      ...(input.prewarm && prepared.request.model.route.supportsPrewarm?.(prepared.request)
+        ? { generation: GenerationOptions.make({ ...prepared.request.generation, maxTokens: 0 }) }
+        : {}),
     })
     yield* Effect.logInfo("sending session generation request", {
       sessionID: selection.session.id,

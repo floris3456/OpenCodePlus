@@ -160,12 +160,14 @@ export const Plugin = define({
         yield* Effect.logInfo("warming session", { sessionID, last })
         // The ping pins the agent and model of the last real request. A blank Enter only
         // commits the composer selection, so the session's stored selection must not retarget
-        // the cache the loop is keeping warm. The core generate path reads these fields even
-        // though the plugin session surface only declares `sessionID` and `prompt`.
+        // the cache the loop is keeping warm. The ping wants no answer: where the provider
+        // accepts it, it asks for zero output tokens. The core generate path reads these fields
+        // even though the plugin session surface only declares `sessionID` and `prompt`.
         const ping: Parameters<typeof ctx.session.generate>[0] & {
           agent: Agent.ID
           model: Model.Ref
-        } = { sessionID, prompt: settings.prompt, agent: current.agent, model: current.model }
+          prewarm: boolean
+        } = { sessionID, prompt: settings.prompt, agent: current.agent, model: current.model, prewarm: true }
         let pingError: string | undefined
         let pingMissingAgent = false
         yield* ctx.session

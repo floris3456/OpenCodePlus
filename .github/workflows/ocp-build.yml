@@ -3,12 +3,12 @@ name: ocp-build
 on:
   push:
     branches:
-      - v2
+      - v2-plus-1
     tags:
       - "v*"
   pull_request:
     branches:
-      - v2
+      - v2-plus-1
   workflow_dispatch:
 
 permissions:
