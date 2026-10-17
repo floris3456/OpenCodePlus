@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { Definition, type Plus } from "../../rpc.js"
 import {
@@ -268,17 +268,21 @@ export function MonitorView(props: MonitorViewProps) {
                 ? shown()?.sessions?.[selected()]?.sessionID
                 : cacheRequests(shown(), settings().missesOnly)[selected()]?.id
               : undefined
-          setReport(next)
-          setFailure(undefined)
-          setSelected((index) => {
-            if (previousID !== undefined) {
-              const at =
-                tab() === "sessions"
-                  ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
-                  : cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
-              if (at !== -1) return at
-            }
-            return Math.min(index, maxIdx)
+          // One update: the rows and the selection that keeps its row change
+          // together, so no effect sees the new rows under the old index.
+          batch(() => {
+            setReport(next)
+            setFailure(undefined)
+            setSelected((index) => {
+              if (previousID !== undefined) {
+                const at =
+                  tab() === "sessions"
+                    ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
+                    : cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
+                if (at !== -1) return at
+              }
+              return Math.min(index, maxIdx)
+            })
           })
         },
         (error: unknown) => setFailure(error instanceof Error ? error.message : String(error)),
@@ -366,10 +370,12 @@ export function MonitorView(props: MonitorViewProps) {
   createEffect(() => setRows("groups", reconcile(groups(), { key: "key" })))
   createEffect(() => setRows("feed", reconcile(shown()?.feed ?? [], { key: "callID" })))
 
-  // Scroll the selected row into view, but only when the selection (or tab)
-  // moved — a poll returns a fresh report every second and must not yank a
-  // user who scrolled the list away from the selection.
-  let lastFollowed: { tab: TabName; index: number } | undefined
+  // Scroll the selected row into view, but only when the selection moved to
+  // another row (or tab) — a poll returns a fresh report every second and must
+  // not yank a user who scrolled the list away from the selection. When a poll
+  // adds rows above, the selection keeps its row at a new index; a list
+  // scrolled down moves by as many rows, so the rows on screen stay put.
+  let lastFollowed: { tab: TabName; row: string | undefined; index: number } | undefined
   const [laidOut, setLaidOut] = createSignal(0)
   createEffect(() => {
     laidOut()
@@ -380,6 +386,12 @@ export function MonitorView(props: MonitorViewProps) {
       lastFollowed = undefined
       return
     }
+    const row =
+      current === "tools"
+        ? rows.groups[index]?.key
+        : current === "sessions"
+          ? shown()?.sessions?.[index]?.sessionID
+          : cacheRequests(shown(), settings().missesOnly)[index]?.id
     if (lastFollowed?.tab === current && lastFollowed.index === index) return
     const scroll = scrolls[current]
     if (scroll === undefined) return
@@ -392,7 +404,13 @@ export function MonitorView(props: MonitorViewProps) {
       props.context.renderer.on("frame", retry)
       return
     }
-    lastFollowed = { tab: current, index }
+    const shift = lastFollowed?.tab === current && row !== undefined && lastFollowed.row === row
+    const previous = lastFollowed?.index ?? index
+    lastFollowed = { tab: current, row, index }
+    if (shift) {
+      if (scroll.scrollTop > 0) scroll.scrollTo(scroll.scrollTop + index - previous)
+      return
+    }
     if (index >= scroll.scrollTop + scroll.viewport.height) scroll.scrollTo(index - scroll.viewport.height + 1)
     if (index < scroll.scrollTop) scroll.scrollTo(index)
   })

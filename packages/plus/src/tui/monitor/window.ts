@@ -35,16 +35,21 @@ export interface RowWindow<T> {
  * keyboard moves the selection outside the mounted window, the window also
  * follows the selection (centred) so the selected row exists before the list
  * scrolls it into view. Its length always stays `viewport + 2 * margin`.
+ *
+ * With `key`, only a selection on another row counts as a step: when a poll
+ * adds rows above, the selection keeps its row at a new index and the window
+ * stays with the viewport.
  */
 export function createRowWindow<T>(options: {
   readonly context: Plugin.Context
   readonly items: () => readonly T[]
   readonly selectedIndex: () => number
+  readonly key?: (item: T) => string
 }): RowWindow<T> {
   let scroll: ScrollBoxRenderable | undefined
   // The selection that the last window was built for: a change means the
   // keyboard moved, not the viewport, and the window must follow it.
-  let lastSelected = options.selectedIndex()
+  let lastSelected: number | string = options.selectedIndex()
   const [view, setView] = createSignal({ top: 0, height: DEFAULT_VIEWPORT })
 
   const sync = () => {
@@ -64,8 +69,9 @@ export function createRowWindow<T>(options: {
     const span = size + LIST_WINDOW_MARGIN * 2
     const selected = Math.max(0, Math.min(total - 1, options.selectedIndex()))
     const top = view().top
-    const moved = selected !== lastSelected
-    lastSelected = selected
+    const identity = options.key ? options.key(items[selected]!) : selected
+    const moved = identity !== lastSelected
+    lastSelected = identity
     const near = selected >= top - LIST_WINDOW_MARGIN && selected < top + size + LIST_WINDOW_MARGIN
     // While the viewport holds the selection, follow the viewport. When the
     // selection moved outside it, centre the selection instead — this is a key

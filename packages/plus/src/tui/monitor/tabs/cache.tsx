@@ -57,6 +57,7 @@ export function CacheTab(props: CacheTabProps) {
     context: props.context,
     items: requests,
     selectedIndex: () => props.selectedIndex,
+    key: (request) => request.id,
   })
   const rows = createRowStore(() => window, "id")
 

@@ -29,6 +29,7 @@ export function SessionsTab(props: SessionsTabProps) {
     context: props.context,
     items: sessions,
     selectedIndex: () => props.selectedIndex,
+    key: (session) => session.sessionID,
   })
   const rows = createRowStore(() => window, "sessionID")
 

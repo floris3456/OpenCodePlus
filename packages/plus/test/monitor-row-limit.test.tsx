@@ -415,6 +415,38 @@ test("the Cache tab lists newest first and the first row opens its own detail", 
   }
 })
 
+test("a new request leaves a list scrolled away from the selection where it is", async () => {
+  let extra: Plus.MonitorRequest[] = []
+  const { fixture } = await render(
+    { ...defaultSettings, tab: "cache", scope: "all" },
+    { report: (input) => ({ ...makeReport(input), requests: [...makeReport(input).requests!.slice(-100), ...extra] }) },
+  )
+  try {
+    await fixture.waitForFrame((text) => text.includes("row-4999"))
+    const scroll = scrollBox(fixture)
+    scroll.scrollTo(60)
+    await fixture.flush()
+    expect(fixture.captureCharFrame()).toContain("row-4939")
+    // The newest request arrives at the top while the selection is off screen.
+    // Every frame drawn meanwhile keeps the rows on screen: none is blank.
+    const frames: string[] = []
+    const record = () => frames.push(fixture.captureCharFrame())
+    fixture.renderer.on("frame", record)
+    extra = [request(COUNT, { at: NOW + 1_000 })]
+    await sleep(2_500)
+    await fixture.flush()
+    fixture.renderer.off("frame", record)
+    const frame = fixture.captureCharFrame()
+    expect(frame).toContain("row 2 of 101")
+    expect(scroll.scrollTop).toBe(61)
+    expect(frame).toContain("row-4939")
+    expect(frames.length).toBeGreaterThan(0)
+    expect(frames.filter((drawn) => !drawn.includes("row-4939"))).toEqual([])
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("a new request keeps the selection on the same request, not the same row", async () => {
   let extra: Plus.MonitorRequest[] = []
   const { fixture } = await render(

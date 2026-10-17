@@ -425,11 +425,12 @@ export function createFixtureReport(
   now: number,
   paged = false,
   payloads = false,
+  arrived = 0,
 ): Plus.MonitorReport {
   const scoped = scopedRequests(input, variant, now)
   const requests =
     paged && scoped.length
-      ? Array.from({ length: 205 }, (_, i) => ({
+      ? Array.from({ length: 205 + arrived }, (_, i) => ({
           ...scoped[i % scoped.length]!,
           id: `fixture-${String(i).padStart(3, "0")}`,
           at: now - 205000 + i * 1000,
@@ -745,6 +746,7 @@ function createFixturePrompt(input: Plus.MonitorPromptInput, now: number): Plus.
 
 export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; payloads?: boolean }) {
   const [missVariant, setMissVariant] = createSignal<MissVariant>("prefix")
+  const [arrived, setArrived] = createSignal(0)
   const dimensions = useTerminalDimensions()
   const now = Date.now()
 
@@ -756,9 +758,9 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
     definition === Definition
       ? {
           "monitor.query": async (input: Plus.MonitorQueryInput) =>
-            createFixtureReport(input, missVariant(), now, props.paged, props.payloads),
+            createFixtureReport(input, missVariant(), now, props.paged, props.payloads, arrived()),
           "monitor.cache": async (input: Plus.MonitorQueryInput) =>
-            createFixtureReport(input, missVariant(), now, props.paged, props.payloads),
+            createFixtureReport(input, missVariant(), now, props.paged, props.payloads, arrived()),
           "monitor.prompt": async (input: Plus.MonitorPromptInput) => createFixturePrompt(input, now),
           "monitor.mark": async (input: Plus.MonitorMarkInput) => ({
             id: 99,
@@ -788,6 +790,16 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
           })
         },
       },
+      ...(props.paged
+        ? [
+            {
+              bind: "ctrl+n",
+              title: "Add a newer request",
+              group: "Story",
+              run: () => setArrived((count) => count + 1),
+            },
+          ]
+        : []),
     ],
   }))
 
@@ -817,6 +829,7 @@ export function MonitorStory(props: { context: Plugin.Context; paged?: boolean; 
             ? [
                 { shortcut: "[/]", label: "older/newer page" },
                 { shortcut: "l", label: "reset latest" },
+                { shortcut: "ctrl+n", label: "add a newer request" },
               ]
             : []),
           ...(props.payloads
