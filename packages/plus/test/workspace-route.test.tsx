@@ -312,7 +312,7 @@ test("enter or → on an OpenCode System row set up in another tab goes to that 
   expect(fixture.captureCharFrame()).toContain("enter → go to Skills")
   expect(dispatch(fixture, "return")).toBe(true)
   await fixture.waitForFrame((frame) => breadcrumb(frame).includes("build › Skills"))
-  expect(fixture.captureCharFrame()).toContain("Skills is set up in Skills")
+  expect(fixture.captureCharFrame()).toContain('Went to Skills: "Skills" in System is built from it')
   await reach(fixture, "item:project:build:system:opencode/tools", "Tools")
   expect(dispatch(fixture, "right")).toBe(true)
   await fixture.waitForFrame((frame) => breadcrumb(frame).includes("build › Tools") && selectedRow(frame).includes("OpenCode"))

@@ -877,7 +877,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const chain = state.pathOf(target.id)
     if (chain.length === 0) return false
     revealChain(chain, target.tab ? findLazy(memo, target.id)?.children()[0]?.id : undefined)
-    state.setStatus(`${node.label} is set up in ${target.label}`)
+    state.setStatus(`Went to ${target.label}: "${node.label}" in System is built from it`)
     return true
   }
 
