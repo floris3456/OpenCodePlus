@@ -228,15 +228,8 @@ export function MonitorView(props: MonitorViewProps) {
     return fallback === undefined ? undefined : { directory: fallback.directory, workspace: fallback.workspaceID }
   }
 
-  const flight = { busy: false, again: false, generation: 0 }
-  const refresh = () => {
-    if (flight.busy) {
-      flight.again = true
-      return
-    }
-    flight.busy = true
-    const generation = ++flight.generation
-    const query = queryOf(
+  const currentQuery = () =>
+    queryOf(
       { ...settings(), tab: tab() },
       {
         sessionID: sessionID(),
@@ -247,13 +240,89 @@ export function MonitorView(props: MonitorViewProps) {
         id: activeDrill()?.requestID,
       },
     )
+
+  // The latest Cache page grows into one list: older requests load a page at a
+  // time ahead of the scroll position (loadOlder). Once a page has loaded,
+  // every row a poll returns is kept as well, so rows that slide off the
+  // newest page stay in the list. Paging with [ ] or another scope starts over.
+  const older = {
+    rows: new Map<string, Plus.MonitorRequest>(),
+    cursor: undefined as NonNullable<Plus.MonitorReport["requestPage"]>["older"],
+    busy: false,
+    scope: 0,
+  }
+  createEffect(() => {
+    pageScope()
+    requestPage()
+    older.rows = new Map()
+    older.cursor = undefined
+    older.busy = false
+    older.scope++
+  })
+  const withOlder = (next: Plus.MonitorReport, since: Plus.MonitorQueryInput["since"]) => {
+    if (older.rows.size === 0 || next.requests === undefined || next.requestPage === undefined) return next
+    for (const request of next.requests) older.rows.set(request.id, request)
+    // A moving window (last hour, …) drops what fell out of it.
+    if (typeof since === "number")
+      older.rows.forEach((request, id) => {
+        if (request.at < since) older.rows.delete(id)
+      })
+    const requests = [...older.rows.values()].toSorted((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1))
+    return {
+      ...next,
+      requests,
+      requestPage: {
+        total: next.requestPage.total,
+        returned: requests.length,
+        limit: next.requestPage.limit,
+        complete: older.cursor === undefined,
+        ...(older.cursor === undefined ? {} : { older: older.cursor }),
+      },
+    }
+  }
+  const loadOlder = () => {
+    const current = report()
+    const cursor = current?.requestPage?.older
+    if (older.busy || current === undefined || cursor === undefined) return
+    if (tab() !== "cache" || requestPage() !== undefined || activeDrill()?.requestID) return
+    older.busy = true
+    const scope = older.scope
+    const query = currentQuery()
+    void plus["monitor.query"](
+      { ...query, requestPage: { cursor, direction: "older" }, fullText: fullText() },
+      { location: location() },
+    )
+      .then(
+        (page) => {
+          if (scope !== older.scope) return
+          for (const request of [...(page.requests ?? []), ...(report()?.requests ?? [])]) older.rows.set(request.id, request)
+          older.cursor = page.requestPage?.older
+          setReport(withOlder(report()!, query.since))
+        },
+        (error: unknown) => setFailure(error instanceof Error ? error.message : String(error)),
+      )
+      .finally(() => {
+        if (scope === older.scope) older.busy = false
+      })
+  }
+
+  const flight = { busy: false, again: false, generation: 0 }
+  const refresh = () => {
+    if (flight.busy) {
+      flight.again = true
+      return
+    }
+    flight.busy = true
+    const generation = ++flight.generation
+    const query = currentQuery()
     void plus["monitor.query"](
       { ...query, requestPage: requestPage(), pages: pages(), fullText: fullText() },
       { location: location() },
     )
       .then(
-        (next) => {
+        (raw) => {
           if (generation !== flight.generation) return
+          const next = withOlder(raw, query.since)
           // Compute maxIdx from the FILTERED view so the selection always points
           // at an actually-visible row; the text filter drops rows independently
           // of the server query and must not leave the selector past the end.
@@ -769,6 +838,7 @@ export function MonitorView(props: MonitorViewProps) {
           if (tab() !== "cache") return
           setSelected(0)
           setRequestPage(undefined)
+          scrolls.cache?.scrollTo(0)
         },
       },
       {
@@ -1233,6 +1303,7 @@ export function MonitorView(props: MonitorViewProps) {
                   missesOnly={settings().missesOnly}
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.cache = ref)}
+                  onNearEnd={loadOlder}
                 />
               </Show>
               <Show when={tab() === "tools"}>

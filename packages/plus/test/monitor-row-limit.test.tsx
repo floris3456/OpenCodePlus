@@ -447,6 +447,78 @@ test("a new request leaves a list scrolled away from the selection where it is",
   }
 })
 
+/** Pages of 100 by cursor, newest page first, as the monitor's request pages are served. */
+function pagedReport(rows: () => readonly Plus.MonitorRequest[]) {
+  return (input: Plus.MonitorQueryInput): Plus.MonitorReport => {
+    const all = rows()
+    const cursor = input.requestPage?.cursor
+    const page = (cursor === undefined ? all : all.filter((row) => row.at < cursor.at)).slice(-100)
+    return {
+      ...makeReport(input),
+      requests: page,
+      requestPage: {
+        total: all.length,
+        returned: page.length,
+        limit: 100,
+        complete: page.length === all.length,
+        ...(page[0] !== undefined && page[0].id !== all[0]?.id ? { older: { at: page[0].at, id: page[0].id } } : {}),
+      },
+    }
+  }
+}
+
+test("the Cache list loads older requests before the scroll reaches its last row", async () => {
+  let rows = Array.from({ length: 1_000 }, (_, index) => request(4_000 + index))
+  const { fixture, queries } = await render({ ...defaultSettings, tab: "cache", scope: "all" }, { report: pagedReport(() => rows) })
+  try {
+    await fixture.waitForFrame((text) => text.includes("100/1000 requests"))
+    const scroll = scrollBox(fixture)
+    // Still about 45 rows above the end of the first page: the next one loads now.
+    scroll.scrollTo(30)
+    await fixture.waitForFrame((text) => text.includes("200/1000 requests"))
+    expect(scroll.scrollTop).toBe(30)
+    expect(queries.filter((query) => query.requestPage?.direction === "older")).toHaveLength(1)
+    // The keyboard runs on past the first page without a stop.
+    for (let step = 0; step < 150; step++) dispatch(fixture, "down")
+    const moved = await fixture.waitForFrame((text) => text.includes("row 151 of"))
+    expect(moved).toContain("row-4849")
+    // Polls keep the loaded rows and add new ones at the top.
+    rows = [...rows, request(5_000, { at: NOW + 1_000 })]
+    await sleep(2_500)
+    await fixture.flush()
+    const polled = fixture.captureCharFrame()
+    expect(polled).toMatch(/[23]01\/1001 requests/)
+    expect(polled).toContain("row 152 of")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("scrolling to the start of a long chat loads every request once", async () => {
+  const rows = Array.from({ length: 1_000 }, (_, index) => request(4_000 + index))
+  const { fixture, queries } = await render({ ...defaultSettings, tab: "cache", scope: "all" }, { report: pagedReport(() => rows) })
+  try {
+    await fixture.waitForFrame((text) => text.includes("100/1000 requests"))
+    const scroll = scrollBox(fixture)
+    for (let step = 0; step < 40 && !fixture.captureCharFrame().includes("row-4000"); step++) {
+      scroll.scrollTo(scroll.scrollTop + 60)
+      await fixture.flush()
+      await sleep(50)
+    }
+    const end = fixture.captureCharFrame()
+    expect(end).toContain("row-4000")
+    expect(end).toContain("1000/1000 requests · [—] older")
+    expect(queries.filter((query) => query.requestPage?.direction === "older")).toHaveLength(9)
+    // l returns to the newest request.
+    dispatch(fixture, "l")
+    const latest = await fixture.waitForFrame((text) => text.includes("row-4999"))
+    expect(latest).toContain("row 1 of 1000")
+    expect(scroll.scrollTop).toBe(0)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("a new request keeps the selection on the same request, not the same row", async () => {
   let extra: Plus.MonitorRequest[] = []
   const { fixture } = await render(

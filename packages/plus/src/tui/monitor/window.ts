@@ -65,10 +65,15 @@ export function createRowWindow<T>(options: {
     const items = options.items()
     const total = items.length
     if (total === 0) return { rows: [], start: 0, end: 0, total: 0 }
-    const size = Math.max(1, view().height)
+    // view() wakes the memo when the viewport moved, but it lags a frame behind
+    // a scroll made since; when the rows change in between (older rows loaded
+    // after a key step), the scrollbox's own position is the one to cover.
+    const synced = view()
+    const live = scroll !== undefined && !scroll.isDestroyed && scroll.viewport.height > 0 ? scroll : undefined
+    const size = Math.max(1, live?.viewport.height ?? synced.height)
     const span = size + LIST_WINDOW_MARGIN * 2
     const selected = Math.max(0, Math.min(total - 1, options.selectedIndex()))
-    const top = view().top
+    const top = live?.scrollTop ?? synced.top
     const identity = options.key ? options.key(items[selected]!) : selected
     const moved = identity !== lastSelected
     lastSelected = identity

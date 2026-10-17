@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, For, Show } from "solid-js"
+import { createEffect, For, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import type { Plus } from "../../../rpc.js"
 import {
@@ -13,7 +13,7 @@ import {
   formatReportedRead,
   formatReportedWriteByTTL,
 } from "../format.js"
-import { createRowStore, createRowWindow } from "../window.js"
+import { createRowStore, createRowWindow, LIST_WINDOW_MARGIN } from "../window.js"
 import { RequestFacts } from "../request-facts.js"
 
 export interface CacheTabProps {
@@ -27,7 +27,12 @@ export interface CacheTabProps {
   readonly active: boolean
   readonly onScrollRef?: (ref: ScrollBoxRenderable) => void
   readonly collection?: Plus.MonitorPageSection
+  /** The viewport is within LOAD_AHEAD rows of the last row: load older ones. */
+  readonly onNearEnd?: () => void
 }
+
+/** Older rows load while this many rows are still below the viewport. */
+const LOAD_AHEAD = 60
 
 export function CacheTab(props: CacheTabProps) {
   const theme = () => props.context.theme
@@ -60,6 +65,11 @@ export function CacheTab(props: CacheTabProps) {
     key: (request) => request.id,
   })
   const rows = createRowStore(() => window, "id")
+
+  // The window ends LIST_WINDOW_MARGIN rows below the viewport.
+  createEffect(() => {
+    if (window.total > 0 && window.end - LIST_WINDOW_MARGIN >= window.total - LOAD_AHEAD) untrack(() => props.onNearEnd?.())
+  })
 
   const position = () => {
     const total = window.total
