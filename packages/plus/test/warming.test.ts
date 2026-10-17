@@ -832,6 +832,118 @@ test("compact before cold skips a running chat, a manual compaction, a cold cach
   store.dispose()
 })
 
+test("warming switched off mid-window compacts at the next keep-alive moment, and switched back on at the window's end", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  const compacted: string[] = []
+  const compact = async (sessionID: string) => {
+    compacted.push(sessionID)
+  }
+  await store.setCompact("ses_warm", "on")
+  // A reply opens a 30-minute window that pings every 2 minutes.
+  await store.decide(event({}), {}, compact)
+  expect(clock.pending()).toEqual([1_000_000 + 30 * MINUTE])
+
+  // No keep-alive yet: core's next one is one interval after the window's start.
+  clock.now = 1_000_000 + MINUTE
+  expect(await store.setChat("ses_warm", "off")).toMatchObject({
+    chat: "off",
+    active: false,
+    compactAt: 1_000_000 + 2 * MINUTE,
+    coldAt: 1_000_000 + 2 * MINUTE,
+  })
+  expect(clock.pending()).toEqual([1_000_000 + 2 * MINUTE])
+  // Switched back on before then, the window runs to its end again.
+  const on = await store.setChat("ses_warm", "on")
+  expect(on).toMatchObject({ chat: "on", active: true, compactAt: 1_000_000 + 30 * MINUTE })
+  expect(on.coldAt).toBeUndefined()
+  expect(clock.pending()).toEqual([1_000_000 + 30 * MINUTE])
+
+  // After a keep-alive, the next one is one interval after it; "default" restores the end too.
+  clock.now = 1_000_000 + 2 * MINUTE
+  await store.decide(event({ phase: "warm", now: clock.now }), {}, compact)
+  clock.now = 1_000_000 + 3 * MINUTE
+  expect(await store.setChat("ses_warm", "off")).toMatchObject({ compactAt: 1_000_000 + 4 * MINUTE, coldAt: 1_000_000 + 4 * MINUTE })
+  expect((await store.setChat("ses_warm", "default")).compactAt).toBe(1_000_000 + 30 * MINUTE)
+  await store.setChat("ses_warm", "off")
+  expect(clock.pending()).toEqual([1_000_000 + 4 * MINUTE])
+  await clock.fire()
+  expect(compacted).toEqual(["ses_warm"])
+  expect(clock.now).toBe(1_000_000 + 4 * MINUTE)
+
+  // A keep-alive less than one interval before the window ends: it goes cold at the end.
+  const end = Session.ID.make("ses_end")
+  const start = clock.now
+  await store.setCompact(end, "on")
+  await store.decide(event({ sessionID: end, since: start, now: start }), {}, compact)
+  clock.now = start + 29 * MINUTE
+  await store.decide(event({ sessionID: end, phase: "warm", since: start, now: clock.now }), {}, compact)
+  expect(await store.setChat(end, "off")).toMatchObject({ compactAt: start + 30 * MINUTE, coldAt: start + 30 * MINUTE })
+  store.dispose()
+})
+
+test("with compact before cold off, a chat switched off mid-window reports when its cache goes cold", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  await store.decide(event({}), {}, async () => {})
+  clock.now = 1_000_000 + 2 * MINUTE
+  await store.decide(event({ phase: "warm", now: clock.now }), {}, async () => {})
+  clock.now = 1_000_000 + 3 * MINUTE
+  const off = await store.setChat("ses_warm", "off")
+  expect(off).toMatchObject({ chat: "off", compact: false, active: false, coldAt: 1_000_000 + 4 * MINUTE })
+  expect(off.compactAt).toBeUndefined()
+  expect(clock.pending()).toEqual([])
+  // Compact before cold switched on later compacts at that same moment.
+  expect(await store.setCompact("ses_warm", "on")).toMatchObject({ compactAt: 1_000_000 + 4 * MINUTE })
+  await store.setCompact("ses_warm", "off")
+  // Core's keep-alive sees the switch and drops the window: nothing left to count.
+  clock.now = 1_000_000 + 4 * MINUTE
+  await store.decide(event({ phase: "warm", now: clock.now }), {}, async () => {})
+  expect((await store.status("ses_warm")).coldAt).toBeUndefined()
+
+  // A compacted chat reports none.
+  await store.decide(event({ sessionID: Session.ID.make("ses_compacted"), since: clock.now, now: clock.now }), {}, async () => {})
+  await store.setChat("ses_compacted", "off")
+  expect((await store.status("ses_compacted")).coldAt).toBe(clock.now + 2 * MINUTE)
+  store.invalidateCompaction("ses_compacted", clock.now + 1)
+  expect((await store.status("ses_compacted", clock.now + 2)).coldAt).toBeUndefined()
+
+  // A chat that never warmed (switched off before its reply) reports none either.
+  await store.setChat("ses_never", "off")
+  await store.decide(event({ sessionID: Session.ID.make("ses_never") }), {}, async () => {})
+  expect((await store.status("ses_never")).coldAt).toBeUndefined()
+  store.dispose()
+})
+
+test("a turn that ends while warming is switched off keeps the next keep-alive moment, not the window's end", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  await store.setCompact("ses_warm", "on")
+  store.running("ses_warm", true)
+  await store.decide(event({}), {}, async () => {})
+  clock.now = 1_000_000 + MINUTE
+  await store.setChat("ses_warm", "off")
+  expect(clock.pending()).toEqual([1_000_000 + 2 * MINUTE])
+  // The turn ends: the window restarts from its end, as core's does, but core
+  // still times its next keep-alive from the last request.
+  clock.now = 1_000_000 + 1.5 * MINUTE
+  store.running("ses_warm", false)
+  expect(await store.settle("ses_warm")).toEqual(["ses_warm"])
+  expect(clock.pending()).toEqual([1_000_000 + 2 * MINUTE])
+  expect(await store.status("ses_warm")).toMatchObject({
+    compactAt: 1_000_000 + 2 * MINUTE,
+    coldAt: 1_000_000 + 2 * MINUTE,
+    since: 1_000_000 + 1.5 * MINUTE,
+    expires: 1_000_000 + 31.5 * MINUTE,
+  })
+  // A window resumed after a restart has no last request: its start stands in for it.
+  const restarted = createWarmingStore(await tempFile(), clock.options)
+  await restarted.decide(event({ phase: "resume", since: 1_000_000 + 1.5 * MINUTE, now: clock.now }), {})
+  expect((await restarted.setChat("ses_warm", "off")).coldAt).toBe(1_000_000 + 3.5 * MINUTE)
+  restarted.dispose()
+  store.dispose()
+})
+
 // Compact before cold now follows the model's effective `compactWarm` unless
 // the chat has its own on/off override (plus-1.2.0 B34 C3b).
 const compactDefaults = (overrides: Partial<ChatCompactionDefaults> = {}): ChatCompactionDefaults => ({
