@@ -101,6 +101,8 @@ type Streamed = {
 }
 
 const NOTHING_TO_COMPACT: Failure = { error: { type: "compaction.unavailable", message: "Nothing to compact yet" } }
+/** An account switch reissues the latest summary instead of writing a new one while less than this was added since. */
+const SWITCH_REUSE_TOKENS = 10_000
 /** After each "too long" rejection, the next attempt aims at this share of the first rejected request's size. */
 const SHRINK_STEPS = [0.7, 0.5, 0.35]
 // The least of the window kept free for the last reply before compaction and for the summary itself.
@@ -267,6 +269,21 @@ export const layer = Layer.effect(
           message.content.flatMap((part) => part.type === "compaction" && part.text ? [part.text] : [])).join("\n")
         if (text.trim()) return yield* publish(trigger, { text, recent: checkpoint.recent, metadata: decision.metadata })
       }
+      // CPA moves a chat to another account once it carries a newer checkpoint than the refused request. A
+      // summary written moments ago already is that small context: summarizing it again only costs a request.
+      const since = context.messages.slice(1)
+      if (
+        trigger.reason === "auto" &&
+        decision.metadata?.["quota.switch"] === true &&
+        checkpoint &&
+        !SessionProviderContext.isCheckpoint(checkpoint) &&
+        since.reduce((sum, message) => sum + Token.estimate(messageToText(message)), 0) < SWITCH_REUSE_TOKENS
+      )
+        return yield* publish(trigger, {
+          text: checkpoint.summary,
+          recent: [checkpoint.recent, ...since.map(messageToText)].filter(Boolean).join("\n\n"),
+          metadata: { ...decision.metadata, "compaction.reused": true },
+        })
       // Plugins may request earlier compaction, but cannot override this preference.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
       if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact) return { status: "skipped" }

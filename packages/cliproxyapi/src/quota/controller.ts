@@ -511,28 +511,33 @@ export class QuotaController {
       // CPA moves this chat off a used-up account only after a compaction. The checkpoint the refused
       // request carried is the one a new compaction has to replace.
       const carried = route.decision?.boundary.checkpoint ?? ""
-      const pending = route.stored.switching
       route.switchRetries = (route.switchRetries ?? 0) + 1
-      // A checkpoint made for this switch was refused as well, or retries keep failing: stop here so the
-      // refusal reaches the chat instead of compacting in a loop.
-      if ((pending !== undefined && carried !== pending) || route.switchRetries > SWITCH_RETRIES) {
+      // Retries keep failing: stop here so the refusal reaches the chat instead of compacting in a loop.
+      if (route.switchRetries > SWITCH_RETRIES) {
         route.stored = { ...route.stored, switching: undefined, switchModels: undefined }
         route.switchRetries = 0
         await this.save(route)
         return false
       }
-      if (pending === undefined) {
+      // A checkpoint made for this switch can be refused as well: CPA sent it to the old account, that
+      // account failed, and CPA moves the chat once more. That is a new switch from this checkpoint.
+      if (route.stored.switching !== carried) {
         route.stored = { ...route.stored, switching: carried, switchModels: route.switchModels }
         await this.save(route)
       }
       const [named, ...fallbacks] = route.stored.switchModels ?? []
+      const moving = route.switchText ?? "CPA is moving this chat to another account."
+      // Core reissues a summary this recent instead of writing another; compacting() names the models
+      // when it does write one.
       route.notices = [
         {
           sessionID: session,
           kind: "switching",
-          text: named
-            ? `${route.switchText ?? "CPA is moving this chat to another account."} Compacting with ${named}${fallbacks.length > 0 ? ` (fallback ${fallbacks.join(", ")})` : ""} first.`
-            : `${route.switchText ?? "CPA is moving this chat to another account."} ${this.summary.problem ?? ""}${this.fallback.problem ?? ""}Compacting with ${this.summary.label ?? "the agent's compaction model"}${this.fallback.label ? ` (fallback ${this.fallback.label})` : ""} first.`,
+          text: carried
+            ? `${moving} This chat was just summarized, so it continues with that summary.`
+            : named
+              ? `${moving} Compacting with ${named}${fallbacks.length > 0 ? ` (fallback ${fallbacks.join(", ")})` : ""} first.`
+              : `${moving} ${this.summary.problem ?? ""}${this.fallback.problem ?? ""}Compacting with ${this.summary.label ?? "the agent's compaction model"}${this.fallback.label ? ` (fallback ${this.fallback.label})` : ""} first.`,
         },
       ]
       // Core runs its compaction decision before rebuilding the request; decide() asks for the summary.
