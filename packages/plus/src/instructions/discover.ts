@@ -10,6 +10,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { idFromPath, parseAgentModel } from "../agents/files.js"
+import { readUserSystemRowsSync } from "../agents/system.js"
 import { controlItems } from "./agent-controls.js"
 import { unmaskModel, unmaskText, upstreamEnabled, type ModelBaseline, type ModelRefLike, type PromptBaseline } from "./inventory.js"
 import {
@@ -190,6 +191,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const fileRows = instructionFileItems(directory, instructions)
   const teachingRows = teachingItems(teaching, instructions.length)
   const guidanceRows = guidanceItems(instructions.length + teachingRows.length)
+  const userSystemRows = userSystemItems(instructions.length + teachingRows.length + guidanceRows.length)
   const modelRows = modelItems(modelRecords, upstream)
   const permRows = permItems({
     tools,
@@ -198,7 +200,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     baseRows,
     skillRows,
     roleRows,
-    fileRows,
+    fileRows: [...fileRows, ...userSystemRows],
     teachingRows,
     agents,
     skills,
@@ -214,6 +216,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...fileRows,
     ...teachingRows,
     ...guidanceRows,
+    ...userSystemRows,
     ...mcp.items,
     ...modelRows,
     ...parameterApprovals(permRows, paramRows),
@@ -1023,6 +1026,22 @@ function guidanceItems(order: number): Item[] {
       order,
     },
   ]
+}
+
+// User-created System rows (agents/system.ts): like the Tools and rules row,
+// no core source carries them; apply plans each one per agent.
+function userSystemItems(order: number): Item[] {
+  return readUserSystemRowsSync().map((row, index): Item => ({
+    id: `system:${row.id}`,
+    kind: "system",
+    group: "none",
+    title: row.title,
+    text: row.text,
+    enabled: upstreamEnabled(),
+    fingerprint: fingerprint(row.text),
+    order: order + index,
+    userSystem: true,
+  }))
 }
 
 // Tool-specific permission rules as view-time perm items. Curated defaults

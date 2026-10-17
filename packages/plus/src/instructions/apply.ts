@@ -53,7 +53,7 @@ import {
   type EnforcementState,
   type PermissionTable,
 } from "./permission-enforce.js"
-import { guidanceItemId, guidancePath, teachingFilePath, teachingItemId } from "./paths.js"
+import { guidanceItemId, guidancePath, isUserSystemFile, teachingFilePath, teachingItemId, userSystemFile } from "./paths.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
@@ -1400,17 +1400,18 @@ function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input, gate)
       const text = resolved.assembled
-      // The Tools and rules row has no source of its own: it reaches an agent
-      // only through this plan, so it is planned exactly when a section of it
-      // applies to that agent (and nothing is installed when none does).
-      const guidance = item.id === guidanceItemId
-      if (guidance && (!resolved.enabled || text.trim().length === 0)) return []
+      // The Tools and rules row and user System rows have no source of their
+      // own: they reach an agent only through this plan, so each is planned
+      // exactly when some text of it applies to that agent (and nothing is
+      // installed when none does).
+      const planOnly = item.id === guidanceItemId || item.userSystem === true
+      if (planOnly && (!resolved.enabled || text.trim().length === 0)) return []
       return [{
         agent: agent.id,
-        path: instructionPlanPath(item.id),
+        path: instructionPlanPath(item),
         text,
         enabled: resolved.enabled && text.trim().length > 0,
-        noop: !guidance && isNoop(item, resolved),
+        noop: !planOnly && isNoop(item, resolved),
       }]
     })
   })
@@ -1427,11 +1428,14 @@ function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boo
 // The teaching row carries a stable id instead of a location-relative path,
 // so it cannot resolve against the location directory like other instruction
 // rows. Core keys that part by the seeded absolute path, so plan it
-// absolutely; resolveInstructionId leaves the seeded path untouched.
-function instructionPlanPath(id: string): string {
-  if (id === teachingItemId) return teachingFilePath()
-  if (id === guidanceItemId) return guidancePath()
-  return parseId(id, "system:")
+// absolutely; resolveInstructionId leaves the seeded path untouched. User
+// System rows plan by their own file the same way.
+function instructionPlanPath(item: Item): string {
+  if (item.id === teachingItemId) return teachingFilePath()
+  if (item.id === guidanceItemId) return guidancePath()
+  const id = parseId(item.id, "system:")
+  if (item.userSystem === true) return userSystemFile(id)
+  return id
 }
 
 export interface SessionPlans {
@@ -1961,7 +1965,7 @@ function applyInstructionPlans(ctx: Context, event: SessionContext, plans: reado
 }
 
 function resolveInstructionId(directory: string, id: string): string {
-  if (id === teachingFilePath() || id === guidancePath()) return id
+  if (id === teachingFilePath() || id === guidancePath() || isUserSystemFile(id)) return id
   const relative = id.replace(/^\/+/, "")
   if (relative === "") return directory
   return path.resolve(directory, relative)

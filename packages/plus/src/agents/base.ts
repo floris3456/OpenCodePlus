@@ -110,30 +110,39 @@ export function readUserBaseTextSync(target: string): string | undefined {
   }
 }
 
-export function readUserBaseTitleSync(index: string, id: string): string {
+export function readUserBaseTitleSync(index: string, id: string, fallback = `${id}.txt`): string {
   try {
     const parsed: unknown = JSON.parse(fsSync.readFileSync(index, "utf8"))
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return `${id}.txt`
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return fallback
     const title = (parsed as Record<string, unknown>)[id]
-    if (typeof title !== "string" || title.length === 0) return `${id}.txt`
+    if (typeof title !== "string" || title.length === 0) return fallback
     return title
   } catch {
-    return `${id}.txt`
+    return fallback
   }
 }
 
 // The small index next to the <id>.txt files so discover (and a future core
 // prompt domain) can list user templates with their titles alongside the
 // built-ins. Best-effort: a missing index only loses titles, never templates.
+// User System rows (agents/system.ts) keep the same index in their own directory.
 async function writeBaseIndexEntry(id: string, title: string): Promise<void> {
-  const target = path.join(userBaseDir(), "index.json")
+  await writeIndexEntry(userBaseDir(), id, title)
+}
+
+async function removeBaseIndexEntry(id: string): Promise<void> {
+  await removeIndexEntry(userBaseDir(), id)
+}
+
+export async function writeIndexEntry(dir: string, id: string, title: string): Promise<void> {
+  const target = path.join(dir, "index.json")
   const current = await readBaseIndex(target)
   current[id] = title
   await Bun.write(target, `${JSON.stringify(current, undefined, 2)}\n`)
 }
 
-async function removeBaseIndexEntry(id: string): Promise<void> {
-  const target = path.join(userBaseDir(), "index.json")
+export async function removeIndexEntry(dir: string, id: string): Promise<void> {
+  const target = path.join(dir, "index.json")
   const current = await readBaseIndex(target)
   if (!(id in current)) return
   delete current[id]

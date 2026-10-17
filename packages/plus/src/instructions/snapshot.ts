@@ -42,6 +42,7 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.controlTeam === undefined ? {} : { controlTeam: item.controlTeam }),
     ...(item.order === undefined ? {} : { order: item.order }),
     ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+    ...(item.userSystem === undefined ? {} : { userSystem: item.userSystem }),
     ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
     ...(item.namespace === undefined ? {} : { namespace: item.namespace }),
     ...(item.pinned === undefined ? {} : { pinned: item.pinned }),

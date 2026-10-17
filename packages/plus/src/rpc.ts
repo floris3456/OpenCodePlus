@@ -110,6 +110,7 @@ export const SnapshotItem = Schema.Struct({
   controlTeam: Schema.optionalKey(TeamOwner),
   order: Schema.optionalKey(Schema.Number),
   userBase: Schema.optionalKey(Schema.Boolean),
+  userSystem: Schema.optionalKey(Schema.Boolean),
   codemode: Schema.optionalKey(Schema.Boolean),
   namespace: Schema.optionalKey(Schema.String),
   pinned: Schema.optionalKey(Schema.Boolean),
@@ -837,6 +838,24 @@ export interface DeleteBaseInput extends Schema.Schema.Type<typeof DeleteBaseInp
 export const DeleteBaseInput = Schema.Struct({
   id: Schema.String,
 }).annotate({ identifier: "Plus.DeleteBaseInput" })
+
+// A user-created System row: one global file every level and catalogue lists.
+export interface CreateSystemInput extends Schema.Schema.Type<typeof CreateSystemInput> {}
+export const CreateSystemInput = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  text: Schema.String,
+}).annotate({ identifier: "Plus.CreateSystemInput" })
+
+export interface SystemRef extends Schema.Schema.Type<typeof SystemRef> {}
+export const SystemRef = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.SystemRef" })
+
+export interface DeleteSystemInput extends Schema.Schema.Type<typeof DeleteSystemInput> {}
+export const DeleteSystemInput = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.DeleteSystemInput" })
 
 export interface CreateInstructionInput extends Schema.Schema.Type<typeof CreateInstructionInput> {}
 export const CreateInstructionInput = Schema.Struct({
@@ -1927,6 +1946,22 @@ export const BaseInvalid = Schema.Struct({
   reason: Schema.String,
 }).annotate({ identifier: "Plus.BaseInvalid" })
 
+export interface SystemExists extends Schema.Schema.Type<typeof SystemExists> {}
+export const SystemExists = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.SystemExists" })
+
+export interface SystemMissing extends Schema.Schema.Type<typeof SystemMissing> {}
+export const SystemMissing = Schema.Struct({
+  id: Schema.String,
+}).annotate({ identifier: "Plus.SystemMissing" })
+
+export interface SystemInvalid extends Schema.Schema.Type<typeof SystemInvalid> {}
+export const SystemInvalid = Schema.Struct({
+  id: Schema.String,
+  reason: Schema.String,
+}).annotate({ identifier: "Plus.SystemInvalid" })
+
 export interface InstructionExists extends Schema.Schema.Type<typeof InstructionExists> {}
 export const InstructionExists = Schema.Struct({
   path: Schema.String,
@@ -2295,6 +2330,13 @@ const PortableDeleteBaseInput = Schema.toStandardSchemaV1(
   DeleteBaseInput.annotate({ identifier: "Plus.DeleteBaseInput" }),
 )
 const PortableBaseRef = Schema.toStandardSchemaV1(BaseRef.annotate({ identifier: "Plus.BaseRef" }))
+const PortableCreateSystemInput = Schema.toStandardSchemaV1(
+  CreateSystemInput.annotate({ identifier: "Plus.CreateSystemInput" }),
+)
+const PortableDeleteSystemInput = Schema.toStandardSchemaV1(
+  DeleteSystemInput.annotate({ identifier: "Plus.DeleteSystemInput" }),
+)
+const PortableSystemRef = Schema.toStandardSchemaV1(SystemRef.annotate({ identifier: "Plus.SystemRef" }))
 const PortableCreateInstructionInput = Schema.toStandardSchemaV1(
   CreateInstructionInput.annotate({ identifier: "Plus.CreateInstructionInput" }),
 )
@@ -2404,6 +2446,9 @@ const PortableSkillInvalid = Schema.toStandardSchemaV1(SkillInvalid.annotate({ i
 const PortableBaseExists = Schema.toStandardSchemaV1(BaseExists.annotate({ identifier: "Plus.BaseExists" }))
 const PortableBaseMissing = Schema.toStandardSchemaV1(BaseMissing.annotate({ identifier: "Plus.BaseMissing" }))
 const PortableBaseInvalid = Schema.toStandardSchemaV1(BaseInvalid.annotate({ identifier: "Plus.BaseInvalid" }))
+const PortableSystemExists = Schema.toStandardSchemaV1(SystemExists.annotate({ identifier: "Plus.SystemExists" }))
+const PortableSystemMissing = Schema.toStandardSchemaV1(SystemMissing.annotate({ identifier: "Plus.SystemMissing" }))
+const PortableSystemInvalid = Schema.toStandardSchemaV1(SystemInvalid.annotate({ identifier: "Plus.SystemInvalid" }))
 const PortableInstructionExists = Schema.toStandardSchemaV1(
   InstructionExists.annotate({ identifier: "Plus.InstructionExists" }),
 )
@@ -2611,6 +2656,22 @@ export const Definition = Rpc.define({
       errors: {
         "base.missing": PortableBaseMissing,
         "base.invalid": PortableBaseInvalid,
+      },
+    },
+    "system.create": {
+      input: PortableCreateSystemInput,
+      output: PortableSystemRef,
+      errors: {
+        "system.exists": PortableSystemExists,
+        "system.invalid": PortableSystemInvalid,
+      },
+    },
+    "system.delete": {
+      input: PortableDeleteSystemInput,
+      output: PortableSystemRef,
+      errors: {
+        "system.missing": PortableSystemMissing,
+        "system.invalid": PortableSystemInvalid,
       },
     },
     "instruction.create": {

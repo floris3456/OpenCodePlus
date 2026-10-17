@@ -168,13 +168,13 @@ const CreateDescription =
   "member (team+level+id, preset; level defaults creates a Teams member entry, team and id are patterns),\n" +
   "entry (catalogue agents|teams + name, team pattern for teams, preset; names may hold * and %, matched case-insensitively),\n" +
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
-  "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), instruction (name+text), mcp (name+config),\n" +
+  "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), system (id+text, title optional: a new System row, switched and edited per agent and level like the built-in ones), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
   "folder (name, id = the tab row or folder row to create it in; a saved category belonging to this owner and tab),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
   "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
   "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
-  "base/instruction/mcp create one file both catalogues list, so catalogue does not change what is written."
+  "base/system/mcp create one file both catalogues list, so catalogue does not change what is written."
 
 const DeleteDescription =
   "Delete a user-owned row (agent, team, member, file, Defaults entry, user preset); refuses without `confirm`.\n" +
@@ -314,6 +314,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("agent"),
     Schema.Literal("skill"),
     Schema.Literal("base"),
+    Schema.Literal("system"),
     Schema.Literal("instruction"),
     Schema.Literal("mcp"),
     Schema.Literal("team"),
@@ -2116,6 +2117,7 @@ function createRow(
       | "agent"
       | "skill"
       | "base"
+      | "system"
       | "instruction"
       | "mcp"
       | "team"
@@ -2269,6 +2271,20 @@ function createRow(
         api,
         (memo) => createdItemRow(memo, { level: "defaults", agent: null, item: `base:${created.value.id}` }),
         `base "${created.value.id}"`,
+      )
+      return { output: { ...created.value, id: row.id, item: row.item } }
+    }
+    if (input.kind === "system") {
+      if (input.id === undefined || input.text === undefined)
+        return yield* Effect.fail(new Tool.Error({ message: "create system requires id and text" }))
+      const created = yield* Effect.promise(() =>
+        api.createSystem({ id: input.id as string, title: input.title ?? "", text: input.text as string, actor }),
+      )
+      if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+      const row = yield* createdRowOrFail(
+        api,
+        (memo) => createdItemRow(memo, { level: "defaults", agent: null, item: `system:${created.value.id}` }),
+        `System row "${created.value.id}"`,
       )
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
@@ -2533,6 +2549,11 @@ function deletePlan(
     }
     if (plan.kind === "base.delete") {
       const result = yield* Effect.promise(() => api.deleteBase({ id: plan.id, actor }))
+      if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+      return { output: { ...result.value, status: plan.successStatus } }
+    }
+    if (plan.kind === "system.delete") {
+      const result = yield* Effect.promise(() => api.deleteSystem({ id: plan.id, actor }))
       if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
       return { output: { ...result.value, status: plan.successStatus } }
     }

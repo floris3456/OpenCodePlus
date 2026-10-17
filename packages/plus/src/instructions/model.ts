@@ -91,6 +91,8 @@ export interface Item {
   readonly order?: number
   /** True for user-created base templates (deletable, never the host active answer). */
   readonly userBase?: boolean
+  /** True for user-created System rows: a global file Plus plans per agent (deletable). */
+  readonly userSystem?: boolean
   /** True for Code Mode tools: applied through deny rules and the catalog hook. */
   readonly codemode?: boolean
   /** The Code Mode namespace the tool is grouped under (`tool.options.namespace`). */

@@ -157,4 +157,19 @@ export function guidancePath(configDir: string = globalConfigDir()): string {
   return path.join(configDir, "instructions", "TOOLS-AND-RULES.md")
 }
 
+// User-created System rows: `<id>.md` files (titles in index.json beside them)
+// that Plus plans per agent like the Tools and rules row. The file path is the
+// system part's identity, so it never resolves against a location directory.
+export function userSystemDir(configDir: string = globalConfigDir()): string {
+  return path.join(configDir, "opencodeplus", "instructions", "system")
+}
+
+export function userSystemFile(id: string, configDir: string = globalConfigDir()): string {
+  return path.join(userSystemDir(configDir), `${id}.md`)
+}
+
+export function isUserSystemFile(file: string): boolean {
+  return path.dirname(file) === userSystemDir() && file.endsWith(".md")
+}
+
 export const teachingSkillId = "instructions-tools"

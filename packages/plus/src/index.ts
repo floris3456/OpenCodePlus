@@ -17,6 +17,7 @@ import { agentBody, discover, hostModelsFrom, instructionCandidates, type BaseTe
 import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
+import { createSystemRow, deleteSystemRow } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
 import { applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
@@ -55,7 +56,7 @@ import {
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, modelItemId, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
-import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir } from "./instructions/paths.js"
+import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { deltaRows, keyIdentity, recordIdentity, recordTarget } from "./instructions/delta.js"
 import { layoutRefusal } from "./instructions/folders.js"
@@ -486,6 +487,25 @@ export type DeleteBaseResult =
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
+export type CreateSystemResult =
+  | { ok: true; value: Plus.SystemRef }
+  | {
+      ok: false
+      error:
+        | { code: "system.exists"; message: string; data: Plus.SystemExists }
+        | { code: "system.invalid"; message: string; data: Plus.SystemInvalid }
+    }
+
+export type DeleteSystemResult =
+  | { ok: true; value: Plus.SystemRef }
+  | {
+      ok: false
+      error:
+        | { code: "system.missing"; message: string; data: Plus.SystemMissing }
+        | { code: "system.invalid"; message: string; data: Plus.SystemInvalid }
+        | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
+    }
+
 export type CreateInstructionApiResult =
   | { ok: true; value: Plus.InstructionRef }
   | {
@@ -687,6 +707,8 @@ export interface PlusApi {
   readonly deleteSkill: (input: Plus.DeleteSkillInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSkillResult>
   readonly createBase: (input: Plus.CreateBaseInput & { readonly actor?: Plus.Actor }) => Promise<CreateBaseResult>
   readonly deleteBase: (input: Plus.DeleteBaseInput & { readonly actor?: Plus.Actor }) => Promise<DeleteBaseResult>
+  readonly createSystem: (input: Plus.CreateSystemInput & { readonly actor?: Plus.Actor }) => Promise<CreateSystemResult>
+  readonly deleteSystem: (input: Plus.DeleteSystemInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSystemResult>
   readonly createInstruction: (input: Plus.CreateInstructionInput & { readonly actor?: Plus.Actor }) => Promise<CreateInstructionApiResult>
   readonly deleteInstruction: (input: Plus.DeleteInstructionInput & { readonly actor?: Plus.Actor }) => Promise<DeleteInstructionApiResult>
   readonly addMcp: (input: Plus.AddMcpInput & { readonly actor?: Plus.Actor }) => Promise<AddMcpResult>
@@ -1347,6 +1369,63 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         op: "base.delete",
         target: userBaseFile(result.id),
         summary: `base.delete ${result.id}`,
+      })
+      return { ok: true as const, value: { id: result.id } }
+    },
+    createSystem: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const result = await createSystemRow(input.id, input.title, input.text)
+      if (!result.ok && result.reason === "exists")
+        return {
+          ok: false as const,
+          error: { code: "system.exists" as const, message: `System row ${result.id} already exists`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "system.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: "global",
+        op: "system.create",
+        target: userSystemFile(result.id),
+        summary: `system.create ${result.id}`,
+      })
+      return { ok: true as const, value: { id: result.id } }
+    },
+    deleteSystem: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const config = await read(directory)
+      // Same cascade guard as base.delete: refuse a tool actor before the file
+      // is removed when a protected agent holds system:<id>.
+      const stored = await load(directory)
+      const refusal = refuseProtectedItemCascade(input.actor, stored.records, `system:${input.id.trim()}`, config)
+      if (refusal !== undefined) return { ok: false as const, error: refusal }
+      const result = await deleteSystemRow(input.id)
+      if (!result.ok && result.reason === "missing")
+        return {
+          ok: false as const,
+          error: { code: "system.missing" as const, message: `System row ${result.id} does not exist`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "system.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      const freshStored = await load(directory)
+      const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+      await removeItemRecords(directory, freshLoaded, `system:${result.id}`)
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: "global",
+        op: "system.delete",
+        target: userSystemFile(result.id),
+        summary: `system.delete ${result.id}`,
       })
       return { ok: true as const, value: { id: result.id } }
     },
@@ -3404,6 +3483,32 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
           // PlusApi, which passes an actor.
           return yield* Effect.fail(
             context.error("base.invalid", result.error.message, { id: input.id, reason: result.error.message }),
+          )
+        }
+        return result.value
+      }),
+    "system.create": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.createSystem(input))
+        if (!result.ok) {
+          if (result.error.code === "system.exists")
+            return yield* Effect.fail(context.error("system.exists", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("system.invalid", result.error.message, result.error.data))
+        }
+        return result.value
+      }),
+    "system.delete": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.deleteSystem(input))
+        if (!result.ok) {
+          if (result.error.code === "system.missing")
+            return yield* Effect.fail(context.error("system.missing", result.error.message, result.error.data))
+          if (result.error.code === "system.invalid")
+            return yield* Effect.fail(context.error("system.invalid", result.error.message, result.error.data))
+          // Unreachable through this method, as for base.delete: its RPC input
+          // carries no actor, so the protected-agent guard cannot refuse.
+          return yield* Effect.fail(
+            context.error("system.invalid", result.error.message, { id: input.id, reason: result.error.message }),
           )
         }
         return result.value
@@ -6774,6 +6879,7 @@ function toSnapshot(
         ...(item.agents === undefined ? {} : { agents: [...item.agents] }),
         ...(item.order === undefined ? {} : { order: item.order }),
         ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
+        ...(item.userSystem === undefined ? {} : { userSystem: item.userSystem }),
         ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
         ...(item.controlTeam === undefined ? {} : { controlTeam: item.controlTeam }),
         ...(item.namespace === undefined ? {} : { namespace: item.namespace }),

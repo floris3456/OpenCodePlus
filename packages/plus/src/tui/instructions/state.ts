@@ -1564,6 +1564,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         )
       } else if (plan.kind === "base.delete") {
         await plus["base.delete"]({ id: plan.id }, { location: context.location })
+      } else if (plan.kind === "system.delete") {
+        await plus["system.delete"]({ id: plan.id }, { location: context.location })
       } else if (plan.kind === "preset.delete") {
         const refused = await plus["preset.delete"]({ ref: plan.ref }, { location: context.location }).then(
           () => undefined,

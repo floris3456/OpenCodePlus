@@ -78,6 +78,7 @@ export function createInstructionsDialogs(
         options: [
           { title: "Agent", value: "agent" },
           { title: "Base prompt", value: "base" },
+          { title: "System row", value: "system" },
           { title: "Skill", value: "skill" },
           // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue
           // (instructions/discover.ts). Restore with the rows.
@@ -130,6 +131,7 @@ export function createInstructionsDialogs(
       return addAgent(node)
     }
     if (kind === "base") return addBase()
+    if (kind === "system") return addSystem()
     if (kind === "skill") return addSkill(node)
     if (kind === "instruction") return addInstruction()
     // Defaults → Teams takes team entries: a team pattern with a member entry.
@@ -610,6 +612,28 @@ export function createInstructionsDialogs(
       await plus["base.create"]({ id, title, text }, { location: context.location })
       if (disposed) return
       context.ui.toast.show({ variant: "success", message: `Created base ${id}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  async function addSystem(): Promise<void> {
+    if (disposed) return
+    const id = await context.ui.dialog.prompt({ title: "System row id", placeholder: "working-rules" })
+    if (disposed) return
+    if (id === undefined) return
+    const title = await context.ui.dialog.prompt({ title: "System row title", placeholder: "Working rules" })
+    if (disposed) return
+    if (title === undefined) return
+    const text = await context.ui.dialog.prompt({ title: "System row text", placeholder: "Instructions every agent with this row receives" })
+    if (disposed) return
+    if (text === undefined) return
+    try {
+      await plus["system.create"]({ id, title, text }, { location: context.location })
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Created System row ${title.trim() || id}` })
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return

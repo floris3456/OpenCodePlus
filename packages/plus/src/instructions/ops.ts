@@ -682,6 +682,13 @@ export type RemovalPlan =
       readonly successStatus: string
     }
   | {
+      readonly kind: "system.delete"
+      readonly id: string
+      readonly confirmTitle: string
+      readonly confirmMessage: string
+      readonly successStatus: string
+    }
+  | {
       readonly kind: "instruction.delete"
       readonly name: string
       readonly confirmTitle: string
@@ -2310,6 +2317,17 @@ export function removalPlan(input: MemoInput, rowId: string, sharedMemo?: Memo):
       successStatus: `Deleted base template ${templateId}`,
     }
   }
+  if (item.kind === "system" && item.userSystem === true) {
+    const systemId = itemId.slice("system:".length)
+    if (node.actions?.remove !== true) return { refusal: `"${node.label}" cannot be deleted here` }
+    return {
+      kind: "system.delete",
+      id: systemId,
+      confirmTitle: `Delete System row ${node.label}?`,
+      confirmMessage: `Delete System row "${node.label}" for every agent and level? This cannot be undone.`,
+      successStatus: `Deleted System row ${node.label}`,
+    }
+  }
   if (item.kind === "system" && itemId.startsWith("system:") && itemId !== "system:role") {
     const relative = itemId.slice("system:".length)
     if (node.actions?.remove !== true)
@@ -2369,6 +2387,10 @@ export function refusalFor(input: MemoInput, rowId: string, sharedMemo?: Memo): 
   if (item.kind === "base") {
     const templateId = address.item.startsWith("base:") ? address.item.slice("base:".length) : address.item
     return `"${node.label}" cannot be deleted: base template "${templateId}" is built in`
+  }
+  if (item.kind === "system" && item.userSystem === true) {
+    if (node.kind === "section") return `"${node.label}" cannot be deleted: sections are toggled or split, not deleted`
+    return undefined
   }
   if (item.kind === "system" && item.id !== "system:role") {
     const relative = address.item.startsWith("system:") ? address.item.slice("system:".length) : address.item

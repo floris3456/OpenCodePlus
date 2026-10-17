@@ -52,16 +52,18 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
   const scrubbed = scrubKeywords(input.items, resolved)
   const system = systemEntry?.system === undefined ? [] : [preserveScrub(systemEntry.system, scrubbed)]
-  // The Tools and rules row as this agent receives it: only the sections
-  // whose rows it has as they require (requires.ts), like apply plans it.
-  const guidance = resolved.get(guidanceItemId)
-  if (guidance !== undefined && guidance.enabled) {
-    const has = (id: string) => input.items.some((item) => item.id === id && applies(item, owner.id))
-    const row = input.items.find((item) => item.id === guidanceItemId && applies(item, owner.id))
-    const gate = gateOf((id) => (has(id) ? resolved.get(id)?.enabled : undefined))
-    const text = row === undefined ? "" : resolvedFor(row, owner, input, gate).assembled
-    if (text.trim().length > 0) system.push(preserveScrub(text, scrubbed))
-  }
+  // The Tools and rules row and user System rows as this agent receives them:
+  // only the sections whose rows it has as they require (requires.ts), like
+  // apply plans them.
+  const has = (id: string) => input.items.some((item) => item.id === id && applies(item, owner.id))
+  const gate = gateOf((id) => (has(id) ? resolved.get(id)?.enabled : undefined))
+  system.push(
+    ...input.items
+      .filter((row) => (row.id === guidanceItemId || row.userSystem === true) && applies(row, owner.id) && resolved.get(row.id)?.enabled === true)
+      .map((row) => resolvedFor(row, owner, input, gate).assembled)
+      .filter((text) => text.trim().length > 0)
+      .map((text) => preserveScrub(text, scrubbed)),
+  )
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])

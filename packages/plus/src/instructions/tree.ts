@@ -147,6 +147,7 @@ export type AddKind =
   | "base"
   | "skill"
   | "instruction"
+  | "system"
   | "mcp"
   | "section"
   | "team"
@@ -2983,7 +2984,7 @@ function lazySystemInstructions(
     id: groupId ?? `group:${level}:${ownerSegment(owner, catalogue)}:system`,
     label: "Instructions",
     depth,
-    add: "instruction",
+    add: "system",
     actions: noActions(),
     children: () => {
       const systems = sortedKind(ctx, "system", owner)
@@ -4022,12 +4023,13 @@ function guidanceFor(memo: Memo, level: Level, owner: string | null, id: string,
 // prompts), user-created base templates (which carry group "none" with
 // userBase, deletable through base.delete while builtins stay refused —
 // builtin-id shadows pre-dating the creation refusal included, so deleting
-// them restores the host template), and agents. The
+// them restores the host template), user-created System rows, and agents. The
 // agent's own Role/persona body is owned but not deletable.
 function removable(level: Level, owner: string | null, item: Item): boolean {
   if (level === "defaults" && owner === null && item.kind === "mcp") return true
   if (item.id === "system:role") return false
   if (item.kind === "base" && item.userBase === true) return true
+  if (item.kind === "system" && item.userSystem === true) return true
   // A skill is deletable wherever a user authored it: the project's own
   // directory or one of the global-directory scopes. Built-in and plugin
   // skills (native/plus/mcp) are not files and stay refused.
