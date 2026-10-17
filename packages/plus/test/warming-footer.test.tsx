@@ -338,6 +338,85 @@ test("warmingLabel formats the compact before cold single label and compacted st
   ).toEqual({ text: "compacted", tone: "muted" })
 })
 
+test("warming switched off mid-window counts down to the keep-alive where the cache goes cold", () => {
+  const now = 1_000_000
+  const off = {
+    sessionID: "s",
+    chat: "off" as const,
+    active: false,
+    since: now - MINUTE,
+    expires: now + 29 * MINUTE,
+    interval: 4 * MINUTE,
+    coldAt: now + 3 * MINUTE,
+    now,
+  }
+  // Compact before cold on: the compaction moved to that keep-alive moment.
+  const compacting = { ...off, compact: true, compactAt: off.coldAt }
+  expect(warmingLabel(compacting, now)).toEqual({ text: "compact cache warm · 3:00 left", tone: "muted" })
+  expect(warmingLabel(compacting, now + 3 * MINUTE + 1_000)).toEqual({ text: "compact cache cold", tone: "warning" })
+  // Compact before cold off: the same moment, while warming stays off.
+  const cooling = { ...off, compact: false, coldAt: now + 2 * MINUTE + 30_000 }
+  expect(warmingLabel(cooling, now)).toEqual({ text: "cache warming off · warm 2:30 left", tone: "muted" })
+  expect(warmingLabel(cooling, cooling.coldAt)).toEqual({ text: "cache warming off", tone: "muted" })
+  expect(warmingLabel(cooling, cooling.coldAt + MINUTE)).toEqual({ text: "cache warming off", tone: "muted" })
+  // Control: a chat with warming off and no window to count shows the plain label.
+  expect(warmingLabel({ sessionID: "s", chat: "off", compact: false, active: false, now }, now)).toEqual({
+    text: "cache warming off",
+    tone: "muted",
+  })
+})
+
+test("the real footer counts a switched-off chat down to its cold moment and never holds its send", async () => {
+  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
+  const opened = Date.now()
+  await using fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 80,
+    height: 4,
+    rpc: {
+      "warming.status": async () => ({
+        sessionID: "ses_off",
+        chat: "off",
+        compact: false,
+        active: false,
+        since: opened - 3 * MINUTE,
+        expires: opened + 27 * MINUTE,
+        interval: 4 * MINUTE,
+        coldAt: opened + 1_500,
+        now: Date.now(),
+      }),
+    },
+    render: (context) => {
+      warming.current = createWarming(context)
+      return <warming.current.Footer sessionID="ses_off" />
+    },
+  })
+  const until = async (predicate: (frame: string) => boolean) => {
+    const deadline = Date.now() + 5_000
+    while (true) {
+      await fixture.flush()
+      const frame = fixture.captureCharFrame()
+      if (predicate(frame) || Date.now() > deadline) return frame
+      await Bun.sleep(50)
+    }
+  }
+  try {
+    expect(await until((frame) => frame.includes("cache warming off · warm"))).toMatch(/cache warming off · warm 0:0[12] left/)
+    expect(fixture.send({ sessionID: "ses_off", mode: "normal", delivery: "steer" })).toBe(true)
+    const cold = await until((frame) => frame.includes("cache warming off") && !frame.includes("· warm"))
+    expect(cold).toContain("cache warming off")
+    expect(cold).not.toContain("· warm")
+    const span = fixture
+      .captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((item) => item.text.startsWith("cache warming off"))
+    expect(span?.fg.equals(createTestTheme().text.muted)).toBe(true)
+    expect(fixture.send({ sessionID: "ses_off", mode: "normal", delivery: "steer" })).toBe(true)
+  } finally {
+    warming.current?.dispose()
+  }
+})
+
 test("the footer keeps warming visible regardless of compaction source and names the cold-arming model", () => {
   const now = 1_000_000
   const base = { sessionID: "s", chat: "default" as const, compact: true, active: true, expires: now + 5_000, now }

@@ -572,6 +572,30 @@ test("Defaults › Models records, host models and model interval round-trip wit
   expect(Schema.decodeUnknownSync(Plus.SetModelSettingsOutput)(Schema.encodeSync(Plus.SetModelSettingsOutput)(removed))).toEqual(removed)
 })
 
+test("WarmingStatus carries the cold moment of a switched-off chat and omits it otherwise", () => {
+  const off: Plus.WarmingStatus = {
+    sessionID: "ses_off",
+    chat: "off",
+    compact: false,
+    active: false,
+    since: 1_000_000,
+    expires: 2_800_000,
+    interval: 240_000,
+    coldAt: 1_240_000,
+    now: 1_100_000,
+  }
+  const encoded = Schema.encodeSync(Plus.WarmingStatus)(off)
+  expectRpcBody(encoded)
+  assertNoUndefinedValues(encoded)
+  expect(encoded.coldAt).toBe(1_240_000)
+  expect(Schema.decodeUnknownSync(Plus.WarmingStatus)(encoded)).toEqual(off)
+
+  const bare: Plus.WarmingStatus = { sessionID: "ses_warm", chat: "default", active: true, now: 1_100_000 }
+  const encodedBare = Schema.encodeSync(Plus.WarmingStatus)(bare)
+  expect("coldAt" in encodedBare).toBe(false)
+  expect(Schema.decodeUnknownSync(Plus.WarmingStatus)(encodedBare)).toEqual(bare)
+})
+
 test("Address schema handles null agent and section correctly", () => {
   const addressWithNulls: Plus.Address = {
     level: "defaults",

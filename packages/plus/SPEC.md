@@ -1160,7 +1160,7 @@ Methods exposed over the `opencode.plus` RPC definition (`src/rpc.ts`):
 | `model.remove` | `{ level, agent, providerID, modelID, variant?, actor? }` | `ModelRef` | `model.missing`, `model.invalid`, `agent.protected` |
 | `catalog.models` | `void` | `{ models: CatalogModel[] }` (`{ providerID, modelID, variant?, name }`, one entry per base model plus one per variant) | — |
 | `modelSettings.set` | `{ providerID?, modelID?, warming?, interval?, prompt?, effort? }` (strings set, `null` clears, absent leaves; no ids = Every model) | `SetModelSettingsOutput` (`{ record: SnapshotModelSettingsRecord \| null, revision, globalRevision }`) | `modelSettings.invalid` |
-| `warming.status` | `{ sessionID }` | `WarmingStatus` (`{ sessionID, chat: on\|off\|default, active, source?, level?, since?, expires?, interval?, lastWarm?, now }`) | — |
+| `warming.status` | `{ sessionID }` | `WarmingStatus` (`{ sessionID, chat: on\|off\|default, active, source?, level?, since?, expires?, interval?, lastWarm?, coldAt?, now }`; `coldAt` while switched off with a window not yet compacted) | — |
 | `warming.set` | `{ sessionID, chat: on\|off\|default }` | `WarmingStatus` | — |
 | `compaction.cold` | `{ sessionID }` | `{ ok: true, models }` after arming the chat's cold list (#1 writes, #2… fall back) and asking core for a manual compaction; `{ ok: false, reason: "no-list", where }` when the list is empty, with no compaction | — |
 | `rule.add` | `{ level, agent, catalogue?, tool, id, label, patterns, keywords?, message?, actor? }` | `RuleRef` | `rule.exists`, `rule.invalid`, `agent.protected` |
@@ -1338,7 +1338,13 @@ is only started by a real request. The switch persists per session in
 reports the chat's window (`since`, `expires` = `since` + total time) from the
 last decision; the TUI shows `cache warm · 23:41 left` under the prompt,
 `cache warming off` while switched off, and `cache warming on · starts after
-the next reply` while switched on with no window running. Once a window has
+the next reply` while switched on with no window running. Switched off while a
+window runs, core stops at its next keep-alive (one interval after the last
+keep-alive or the window's start, at most the window's end): the cache goes
+cold then (`coldAt`), a scheduled compaction before cold moves there, and the
+footer counts down to it (`cache warming off · warm 2:41 left`, or
+`compact cache warm · 2:41 left`); switched back on, the window's end applies
+again. Once a window has
 ended it shows `cache cold` (`cache cold · warming starts after the next reply`
 when switched on) in the warning feedback colour instead of disappearing; a chat
 that never had a window shows nothing. `warming.changed`
