@@ -29,6 +29,20 @@ export function opencodePartItemId(name: string): string {
   return `system:opencode/${name}`
 }
 
+// The tool definitions are a request field of their own, outside the system
+// array, and Anthropic's API reads them before the whole system prompt. Their
+// row heads every System list and is no slot: no stored order can move it.
+export const toolsPart = {
+  name: "tools",
+  slot: "tools",
+  title: "Tools",
+  text: "OpenCode sends the definitions of the tools this agent calls directly (with Code Mode on, `execute` among them): each tool's name, description and parameters. They are a field of the request of their own, not part of the system prompt. Claude receives them before the whole system prompt, so this row stays first and doesn't move; other providers place them themselves. The tools reached through Code Mode are listed in the Code Mode part instead. Switch tools on or off in the Tools category.",
+} as const
+
+export const toolsItemId = opencodePartItemId(toolsPart.name)
+
+export const toolsMoveRefusal = `"Tools" always comes first: the model receives the tool definitions before the whole system prompt, so nothing moves above them`
+
 const coreSlots: readonly string[] = opencodeParts.map((part) => part.slot)
 
 /** The default order: exactly the order the request carries the parts in when nothing is stored. */
@@ -48,6 +62,7 @@ export function isSlot(id: string): boolean {
 export function slotOfItem(item: Pick<Item, "id" | "kind" | "opencodePart" | "userSystem">): string | undefined {
   if (item.kind === "base" || item.id === "system:role") return firstSlot
   if (item.kind !== "system") return undefined
+  if (item.opencodePart === toolsPart.slot) return undefined
   if (item.opencodePart !== undefined) return item.opencodePart
   if (item.id === teachingItemId || item.id === guidanceItemId || item.userSystem === true) return item.id
   // An instruction file row (`system:<path>`) edits one of the AGENTS.md parts.

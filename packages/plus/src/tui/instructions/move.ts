@@ -20,7 +20,7 @@ import {
   type LayoutRecords,
   type RowTarget,
 } from "../../instructions/ops.js"
-import { firstSlot } from "../../instructions/system-order.js"
+import { firstSlot, toolsItemId, toolsMoveRefusal } from "../../instructions/system-order.js"
 import { buildTreeMemo, lazyPath, systemSlotOf, type Lazy, type Memo, type MemoInput, type TreeNode } from "../../instructions/tree.js"
 
 export interface MoveState {
@@ -56,6 +56,7 @@ export function startMove(node: TreeNode, layout: LayoutRecords): MoveStart {
     return { state: { rowId: node.id, layout, target: node.id, isSection: true, status: `Moving "${node.label}"` } }
   // Base prompts only live inside System, where they are alternatives for one part.
   if (node.address?.item.startsWith("base:") === true) return { refusal: baseMoveRefusal }
+  if (node.address?.item === toolsItemId) return { refusal: toolsMoveRefusal }
   const base = node.kind === "group" && node.id.endsWith(":base")
   const token = base ? firstSlot : listToken(node)
   if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }

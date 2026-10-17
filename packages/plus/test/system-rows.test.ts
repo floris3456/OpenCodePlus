@@ -14,10 +14,12 @@ import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { groupScope, layoutRefusal, type OrderRecord } from "../src/instructions/folders.js"
 import { fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
-import { planFolderCreate, planRowMove, planSystemMove } from "../src/instructions/ops.js"
+import { planFolderCreate, planRowMove, planSystemMove, refusalFor } from "../src/instructions/ops.js"
 import { userSystemFile } from "../src/instructions/paths.js"
 import { chainContext } from "../src/instructions/presets.js"
+import { toolsMoveRefusal } from "../src/instructions/system-order.js"
 import { expandedTree, type TreeNode } from "../src/instructions/tree.js"
+import { startMove } from "../src/tui/instructions/move.js"
 import { agentHarness, agentInfo, context, fullContext, toolHarness } from "./harness.js"
 
 // User-created System rows: a global file per row that every level and
@@ -188,6 +190,7 @@ test("System is one flat list in the order the request carries its parts, OpenCo
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
   const list = systemList(expandedTree({ agents: discovered.agents, items: discovered.items, records: [], teams: [] }), "group:defaults::system")
   expect(list.map((node) => node.label)).toEqual([
+    "Tools",
     "Role/persona",
     "Base",
     "Your model",
@@ -203,11 +206,13 @@ test("System is one flat list in the order the request carries its parts, OpenCo
     "Tools and rules",
     "Working rules",
   ])
+  // The tool definitions come before the whole system prompt.
+  expect(list[0]?.badges.slotNote).toBe("first, before the system prompt")
   // Role/persona is off, so the base prompt holds the first place.
-  expect(list[0]?.badges.slotNote).toBe("base prompt sent instead")
-  expect(list[1]?.badges.slotNote).toBeUndefined()
+  expect(list[1]?.badges.slotNote).toBe("base prompt sent instead")
+  expect(list[2]?.badges.slotNote).toBeUndefined()
   const opencode = list.filter((node) => node.id.startsWith("item:defaults::system:opencode/"))
-  expect(opencode).toHaveLength(10)
+  expect(opencode).toHaveLength(11)
   expect(opencode.every((node) => node.badges.fromLabel === "OpenCode" && Object.values(node.actions ?? {}).every((action) => action !== true))).toBe(true)
 })
 
@@ -336,7 +341,7 @@ test("moving a System row stores the owner's complete order, which the tree list
   ])
   expect(moved.status).toBe(`Moved "Date" before "Role/persona": the model receives it there`)
   const after = systemList(expandedTree({ ...memo, orders: moved.layout.orders }), "group:defaults::system")
-  expect(after.map((node) => node.label).slice(0, 4)).toEqual(["Date", "Role/persona", "Base", "Your model"])
+  expect(after.map((node) => node.label).slice(0, 5)).toEqual(["Tools", "Date", "Role/persona", "Base", "Your model"])
   // planRowMove routes System rows the same way, and the Base group moves with Role/persona.
   const base = planRowMove(memo, empty, "group:defaults::base", { after: "item:defaults::system:working-rules" }, UPDATED)
   if ("refusal" in base) throw new Error(base.refusal)
@@ -351,4 +356,28 @@ test("moving a System row stores the owner's complete order, which the tree list
     refusal: "System has no folders: its list is the order the model receives the parts",
   })
   expect(layoutRefusal(moved.layout.folders, moved.layout.orders)).toBeUndefined()
+})
+
+test("Tools heads every System list: it never moves, nothing moves above it, and right after it is the top of the order", async () => {
+  await tempRoot()
+  const ctx = context({ agent: agentHarness([agentInfo("alpha", "upstream")]).domain })
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  const memo = { agents: discovered.agents, items: discovered.items, records: [], teams: [] }
+  const empty = { folders: [], orders: [] }
+  const tools = "item:defaults::system:opencode/tools"
+  expect(planSystemMove(memo, empty, tools, { after: "item:defaults::system:role" }, UPDATED)).toEqual({ refusal: toolsMoveRefusal })
+  expect(planSystemMove(memo, empty, "item:defaults::system:opencode/date", { before: tools }, UPDATED)).toEqual({ refusal: toolsMoveRefusal })
+  expect(planSystemMove(memo, empty, "item:defaults::system:role", { after: tools }, UPDATED)).toEqual({
+    refusal: `"Role/persona" is already right after "Tools"`,
+  })
+  const top = planSystemMove(memo, empty, "item:defaults::system:opencode/date", { after: tools }, UPDATED)
+  if ("refusal" in top) throw new Error(top.refusal)
+  expect(top.layout.orders[0]?.items.slice(0, 2)).toEqual(["core/date", "first"])
+  const listed = systemList(expandedTree({ ...memo, orders: top.layout.orders }), "group:defaults::system")
+  expect(listed.map((node) => node.label).slice(0, 3)).toEqual(["Tools", "Date", "Role/persona"])
+  // An agent's own stored order keeps Tools first too, and move mode refuses to pick it up.
+  const agentList = systemList(expandedTree({ ...memo, orders: [order("group:defaults:alpha:system", ["core/date", "first"])] }), "group:defaults:alpha:system")
+  expect(agentList.map((node) => node.label).slice(0, 2)).toEqual(["Tools", "Date"])
+  expect(startMove(listed[0]!, empty)).toEqual({ refusal: toolsMoveRefusal })
+  expect(refusalFor(memo, tools)).toBe(`"Tools" cannot be deleted: OpenCode sends the definitions of the tools that are on; switch tools off in the Tools category`)
 })

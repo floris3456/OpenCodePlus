@@ -11,7 +11,7 @@ import os from "node:os"
 import path from "node:path"
 import { idFromPath, parseAgentModel } from "../agents/files.js"
 import { readUserSystemRowsSync } from "../agents/system.js"
-import { opencodePartItemId, opencodeParts } from "./system-order.js"
+import { opencodePartItemId, opencodeParts, toolsPart } from "./system-order.js"
 import { controlItems } from "./agent-controls.js"
 import { unmaskModel, unmaskText, upstreamEnabled, type ModelBaseline, type ModelRefLike, type PromptBaseline } from "./inventory.js"
 import {
@@ -1051,7 +1051,7 @@ function userSystemItems(order: number): Item[] {
 // and move every part the model receives. Their text says what OpenCode puts
 // there; apply plans nothing for them and rules never mine them.
 function opencodePartItems(order: number): Item[] {
-  return opencodeParts.map((part, index): Item => ({
+  return [toolsPart, ...opencodeParts].map((part, index): Item => ({
     id: opencodePartItemId(part.name),
     kind: "system",
     group: "native",

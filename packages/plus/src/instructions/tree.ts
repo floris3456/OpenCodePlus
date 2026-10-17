@@ -21,7 +21,7 @@ import {
   sameModelCandidate,
   scopedTo,
 } from "./model.js"
-import { completeOrder, defaultSystemOrder, firstSlot, slotOfItem, storedSystemOrder, userSystemRows } from "./system-order.js"
+import { completeOrder, defaultSystemOrder, firstSlot, slotOfItem, storedSystemOrder, toolsItemId, userSystemRows } from "./system-order.js"
 import type {
   Address,
   AgentSource,
@@ -2959,8 +2959,9 @@ function lazyBase(
 }
 
 // System lists every part of the owner's system prompt in the order the model
-// receives it (system-order.ts): Role/persona and the Base group first (one
-// slot: the base prompt is sent only while Role/persona is empty), OpenCode's
+// receives it (system-order.ts), headed by the tool definitions, which the
+// model receives before it and which never move: Role/persona and the Base
+// group (one slot: the base prompt is sent only while Role/persona is empty), OpenCode's
 // own parts (movable, not editable), OpenCodePlus, Tools and rules and the
 // user's System rows. Moving a row stores the order, which reorders the
 // request; it has no folders.
@@ -3007,7 +3008,11 @@ function lazySystem(
           lazyBase(ctx, memo, level, owner, agent, depth + 1, id.replace(/:system$/, ":base"), teamRef, catalogue, ownerPath, replaced),
         ]
       }
-      return systemOrderAt(memo, addressOf(level, owner, "system:role", null, teamRef, catalogue)).flatMap(rowsOf)
+      const tools = systems.find((item) => item.id === toolsItemId)
+      return [
+        ...(tools === undefined ? [] : [row(tools)]),
+        ...systemOrderAt(memo, addressOf(level, owner, "system:role", null, teamRef, catalogue)).flatMap(rowsOf),
+      ]
     },
   })
 }
@@ -3032,7 +3037,7 @@ function lazyOpencodePart(
     address: addressOf(level, owner, item.id, null, teamRef, catalogue),
     actions: noActions(),
     selfReview: () => false,
-    partial: () => ({ fromLabel: "OpenCode" }),
+    partial: () => (item.id === toolsItemId ? { fromLabel: "OpenCode", slotNote: "first, before the system prompt" } : { fromLabel: "OpenCode" }),
     reviewCount: () => 0,
     children: () => [],
   }

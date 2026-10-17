@@ -104,7 +104,7 @@ import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
 import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf, systemOrderAt, systemSlotOf } from "./tree.js"
-import { firstSlot } from "./system-order.js"
+import { firstSlot, toolsItemId, toolsMoveRefusal } from "./system-order.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, parentIndexes, relocateHeadingSpan, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -357,6 +357,14 @@ export function planSystemMove(memo: MemoInput, layout: LayoutRecords, rowId: st
   const rows = list.children()
   const sibling = rows.find((row) => row.id === (target.before ?? target.after))
   if (sibling === undefined) return { refusal: `say where "${node.label}" goes: before or after a row of the same System list` }
+  if (node.address?.item === toolsItemId || (sibling.address?.item === toolsItemId && !target.after)) return { refusal: toolsMoveRefusal }
+  // Right after Tools is the top of the parts an order arranges.
+  if (sibling.address?.item === toolsItemId) {
+    const top = rows.find((row) => systemSlotOf(active, row) !== undefined)
+    if (top === undefined) return { refusal: `"${node.label}" cannot move here` }
+    if (systemSlotOf(active, top) === systemSlotOf(active, node)) return { refusal: `"${node.label}" is already right after "Tools"` }
+    return planSystemMove(memo, layout, rowId, { before: top.id }, updated, active)
+  }
   const slot = systemSlotOf(active, node)
   const anchor = systemSlotOf(active, sibling)
   const address = rows.flatMap((row) => (row.address === undefined ? [] : [row.address]))[0]
@@ -381,7 +389,8 @@ export function planSystemMove(memo: MemoInput, layout: LayoutRecords, rowId: st
   }
 }
 
-function opencodePartRefusal(label: string): string {
+function opencodePartRefusal(label: string, item: string): string {
+  if (item === toolsItemId) return `"${label}" cannot be deleted: OpenCode sends the definitions of the tools that are on; switch tools off in the Tools category`
   return `"${label}" cannot be deleted: OpenCode builds this part for each request; move it to change where the model receives it`
 }
 
@@ -2393,7 +2402,7 @@ export function removalPlan(input: MemoInput, rowId: string, sharedMemo?: Memo):
       successStatus: `Deleted System row ${node.label}`,
     }
   }
-  if (item.opencodePart !== undefined) return { refusal: opencodePartRefusal(node.label) }
+  if (item.opencodePart !== undefined) return { refusal: opencodePartRefusal(node.label, item.id) }
   if (item.kind === "system" && itemId.startsWith("system:") && itemId !== "system:role") {
     const relative = itemId.slice("system:".length)
     if (node.actions?.remove !== true)
@@ -2458,7 +2467,7 @@ export function refusalFor(input: MemoInput, rowId: string, sharedMemo?: Memo): 
     if (node.kind === "section") return `"${node.label}" cannot be deleted: sections are toggled or split, not deleted`
     return undefined
   }
-  if (item.opencodePart !== undefined) return opencodePartRefusal(node.label)
+  if (item.opencodePart !== undefined) return opencodePartRefusal(node.label, item.id)
   if (item.kind === "system" && item.id !== "system:role") {
     const relative = address.item.startsWith("system:") ? address.item.slice("system:".length) : address.item
     return `"${node.label}" cannot be deleted: instruction "${relative}" is not project-owned`

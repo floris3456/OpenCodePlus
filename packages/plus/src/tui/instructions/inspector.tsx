@@ -7,6 +7,7 @@ import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LAB
 import { formatDuration } from "../../instructions/model.js"
 import { contextOfSnapshot, modelDefaultsViewOf, rowlinkOf } from "../../instructions/snapshot.js"
 import { rowlinkView } from "../../instructions/rowlinks.js"
+import { toolsItemId } from "../../instructions/system-order.js"
 import type { Snapshot } from "../../rpc.js"
 import {
   addressLine,
@@ -143,7 +144,13 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   if (node.badges.slotNote !== undefined) facts.push(["request", node.badges.slotNote])
   // OpenCode's own parts are built per request: nothing resolves or overrides them here.
   const opencode = node.address?.item.startsWith("system:opencode/") === true
-  if (opencode) facts.push(["source", "OpenCode builds it for each request · m moves it, nothing here edits it"])
+  if (opencode)
+    facts.push([
+      "source",
+      node.address?.item === toolsItemId
+        ? "OpenCode sends the tools that are on · it always comes first, nothing here moves or edits it"
+        : "OpenCode builds it for each request · m moves it, nothing here edits it",
+    ])
   const provenance = opencode ? undefined : provenanceLine(node, snapshot, memo)
   if (provenance !== undefined) facts.push(["source", BASELINE.test(provenance) ? "default (nothing overrides it)" : provenance.replace(/^(state and text|value|enabled): /, "")])
   const link = linkLine(node, snapshot)
