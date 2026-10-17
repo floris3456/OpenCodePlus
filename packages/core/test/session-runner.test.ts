@@ -2680,7 +2680,7 @@ describe("SessionRunnerLLM", () => {
         expect(s.requests[1].model).toBe(replacementModel)
         expect(s.requests[1].system).toEqual([
           SystemPart.make("Keep exact unresolved decisions"),
-          SystemPart.make(replacementIdentity),
+          SystemPart.make(replacementIdentity, { instruction: { key: "core/identity" } }),
           ...s.requests[0].system.slice(2),
         ])
         expect(userTexts(s.requests[1]).at(-1)).toBe(SessionCompaction.buildPrompt(false))

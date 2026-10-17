@@ -94,6 +94,7 @@ export const Plugin = {
         event.system.push(
           SystemPart.make(
             "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using `execute` to call `tools.opencode.session_move` and make the worktree the session's working directory.",
+            { instruction: { key: "core/tools-note" } },
           ),
         )
       })

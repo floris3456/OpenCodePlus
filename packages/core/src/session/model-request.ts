@@ -128,11 +128,11 @@ export const baseTranscript = (input: {
   readonly model: SessionRunnerModel.Resolved
   readonly tools: Tool.Snapshot
   // Ordered instruction parts; one SystemPart per part, so each instruction
-  // source file keeps its own part boundary. A file-backed baseline part is an
-  // `Instructions.Part` carrying its canonical absolute file path, which the
-  // model request carries as `metadata.instruction.path` for file matching;
-  // other sources stay plain strings. The agent's own system prompt stays the
-  // first part.
+  // source keeps its own part boundary. A baseline part is an
+  // `Instructions.Part` carrying its source key and, when file-backed, its
+  // canonical absolute file path; the model request carries them as
+  // `metadata.instruction` so plugins can tell the parts apart. The agent's
+  // own system prompt stays the first part.
   readonly initial: ReadonlyArray<string | Instructions.Part>
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
@@ -151,7 +151,9 @@ export const baseTranscript = (input: {
 }
 
 const instructionPart = (part: Instructions.Part): SystemPart =>
-  SystemPart.make(part.text, { instruction: { path: part.path } })
+  SystemPart.make(part.text, {
+    instruction: part.path === undefined ? { key: part.key } : { key: part.key, path: part.path },
+  })
 
 const mimeToModality = (mime: string) => {
   if (mime.startsWith("image/")) return "image"

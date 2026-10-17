@@ -280,7 +280,7 @@ describe("InstructionState", () => {
 
       // The epoch baseline is now ordered per-source parts, not one joined
       // string; frozen historical update text stays a single rendered string.
-      expect(assembled).toEqual({ initial: ["Changed context"], update: "" })
+      expect(assembled).toEqual({ initial: [{ text: "Changed context", key: Instructions.Key.make("test/context") }], update: "" })
       expect(yield* instructionEvents(db, sessionID)).toEqual(beforeEvents)
       expect(yield* db.select().from(InstructionBlobTable).all().pipe(Effect.orDie)).toEqual(beforeBlobs)
       expect(
@@ -322,7 +322,7 @@ describe("InstructionState", () => {
 
       // The epoch baseline is now ordered per-source parts, not one joined
       // string; frozen historical update text stays a single rendered string.
-      expect(assembled.initial).toEqual(["Initial context"])
+      expect(assembled.initial).toEqual([{ text: "Initial context", key: Instructions.Key.make("test/context") }])
       expect(assembled.update).toBe("Private update")
       expect(yield* instructionEvents(db, sessionID)).toEqual(beforeEvents)
       expect(yield* db.select().from(InstructionBlobTable).all().pipe(Effect.orDie)).toEqual(beforeBlobs)
@@ -352,8 +352,8 @@ describe("InstructionState", () => {
 
       const assembled = yield* preview(db, sessionID, instructions)
 
-      expect(assembled.initial).toContain("Initial context")
-      expect(assembled.initial).toContain("Retired context")
+      expect(assembled.initial).toContainEqual({ text: "Initial context", key: Instructions.Key.make("test/current") })
+      expect(assembled.initial).toContainEqual({ text: "Retired context", key: Instructions.Key.make("test/retired") })
       expect(assembled.update).toContain("Changed context")
       expect(assembled.update).toContain("Removed Retired context")
     }),
@@ -403,7 +403,7 @@ describe("InstructionState", () => {
       // The epoch baseline is now ordered per-source parts, not one joined
       // string; frozen historical update text stays a single rendered string.
       expect(yield* preview(db, sessionID, instructions)).toEqual({
-        initial: ["Initial context"],
+        initial: [{ text: "Initial context", key: Instructions.Key.make("test/context") }],
         update: "",
       })
       expect(yield* instructionEvents(db, sessionID)).toEqual([])
@@ -430,7 +430,7 @@ describe("InstructionState", () => {
       // The epoch baseline is now ordered per-source parts, not one joined
       // string; frozen historical update text stays a single rendered string.
       expect(yield* preview(db, sessionID, instructions)).toEqual({
-        initial: ["Committed context"],
+        initial: [{ text: "Committed context", key: Instructions.Key.make("test/context") }],
         update: "",
       })
       expect(yield* instructionEvents(db, sessionID)).toEqual(beforeEvents)

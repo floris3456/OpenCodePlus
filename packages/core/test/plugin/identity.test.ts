@@ -57,6 +57,7 @@ it.effect("inserts the structured model block after the agent prompt", () =>
       identity("Muse Spark", "meta/muse-spark-1.1"),
       "Initial context",
     ])
+    expect(named.system[1]?.metadata).toEqual({ instruction: { key: "core/identity" } })
 
     const fallback = context("unknown-model")
     yield* hooks.trigger("session", "context", fallback)

@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { LanguageModel, SystemPart } from "@opencode/ai"
+import { LanguageModel } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
@@ -19,7 +19,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Event } from "@opencode/schema/event"
 import { Project } from "@opencode/schema/project"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { testEffect } from "./lib/effect"
 import { readInitial, readUpdate, state } from "./lib/instructions"
 
@@ -115,9 +115,7 @@ const parts = (instructions: Instructions.List) =>
       ),
     )
     // Same mapping the model request applies: one SystemPart per instruction source.
-    return Instructions.renderInitialParts(instructions, values).map((part) =>
-      typeof part === "string" ? SystemPart.make(part) : SystemPart.make(part.text, { instruction: { path: part.path } }),
-    )
+    return assemble(Instructions.renderInitialParts(instructions, values)).slice(1)
   })
 
 describe("InstructionDiscovery per-file parts", () => {
@@ -253,10 +251,41 @@ describe("InstructionDiscovery per-file parts", () => {
 
       const history = yield* SessionHistory.entriesForRunner(db, sessionID, yield* discovery.load(), "local")
       const system = assemble(history.initial)
-      expect(system.slice(1).map((part) => part.metadata)).toEqual([
-        { instruction: { path: "/repo/AGENTS.md" } },
-        { instruction: { path: "/repo/packages/AGENTS.md" } },
+      expect(system.slice(1).map((part) => part.metadata)).toEqual(
+        (yield* discovery.load()).map((source) => ({ instruction: { key: source.key, path: source.path } })),
+      )
+      expect(system.slice(1).map((part) => (part.metadata?.instruction as { path?: string }).path)).toEqual([
+        "/repo/AGENTS.md",
+        "/repo/packages/AGENTS.md",
       ])
+    }),
+  )
+
+  discoveryOnly.effect("every initial part carries its source key, and only file-backed parts a path", () =>
+    Effect.gen(function* () {
+      const discovery = yield* InstructionDiscovery.Service
+      yield* discovery.transform((editor) => {
+        editor.add(file("/repo/AGENTS.md", "root"))
+      })
+      const text = (key: string, value: string) =>
+        Instructions.make({
+          key: Instructions.Key.make(key),
+          codec: Schema.String,
+          read: Effect.succeed(value),
+          render: { initial: (current) => current, changed: (_, current) => current },
+        })
+      const files = yield* discovery.load()
+      const system = yield* parts(
+        Instructions.combine([text("core/codemode", "catalog"), files, text("core/date", "today"), text("api/note", "note")]),
+      )
+      expect(system.map((part) => part.metadata)).toEqual([
+        { instruction: { key: "core/codemode" } },
+        { instruction: { key: files[0]?.key, path: "/repo/AGENTS.md" } },
+        { instruction: { key: "core/date" } },
+        { instruction: { key: "api/note" } },
+      ])
+      // The agent's own prompt stays a plain first part.
+      expect(assemble([])[0]?.metadata).toBeUndefined()
     }),
   )
 })

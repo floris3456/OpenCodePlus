@@ -24,7 +24,11 @@ export const Plugin = define({
           (yield* ctx.model.list()).data.find(
             (model) => model.providerID === event.model.providerID && model.id === event.model.id,
           ) ?? Model.Info.default(event.model.providerID, event.model.id)
-        event.system.splice(1, 0, SystemPart.make(identity({ name: model.name, ref: event.model })))
+        event.system.splice(
+          1,
+          0,
+          SystemPart.make(identity({ name: model.name, ref: event.model }), { instruction: { key: "core/identity" } }),
+        )
       }).pipe(Effect.catch(() => Effect.void))
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)
