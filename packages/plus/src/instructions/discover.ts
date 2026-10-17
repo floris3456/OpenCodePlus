@@ -111,15 +111,10 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const ruleRecords = input.ruleRecords ?? []
   const sources = await resolveAgentSources(directory, agents, input.activeBase)
   const bodies = await readAgentBodies(sources)
-  // OpenCodePlus: AGENTS.md handling is DISABLED for now. Native opencode applies
-  // AGENTS.md files itself (session-start upward walk plus read-time descendant
-  // discovery); Plus used to mirror the ambient set as `system:<path>` rows under
-  // every agent so they could be overridden or toggled per agent. That surface is
-  // being reworked as part of the Context catalogue. Until then no AGENTS.md rows
-  // exist, so nothing here shows, overrides or toggles them; the seeded
-  // OPENCODEPLUS.md teaching row is unaffected. Re-enable by restoring the call.
-  // const instructions = await discoverInstructionFiles(directory, projectDirectory)
-  const instructions: { path: string; text: string }[] = []
+  // The AGENTS.md files core sends from this directory, one `system:<relative
+  // path>` row each, listed under System's "AGENTS.md files" row so each can be
+  // switched off or edited per agent. Creating and deleting them stays off.
+  const instructions = await discoverInstructionFiles(directory, input.ctx.location.project.directory)
   const teaching = await readTeachingFile()
   const mcp = mcpInventory(servers, input.records)
   const upstream = await upstreamModels(sources, agents, modelBaselines)
@@ -918,6 +913,21 @@ function upstreamMcpAvailable(
   return config.disabled !== true
 }
 
+// The AGENTS.md files core's instruction source loads for a location
+// (core config/plugin/instruction.ts): the global file, then every file from
+// the location upward to the stop directory (nearest-to-farthest). Descendant
+// files, which core surfaces only as synthetic messages when read, are not
+// inventory. Plus cannot reach core's project/global discovery flags, so both
+// scopes are always listed; with either disabled core sends a subset.
+async function discoverInstructionFiles(directory: string, projectDirectory: string): Promise<{ path: string; text: string }[]> {
+  const candidates = instructionCandidates(directory, projectDirectory)
+  const texts = await Promise.all(candidates.map((file) => readText(file)))
+  return candidates.flatMap((file, index) => {
+    const text = texts[index]
+    return text === undefined ? [] : [{ path: file, text }]
+  })
+}
+
 export function instructionCandidates(directory: string, projectDirectory: string): string[] {
   const start = path.resolve(directory)
   const root = path.resolve(projectDirectory)
@@ -927,16 +937,6 @@ export function instructionCandidates(directory: string, projectDirectory: strin
   if (!contains(root, start)) return [...new Set(candidates)]
   return [...new Set([...candidates, ...ancestorFiles(start, stop)])]
 }
-
-// Ownership for the delete path: the session file (<session>/AGENTS.md) is
-// the only instruction `instruction.delete` can reach — its resolver confines
-// resolution to the project root, which the session file satisfies exactly
-// when the session is the project root (the only layout `instruction.create`
-// writes). The global-config AGENTS.md and ancestor files outside the session
-// are ambient inventory: the tree must not offer `d` on them because the
-// handler would reject the traversal. Group carries the signal so no model,
-// RPC, or snapshot change is needed: `removable()` already grants delete to
-// project-group items, and `instructionFileItems` sets it above.
 
 function ancestorFiles(start: string, stop: string): string[] {
   const files: string[] = []
@@ -965,18 +965,19 @@ async function readText(file: string): Promise<string | undefined> {
   return fs.readFile(file, "utf8").catch(() => undefined)
 }
 
+// Group "project" would offer `d`; instruction files are not deleted from
+// here (instruction.delete refuses), so every row is ambient inventory.
 function instructionFileItems(
   directory: string,
   files: readonly { path: string; text: string }[],
 ): Item[] {
-  const owned = path.resolve(directory, "AGENTS.md")
   return files.map((file, index): Item => {
     const relative = path.relative(directory, file.path) || file.path
     const id = `system:${relative}`
     return {
       id,
       kind: "system",
-      group: path.resolve(file.path) === owned ? "project" : "none",
+      group: "none",
       title: relative,
       text: file.text,
       enabled: upstreamEnabled(),

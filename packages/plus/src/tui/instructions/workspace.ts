@@ -28,6 +28,38 @@ export function isLevelId(value: unknown): value is LevelId {
 
 export const CATEGORY = /:(settings|models|compaction|tools|skills|base|system|mcp)$/
 
+/** Where an OpenCode row of a System list keeps its settings: the row Enter and → go to. */
+export interface SettingsTarget {
+  readonly id: string
+  /** The owner's tab itself: the jump lands on its first row. */
+  readonly tab: boolean
+  readonly label: string
+}
+
+/**
+ * The tab, or the row inside one, holding the settings OpenCode builds a
+ * System row from. Undefined for rows set up nowhere (date, environment, …).
+ * Only rows that exist by construction are named: a missing id walks the
+ * whole tree.
+ */
+export function settingsTarget(node: Pick<TreeNode, "id" | "address">, hasExecute: boolean): SettingsTarget | undefined {
+  const item = node.address?.item
+  if (item === undefined || !item.startsWith("system:opencode/") || !node.id.endsWith(`:${item}`)) return undefined
+  // A row id is `item:<level>:<owner path>:<item>`; the owner's tabs are `group:<level>:<owner path>:<tab>`.
+  const owner = node.id.slice("item:".length, node.id.length - item.length - 1)
+  const group = `group:${owner}`
+  const part = item.slice("system:opencode/".length)
+  if (part === "tools") return { id: `${group}:tools`, tab: true, label: "Tools" }
+  if (part === "identity") return { id: `${group}:models`, tab: true, label: "Models" }
+  if (part === "skills") return { id: `${group}:skills`, tab: true, label: "Skills" }
+  if (part === "codemode")
+    return hasExecute ? { id: `item:${owner}:tool:execute`, tab: false, label: "Tools › execute" } : { id: `${group}:tools`, tab: true, label: "Tools" }
+  // Only the Defaults catalogues have an MCP tab (the servers); an agent's MCP tools sit in Tools.
+  if (part === "mcp")
+    return /^defaults:(\/teams)?$/.test(owner) ? { id: `${group}:mcp`, tab: true, label: "MCP" } : { id: `${group}:tools:mcp`, tab: false, label: "Tools › MCP" }
+  return undefined
+}
+
 /** A folder's name when `node` is one of its group rows (S1a), else undefined. */
 export function folderName(node: TreeNode | undefined): string | undefined {
   if (node?.kind !== "group" || !node.id.includes(":folder:")) return undefined

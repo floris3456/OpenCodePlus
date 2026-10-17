@@ -3002,11 +3002,14 @@ function lazySystem(
           ? lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath)
           : lazyOpencodePart(level, owner, item, depth + 1, teamRef, catalogue, ownerPath)
       const rowsOf = (slot: string): Lazy[] => {
-        if (slot !== firstSlot)
-          return systems
-            .filter((item) => item.id !== "system:role" && slotOfItem(item) === slot)
-            .toSorted((left, right) => Number(right.opencodePart !== undefined) - Number(left.opencodePart !== undefined))
-            .map(row)
+        if (slot !== firstSlot) {
+          const rows = systems.filter((item) => item.id !== "system:role" && slotOfItem(item) === slot)
+          const part = rows.find((item) => item.opencodePart !== undefined)
+          if (part === undefined || slot !== "core/instructions") return rows.toSorted((left, right) => Number(right.opencodePart !== undefined) - Number(left.opencodePart !== undefined)).map(row)
+          // Each AGENTS.md file opens under OpenCode's "AGENTS.md files" row.
+          const files = rows.filter((item) => item !== part).map((item) => lazyItem(ctx, memo, level, owner, agent, item, depth + 2, teamRef, catalogue, ownerPath))
+          return [lazyOpencodePart(level, owner, part, depth + 1, teamRef, catalogue, ownerPath, files)]
+        }
         const head = role === undefined ? undefined : row(role)
         return [
           ...(head === undefined ? [] : [{ ...head, partial: () => (replaced() ? head.partial() : { ...head.partial(), slotNote: "base prompt sent instead" }) }]),
@@ -3024,6 +3027,7 @@ function lazySystem(
 
 // One of OpenCode's own parts: it moves with the System order, but OpenCode
 // builds its content per request, so nothing here edits, toggles or splits it.
+// The AGENTS.md part opens into its files, which are rows of their own.
 function lazyOpencodePart(
   level: Level,
   owner: string | null,
@@ -3032,19 +3036,20 @@ function lazyOpencodePart(
   teamRef?: RowTeam,
   catalogue?: Catalogue,
   ownerPath?: string,
+  files: readonly Lazy[] = [],
 ): Lazy {
   return {
     id: rowIdOf("item", level, owner, item.id, catalogue, ownerPath),
     kind: "item",
     label: item.title,
     depth,
-    expandable: false,
+    expandable: files.length > 0,
     address: addressOf(level, owner, item.id, null, teamRef, catalogue),
     actions: noActions(),
     selfReview: () => false,
     partial: () => (item.id === toolsItemId ? { fromLabel: "OpenCode", slotNote: "first, before the system prompt" } : { fromLabel: "OpenCode" }),
-    reviewCount: () => 0,
-    children: () => [],
+    reviewCount: () => files.reduce((total, file) => total + file.reviewCount(), 0),
+    children: () => files,
   }
 }
 

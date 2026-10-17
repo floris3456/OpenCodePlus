@@ -28,7 +28,7 @@ import {
 } from "./detail-pane.js"
 import { structureDetail } from "./descriptions.js"
 import { folderHolding } from "../../instructions/folders.js"
-import { toolWords, type Row, type ToolCount } from "./workspace.js"
+import { settingsTarget, toolWords, type Row, type ToolCount } from "./workspace.js"
 
 export interface InspectorProps {
   readonly context: Plugin.Context
@@ -151,6 +151,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
         ? "OpenCode sends the tools that are on · it always comes first, nothing here moves or edits it"
         : "OpenCode builds it for each request · m moves it, nothing here edits it",
     ])
+  const settings = opencode ? settingsTarget(node, snapshot.items.some((item) => item.id === "tool:execute")) : undefined
+  if (settings !== undefined) facts.push(["settings", `${settings.label} · enter or → goes there`])
   const provenance = opencode ? undefined : provenanceLine(node, snapshot, memo)
   if (provenance !== undefined) facts.push(["source", BASELINE.test(provenance) ? "default (nothing overrides it)" : provenance.replace(/^(state and text|value|enabled): /, "")])
   const link = linkLine(node, snapshot)

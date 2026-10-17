@@ -113,10 +113,10 @@ import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
 const namespace = "instructions"
-// OpenCodePlus: AGENTS.md rows and their create/delete are disabled pending the
-// Context catalogue (instructions/discover.ts carries the full note).
+// OpenCodePlus: creating and deleting AGENTS.md files is off pending the
+// Context catalogue; the files OpenCode sends are rows under System.
 export const INSTRUCTION_DISABLED =
-  "instruction.disabled: AGENTS.md handling in OpenCodePlus is disabled for now; OpenCode applies AGENTS.md files. Being reworked with the Context catalogue."
+  "instruction.disabled: creating and deleting AGENTS.md files from OpenCodePlus is off until the Context catalogue. The files OpenCode sends are listed under System › AGENTS.md files, each switched off or edited per agent."
 const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
 
@@ -2290,8 +2290,7 @@ function createRow(
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "instruction") {
-      // OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
-      // (see instructions/discover.ts). Native opencode owns AGENTS.md until then.
+      // OpenCodePlus: creating AGENTS.md files is off pending the Context catalogue.
       return yield* Effect.fail(new Tool.Error({ message: INSTRUCTION_DISABLED }))
       // if (input.name === undefined || input.text === undefined)
       //   return yield* Effect.fail(new Tool.Error({ message: "create instruction requires name and text" }))

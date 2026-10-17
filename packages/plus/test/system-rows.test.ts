@@ -14,12 +14,13 @@ import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { groupScope, layoutRefusal, type OrderRecord } from "../src/instructions/folders.js"
 import { fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
-import { planFolderCreate, planRowMove, planSystemMove, refusalFor } from "../src/instructions/ops.js"
+import { planFolderCreate, planRowMove, planSystemMove, refusalFor, setEnabled } from "../src/instructions/ops.js"
 import { userSystemFile } from "../src/instructions/paths.js"
 import { chainContext } from "../src/instructions/presets.js"
-import { toolsMoveRefusal } from "../src/instructions/system-order.js"
+import { agentsFileMoveRefusal, toolsMoveRefusal } from "../src/instructions/system-order.js"
 import { expandedTree, type TreeNode } from "../src/instructions/tree.js"
 import { startMove } from "../src/tui/instructions/move.js"
+import { settingsTarget } from "../src/tui/instructions/workspace.js"
 import { agentHarness, agentInfo, context, fullContext, toolHarness } from "./harness.js"
 
 // User-created System rows: a global file per row that every level and
@@ -28,10 +29,13 @@ import { agentHarness, agentInfo, context, fullContext, toolHarness } from "./ha
 const UPDATED = "2026-01-01T00:00:00.000Z"
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
+const priorTestHome = process.env.OPENCODE_TEST_HOME
 
 afterEach(async () => {
   if (priorConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
   else process.env.OPENCODE_CONFIG_DIR = priorConfigDir
+  if (priorTestHome === undefined) delete process.env.OPENCODE_TEST_HOME
+  else process.env.OPENCODE_TEST_HOME = priorTestHome
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -39,6 +43,8 @@ async function tempRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-system-rows-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  // The AGENTS.md walk stops at home: keep it inside the fixture.
+  process.env.OPENCODE_TEST_HOME = root
   return path.join(root, "project")
 }
 
@@ -380,4 +386,47 @@ test("Tools heads every System list: it never moves, nothing moves above it, and
   expect(agentList.map((node) => node.label).slice(0, 2)).toEqual(["Tools", "Date"])
   expect(startMove(listed[0]!, empty)).toEqual({ refusal: toolsMoveRefusal })
   expect(refusalFor(memo, tools)).toBe(`"Tools" cannot be deleted: OpenCode sends the definitions of the tools that are on; switch tools off in the Tools category`)
+})
+
+test("AGENTS.md files opens into every AGENTS.md file up from the directory, by relative path; each switches per agent and moves only with the part", async () => {
+  const project = await tempRoot()
+  const app = path.join(project, "app")
+  const config = process.env.OPENCODE_CONFIG_DIR!
+  await fs.mkdir(app, { recursive: true })
+  await fs.mkdir(config, { recursive: true })
+  await Bun.write(path.join(config, "AGENTS.md"), "global guide\n")
+  await Bun.write(path.join(project, "AGENTS.md"), "project guide\n")
+  await Bun.write(path.join(app, "AGENTS.md"), "app guide\n")
+  const discovered = await discover({ ctx: fullContext({ directory: app, agents: [agentInfo("alpha", "upstream")] }), records: [], baseTemplates: [], activeBase: () => undefined })
+  const memo = { agents: discovered.agents, items: discovered.items, records: [], teams: [] }
+  const nodes = expandedTree(memo)
+  const list = systemList(nodes, "group:defaults:alpha:system")
+  // The files are not rows of the list itself: they open under "AGENTS.md files".
+  expect(list.filter((node) => node.label.includes("AGENTS.md")).map((node) => node.label)).toEqual(["AGENTS.md files"])
+  const part = list.find((node) => node.label === "AGENTS.md files")!
+  expect(part.expandable).toBe(true)
+  const files = systemList(nodes, part.id)
+  expect(files.map((node) => node.label)).toEqual([path.relative(app, path.join(config, "AGENTS.md")), "AGENTS.md", path.join("..", "AGENTS.md")])
+  expect(files.every((node) => node.actions?.toggle === true && node.actions?.edit === true && node.actions?.remove !== true)).toBe(true)
+  const off = setEnabled(memo, files[2]!.id, false)
+  if ("refusal" in off) throw new Error(off.refusal)
+  expect(off.records).toMatchObject([{ item: "system:../AGENTS.md", agent: "alpha", state: "off" }])
+  const empty = { folders: [], orders: [] }
+  expect(startMove(files[1]!, empty)).toEqual({ refusal: agentsFileMoveRefusal })
+  expect(planRowMove(memo, empty, files[1]!.id, { before: files[0]!.id }, UPDATED)).toEqual({ refusal: agentsFileMoveRefusal })
+})
+
+test("an OpenCode row set up in another tab names that tab, or the row inside it, for Enter and →", () => {
+  const row = (owner: string, part: string) => ({ id: `item:${owner}:system:opencode/${part}`, address: { level: "project" as const, agent: "build", item: `system:opencode/${part}`, section: null } })
+  expect(settingsTarget(row("project:build", "tools"), true)).toEqual({ id: "group:project:build:tools", tab: true, label: "Tools" })
+  expect(settingsTarget(row("project:build", "identity"), true)).toEqual({ id: "group:project:build:models", tab: true, label: "Models" })
+  expect(settingsTarget(row("project:build", "skills"), true)).toEqual({ id: "group:project:build:skills", tab: true, label: "Skills" })
+  expect(settingsTarget(row("project:build", "codemode"), true)).toEqual({ id: "item:project:build:tool:execute", tab: false, label: "Tools › execute" })
+  expect(settingsTarget(row("project:build", "codemode"), false)).toEqual({ id: "group:project:build:tools", tab: true, label: "Tools" })
+  expect(settingsTarget(row("project:build", "mcp"), true)).toEqual({ id: "group:project:build:tools:mcp", tab: false, label: "Tools › MCP" })
+  expect(settingsTarget(row("defaults:", "mcp"), true)).toEqual({ id: "group:defaults::mcp", tab: true, label: "MCP" })
+  expect(settingsTarget(row("project:crew/:mate", "skills"), true)).toEqual({ id: "group:project:crew/:mate:skills", tab: true, label: "Skills" })
+  // Set up nowhere: no jump.
+  expect(settingsTarget(row("project:build", "date"), true)).toBeUndefined()
+  expect(settingsTarget(row("project:build", "agents-md"), true)).toBeUndefined()
 })

@@ -18,7 +18,7 @@ export const opencodeParts = [
   { name: "mcp", slot: "core/mcp-guidance", title: "MCP servers", text: "OpenCode passes on the instructions of the MCP servers this agent can use." },
   { name: "references", slot: "core/reference-guidance", title: "References", text: "OpenCode lists the project references this session can read." },
   { name: "skills", slot: "core/skill-guidance", title: "Skills", text: "OpenCode lists the skills this agent may load, with their descriptions." },
-  { name: "agents-md", slot: "core/instructions", title: "AGENTS.md files", text: "OpenCode adds the AGENTS.md files it finds globally and up the project tree, one part per file." },
+  { name: "agents-md", slot: "core/instructions", title: "AGENTS.md files", text: "OpenCode adds the AGENTS.md files it finds globally and up the project tree, one part per file. Open this row to see each file by its path from here, and switch it off or edit it for this agent." },
   { name: "date", slot: "core/date", title: "Date", text: "OpenCode adds today's date." },
   { name: "environment", slot: "core/environment", title: "Environment", text: "OpenCode describes where it runs: the working directory, the workspace root, whether it is a git repository, and the platform." },
   { name: "entries", slot: "api", title: "Session entries", text: "OpenCode adds the instructions a client attached to this session." },
@@ -40,6 +40,15 @@ export const toolsPart = {
 } as const
 
 export const toolsItemId = opencodePartItemId(toolsPart.name)
+
+export const agentsMdItemId = opencodePartItemId("agents-md")
+
+/** An AGENTS.md file row (`system:<relative path>`); System row ids are slugs, which never hold a dot. */
+export function isAgentsFile(item: string): boolean {
+  return item.startsWith("system:") && path.basename(item.slice("system:".length)) === "AGENTS.md"
+}
+
+export const agentsFileMoveRefusal = `An AGENTS.md file keeps core's order (the global file, then nearest to farthest); move "AGENTS.md files" to move them all`
 
 export const toolsMoveRefusal = `"Tools" always comes first: the model receives the tool definitions before the whole system prompt, so nothing moves above them`
 

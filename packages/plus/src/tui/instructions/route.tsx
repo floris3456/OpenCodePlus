@@ -5,8 +5,9 @@ import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, un
 import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
-import { controlKind, lazyPath, materialize, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { controlKind, findLazy, lazyPath, materialize, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { isDefaultSwitchField, isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseColdDefaultItemId, parseColdModelItemId, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
+import { isAgentsFile, toolsItemId } from "../../instructions/system-order.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -27,7 +28,7 @@ import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { renameCandidateOf } from "./rename.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
-import { ancestry, CATEGORY, isLevelId, LEVELS, reviewTargets, toolCountOf, toolHint, folderName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
+import { ancestry, CATEGORY, isLevelId, LEVELS, reviewTargets, settingsTarget, toolCountOf, toolHint, folderName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
 // Wide: sidebar | list | inspector. Narrow: the sidebar and the owner are two
 // pages, the inspector sits under the list (docs/instructions-redesign.md).
@@ -862,7 +863,22 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       jumpTo(row.node)
       return
     }
+    if (focus() === "list" && openSettings(row.node)) return
     if (row.expandable && !row.expanded) setOpen(row, true)
+  }
+
+  // A System row OpenCode builds from another tab's settings: go to that tab
+  // and highlight the row they are on.
+  function openSettings(node: TreeNode): boolean {
+    const memo = state.memo()
+    if (memo === undefined) return false
+    const target = settingsTarget(node, memo.ctx.items.some((item) => item.id === "tool:execute"))
+    if (target === undefined) return false
+    const chain = state.pathOf(target.id)
+    if (chain.length === 0) return false
+    revealChain(chain, target.tab ? findLazy(memo, target.id)?.children()[0]?.id : undefined)
+    state.setStatus(`${node.label} is set up in ${target.label}`)
+    return true
   }
 
   // ← : close an open row, else go to its parent; the list's top level goes
@@ -1246,8 +1262,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (node === undefined || node.badges.disabled !== undefined) return false
     if (isColdListRow(node)) return true
     if (node.address?.section !== undefined && node.address.section !== null) return true
-    // A base prompt moves only as System's Base group, together with Role/persona.
-    if (node.kind === "item") return node.address !== undefined && node.address.section === null && !node.address.item.startsWith("base:")
+    // A base prompt moves only as System's Base group, together with Role/persona;
+    // Tools always comes first and an AGENTS.md file moves only with its part.
+    if (node.kind === "item")
+      return node.address !== undefined && node.address.section === null && !node.address.item.startsWith("base:") && node.address.item !== toolsItemId && !isAgentsFile(node.address.item)
     if (node.kind === "agent" || node.kind === "team") return true
     if (node.kind === "group" && node.id.endsWith(":base")) return true
     return folderName(node) !== undefined
@@ -1291,6 +1309,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       jumpTo(node)
       return
     }
+    if (focus() === "list" && openSettings(node)) return
     if (node.address === undefined) {
       if (row?.expandable === true) setOpen(row, !row.expanded)
       return
@@ -1550,7 +1569,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (inList()) {
       const perm = node === undefined ? undefined : permItem(node)
       const control = controlKind(node?.address?.item)
-      if (node?.badges.disabled !== undefined) hints.push(["", "local settings unavailable in Remote"])
+      const settings = node === undefined ? undefined : settingsTarget(node, state.snapshot()?.items.some((item) => item.id === "tool:execute") ?? false)
+      if (settings !== undefined) hints.push(["enter →", `go to ${settings.label}`])
+      else if (node?.badges.disabled !== undefined) hints.push(["", "local settings unavailable in Remote"])
       else if (control === "cycle") hints.push(["enter", "cycle"])
       else if (isReview(node)) hints.push(["enter", "review"])
       else if (control === "toggle") hints.push(["enter", "toggle"])

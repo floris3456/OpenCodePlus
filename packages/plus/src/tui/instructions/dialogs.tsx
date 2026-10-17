@@ -80,8 +80,7 @@ export function createInstructionsDialogs(
           { title: "Base prompt", value: "base" },
           { title: "System row", value: "system" },
           { title: "Skill", value: "skill" },
-          // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue
-          // (instructions/discover.ts). Restore with the rows.
+          // OpenCodePlus: creating AGENTS.md files is off pending the Context catalogue.
           // { title: "Instruction", value: "instruction" },
           { title: "MCP server", value: "mcp" },
           { title: "Team", value: "team" },

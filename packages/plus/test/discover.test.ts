@@ -592,14 +592,14 @@ test("system:role is one per agent with scoped agents and order 0", async () => 
   expect(roles[1]).toMatchObject({ text: "beta prompt", agents: ["beta"], order: 0 })
 })
 
-// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
-// (src/instructions/discover.ts). Tests that exist only to exercise AGENTS.md
-// rows, their apply, or instruction.create/delete are skipped, not deleted, so
-// the rework re-enables them with the feature.
-test.skip("instruction files follow core order: global first, then nearest-to-farthest", async () => {
+// AGENTS.md rows: discovered and applied per file again; creating and deleting
+// instruction files stays off (those tests stay skipped).
+test("instruction files follow core order: global first, then nearest-to-farthest", async () => {
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const project = await tempDir("plus-discover-")
+  // The walk stops at home when the project sits under it: keep it inside the fixture.
+  process.env.OPENCODE_TEST_HOME = project
   const nested = path.join(project, "nested")
   await fs.mkdir(nested, { recursive: true })
   await Bun.write(path.join(global, "AGENTS.md"), "global instructions\n")
@@ -611,7 +611,7 @@ test.skip("instruction files follow core order: global first, then nearest-to-fa
     baseTemplates: noTemplates,
     activeBase: noBase,
   })
-  const files = discovered.items.filter((item) => item.kind === "system" && item.id !== "system:role")
+  const files = discovered.items.filter((item) => item.kind === "system" && item.id.endsWith("AGENTS.md"))
   expect(files.map((item) => item.id)).toEqual([
     `system:${path.relative(nested, path.join(global, "AGENTS.md")) || path.join(global, "AGENTS.md")}`,
     "system:AGENTS.md",
@@ -621,10 +621,11 @@ test.skip("instruction files follow core order: global first, then nearest-to-fa
   expect(files[0].text).toBe("global instructions\n")
 })
 
-test.skip("descendant instruction files are not inventory", async () => {
+test("descendant instruction files are not inventory", async () => {
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
   const project = await tempDir("plus-discover-")
+  process.env.OPENCODE_TEST_HOME = project
   await Bun.write(path.join(project, "AGENTS.md"), "project instructions\n")
   await fs.mkdir(path.join(project, "child"), { recursive: true })
   await Bun.write(path.join(project, "child", "AGENTS.md"), "descendant instructions\n")
@@ -634,7 +635,7 @@ test.skip("descendant instruction files are not inventory", async () => {
     baseTemplates: noTemplates,
     activeBase: noBase,
   })
-  const files = discovered.items.filter((item) => item.kind === "system" && item.id !== "system:role")
+  const files = discovered.items.filter((item) => item.kind === "system" && item.id.endsWith("AGENTS.md"))
   expect(files.map((item) => item.id)).toEqual(["system:AGENTS.md"])
 })
 

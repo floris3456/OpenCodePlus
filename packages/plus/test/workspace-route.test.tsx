@@ -292,3 +292,34 @@ test("an owner with nothing switched on warns no tools and says how to turn some
   expect(sidebar?.fg.equals(createTestTheme().text.feedback.warning.base)).toBe(true)
   expect(fixture.captureCharFrame()).toContain("Tools 0")
 })
+
+test("enter or → on an OpenCode System row set up in another tab goes to that tab and highlights the row", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({
+      agents: [build],
+      items: [
+        tool("tool:read", "read", "Read a file."),
+        { ...tool("skill:notes", "notes", "Take notes."), kind: "skill" },
+        { ...tool("system:opencode/tools", "Tools", "OpenCode sends the definitions of the tools."), kind: "system", opencodePart: "tools" },
+        { ...tool("system:opencode/skills", "Skills", "OpenCode lists the skills."), kind: "system", opencodePart: "core/skill-guidance" },
+        { ...tool("system:opencode/date", "Date", "OpenCode adds today's date."), kind: "system", opencodePart: "core/date" },
+      ],
+    })],
+    width: 130, height: 40,
+  })
+  await reach(fixture, "item:project:build:system:opencode/skills", "Skills")
+  expect(fixture.captureCharFrame()).toContain("settings    Skills · enter or → goes")
+  expect(fixture.captureCharFrame()).toContain("enter → go to Skills")
+  expect(dispatch(fixture, "return")).toBe(true)
+  await fixture.waitForFrame((frame) => breadcrumb(frame).includes("build › Skills"))
+  expect(fixture.captureCharFrame()).toContain("Skills is set up in Skills")
+  await reach(fixture, "item:project:build:system:opencode/tools", "Tools")
+  expect(dispatch(fixture, "right")).toBe(true)
+  await fixture.waitForFrame((frame) => breadcrumb(frame).includes("build › Tools") && selectedRow(frame).includes("OpenCode"))
+  // A row set up nowhere keeps its usual keys: enter does not leave System.
+  await reach(fixture, "item:project:build:system:opencode/date", "Date")
+  expect(fixture.captureCharFrame()).not.toContain("enter or → goes")
+  dispatch(fixture, "return")
+  await sleep(100)
+  expect(breadcrumb(fixture.captureCharFrame())).toContain("System › Date")
+})

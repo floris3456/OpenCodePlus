@@ -1432,8 +1432,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createInstruction: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue
-      // (instructions/discover.ts). The handler body below is kept for the rework.
+      // OpenCodePlus: creating AGENTS.md files is off pending the Context
+      // catalogue. The handler body below is kept for the rework.
       if (INSTRUCTIONS_DISABLED)
         return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
       const result = await createInstruction({
@@ -1465,7 +1465,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     deleteInstruction: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      // OpenCodePlus: AGENTS.md handling disabled pending the Context catalogue.
+      // OpenCodePlus: deleting AGENTS.md files is off pending the Context catalogue.
       if (INSTRUCTIONS_DISABLED)
         return { ok: false as const, error: { code: "instruction.invalid" as const, message: INSTRUCTION_DISABLED, data: { name: input.name, reason: INSTRUCTION_DISABLED } } }
       const config = await read(directory)
@@ -4073,8 +4073,8 @@ interface LoadedStores {
   readonly protectedAgents: readonly string[]
 }
 
-// OpenCodePlus: AGENTS.md handling is disabled pending the Context catalogue
-// (instructions/discover.ts). Flip to false together with restoring the rows.
+// OpenCodePlus: creating and deleting AGENTS.md files is off pending the Context
+// catalogue; the rows themselves are back (instructions/discover.ts).
 const INSTRUCTIONS_DISABLED = true
 
 // Resolve the skill storage target from a skill RPC input. Scope defaults to

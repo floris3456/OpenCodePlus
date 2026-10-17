@@ -3344,7 +3344,7 @@ test("create kind instruction is refused with instruction.disabled and writes no
   const { project, tools } = await freshFixture()
   const error = await runFail(need(tools, "instructions_create"), { kind: "instruction", name: "AGENTS.md", text: "guide" })
   expect(error.message).toContain("instruction.disabled")
-  expect(error.message).toContain("Context catalogue")
+  expect(error.message).toContain("System › AGENTS.md files")
   expect(await Bun.file(path.join(project, "AGENTS.md")).exists()).toBe(false)
   expect(await Bun.file(path.join(project, ".opencode", "AGENTS.md")).exists()).toBe(false)
   round3Capture(

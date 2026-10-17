@@ -104,7 +104,7 @@ import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
 import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf, systemOrderAt, systemSlotOf } from "./tree.js"
-import { firstSlot, toolsItemId, toolsMoveRefusal } from "./system-order.js"
+import { agentsFileMoveRefusal, agentsMdItemId, firstSlot, toolsItemId, toolsMoveRefusal } from "./system-order.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, parentIndexes, relocateHeadingSpan, slice, wrappingSection, type Boundary } from "./sections.js"
 import type { Split } from "./sections.js"
@@ -350,6 +350,7 @@ export function planSystemMove(memo: MemoInput, layout: LayoutRecords, rowId: st
   const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   const list = path.at(-2)
+  if (list?.address?.item === agentsMdItemId) return { refusal: agentsFileMoveRefusal }
   if (list === undefined || !isSystemGroupId(list.id))
     return { refusal: node.address?.item.startsWith("base:") === true ? baseMoveRefusal : `"${node.label}" is not in a System list` }
   if (target.into !== undefined) return { refusal: NO_SYSTEM_FOLDERS }
