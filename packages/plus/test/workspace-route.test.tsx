@@ -80,19 +80,22 @@ test("selected tools keep their marks across navigation and Space applies one re
   await fixture.waitForFrame((frame) => !frame.includes("2 selected"))
 })
 
-test("System sub-tabs support keyboard switching and Base filter reveal", async () => {
+test("Base is a section of the System list, below Instructions, and a reveal lands on its row", async () => {
   await using fixture = await renderInstructionsRoute({
     snapshots: [createSnapshot({ agents: [build], items: [{ ...tool("base:gpt", "GPT base", "base instructions"), kind: "base", group: "none" }] })],
     width: 130, height: 40,
   })
   await reach(fixture, "item:project:build:base:gpt", "GPT base")
-  expect(fixture.captureCharFrame()).toContain("4 System")
-  expect(fixture.captureCharFrame()).not.toContain("4 Base")
-  expect(breadcrumb(fixture.captureCharFrame())).toContain("System › Base")
-  expect(dispatch(fixture, ".")).toBe(true)
-  await fixture.waitForFrame((frame) => !selectedRow(frame).includes("GPT base"))
-  expect(dispatch(fixture, ".")).toBe(true)
-  await fixture.waitForFrame((frame) => selectedRow(frame).includes("GPT base"))
+  const frame = fixture.captureCharFrame()
+  expect(frame).toContain("4 System")
+  expect(frame).not.toContain("4 Base")
+  expect(frame).not.toContain("switch tab")
+  expect(breadcrumb(frame)).toContain("System › Base")
+  // One list: up from the base prompt is the Base heading, then the Instructions rows above it.
+  expect(dispatch(fixture, "up")).toBe(true)
+  await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Base"))
+  expect(dispatch(fixture, "up")).toBe(true)
+  await fixture.waitForFrame((next) => breadcrumb(next).includes("System › Instructions"))
 })
 
 test("successful paste reveals its nested destination row instead of the paste target", async () => {

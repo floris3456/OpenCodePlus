@@ -53,20 +53,23 @@ test("the sidebar lists catalogues, origins, owners and teams with their members
   expect(ws.category?.label).toBe("Settings")
 })
 
-test("System contains Instructions and Base tabs and restores old Base selections", () => {
+test("System lists Instructions and Base as open sections of one list and restores old sub-tab selections", () => {
   const source = rowsOf()
   const known = new Set<string>()
   const system = workspaceOf(input(source.rows, { category: "group:project:build:system" }), known)
   expect(system.categories.map((node) => node.label)).not.toContain("Base")
-  expect(system.subcategories?.map((node) => node.label)).toEqual(["Instructions", "Base"])
-  expect(system.subcategory?.id).toBe("group:project:build:system:instructions")
-  expect(system.list.some((row) => row.node.address?.item === "base:gpt")).toBe(false)
-  const base = workspaceOf(input(source.rows, { category: "group:project:build:base" }), known)
-  expect(base.category?.id).toBe("group:project:build:system")
-  expect(base.subcategory?.id).toBe("group:project:build:base")
-  expect(base.list.map((row) => row.node.address?.item)).toEqual(["base:gpt"])
-  expect(base.list[0]?.depth).toBe(0)
-  expect(base.parents.get("group:project:build:base")?.id).toBe("group:project:build:system")
+  expect(system.list.map((row) => `${row.depth} ${row.label}${row.expandable ? (row.expanded ? " -" : " +") : ""}`)).toEqual([
+    "0 Instructions -",
+    "1 Role/persona +",
+    "0 Base -",
+    "1 gpt.txt +",
+  ])
+  for (const old of ["group:project:build:base", "group:project:build:system:instructions"]) {
+    const restored = workspaceOf(input(source.rows, { category: old }), known)
+    expect(restored.category?.id).toBe("group:project:build:system")
+    expect(restored.list.map((row) => row.key)).toEqual(system.list.map((row) => row.key))
+  }
+  expect(system.parents.get("group:project:build:base")?.id).toBe("group:project:build:system")
 })
 
 test("the list is the category's own subtree, its origin subgroups open by default", () => {
