@@ -280,7 +280,15 @@ export function MonitorView(props: MonitorViewProps) {
       },
     }
   }
-  const loadOlder = () => {
+  // Rows of the scope not loaded yet, in the latest view; a text filter can't
+  // tell how many of them it would keep.
+  const pending = () => {
+    const page = report()?.requestPage
+    if (page?.older === undefined || requestPage() !== undefined || settings().filterText) return 0
+    return Math.max(0, page.total - page.returned)
+  }
+  // A page of 100, or up to the server's 500 to reach a viewport dragged further.
+  const loadOlder = (rows: number) => {
     const current = report()
     const cursor = current?.requestPage?.older
     if (older.busy || current === undefined || cursor === undefined) return
@@ -288,22 +296,25 @@ export function MonitorView(props: MonitorViewProps) {
     older.busy = true
     const scope = older.scope
     const query = currentQuery()
+    const limit = Math.min(500, Math.ceil(Math.max(rows, 100) / 100) * 100)
     void plus["monitor.query"](
-      { ...query, requestPage: { cursor, direction: "older" }, fullText: fullText() },
+      { ...query, requestPage: { cursor, direction: "older", limit }, fullText: fullText() },
       { location: location() },
     )
       .then(
         (page) => {
           if (scope !== older.scope) return
+          // Free before the rows land: they can ask for the next page at once.
+          older.busy = false
           for (const request of [...(page.requests ?? []), ...(report()?.requests ?? [])]) older.rows.set(request.id, request)
           older.cursor = page.requestPage?.older
           setReport(withOlder(report()!, query.since))
         },
-        (error: unknown) => setFailure(error instanceof Error ? error.message : String(error)),
+        (error: unknown) => {
+          if (scope === older.scope) older.busy = false
+          setFailure(error instanceof Error ? error.message : String(error))
+        },
       )
-      .finally(() => {
-        if (scope === older.scope) older.busy = false
-      })
   }
 
   const flight = { busy: false, again: false, generation: 0 }
@@ -1303,6 +1314,7 @@ export function MonitorView(props: MonitorViewProps) {
                   missesOnly={settings().missesOnly}
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.cache = ref)}
+                  pending={pending()}
                   onNearEnd={loadOlder}
                 />
               </Show>

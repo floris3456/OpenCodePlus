@@ -144,7 +144,12 @@ function mountedRows(fixture: TestFixture): { id: string; node: unknown }[] {
 function scrollBox(fixture: TestFixture) {
   const scroll = fixture.renderer.root.findDescendantById("monitor-scroll")
   if (scroll === undefined) throw new Error("monitor scrollbox missing")
-  return scroll as unknown as { scrollTop: number; viewport: { height: number }; scrollTo: (position: number) => void }
+  return scroll as unknown as {
+    scrollTop: number
+    scrollHeight: number
+    viewport: { height: number }
+    scrollTo: (position: number) => void
+  }
 }
 
 test("the Cache tab mounts only a viewport window of a 5,000-row list, and refreshes keep the rows", async () => {
@@ -447,19 +452,20 @@ test("a new request leaves a list scrolled away from the selection where it is",
   }
 })
 
-/** Pages of 100 by cursor, newest page first, as the monitor's request pages are served. */
+/** Pages by cursor (100 unless asked), newest page first, as the monitor's request pages are served. */
 function pagedReport(rows: () => readonly Plus.MonitorRequest[]) {
   return (input: Plus.MonitorQueryInput): Plus.MonitorReport => {
     const all = rows()
     const cursor = input.requestPage?.cursor
-    const page = (cursor === undefined ? all : all.filter((row) => row.at < cursor.at)).slice(-100)
+    const limit = input.requestPage?.limit ?? 100
+    const page = (cursor === undefined ? all : all.filter((row) => row.at < cursor.at)).slice(-limit)
     return {
       ...makeReport(input),
       requests: page,
       requestPage: {
         total: all.length,
         returned: page.length,
-        limit: 100,
+        limit,
         complete: page.length === all.length,
         ...(page[0] !== undefined && page[0].id !== all[0]?.id ? { older: { at: page[0].at, id: page[0].id } } : {}),
       },
@@ -494,6 +500,30 @@ test("the Cache list loads older requests before the scroll reaches its last row
   }
 })
 
+test("the scrollbar spans the whole chat, and a drag far down loads the rows down to it", async () => {
+  const rows = Array.from({ length: 1_000 }, (_, index) => request(4_000 + index))
+  const { fixture, queries } = await render({ ...defaultSettings, tab: "cache", scope: "all" }, { report: pagedReport(() => rows) })
+  try {
+    await fixture.waitForFrame((text) => text.includes("100/1000 requests"))
+    const scroll = scrollBox(fixture)
+    // Room for all 1000 rows from the first page on: loading never resizes it.
+    const height = scroll.scrollHeight
+    expect(height).toBeGreaterThanOrEqual(1_000)
+    scroll.scrollTo(30)
+    await fixture.waitForFrame((text) => text.includes("200/1000 requests"))
+    expect(scroll.scrollHeight).toBe(height)
+    // Dragged to row 701: one request reaches it, and its rows are drawn there.
+    scroll.scrollTo(700)
+    const far = await fixture.waitForFrame((text) => text.includes("row-4299"))
+    expect(scroll.scrollTop).toBe(700)
+    expect(scroll.scrollHeight).toBe(height)
+    expect(far).toMatch(/[89]00\/1000 requests/)
+    expect(queries.some((query) => query.requestPage?.limit === 500)).toBe(true)
+  } finally {
+    fixture.destroy()
+  }
+})
+
 test("scrolling to the start of a long chat loads every request once", async () => {
   const rows = Array.from({ length: 1_000 }, (_, index) => request(4_000 + index))
   const { fixture, queries } = await render({ ...defaultSettings, tab: "cache", scope: "all" }, { report: pagedReport(() => rows) })
@@ -508,7 +538,8 @@ test("scrolling to the start of a long chat loads every request once", async () 
     const end = fixture.captureCharFrame()
     expect(end).toContain("row-4000")
     expect(end).toContain("1000/1000 requests · [—] older")
-    expect(queries.filter((query) => query.requestPage?.direction === "older")).toHaveLength(9)
+    const loads = queries.filter((query) => query.requestPage?.direction === "older")
+    expect(new Set(loads.map((query) => query.requestPage?.cursor?.id)).size).toBe(loads.length)
     // l returns to the newest request.
     dispatch(fixture, "l")
     const latest = await fixture.waitForFrame((text) => text.includes("row-4999"))

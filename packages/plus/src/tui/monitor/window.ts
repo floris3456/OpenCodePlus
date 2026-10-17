@@ -24,6 +24,8 @@ export interface RowWindow<T> {
   /** The index one past the last rendered row. */
   readonly end: number
   readonly total: number
+  /** One past the viewport's last row; beyond total when the list scrolls past its rows. */
+  readonly viewEnd: number
   readonly ref: (scroll: ScrollBoxRenderable) => void
 }
 
@@ -61,10 +63,10 @@ export function createRowWindow<T>(options: {
   options.context.renderer.on("frame", sync)
   onCleanup(() => options.context.renderer.off("frame", sync))
 
-  const frame = createMemo((): { rows: readonly T[]; start: number; end: number; total: number } => {
+  const frame = createMemo((): { rows: readonly T[]; start: number; end: number; total: number; viewEnd: number } => {
     const items = options.items()
     const total = items.length
-    if (total === 0) return { rows: [], start: 0, end: 0, total: 0 }
+    if (total === 0) return { rows: [], start: 0, end: 0, total: 0, viewEnd: 0 }
     // view() wakes the memo when the viewport moved, but it lags a frame behind
     // a scroll made since; when the rows change in between (older rows loaded
     // after a key step), the scrollbox's own position is the one to cover.
@@ -84,7 +86,7 @@ export function createRowWindow<T>(options: {
     const anchor = near || !moved ? top - LIST_WINDOW_MARGIN : selected - Math.floor(size / 2)
     const start = Math.max(0, Math.min(anchor, Math.max(0, total - span)))
     const end = Math.min(total, start + span)
-    return { rows: items.slice(start, end), start, end, total }
+    return { rows: items.slice(start, end), start, end, total, viewEnd: top + size }
   })
 
   return {
@@ -99,6 +101,9 @@ export function createRowWindow<T>(options: {
     },
     get total() {
       return frame().total
+    },
+    get viewEnd() {
+      return frame().viewEnd
     },
     ref: (next: ScrollBoxRenderable) => {
       scroll = next
