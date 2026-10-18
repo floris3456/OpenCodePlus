@@ -324,8 +324,8 @@ export async function applyPublishParts(
     .map(nativePlan)
 
   const instructionCand = instructionCandidates(input.applyInput)
-  const instructions = instructionCand.filter((c) => !c.noop).map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
-  const allInstructions = instructionCand.map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
+  const instructions = instructionCand.filter((c) => !c.noop).map(instructionPlanOf)
+  const allInstructions = instructionCand.map(instructionPlanOf)
 
   // 1. roles
   const rolesFp = JSON.stringify(roles)
@@ -1432,9 +1432,14 @@ function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
 
 function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
   const candidates = instructionCandidates(input)
-  const plan = (c: InstructionCandidate): InstructionPlan => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled, ...(c.models === undefined ? {} : { models: c.models }) })
-  if (options?.skipNoop === true) return candidates.map(plan)
-  return candidates.filter((c) => !c.noop).map(plan)
+  if (options?.skipNoop === true) return candidates.map(instructionPlanOf)
+  return candidates.filter((c) => !c.noop).map(instructionPlanOf)
+}
+
+// Every path that installs instruction plans builds them here, so a model
+// prompt never loses the models it is for.
+function instructionPlanOf(c: InstructionCandidate): InstructionPlan {
+  return { agent: c.agent, path: c.path, text: c.text, enabled: c.enabled, ...(c.models === undefined ? {} : { models: c.models }) }
 }
 
 // The teaching row carries a stable id instead of a location-relative path,

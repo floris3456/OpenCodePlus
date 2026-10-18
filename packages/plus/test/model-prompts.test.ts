@@ -10,8 +10,8 @@ import os from "node:os"
 import path from "node:path"
 import { createSystemRow } from "../src/agents/system.js"
 import { createHandlers, createState } from "../src/index.js"
-import { apply, type ApplyInput } from "../src/instructions/apply.js"
-import { computeChangeNote, createPlanSet, type SessionPin } from "../src/instructions/cache-safe.js"
+import { apply, applyPublishParts, type ApplyInput } from "../src/instructions/apply.js"
+import { computeChangeNote, createPlanSet, sessionPins, type SessionPin } from "../src/instructions/cache-safe.js"
 import { discover } from "../src/instructions/discover.js"
 import { groupScope } from "../src/instructions/folders.js"
 import type { CustomizationRecord, Item, Level } from "../src/instructions/model.js"
@@ -178,6 +178,33 @@ test("a model prompt is sent right after the base prompt, only to a request whos
   // A stored System order moves them as one part.
   const orders = [{ type: "order" as const, level: "global" as const, scope: groupScope("group:defaults::system"), items: ["first", "core/identity", "core/date", "model-prompts"], updated: UPDATED }]
   expect(await request("alpha", "claude-opus-5-5", [off], orders)).toEqual(["base", "identity", "date", "Check twice."])
+})
+
+// The path a publish installs (with session pins), as the service runs it.
+test("the publish path keeps a model prompt's models: a chat on another model gets none", async () => {
+  await tempRoot()
+  await createSystemRow("opus", "Opus 5.5", "Check twice.", ["*opus-5-5*"])
+  sessionPins.clear()
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    agent: agentHarness([agentInfo("alpha", "upstream")]).domain,
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
+  await applyPublishParts(ctx, { appliedParts: new Map() }, { applyInput: input(discovered.items, [], ["alpha"]) })
+  const chat = async (session: string, modelID: string) => {
+    const event = { ...sessionEvent("alpha", modelID, requestSystem()), sessionID: Session.ID.make(session) }
+    await Effect.runPromise(Effect.forEach(callbacks, (run) => run(event), { discard: true }))
+    return event.system.map((part) => part.text)
+  }
+  expect(await chat("ses_opus", "claude-opus-5-5")).toEqual(["base", "Check twice.", "identity", "date"])
+  expect(await chat("ses_qwen", "qwen3.6")).toEqual(["base", "identity", "date"])
+  sessionPins.clear()
 })
 
 // The direct rows of one tree group, in list order.
