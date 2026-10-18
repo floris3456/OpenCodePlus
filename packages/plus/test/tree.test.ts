@@ -140,11 +140,11 @@ test("Implementer subtree shape under the project root", () => {
   expect(agent?.kind).toBe("agent")
   expect(agent?.depth).toBe(3)
   expect(childrenOf(nodes, "agent:project:Implementer").map((node) => node.label)).toEqual([
-    "Settings",
     "Models",
     "Tools",
     "Skills",
     "System",
+    "Settings",
   ])
   expect(childrenOf(nodes, "group:project:Implementer:tools").map((node) => node.label)).toEqual([
     "OpenCode",
@@ -179,7 +179,7 @@ test("identical subtree under each of the three roots", () => {
   ] as const) {
     const id = `agent:${level}:${agent}`
     expect(nodes.find((node) => node.id === id)?.depth).toBe(depth)
-    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Skills", "System"])
+    expect(childrenOf(nodes, id).map((node) => node.label)).toEqual(["Models", "Tools", "Skills", "System", "Settings"])
     expect(childrenOf(nodes, `group:${level}:${agent}:system`).map((node) => node.label).slice(0, 2)).toEqual(["Role/persona", "Base"])
   }
 })
@@ -195,19 +195,19 @@ test("Defaults holds two catalogues with the Models section between them, each o
     "group:defaults:agents:native",
     "group:defaults:agents:plus",
     "group:defaults:agents:user",
-    "group:defaults::settings",
     "group:defaults::models",
     "group:defaults::tools",
     "group:defaults::skills",
     "group:defaults::system",
+    "group:defaults::settings",
     "group:defaults::mcp",
   ])
   expect(childrenOf(nodes, "group:defaults:teams").map((node) => node.id)).toEqual([
-    "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
     "group:defaults:/teams:tools",
     "group:defaults:/teams:skills",
     "group:defaults:/teams:system",
+    "group:defaults:/teams:settings",
     "group:defaults:/teams:mcp",
   ])
   expect(childrenOf(nodes, "group:defaults:agents:user").map((node) => node.id)).toEqual(["agent:defaults:Template"])
@@ -354,11 +354,11 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(member?.add).toBe("agent")
   expect(member?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: true, split: false, pin: false })
   expect(childrenOf(nodes, "team:project:crew:CrewMate").map((node) => node.id)).toEqual([
-    "group:project:crew/:CrewMate:settings",
     "group:project:crew/:CrewMate:models",
     "group:project:crew/:CrewMate:tools",
     "group:project:crew/:CrewMate:skills",
     "group:project:crew/:CrewMate:system",
+    "group:project:crew/:CrewMate:settings",
   ])
   // Member rows carry the member's own `<team>/:<member>` owner path so the
   // Teams-catalogue row and the stand-alone Agents-catalogue row stay two
@@ -562,11 +562,11 @@ test("team Special group row and special agent subtrees across all three levels"
 
       const agentKids = childrenOf(nodes, `team:${level}:crew:special:${id}`)
       expect(agentKids.map((k) => k.id)).toEqual([
-        `group:${level}:crew/:special:${id}:settings`,
         `group:${level}:crew/:special:${id}:models`,
         `group:${level}:crew/:special:${id}:tools`,
         `group:${level}:crew/:special:${id}:skills`,
         `group:${level}:crew/:special:${id}:system`,
+        `group:${level}:crew/:special:${id}:settings`,
       ])
       for (const group of agentKids) {
         expect(group.kind).toBe("group")
@@ -651,11 +651,11 @@ test("Defaults lists built-in team rows with toggles and member rows", () => {
   expect(childrenOf(nodes, "group:defaults:teams").map((node) => node.id)).toEqual([
     "team:defaults:other",
     "team:defaults:ship",
-    "group:defaults:/teams:settings",
     "group:defaults:/teams:models",
     "group:defaults:/teams:tools",
     "group:defaults:/teams:skills",
     "group:defaults:/teams:system",
+    "group:defaults:/teams:settings",
     "group:defaults:/teams:mcp",
   ])
   const enabled = nodes.find((node) => node.id === "team:defaults:ship")
@@ -1057,11 +1057,11 @@ test("expansion emits only expanded children", () => {
     "group:project:agents:plus",
     "group:project:agents:user",
     "agent:project:Implementer",
-    "group:project:Implementer:settings",
     "group:project:Implementer:models",
     "group:project:Implementer:tools",
     "group:project:Implementer:skills",
     "group:project:Implementer:system",
+    "group:project:Implementer:settings",
     "group:project:teams",
     "root:global",
     "root:defaults",
@@ -1086,11 +1086,11 @@ test("expansion emits only expanded children", () => {
     "group:defaults:agents:native",
     "group:defaults:agents:plus",
     "group:defaults:agents:user",
-    "group:defaults::settings",
     "group:defaults::models",
     "group:defaults::tools",
     "group:defaults::skills",
     "group:defaults::system",
+    "group:defaults::settings",
     "group:defaults::mcp",
     "group:defaults:/models",
     "group:defaults:teams",
@@ -1394,11 +1394,12 @@ test("badges carry state, modified, and source from resolution", () => {
   expect(plus?.badges.source).toBe("upstream")
 })
 
-test("Models group follows Settings under every agent with toggle/remove-only rows", () => {
+test("Models group is the first tab of every agent, Settings the last, with toggle/remove-only rows", () => {
   const nodes = expandAll({ items: items(), records: [], agents: agents() })
   for (const id of ["agent:project:Implementer", "agent:global:Helper", "agent:defaults:Template"]) {
     const labels = childrenOf(nodes, id).map((node) => node.label)
-    expect(labels.slice(0, 2)).toEqual(["Settings", "Models"])
+    expect(labels[0]).toBe("Models")
+    expect(labels.at(-1)).toBe("Settings")
     expect(labels).not.toContain("Compaction")
   }
   const group = nodes.find((node) => node.id === "group:project:Implementer:models")

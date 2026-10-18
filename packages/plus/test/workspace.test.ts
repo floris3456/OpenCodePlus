@@ -49,8 +49,8 @@ test("the sidebar lists catalogues, origins, owners and teams with their members
   // The first owner shows by default, with its categories as tabs.
   expect(ws.owner?.key).toBe("agent:project:build")
   // Skills have their own tab, the only place they are set up.
-  expect(ws.categories.map((node) => node.label)).toEqual(["Settings", "Models", "Tools", "Skills", "System"])
-  expect(ws.category?.label).toBe("Settings")
+  expect(ws.categories.map((node) => node.label)).toEqual(["Models", "Tools", "Skills", "System", "Settings"])
+  expect(ws.category?.label).toBe("Models")
 })
 
 test("System is one flat list in request order, Base open in it, and restores old sub-tab selections", () => {

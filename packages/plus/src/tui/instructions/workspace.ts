@@ -452,6 +452,6 @@ export function toolWords(count: ToolCount): string {
  * fuller account (total rows, why it cannot act).
  */
 export function toolHint(count: ToolCount): string {
-  if (count.on === 0) return "no tools on · link a preset (l) or turn tools on (3)"
+  if (count.on === 0) return "no tools on · link a preset (l) or turn tools on (2)"
   return toolWords(count)
 }

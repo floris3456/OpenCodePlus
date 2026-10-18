@@ -283,7 +283,7 @@ count, or a warning-coloured `no tools`; a zero beside state tags compacts to
 `0` so the mode/hidden tags keep the room), and the owner header line under the
 tabs adds a second line `N tools on (D direct, C through Code Mode)` — an
 unpinned Code Mode tool counts through Code Mode, a pinned one as direct —
-or `no tools on · link a preset (l) or turn tools on (4)` at zero. The Tools
+or `no tools on · link a preset (l) or turn tools on (2)` at zero. The Tools
 category tab names the same count. Counts come from `toolCounts()` over each
 owner's Tools group with its own expansion set, so they never depend on what
 the user has open; the inspector's `tools` fact adds the total row count

@@ -1218,11 +1218,11 @@ function lazyPresetTeam(ctx: BuildContext, memo: Memo, entry: PresetEntry): Lazy
 // records no agent ever reads.
 function lazyInventory(ctx: BuildContext, memo: Memo, catalogue: Catalogue, depth: number): readonly Lazy[] {
   return withFolders(memo, [
-    lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyModels(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazyTools(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySkills(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
     lazySystem(ctx, memo, "defaults", null, null, depth, undefined, undefined, catalogue),
+    lazyControls(memo, "setting", "defaults", null, depth, undefined, catalogue),
     lazyMcpInventory(ctx, memo, catalogue, depth),
   ])
 }
@@ -1464,11 +1464,11 @@ function lazyOwnerRow(
     actions: { ...noActions(), remove: row.remove },
     children: () =>
       withFolders(memo, [
-        lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
         lazyModels(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazyTools(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazySkills(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
         lazySystem(ctx, memo, row.level, row.id, row.agent, row.depth + 1),
+        lazyControls(memo, "setting", row.level, row.id, row.depth + 1),
       ]),
   }), row.level, row.id)
 }
@@ -1784,11 +1784,11 @@ function lazyTeamMember(
     // the stand-alone agent's.
     children: () =>
       withFolders(memo, [
-        lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
         lazyTools(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:tools`, teamRef, "teams", memberPath),
         lazySkills(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:skills`, teamRef, "teams", memberPath),
         lazySystem(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:system`, teamRef, "teams", memberPath),
+        lazyControls(memo, "setting", level, owner, depth + 1, teamRef, "teams", memberPath),
       ]),
   }), level, owner, teamRef, "teams", memberPath)
 }
@@ -1825,11 +1825,11 @@ function lazyTeamSpecialAgent(
     actions: noActions(),
     children: () =>
       withFolders(memo, [
-        lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
         lazyModels(ctx, memo, level, owner, agent, 5, `${specialGroup}:models`, teamRef, "teams", specialPath),
         lazyTools(ctx, memo, level, owner, agent, 5, `${specialGroup}:tools`, teamRef, "teams", specialPath),
         lazySkills(ctx, memo, level, owner, agent, 5, `${specialGroup}:skills`, teamRef, "teams", specialPath),
         lazySystem(ctx, memo, level, owner, agent, 5, `${specialGroup}:system`, teamRef, "teams", specialPath),
+        lazyControls(memo, "setting", level, owner, 5, teamRef, "teams", specialPath),
       ]),
   }), level, owner, teamRef, "teams", specialPath)
 }
@@ -2050,7 +2050,7 @@ function withAgentControls(
   }
 }
 
-// Models group, following Settings in each agent subtree and shared Defaults
+// Models group, the first tab of each agent subtree and shared Defaults
 // inventory. Rows are the union down the chain (deduplicated) plus the
 // agent's upstream model, each carrying a source badge naming the level it
 // came from. Toggle activates exclusively at this level, remove hides or

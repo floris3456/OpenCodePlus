@@ -366,7 +366,8 @@ test("the category tab digits follow the real effective list width", async () =>
   await using fixture = await open(200, 45)
   // Defaults: Owners 30, Inspector 68, list 100 — the digits fit.
   expect(dividerColumns(fixture)).toEqual([30, 131])
-  expect(fixture.captureCharFrame()).toContain("1 Settings")
+  expect(fixture.captureCharFrame()).toContain("1 Models")
+  expect(fixture.captureCharFrame()).toContain("5 Settings")
   expect(dispatch(fixture, "shift+w")).toBe(true)
   await fixture.waitForFrame((frame) => footer(frame).includes("W Owners 30 cols"))
   for (let step = 0; step < 100; step++) dispatch(fixture, "]")
@@ -376,8 +377,8 @@ test("the category tab digits follow the real effective list width", async () =>
   // Owners 100 leaves the list exactly MIN_LIST: the digits drop.
   expect(dividerColumns(fixture)).toEqual([100, 131])
   const frame = fixture.captureCharFrame()
-  expect(frame).toContain("Settings")
-  expect(frame).not.toContain("1 Settings")
+  expect(frame).toContain("Models")
+  expect(frame).not.toContain("1 Models")
 })
 
 test("resize mode coexists with Tab/Shift+Tab levels and E / ctrl+E", async () => {
