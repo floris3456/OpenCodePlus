@@ -1,8 +1,10 @@
 export * as Image from "./image.js"
 
+import type { Session } from "@opencode/schema/session"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { FileSystem } from "./filesystem.js"
+import { PluginHooks } from "./plugin/hooks.js"
 import { State } from "./state.js"
 
 export class ResizerUnavailableError extends Schema.TaggedError<ResizerUnavailableError>()(
@@ -39,7 +41,15 @@ export type Limits = {
   maxBase64Bytes: number
   /** Claude reads images in 28x28-pixel blocks and downsizes beyond this many (its high-resolution tier). */
   maxVisualTokens: number
+  /** What a large PNG is stored as: WebP at `quality`, lossless WebP, or the PNG itself. */
+  format: Format
+  /** WebP quality, 1 to 100. */
+  quality: number
 }
+
+export type Format = "webp" | "webp-lossless" | "original"
+
+const FORMATS: ReadonlyArray<Format> = ["webp", "webp-lossless", "original"]
 
 /**
  * The largest size, at the image's aspect ratio, within the edge limits and the visual-token budget. The edge
@@ -69,21 +79,21 @@ export const fitSize = (
 // A large PNG is stored as WebP when that saves at least a quarter. It happens once, when the image arrives, and
 // the same bytes always give the same result, so a stored image never changes and the prompt cache holds.
 const COMPACT_FROM_BASE64_BYTES = 512 * 1024
-const COMPACT_QUALITY = 90
 const COMPACT_KEEPS_AT_MOST = 0.75
 
 export type Editor = {
   configure: (limits: Partial<Limits>) => void
 }
 
+type Content = FileSystem.Content & { readonly encoding: "base64" }
+
 export interface Interface extends State.Transformable<Editor> {
   readonly normalize: (
     resource: string,
-    content: FileSystem.Content & { readonly encoding: "base64" },
-  ) => Effect.Effect<
-    FileSystem.Content & { readonly encoding: "base64" },
-    ResizerUnavailableError | DecodeError | SizeError
-  >
+    content: Content,
+    /** The Session the image arrives in; its plugins may choose how the image is stored (`SessionImage`). */
+    sessionID?: Session.ID,
+  ) => Effect.Effect<Content, ResizerUnavailableError | DecodeError | SizeError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Image") {}
@@ -91,6 +101,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Im
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
     const state = State.create<Limits, Editor>({
       name: "image",
       initial: () => ({
@@ -99,6 +110,8 @@ const layer = Layer.effect(
         maxHeight: 2_000,
         maxBase64Bytes: 5 * 1024 * 1024,
         maxVisualTokens: 4_784,
+        format: "webp",
+        quality: 90,
       }),
       editor: (editor) => ({
         configure: (limits) => {
@@ -107,6 +120,8 @@ const layer = Layer.effect(
           if (limits.maxHeight !== undefined) editor.maxHeight = limits.maxHeight
           if (limits.maxBase64Bytes !== undefined) editor.maxBase64Bytes = limits.maxBase64Bytes
           if (limits.maxVisualTokens !== undefined) editor.maxVisualTokens = limits.maxVisualTokens
+          if (limits.format !== undefined) editor.format = limits.format
+          if (limits.quality !== undefined) editor.quality = limits.quality
         },
       }),
     })
@@ -116,23 +131,54 @@ const layer = Layer.effect(
         catch: () => new ResizerUnavailableError(),
       }).pipe(Effect.flatMap((adapter) => adapter.make)),
     )
-    const normalize = Effect.fn("Image.normalize")(function* (
-      resource: string,
-      content: FileSystem.Content & { readonly encoding: "base64" },
-    ) {
-      const normalize = yield* loadAdapter
-      return yield* compact(yield* normalize(resource, content, state.get()))
+    const limitsFor = Effect.fnUntraced(function* (resource: string, sessionID: Session.ID | undefined) {
+      const limits = state.get()
+      if (sessionID === undefined) return limits
+      const chosen = yield* hooks.trigger("session", "image", {
+        sessionID,
+        resource,
+        maxWidth: limits.maxWidth,
+        maxHeight: limits.maxHeight,
+        maxVisualTokens: limits.maxVisualTokens,
+        format: limits.format,
+        quality: limits.quality,
+      })
+      // A plugin's choice is used only where it is a value these limits can hold.
+      const size = (value: number, fallback: number) => (Number.isInteger(value) && value > 0 ? value : fallback)
+      return {
+        ...limits,
+        maxWidth: size(chosen.maxWidth, limits.maxWidth),
+        maxHeight: size(chosen.maxHeight, limits.maxHeight),
+        maxVisualTokens: size(chosen.maxVisualTokens, limits.maxVisualTokens),
+        format: FORMATS.includes(chosen.format) ? chosen.format : limits.format,
+        quality: Number.isInteger(chosen.quality) && chosen.quality >= 1 && chosen.quality <= 100 ? chosen.quality : limits.quality,
+      }
+    })
+    const normalize = Effect.fn("Image.normalize")(function* (resource: string, content: Content, sessionID?: Session.ID) {
+      const adapter = yield* loadAdapter
+      const limits = yield* limitsFor(resource, sessionID)
+      // A PNG that will be converted is fitted to the size limits only, then converted, and only then held to the
+      // byte limit: a large screenshot becomes a full-size WebP instead of a smaller PNG or a JPEG.
+      const converted = yield* convert(
+        yield* adapter(resource, content, limits.format === "original" ? limits : { ...limits, maxBase64Bytes: Number.POSITIVE_INFINITY }),
+        limits,
+      )
+      if (Buffer.byteLength(converted.content, "utf-8") <= limits.maxBase64Bytes) return converted
+      return yield* convert(yield* adapter(resource, content, limits), limits)
     })
     return Service.of({ transform: state.transform, reload: state.reload, normalize })
   }),
 )
 
 /** Bun's encoder writes the WebP; elsewhere the image stays as the adapter left it. */
-const compact = (content: FileSystem.Content & { readonly encoding: "base64" }) => {
-  if (content.mime !== "image/png" || content.content.length < COMPACT_FROM_BASE64_BYTES) return Effect.succeed(content)
+const convert = (content: Content, limits: Pick<Limits, "format" | "quality">) => {
+  if (limits.format === "original" || content.mime !== "image/png" || content.content.length < COMPACT_FROM_BASE64_BYTES)
+    return Effect.succeed(content)
   if (typeof Bun === "undefined" || typeof Bun.Image !== "function") return Effect.succeed(content)
   return Effect.tryPromise(() =>
-    new Bun.Image(Buffer.from(content.content, "base64")).webp({ quality: COMPACT_QUALITY }).bytes(),
+    new Bun.Image(Buffer.from(content.content, "base64"))
+      .webp(limits.format === "webp-lossless" ? { lossless: true } : { quality: limits.quality })
+      .bytes(),
   ).pipe(
     Effect.map((encoded) => {
       const base64 = Buffer.from(encoded).toString("base64")
@@ -143,4 +189,4 @@ const compact = (content: FileSystem.Content & { readonly encoding: "base64" }) 
   )
 }
 
-export const node = makeLocationNode({ service: Service, layer, deps: [] })
+export const node = makeLocationNode({ service: Service, layer, deps: [PluginHooks.node] })

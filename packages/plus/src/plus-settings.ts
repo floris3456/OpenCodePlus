@@ -2,7 +2,7 @@ import { Product } from "@opencode/util/product"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { PlusSettings } from "./rpc.js"
+import { ImageFormat, ImagesFull, ImageSize, type PlusSettings } from "./rpc.js"
 
 // Plus's global switches: the server half of the Settings › OpenCodePlus rows
 // that change what the server does. One file beside the other Plus state, read
@@ -20,6 +20,9 @@ const DEFAULTS: PlusSettings = {
   noticeMinTokens: 0,
   noticeKinds: "misses-and-partials",
   noticeDismiss: "everywhere",
+  imageFormat: "webp",
+  imageSize: "full",
+  imagesFull: "compact",
 }
 
 export function plusSettingsPath(): string {
@@ -64,5 +67,8 @@ function settingsOf(value: unknown): PlusSettings {
     noticeMinTokens: pick(NOTICE_MIN_TOKENS, "noticeMinTokens"),
     noticeKinds: pick(["misses-and-partials", "misses"] as const, "noticeKinds"),
     noticeDismiss: pick(["everywhere", "this-tui"] as const, "noticeDismiss"),
+    imageFormat: pick(ImageFormat.literals, "imageFormat"),
+    imageSize: pick(ImageSize.literals, "imageSize"),
+    imagesFull: pick(ImagesFull.literals, "imagesFull"),
   }
 }

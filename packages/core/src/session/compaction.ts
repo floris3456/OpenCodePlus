@@ -286,9 +286,11 @@ export const layer = Layer.effect(
         })
       // Plugins may request earlier compaction, but cannot override this preference.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
-      // The next request would leave an image out, so compact first. Until agents can compact for themselves, this is
-      // what makes room; a failure only means the step goes out with the newest images left out.
-      const images = trigger.reason === "auto" && !decision.compact && !due(context, ceiling) && imagesFull(context)
+      // The next request would leave an image out, so compact first, unless a plugin chose to leave them out. Until
+      // agents can compact for themselves, this is what makes room; a failure only means the step goes out with the
+      // newest images left out.
+      const images = trigger.reason === "auto" && decision.images !== "leave-out" && !decision.compact &&
+        !due(context, ceiling) && imagesFull(context)
       if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact && !images) return { status: "skipped" }
       // Opaque windows cannot be sized locally. The first primary request measures the rebuilt
       // checkpoint. If it was already full, do not keep recompressing it after every small tool call.

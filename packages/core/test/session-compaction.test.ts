@@ -259,6 +259,18 @@ it.effect("auto compaction makes room when the images no longer fit one request"
     const checkpoints = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
     expect(yield* compaction.compact({ reason: "auto", context: loaded(session, [...history, ...checkpoints]) })).toEqual({ status: "skipped" })
 
+    // A plugin that chose to leave new images out keeps the chat as it is.
+    const leaving = yield* insertSession(Session.ID.make("ses_image_limit_leave"))
+    const leaveOut = yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.images = "leave-out"
+      }),
+    )
+    requests = []
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(leaving, history) })).toEqual({ status: "skipped" })
+    expect(requests).toHaveLength(0)
+    yield* leaveOut.dispose
+
     // A compaction that fails lets the step go out with the newest image left out instead of failing it.
     const failing = yield* insertSession(Session.ID.make("ses_image_limit_failed"))
     const context = loaded(failing, history)

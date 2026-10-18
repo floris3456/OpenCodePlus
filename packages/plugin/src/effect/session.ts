@@ -207,6 +207,26 @@ export interface SessionWarming {
   settings: SessionWarmingSettings | undefined
 }
 
+/**
+ * How an image that arrives in a Session (a tool result or a prompt attachment) is stored. Each field starts as the
+ * configured value; change it to shrink or convert differently. An image is stored once and never changes afterwards,
+ * so a change applies only to images that arrive later.
+ */
+export interface SessionImage {
+  readonly sessionID: Session.ID
+  /** The file or attachment the image came from. */
+  readonly resource: string
+  /** The longest edges, in pixels. */
+  maxWidth: number
+  maxHeight: number
+  /** The most 28 x 28-pixel blocks (Claude's visual tokens) the image may cover. */
+  maxVisualTokens: number
+  /** What a large PNG is stored as: WebP at `quality`, lossless WebP, or the PNG itself. JPEGs stay as they are. */
+  format: "webp" | "webp-lossless" | "original"
+  /** WebP quality, 1 to 100. */
+  quality: number
+}
+
 /** Request-local tool exposure overrides, by registry tool id. Permissions still apply. */
 export interface SessionTools {
   readonly sessionID: Session.ID
@@ -246,6 +266,7 @@ export interface SessionHooks {
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
   readonly warming: SessionWarming
+  readonly image: SessionImage
 }
 
 export type SessionDomain = Pick<

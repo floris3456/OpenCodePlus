@@ -79,13 +79,13 @@ const layer = Layer.effect(
     const image = yield* Image.Service
 
     type NormalizedItem = Tool.Content | "decode" | "size"
-    const normalizeImages = Effect.fnUntraced(function* (content: ReadonlyArray<Tool.Content>) {
+    const normalizeImages = Effect.fnUntraced(function* (content: ReadonlyArray<Tool.Content>, sessionID: SessionSchema.ID) {
       const normalized = yield* Effect.forEach(content, (item): Effect.Effect<NormalizedItem> => {
         if (item.type !== "file" || !item.mime.startsWith("image/")) return Effect.succeed(item)
         const base64 = /^data:[^,]*;base64,(.*)$/s.exec(item.uri)?.[1]
         if (base64 === undefined) return Effect.succeed(item)
         const resource = item.name ?? `${item.mime} tool output`
-        return image.normalize(resource, { uri: resource, content: base64, encoding: "base64", mime: item.mime }).pipe(
+        return image.normalize(resource, { uri: resource, content: base64, encoding: "base64", mime: item.mime }, sessionID).pipe(
           Effect.map((result) => ({
             ...item,
             uri: `data:${result.mime};base64,${result.content}`,
@@ -156,7 +156,7 @@ const layer = Layer.effect(
         },
       }
       yield* hooks.trigger("tool", "execute.after", afterEvent)
-      const afterContent = yield* normalizeImages(normalizeContent(afterEvent.result.content, afterEvent.result.output))
+      const afterContent = yield* normalizeImages(normalizeContent(afterEvent.result.content, afterEvent.result.output), context.sessionID)
       return {
         ...(afterEvent.result.output === undefined ? {} : { output: afterEvent.result.output }),
         content: afterContent,

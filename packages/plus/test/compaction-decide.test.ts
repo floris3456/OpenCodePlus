@@ -382,6 +382,21 @@ async function withColdSwitch(run: () => Promise<void>) {
   }
 }
 
+test("Settings › Images › Leave new images out reaches core's decision; the default leaves it to core", async () => {
+  const event = () => decision({ sessionID: Session.ID.make("ses_images_full"), boundary: { fresh: false, portable: true } })
+  const byDefault = event()
+  await Effect.runPromise(decideCompactionFor(wiringContext(), coldState([]), byDefault, fakeLedger(requestRow(Date.now()), oneHourFingerprint())))
+  expect(byDefault.images).toBeUndefined()
+  await plusSettings.update({ imagesFull: "leave-out" })
+  try {
+    const leaving = event()
+    await Effect.runPromise(decideCompactionFor(wiringContext(), coldState([]), leaving, fakeLedger(requestRow(Date.now()), oneHourFingerprint())))
+    expect(leaving.images).toBe("leave-out")
+  } finally {
+    await plusSettings.update({ imagesFull: "compact" })
+  }
+})
+
 test("with Compact cold chats first off, a cold fresh prompt does not arm, and the mark is still consumed", async () => {
   const sessionID = "ses_wire_off"
   markPromptAdmitted(sessionID)

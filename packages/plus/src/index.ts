@@ -91,6 +91,7 @@ import { monitorCache, monitorDismiss, monitorFact, monitorMark, monitorNotices,
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { plusSettings } from "./plus-settings.js"
+import { chooseImage } from "./image-settings.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
@@ -318,6 +319,10 @@ export default Plugin.define({
         return Effect.void
       })
       yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
+      // Settings › Images: how an arriving image is stored.
+      yield* ctx.session.hook("image", (event) =>
+        Effect.promise(() => plusSettings.read()).pipe(Effect.map((settings) => chooseImage(event, settings))),
+      )
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -4058,6 +4063,9 @@ export function decideCompactionFor(
   ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
 ): Effect.Effect<void> {
   return Effect.promise(async () => {
+    const settings = await plusSettings.read()
+    // Settings › Images › When images fill a request.
+    if (settings.imagesFull === "leave-out") event.images = "leave-out"
     // An armed list (a team compactWith, or `compaction.cold`) is the user's
     // explicit instruction: it wins, and nothing below needs reading.
     const armed = consumeColdCompaction(event.sessionID)
@@ -4070,7 +4078,7 @@ export function decideCompactionFor(
     // outcome, so later steps of the same turn never consult it. A manual or
     // overflow decision leaves it for the next auto step.
     const fresh = event.reason === "auto" && consumePromptAdmitted(event.sessionID)
-    const cold = fresh && (await plusSettings.read()).coldCompact ? await coldFor(ctx, event, ledger) : undefined
+    const cold = fresh && settings.coldCompact ? await coldFor(ctx, event, ledger) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)

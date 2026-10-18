@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Image } from "@opencode/core/image"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
+import { LayerNode } from "@opencode/util/effect/layer-node"
+import type { SessionImage } from "@opencode/plugin/effect/session"
+import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
 import { testEffect } from "./lib/effect"
 
@@ -56,7 +60,7 @@ const rendering = (format: "png" | "jpeg") =>
   })
 
 describe("Image.normalize", () => {
-  const it = testEffect(AppNodeBuilder.build(Image.node))
+  const it = testEffect(AppNodeBuilder.build(LayerNode.group([Image.node, PluginHooks.node])))
 
   it.effect("stores a large PNG as a WebP at the same size, the same way every time", () =>
     Effect.gen(function* () {
@@ -87,6 +91,85 @@ describe("Image.normalize", () => {
       const jpeg = yield* rendering("jpeg")
       expect(jpeg.content.length).toBeGreaterThan(512 * 1024)
       expect(yield* image.normalize("render.jpeg", jpeg)).toEqual(jpeg)
+    }),
+  )
+
+  /** Normalizes in a Session whose plugin chooses these settings for every arriving image. */
+  const chosen = (choice: (event: SessionImage) => void) =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const seen: SessionImage[] = []
+      yield* hooks.register("session", "image", (event) =>
+        Effect.sync(() => {
+          seen.push({ ...event })
+          choice(event)
+        }),
+      )
+      const image = yield* Image.Service
+      return {
+        seen,
+        normalize: (content: Parameters<Image.Interface["normalize"]>[1]) =>
+          image.normalize("render.png", content, Session.ID.make("ses_image_settings")),
+      }
+    })
+  const pixels = (base64: string) =>
+    Effect.promise(() => new Bun.Image(Buffer.from(base64, "base64")).png({ compressionLevel: 1 }).bytes())
+
+  it.effect("a plugin chooses the format: lossless WebP keeps every pixel, the original keeps the PNG", () =>
+    Effect.gen(function* () {
+      const png = yield* rendering("png")
+      const lossless = yield* chosen((event) => {
+        event.format = "webp-lossless"
+      })
+      const stored = yield* lossless.normalize(png)
+      expect(lossless.seen[0]).toMatchObject({ resource: "render.png", format: "webp", quality: 90, maxWidth: 2_000 })
+      expect(stored.mime).toBe("image/webp")
+      expect(stored.content.length).toBeLessThan(png.content.length)
+      expect(yield* pixels(stored.content)).toEqual(yield* pixels(png.content))
+    }),
+  )
+
+  it.effect("the original format leaves a large PNG as it is", () =>
+    Effect.gen(function* () {
+      const png = yield* rendering("png")
+      const original = yield* chosen((event) => {
+        event.format = "original"
+      })
+      expect(yield* original.normalize(png)).toEqual(png)
+    }),
+  )
+
+  it.effect("a plugin chooses the quality and the size", () =>
+    Effect.gen(function* () {
+      const png = yield* rendering("png")
+      const image = yield* Image.Service
+      const standard = yield* image.normalize("render.png", png)
+      const smaller = yield* chosen((event) => {
+        event.quality = 60
+        event.maxWidth = 600
+        event.maxHeight = 600
+      })
+      const stored = yield* smaller.normalize(png)
+      const metadata = yield* Effect.promise(() => new Bun.Image(Buffer.from(stored.content, "base64")).metadata())
+      expect({ width: metadata.width, height: metadata.height }).toEqual({ width: 600, height: 450 })
+      expect(stored.content.length).toBeLessThan(standard.content.length / 3)
+    }),
+  )
+
+  it.effect("converts before the byte limit, so a PNG over it becomes a full-size WebP rather than a JPEG", () =>
+    Effect.gen(function* () {
+      const png = yield* rendering("png")
+      const image = yield* Image.Service
+      const webp = yield* image.normalize("render.png", png)
+      // A limit between the WebP and the PNG: only the PNG is over it.
+      yield* image.transform((editor) => editor.configure({ maxBase64Bytes: webp.content.length + 1 }))
+      const stored = yield* image.normalize("render.png", png)
+      expect(stored).toEqual(webp)
+      // Kept as PNG, the same image has to give way to the limit as before.
+      const original = yield* chosen((event) => {
+        event.format = "original"
+      })
+      expect((yield* original.normalize(png)).mime).toBe("image/jpeg")
     }),
   )
 })

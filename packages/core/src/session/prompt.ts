@@ -53,7 +53,7 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
     })
     const input = event.prompt
     const files = input.files
-      ? yield* Effect.forEach(input.files, materializeAttachment, { concurrency: 8 })
+      ? yield* Effect.forEach(input.files, (file) => materializeAttachment(file, request.session.id), { concurrency: 8 })
       : undefined
     const requested = input.skills
     const selected = yield* Effect.gen(function* () {
@@ -94,6 +94,7 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
 
 const materializeAttachment = Effect.fn("SessionPrompt.materializeAttachment")(function* (
   input: PromptInput.FileAttachment,
+  sessionID: Session.ID,
 ) {
   const label = attachmentLabel(input)
   const resolved = input.uri.startsWith("data:")
@@ -123,7 +124,7 @@ const materializeAttachment = Effect.fn("SessionPrompt.materializeAttachment")(f
             .join("\n"),
         )
       : resolved.bytes
-  const normalized = yield* normalizeImageAttachment(input, Buffer.from(content).toString("base64"), mime)
+  const normalized = yield* normalizeImageAttachment(input, Buffer.from(content).toString("base64"), mime, sessionID)
   return FileAttachment.create({
     data: normalized.data,
     mime: normalized.mime,
@@ -138,12 +139,13 @@ const normalizeImageAttachment = Effect.fn("SessionPrompt.normalizeImageAttachme
   input: PromptInput.FileAttachment,
   data: string,
   mime: string,
+  sessionID: Session.ID,
 ) {
   if (!mime.startsWith("image/")) return { data: Base64.make(data), mime }
   const image = yield* Image.Service
   const label = attachmentLabel(input)
   const content = { uri: label, content: data, encoding: "base64" as const, mime }
-  const normalized = yield* image.normalize(label, content).pipe(
+  const normalized = yield* image.normalize(label, content, sessionID).pipe(
     Effect.catchTag("Image.ResizerUnavailableError", () => Effect.succeed(content)),
     Effect.mapError((error) => new AttachmentError({ uri: label, message: error.message })),
   )

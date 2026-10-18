@@ -28,6 +28,11 @@ export interface SessionCompactionDecision {
   }
   /** Request compaction below the context threshold; never overrides auto:false. */
   compact?: boolean
+  /**
+   * When the next request would leave an image out (its images exceed what one request may carry): `compact` the
+   * chat first (the default), or `leave-out`: send it as it is, with the newest images replaced by a note to the model.
+   */
+  images?: "compact" | "leave-out"
   /** Require a local text checkpoint without account-bound provider state. */
   portable?: boolean
   /**

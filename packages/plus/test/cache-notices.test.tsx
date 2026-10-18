@@ -41,6 +41,9 @@ async function render(options: {
     noticeMinTokens: 0,
     noticeKinds: "misses-and-partials",
     noticeDismiss: options.dismiss ?? "everywhere",
+    imageFormat: "webp",
+    imageSize: "full",
+    imagesFull: "compact",
   }
   const notices = { list: options.notices }
   const fixture = await renderPlusFixture({
