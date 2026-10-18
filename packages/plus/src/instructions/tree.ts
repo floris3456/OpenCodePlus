@@ -3547,9 +3547,12 @@ function lazyItem(
       ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
       ...toolPermissions(ctx, memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath),
     ]
+    // A tool's text is one of several things under it (mode, parameters, permissions), so it gets a Description row
+    // of its own. Every other row is only text: the row itself is the whole text and opens straight into its sections.
     const sections = cachedKids(memo, rowId, () => {
       const split = splitOf(memo, level, owner, item, catalogue, teamRef)
-      return [descriptionRow(memo, level, owner, item, rowId, split, depth + 1, teamRef, catalogue, ownerPath)]
+      if (tool) return [descriptionRow(memo, level, owner, item, rowId, split, depth + 1, teamRef, catalogue, ownerPath)]
+      return split.kind === "whole" ? [] : sectionKids(ctx, memo, level, owner, item, split, depth + 1, teamRef, catalogue, ownerPath)
     })
     if (!tool) return sections
     return [

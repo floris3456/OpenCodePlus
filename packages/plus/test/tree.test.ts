@@ -789,7 +789,8 @@ test("section rows carry section addresses, stable ids, and nested depths", () =
     { level: "project", agent: "Implementer", item: "system:role", section: "purpose" },
     { level: "project", agent: "Implementer", item: "system:role", section: "usage" },
   ])
-  expect(sections.map((node) => node.depth)).toEqual([7, 7])
+  // Directly under the Role/persona row: a text row is itself the whole text, with no Description row between.
+  expect(sections.map((node) => node.depth)).toEqual([6, 6])
   expect(sections.every((node) => node.badges.state === "on")).toBe(true)
   expect(sections.every((node) => node.actions?.toggle === true && node.actions?.split === false)).toBe(true)
   expect(sections.every((node) => node.add === "section")).toBe(true)
@@ -804,11 +805,11 @@ test("a lone top-level heading is not an extra level: children render directly a
   const nodes = expandAll(input)
   const itemRow = nodes.find((node) => node.id === "item:project:Implementer:skill:solo")
   if (!itemRow) throw new Error("expected skill row")
-  const children = childrenOf(nodes, `${itemRow.id}:description`)
+  const children = childrenOf(nodes, itemRow.id)
   expect(children.map((node) => [node.id, node.label, node.depth])).toEqual([
-    ["section:project:Implementer:skill:solo:title", "Introduction", itemRow.depth + 2],
-    ["section:project:Implementer:skill:solo:title/a", "A", itemRow.depth + 2],
-    ["section:project:Implementer:skill:solo:title/b", "B", itemRow.depth + 2],
+    ["section:project:Implementer:skill:solo:title", "Introduction", itemRow.depth + 1],
+    ["section:project:Implementer:skill:solo:title/a", "A", itemRow.depth + 1],
+    ["section:project:Implementer:skill:solo:title/b", "B", itemRow.depth + 1],
   ])
   const intro = children[0]
   if (intro === undefined) throw new Error("expected Introduction row")
@@ -831,14 +832,14 @@ test("a wrapper with no body shows no Introduction, and several top-level sectio
     records: [],
     agents: agents(),
   })
-  expect(childrenOf(nodes, "item:project:Implementer:skill:bare:description").map((node) => node.label)).toEqual(["A", "B"])
+  expect(childrenOf(nodes, "item:project:Implementer:skill:bare").map((node) => node.label)).toEqual(["A", "B"])
   // Two H1s are two real sections: both keep their rows.
   const multi = expandAll({
     items: [skillTool, makeItem({ id: "skill:multi", kind: "skill", group: "project", title: "multi", text: "# Alpha\na\n# Beta\nb\n" })],
     records: [],
     agents: agents(),
   })
-  expect(childrenOf(multi, "item:project:Implementer:skill:multi:description").map((node) => node.label)).toEqual(["Alpha", "Beta"])
+  expect(childrenOf(multi, "item:project:Implementer:skill:multi").map((node) => node.label)).toEqual(["Alpha", "Beta"])
   // A tool's wrapper hides under its Description group like any other item's.
   const tool = expandAll({
     items: [makeItem({ id: "tool:desc", title: "desc", text: "# T\np\n## A\na\n" })],
@@ -854,7 +855,7 @@ test("a wrapper with no body shows no Introduction, and several top-level sectio
     records: [{ ...makeRecord(), item: "skill:quiet", section: "title", state: "off" }],
     agents: agents(),
   })
-  expect(childrenOf(saved, "item:project:Implementer:skill:quiet:description").map((node) => node.label)).toEqual(["Introduction", "A"])
+  expect(childrenOf(saved, "item:project:Implementer:skill:quiet").map((node) => node.label)).toEqual(["Introduction", "A"])
 })
 
 test("whole Role/persona and whole base rows refuse toggle but read unsupported", () => {

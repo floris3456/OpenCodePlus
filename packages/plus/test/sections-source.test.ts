@@ -60,21 +60,21 @@ function findNodeId(input: MemoInput, itemId: string, section?: string): string 
   return node.id
 }
 
-test("unsplit text has a non-expandable Description row at its whole-text address", () => {
+test("unsplit text: a tool has a non-expandable Description row; a text row is itself the whole text", () => {
   const input = baseInput()
   const tree = expandedTree(input)
 
-  // Unsplit tool row (tool:bash has no headings)
+  // Unsplit tool row (tool:bash has no headings): its text is one of several things under it.
   const bashSection = tree.find((n) => n.kind === "section" && n.address?.item === "tool:bash" && n.address.section === null)
   expect(bashSection).toBeDefined()
   expect(bashSection?.label).toBe("Description")
   expect(bashSection?.expandable).toBe(false)
 
-  // Unsplit non-tool row (system:prose has no headings)
-  const proseSection = tree.find((n) => n.kind === "section" && n.address?.item === "system:prose" && n.address.section === null)
-  expect(proseSection).toBeDefined()
-  expect(proseSection?.label).toBe("Description")
-  expect(proseSection?.expandable).toBe(false)
+  // Unsplit text row (system:prose has no headings): no Description row; the row edits its whole text.
+  expect(tree.find((n) => n.kind === "section" && n.address?.item === "system:prose")).toBeUndefined()
+  const prose = tree.find((n) => n.kind === "item" && n.address?.item === "system:prose" && n.address.section === null)
+  expect(prose?.actions?.edit).toBe(true)
+  expect(tree.some((n) => n.id === `${prose?.id}:description`)).toBe(false)
 
   // The stable whole-section id remains available for stored overrides.
   const split = derive("plain text", "General")
