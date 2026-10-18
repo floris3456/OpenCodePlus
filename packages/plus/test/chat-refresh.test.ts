@@ -3,7 +3,8 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { activate, createHandlers, createState, refreshFolderForNewChat } from "../src/index.js"
-import { agentHarness, agentInfo, context, fullContext, toolHarness } from "./harness.js"
+import { createPlanSet, SessionPinManager } from "../src/instructions/cache-safe.js"
+import { agentHarness, agentInfo, context, fullContext, memoryStorage, toolHarness } from "./harness.js"
 
 const throwing = {
   error: (type: string, message: string, data?: unknown): never => {
@@ -47,6 +48,43 @@ describe("chat.refresh", () => {
     // With no measured last request, the cost is zero and names no cache.
     expect(result.reReadTokens).toBe(0)
     expect(result.withoutCache).toBe(false)
+  })
+
+  test("a refresh makes the chat's next request pin what it published, even after Plus re-activates", async () => {
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    await fs.mkdir(project, { recursive: true })
+
+    const harness = agentHarness([agentInfo("build", "build role")], project)
+    const ctx = context({
+      ...fullContext({ directory: project, hooks: { current: 0 } }),
+      agent: harness.domain,
+    })
+    const { storage } = memoryStorage()
+    const state = createState(storage)
+    await Effect.runPromise(activate(ctx, state))
+    const plans = state.currentPlanSet ?? createPlanSet({
+      roles: new Map(),
+      base: [],
+      native: [],
+      instructions: [],
+      scrubByAgent: new Map(),
+      needsNarrowing: false,
+      permissions: { rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
+      customByAgent: new Set(),
+    })
+    const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+    // The chat was pinned by an earlier Plus instance, and is not in this one's memory.
+    const earlier = new SessionPinManager(storage)
+    await Effect.runPromise(earlier.save(earlier.pinSession("ses_refresh_pin", model, plans), "build"))
+    const handlers = createHandlers(ctx, state)
+
+    await Effect.runPromise(handlers["chat.refresh"]({ sessionID: "ses_refresh_pin", dryRun: true }, throwing))
+    expect((await Effect.runPromise(new SessionPinManager(storage).load("ses_refresh_pin", plans)))?.rebuildNeeded).toBeUndefined()
+
+    await Effect.runPromise(handlers["chat.refresh"]({ sessionID: "ses_refresh_pin" }, throwing))
+    expect((await Effect.runPromise(new SessionPinManager(storage).load("ses_refresh_pin", plans)))?.rebuildNeeded).toBe(true)
   })
 
   test("a dry run reports the cost without reloading", async () => {

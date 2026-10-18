@@ -743,6 +743,28 @@ export function fullContext(options: {
   })
 }
 
+// Plus's plugin storage as core keeps it: a key-value table, here in memory.
+export function memoryStorage() {
+  const entries = new Map<string, Schema.Json>()
+  const storage: StorageDomain = {
+    get: (key) => Effect.sync(() => entries.get(key)),
+    set: (key, value) => Effect.sync(() => void entries.set(key, value)),
+    remove: (key) => Effect.sync(() => void entries.delete(key)),
+    scan: (options) =>
+      Effect.sync(() => {
+        const keys = [...entries.keys()]
+          .filter((key) => key.startsWith(options.prefix) && (options.after === undefined || key > options.after))
+          .sort()
+        const page = keys.slice(0, options.limit ?? 100)
+        return {
+          entries: page.map((key) => ({ key, value: entries.get(key)! })),
+          ...(keys.length > page.length ? { next: page.at(-1)! } : {}),
+        }
+      }),
+  }
+  return { storage, entries }
+}
+
 function storageDomain(): StorageDomain {
   return {
     get: die("unused storage.get"),

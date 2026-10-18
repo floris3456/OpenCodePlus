@@ -4,6 +4,7 @@ import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { RpcHandlers, RpcRegistration } from "@opencode/plugin/effect/rpc"
+import type { StorageDomain } from "@opencode/plugin/effect/storage"
 import { Agent } from "@opencode/schema/agent"
 import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
@@ -195,7 +196,7 @@ export interface PlusState {
   pendingPick?: Promise<void>
 }
 
-export function createState(): PlusState {
+export function createState(storage?: StorageDomain): PlusState {
   return {
     loadedAt: Date.now(),
     chatsSeen: new Set(),
@@ -203,7 +204,7 @@ export function createState(): PlusState {
     applied: [],
     appliedParts: new Map(),
     appliedPlans: new Map(),
-    sessionPins: new SessionPinManager(),
+    sessionPins: new SessionPinManager(storage),
     currentPlanSet: undefined,
     tooling: [],
     teamTooling: [],
@@ -246,7 +247,7 @@ export default Plugin.define({
       // this listener before the next effect can register another.
       const disposeQuotaFacts = onQuotaFact(monitorFact)
       yield* Effect.addFinalizer(() => Effect.sync(() => disposeQuotaFacts()))
-      const state = createState()
+      const state = createState(ctx.storage)
       // Applied registrations live on detached scopes, so without this
       // finalizer they outlive the plugin when core unloads or reactivates it.
       yield* Effect.addFinalizer(() => deactivate(state))
@@ -315,10 +316,7 @@ export default Plugin.define({
           }
         }),
       )
-      yield* ctx.session.hook("compaction", (event) => {
-        state.sessionPins.markRebuild(String(event.sessionID))
-        return Effect.void
-      })
+      yield* ctx.session.hook("compaction", (event) => state.sessionPins.markRebuild(String(event.sessionID)))
       yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
       // Instructions › a model › Images: how an image that arrives in a chat on that model is stored.
       yield* ctx.session.hook("image", (event) => chooseImageFor(ctx, state, event))
@@ -1026,6 +1024,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         else Effect.runSync(Effect.logWarning("plus chat refresh reload failed", { domain: name }))
       }
       await Effect.runPromise(refreshFromHost(ctx, state))
+      // The chat's next request pins what was just published. Stored, so it holds
+      // when the config reload above re-activates Plus.
+      if (input.sessionID !== undefined) await Effect.runPromise(state.sessionPins.markRebuild(input.sessionID))
       const fresh = await loadMigrated(directory)
       const cost = await chatRefreshCost(ctx, input.sessionID)
       return {
@@ -6522,7 +6523,7 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
       Effect.gen(function* () {
         const sessionID = (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID
         if (typeof sessionID === "string") {
-          state.sessionPins.markRebuild(sessionID)
+          yield* state.sessionPins.markRebuild(sessionID)
           const created = (event as { created?: unknown }).created
           const completedAt = typeof created === "number" ? created : Date.now()
           warmingStore.invalidateCompaction(sessionID, completedAt)
@@ -6538,16 +6539,12 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
   )
   const sessionDeletions = ctx.event.subscribe().pipe(
     Stream.filter((event) => event.type === "session.deleted"),
-    Stream.runForEach((event) =>
-      Effect.sync(() => {
-        const sessionID =
-          (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID ??
-          (event as { readonly sessionID?: unknown }).sessionID
-        if (typeof sessionID === "string") {
-          state.sessionPins.dropPin(sessionID)
-        }
-      }),
-    ),
+    Stream.runForEach((event) => {
+      const sessionID =
+        (event.data as { readonly sessionID?: unknown } | undefined)?.sessionID ??
+        (event as { readonly sessionID?: unknown }).sessionID
+      return typeof sessionID === "string" ? state.sessionPins.dropPin(sessionID) : Effect.void
+    }),
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
   )

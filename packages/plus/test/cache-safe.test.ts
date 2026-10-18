@@ -7,10 +7,20 @@ import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect } from "effect"
 import { applyPublishParts } from "../src/instructions/apply.js"
 import type { PublishPartsInput } from "../src/instructions/apply.js"
-import { checkAndEmitChangeNote, handlePromptBoundary, sessionPins, type PlanSet } from "../src/instructions/cache-safe.js"
+import {
+  checkAndEmitChangeNote,
+  createPlanSet,
+  handlePromptBoundary,
+  pinnedPermissions,
+  SessionPinManager,
+  sessionPins,
+  sweepStoredPins,
+  type PlanSet,
+} from "../src/instructions/cache-safe.js"
+import type { PermissionTable } from "../src/instructions/permission-enforce.js"
 import { fingerprint, type Item } from "../src/instructions/model.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
-import { context, modelInfo } from "./harness.js"
+import { context, memoryStorage, modelInfo } from "./harness.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 
 function sessionEvent(
@@ -342,7 +352,7 @@ test("folding in after compaction / model switch / new chat", async () => {
   expect(synthetics).toHaveLength(1)
 
   // 1. Compaction rebuild moment
-  sessionPins.markRebuild("ses_folding")
+  await Effect.runPromise(sessionPins.markRebuild("ses_folding"))
   synthetics.length = 0
 
   const turn3 = sessionEvent(
@@ -523,7 +533,7 @@ test("a native tool switched on appears only after a rebuild moment", async () =
   expect(synthetics[0].text).toContain("available after the next rebuild")
 
   // Rebuild moment (compaction)
-  sessionPins.markRebuild("ses_tool_on")
+  await Effect.runPromise(sessionPins.markRebuild("ses_tool_on"))
   const turn3 = sessionEvent(
     "ses_tool_on",
     "alpha",
@@ -971,4 +981,149 @@ test("mid-chat variant effort change updates pin variant on non-rebuild request 
   await Effect.runPromise(compactionHook(compactionHigh))
   expect(compactionHigh.system).toEqual(rawSystem)
   expect(compactionHigh.tools).toEqual(rawTools)
+})
+
+const GUIDE = "/workspace/AGENTS.md"
+
+function restartPlan(guide: string, rules: string, reader: string): PublishPartsInput {
+  return {
+    applyInput: {
+      agents: [{ id: "alpha", level: "project" }],
+      items: [
+        makeItem({ id: "tool:reader", kind: "tool", text: reader, enabled: true, agents: ["alpha"] }),
+        makeItem({ id: "system:role", kind: "system", text: `You are helpful.\n\n## Rules\n${rules}`, enabled: true, agents: ["alpha"] }),
+        makeItem({ id: "system:AGENTS.md", kind: "system", text: guide, enabled: true, agents: ["alpha"] }),
+      ],
+      records: [],
+      splits: [],
+      scopes: { global: new Set(), defaults: new Set() },
+    },
+  }
+}
+
+// What core sends: its own system parts and tools, before Plus shapes them.
+function restartRequest(rules: string, guide: string) {
+  return sessionEvent("ses_restart", "alpha", { reader: { description: "read files", input: { type: "object" } } }, [
+    { type: "text", text: `You are helpful.\n\n## Rules\n${rules}` },
+    { type: "text", text: guide, metadata: { instruction: { path: GUIDE } } },
+  ])
+}
+
+test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as one note", async () => {
+  const { storage } = memoryStorage()
+  const { ctx, contextCallbacks, synthetics } = createHarness()
+
+  await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, restartPlan("Guide v1.", "Be nice.", "read files"))
+  const first = restartRequest("Be nice.", "Guide v1.")
+  await Effect.runPromise(contextCallbacks.at(-1)!(first))
+  expect(first.system.map((part) => part.text)).toEqual(["You are helpful.\n\n## Rules\nBe nice.", "Guide v1."])
+
+  // AGENTS.md, a role section and a tool description change; then Plus starts again
+  // (a release, or a re-activation) with nothing in memory.
+  const changed = restartPlan("Guide v2.", "Speak like a pirate.", "read files, carefully")
+  await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, changed)
+  const after = restartRequest("Speak like a pirate.", "Guide v2.")
+  await Effect.runPromise(contextCallbacks.at(-1)!(after))
+
+  expect(after.system, "the system prompt is the one the chat was sent").toEqual(first.system)
+  expect(after.tools, "the tools are the ones the chat was sent").toEqual(first.tools)
+  expect(synthetics).toHaveLength(1)
+  expect(synthetics[0]?.text).toContain("Guide v2.")
+  expect(synthetics[0]?.text).toContain("Speak like a pirate")
+  expect(synthetics[0]?.text).toContain('Tool "reader" description changed')
+
+  // The note was stored with the pin: another start does not announce it again.
+  await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, changed)
+  const again = restartRequest("Speak like a pirate.", "Guide v2.")
+  await Effect.runPromise(contextCallbacks.at(-1)!(again))
+  expect(again.system).toEqual(first.system)
+  expect(synthetics).toHaveLength(1)
+
+  // Without a store, the same start pins the changed files: the miss this prevents.
+  await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager() }, changed)
+  const unstored = restartRequest("Speak like a pirate.", "Guide v2.")
+  await Effect.runPromise(contextCallbacks.at(-1)!(unstored))
+  expect(unstored.system.map((part) => part.text)).toContain("Guide v2.")
+})
+
+function answering(label: string): PermissionTable {
+  return {
+    rows: () => [],
+    toolRows: (agent, tool) => [{ item: makeItem({ id: `tool:${tool}`, kind: "tool", text: tool }), on: true, text: `${label}: ${agent} ${tool}` }],
+    ruleRows: () => [],
+    teamMembers: new Set(),
+    describe: (agent) => (agent === "quiet" ? undefined : `${label}: ${agent}`),
+  }
+}
+
+function narrowingPlans(permissions: PermissionTable): PlanSet {
+  return createPlanSet({
+    roles: new Map(),
+    base: [],
+    native: [],
+    instructions: [],
+    scrubByAgent: new Map(),
+    needsNarrowing: true,
+    permissions,
+    customByAgent: new Set(),
+  })
+}
+
+test("after a restart, narrowing reads the permission answers the pin stored and asks the current table only what is new", async () => {
+  const { storage } = memoryStorage()
+  const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+  const before = new SessionPinManager(storage)
+  const pin = before.pinSession("ses_answers", model, narrowingPlans(answering("before")))
+  const asked = pinnedPermissions(pin, "alpha", pin.planSet.permissions)
+  expect(asked.toolRows("alpha", "bash")[0]?.text).toBe("before: alpha bash")
+  expect(asked.describe("quiet")).toBeUndefined()
+  await Effect.runPromise(before.save(pin, "alpha"))
+
+  const restored = await Effect.runPromise(new SessionPinManager(storage).load("ses_answers", narrowingPlans(answering("after"))))
+  if (restored === undefined) throw new Error("expected the stored pin")
+  const replayed = pinnedPermissions(restored, "alpha", restored.planSet.permissions)
+  expect(replayed.toolRows("alpha", "bash")[0]?.text).toBe("before: alpha bash")
+  expect(replayed.describe("quiet")).toBeUndefined()
+  expect(replayed.toolRows("alpha", "edit")[0]?.text).toBe("after: alpha edit")
+  expect(restored.planSet.needsNarrowing).toBe(true)
+})
+
+test("a stored pin keeps a rebuild marked before a restart or while unloaded, and goes when its chat is deleted", async () => {
+  const { storage, entries } = memoryStorage()
+  const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+  const plans = narrowingPlans(answering("now"))
+  const first = new SessionPinManager(storage)
+  await Effect.runPromise(first.save(first.pinSession("ses_life", model, plans), "alpha"))
+  expect([...entries.keys()].filter((key) => key.includes("ses_life"))).toHaveLength(2)
+
+  // Marked by an instance that never loaded the pin (a compaction right after a restart).
+  await Effect.runPromise(new SessionPinManager(storage).markRebuild("ses_life"))
+  const restored = await Effect.runPromise(new SessionPinManager(storage).load("ses_life", plans))
+  expect(restored?.rebuildNeeded).toBe(true)
+
+  await Effect.runPromise(new SessionPinManager(storage).dropPin("ses_life"))
+  expect([...entries.keys()].filter((key) => key.includes("ses_life"))).toEqual([])
+})
+
+test("a stored pin from an earlier plan set is not restored, and pins idle past every cache lifetime are swept", async () => {
+  const { storage, entries } = memoryStorage()
+  const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+  const manager = new SessionPinManager(storage)
+  const pin = manager.pinSession("ses_epoch", model, narrowingPlans(answering("first")))
+  pinnedPermissions(pin, "alpha", pin.planSet.permissions).toolRows("alpha", "bash")
+  await Effect.runPromise(manager.save(pin, "alpha"))
+  // A rebuild moment: the pin takes another plan set; only the record is written before the next agent part.
+  manager.repinSession("ses_epoch", model, narrowingPlans(answering("second")))
+  await Effect.runPromise(manager.save(pin))
+  const restored = await Effect.runPromise(new SessionPinManager(storage).load("ses_epoch", narrowingPlans(answering("third"))))
+  if (restored === undefined) throw new Error("expected the stored pin")
+  expect(pinnedPermissions(restored, "alpha", restored.planSet.permissions).toolRows("alpha", "bash")[0]?.text).toBe("third: alpha bash")
+
+  const idle = new SessionPinManager(storage)
+  const old = idle.pinSession("ses_idle", model, narrowingPlans(answering("old")))
+  old.lastRequestAt = Date.now() - 25 * 60 * 60 * 1000
+  await Effect.runPromise(idle.save(old, "alpha"))
+  await Effect.runPromise(sweepStoredPins(storage, Date.now()))
+  expect([...entries.keys()].filter((key) => key.includes("ses_idle"))).toEqual([])
+  expect([...entries.keys()].filter((key) => key.includes("ses_epoch")).length).toBeGreaterThan(0)
 })

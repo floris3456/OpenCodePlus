@@ -65,6 +65,7 @@ import {
   checkAndEmitChangeNote,
   createPlanSet,
   isRebuildMoment,
+  pinnedPermissions,
   sessionPins,
   type PlanSet,
   type SessionPin,
@@ -1642,60 +1643,48 @@ export async function installSessionPlans(
           const agent = String(event.agent)
           const pinManager = state?.sessionPins ?? sessionPins
           const activePlanSet = state?.currentPlanSet ?? fallbackPlanSet
-          let pin = pinManager.getPin(sessionID)
-
-          if (pin === undefined) {
-            pin = pinManager.pinSession(sessionID, event.model, activePlanSet)
+          // A first request, or a rebuild moment: the pin takes the current plan set.
+          const applyCurrent = Effect.fnUntraced(function* (pin: SessionPin) {
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
             applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent), classifier)
             applyRuleScrub(event, activePlanSet.scrubByAgent.get(agent) ?? [])
-            if (activePlanSet.needsNarrowing) narrowTools(event, activePlanSet.permissions)
+            if (activePlanSet.needsNarrowing) narrowTools(event, pinnedPermissions(pin, agent, activePlanSet.permissions))
             pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
             pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
             pin.lastRequestAt = Date.now()
             applySystemOrder(event, activePlanSet.orders.get(agent))
             if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
-            return
-          }
+            yield* pinManager.save(pin, agent)
+          })
+          const pin = yield* pinManager.load(sessionID, activePlanSet)
 
-          const rebuild = yield* Effect.promise(() => isRebuildMoment(pin!, event, Date.now()))
-          if (rebuild) {
-            pin = pinManager.repinSession(sessionID, event.model, activePlanSet)
-            applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
-            applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
-            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent), classifier)
-            applyRuleScrub(event, activePlanSet.scrubByAgent.get(agent) ?? [])
-            if (activePlanSet.needsNarrowing) narrowTools(event, activePlanSet.permissions)
-            pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
-            pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
-            pin.lastRequestAt = Date.now()
-            applySystemOrder(event, activePlanSet.orders.get(agent))
-            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
-            return
-          }
+          if (pin === undefined) return yield* applyCurrent(pinManager.pinSession(sessionID, event.model, activePlanSet))
+          if (yield* Effect.promise(() => isRebuildMoment(pin, event, Date.now())))
+            return yield* applyCurrent(pinManager.repinSession(sessionID, event.model, activePlanSet))
 
           // The note is delivered only as the steered synthetic admitted here;
           // copying it into this request's messages would deliver it twice.
-          yield* Effect.promise(() => checkAndEmitChangeNote(ctx, pin!, activePlanSet, agent, sessionID))
+          yield* Effect.promise(() => checkAndEmitChangeNote(ctx, pin, activePlanSet, agent, sessionID))
 
-          yield* applyPinnedPlans(ctx, event, pin!, classifier)
+          yield* applyPinnedPlans(ctx, event, pin, classifier)
           pin.lastRequestAt = Date.now()
           if (event.model.variant !== undefined) pin.model.variant = String(event.model.variant)
           if (event.model.variant === undefined) delete pin.model.variant
+          yield* pinManager.save(pin, agent)
         })
       })
       installed.push(registration)
 
       if (state !== undefined) {
-        const compactionRegistration = await runHook(ctx.session.hook, "compaction", (event) => {
-          const sessionID = String(event.sessionID)
-          const pinManager = state?.sessionPins ?? sessionPins
-          const pin = pinManager.getPin(sessionID)
-          if (pin === undefined) return Effect.void
-          if (!sameModel(event.model, pin.model)) return Effect.void
-          return applyPinnedPlans(ctx, event, pin, classifier)
-        })
+        const compactionRegistration = await runHook(ctx.session.hook, "compaction", (event) =>
+          Effect.gen(function* () {
+            const pinManager = state?.sessionPins ?? sessionPins
+            const pin = yield* pinManager.load(String(event.sessionID), state?.currentPlanSet ?? fallbackPlanSet)
+            if (pin === undefined || !sameModel(event.model, pin.model)) return
+            yield* applyPinnedPlans(ctx, event, pin, classifier)
+          }),
+        )
         installed.push(compactionRegistration)
       }
     }
@@ -1783,7 +1772,7 @@ function applyPinnedPlans(
   applyToolPlan(event, pin.planSet.native.filter((plan) => plan.agent === agent))
   applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent), classifier)
   applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
-  if (pin.planSet.needsNarrowing) narrowTools(event, pin.planSet.permissions)
+  if (pin.planSet.needsNarrowing) narrowTools(event, pinnedPermissions(pin, agent, pin.planSet.permissions))
   applySystemOrder(event, pin.planSet.orders.get(agent))
   if (pin.planSet.needsNarrowing) return describeChecks(ctx, event)
   return Effect.void

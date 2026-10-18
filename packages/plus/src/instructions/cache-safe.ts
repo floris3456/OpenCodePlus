@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import { Session } from "@opencode/schema/session"
-import { Effect } from "effect"
+import { Effect, Option, Schema } from "effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionContext } from "@opencode/plugin/effect/session"
+import type { StorageDomain } from "@opencode/plugin/effect/storage"
 import type { PermissionTable } from "./permission-enforce.js"
 import type { BasePlan, InstructionPlan, ToolPlan } from "./apply.js"
 import { derive, slice } from "./sections.js"
@@ -61,16 +62,161 @@ export interface SessionPin {
   planSet: PlanSet
   pinnedSystem0: Map<string, string>
   pinnedRoles: Map<string, string>
+  /** Per agent: every permission-table answer its tool narrowing read (pinnedPermissions). */
+  permissionAnswers: Map<string, Map<string, unknown>>
+  /** New with each plan set the pin takes: a stored agent part from another epoch is stale. */
+  epoch: string
   lastNoteHash?: string
   lastRequestAt: number
   rebuildNeeded?: boolean
 }
 
+// A chat's pin is also stored (Plus's plugin storage: core's KV table), so a restart or a
+// re-activation of Plus keeps sending what the chat was sent before. Without it the next
+// request pinned the current files: one file edited meanwhile rewrote the system prompt,
+// and the provider cache missed from the tools on.
+const RECORD_PREFIX = "session-pin/"
+const recordKey = (sessionID: string) => `${RECORD_PREFIX}${sessionID}`
+const agentKey = (sessionID: string, agent: string) => `session-pin-agent/${sessionID}/${agent}`
+/** A stored pin idle this long is past every cache lifetime: its chat re-pins anyway. */
+const PIN_RETENTION_MS = 24 * 60 * 60 * 1000
+const SWEEP_INTERVAL_MS = 60 * 60 * 1000
+let sweptAt = 0
+
+const StoredRecord = Schema.Struct({
+  version: Schema.Literal(1),
+  epoch: Schema.String,
+  model: Schema.Struct({ providerID: Schema.String, id: Schema.String, variant: Schema.optional(Schema.String) }),
+  lastRequestAt: Schema.Number,
+  lastNoteHash: Schema.optional(Schema.String),
+  rebuildNeeded: Schema.optional(Schema.Boolean),
+  /** Every agent with a stored part, any epoch: what removing the pin removes. */
+  agents: Schema.Array(Schema.String),
+})
+
+// One agent's share of the pinned plan set, with the system prompt and the
+// permission answers it was sent with.
+const StoredAgent = Schema.Struct({
+  epoch: Schema.String,
+  system0: Schema.optional(Schema.String),
+  role: Schema.String,
+  base: Schema.Array(Schema.Struct({ agent: Schema.String, template: Schema.String, text: Schema.String, upstream: Schema.String })),
+  native: Schema.Array(
+    Schema.Struct({
+      agent: Schema.String,
+      tool: Schema.String,
+      enabled: Schema.Boolean,
+      text: Schema.String,
+      codemode: Schema.optional(Schema.Boolean),
+      catalogPath: Schema.optional(Schema.String),
+      pinned: Schema.optional(Schema.Boolean),
+      params: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean, text: Schema.String }))),
+    }),
+  ),
+  instructions: Schema.Array(
+    Schema.Struct({
+      agent: Schema.String,
+      path: Schema.String,
+      text: Schema.String,
+      enabled: Schema.Boolean,
+      models: Schema.optional(Schema.Array(Schema.String)),
+    }),
+  ),
+  scrub: Schema.Array(Schema.String),
+  order: Schema.optional(Schema.Array(Schema.String)),
+  custom: Schema.Boolean,
+  narrowing: Schema.Boolean,
+  permissionAnswers: Schema.Array(Schema.Tuple([Schema.String, Schema.Unknown])),
+})
+
+type StoredRecord = Schema.Schema.Type<typeof StoredRecord>
+type StoredAgent = Schema.Schema.Type<typeof StoredAgent>
+const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(StoredRecord))
+const decodeAgent = Schema.decodeUnknownOption(Schema.fromJsonString(StoredAgent))
+
+/** What was last stored for a chat, to write only what changed. */
+interface Written {
+  record?: string
+  readonly agents: Set<string>
+  readonly parts: Map<string, PartMark>
+}
+
+interface PartMark {
+  readonly planSet: PlanSet
+  readonly epoch: string
+  readonly system0: string | undefined
+  readonly answers: number
+}
+
 export class SessionPinManager {
   private readonly pins = new Map<string, SessionPin>()
+  private readonly written = new Map<string, Written>()
+  private readonly store: StorageDomain | undefined
+
+  /** Without a store, pins live only as long as this manager. */
+  constructor(store?: StorageDomain) {
+    this.store = store
+  }
 
   getPin(sessionID: string): SessionPin | undefined {
     return this.pins.get(sessionID)
+  }
+
+  /** The chat's pin in memory, else the one stored before a restart or a re-activation. */
+  load(sessionID: string, current: PlanSet): Effect.Effect<SessionPin | undefined> {
+    const pin = this.pins.get(sessionID)
+    const store = this.store
+    if (pin !== undefined || store === undefined) return Effect.succeed(pin)
+    return restorePin(store, sessionID, current).pipe(
+      Effect.map((restored) => {
+        if (restored === undefined) return undefined
+        const raced = this.pins.get(sessionID)
+        if (raced !== undefined) return raced
+        this.pins.set(sessionID, restored.pin)
+        this.written.set(sessionID, restored.written)
+        return restored.pin
+      }),
+      Effect.catchCause((cause) =>
+        Effect.as(Effect.logWarning("plus could not restore a chat's pinned prompt", { sessionID, cause }), undefined),
+      ),
+    )
+  }
+
+  /** Stores what changed since the last write: this agent's part, then the record. */
+  save(pin: SessionPin, agent?: string): Effect.Effect<void> {
+    const store = this.store
+    if (store === undefined) return Effect.void
+    return Effect.suspend(() => {
+      const written = this.written.get(pin.sessionID) ?? { agents: new Set<string>(), parts: new Map<string, PartMark>() }
+      this.written.set(pin.sessionID, written)
+      const mark = agent === undefined ? undefined : markOf(pin, agent)
+      const last = agent === undefined ? undefined : written.parts.get(agent)
+      const part = agent !== undefined && mark !== undefined && !sameMark(last, mark) ? agent : undefined
+      const agents = part === undefined ? written.agents : new Set([...written.agents, part])
+      const record = JSON.stringify(recordOf(pin, agents))
+      const writes = [
+        ...(part === undefined ? [] : [[agentKey(pin.sessionID, part), JSON.stringify(agentPart(pin, part))] as const]),
+        ...(record === written.record ? [] : [[recordKey(pin.sessionID), record] as const]),
+      ]
+      const now = Date.now()
+      const sweep = now - sweptAt > SWEEP_INTERVAL_MS
+      if (sweep) sweptAt = now
+      return Effect.forEach(writes, ([key, value]) => store.set(key, value), { discard: true }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            written.record = record
+            if (part === undefined || mark === undefined) return
+            written.agents.add(part)
+            written.parts.set(part, mark)
+          }),
+        ),
+        Effect.andThen(sweep ? Effect.forkDetach(sweepStoredPins(store, now)) : Effect.void),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("plus could not store a chat's pinned prompt", { sessionID: pin.sessionID, cause }),
+        ),
+        Effect.asVoid,
+      )
+    })
   }
 
   pinSession(
@@ -88,6 +234,8 @@ export class SessionPinManager {
       planSet,
       pinnedSystem0: new Map(),
       pinnedRoles: new Map(),
+      permissionAnswers: new Map(),
+      epoch: randomUUID(),
       lastRequestAt: Date.now(),
     }
     this.pins.set(sessionID, pin)
@@ -111,24 +259,206 @@ export class SessionPinManager {
     existing.planSet = planSet
     existing.pinnedSystem0.clear()
     existing.pinnedRoles.clear()
+    existing.permissionAnswers = new Map()
+    existing.epoch = randomUUID()
     delete existing.lastNoteHash
     delete existing.rebuildNeeded
     existing.lastRequestAt = Date.now()
     return existing
   }
 
-  markRebuild(sessionID: string): void {
-    const pin = this.pins.get(sessionID)
-    if (pin !== undefined) pin.rebuildNeeded = true
+  /** The chat's next request pins the current plan set; kept across a restart too. */
+  markRebuild(sessionID: string): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const pin = this.pins.get(sessionID)
+      if (pin !== undefined) {
+        pin.rebuildNeeded = true
+        return this.save(pin)
+      }
+      if (this.store === undefined) return Effect.void
+      return markStoredRebuild(this.store, sessionID).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus could not mark a stored chat pin for rebuild", { sessionID, cause })),
+      )
+    })
   }
 
-  dropPin(sessionID: string): void {
-    this.pins.delete(sessionID)
+  dropPin(sessionID: string): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      const agents = this.written.get(sessionID)?.agents
+      this.pins.delete(sessionID)
+      this.written.delete(sessionID)
+      if (this.store === undefined) return Effect.void
+      return removeStored(this.store, sessionID, agents).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("plus could not remove a chat's pinned prompt", { sessionID, cause })),
+      )
+    })
   }
 
+  /** Forgets the pins in memory only: a later Plus instance restores them from the store. */
   clear(): void {
     this.pins.clear()
+    this.written.clear()
   }
+}
+
+/**
+ * The permission table a pin's tool narrowing reads. Each answer is kept on the pin
+ * and stored with it, so the narrowed tools stay as first sent; after a restart only
+ * a question never asked before reaches the current table.
+ */
+export function pinnedPermissions(pin: SessionPin, agent: string, table: PermissionTable): PermissionTable {
+  const answers = pin.permissionAnswers.get(agent) ?? new Map<string, unknown>()
+  pin.permissionAnswers.set(agent, answers)
+  const remember = <A>(read: () => A, ...question: readonly string[]): A => {
+    const key = JSON.stringify(question)
+    // A stored answer of "none" comes back as null.
+    if (answers.has(key)) return (answers.get(key) ?? undefined) as A
+    const answer = read()
+    answers.set(key, answer)
+    return answer
+  }
+  return {
+    rows: (target) => remember(() => table.rows(target), "rows", target),
+    toolRows: (target, tool) => remember(() => table.toolRows(target, tool), "toolRows", target, tool),
+    ruleRows: (target, tool) => remember(() => table.ruleRows(target, tool), "ruleRows", target, tool),
+    teamMembers: table.teamMembers,
+    describe: (target) => remember(() => table.describe(target), "describe", target),
+  }
+}
+
+const restorePin = Effect.fnUntraced(function* (store: StorageDomain, sessionID: string, current: PlanSet) {
+  const record = Option.getOrUndefined(decodeRecord(yield* store.get(recordKey(sessionID))))
+  if (record === undefined) return undefined
+  const stored = yield* Effect.forEach(record.agents, (agent) =>
+    store.get(agentKey(sessionID, agent)).pipe(Effect.map((value) => [agent, Option.getOrUndefined(decodeAgent(value))] as const)),
+  )
+  const parts = new Map(
+    stored.flatMap(([agent, part]) => (part === undefined || part.epoch !== record.epoch ? [] : [[agent, part] as const])),
+  )
+  const pin: SessionPin = {
+    sessionID,
+    model: {
+      providerID: record.model.providerID,
+      id: record.model.id,
+      ...(record.model.variant === undefined ? {} : { variant: record.model.variant }),
+    },
+    planSet: restoredPlanSet(current, parts),
+    pinnedSystem0: new Map([...parts].flatMap(([agent, part]) => (part.system0 === undefined ? [] : [[agent, part.system0] as const]))),
+    pinnedRoles: new Map([...parts].map(([agent, part]) => [agent, part.role] as const)),
+    permissionAnswers: new Map([...parts].map(([agent, part]) => [agent, new Map(part.permissionAnswers)] as const)),
+    epoch: record.epoch,
+    ...(record.lastNoteHash === undefined ? {} : { lastNoteHash: record.lastNoteHash }),
+    lastRequestAt: record.lastRequestAt,
+    ...(record.rebuildNeeded === true ? { rebuildNeeded: true } : {}),
+  }
+  const written: Written = {
+    agents: new Set(record.agents),
+    parts: new Map([...parts.keys()].map((agent) => [agent, markOf(pin, agent)] as const)),
+  }
+  return { pin, written }
+})
+
+// The stored agents' plans in place of their current ones; any other agent the
+// chat switches to starts from the current plan set, as a first use would.
+function restoredPlanSet(current: PlanSet, parts: ReadonlyMap<string, StoredAgent>): PlanSet {
+  const others = <T extends { readonly agent: string }>(plans: readonly T[]) => plans.filter((plan) => !parts.has(plan.agent))
+  const stored = [...parts]
+  return createPlanSet({
+    roles: new Map([
+      ...[...current.roles].filter(([agent]) => !parts.has(agent)),
+      ...stored.flatMap(([agent, part]) => (part.role === "" ? [] : [[agent, part.role] as const])),
+    ]),
+    base: [...others(current.base), ...stored.flatMap(([, part]) => part.base)],
+    native: [...others(current.native), ...stored.flatMap(([, part]) => part.native)],
+    instructions: [...others(current.instructions), ...stored.flatMap(([, part]) => part.instructions)],
+    scrubByAgent: new Map([...current.scrubByAgent, ...stored.map(([agent, part]) => [agent, part.scrub] as const)]),
+    // One flag for every agent, as on the pin it was stored from.
+    needsNarrowing: stored.length === 0 ? current.needsNarrowing : stored.some(([, part]) => part.narrowing),
+    permissions: current.permissions,
+    customByAgent: new Set([
+      ...[...current.customByAgent].filter((agent) => !parts.has(agent)),
+      ...stored.flatMap(([agent, part]) => (part.custom ? [agent] : [])),
+    ]),
+    orders: new Map([
+      ...[...current.orders].filter(([agent]) => !parts.has(agent)),
+      ...stored.flatMap(([agent, part]) => (part.order === undefined ? [] : [[agent, part.order] as const])),
+    ]),
+  })
+}
+
+function agentPart(pin: SessionPin, agent: string): StoredAgent {
+  const own = <T extends { readonly agent: string }>(plans: readonly T[]) => plans.filter((plan) => plan.agent === agent)
+  const system0 = pin.pinnedSystem0.get(agent)
+  const order = pin.planSet.orders.get(agent)
+  return {
+    epoch: pin.epoch,
+    ...(system0 === undefined ? {} : { system0 }),
+    role: pin.planSet.roles.get(agent) ?? "",
+    base: own(pin.planSet.base),
+    native: own(pin.planSet.native),
+    instructions: own(pin.planSet.instructions),
+    scrub: pin.planSet.scrubByAgent.get(agent) ?? [],
+    ...(order === undefined ? {} : { order }),
+    custom: pin.planSet.customByAgent.has(agent),
+    narrowing: pin.planSet.needsNarrowing,
+    permissionAnswers: [...(pin.permissionAnswers.get(agent) ?? [])].map(([key, answer]) => [key, answer ?? null] as const),
+  }
+}
+
+function recordOf(pin: SessionPin, agents: ReadonlySet<string>): StoredRecord {
+  return {
+    version: 1,
+    epoch: pin.epoch,
+    model: pin.model,
+    lastRequestAt: pin.lastRequestAt,
+    ...(pin.lastNoteHash === undefined ? {} : { lastNoteHash: pin.lastNoteHash }),
+    ...(pin.rebuildNeeded === true ? { rebuildNeeded: true } : {}),
+    agents: [...agents],
+  }
+}
+
+function markOf(pin: SessionPin, agent: string): PartMark {
+  return {
+    planSet: pin.planSet,
+    epoch: pin.epoch,
+    system0: pin.pinnedSystem0.get(agent),
+    answers: pin.permissionAnswers.get(agent)?.size ?? 0,
+  }
+}
+
+function sameMark(a: PartMark | undefined, b: PartMark): boolean {
+  return a !== undefined && a.planSet === b.planSet && a.epoch === b.epoch && a.system0 === b.system0 && a.answers === b.answers
+}
+
+const markStoredRebuild = Effect.fnUntraced(function* (store: StorageDomain, sessionID: string) {
+  const record = Option.getOrUndefined(decodeRecord(yield* store.get(recordKey(sessionID))))
+  if (record === undefined || record.rebuildNeeded === true) return
+  yield* store.set(recordKey(sessionID), JSON.stringify({ ...record, rebuildNeeded: true }))
+})
+
+const removeStored = Effect.fnUntraced(function* (store: StorageDomain, sessionID: string, known?: ReadonlySet<string>) {
+  const agents = known ?? Option.getOrUndefined(decodeRecord(yield* store.get(recordKey(sessionID))))?.agents ?? []
+  yield* Effect.forEach(agents, (agent) => store.remove(agentKey(sessionID, agent)), { discard: true })
+  yield* store.remove(recordKey(sessionID))
+})
+
+// Drops stored pins idle past every cache lifetime. A record this version cannot
+// read (a newer release's) is left alone.
+export function sweepStoredPins(store: StorageDomain, now: number, after?: string): Effect.Effect<void> {
+  return store.scan({ prefix: RECORD_PREFIX, limit: 500, ...(after === undefined ? {} : { after }) }).pipe(
+    Effect.flatMap((page) =>
+      Effect.forEach(
+        page.entries,
+        (entry) => {
+          const record = Option.getOrUndefined(decodeRecord(entry.value))
+          if (record === undefined || now - record.lastRequestAt < PIN_RETENTION_MS) return Effect.void
+          return removeStored(store, entry.key.slice(RECORD_PREFIX.length), new Set(record.agents))
+        },
+        { discard: true },
+      ).pipe(Effect.andThen(page.next === undefined ? Effect.void : sweepStoredPins(store, now, page.next))),
+    ),
+    Effect.catchCause((cause) => Effect.logWarning("plus could not sweep stored chat pins", { cause })),
+  )
 }
 
 export const sessionPins = new SessionPinManager()
@@ -342,9 +672,10 @@ export const handlePromptBoundary = Effect.fnUntraced(function* (
   sessionID: string,
 ) {
   const pinManager = state.sessionPins ?? sessionPins
-  const pin = pinManager.getPin(sessionID)
   const current = state.currentPlanSet
-  if (pin === undefined || current === undefined) return
+  if (current === undefined) return
+  const pin = yield* pinManager.load(sessionID, current)
+  if (pin === undefined) return
 
   const now = Date.now()
   const lifetime = cacheLifetime({ provider: pin.model.providerID, model: pin.model.id } as unknown as RequestRow)
