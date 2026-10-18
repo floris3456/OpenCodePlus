@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { FileSystem } from "../filesystem.js"
-import { DecodeError, ResizerUnavailableError, SizeError, type Limits } from "../image.js"
+import { DecodeError, fitSize, ResizerUnavailableError, SizeError, type Limits } from "../image.js"
 
 const JPEG_QUALITIES = [80, 85, 70, 55, 40]
 
@@ -44,7 +44,8 @@ export const make = Effect.gen(function* () {
       const width = decoded.get_width()
       const height = decoded.get_height()
       const bytes = Buffer.byteLength(content.content, "utf-8")
-      if (width <= limits.maxWidth && height <= limits.maxHeight && bytes <= limits.maxBase64Bytes) return content
+      const fitted = fitSize(width, height, limits)
+      if (fitted.width === width && fitted.height === height && bytes <= limits.maxBase64Bytes) return content
       if (!limits.autoResize)
         return yield* new SizeError({
           resource,
@@ -55,12 +56,8 @@ export const make = Effect.gen(function* () {
           maxHeight: limits.maxHeight,
           maxBytes: limits.maxBase64Bytes,
         })
-      const scale = Math.min(1, limits.maxWidth / width, limits.maxHeight / height)
       const sizes = Array.from({ length: 32 }).reduce<Array<{ width: number; height: number }>>((acc) => {
-        const previous = acc.at(-1) ?? {
-          width: Math.max(1, Math.round(width * scale)),
-          height: Math.max(1, Math.round(height * scale)),
-        }
+        const previous = acc.at(-1) ?? fitted
         const next =
           acc.length === 0
             ? previous

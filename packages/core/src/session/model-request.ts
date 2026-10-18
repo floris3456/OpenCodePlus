@@ -45,10 +45,10 @@ import { toLLMMessages } from "./runner/to-llm-message.js"
 import { Instructions } from "../instructions/index.js"
 import type { SessionMessage } from "./message.js"
 
-const IMAGE_BYTES_TRIGGER = 25 * 1024 * 1024 // 25 MiB
-const IMAGE_BYTES_TARGET = 15 * 1024 * 1024 // 15 MiB
-const IMAGE_REMOVED =
-  "[This image was removed to reduce the request size and is no longer visible. Do not make claims about its contents from memory. If needed, retrieve it again with an available tool or ask the user to attach it again.]"
+// Inline images one request may carry: under Anthropic's 32 MB request limit, with room for the text.
+const IMAGE_BYTES_BUDGET = 25 * 1024 * 1024
+// From this share of the budget, every attached image tells the model how full the chat is.
+const IMAGE_WARNING_SHARE = 0.8
 const GENERATION_KEYS = new Set(Object.keys(GenerationOptions.fields))
 // Used when the catalog has no output limit for the model.
 const OUTPUT_TOKEN_FALLBACK = 32_000
@@ -222,45 +222,74 @@ export const unsupportedParts = (
   provider?: string,
 ) => replaceMedia(messages, (media) => unsupportedMedia(media.mime, media.name, capabilities, provider))
 
-/**
- * Replaces the oldest images once the kept ones pass the trigger, down to the target. The images are walked in
- * the order the history gained them, so each cut depends only on the images before it: a newer image never moves
- * an earlier cut, and the sent prefix changes once per batch of about trigger minus target bytes instead of on
- * every image read after the trigger, which would write the provider's prompt cache again each time.
- */
-export const boundImages = (messages: LLMRequest["messages"]) => {
-  const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
-  const sizes = messages.flatMap((message) =>
-    message.content.flatMap((part) => {
-      if (part.type === "media") return isImage(part.media.mediaType) ? [mediaBytes(part.media)] : []
-      if (part.type !== "tool-result" || part.result.type !== "content") return []
-      return part.result.value.flatMap((item: Content) =>
-        item.type === "file" && isImage(item.mime) ? [Buffer.byteLength(item.uri)] : [],
-      )
-    }),
-  )
-  // The removed images are always the oldest ones, so the cut is a count.
-  const cut = sizes.reduce(
-    (state, bytes, index) => {
-      const kept = state.kept + bytes
-      if (kept <= IMAGE_BYTES_TRIGGER) return { kept, oldest: state.oldest }
-      return sizes
-        .slice(state.oldest, index + 1)
-        .reduce(
-          (next, size) => (next.kept > IMAGE_BYTES_TARGET ? { kept: next.kept - size, oldest: next.oldest + 1 } : next),
-          { kept, oldest: state.oldest },
-        )
-    },
-    { kept: 0, oldest: 0 },
-  ).oldest
-  if (cut === 0) return messages
-
-  let index = 0
-  return replaceMedia(messages, (media) => {
-    if (!isImage(media.mime)) return
-    return index++ < cut ? IMAGE_REMOVED : undefined
-  })
+/** What one request may carry in inline images; `count` only where the provider documents a limit. */
+export interface ImageLimits {
+  readonly bytes: number
+  readonly count?: number
 }
+
+export const DEFAULT_IMAGE_LIMITS: ImageLimits = { bytes: IMAGE_BYTES_BUDGET }
+
+/** Anthropic: 600 images a request, 100 on 200k-context models; OpenAI Responses: 500. */
+export const imageLimits = (model: Pick<SessionRunnerModel.Resolved, "model" | "limit">): ImageLimits => {
+  const protocol = model.model.route.protocol
+  if (protocol === "anthropic-messages")
+    return { bytes: IMAGE_BYTES_BUDGET, count: model.limit.context > 0 && model.limit.context <= 200_000 ? 100 : 600 }
+  if (protocol === "openai-responses") return { bytes: IMAGE_BYTES_BUDGET, count: 500 }
+  return DEFAULT_IMAGE_LIMITS
+}
+
+/**
+ * Never changes an image once it was sent, so the provider's prompt cache stays valid. Images are attached in the
+ * order the history gained them while they fit the limits; the first one that would not fit, and every image after
+ * it, is replaced where it arrives by a note telling the model so, until compaction starts a new history. From 80%
+ * of the limits each attached image is followed by a note saying how full the chat is. Every decision depends only
+ * on the images before it, so a request repeats the previous one's history exactly and only adds to it.
+ */
+export const boundImages = (messages: LLMRequest["messages"], limits: ImageLimits = DEFAULT_IMAGE_LIMITS) => {
+  const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
+  const state = { bytes: 0, count: 0, full: false }
+  const place = (name: string | undefined, bytes: number): { keep: boolean; note?: string } => {
+    if (!state.full && state.bytes + bytes <= limits.bytes && (limits.count === undefined || state.count < limits.count)) {
+      state.bytes += bytes
+      state.count += 1
+      const share = Math.max(state.bytes / limits.bytes, limits.count === undefined ? 0 : state.count / limits.count)
+      return share < IMAGE_WARNING_SHARE ? { keep: true } : { keep: true, note: imagesFilling(state, limits, share) }
+    }
+    state.full = true
+    return { keep: false, note: imageWithheld(name, state, limits) }
+  }
+  const shaped = messages.map((message) => {
+    const content = message.content.flatMap((part) => {
+      if (part.type === "media") {
+        if (!isImage(part.media.mediaType)) return [part]
+        const placed = place(part.filename, mediaBytes(part.media))
+        return [...(placed.keep ? [part] : []), ...(placed.note === undefined ? [] : [Message.text(placed.note)])]
+      }
+      if (part.type !== "tool-result" || part.result.type !== "content") return [part]
+      const result = part.result
+      const value = result.value.flatMap((item): Content[] => {
+        if (item.type !== "file" || !isImage(item.mime)) return [item]
+        const placed = place(item.name, Buffer.byteLength(item.uri))
+        return [...(placed.keep ? [item] : []), ...(placed.note === undefined ? [] : [{ type: "text" as const, text: placed.note }])]
+      })
+      return sameItems(value, result.value) ? [part] : [{ ...part, result: { ...result, value } }]
+    })
+    return sameItems(content, message.content) ? message : new Message({ ...message, content })
+  })
+  return sameItems(shaped, messages) ? messages : shaped
+}
+
+const sameItems = <T,>(next: ReadonlyArray<T>, previous: ReadonlyArray<T>) =>
+  next.length === previous.length && next.every((item, index) => item === previous[index])
+
+const megabytes = (bytes: number) => (bytes / 1024 / 1024).toFixed(1)
+
+const imagesFilling = (state: { bytes: number; count: number }, limits: ImageLimits, share: number) =>
+  `[Images in this chat: ${Math.floor(share * 100)}% of what one request may carry (${megabytes(state.bytes)} of ${megabytes(limits.bytes)} MB${limits.count === undefined ? "" : `, ${state.count} of ${limits.count} images`}). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]`
+
+const imageWithheld = (name: string | undefined, state: { bytes: number; count: number }, limits: ImageLimits) =>
+  `[Image not attached${name === undefined ? "" : `: ${name}`}. This chat already carries the most images one request may hold (${state.count}${limits.count === undefined ? "" : ` of ${limits.count}`} images, ${megabytes(state.bytes)} of ${megabytes(limits.bytes)} MB). The earlier images are still attached. New images stay unattached until the chat is compacted (/compact).]`
 
 const decodeHookMessage = Schema.decodeUnknownOption(Message)
 
@@ -405,7 +434,7 @@ export const layer = Layer.effect(
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         system: shaped.system,
-        messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
+        messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider), imageLimits(model)),
         tools: [...Array.from(hooked, ([name, t]) => ({ ...t, name })), ...placeholders],
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,

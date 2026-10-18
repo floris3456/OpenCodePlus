@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { Message, ToolResultPart, Media } from "@opencode/ai"
-import { OpenAIChat } from "@opencode/ai/protocols"
+import { AnthropicMessages, OpenAIChat, OpenAIResponses } from "@opencode/ai/protocols"
 import { Agent } from "@opencode/schema/agent"
 import { Money } from "@opencode/schema/money"
 import { Session } from "@opencode/schema/session"
 import { Location } from "@opencode/core/location"
 import { Project } from "@opencode/core/project"
 import { AbsolutePath } from "@opencode/core/schema"
-import { boundImages, SessionModelRequest, unsupportedParts } from "@opencode/core/session/model-request"
+import { boundImages, imageLimits, SessionModelRequest, unsupportedParts } from "@opencode/core/session/model-request"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { DateTime, Effect } from "effect"
@@ -192,73 +192,74 @@ describe("SessionModelRequest.unsupportedParts", () => {
 })
 
 describe("SessionModelRequest.boundImages", () => {
-  test("preserves images below the trigger", () => {
+  const read = (index: number, mebibytes: number) =>
+    Message.tool(
+      ToolResultPart.make({
+        id: `call_${index}`,
+        name: "read",
+        result: {
+          type: "content",
+          value: [
+            { type: "text", text: "Image read successfully" },
+            {
+              type: "file",
+              uri: `data:image/png;base64,${"a".repeat(mebibytes * 1024 * 1024)}`,
+              mime: "image/png",
+              name: `${index}.png`,
+            },
+          ],
+        },
+      }),
+    )
+  /** Per message: "image", "warned" (attached, with a fill note) or "withheld" (a note instead of the image). */
+  const outcome = (messages: ReturnType<typeof boundImages>) =>
+    messages.map((message) => {
+      const part = message.content[0]
+      if (part?.type !== "tool-result" || part.result.type !== "content") return "other"
+      const items = part.result.value
+      if (items.some((item) => item.type === "text" && item.text.startsWith("[Image not attached: "))) return "withheld"
+      if (items.some((item) => item.type === "text" && item.text.startsWith("[Images in this chat: "))) return "warned"
+      return items.some((item) => item.type === "file") ? "image" : "other"
+    })
+
+  test("preserves images below the limit", () => {
     const messages = [Message.user({ type: "media", media: Media.base64("aGVsbG8=", "image/png") })]
     expect(boundImages(messages)).toBe(messages)
   })
 
-  test("replaces oldest images until the retained payload reaches the target", () => {
-    const image = "a".repeat(9 * 1024 * 1024)
-    const text = Message.user("plain")
-    const third = Message.user({ type: "media", media: Media.base64(image, "image/png"), filename: "third.png" })
-    const messages = [
-      Message.user({ type: "media", media: Media.base64(image, "image/png"), filename: "first.png" }),
-      text,
-      Message.user({ type: "media", media: Media.base64(image, "image/png"), filename: "second.png" }),
-      third,
-    ]
-    const result = boundImages(messages)
-
-    expect(result[0]).toBeInstanceOf(Message)
-    expect(result[0]?.content).toEqual([Message.text(expect.stringContaining("image was removed"))])
-    expect(result[1]).toBe(text)
-    expect(result[2]).not.toBe(messages[2])
-    expect(result[2]?.content[0]).toMatchObject({ type: "text" })
-    expect(result[3]).toBe(third)
+  test("never changes an image already sent: each request repeats the previous one and only adds to it", () => {
+    // 4 MiB screenshots: five reach 80% of 25 MiB, six fit, the seventh does not.
+    const history = Array.from({ length: 9 }, (_, index) => read(index, 4))
+    const sent = Array.from({ length: history.length }, (_, length) => boundImages(history.slice(0, length + 1)))
+    sent.slice(1).forEach((request, index) => expect(request.slice(0, index + 1)).toEqual([...sent[index]!]))
+    expect(outcome(sent.at(-1)!)).toEqual(["image", "image", "image", "image", "warned", "warned", "withheld", "withheld", "withheld"])
+    // The earlier images are the very same messages, untouched.
+    sent.at(-1)!.slice(0, 4).forEach((message, index) => expect(message).toBe(history[index]))
   })
 
-  test("keeps earlier cuts when a newer image arrives, until the kept images pass the trigger again", () => {
-    // Seven 4 MiB screenshots pass 25 MiB at the seventh, which cuts the oldest four (down to 12 MiB kept).
-    const image = "a".repeat(4 * 1024 * 1024)
-    const read = (index: number) =>
-      Message.tool(
-        ToolResultPart.make({
-          id: `call_${index}`,
-          name: "read",
-          result: {
-            type: "content",
-            value: [
-              { type: "text", text: "Image read successfully" },
-              { type: "file", uri: `data:image/png;base64,${image}`, mime: "image/png", name: `${index}.png` },
-            ],
-          },
-        }),
-      )
-    const history = Array.from({ length: 11 }, (_, index) => read(index))
-    const removed = (messages: ReturnType<typeof boundImages>) =>
-      messages.flatMap((message, index) =>
-        message.content.some(
-          (part) =>
-            part.type === "tool-result" &&
-            part.result.type === "content" &&
-            part.result.value.some((item) => item.type === "text" && item.text.includes("image was removed")),
-        )
-          ? [index]
+  test("tells the model how full the chat is and why a new image is missing", () => {
+    const result = boundImages(Array.from({ length: 7 }, (_, index) => read(index, 4)))
+    const notes = result.flatMap((message) =>
+      message.content.flatMap((part) =>
+        part.type === "tool-result" && part.result.type === "content"
+          ? part.result.value.flatMap((item) => (item.type === "text" && item.text.startsWith("[") ? [item.text] : []))
           : [],
-      )
-
-    expect(removed(boundImages(history.slice(0, 7)))).toEqual([0, 1, 2, 3])
-    // Images 8 to 10 fit under the trigger again: the sent prefix stays byte-for-byte the same.
-    for (const length of [8, 9, 10]) {
-      const sent = boundImages(history.slice(0, length))
-      expect(removed(sent)).toEqual([0, 1, 2, 3])
-      expect(sent.slice(0, 7)).toEqual([...boundImages(history.slice(0, 7))])
-    }
-    // The eleventh passes 25 MiB again (28 MiB kept) and cuts the next batch at once, down to 12 MiB.
-    expect(removed(boundImages(history))).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+      ),
+    )
+    expect(notes).toEqual([
+      "[Images in this chat: 80% of what one request may carry (20.0 of 25.0 MB). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]",
+      "[Images in this chat: 96% of what one request may carry (24.0 of 25.0 MB). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]",
+      "[Image not attached: 6.png. This chat already carries the most images one request may hold (6 images, 24.0 of 25.0 MB). The earlier images are still attached. New images stay unattached until the chat is compacted (/compact).]",
+    ])
   })
 
-  test("replaces images nested in tool results", () => {
+  test("a provider's image count is a limit too", () => {
+    const history = Array.from({ length: 4 }, (_, index) => read(index, 0))
+    // 1 and 2 of 3 are under 80%; 3 of 3 is full and says so; the fourth is not attached.
+    expect(outcome(boundImages(history, { bytes: 25 * 1024 * 1024, count: 3 }))).toEqual(["image", "image", "warned", "withheld"])
+  })
+
+  test("withholds the image that does not fit inside a tool result, keeping the one before it", () => {
     const image = "a".repeat(13 * 1024 * 1024)
     const result = boundImages([
       Message.tool(
@@ -280,9 +281,25 @@ describe("SessionModelRequest.boundImages", () => {
       type: "tool-result",
       result: {
         type: "content",
-        value: [{ type: "text" }, { type: "file", name: "second.png" }],
+        value: [{ type: "file", name: "first.png" }, { type: "text", text: expect.stringContaining("Image not attached: second.png") }],
       },
     })
+  })
+
+  test("the image limits follow the provider's documented ones", () => {
+    const limits = (route: { model: (input: { id: string; provider: string }) => Parameters<typeof SessionRunnerModel.resolved>[0] }, context: number) =>
+      imageLimits(
+        SessionRunnerModel.resolved(route.model({ id: "model", provider: "test" }), {
+          capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+          cost: [],
+          limit: { context, output: 32_000 },
+        }),
+      )
+    const mib25 = 25 * 1024 * 1024
+    expect(limits(AnthropicMessages.route, 1_000_000)).toEqual({ bytes: mib25, count: 600 })
+    expect(limits(AnthropicMessages.route, 200_000)).toEqual({ bytes: mib25, count: 100 })
+    expect(limits(OpenAIResponses.route, 400_000)).toEqual({ bytes: mib25, count: 500 })
+    expect(limits(OpenAIChat.route, 128_000)).toEqual({ bytes: mib25 })
   })
 })
 
