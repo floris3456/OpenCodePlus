@@ -223,6 +223,51 @@ it.effect("compaction describes tool media without embedding base64", () =>
   }),
 )
 
+it.effect("auto compaction makes room when the images no longer fit one request", () =>
+  Effect.gen(function* () {
+    const hooks = yield* PluginHooks.Service
+    const compaction = yield* SessionCompaction.Service
+    const store = yield* SessionStore.Service
+    const triggers: unknown[] = []
+    yield* hooks.register("session", "model.observed", (event) => Effect.sync(() => { triggers.push(event.compaction?.trigger) }))
+    // 4 MiB screenshots: six fit the 25 MiB a request may carry, the seventh does not.
+    const screenshots = (count: number) =>
+      Schema.decodeUnknownSync(SessionMessage.Assistant)({
+        id: SessionMessage.ID.create(), type: "assistant", agent: Agent.defaultID,
+        model: { id: "summary-model", providerID: "test" },
+        content: Array.from({ length: count }, (_, index) => ({
+          type: "tool", id: `call_read_${index}`, name: "read",
+          state: { status: "completed", input: {}, content: [
+            { type: "text", text: "Image read successfully" },
+            { type: "file", mime: "image/png", name: `${index}.png`, uri: `data:image/png;base64,${String(index).repeat(4 * 1024 * 1024)}` },
+          ] },
+          time: { created: 0 },
+        })),
+        time: { created: 0, completed: 1 },
+      })
+    const session = yield* insertSession(Session.ID.make("ses_image_limit"))
+    requests = []
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, [screenshots(6)]) })).toEqual({ status: "skipped" })
+    expect(requests).toHaveLength(0)
+
+    const history = [screenshots(7)]
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, history) })).toEqual({ status: "completed" })
+    expect(triggers).toEqual(["image-limit"])
+    // The summary is written from the same images the chat would send, so it knows which one it never saw.
+    expect(JSON.stringify(requests[0]?.messages)).toContain("[Image not attached: 6.png.")
+    // Nothing arrived since, so the checkpoint does not compact again.
+    const checkpoints = yield* store.messages({ sessionID: session.id, order: "asc", type: "compaction" })
+    expect(yield* compaction.compact({ reason: "auto", context: loaded(session, [...history, ...checkpoints]) })).toEqual({ status: "skipped" })
+
+    // A compaction that fails lets the step go out with the newest image left out instead of failing it.
+    const failing = yield* insertSession(Session.ID.make("ses_image_limit_failed"))
+    const context = loaded(failing, history)
+    const agent = { ...context.agent, info: { ...context.agent.info, compaction: { model: { providerID: Provider.ID.make("missing"), id: Model.ID.make("summary") } } } }
+    expect(yield* compaction.compact({ reason: "auto", context: { ...context, agent } })).toEqual({ status: "skipped" })
+    expect(yield* store.messages({ sessionID: failing.id, order: "asc", type: "compaction" })).toMatchObject([{ status: "failed" }])
+  }),
+)
+
 it.effect("compaction truncation does not split surrogate pairs", () =>
   Effect.gen(function* () {
     const prefix = "a".repeat(1_249)

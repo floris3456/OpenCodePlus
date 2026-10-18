@@ -247,8 +247,8 @@ describe("SessionModelRequest.boundImages", () => {
       ),
     )
     expect(notes).toEqual([
-      "[Images in this chat: 96% of what one request may carry (24.0 of 25.0 MB). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]",
-      "[Image not attached: 6.png. This chat already carries the most images one request may hold (6 images, 24.0 of 25.0 MB). The earlier images are still attached. New images stay unattached until the chat is compacted (/compact).]",
+      "[Images in this chat: 96% of what one request may carry (24.0 of 25.0 MB). Images beyond 100% are only attached after the chat is compacted.]",
+      "[Image not attached: 6.png. The images already attached fill the 25.0 MB one request may carry (24.0 MB in 6 images). They stay attached. New images are attached again after the chat is compacted; load this image again then to see it.]",
     ])
   })
 
@@ -265,8 +265,21 @@ describe("SessionModelRequest.boundImages", () => {
 
   test("a provider's image count is a limit too", () => {
     const history = Array.from({ length: 4 }, (_, index) => read(index, 0))
-    // 1 and 2 of 3 are under 80%; 3 of 3 is full and says so; the fourth is not attached.
-    expect(outcome(boundImages(history, { bytes: 25 * 1024 * 1024, count: 3 }))).toEqual(["image", "image", "warned", "withheld"])
+    // 1 and 2 of 3 are under 90%; 3 of 3 is full and says so; the fourth is not attached.
+    const result = boundImages(history, { bytes: 25 * 1024 * 1024, count: 3 })
+    expect(outcome(result)).toEqual(["image", "image", "warned", "withheld"])
+    expect(JSON.stringify(result.at(-1))).toContain("[Image not attached: 3.png. The images already attached fill the 3 images one request may carry.")
+  })
+
+  test("imagesExceed is true exactly when boundImages leaves an image out", () => {
+    const cases = [
+      ...[5, 6, 7].map((length) => [Array.from({ length }, (_, index) => read(index, 4)), undefined] as const),
+      ...[3, 4].map((length) => [Array.from({ length }, (_, index) => read(index, 0)), { bytes: 25 * 1024 * 1024, count: 3 }] as const),
+    ]
+    cases.forEach(([history, limits]) =>
+      expect(SessionModelRequest.imagesExceed(history, limits)).toBe(outcome(boundImages(history, limits)).includes("withheld")),
+    )
+    expect(cases.map(([history, limits]) => SessionModelRequest.imagesExceed(history, limits))).toEqual([false, false, true, false, true])
   })
 
   test("withholds the image that does not fit inside a tool result, keeping the one before it", () => {

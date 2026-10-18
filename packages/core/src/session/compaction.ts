@@ -286,7 +286,10 @@ export const layer = Layer.effect(
         })
       // Plugins may request earlier compaction, but cannot override this preference.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
-      if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact) return { status: "skipped" }
+      // The next request would leave an image out, so compact first. Until agents can compact for themselves, this is
+      // what makes room; a failure only means the step goes out with the newest images left out.
+      const images = trigger.reason === "auto" && !decision.compact && !due(context, ceiling) && imagesFull(context)
+      if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact && !images) return { status: "skipped" }
       // Opaque windows cannot be sized locally. The first primary request measures the rebuilt
       // checkpoint. If it was already full, do not keep recompressing it after every small tool call.
       // Oversized legacy readable tails get one repair; genuine subsequent growth gets a new attempt.
@@ -348,7 +351,9 @@ export const layer = Layer.effect(
                 ? "handoff"
                 : due(context, ceiling)
                   ? "context-threshold"
-                  : "hook-request",
+                  : images
+                    ? "image-limit"
+                    : "hook-request",
         configuredStrategy,
         ...(decision.explanation?.threshold === undefined ? {} : { threshold: decision.explanation.threshold }),
         modelPolicy: context.model.compaction?.type,
@@ -386,10 +391,10 @@ export const layer = Layer.effect(
         })
       }
       // A failed compaction is recorded; an optional auto compaction then reports skipped so the runner
-      // sends its step uncompacted. Manual and overflow ignore `optional`.
+      // sends its step uncompacted. Manual and overflow ignore `optional`; an image-limit compaction is optional.
       const settle = (failure: Failure): Effect.Effect<Outcome> =>
         publish(trigger, failure).pipe(
-          Effect.map((outcome) => (decision.optional && trigger.reason === "auto" ? { status: "skipped" } : outcome)),
+          Effect.map((outcome) => ((decision.optional || images) && trigger.reason === "auto" ? { status: "skipped" } : outcome)),
         )
       let fallbackReason = observation.selectionReason
       if (native) {
@@ -1371,6 +1376,20 @@ export const recentUserMessages = (
 export const estimateContext = (context: SessionContext.Loaded) => {
   const prompt = estimatePrompt(context)
   return prompt.measured + prompt.estimated
+}
+
+/**
+ * The next request would leave an image out: its images exceed what one request may carry. Only when an image arrived
+ * since the last compaction, since compacting cannot shrink what that compaction kept, so it never repeats on its own.
+ */
+export const imagesFull = (context: SessionContext.Loaded) => {
+  const sendable = (messages: ReadonlyArray<SessionMessage.Info>) =>
+    SessionModelRequest.unsupportedParts(toLLMMessages(messages, context.model.ref), context.model.capabilities, context.model.model.provider)
+  const checkpoint = context.messages.findLastIndex((message) => message.type === "compaction" && message.status === "completed")
+  return (
+    SessionModelRequest.imageLoad(sendable(context.messages.slice(checkpoint + 1))).count > 0 &&
+    SessionModelRequest.imagesExceed(sendable(context.messages), SessionModelRequest.imageLimits(context.model))
+  )
 }
 
 /** Only projected assistant usage counts: maintenance and rebilled physical attempts are not history. */

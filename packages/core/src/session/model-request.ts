@@ -247,8 +247,8 @@ export const imageLimits = (model: Pick<SessionRunnerModel.Resolved, "model" | "
  * only on the images before it, so a request repeats the previous one's history exactly and only adds to it.
  */
 export const boundImages = (messages: LLMRequest["messages"], limits: ImageLimits = DEFAULT_IMAGE_LIMITS) => {
-  const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
-  const state = { bytes: 0, count: 0, warned: false, full: false }
+  // `full` names the limit the first image that did not fit ran into.
+  const state = { bytes: 0, count: 0, warned: false, full: undefined as "bytes" | "count" | undefined }
   const place = (name: string | undefined, bytes: number): { keep: boolean; note?: string } => {
     if (!state.full && state.bytes + bytes <= limits.bytes && (limits.count === undefined || state.count < limits.count)) {
       state.bytes += bytes
@@ -258,8 +258,8 @@ export const boundImages = (messages: LLMRequest["messages"], limits: ImageLimit
       state.warned = true
       return { keep: true, note: imagesFilling(state, limits, share) }
     }
-    state.full = true
-    return { keep: false, note: imageWithheld(name, state, limits) }
+    state.full ??= limits.count !== undefined && state.count >= limits.count ? "count" : "bytes"
+    return { keep: false, note: imageWithheld(name, { ...state, full: state.full }, limits) }
   }
   const shaped = messages.map((message) => {
     const content = message.content.flatMap((part) => {
@@ -282,16 +282,44 @@ export const boundImages = (messages: LLMRequest["messages"], limits: ImageLimit
   return sameItems(shaped, messages) ? messages : shaped
 }
 
+/** The inline images these messages carry, counted as `boundImages` counts them. */
+export const imageLoad = (messages: LLMRequest["messages"]) => {
+  const sizes = messages.flatMap((message) =>
+    message.content.flatMap((part) => {
+      if (part.type === "media") return isImage(part.media.mediaType) ? [mediaBytes(part.media)] : []
+      if (part.type !== "tool-result" || part.result.type !== "content") return []
+      return part.result.value.flatMap((item) => (item.type === "file" && isImage(item.mime) ? [Buffer.byteLength(item.uri)] : []))
+    }),
+  )
+  return { bytes: sizes.reduce((total, bytes) => total + bytes, 0), count: sizes.length }
+}
+
+/** Whether `boundImages` would leave an image out of these messages. */
+export const imagesExceed = (messages: LLMRequest["messages"], limits: ImageLimits = DEFAULT_IMAGE_LIMITS) => {
+  const load = imageLoad(messages)
+  return load.bytes > limits.bytes || (limits.count !== undefined && load.count > limits.count)
+}
+
+const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
+
 const sameItems = <T,>(next: ReadonlyArray<T>, previous: ReadonlyArray<T>) =>
   next.length === previous.length && next.every((item, index) => item === previous[index])
 
 const megabytes = (bytes: number) => (bytes / 1024 / 1024).toFixed(1)
 
 const imagesFilling = (state: { bytes: number; count: number }, limits: ImageLimits, share: number) =>
-  `[Images in this chat: ${Math.floor(share * 100)}% of what one request may carry (${megabytes(state.bytes)} of ${megabytes(limits.bytes)} MB${limits.count === undefined ? "" : `, ${state.count} of ${limits.count} images`}). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]`
+  `[Images in this chat: ${Math.floor(share * 100)}% of what one request may carry (${megabytes(state.bytes)} of ${megabytes(limits.bytes)} MB${limits.count === undefined ? "" : `, ${state.count} of ${limits.count} images`}). Images beyond 100% are only attached after the chat is compacted.]`
 
-const imageWithheld = (name: string | undefined, state: { bytes: number; count: number }, limits: ImageLimits) =>
-  `[Image not attached${name === undefined ? "" : `: ${name}`}. This chat already carries the most images one request may hold (${state.count}${limits.count === undefined ? "" : ` of ${limits.count}`} images, ${megabytes(state.bytes)} of ${megabytes(limits.bytes)} MB). The earlier images are still attached. New images stay unattached until the chat is compacted (/compact).]`
+const imageWithheld = (
+  name: string | undefined,
+  state: { bytes: number; count: number; full: "bytes" | "count" },
+  limits: ImageLimits,
+) =>
+  `[Image not attached${name === undefined ? "" : `: ${name}`}. ${
+    state.full === "count"
+      ? `The images already attached fill the ${limits.count} images one request may carry.`
+      : `The images already attached fill the ${megabytes(limits.bytes)} MB one request may carry (${megabytes(state.bytes)} MB in ${state.count} images).`
+  } They stay attached. New images are attached again after the chat is compacted; load this image again then to see it.]`
 
 const decodeHookMessage = Schema.decodeUnknownOption(Message)
 
