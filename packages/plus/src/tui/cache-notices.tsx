@@ -210,11 +210,17 @@ export function createCacheNotices(context: Plugin.Context, options: { readonly 
     }),
   ]
 
+  // The monitor's scope and filters sit at its top; while it is open the
+  // stack moves to the bottom corner so they stay readable.
+  const monitorOpen = () => {
+    const route = context.ui.router.current()
+    return context.ui.panel.current()?.name === "plus.monitor" || (route.type === "plugin" && route.name === "monitor")
+  }
   const disposeSlot = context.ui.slot({
     append: "app",
     render: () => (
       <Show when={visible().length > 0}>
-        <NoticeStack context={context} notices={visible} now={now} onOpen={openNotice} />
+        <NoticeStack context={context} notices={visible} now={now} bottom={monitorOpen()} onOpen={openNotice} />
       </Show>
     ),
   })
@@ -234,6 +240,7 @@ function NoticeStack(props: {
   readonly context: Plugin.Context
   readonly notices: () => readonly Plus.MonitorNotice[]
   readonly now: () => number
+  readonly bottom: boolean
   readonly onOpen: (notice: Plus.MonitorNotice) => void
 }) {
   const theme = () => props.context.theme
@@ -247,7 +254,14 @@ function NoticeStack(props: {
     return minutes === 0 ? "just now" : `${minutes} min ago`
   }
   return (
-    <box position="absolute" top={1} right={2} width={width()} flexDirection="column">
+    <box
+      position="absolute"
+      top={props.bottom ? "auto" : 1}
+      bottom={props.bottom ? 2 : "auto"}
+      right={2}
+      width={width()}
+      flexDirection="column"
+    >
       <For each={props.notices().slice(0, shown())}>
         {(notice) => (
           <box

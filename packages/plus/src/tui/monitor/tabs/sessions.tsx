@@ -44,12 +44,13 @@ export function SessionsTab(props: SessionsTabProps) {
     const hidden = !props.all && (list?.inactive ?? 0) > 0 ? ` · ${list!.inactive} inactive hidden` : ""
     const total = window.total
     const position = total === 0 ? "" : ` · row ${Math.min(props.selectedIndex, total - 1) + 1} of ${total}`
-    return `${props.all ? "All sessions" : "Active sessions"}${trees}${hidden}${position} · [S] ${props.all ? "active only" : "show inactive"}`
+    return `${props.all ? "All sessions" : "Active sessions"}${trees}${hidden}${position} · [S] ${props.all ? "active only" : "all"}`
   }
 
   // Drop whole columns when the terminal is narrow so labels never lose their
   // values; keep the session, state, steps, tokens and last activity always.
   const available = () => (props.width ?? dimensions().width) - 2
+  const nameWidth = () => (available() >= 88 ? 40 : 34)
   const showAgent = () => available() >= 122
   const showCost = () => available() >= 108
   const showHitRate = () => available() >= 98
@@ -63,7 +64,7 @@ export function SessionsTab(props: SessionsTabProps) {
         </text>
       </box>
       <box flexDirection="row" flexShrink={0} paddingLeft={1} paddingRight={1}>
-        <text fg={theme().text.muted} width={40} attributes={TextAttributes.BOLD}>
+        <text fg={theme().text.muted} width={nameWidth()} attributes={TextAttributes.BOLD}>
           Session / Role
         </text>
         <Show when={showAgent()}>
@@ -153,7 +154,7 @@ export function SessionsTab(props: SessionsTabProps) {
                   backgroundColor={bg()}
                   onMouseUp={() => props.onSelect(at())}
                 >
-                  <box width={40} flexDirection="row" flexShrink={0}>
+                  <box width={nameWidth()} flexDirection="row" flexShrink={0}>
                     <text fg={mark()} flexShrink={0} wrapMode="none">
                       {props.checked(s) ? "[x] " : "[ ] "}
                     </text>
