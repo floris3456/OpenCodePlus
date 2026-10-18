@@ -217,6 +217,47 @@ describe("SessionModelRequest.boundImages", () => {
     expect(result[3]).toBe(third)
   })
 
+  test("keeps earlier cuts when a newer image arrives, until the kept images pass the trigger again", () => {
+    // Seven 4 MiB screenshots pass 25 MiB at the seventh, which cuts the oldest four (down to 12 MiB kept).
+    const image = "a".repeat(4 * 1024 * 1024)
+    const read = (index: number) =>
+      Message.tool(
+        ToolResultPart.make({
+          id: `call_${index}`,
+          name: "read",
+          result: {
+            type: "content",
+            value: [
+              { type: "text", text: "Image read successfully" },
+              { type: "file", uri: `data:image/png;base64,${image}`, mime: "image/png", name: `${index}.png` },
+            ],
+          },
+        }),
+      )
+    const history = Array.from({ length: 11 }, (_, index) => read(index))
+    const removed = (messages: ReturnType<typeof boundImages>) =>
+      messages.flatMap((message, index) =>
+        message.content.some(
+          (part) =>
+            part.type === "tool-result" &&
+            part.result.type === "content" &&
+            part.result.value.some((item) => item.type === "text" && item.text.includes("image was removed")),
+        )
+          ? [index]
+          : [],
+      )
+
+    expect(removed(boundImages(history.slice(0, 7)))).toEqual([0, 1, 2, 3])
+    // Images 8 to 10 fit under the trigger again: the sent prefix stays byte-for-byte the same.
+    for (const length of [8, 9, 10]) {
+      const sent = boundImages(history.slice(0, length))
+      expect(removed(sent)).toEqual([0, 1, 2, 3])
+      expect(sent.slice(0, 7)).toEqual([...boundImages(history.slice(0, 7))])
+    }
+    // The eleventh passes 25 MiB again (28 MiB kept) and cuts the next batch at once, down to 12 MiB.
+    expect(removed(boundImages(history))).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+  })
+
   test("replaces images nested in tool results", () => {
     const image = "a".repeat(13 * 1024 * 1024)
     const result = boundImages([

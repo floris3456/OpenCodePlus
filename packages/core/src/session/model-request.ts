@@ -192,19 +192,19 @@ const mediaBytes = (media: Media.Asset) => {
 /** Replaces media with the returned text; messages without replacements are returned unchanged. */
 const replaceMedia = (
   messages: LLMRequest["messages"],
-  replace: (media: { mime: string; name: string | undefined; bytes: () => number }) => string | undefined,
+  replace: (media: { mime: string; name: string | undefined }) => string | undefined,
 ) =>
   messages.map((message) => {
     const content = message.content.map((part) => {
       if (part.type === "media") {
-        const text = replace({ mime: part.media.mediaType, name: part.filename, bytes: () => mediaBytes(part.media) })
+        const text = replace({ mime: part.media.mediaType, name: part.filename })
         return text === undefined ? part : Message.text(text)
       }
       if (part.type !== "tool-result" || part.result.type !== "content") return part
       const result = part.result
       const value = result.value.map((item): Content => {
         if (item.type !== "file") return item
-        const text = replace({ mime: item.mime, name: item.name, bytes: () => Buffer.byteLength(item.uri) })
+        const text = replace({ mime: item.mime, name: item.name })
         return text === undefined ? item : { type: "text", text }
       })
       return value.every((item, index) => item === result.value[index])
@@ -222,32 +222,43 @@ export const unsupportedParts = (
   provider?: string,
 ) => replaceMedia(messages, (media) => unsupportedMedia(media.mime, media.name, capabilities, provider))
 
+/**
+ * Replaces the oldest images once the kept ones pass the trigger, down to the target. The images are walked in
+ * the order the history gained them, so each cut depends only on the images before it: a newer image never moves
+ * an earlier cut, and the sent prefix changes once per batch of about trigger minus target bytes instead of on
+ * every image read after the trigger, which would write the provider's prompt cache again each time.
+ */
 export const boundImages = (messages: LLMRequest["messages"]) => {
   const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
-  const imageBytes = messages.reduce(
-    (total, message) =>
-      total +
-      message.content.reduce((sum, part) => {
-        if (part.type === "media" && isImage(part.media.mediaType)) return sum + mediaBytes(part.media)
-        if (part.type !== "tool-result" || part.result.type !== "content") return sum
-        return (
-          sum +
-          part.result.value.reduce(
-            (bytes: number, item: Content) =>
-              bytes + (item.type === "file" && isImage(item.mime) ? Buffer.byteLength(item.uri) : 0),
-            0,
-          )
-        )
-      }, 0),
-    0,
+  const sizes = messages.flatMap((message) =>
+    message.content.flatMap((part) => {
+      if (part.type === "media") return isImage(part.media.mediaType) ? [mediaBytes(part.media)] : []
+      if (part.type !== "tool-result" || part.result.type !== "content") return []
+      return part.result.value.flatMap((item: Content) =>
+        item.type === "file" && isImage(item.mime) ? [Buffer.byteLength(item.uri)] : [],
+      )
+    }),
   )
-  if (imageBytes <= IMAGE_BYTES_TRIGGER) return messages
+  // The removed images are always the oldest ones, so the cut is a count.
+  const cut = sizes.reduce(
+    (state, bytes, index) => {
+      const kept = state.kept + bytes
+      if (kept <= IMAGE_BYTES_TRIGGER) return { kept, oldest: state.oldest }
+      return sizes
+        .slice(state.oldest, index + 1)
+        .reduce(
+          (next, size) => (next.kept > IMAGE_BYTES_TARGET ? { kept: next.kept - size, oldest: next.oldest + 1 } : next),
+          { kept, oldest: state.oldest },
+        )
+    },
+    { kept: 0, oldest: 0 },
+  ).oldest
+  if (cut === 0) return messages
 
-  let removed = 0
+  let index = 0
   return replaceMedia(messages, (media) => {
-    if (!isImage(media.mime) || imageBytes - removed <= IMAGE_BYTES_TARGET) return
-    removed += media.bytes()
-    return IMAGE_REMOVED
+    if (!isImage(media.mime)) return
+    return index++ < cut ? IMAGE_REMOVED : undefined
   })
 }
 
