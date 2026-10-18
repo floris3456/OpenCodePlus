@@ -1,6 +1,7 @@
 export * as SessionGenerate from "./generate.js"
 
-import { GenerationOptions, LLMClient, LLMRequest, Message, type AIError, type Usage } from "@opencode/ai"
+import { CacheHint, GenerationOptions, LLMClient, LLMRequest, Message, type AIError, type Usage } from "@opencode/ai"
+import { markMessage } from "@opencode/ai/cache-policy"
 import type { Model } from "@opencode/schema/model"
 import type { FileSystem } from "../filesystem.js"
 import { Effect } from "effect"
@@ -73,14 +74,22 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
       durable: false,
     })
     // Run all primary content transforms first, then append the private prompt. Never
-    // bind the durable runner's stateful WebSocket to this throwaway response. The
-    // cache policy keeps the last history boundary marked so the provider caches the
-    // prefix just before the prompt; a real step after a pause then reads it, instead
-    // of only the previous turn's boundary.
+    // bind the durable runner's stateful WebSocket to this throwaway response.
+    // The only message breakpoint sits on the last history message the next real step
+    // shares at the same place, so that step reads what this request writes. Never on
+    // the prompt, which the step does not contain, nor on a trailing system update:
+    // Anthropic accepts a system message only after a user turn, so it moves behind the
+    // prompt here and behind the next user message in the step.
     // The output limit is not part of the cached prefix, so a pre-warm reads and writes the same cache.
+    const shared = prepared.request.messages.findLastIndex((message) => message.role !== "system")
     const request = LLMRequest.update(prepared.request, {
-      cache: { tools: true, system: true, messages: { tail: 2 } },
-      messages: [...prepared.request.messages, Message.user(input.prompt)],
+      cache: { tools: true, system: true },
+      messages: [
+        ...prepared.request.messages.map((message, index) =>
+          index === shared ? markMessage(message, new CacheHint({ type: "ephemeral" })) : message,
+        ),
+        Message.user(input.prompt),
+      ],
       ...(input.prewarm && prepared.request.model.route.supportsPrewarm?.(prepared.request)
         ? { generation: GenerationOptions.make({ ...prepared.request.generation, maxTokens: 0 }) }
         : {}),

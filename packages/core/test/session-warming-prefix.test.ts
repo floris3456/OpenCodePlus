@@ -1,6 +1,8 @@
 import { expect } from "bun:test"
 import { GenerationOptions, LanguageModel, Message, SystemPart, ToolDefinition, type LLMRequest } from "@opencode/ai"
 import { AnthropicMessages, OpenAIChat } from "@opencode/ai/protocols"
+import { Auth } from "@opencode/ai/route"
+import { compileRequest } from "@opencode/ai/route/client"
 import { TestLLM } from "@opencode/ai/testing"
 import { Agent } from "@opencode/core/agent"
 import { Bus } from "@opencode/core/bus"
@@ -50,8 +52,13 @@ class Fixture extends Context.Service<Fixture, { instruction: string }>()("test/
 const fixtureLayer = Layer.sync(Fixture, () => ({ instruction: "Initial instructions" }))
 const models = {
   openai: LanguageModel.make({ id: "warming-model", provider: "fake", route: OpenAIChat.route }),
-  // The Anthropic route accepts a zero-token pre-warm.
-  anthropic: LanguageModel.make({ id: "claude-opus-5-5", provider: "fake", route: AnthropicMessages.route }),
+  // The Anthropic route accepts a zero-token pre-warm, and on this model lowers a system update to a native system
+  // message, which it moves behind the next user message. Auth only lets the test compile its wire bodies.
+  anthropic: LanguageModel.make({
+    id: "claude-opus-5-5",
+    provider: "fake",
+    route: AnthropicMessages.route.with({ auth: Auth.header("x-api-key", "test") }),
+  }),
 }
 const selected = { model: models.openai }
 const scripted = TestLLM.layer({ fallback: [] })
@@ -139,6 +146,7 @@ const it = testEffect(
 )
 
 // Compare in wire-prefix order and name the first differing part, not just the whole request.
+// The ping's own breakpoint is not content: it is compared without it.
 function expectPrefix(ping: LLMRequest, primary: LLMRequest, prewarmed: boolean) {
   expect(ping.tools, "tools (first prefix section)").toEqual(primary.tools)
   expect(ping.system, "system parts").toEqual(primary.system)
@@ -146,7 +154,7 @@ function expectPrefix(ping: LLMRequest, primary: LLMRequest, prewarmed: boolean)
   const next = primary.messages.slice(0, -1)
   expect(history.length, "history message count").toBe(next.length)
   history.forEach((message, index) =>
-    expect(message, `history message ${index}: role, parts, metadata and text`).toEqual(next[index]),
+    expect(withoutCache(message), `history message ${index}: role, parts, metadata and text`).toEqual(next[index]),
   )
   expect(ping.messages.at(-1), "ping is appended after preparation").toEqual(Message.user("Keep this cache warm."))
   expect(primary.messages.at(-1)?.content).toEqual([Message.text("Primary: Continue with a new user message")])
@@ -157,7 +165,39 @@ function expectPrefix(ping: LLMRequest, primary: LLMRequest, prewarmed: boolean)
   else expect(ping.generation, "primary output budgeting").toEqual(primary.generation)
 }
 
-for (const scenario of ["plain", "compaction checkpoint", "instruction update", "anthropic pre-warm"] as const) {
+function withoutCache(message: Message) {
+  return Message.make({
+    ...message,
+    content: message.content.map((part) => ("cache" in part ? { ...part, cache: undefined } : part)),
+  })
+}
+
+function cached(message: Message) {
+  return message.content.some((part) => "cache" in part && part.cache !== undefined)
+}
+
+// Wire bodies without their breakpoints, which are not content.
+function unmarked(value: unknown) {
+  return JSON.parse(JSON.stringify(value, (key, entry) => (key === "cache_control" ? undefined : entry)))
+}
+
+interface AnthropicBody {
+  readonly messages: ReadonlyArray<{
+    readonly role: string
+    readonly content: ReadonlyArray<{ readonly cache_control?: unknown }>
+  }>
+}
+
+const scenarios = [
+  "plain",
+  "compaction checkpoint",
+  "instruction update",
+  "anthropic pre-warm",
+  "anthropic instruction update",
+] as const
+for (const scenario of scenarios) {
+  const anthropic = scenario === "anthropic pre-warm" || scenario === "anthropic instruction update"
+  const update = scenario === "instruction update" || scenario === "anthropic instruction update"
   it.effect(
     `warming preserves the next primary prefix: ${scenario}`,
     () =>
@@ -172,7 +212,7 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update", 
         const llm = yield* TestLLM.Service
         const fixture = yield* Fixture
         const hooks = yield* PluginHooks.Service
-        selected.model = scenario === "anthropic pre-warm" ? models.anthropic : models.openai
+        selected.model = anthropic ? models.anthropic : models.openai
         const sessionID = SessionSchema.ID.create()
         yield* agents.transform((editor) =>
           editor.update(Agent.ID.make("build"), (agent) => {
@@ -237,7 +277,7 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update", 
             reason: "manual",
           })
         }
-        if (scenario === "instruction update") {
+        if (update) {
           fixture.instruction = "Previously committed instruction update"
           yield* InstructionState.prepare(db, bus, (yield* context.select(sessionID)).instructions, sessionID)
           fixture.instruction = "Changed instructions before warming"
@@ -264,7 +304,7 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update", 
         yield* SessionGenerate.generate({
           session,
           prompt: "Keep this cache warm.",
-          prewarm: scenario === "plain" || scenario === "anthropic pre-warm",
+          prewarm: scenario === "plain" || anthropic,
         }).pipe(
           Effect.provideService(
             Instance.Service,
@@ -282,12 +322,34 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update", 
         expect(yield* durable(), "warming must not mutate any durable state").toEqual(before)
         yield* prompt("Continue with a new user message")
         expect(llm.requests).toHaveLength(4)
-        expectPrefix(llm.requests[2], llm.requests[3], scenario === "anthropic pre-warm")
+        expectPrefix(llm.requests[2], llm.requests[3], anthropic)
         expect(generates, "warming must not use a different content hook").toBe(0)
+        expect(llm.requests[2].cache, "warming marks tools and system; its one message mark is its own").toEqual({
+          tools: true,
+          system: true,
+        })
+        const history = llm.requests[2].messages.slice(0, -1)
         expect(
-          llm.requests[2].cache,
-          "warming marks the history boundary so the next real step can read it",
-        ).toEqual({ tools: true, system: true, messages: { tail: 2 } })
+          llm.requests[2].messages.flatMap((message, index) => (cached(message) ? [index] : [])),
+          "warming marks only the last history message the next step shares, never the prompt or a system update",
+        ).toEqual([history.findLastIndex((message) => message.role !== "system")])
+        if (anthropic) {
+          const ping = (yield* compileRequest(llm.requests[2])).body as AnthropicBody
+          const step = (yield* compileRequest(llm.requests[3])).body as AnthropicBody
+          const marked = ping.messages.flatMap((message, index) =>
+            message.content.some((block) => block.cache_control !== undefined) ? [index] : [],
+          )
+          expect(marked, "one message breakpoint on the wire").toHaveLength(1)
+          const prefix = ping.messages.slice(0, marked[0]! + 1)
+          expect(unmarked(prefix), "the next step sends the marked prefix unchanged").toEqual(
+            unmarked(step.messages.slice(0, prefix.length)),
+          )
+          expect(JSON.stringify(prefix), "the prompt is outside the marked prefix").not.toContain(
+            "Keep this cache warm.",
+          )
+          if (update)
+            expect(ping.messages.at(-1)?.role, "the pending update moved behind the prompt").toBe("system")
+        }
         expect(llm.requests[3].cache, "a real step keeps the default cache policy").toBeUndefined()
         expect(durables, "only the warming request is non-durable").toEqual([undefined, undefined, false, undefined])
         if (scenario === "plain") {
@@ -296,7 +358,7 @@ for (const scenario of ["plain", "compaction checkpoint", "instruction update", 
         }
         if (scenario === "compaction checkpoint")
           expect(JSON.stringify(llm.requests[2].messages)).toContain("The tool returned a result.")
-        if (scenario === "instruction update") {
+        if (update) {
           expect(JSON.stringify(llm.requests[2].messages)).toContain("Previously committed instruction update")
           expect(JSON.stringify(llm.requests[2].messages)).toContain("Changed instructions before warming")
         }

@@ -107,9 +107,23 @@ const markSystemBoundaries = (system: LLMRequest["system"], hint: CacheHint, bud
 const lastIndexOfRole = (messages: ReadonlyArray<Message>, role: Message["role"]): number =>
   messages.findLastIndex((m) => m.role === role)
 
-// Mark the last text part of `messages[index]`. If no text part exists, mark
-// the last content part regardless of type — that's the breakpoint position
-// in tool-result-only messages too.
+// The breakpoint position of a message: its last text part, or its last content
+// part regardless of type when it has no text (tool-result-only messages too).
+const markIndex = (message: Message) => {
+  const lastTextIndex = message.content.findLastIndex((part) => part.type === "text")
+  return lastTextIndex >= 0 ? lastTextIndex : message.content.length - 1
+}
+
+/** A manual breakpoint on one message, at the position the auto policy would mark. */
+export const markMessage = (message: Message, hint: CacheHint): Message => {
+  const markAt = markIndex(message)
+  if (markAt < 0) return message
+  return new Message({
+    ...message,
+    content: message.content.map((part, i) => (i === markAt ? ({ ...part, cache: hint } as ContentPart) : part)),
+  })
+}
+
 const markMessageAt = (
   messages: ReadonlyArray<Message>,
   index: number,
@@ -119,18 +133,14 @@ const markMessageAt = (
   if (index < 0 || index >= messages.length) return messages
   const target = messages[index]!
   if (target.content.length === 0) return messages
-  const lastTextIndex = target.content.findLastIndex((part) => part.type === "text")
-  const markAt = lastTextIndex >= 0 ? lastTextIndex : target.content.length - 1
-  const existing = target.content[markAt]!
+  const existing = target.content[markIndex(target)]!
   if (("cache" in existing && existing.cache) || budget.remaining === 0) return messages
   budget.remaining -= 1
-  const nextContent = target.content.map((part, i) => (i === markAt ? ({ ...part, cache: hint } as ContentPart) : part))
-  const next = new Message({ ...target, content: nextContent })
   // Single pass over `messages`, substituting the one updated entry. Long
   // conversations call this on every request, so avoid `.map()` here — its
   // closure dispatch and identity copies show up in profiling.
   const result = messages.slice()
-  result[index] = next
+  result[index] = markMessage(target, hint)
   return result
 }
 
