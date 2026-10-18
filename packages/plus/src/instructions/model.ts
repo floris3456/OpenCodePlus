@@ -94,6 +94,11 @@ export interface Item {
   /** True for user-created System rows: a global file Plus plans per agent (deletable). */
   readonly userSystem?: boolean
   /**
+   * Model prompts only (user System rows `system:model/<id>`, listed under System ›
+   * Model prompts): the patterns of the models the row is sent for (model-patterns.ts).
+   */
+  readonly models?: readonly string[]
+  /**
    * OpenCode's own system parts (read-only System rows): the request slot the
    * part fills (system-order.ts). Its text only says what OpenCode puts there;
    * the real content is built per request.

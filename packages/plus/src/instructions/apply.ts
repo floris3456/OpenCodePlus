@@ -53,7 +53,8 @@ import {
   type EnforcementState,
   type PermissionTable,
 } from "./permission-enforce.js"
-import { guidanceItemId, guidancePath, isUserSystemFile, teachingFilePath, teachingItemId, userSystemFile } from "./paths.js"
+import { guidanceItemId, guidancePath, isModelPromptFile, isUserSystemFile, teachingFilePath, teachingItemId, userSystemFile } from "./paths.js"
+import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
@@ -1289,6 +1290,8 @@ export interface InstructionPlan {
   readonly path: string
   readonly text: string
   readonly enabled: boolean
+  /** A model prompt: sent only to a request whose model one of these patterns names. */
+  readonly models?: readonly string[]
 }
 
 function basePlans(input: ApplyInput): BasePlan[] {
@@ -1395,6 +1398,7 @@ interface InstructionCandidate {
   readonly text: string
   readonly enabled: boolean
   readonly noop: boolean
+  readonly models?: readonly string[]
 }
 
 function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
@@ -1420,6 +1424,7 @@ function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
         text,
         enabled: resolved.enabled && text.trim().length > 0,
         noop: !planOnly && isNoop(item, resolved),
+        ...(item.models === undefined ? {} : { models: item.models }),
       }]
     })
   })
@@ -1427,10 +1432,9 @@ function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
 
 function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
   const candidates = instructionCandidates(input)
-  if (options?.skipNoop === true) {
-    return candidates.map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
-  }
-  return candidates.filter((c) => !c.noop).map((c) => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled }))
+  const plan = (c: InstructionCandidate): InstructionPlan => ({ agent: c.agent, path: c.path, text: c.text, enabled: c.enabled, ...(c.models === undefined ? {} : { models: c.models }) })
+  if (options?.skipNoop === true) return candidates.map(plan)
+  return candidates.filter((c) => !c.noop).map(plan)
 }
 
 // The teaching row carries a stable id instead of a location-relative path,
@@ -1622,7 +1626,7 @@ export async function installSessionPlans(
         if (state === undefined) {
           applyBasePlan(event, plans.base, classifier, customByAgent)
           applyToolPlan(event, plans.native.filter((plan) => plan.agent === String(event.agent)))
-          applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)))
+          applyInstructionPlans(ctx, event, instructions.filter((plan) => plan.agent === String(event.agent)), classifier)
           applyRuleScrub(event, scrubByAgent.get(String(event.agent)) ?? [])
           if (plans.needsNarrowing) narrowTools(event, permissions)
           applySystemOrder(event, orders.get(String(event.agent)))
@@ -1639,7 +1643,7 @@ export async function installSessionPlans(
             pin = pinManager.pinSession(sessionID, event.model, activePlanSet)
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
-            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
+            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent), classifier)
             applyRuleScrub(event, activePlanSet.scrubByAgent.get(agent) ?? [])
             if (activePlanSet.needsNarrowing) narrowTools(event, activePlanSet.permissions)
             pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
@@ -1655,7 +1659,7 @@ export async function installSessionPlans(
             pin = pinManager.repinSession(sessionID, event.model, activePlanSet)
             applyBasePlan(event, activePlanSet.base, classifier, activePlanSet.customByAgent)
             applyToolPlan(event, activePlanSet.native.filter((plan) => plan.agent === agent))
-            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent))
+            applyInstructionPlans(ctx, event, activePlanSet.instructions.filter((plan) => plan.agent === agent), classifier)
             applyRuleScrub(event, activePlanSet.scrubByAgent.get(agent) ?? [])
             if (activePlanSet.needsNarrowing) narrowTools(event, activePlanSet.permissions)
             pin.pinnedSystem0.set(agent, event.system[0]?.text ?? "")
@@ -1772,7 +1776,7 @@ function applyPinnedPlans(
   const agent = String(event.agent)
   applyPinnedSystem0(event, pin, classifier, agent)
   applyToolPlan(event, pin.planSet.native.filter((plan) => plan.agent === agent))
-  applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent))
+  applyInstructionPlans(ctx, event, pin.planSet.instructions.filter((plan) => plan.agent === agent), classifier)
   applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
   if (pin.planSet.needsNarrowing) narrowTools(event, pin.planSet.permissions)
   applySystemOrder(event, pin.planSet.orders.get(agent))
@@ -2002,13 +2006,25 @@ export function applyInstructions(
 // resolved these same ids against `ctx.location.directory`. `..` segments
 // resolve here instead of silently matching nothing, and a bare `AGENTS.md`
 // resolves to the session file rather than the first same-named part.
-function applyInstructionPlans(ctx: Context, event: SessionContext, plans: readonly InstructionPlan[]): void {
-  const resolved = plans.map((plan) => ({ ...plan, path: resolveInstructionId(ctx.location.directory, plan.path) }))
+// A model prompt reaches only a request whose model it names; for any other
+// model it is not planned at all.
+function applyInstructionPlans(ctx: Context, event: SessionContext, plans: readonly InstructionPlan[], classifier: RequestClassifier): void {
+  const model = requestTarget(classifier, event.model)
+  const resolved = plans
+    .filter((plan) => plan.models === undefined || matchesModel(plan.models, model))
+    .map((plan) => ({ ...plan, path: resolveInstructionId(ctx.location.directory, plan.path) }))
   applyInstructionsToSystem(event.system, resolved)
 }
 
+function requestTarget(classifier: RequestClassifier, ref: { providerID: unknown; id: unknown }): ModelTarget {
+  const providerID = String(ref.providerID)
+  const id = String(ref.id)
+  const found = classifier.catalog.find((entry) => String(entry.providerID) === providerID && String(entry.id) === id)
+  return { providerID, id, ...(found === undefined ? {} : { name: found.name }) }
+}
+
 function resolveInstructionId(directory: string, id: string): string {
-  if (id === teachingFilePath() || id === guidancePath() || isUserSystemFile(id)) return id
+  if (id === teachingFilePath() || id === guidancePath() || isUserSystemFile(id) || isModelPromptFile(id)) return id
   const relative = id.replace(/^\/+/, "")
   if (relative === "") return directory
   return path.resolve(directory, relative)
@@ -2033,7 +2049,15 @@ function applyInstructionsToSystem(
       if (current.text !== plan.text) system[index] = { ...current, text: plan.text }
       continue
     }
-    system.push({ type: "text", text: plan.text, metadata: { instruction: { path: plan.path } } })
+    const part = { type: "text" as const, text: plan.text, metadata: { instruction: { path: plan.path } } }
+    if (plan.models === undefined) {
+      system.push(part)
+      continue
+    }
+    // Model prompts follow the base prompt (and each other) even with no
+    // stored System order; a stored order moves them with their slot.
+    const last = system.findLastIndex((entry) => isModelPromptFile(partPath(entry) ?? ""))
+    system.splice(last === -1 ? Math.min(1, system.length) : last + 1, 0, part)
   }
 }
 

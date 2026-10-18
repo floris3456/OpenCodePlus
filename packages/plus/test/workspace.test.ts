@@ -62,6 +62,7 @@ test("System is one flat list in request order, Base open in it, and restores ol
     "0 Role/persona +",
     "0 Base -",
     "1 gpt.txt +",
+    "0 Model prompts",
   ])
   for (const old of ["group:project:build:base", "group:project:build:system:instructions"]) {
     const restored = workspaceOf(input(source.rows, { category: old }), known)

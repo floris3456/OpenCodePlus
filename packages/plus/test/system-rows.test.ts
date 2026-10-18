@@ -199,6 +199,7 @@ test("System is one flat list in the order the request carries its parts, OpenCo
     "Tools",
     "Role/persona",
     "Base",
+    "Model prompts",
     "Your model",
     "Code Mode",
     "MCP servers",
@@ -341,13 +342,13 @@ test("moving a System row stores the owner's complete order, which the tree list
   if ("refusal" in moved) throw new Error(moved.refusal)
   expect(moved.layout.orders).toEqual([
     order("group:defaults::system", [
-      "core/date", "first", "core/identity", "core/codemode", "core/mcp-guidance", "core/reference-guidance", "core/skill-guidance",
+      "core/date", "first", "model-prompts", "core/identity", "core/codemode", "core/mcp-guidance", "core/reference-guidance", "core/skill-guidance",
       "core/instructions", "system:opencodeplus", "core/environment", "api", "core/tools-note", "system:tools-and-rules", "system:working-rules",
     ]),
   ])
   expect(moved.status).toBe(`Moved "Date" before "Role/persona": the model receives it there`)
   const after = systemList(expandedTree({ ...memo, orders: moved.layout.orders }), "group:defaults::system")
-  expect(after.map((node) => node.label).slice(0, 5)).toEqual(["Tools", "Date", "Role/persona", "Base", "Your model"])
+  expect(after.map((node) => node.label).slice(0, 6)).toEqual(["Tools", "Date", "Role/persona", "Base", "Model prompts", "Your model"])
   // planRowMove routes System rows the same way, and the Base group moves with Role/persona.
   const base = planRowMove(memo, empty, "group:defaults::base", { after: "item:defaults::system:working-rules" }, UPDATED)
   if ("refusal" in base) throw new Error(base.refusal)

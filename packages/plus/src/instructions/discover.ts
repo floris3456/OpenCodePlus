@@ -1033,7 +1033,8 @@ function guidanceItems(order: number): Item[] {
 }
 
 // User-created System rows (agents/system.ts): like the Tools and rules row,
-// no core source carries them; apply plans each one per agent.
+// no core source carries them; apply plans each one per agent. A model prompt
+// (`system:model/<id>`) carries the models it is sent for.
 function userSystemItems(order: number): Item[] {
   return readUserSystemRowsSync().map((row, index): Item => ({
     id: `system:${row.id}`,
@@ -1045,6 +1046,7 @@ function userSystemItems(order: number): Item[] {
     fingerprint: fingerprint(row.text),
     order: order + index,
     userSystem: true,
+    ...(row.models === undefined ? {} : { models: [...row.models] }),
   }))
 }
 

@@ -21,7 +21,8 @@ import {
   sameModelCandidate,
   scopedTo,
 } from "./model.js"
-import { completeOrder, defaultSystemOrder, firstSlot, slotOfItem, storedSystemOrder, toolsItemId, userSystemRows } from "./system-order.js"
+import { completeOrder, defaultSystemOrder, firstSlot, modelPromptsSlot, slotOfItem, storedSystemOrder, toolsItemId, userSystemRows } from "./system-order.js"
+import { matchesModel } from "./model-patterns.js"
 import type {
   Address,
   AgentSource,
@@ -159,6 +160,7 @@ export type AddKind =
   | "preset"
   | "team-preset"
   | "folder"
+  | "modelprompt"
 
 /**
  * What an agent, team, member, entry or preset row stands for: the owner of
@@ -221,6 +223,8 @@ export interface TreeNodeBadges {
   readonly inactive?: boolean
   /** System list: which of the first part's alternatives the request carries ("not sent: replaced by Role/persona", "base prompt sent instead"). */
   readonly slotNote?: string
+  /** Model prompts: the patterns of the models the row is sent for (model-patterns.ts). */
+  readonly models?: readonly string[]
   /** Registry or user pin state for Code Mode tool rows. */
   readonly pinned?: boolean
   /** Whole Role/persona or whole base row: apply keeps the original text live, so the row cannot be toggled off. */
@@ -859,6 +863,8 @@ interface BranchArgs {
   readonly children: () => readonly Lazy[]
   /** Extra badges the structural row itself carries (the Models group's effective model). */
   readonly partial?: () => TreeNodeBadges
+  /** Known child availability, when it is known without building the children. */
+  readonly expandable?: boolean
 }
 
 // `address` lets a structural row show an item's detail (a tool's
@@ -873,6 +879,7 @@ function branch(memo: Memo, args: BranchArgs, address?: Address): Lazy {
     ...(address === undefined ? {} : { address }),
     ...(args.add === undefined ? {} : { add: args.add }),
     ...(args.owner === undefined ? {} : { owner: args.owner }),
+    ...(args.expandable === undefined ? {} : { expandable: args.expandable }),
     actions: args.actions,
     selfReview: () => cachedSelfReview(memo, args.id, () => false),
     partial: args.partial ?? (() => ({})),
@@ -3004,6 +3011,8 @@ function lazySystem(
       const rowsOf = (slot: string): Lazy[] => {
         if (slot !== firstSlot) {
           const rows = systems.filter((item) => item.id !== "system:role" && slotOfItem(item) === slot)
+          if (slot === modelPromptsSlot)
+            return [lazyModelPrompts(ctx, memo, level, owner, agent, depth + 1, id.replace(/:system$/, ":model-prompts"), rows, teamRef, catalogue, ownerPath)]
           const part = rows.find((item) => item.opencodePart !== undefined)
           if (part === undefined || slot !== "core/instructions") return rows.toSorted((left, right) => Number(right.opencodePart !== undefined) - Number(left.opencodePart !== undefined)).map(row)
           // Each AGENTS.md file opens under OpenCode's "AGENTS.md files" row.
@@ -3022,6 +3031,54 @@ function lazySystem(
         ...systemOrderAt(memo, addressOf(level, owner, "system:role", null, teamRef, catalogue)).flatMap(rowsOf),
       ]
     },
+  })
+}
+
+// The model prompts: one slot, right after the base prompt unless moved. Each
+// is sent only to a request whose model one of its patterns names, so each row
+// says which models it is for and whether this owner's model is one of them
+// (the owner's active model; the Defaults rows have none to check).
+function lazyModelPrompts(
+  ctx: BuildContext,
+  memo: Memo,
+  level: Level,
+  owner: string | null,
+  agent: AgentSource | null,
+  depth: number,
+  groupId: string,
+  prompts: readonly Item[],
+  teamRef: RowTeam | undefined,
+  catalogue: Catalogue | undefined,
+  ownerPath: string | undefined,
+): Lazy {
+  const model = () => {
+    if (owner === null) return undefined
+    const active = cachedModelsState(memo, `${groupId}#model`, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue)).active
+    if (active === undefined) return undefined
+    const name = hostModelOf(ctx.hostModels, { providerID: active.providerID, modelID: active.modelID })?.name
+    return { providerID: active.providerID, id: active.modelID, ...(name === undefined ? {} : { name }) }
+  }
+  return branch(memo, {
+    kind: "group",
+    id: groupId,
+    label: "Model prompts",
+    depth,
+    add: "modelprompt",
+    expandable: prompts.length > 0,
+    actions: noActions(),
+    partial: () => (prompts.length === 0 ? { slotNote: "none yet · a adds one" } : {}),
+    children: () =>
+      prompts.map((item) => {
+        const row = lazyItem(ctx, memo, level, owner, agent, item, depth + 1, teamRef, catalogue, ownerPath)
+        return { ...row, add: "modelprompt" as const, partial: () => {
+          const models = item.models ?? []
+          const target = model()
+          if (models.length === 0) return { ...row.partial(), models, slotNote: "names no model: never sent" }
+          if (target === undefined) return { ...row.partial(), models }
+          const shown = target.name ?? target.id
+          return { ...row.partial(), models, slotNote: matchesModel(models, target) ? `sent with ${shown}` : `not sent: model is ${shown}` }
+        } }
+      }),
   })
 }
 
@@ -3061,7 +3118,7 @@ export function systemOrderAt(memo: Memo, address: Address): string[] {
 
 /** The slot a System list row stands for: Role/persona and the Base group share the first one. */
 export function systemSlotOf(memo: Memo, row: Pick<Lazy, "id" | "kind" | "address">): string | undefined {
-  if (row.kind === "group") return row.id.endsWith(":base") ? firstSlot : undefined
+  if (row.kind === "group") return row.id.endsWith(":base") ? firstSlot : row.id.endsWith(":model-prompts") ? modelPromptsSlot : undefined
   const id = row.address?.section === null ? row.address.item : undefined
   const item = id === undefined ? undefined : memo.ctx.items.find((entry) => entry.id === id)
   return item === undefined ? undefined : slotOfItem(item)

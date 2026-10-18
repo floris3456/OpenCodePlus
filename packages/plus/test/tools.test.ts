@@ -4226,3 +4226,18 @@ test("legacy requires durably replaces a same-scope switch pair without duplicat
   await runOk(set, { id: question, requires: null })
   expect((await linksOf(project)).map((record) => [record.item, record.link])).toEqual([["tool:extra", "either"]])
 })
+
+test("a model prompt is created with create kind system + models, re-aimed with set models, and deleted like a System row", async () => {
+  const { api, tools } = await freshFixture()
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const output = (await runOk(create, decoded(create, { kind: "system", id: "opus", title: "Opus 5.5", text: "Check twice.", models: ["*opus-5-5*"] }))) as { id: string; item: string }
+  expect(output).toMatchObject({ id: "item:defaults::system:model/opus", item: "system:model/opus" })
+  expect((await snapshotOf(api)).items.find((item) => item.id === "system:model/opus")?.models).toEqual(["*opus-5-5*"])
+  expect(await runOk(set, decoded(set, { id: output.id, models: ["*opus-5-5*", "Claude Opus 5.5"] }))).toMatchObject({ models: ["*opus-5-5*", "Claude Opus 5.5"] })
+  expect((await runFail(set, decoded(set, { id: output.id, models: ["*"], state: "off" }))).message).toBe("models is set on its own; send state in another call")
+  expect((await runFail(set, decoded(set, { id: output.id, models: [] }))).message).toContain("system.invalid")
+  expect((await runFail(set, decoded(set, { id: "item:defaults::system:tools-and-rules", models: ["*"] }))).message).toContain("is not a model prompt")
+  expect(await runOk(need(tools, "instructions_delete"), { id: output.id, confirm: true })).toMatchObject({ id: "model/opus" })
+  expect((await snapshotOf(api)).items.some((item) => item.id === "system:model/opus")).toBe(false)
+})

@@ -99,13 +99,15 @@ test("Base sits in the flat System list right after Role/persona, and a reveal l
   expect(frame).not.toContain("switch tab")
   expect(breadcrumb(frame)).toContain("System › Base")
   // One list in request order: up from the base prompt is the Base heading,
-  // then Role/persona; below it the next part, OpenCode's date.
+  // then Role/persona; below it the next parts, Model prompts and OpenCode's date.
   expect(dispatch(fixture, "up")).toBe(true)
   await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Base"))
   expect(dispatch(fixture, "up")).toBe(true)
   await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Role/persona"))
   expect(dispatch(fixture, "down")).toBe(true)
   expect(dispatch(fixture, "down")).toBe(true)
+  expect(dispatch(fixture, "down")).toBe(true)
+  await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Model prompts"))
   expect(dispatch(fixture, "down")).toBe(true)
   await fixture.waitForFrame((next) => breadcrumb(next).trimEnd().endsWith("System › Date"))
 })

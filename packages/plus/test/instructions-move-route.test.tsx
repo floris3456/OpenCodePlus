@@ -250,6 +250,9 @@ test("m on a System row moves its part in the request with one layout write", as
     await moveTo(fixture, "Date")
     dispatch(fixture, "m")
     await fixture.waitForFrame((frame) => footer(frame).includes("move in the request") && !footer(frame).includes("into folder"))
+    // Up passes Model prompts, then Role/persona and Base as one part.
+    dispatch(fixture, "up")
+    await fixture.waitForFrame((frame) => middleLine(frame, "Date") < middleLine(frame, "Model prompts") && middleLine(frame, "GPT base") < middleLine(frame, "Date"))
     dispatch(fixture, "up")
     await fixture.waitForFrame((frame) => middleLine(frame, "Date") < middleLine(frame, "Role/persona") && middleLine(frame, "Role/persona") < middleLine(frame, "GPT base"))
     expect(fixture.fake.layoutWrites).toHaveLength(0)
@@ -258,7 +261,7 @@ test("m on a System row moves its part in the request with one layout write", as
     expect(fixture.fake.layoutWrites[0]?.orders.find((record) => record.scope === "group:group:defaults:build:system")?.items.slice(0, 3)).toEqual([
       "core/date",
       "first",
-      "core/identity",
+      "model-prompts",
     ])
   } finally {
     fixture.destroy()

@@ -28,6 +28,12 @@ import { pickAgentPreset, pickTeamPreset, presetName } from "../preset-picker.js
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import type { InstructionsState } from "./state.js"
 import { sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../instructions/rowlinks.js"
+import { parseModelPatterns } from "../../instructions/model-patterns.js"
+import { isModelPrompt } from "../../instructions/system-order.js"
+import { folderSlug } from "../../instructions/folders.js"
+
+const MODEL_PATTERN_HELP =
+  "Separate patterns with commas. * or % stands for any text (*opus-5-5*, %qwen%). Each is checked against provider/model, the model id and its name, ignoring case."
 
 export interface InstructionsDialogsOptions {
   /** The row a node hangs under; defaults to the flat tree's nearest shallower row. */
@@ -79,6 +85,7 @@ export function createInstructionsDialogs(
           { title: "Agent", value: "agent" },
           { title: "Base prompt", value: "base" },
           { title: "System row", value: "system" },
+          { title: "Model prompt", value: "modelprompt" },
           { title: "Skill", value: "skill" },
           // OpenCodePlus: creating AGENTS.md files is off pending the Context catalogue.
           // { title: "Instruction", value: "instruction" },
@@ -131,6 +138,7 @@ export function createInstructionsDialogs(
     }
     if (kind === "base") return addBase()
     if (kind === "system") return addSystem()
+    if (kind === "modelprompt") return addModelPrompt()
     if (kind === "skill") return addSkill(node)
     if (kind === "instruction") return addInstruction()
     // Defaults → Teams takes team entries: a team pattern with a member entry.
@@ -633,6 +641,53 @@ export function createInstructionsDialogs(
       await plus["system.create"]({ id, title, text }, { location: context.location })
       if (disposed) return
       context.ui.toast.show({ variant: "success", message: `Created System row ${title.trim() || id}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  // A model prompt: the models first (what it is for), then its title and
+  // text. The file name comes from the title.
+  async function addModelPrompt(): Promise<void> {
+    if (disposed) return
+    const models = await context.ui.dialog.prompt({
+      title: "Model prompt for which models",
+      description: MODEL_PATTERN_HELP,
+      placeholder: "*opus-5-5*, *opus-5.5*",
+    })
+    if (disposed || models === undefined) return
+    const title = await context.ui.dialog.prompt({ title: "Model prompt title", placeholder: "Opus 5.5" })
+    if (disposed || title === undefined) return
+    const text = await context.ui.dialog.prompt({ title: "Model prompt text", placeholder: "Instructions only these models receive, right after the base prompt" })
+    if (disposed || text === undefined) return
+    try {
+      await plus["system.create"]({ id: folderSlug(title.trim() || models), title, text, models: parseModelPatterns(models) }, { location: context.location })
+      if (disposed) return
+      context.ui.toast.show({ variant: "success", message: `Created model prompt ${title.trim() || models.trim()}` })
+      await state.refresh()
+    } catch (error: unknown) {
+      if (disposed) return
+      context.ui.toast.show({ variant: "error", message: errorMessage(error) })
+    }
+  }
+
+  async function editModels(node: TreeNode): Promise<void> {
+    const item = node.address?.item
+    if (disposed || item === undefined || !isModelPrompt(item)) return
+    const raw = await context.ui.dialog.prompt({
+      title: `Models · ${node.label}`,
+      description: MODEL_PATTERN_HELP,
+      value: (node.badges.models ?? []).join(", "),
+      placeholder: "*opus-5-5*",
+    })
+    if (disposed || raw === undefined) return
+    const models = parseModelPatterns(raw)
+    try {
+      await plus["system.models"]({ id: item.slice("system:".length), models }, { location: context.location })
+      if (disposed) return
+      state.setStatus(`"${node.label}" is sent for ${models.join(", ")}`)
       await state.refresh()
     } catch (error: unknown) {
       if (disposed) return
@@ -1321,6 +1376,7 @@ export function createInstructionsDialogs(
       return
     }
     const SAVE = "\u0000save"
+    const MODELS = "\u0000models"
     const ADD = "\u0000add"
     const ALWAYS = "\u0000always"
     const FOLLOW = "\u0000follow"
@@ -1337,6 +1393,10 @@ export function createInstructionsDialogs(
         placeholder: node.badges.requiresFrom === undefined ? "Sent always now" : `Now from ${node.badges.requiresFrom}`,
         ...(cursor === undefined ? {} : { current: cursor }),
         options: [
+          // A model prompt is first of all sent for its models.
+          ...(node.address !== undefined && isModelPrompt(node.address.item)
+            ? [{ title: `For models: ${(node.badges.models ?? []).join(", ") || "none"}`, value: MODELS, description: "pick to change which models receive it", category: "Sent for these models" }]
+            : []),
           ...ids.map((id) => ({
             title: `${labelOf(id.replace(/^!/, ""))} must be ${id.startsWith("!") ? "off" : "on"}`,
             value: `row:${id}`,
@@ -1351,6 +1411,7 @@ export function createInstructionsDialogs(
         ],
       })
       if (disposed || picked === undefined || picked === CANCEL) return
+      if (picked === MODELS) return void (await editModels(node))
       if (picked === SAVE) return void (await state.setRequires(node, ids))
       if (picked === ALWAYS) return void (await state.setRequires(node, []))
       if (picked === FOLLOW) return void (await state.setRequires(node, null))

@@ -167,7 +167,7 @@ test("Implementer subtree shape under the project root", () => {
   ])
   // One flat list in request order: the first part (Role/persona, Base), then
   // the instruction file row in the AGENTS.md place.
-  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)).toEqual(["Role/persona", "Base", "guide"])
+  expect(childrenOf(nodes, "group:project:Implementer:system").map((node) => node.label)).toEqual(["Role/persona", "Base", "Model prompts", "guide"])
 })
 
 test("identical subtree under each of the three roots", () => {

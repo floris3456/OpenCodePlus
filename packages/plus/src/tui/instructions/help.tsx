@@ -38,7 +38,7 @@ export const HELP: readonly HelpGroup[] = [
       ["c", "compare your text with upstream (a real diff)"],
       ["r", "reset this level's override"],
       ["p", "pin a Code Mode tool"],
-      ["w", "shown when: send a system row or section only while chosen rows are on"],
+      ["w", "shown when: send a system row or section only while chosen rows are on · on a model prompt also its models"],
       ["s", "split text into sections"],
       ["m", "pick a row or folder up: ↑/↓ move, → into the folder below, ← out, enter drops, esc restores · on a cold-cache model list: ↑/↓ reorder the try order"],
       ["shift+r", "rename a user category, user agent, team member or team"],
@@ -47,7 +47,7 @@ export const HELP: readonly HelpGroup[] = [
   [
     "Create and link",
     [
-      ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section, category"],
+      ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section, category · in Model prompts: a model prompt"],
       ["l", "link an agent, member, team, entry or User preset to a preset (or unlink)"],
       ["L", "row links: select primary, navigate to another row, L finishes; Esc cancels"],
       ["", "link list: Enter edits type; Space enables/disables; d deletes a local link"],

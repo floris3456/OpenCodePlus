@@ -172,4 +172,15 @@ export function isUserSystemFile(file: string): boolean {
   return path.dirname(file) === userSystemDir() && file.endsWith(".md")
 }
 
+// Model prompts: user System rows sent only for the models their patterns name
+// (model-patterns.ts), in a folder of their own beside the System rows so a
+// release without them never reads one as a row for every model.
+export function modelPromptDir(configDir: string = globalConfigDir()): string {
+  return path.join(userSystemDir(configDir), "model")
+}
+
+export function isModelPromptFile(file: string): boolean {
+  return path.dirname(file) === modelPromptDir() && file.endsWith(".md")
+}
+
 export const teachingSkillId = "instructions-tools"

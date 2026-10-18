@@ -80,6 +80,7 @@ import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord
 import { buildTreeMemo, lazyPath } from "./instructions/tree.js"
 import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
+import { isModelPrompt } from "./instructions/system-order.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
 import { rowlinksOf } from "./instructions/resolve-memo.js"
 import { markerIn } from "./instructions/requires.js"
@@ -143,6 +144,7 @@ const SetDescription =
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
   "Model and Defaults › Models rows accept compactWarm (on|off), compactionStrategy (auto|local|remote), compactionModel (provider/model#variant), compactionInstructions, compactionInput/compactionOutput (positive whole token-count strings or off), and coldModels (ordered array or comma list). Null inherits; empty strings inherit except compactionInstructions, where empty is an explicit empty prompt. Threshold off suppresses an inherited early trigger; normal context safety still applies. coldModels:[] explicitly disables the list; whether cold chats compact at all is the person's global Settings switch, so coldCompact is refused. Emitted modelfield:/modelsetting: field rows take text and reset; the cold-cache models are a group, not a scalar field row, and no modelsetting:coldModels row is emitted. Use list's actual ids.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
+  "On a model prompt row (item:…:system:model/<id>) models replaces the patterns of the models it is sent for (on its own, not with other fields).\n" +
   "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
 
@@ -169,7 +171,7 @@ const CreateDescription =
   "member (team+level+id, preset; level defaults creates a Teams member entry, team and id are patterns),\n" +
   "entry (catalogue agents|teams + name, team pattern for teams, preset; names may hold * and %, matched case-insensitively),\n" +
   "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
-  "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), system (id+text, title optional: a new System row, switched and edited per agent and level like the built-in ones), mcp (name+config),\n" +
+  "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), system (id+text, title optional: a new System row, switched and edited per agent and level like the built-in ones; with models it is a model prompt, id system:model/<id>, listed under System › Model prompts and sent right after the base prompt only to a request whose model a pattern names), mcp (name+config),\n" +
   "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
   "folder (name, id = the tab row or folder row to create it in; a saved category belonging to this owner and tab),\n" +
   "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
@@ -259,6 +261,10 @@ const SetInput = Schema.Struct({
       "e.g. [\"tool:question\"]; \"!perm:shell:git-push\" = while that row is off. [] = always; null = drop this level's " +
       "condition (the level above, or the section's own <!-- requires --> line, decides). Shown as \"shown when\".",
   }),
+  models: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+    description:
+      "Model prompt rows only: the models it is sent for. Each pattern is matched, ignoring case, against provider/model, the model id and its name; * or % stands for any text, e.g. [\"*opus-5-5*\", \"%qwen3.6%\"].",
+  }),
   active: Schema.optionalKey(Schema.Boolean),
   resolve: Schema.optionalKey(
     Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit"), Schema.Literal("merge")]),
@@ -338,6 +344,9 @@ const CreateInput = Schema.Struct({
   body: Schema.optionalKey(Schema.String),
   title: Schema.optionalKey(Schema.String),
   text: Schema.optionalKey(Schema.String),
+  models: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+    description: "kind system: make it a model prompt sent only for these models (patterns; * or % stands for any text).",
+  }),
   config: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   team: Schema.optionalKey(Schema.String),
   level: Schema.optionalKey(
@@ -548,6 +557,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             return { output: { id: input.id, ...applied } }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
+          if (input.models !== undefined) return yield* setModels(api, node, input, actor)
           if (isModelFieldRowId(input.id)) return yield* setModelField(api, snapshot, memo, input.id, actor, input)
           if (isModelSettingRowId(input.id)) {
             const field = settingOf(node)?.field
@@ -944,6 +954,28 @@ function protectedForActor(snapshot: Plus.Snapshot, agent: string | null): boole
 // team. The API owns the refusals (built-ins, shipped Defaults rows,
 // ancestor-backed agents, protected agents for a tool actor); this wrapper
 // only routes the row to the right method.
+// A model prompt's patterns live with its file, not in a level's records: one
+// list for every agent and level, set on its own.
+function setModels(
+  api: PlusApi,
+  node: TreeNode,
+  input: { readonly id: string; readonly models?: readonly string[]; readonly [field: string]: unknown },
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const item = node.address?.section === null ? node.address.item : undefined
+    if (item === undefined || !isModelPrompt(item))
+      return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model prompt; models is set on System › Model prompts rows` }))
+    const others = Object.keys(input).filter((key) => key !== "id" && key !== "models" && input[key] !== undefined)
+    if (others.length > 0) return yield* Effect.fail(new Tool.Error({ message: `models is set on its own; send ${others.join(", ")} in another call` }))
+    const result = yield* Effect.promise(() => api.setSystemModels({ id: item.slice("system:".length), models: input.models ?? [], actor }))
+    if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    const snapshot = yield* snapshotOrFail(api)
+    const models = snapshot.items.find((entry) => entry.id === item)?.models ?? []
+    return { output: { id: input.id, models, status: `"${node.label}" is sent for ${models.join(", ")}` } }
+  })
+}
+
 function renameRow(
   api: PlusApi,
   snapshot: Plus.Snapshot,
@@ -2138,6 +2170,7 @@ function createRow(
     body?: string
     title?: string
     text?: string
+    models?: readonly string[]
     config?: Record<string, unknown>
     team?: string
     level?: "project" | "global" | "defaults" | "preset"
@@ -2279,13 +2312,13 @@ function createRow(
       if (input.id === undefined || input.text === undefined)
         return yield* Effect.fail(new Tool.Error({ message: "create system requires id and text" }))
       const created = yield* Effect.promise(() =>
-        api.createSystem({ id: input.id as string, title: input.title ?? "", text: input.text as string, actor }),
+        api.createSystem({ id: input.id as string, title: input.title ?? "", text: input.text as string, ...(input.models === undefined ? {} : { models: input.models }), actor }),
       )
       if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
       const row = yield* createdRowOrFail(
         api,
         (memo) => createdItemRow(memo, { level: "defaults", agent: null, item: `system:${created.value.id}` }),
-        `System row "${created.value.id}"`,
+        `${input.models === undefined ? "System row" : "model prompt"} "${created.value.id}"`,
       )
       return { output: { ...created.value, id: row.id, item: row.item } }
     }

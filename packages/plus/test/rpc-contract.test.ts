@@ -32,6 +32,7 @@ test("every method and event is declared", () => {
     "base.delete",
     "system.create",
     "system.delete",
+    "system.models",
     "instruction.create",
     "instruction.delete",
     "mcp.add",
@@ -172,6 +173,7 @@ test("error schemas are correctly bound to their corresponding methods", () => {
     "base.delete",
     "system.create",
     "system.delete",
+    "system.models",
     "instruction.create",
     "instruction.delete",
     "mcp.add",
@@ -236,6 +238,9 @@ test("error schemas are correctly bound to their corresponding methods", () => {
 
   expect("system.missing" in errorsOf("system.delete")).toBe(true)
   expect("system.invalid" in errorsOf("system.delete")).toBe(true)
+
+  expect("system.missing" in errorsOf("system.models")).toBe(true)
+  expect("system.invalid" in errorsOf("system.models")).toBe(true)
 
   expect("instruction.exists" in errorsOf("instruction.create")).toBe(true)
   expect("instruction.invalid" in errorsOf("instruction.create")).toBe(true)

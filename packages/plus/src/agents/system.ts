@@ -1,7 +1,8 @@
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
-import { userSystemDir, userSystemFile } from "../instructions/paths.js"
+import { parseModelPatterns } from "../instructions/model-patterns.js"
+import { modelPromptDir, userSystemDir, userSystemFile } from "../instructions/paths.js"
 import { readUserBaseTextSync, readUserBaseTitleSync, removeIndexEntry, writeIndexEntry } from "./base.js"
 
 export type SystemRowResult =
@@ -18,7 +19,13 @@ export interface UserSystemRow {
   readonly id: string
   readonly title: string
   readonly text: string
+  /** Model prompts only: the models the row is sent for (model-patterns.ts). */
+  readonly models?: readonly string[]
 }
+
+// A model prompt is a System row id `model/<slug>`: its file sits in the model
+// prompt folder and its patterns in models.json there.
+const modelPrefix = "model/"
 
 // The built-in System rows own these ids (`system:<id>`).
 const reserved = new Set(["role", "opencodeplus", "tools-and-rules"])
@@ -34,7 +41,8 @@ export function validateSystemId(raw: string): { ok: true; id: string } | { ok: 
   return { ok: true, id }
 }
 
-export async function createSystemRow(id: string, title: string, text: string): Promise<SystemRowResult> {
+export async function createSystemRow(id: string, title: string, text: string, models?: readonly string[]): Promise<SystemRowResult> {
+  if (models !== undefined) return createModelPrompt(id, title, text, models)
   const validated = validateSystemId(id)
   if (!validated.ok) return { ok: false, reason: "invalid", id, message: validated.reason }
   const target = userSystemFile(validated.id)
@@ -46,6 +54,7 @@ export async function createSystemRow(id: string, title: string, text: string): 
 }
 
 export async function deleteSystemRow(id: string): Promise<SystemRowDeleteResult> {
+  if (id.trim().startsWith(modelPrefix)) return deleteModelPrompt(id)
   const validated = validateSystemId(id)
   if (!validated.ok) return { ok: false, reason: "invalid", id, message: validated.reason }
   const target = userSystemFile(validated.id)
@@ -55,10 +64,74 @@ export async function deleteSystemRow(id: string): Promise<SystemRowDeleteResult
   return { ok: true, id: validated.id }
 }
 
+/** Replace a model prompt's patterns (`model/<slug>`); at least one is needed. */
+export async function setModelPromptModels(id: string, models: readonly string[]): Promise<SystemRowDeleteResult> {
+  const slug = modelSlugOf(id)
+  if (!slug.ok) return { ok: false, reason: "invalid", id, message: slug.reason }
+  const patterns = parseModelPatterns(models.join(","))
+  if (patterns.length === 0) return { ok: false, reason: "invalid", id, message: noModelsMessage }
+  if (!(await Bun.file(modelPromptFile(slug.id)).exists())) return { ok: false, reason: "missing", id: `${modelPrefix}${slug.id}` }
+  await writeModelsEntry(slug.id, patterns)
+  return { ok: true, id: `${modelPrefix}${slug.id}` }
+}
+
 // Synchronous like the base template read: discovery awaits it, and the
-// directory is tiny. A missing directory means no rows.
+// directory is tiny. A missing directory means no rows. Model prompts follow
+// the System rows.
 export function readUserSystemRowsSync(): UserSystemRow[] {
   const dir = userSystemDir()
+  const rows = markdownIds(dir).map((id) => ({ id, text: readUserBaseTextSync(path.join(dir, `${id}.md`)), title: readUserBaseTitleSync(path.join(dir, "index.json"), id, id) }))
+  const models = modelPromptDir()
+  const patterns = readModelsIndexSync()
+  const prompts = markdownIds(models).map((id) => ({
+    id: `${modelPrefix}${id}`,
+    text: readUserBaseTextSync(path.join(models, `${id}.md`)),
+    title: readUserBaseTitleSync(path.join(models, "index.json"), id, id),
+    models: patterns[id] ?? [],
+  }))
+  return [...rows, ...prompts].flatMap((row) => (row.text === undefined ? [] : [{ ...row, text: row.text }]))
+}
+
+const noModelsMessage = "A model prompt needs at least one model, e.g. *opus-5-5* or cliproxyapi/claude-opus-5-5"
+
+async function createModelPrompt(id: string, title: string, text: string, models: readonly string[]): Promise<SystemRowResult> {
+  const slug = modelSlugOf(id)
+  if (!slug.ok) return { ok: false, reason: "invalid", id, message: slug.reason }
+  const patterns = parseModelPatterns(models.join(","))
+  if (patterns.length === 0) return { ok: false, reason: "invalid", id, message: noModelsMessage }
+  const target = modelPromptFile(slug.id)
+  if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: `${modelPrefix}${slug.id}` }
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await Bun.write(target, text)
+  await writeIndexEntry(modelPromptDir(), slug.id, title.trim().length === 0 ? slug.id : title.trim())
+  await writeModelsEntry(slug.id, patterns)
+  return { ok: true, id: `${modelPrefix}${slug.id}` }
+}
+
+async function deleteModelPrompt(id: string): Promise<SystemRowDeleteResult> {
+  const slug = modelSlugOf(id)
+  if (!slug.ok) return { ok: false, reason: "invalid", id, message: slug.reason }
+  const target = modelPromptFile(slug.id)
+  if (!(await Bun.file(target).exists())) return { ok: false, reason: "missing", id: `${modelPrefix}${slug.id}` }
+  await fs.rm(target, { force: true })
+  await removeIndexEntry(modelPromptDir(), slug.id)
+  await writeModelsEntry(slug.id, undefined)
+  return { ok: true, id: `${modelPrefix}${slug.id}` }
+}
+
+// `model/<slug>` or the bare slug; the slug follows the System row id rules.
+function modelSlugOf(raw: string): { ok: true; id: string } | { ok: false; reason: string } {
+  const trimmed = raw.trim()
+  const validated = validateSystemId(trimmed.startsWith(modelPrefix) ? trimmed.slice(modelPrefix.length) : trimmed)
+  if (!validated.ok) return { ok: false, reason: validated.reason.replace("System row", "Model prompt") }
+  return validated
+}
+
+function modelPromptFile(slug: string): string {
+  return path.join(modelPromptDir(), `${slug}.md`)
+}
+
+function markdownIds(dir: string): string[] {
   const entries = (() => {
     try {
       return fsSync.readdirSync(dir)
@@ -68,11 +141,28 @@ export function readUserSystemRowsSync(): UserSystemRow[] {
   })()
   return entries
     .filter((entry) => entry.endsWith(".md") && validateSystemId(entry.slice(0, -".md".length)).ok)
+    .map((entry) => entry.slice(0, -".md".length))
     .toSorted()
-    .flatMap((entry) => {
-      const id = entry.slice(0, -".md".length)
-      const text = readUserBaseTextSync(path.join(dir, entry))
-      if (text === undefined) return []
-      return [{ id, title: readUserBaseTitleSync(path.join(dir, "index.json"), id, id), text }]
-    })
+}
+
+function readModelsIndexSync(): Record<string, readonly string[]> {
+  try {
+    const parsed: unknown = JSON.parse(fsSync.readFileSync(path.join(modelPromptDir(), "models.json"), "utf8"))
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).flatMap(([id, value]) =>
+        Array.isArray(value) ? [[id, value.filter((pattern): pattern is string => typeof pattern === "string")]] : [],
+      ),
+    )
+  } catch {
+    return {}
+  }
+}
+
+async function writeModelsEntry(slug: string, patterns: readonly string[] | undefined): Promise<void> {
+  const current = { ...readModelsIndexSync() }
+  if (patterns === undefined) delete current[slug]
+  if (patterns !== undefined) current[slug] = patterns
+  await fs.mkdir(modelPromptDir(), { recursive: true })
+  await Bun.write(path.join(modelPromptDir(), "models.json"), `${JSON.stringify(current, undefined, 2)}\n`)
 }

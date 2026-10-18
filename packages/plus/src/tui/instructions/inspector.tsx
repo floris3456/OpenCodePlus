@@ -141,6 +141,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     ])
   const guidance = node.badges.guidance
   if (guidance !== undefined && guidance.length > 0) facts.push(["instructions", `System › Tools and rules › ${guidance.join(", ")}`])
+  const models = node.badges.models
+  if (models !== undefined) facts.push(["models", models.length === 0 ? "none: it is never sent · w names them" : `${models.join(", ")} · w changes them`])
   if (node.badges.slotNote !== undefined) facts.push(["request", node.badges.slotNote])
   // OpenCode's own parts are built per request: nothing resolves or overrides them here.
   const opencode = node.address?.item.startsWith("system:opencode/") === true

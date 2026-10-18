@@ -112,6 +112,7 @@ export const SnapshotItem = Schema.Struct({
   order: Schema.optionalKey(Schema.Number),
   userBase: Schema.optionalKey(Schema.Boolean),
   userSystem: Schema.optionalKey(Schema.Boolean),
+  models: Schema.optionalKey(Schema.Array(Schema.String)),
   opencodePart: Schema.optionalKey(Schema.String),
   codemode: Schema.optionalKey(Schema.Boolean),
   namespace: Schema.optionalKey(Schema.String),
@@ -842,12 +843,21 @@ export const DeleteBaseInput = Schema.Struct({
 }).annotate({ identifier: "Plus.DeleteBaseInput" })
 
 // A user-created System row: one global file every level and catalogue lists.
+// With `models` it is a model prompt (`model/<id>`), sent only for those models.
 export interface CreateSystemInput extends Schema.Schema.Type<typeof CreateSystemInput> {}
 export const CreateSystemInput = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   text: Schema.String,
+  models: Schema.optionalKey(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Plus.CreateSystemInput" })
+
+// A model prompt's patterns (`model/<id>`), replaced whole.
+export interface SetSystemModelsInput extends Schema.Schema.Type<typeof SetSystemModelsInput> {}
+export const SetSystemModelsInput = Schema.Struct({
+  id: Schema.String,
+  models: Schema.Array(Schema.String),
+}).annotate({ identifier: "Plus.SetSystemModelsInput" })
 
 export interface SystemRef extends Schema.Schema.Type<typeof SystemRef> {}
 export const SystemRef = Schema.Struct({
@@ -2340,6 +2350,9 @@ const PortableBaseRef = Schema.toStandardSchemaV1(BaseRef.annotate({ identifier:
 const PortableCreateSystemInput = Schema.toStandardSchemaV1(
   CreateSystemInput.annotate({ identifier: "Plus.CreateSystemInput" }),
 )
+const PortableSetSystemModelsInput = Schema.toStandardSchemaV1(
+  SetSystemModelsInput.annotate({ identifier: "Plus.SetSystemModelsInput" }),
+)
 const PortableDeleteSystemInput = Schema.toStandardSchemaV1(
   DeleteSystemInput.annotate({ identifier: "Plus.DeleteSystemInput" }),
 )
@@ -2675,6 +2688,14 @@ export const Definition = Rpc.define({
     },
     "system.delete": {
       input: PortableDeleteSystemInput,
+      output: PortableSystemRef,
+      errors: {
+        "system.missing": PortableSystemMissing,
+        "system.invalid": PortableSystemInvalid,
+      },
+    },
+    "system.models": {
+      input: PortableSetSystemModelsInput,
       output: PortableSystemRef,
       errors: {
         "system.missing": PortableSystemMissing,

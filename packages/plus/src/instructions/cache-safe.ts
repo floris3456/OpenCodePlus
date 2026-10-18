@@ -10,7 +10,8 @@ import { derive, slice } from "./sections.js"
 import { cacheLifetime } from "../monitor/cache.js"
 import type { RequestRow } from "../monitor/ledger.js"
 import { isSessionWarm } from "../teams/cold-compaction.js"
-import { guidancePath, teachingFilePath } from "./paths.js"
+import { matchesModel } from "./model-patterns.js"
+import { guidancePath, isModelPromptFile, teachingFilePath } from "./paths.js"
 
 export interface PlanSet {
   readonly roles: ReadonlyMap<string, string>
@@ -135,6 +136,7 @@ export const sessionPins = new SessionPinManager()
 function instructionLabel(filePath: string): string {
   if (filePath === teachingFilePath()) return "Teaching"
   if (filePath === guidancePath()) return "Tools and rules"
+  if (isModelPromptFile(filePath)) return `model prompt ${path.basename(filePath, ".md")}`
   return path.basename(filePath)
 }
 
@@ -205,9 +207,10 @@ export function computeChangeNote(
     items.push(`Base template replaces the earlier text:\n${curBase.text.trim()}`)
   }
 
-  // 3. System instruction rows
-  const pinnedInstructions = pin.planSet.instructions.filter((p) => p.agent === agent)
-  const currentInstructions = current.instructions.filter((p) => p.agent === agent)
+  // 3. System instruction rows; a model prompt only for the session's model
+  const forModel = (p: InstructionPlan) => p.agent === agent && (p.models === undefined || matchesModel(p.models, { providerID: pin.model.providerID, id: pin.model.id }))
+  const pinnedInstructions = pin.planSet.instructions.filter(forModel)
+  const currentInstructions = current.instructions.filter(forModel)
   const pinByPath = new Map(pinnedInstructions.map((p) => [p.path, p]))
   const curByPath = new Map(currentInstructions.map((p) => [p.path, p]))
 

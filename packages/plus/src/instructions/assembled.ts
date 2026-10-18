@@ -9,7 +9,8 @@ import { scrubLines } from "./tool-permissions.js"
 import { guidanceItemId } from "./paths.js"
 import { gateOf } from "./requires.js"
 import type { OrderRecord } from "./folders.js"
-import { arrangeBySlot, firstSlot } from "./system-order.js"
+import { arrangeBySlot, defaultSystemOrder, firstSlot, slotOfItem, userSystemRows } from "./system-order.js"
+import { matchesModel } from "./model-patterns.js"
 import type { Plus } from "../rpc.js"
 
 interface AssembledInput {
@@ -60,16 +61,21 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   // apply plans them.
   const has = (id: string) => input.items.some((item) => item.id === id && applies(item, owner.id))
   const gate = gateOf((id) => (has(id) ? resolved.get(id)?.enabled : undefined))
+  // A model prompt as the agent's own model receives it (the host reports the
+  // active model); a session on another model gets the prompts for that one.
+  const model = systemEntry?.model
+  const forModel = (row: Item) =>
+    row.models === undefined || (model !== undefined && matchesModel(row.models, { providerID: String(model.providerID), id: String(model.id) }))
   const parts = [
     ...(systemEntry?.system === undefined ? [] : [{ slot: firstSlot, text: systemEntry.system }]),
     ...input.items
-      .filter((row) => (row.id === guidanceItemId || row.userSystem === true) && applies(row, owner.id) && resolved.get(row.id)?.enabled === true)
-      .map((row) => ({ slot: row.id, text: resolvedFor(row, owner, input, gate).assembled }))
+      .filter((row) => (row.id === guidanceItemId || row.userSystem === true) && forModel(row) && applies(row, owner.id) && resolved.get(row.id)?.enabled === true)
+      .map((row) => ({ slot: slotOfItem(row) ?? row.id, text: resolvedFor(row, owner, input, gate).assembled }))
       .filter((part) => part.text.trim().length > 0),
   ]
   // Listed in the order the agent's requests carry them (its System order).
   const order = systemOrders({ ...input, agents: [owner] })[0]?.[1]
-  const system = (order === undefined ? parts : arrangeBySlot(parts, (part) => part.slot, order)).map((part) => preserveScrub(part.text, scrubbed))
+  const system = arrangeBySlot(parts, (part) => part.slot, order ?? defaultSystemOrder(userSystemRows(input.items))).map((part) => preserveScrub(part.text, scrubbed))
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])

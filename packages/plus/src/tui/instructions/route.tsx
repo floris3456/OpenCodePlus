@@ -7,7 +7,7 @@ import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
 import { controlKind, findLazy, lazyPath, materialize, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { isDefaultSwitchField, isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseColdDefaultItemId, parseColdModelItemId, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
-import { isAgentsFile, toolsItemId } from "../../instructions/system-order.js"
+import { isAgentsFile, isModelPrompt, toolsItemId } from "../../instructions/system-order.js"
 import { isEditable } from "./detail-pane.js"
 import { DiffPane } from "./diff-pane.js"
 import { createInstructionsDialogs, isLinkable } from "./dialogs.js"
@@ -1263,11 +1263,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (isColdListRow(node)) return true
     if (node.address?.section !== undefined && node.address.section !== null) return true
     // A base prompt moves only as System's Base group, together with Role/persona;
-    // Tools always comes first and an AGENTS.md file moves only with its part.
+    // Tools always comes first, an AGENTS.md file moves only with its part and a
+    // model prompt only with Model prompts.
     if (node.kind === "item")
-      return node.address !== undefined && node.address.section === null && !node.address.item.startsWith("base:") && node.address.item !== toolsItemId && !isAgentsFile(node.address.item)
+      return node.address !== undefined && node.address.section === null && !node.address.item.startsWith("base:") && node.address.item !== toolsItemId && !isAgentsFile(node.address.item) && !isModelPrompt(node.address.item)
     if (node.kind === "agent" || node.kind === "team") return true
-    if (node.kind === "group" && node.id.endsWith(":base")) return true
+    if (node.kind === "group" && (node.id.endsWith(":base") || node.id.endsWith(":model-prompts"))) return true
     return folderName(node) !== undefined
   }
 
@@ -1587,7 +1588,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (canToggle(node) && selectableAgent(node) !== undefined) hints.push(["ctrl+space", "select"])
     if (inList() && comparable(node) && state.threeWay(node!) !== undefined) hints.push(["c", "compare"])
     if (canPin(node)) hints.push(["p", "pin"])
-    if (node?.actions?.requires === true) hints.push(["w", "shown when"])
+    if (node?.actions?.requires === true) hints.push(["w", node.address !== undefined && node.address.section === null && isModelPrompt(node.address.item) ? "models · shown when" : "shown when"])
     hints.push(["a", "add"])
     if (node?.actions?.remove === true || folderName(node) !== undefined) hints.push(["d", "delete"])
     if (node?.address !== undefined) hints.push(["L", state.linkPrimary() === undefined ? "row links" : "finish link"])

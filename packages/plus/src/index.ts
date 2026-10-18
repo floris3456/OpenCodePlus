@@ -17,7 +17,7 @@ import { agentBody, discover, hostModelsFrom, instructionCandidates, type BaseTe
 import { validateRuleInput } from "./instructions/tool-permissions.js"
 import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
-import { createSystemRow, deleteSystemRow } from "./agents/system.js"
+import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
 import { applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
@@ -506,6 +506,15 @@ export type DeleteSystemResult =
         | { code: "agent.protected"; message: string; data: Plus.AgentProtected }
     }
 
+export type SetSystemModelsResult =
+  | { ok: true; value: Plus.SystemRef }
+  | {
+      ok: false
+      error:
+        | { code: "system.missing"; message: string; data: Plus.SystemMissing }
+        | { code: "system.invalid"; message: string; data: Plus.SystemInvalid }
+    }
+
 export type CreateInstructionApiResult =
   | { ok: true; value: Plus.InstructionRef }
   | {
@@ -709,6 +718,7 @@ export interface PlusApi {
   readonly deleteBase: (input: Plus.DeleteBaseInput & { readonly actor?: Plus.Actor }) => Promise<DeleteBaseResult>
   readonly createSystem: (input: Plus.CreateSystemInput & { readonly actor?: Plus.Actor }) => Promise<CreateSystemResult>
   readonly deleteSystem: (input: Plus.DeleteSystemInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSystemResult>
+  readonly setSystemModels: (input: Plus.SetSystemModelsInput & { readonly actor?: Plus.Actor }) => Promise<SetSystemModelsResult>
   readonly createInstruction: (input: Plus.CreateInstructionInput & { readonly actor?: Plus.Actor }) => Promise<CreateInstructionApiResult>
   readonly deleteInstruction: (input: Plus.DeleteInstructionInput & { readonly actor?: Plus.Actor }) => Promise<DeleteInstructionApiResult>
   readonly addMcp: (input: Plus.AddMcpInput & { readonly actor?: Plus.Actor }) => Promise<AddMcpResult>
@@ -1375,7 +1385,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createSystem: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const result = await createSystemRow(input.id, input.title, input.text)
+      const result = await createSystemRow(input.id, input.title, input.text, input.models)
       if (!result.ok && result.reason === "exists")
         return {
           ok: false as const,
@@ -1427,6 +1437,30 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         op: "system.delete",
         target: userSystemFile(result.id),
         summary: `system.delete ${result.id}`,
+      })
+      return { ok: true as const, value: { id: result.id } }
+    },
+    setSystemModels: async (input) => {
+      const directory = await activationDirectory(ctx.location.directory)
+      const result = await setModelPromptModels(input.id, input.models)
+      if (!result.ok && result.reason === "missing")
+        return {
+          ok: false as const,
+          error: { code: "system.missing" as const, message: `Model prompt ${result.id} does not exist`, data: { id: result.id } },
+        }
+      if (!result.ok)
+        return {
+          ok: false as const,
+          error: { code: "system.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
+        }
+      await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
+      await logFileOp({
+        directory,
+        actor: normalizeActor(input.actor),
+        scope: "global",
+        op: "system.models",
+        target: userSystemFile(result.id),
+        summary: `system.models ${result.id} ${input.models.join(" ")}`,
       })
       return { ok: true as const, value: { id: result.id } }
     },
@@ -3511,6 +3545,16 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
           return yield* Effect.fail(
             context.error("system.invalid", result.error.message, { id: input.id, reason: result.error.message }),
           )
+        }
+        return result.value
+      }),
+    "system.models": (input, context) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => api.setSystemModels(input))
+        if (!result.ok) {
+          if (result.error.code === "system.missing")
+            return yield* Effect.fail(context.error("system.missing", result.error.message, result.error.data))
+          return yield* Effect.fail(context.error("system.invalid", result.error.message, result.error.data))
         }
         return result.value
       }),
@@ -6882,6 +6926,7 @@ function toSnapshot(
         ...(item.order === undefined ? {} : { order: item.order }),
         ...(item.userBase === undefined ? {} : { userBase: item.userBase }),
         ...(item.userSystem === undefined ? {} : { userSystem: item.userSystem }),
+        ...(item.models === undefined ? {} : { models: [...item.models] }),
         ...(item.opencodePart === undefined ? {} : { opencodePart: item.opencodePart }),
         ...(item.codemode === undefined ? {} : { codemode: item.codemode }),
         ...(item.controlTeam === undefined ? {} : { controlTeam: item.controlTeam }),

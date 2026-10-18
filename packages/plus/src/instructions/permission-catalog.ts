@@ -1049,6 +1049,7 @@ const instructionsCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "active", label: "Activate models (active)", on: true, field: "active" },
         { id: "resolve", label: "Resolve reviews (resolve)", on: true, field: "resolve" },
         { id: "rule", label: "Rewrite permission rules", on: true, field: "patterns" },
+        { id: "models", label: "Change which models a model prompt is for (models)", on: true, field: "models" },
       ],
     },
     approval(),

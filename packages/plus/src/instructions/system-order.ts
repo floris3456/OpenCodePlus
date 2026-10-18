@@ -1,15 +1,21 @@
 // The order of an agent's system prompt parts. A slot is one movable position
 // in the request's system array: the first part (Role/persona, or the base
-// prompt it replaces), each of OpenCode's own parts, and each Plus System row.
+// prompt it replaces), the model prompts, each of OpenCode's own parts, and
+// each Plus System row.
 // The System list shows the slots in the order the model receives them, and an
 // order stored for a System group (a layout OrderRecord whose items are slot
 // ids) reorders the request the same way. With no stored order nothing moves.
 import path from "node:path"
 import { groupScope, orderOf, teamsOwnerSegment, type OrderRecord } from "./folders.js"
 import { catalogueOf, type ChainNode, type Item } from "./model.js"
-import { guidanceItemId, guidancePath, isUserSystemFile, teachingFilePath, teachingItemId } from "./paths.js"
+import { guidanceItemId, guidancePath, isModelPromptFile, isUserSystemFile, teachingFilePath, teachingItemId } from "./paths.js"
 
 export const firstSlot = "first"
+
+/** The model prompts (System › Model prompts): one slot, right after the base prompt unless moved. */
+export const modelPromptsSlot = "model-prompts"
+
+export const modelPromptMoveRefusal = `A model prompt does not move on its own: move "Model prompts" to move them all`
 
 /** OpenCode's own parts, in the order the request carries them: the rows the System list shows for them. */
 export const opencodeParts = [
@@ -43,6 +49,11 @@ export const toolsItemId = opencodePartItemId(toolsPart.name)
 
 export const agentsMdItemId = opencodePartItemId("agents-md")
 
+/** A model prompt row (`system:model/<id>`). */
+export function isModelPrompt(item: string): boolean {
+  return item.startsWith("system:model/")
+}
+
 /** An AGENTS.md file row (`system:<relative path>`); System row ids are slugs, which never hold a dot. */
 export function isAgentsFile(item: string): boolean {
   return item.startsWith("system:") && path.basename(item.slice("system:".length)) === "AGENTS.md"
@@ -58,19 +69,20 @@ const coreSlots: readonly string[] = opencodeParts.map((part) => part.slot)
 export function defaultSystemOrder(userRows: readonly string[]): string[] {
   // The OpenCodePlus teaching file reaches core as the last discovered instruction file.
   const files = coreSlots.indexOf("core/instructions") + 1
-  return [firstSlot, ...coreSlots.slice(0, files), teachingItemId, ...coreSlots.slice(files), guidanceItemId, ...userRows]
+  return [firstSlot, modelPromptsSlot, ...coreSlots.slice(0, files), teachingItemId, ...coreSlots.slice(files), guidanceItemId, ...userRows]
 }
 
-/** A slot id: the first part, one of OpenCode's parts, or a Plus System row (`system:<id>`). */
+/** A slot id: the first part, the model prompts, one of OpenCode's parts, or a Plus System row (`system:<id>`). */
 export function isSlot(id: string): boolean {
-  if (id === firstSlot || coreSlots.includes(id)) return true
+  if (id === firstSlot || id === modelPromptsSlot || coreSlots.includes(id)) return true
   return /^system:[a-z0-9][a-z0-9-]*$/.test(id) && id !== "system:role"
 }
 
 /** The slot an item row stands for in the System list; undefined for rows outside it. */
-export function slotOfItem(item: Pick<Item, "id" | "kind" | "opencodePart" | "userSystem">): string | undefined {
+export function slotOfItem(item: Pick<Item, "id" | "kind" | "opencodePart" | "userSystem" | "models">): string | undefined {
   if (item.kind === "base" || item.id === "system:role") return firstSlot
   if (item.kind !== "system") return undefined
+  if (item.models !== undefined) return modelPromptsSlot
   if (item.opencodePart === toolsPart.slot) return undefined
   if (item.opencodePart !== undefined) return item.opencodePart
   if (item.id === teachingItemId || item.id === guidanceItemId || item.userSystem === true) return item.id
@@ -95,6 +107,7 @@ export function slotOfPart(part: PartLike, index: number): string | undefined {
   const key = typeof instruction?.key === "string" ? instruction.key : undefined
   if (file === teachingFilePath()) return teachingItemId
   if (file === guidancePath()) return guidanceItemId
+  if (file !== undefined && isModelPromptFile(file)) return modelPromptsSlot
   if (file !== undefined && isUserSystemFile(file)) return `system:${path.basename(file, ".md")}`
   // A file part without a key is an instruction file row Plus planned in.
   if (key === undefined) return file === undefined ? undefined : "core/instructions"
@@ -165,7 +178,7 @@ export function effectiveSystemOrder(stored: readonly string[] | undefined, item
   return completeOrder(stored, defaultSystemOrder(userSystemRows(items)))
 }
 
-/** The user-created System rows' slots, in item order. */
+/** The user-created System rows' slots, in item order (model prompts share theirs). */
 export function userSystemRows(items: readonly Item[]): string[] {
-  return [...new Set(items.filter((item) => item.kind === "system" && item.userSystem === true).map((item) => item.id))]
+  return [...new Set(items.filter((item) => item.kind === "system" && item.userSystem === true && item.models === undefined).map((item) => item.id))]
 }

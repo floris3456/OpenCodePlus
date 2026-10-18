@@ -20,7 +20,7 @@ import {
   type LayoutRecords,
   type RowTarget,
 } from "../../instructions/ops.js"
-import { agentsFileMoveRefusal, firstSlot, isAgentsFile, toolsItemId, toolsMoveRefusal } from "../../instructions/system-order.js"
+import { agentsFileMoveRefusal, firstSlot, isAgentsFile, isModelPrompt, modelPromptMoveRefusal, modelPromptsSlot, toolsItemId, toolsMoveRefusal } from "../../instructions/system-order.js"
 import { buildTreeMemo, lazyPath, systemSlotOf, type Lazy, type Memo, type MemoInput, type TreeNode } from "../../instructions/tree.js"
 
 export interface MoveState {
@@ -50,7 +50,8 @@ function folderTokenOf(node: Pick<TreeNode, "id" | "kind" | "address"> | undefin
 }
 
 // Pick a row up. Refuses structural rows (level tabs and group headings), except
-// System's Base group, which moves with Role/persona as the request's first part.
+// System's Base group, which moves with Role/persona as the request's first part,
+// and its Model prompts group, one part of its own.
 export function startMove(node: TreeNode, layout: LayoutRecords): MoveStart {
   if (node.address !== undefined && node.address.section !== null)
     return { state: { rowId: node.id, layout, target: node.id, isSection: true, status: `Moving "${node.label}"` } }
@@ -58,10 +59,11 @@ export function startMove(node: TreeNode, layout: LayoutRecords): MoveStart {
   if (node.address?.item.startsWith("base:") === true) return { refusal: baseMoveRefusal }
   if (node.address?.item === toolsItemId) return { refusal: toolsMoveRefusal }
   if (node.address !== undefined && isAgentsFile(node.address.item)) return { refusal: agentsFileMoveRefusal }
-  const base = node.kind === "group" && node.id.endsWith(":base")
-  const token = base ? firstSlot : listToken(node)
+  if (node.address !== undefined && isModelPrompt(node.address.item)) return { refusal: modelPromptMoveRefusal }
+  const group = node.kind !== "group" ? undefined : node.id.endsWith(":base") ? firstSlot : node.id.endsWith(":model-prompts") ? modelPromptsSlot : undefined
+  const token = group ?? listToken(node)
   if (token === undefined) return { refusal: `"${node.label}" is built-in structure and cannot move` }
-  const inSystem = base || node.address?.item.startsWith("system:") === true
+  const inSystem = group !== undefined || node.address?.item.startsWith("system:") === true
   return { state: { rowId: node.id, layout, target: token, status: `Moving "${node.label}"`, ...(inSystem ? { inSystem } : {}) } }
 }
 
