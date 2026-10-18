@@ -1,31 +1,10 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { Definition } from "../rpc.js"
 
-export interface MissToast {
-  readonly enabled: () => boolean
-  readonly toggle: () => Promise<void>
-  readonly dispose: () => void
-}
-
-export function createMissToast(context: Plugin.Context): MissToast {
+// Claude dropping earlier thinking blocks: a toast for the chat on screen.
+// Cache misses and partial reuse are cache notices (cache-notices.tsx).
+export function createThinkingToast(context: Plugin.Context) {
   const plus = context.client.rpc(Definition)
-
-  const [settings, saveSettings] = context.storage.store<{ enabled?: boolean }>("opencode.plus.miss-notices", {
-    initial: { enabled: true },
-  })
-
-  const enabled = () => settings.enabled ?? true
-
-  async function toggle() {
-    const next = !enabled()
-    await saveSettings((draft) => {
-      draft.enabled = next
-    })
-    context.ui.toast.show({
-      variant: "info",
-      message: `Cache-miss notices: ${next ? "on" : "off"}`,
-    })
-  }
 
   function screenSessionID(): string | undefined {
     const route = context.ui.router.current()
@@ -33,7 +12,6 @@ export function createMissToast(context: Plugin.Context): MissToast {
     return route.sessionID
   }
 
-  const lastToastedBySession = new Map<string, string>()
   const droppedBySession = new Map<string, string>()
   const pendingRetry = new Set<string>()
 
@@ -47,30 +25,16 @@ export function createMissToast(context: Plugin.Context): MissToast {
     }
     pendingRetry.delete(sessionID)
     // Dropped thinking stays dropped on every later step, so it alerts once per first dropped block.
-    // This alert does not follow the cache-miss notice switch.
     const dropped =
       res.droppedThinking && droppedBySession.get(sessionID) !== (res.droppedThinking.first ?? "")
         ? res.droppedThinking
         : undefined
-    if (dropped) droppedBySession.set(sessionID, dropped.first ?? "")
-    const stepID = res.stepID ?? res.requestID
-    const miss = res.miss && lastToastedBySession.get(sessionID) !== stepID
-    if (miss) lastToastedBySession.set(sessionID, stepID)
+    if (!dropped) return
+    droppedBySession.set(sessionID, dropped.first ?? "")
     if (screenSessionID() !== sessionID) return
-    const notices = [
-      ...(dropped
-        ? [
-            `Claude dropped ${dropped.blocks.toLocaleString("en-US")} earlier thinking block${dropped.blocks === 1 ? "" : "s"} and answered without them`,
-          ]
-        : []),
-      ...(miss && enabled()
-        ? [`Cache shortfall estimate · ${res.notReused.toLocaleString("en-US")} tokens · ${res.causeText}`]
-        : []),
-    ]
-    if (notices.length === 0) return
     context.ui.toast.show({
       variant: "warning",
-      message: `${notices.join(" · ")} · type /monitor for details`,
+      message: `Claude dropped ${dropped.blocks.toLocaleString("en-US")} earlier thinking block${dropped.blocks === 1 ? "" : "s"} and answered without them · type /monitor for details`,
     })
   }
 
@@ -87,14 +51,10 @@ export function createMissToast(context: Plugin.Context): MissToast {
     void checkStep(sessionID)
   })
 
-  function dispose() {
-    unsubscribeStep()
-    unsubscribeNext()
-  }
-
   return {
-    enabled,
-    toggle,
-    dispose,
+    dispose: () => {
+      unsubscribeStep()
+      unsubscribeNext()
+    },
   }
 }

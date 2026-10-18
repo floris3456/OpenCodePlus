@@ -24,7 +24,13 @@ function createHarness(): CommandsHarness {
   const navigations: unknown[] = []
   const settings: Setting[] = []
   const settingWrites: unknown[] = []
-  const server = { coldCompact: false }
+  const server = {
+    coldCompact: false,
+    noticeMinutes: 15,
+    noticeMinTokens: 0,
+    noticeKinds: "misses-and-partials",
+    noticeDismiss: "everywhere",
+  }
   // Slot renders receive the slot's input; the prompt footer's carries no session here.
   const slotRenders: ((props: object) => unknown)[] = []
   let current: unknown = { type: "session", sessionID: "ses_1" }
@@ -41,6 +47,7 @@ function createHarness(): CommandsHarness {
           if (input.coldCompact !== undefined) server.coldCompact = input.coldCompact
           return { ...server }
         },
+        "monitor.notices": async () => ({ notices: [] }),
         events: { on: () => () => {} },
       }),
     },

@@ -2,11 +2,14 @@
 // answer the TUI and tool queries, and keep the ledger within retention.
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
+import { Location } from "@opencode/schema/location"
+import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
 import { guidancePath, teachingFilePath, teamsDataDir } from "../instructions/paths.js"
-import type { MonitorMark, MonitorPrompt, MonitorPromptInput, MonitorQueryInput, MonitorReport, MonitorRequestDetail, MonitorStepInput, MonitorStepResult } from "../rpc.js"
+import type { MonitorMark, MonitorNotices, MonitorPrompt, MonitorPromptInput, MonitorQueryInput, MonitorReport, MonitorRequestDetail, MonitorSessionList, MonitorSessionsInput, MonitorStepInput, MonitorStepResult, PlusSettings } from "../rpc.js"
+import { dismissNotice, queryNotices, sessionChecklist } from "./notices.js"
 import { bySession, inferRunTeam, loadRun } from "../teams/run.js"
 import { causeWords, isMiss } from "./cache.js"
 import { createCollector, MonitorEvents, type Collector } from "./collector.js"
@@ -483,6 +486,55 @@ async function hostSessionFacts(ctx: Context, ledger: Ledger, ids: readonly stri
     }),
   )
   return { states, agents }
+}
+
+export function monitorNotices(settings: PlusSettings, ledger: Ledger = ledgerAt()): MonitorNotices {
+  return { notices: queryNotices(ledger, settings) }
+}
+
+export function monitorDismiss(requestID: string, ledger: Ledger = ledgerAt()): void {
+  dismissNotice(ledger, requestID)
+}
+
+// Roughly when this server process started: what the monitor saw before it
+// belongs to an earlier run, which the server no longer holds.
+const serverStarted = Date.now() - process.uptime() * 1000
+
+/**
+ * The Sessions checklist. A session is active when the monitor saw it since
+ * this server started and the server still has its folder loaded (a folder is
+ * unloaded after an hour without activity), or when it is running now.
+ */
+export async function monitorSessions(ctx: Context, input: MonitorSessionsInput, ledger: Ledger = ledgerAt()): Promise<MonitorSessionList> {
+  const recent = ledger.db
+    .query<{ id: string; directory: string | null }, [number]>("select id, directory from session where last_seen >= ?")
+    .all(serverStarted)
+  const directories = [...new Set(recent.flatMap((row) => (row.directory ? [row.directory] : [])))]
+  const loaded = new Set(
+    (
+      await Promise.all(
+        directories.map(async (directory) => {
+          const ref = Location.Ref.make({ directory: AbsolutePath.make(directory) })
+          return (await Effect.runPromise(ctx.locations.loaded(ref)).catch(() => true)) ? [directory] : []
+        }),
+      )
+    ).flat(),
+  )
+  const running = await Effect.runPromise(Effect.suspend(() => ctx.session.active())).catch(() => undefined)
+  const active = new Set([
+    ...recent.filter((row) => row.directory === null || loaded.has(row.directory)).map((row) => row.id),
+    ...Object.keys(running ?? {}),
+  ])
+  const list = sessionChecklist(ledger, input, { directory: ctx.location.directory, active })
+  const facts = await hostSessionFacts(ctx, ledger, list.sessions.map((row) => row.sessionID))
+  return {
+    ...list,
+    sessions: list.sessions.map((row) => ({
+      ...row,
+      ...(facts.agents.has(row.sessionID) ? { agent: facts.agents.get(row.sessionID)! } : {}),
+      ...(facts.states.has(row.sessionID) ? { state: facts.states.get(row.sessionID)! } : {}),
+    })),
+  }
 }
 
 export function monitorMark(label: string, ledger: Ledger = ledgerAt()): MonitorMark {

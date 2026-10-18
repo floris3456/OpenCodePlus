@@ -16,12 +16,13 @@ import {
   formatTokens,
   GROUPS,
   knownTab,
+  noticeSettings,
   queryOf,
   SCOPES,
   scopeWords,
-  sessionDrill,
   SORTS,
   TABS,
+  textMatches,
   totalsLine,
   totalsLines,
   windowLabels,
@@ -31,7 +32,6 @@ import {
   type TabName,
 } from "./format.js"
 import { MonitorHelp } from "./help.js"
-import { openSessionPicker } from "./session-picker.js"
 import { CacheTab } from "./tabs/cache.js"
 import { PromptTab, type PromptController } from "./tabs/prompt.js"
 import { SessionsTab } from "./tabs/sessions.js"
@@ -76,6 +76,15 @@ export interface MonitorViewProps {
   readonly focus?: () => void
   /** The active team; the Team tab is shown only while there is one. */
   readonly team?: () => ActiveTeamInfo | undefined
+  /** A cache notice to open: its session alone, on the Cache tab, its request selected. */
+  readonly target?: () => MonitorTarget | undefined
+  /** The view took the target; the caller clears it so it is applied once. */
+  readonly onTarget?: () => void
+}
+
+export interface MonitorTarget {
+  readonly sessionID: string
+  readonly requestID: string
 }
 
 export function createMonitorSettings(
@@ -165,13 +174,7 @@ export function MonitorView(props: MonitorViewProps) {
   const [pages, setPages] = createSignal<Plus.MonitorQueryInput["pages"]>()
   const [collection, setCollection] = createSignal<Plus.MonitorPageSection>()
   const [fullText, setFullText] = createSignal(false)
-  const pageTarget = () =>
-    collection() ??
-    (activeDrill()?.requestID
-      ? "detail.segments"
-      : tab() === "sessions"
-        ? "sessions"
-        : undefined)
+  const pageTarget = () => collection() ?? (activeDrill()?.requestID ? "detail.segments" : undefined)
   const [promptTarget, setPromptTarget] = createSignal<string>()
   const prompt: { controller?: PromptController } = {}
   // Prompt shows one session's sent bodies: the selected one, else the latest of any.
@@ -343,22 +346,17 @@ export function MonitorView(props: MonitorViewProps) {
           // top and shifts every row down. Remember the selected request's id
           // so the selection follows the same request instead of its old row.
           const previousID =
-            props.full && (tab() === "cache" || tab() === "sessions")
-              ? tab() === "sessions"
-                ? shown()?.sessions?.[selected()]?.sessionID
-                : cacheRequests(shown(), settings().missesOnly)[selected()]?.id
-              : undefined
+            props.full && tab() === "cache" ? cacheRequests(shown(), settings().missesOnly)[selected()]?.id : undefined
           // One update: the rows and the selection that keeps its row change
           // together, so no effect sees the new rows under the old index.
           batch(() => {
             setReport(next)
             setFailure(undefined)
+            // The Sessions checklist keeps its own selection when it reloads.
+            if (tab() === "sessions") return
             setSelected((index) => {
               if (previousID !== undefined) {
-                const at =
-                  tab() === "sessions"
-                    ? (filtered.sessions ?? []).findIndex((r) => r.sessionID === previousID)
-                    : cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
+                const at = cacheRequests(filtered, settings().missesOnly).findIndex((request) => request.id === previousID)
                 if (at !== -1) return at
               }
               return Math.min(index, maxIdx)
@@ -379,7 +377,7 @@ export function MonitorView(props: MonitorViewProps) {
   function rowCount(report: Plus.MonitorReport | undefined) {
     if (!props.full || tab() === "tools") return report?.groups.length ?? 0
     if (tab() === "cache") return cacheRequests(report, settings().missesOnly).length
-    if (tab() === "sessions") return report?.sessions?.length ?? 0
+    if (tab() === "sessions") return sessionRows().length
     return 0
   }
 
@@ -426,6 +424,181 @@ export function MonitorView(props: MonitorViewProps) {
     return current === undefined ? undefined : filterReport(current, settings().filterText)
   })
 
+  // The Sessions checklist: every session as trees, the active ones unless S
+  // shows the rest, this chat's tree first and open. The checked sessions are
+  // what every other tab reports on; checking changes only this monitor's
+  // temporary filter, never the stored settings.
+  const [allSessions, setAllSessions] = createSignal(false)
+  const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(
+    new Set(props.sessionID() === undefined ? [] : [props.sessionID()!]),
+  )
+  const [treeOffset, setTreeOffset] = createSignal(0)
+  const [checklist, setChecklist] = createSignal<Plus.MonitorSessionList>()
+  const rowsOf = (list: Plus.MonitorSessionList | undefined): readonly Plus.MonitorSessionRow[] => {
+    if (list === undefined) return []
+    const chat = props.sessionID()
+    const title = chat === undefined ? undefined : props.context.data.session.get(chat)?.title
+    // A chat without a finished request is not in the monitor yet; it still heads the list.
+    const rows: readonly Plus.MonitorSessionRow[] =
+      chat !== undefined && list.offset === 0 && !list.sessions.some((row) => row.sessionID === chat)
+        ? [
+            {
+              sessionID: chat, rootID: chat, depth: 0, ...(title ? { title } : {}), lastActive: 0, requests: 0, steps: 0,
+              input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, cost: 0, misses: 0, active: true, descendants: 0,
+            },
+            ...list.sessions,
+          ]
+        : list.sessions
+    const filter = settings().filterText
+    return rows.filter((row) => textMatches(filter, [row.sessionID, row.title, row.agent, row.role, row.team, row.state, row.runID]))
+  }
+  const sessionRows = createMemo(() => rowsOf(checklist()))
+  const rootOf = (id: string) => sessionRows().find((row) => row.sessionID === id)?.rootID ?? id
+  const isExpanded = (root: string) => [...expanded()].some((id) => rootOf(id) === root)
+  /** The sessions the other tabs report on; undefined when the scope is not a session selection. */
+  const checkedIDs = (): readonly string[] | undefined => {
+    const current = settings()
+    if (current.scope !== "session" && current.scope !== "tree") return undefined
+    const ids = current.sessionIDs ?? (sessionID() === undefined ? [] : [sessionID()!])
+    if (current.scope === "session") return ids
+    const roots = new Set(ids.map(rootOf))
+    return sessionRows().filter((row) => roots.has(row.rootID)).map((row) => row.sessionID)
+  }
+  const isChecked = (row: Plus.MonitorSessionRow) => checkedIDs()?.includes(row.sessionID) ?? false
+  const check = (ids: readonly string[], on: boolean) => {
+    const base = checkedIDs() ?? []
+    const next = on ? [...base, ...ids.filter((id) => !base.includes(id))] : base.filter((id) => !ids.includes(id))
+    const drill: Drill = {
+      settings: { ...settings(), scope: "session", sessionIDs: next },
+      ...(next.length === 0 ? {} : { sessionID: next.at(-1)! }),
+    }
+    setDrills((stack) => (stack.length === 0 ? [drill] : [...stack.slice(0, -1), { ...stack.at(-1)!, ...drill }]))
+  }
+  const checklistFlight = { generation: 0 }
+  const loadChecklist = (expand: readonly string[] = []) => {
+    const generation = ++checklistFlight.generation
+    const query = currentQuery()
+    const chat = props.sessionID()
+    return plus["monitor.sessions"](
+      {
+        ...(allSessions() ? { all: true } : {}),
+        expanded: [...expanded(), ...expand],
+        ...(chat === undefined ? {} : { first: chat }),
+        ...(query.since === undefined ? {} : { since: query.since }),
+        ...(query.until === undefined ? {} : { until: query.until }),
+        page: { offset: treeOffset() },
+      },
+      { location: location() },
+    ).then(
+      (list) => {
+        if (generation !== checklistFlight.generation) return undefined
+        // The selection stays on its session when rows above it come or go.
+        const keep = sessionRows()[selected()]?.sessionID
+        const at = keep === undefined ? -1 : rowsOf(list).findIndex((row) => row.sessionID === keep)
+        batch(() => {
+          setChecklist(list)
+          if (at !== -1) setSelected(at)
+        })
+        return list
+      },
+      (error: unknown) => {
+        setFailure(error instanceof Error ? error.message : String(error))
+        return undefined
+      },
+    )
+  }
+  createEffect(() => {
+    if (!props.full || tab() !== "sessions" || !props.active()) return
+    allSessions()
+    expanded()
+    treeOffset()
+    settings().window
+    props.sessionID()
+    untrack(() => void loadChecklist())
+    const timer = setInterval(() => void loadChecklist(), pace())
+    onCleanup(() => clearInterval(timer))
+  })
+  /** Space: check or uncheck a whole tree, opening it first so every session in it is known. */
+  const checkTree = async (row: Plus.MonitorSessionRow) => {
+    const root = row.rootID
+    const known = sessionRows().filter((entry) => entry.rootID === root)
+    const head = known.find((entry) => entry.sessionID === root)
+    const whole = head === undefined || (head.descendants ?? 0) <= known.length - 1
+    setExpanded((set) => new Set([...set, root]))
+    const list = whole ? checklist() : await loadChecklist([root])
+    const ids = rowsOf(list).filter((entry) => entry.rootID === root).map((entry) => entry.sessionID)
+    if (ids.length === 0) return
+    const checked = checkedIDs() ?? []
+    check(ids, !ids.every((id) => checked.includes(id)))
+  }
+  const closeTree = (row: Plus.MonitorSessionRow) => {
+    const root = row.rootID
+    setExpanded((set) => new Set([...set].filter((id) => id !== root && rootOf(id) !== root)))
+    const at = sessionRows().findIndex((entry) => entry.sessionID === root)
+    if (at !== -1) setSelected(at)
+  }
+  props.context.keymap.layer(() => ({
+    ...(props.mode === undefined ? {} : { mode: props.mode }),
+    enabled: () => props.active() && props.full && tab() === "sessions" && !helpOpen(),
+    priority: 2,
+    commands: [
+      {
+        bind: "right",
+        title: "Open tree",
+        group: "Monitor",
+        run: () => {
+          const row = sessionRows()[selected()]
+          if (row !== undefined) setExpanded((set) => new Set([...set, row.rootID]))
+        },
+      },
+      {
+        bind: "left",
+        title: "Close tree",
+        group: "Monitor",
+        run: () => {
+          const row = sessionRows()[selected()]
+          if (row !== undefined) closeTree(row)
+        },
+      },
+    ],
+  }))
+
+  // A cache notice opens on its session alone with its request selected and
+  // marked; older pages load until the request is in the list.
+  const [highlight, setHighlight] = createSignal<string>()
+  const [seeking, setSeeking] = createSignal<string>()
+  createEffect(() => {
+    const goal = props.target?.()
+    if (goal === undefined || !props.full) return
+    untrack(() => {
+      props.onTarget?.()
+      batch(() => {
+        setHelpOpen(false)
+        setPromptTarget(undefined)
+        setRequestPage(undefined)
+        setReport(undefined)
+        setSelected(0)
+        setDrills([{ settings: noticeSettings(store.settings(), goal.sessionID), sessionID: goal.sessionID }])
+        setHighlight(goal.requestID)
+        setSeeking(goal.requestID)
+      })
+      props.focus?.()
+    })
+  })
+  createEffect(() => {
+    const id = seeking()
+    const current = shown()
+    if (id === undefined || current === undefined || tab() !== "cache") return
+    const index = cacheRequests(current, settings().missesOnly).findIndex((request) => request.id === id)
+    if (index !== -1) {
+      setSelected(index)
+      setSeeking(undefined)
+      return
+    }
+    if (current.requestPage?.older !== undefined) untrack(() => loadOlder(100))
+    else setSeeking(undefined)
+  })
+
   const groups = createMemo((): readonly Plus.MonitorGroup[] => {
     const current = shown()
     if (current === undefined) return []
@@ -470,7 +643,7 @@ export function MonitorView(props: MonitorViewProps) {
       current === "tools"
         ? rows.groups[index]?.key
         : current === "sessions"
-          ? shown()?.sessions?.[index]?.sessionID
+          ? sessionRows()[index]?.sessionID
           : cacheRequests(shown(), settings().missesOnly)[index]?.id
     if (lastFollowed?.tab === current && lastFollowed.index === index) return
     const scroll = scrolls[current]
@@ -660,39 +833,6 @@ export function MonitorView(props: MonitorViewProps) {
     }
   }
 
-  // `S` adds a session to a combined report; already-selected sessions are omitted.
-  const openPicker = () => {
-    void currentSessions().then(
-      (list) =>
-        openSessionPicker(
-          props.context,
-          list.sessions,
-          (picked) => {
-            addSession(picked)
-          },
-          {
-            page: list.page,
-            selected: settings().scope === "session"
-              ? settings().sessionIDs ?? (sessionID() ? [sessionID()!] : [])
-              : [],
-            load: (cursor) => loadSessions(cursor).then((next) => ({ sessions: next.sessions, page: next.page })),
-          },
-        ),
-      (error: unknown) =>
-        props.context.ui.toast.show({
-          variant: "error",
-          message: error instanceof Error ? error.message : String(error),
-        }),
-    )
-  }
-
-  const addSession = (id: string, scope: "session" | "tree" = "session") => {
-    const next = sessionDrill(settings(), id, sessionID(), scope)
-    if (next === undefined) return
-    setSelected(0)
-    setDrills((stack) => [...stack, next])
-  }
-
   const mark = async () => {
     const label = await props.context.ui.dialog.prompt({
       title: "Mark this moment",
@@ -750,11 +890,8 @@ export function MonitorView(props: MonitorViewProps) {
       return
     }
     if (current === "sessions") {
-      const s = shown()?.sessions?.[selected()]
-      if (s === undefined) return
-      // Scope to the session as a temporary drill: the stored preference and
-      // the original filters stay untouched, so Backspace restores exactly.
-      addSession(s.sessionID)
+      const row = sessionRows()[selected()]
+      if (row !== undefined) check([row.sessionID], !isChecked(row))
       return
     }
   }
@@ -819,6 +956,15 @@ export function MonitorView(props: MonitorViewProps) {
         group: "Monitor",
         run: () => {
           if (tab() === "prompt") return prompt.controller?.step(direction)
+          if (tab() === "sessions") {
+            const list = checklist()
+            if (list === undefined) return
+            const offset = direction === "older" ? list.offset - list.limit : list.offset + list.limit
+            if (offset < 0 || offset >= list.roots) return
+            setSelected(0)
+            setTreeOffset(offset)
+            return
+          }
           const target = pageTarget()
           if (target) {
             const cursor = direction === "older" ? metadata()?.previous : metadata()?.next
@@ -840,6 +986,11 @@ export function MonitorView(props: MonitorViewProps) {
         group: "Monitor",
         run: () => {
           if (tab() === "prompt") return prompt.controller?.latest()
+          if (tab() === "sessions") {
+            setSelected(0)
+            setTreeOffset(0)
+            return
+          }
           if (pageTarget()) {
             const target = pageTarget()!
             setSelected(0)
@@ -956,9 +1107,20 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "shift+s",
-        title: "Add session filter",
+        title: "Show inactive sessions",
         group: "Monitor",
-        run: () => openPicker(),
+        run: () => {
+          // The compact composer body has no Sessions tab.
+          if (!props.full) return
+          setTreeOffset(0)
+          if (tab() !== "sessions") {
+            setAllSessions(true)
+            setTab("sessions")
+            return
+          }
+          setSelected(0)
+          setAllSessions((value) => !value)
+        },
       },
       {
         bind: "shift+t",
@@ -1002,16 +1164,11 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "space",
-        title: "Scope to session tree",
+        title: "Check session tree",
         group: "Monitor",
         run: () => {
-          if (tab() === "sessions") {
-            const s = shown()?.sessions?.[selected()]
-            if (s !== undefined) {
-              // Temporary tree drill: the stored scope/filters never change.
-              addSession(s.rootID, "tree")
-            }
-          }
+          const row = tab() === "sessions" ? sessionRows()[selected()] : undefined
+          if (row !== undefined) void checkTree(row)
         },
       },
       { bind: "a", title: "Filter by agent", group: "Monitor", run: () => void pickFilter("agent") },
@@ -1056,6 +1213,7 @@ export function MonitorView(props: MonitorViewProps) {
     const effective = (s === "session" || s === "tree") && sessionID() === undefined ? "project" : s
     const name = scopeWords[effective] ?? effective
     const ids = settings().sessionIDs
+    if (effective === "session" && ids?.length === 0) return "No session checked (Sessions tab)"
     if ((effective === "session" || effective === "tree") && ids !== undefined && ids.length > 1) {
       return `${ids.length} ${effective === "tree" ? "session trees" : "sessions"} (${ids.map((id) => id.slice(0, 10)).join(", ")})`
     }
@@ -1091,8 +1249,8 @@ export function MonitorView(props: MonitorViewProps) {
           : "[↑↓] select · [⏎] filter · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] compare · [m] mark · [?] help"
       case "sessions":
         return narrow
-          ? "[↑↓] · [⏎] session · [space] tree · [s] scope · [t] window · [?] help · [esc]"
-          : "[↑↓] select · [⏎] add session · [space] add tree · [S] add session · [s] scope · [?] help · [esc] close"
+          ? "[↑↓] · [⏎] check · [space] tree · [→←] open · [S] inactive · [?] · [esc]"
+          : "[↑↓] select · [⏎] check session · [space] check tree · [→/←] open/close tree · [S] show inactive · [?] help · [esc] close"
       case "team":
         return narrow
           ? "[↑↓] · [⏎] open · [ctrl+a/t] inactive/tree · [ctrl+d] stop · [e] checks"
@@ -1181,7 +1339,7 @@ export function MonitorView(props: MonitorViewProps) {
           {scopeLabel()}
         </text>
         <Show when={width() >= 80}>
-          <text fg={theme().text.muted}> [s] choose · [S] add session · [T] team</text>
+          <text fg={theme().text.muted}> [s] choose · [S] all sessions · [T] team</text>
         </Show>
       </box>
 
@@ -1310,6 +1468,7 @@ export function MonitorView(props: MonitorViewProps) {
                   selectedIndex={selected()}
                   onSelect={setSelected}
                   detailID={activeDrill()?.requestID}
+                  highlightID={highlight()}
                   collection={pageTarget()}
                   missesOnly={settings().missesOnly}
                   active={props.active()}
@@ -1336,13 +1495,13 @@ export function MonitorView(props: MonitorViewProps) {
                 <SessionsTab
                   width={width()}
                   context={props.context}
-                  report={shown()}
+                  rows={sessionRows()}
+                  list={checklist()}
+                  all={allSessions()}
+                  checked={isChecked}
+                  expanded={isExpanded}
                   selectedIndex={selected()}
                   onSelect={setSelected}
-                  onScopeSession={(sid) => addSession(sid)}
-                  onScopeTree={(sid) =>
-                    addSession(shown()?.sessions?.find((s) => s.sessionID === sid)?.rootID ?? sid, "tree")
-                  }
                   active={props.active()}
                   onScrollRef={(ref) => (scrolls.sessions = ref)}
                 />

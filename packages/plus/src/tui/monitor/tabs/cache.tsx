@@ -23,6 +23,8 @@ export interface CacheTabProps {
   readonly selectedIndex: number
   readonly onSelect: (index: number) => void
   readonly detailID: string | undefined
+  /** The request a cache notice opened; marked while another row is selected. */
+  readonly highlightID?: string
   readonly missesOnly: boolean
   readonly active: boolean
   readonly onScrollRef?: (ref: ScrollBoxRenderable) => void
@@ -187,7 +189,9 @@ export function CacheTab(props: CacheTabProps) {
                         const bg = () =>
                           isSelected()
                             ? theme().background.action.primary.focused
-                            : theme().background.action.primary.base
+                            : req.id === props.highlightID
+                              ? theme().background.feedback.warning.base
+                              : theme().background.action.primary.base
                         const fg = () => (isSelected() ? theme().text.action.primary.focused : theme().text.base)
 
                         return (

@@ -74,6 +74,9 @@ test("every method and event is declared", () => {
     "monitor.prompt",
     "monitor.step",
     "monitor.mark",
+    "monitor.notices",
+    "monitor.dismiss",
+    "monitor.sessions",
   ]
 
   for (const name of expectedMethods) {

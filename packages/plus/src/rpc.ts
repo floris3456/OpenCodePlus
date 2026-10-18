@@ -1277,15 +1277,29 @@ export const WarmingCompactInput = Schema.Struct({
 
 // Plus's global switches, the Settings › OpenCodePlus rows the server acts on.
 // `coldCompact`: a message sent into a cold chat is first summarized by the
-// cold-cache models its model resolves in Instructions.
+// cold-cache models its model resolves in Instructions. The `notice*` fields
+// shape the cache notices every TUI of this server shows.
+export const NoticeKinds = Schema.Literals(["misses-and-partials", "misses"])
+export const NoticeDismiss = Schema.Literals(["everywhere", "this-tui"])
 export interface PlusSettings extends Schema.Schema.Type<typeof PlusSettings> {}
 export const PlusSettings = Schema.Struct({
   coldCompact: Schema.Boolean,
+  /** How long a notice stays, in minutes. */
+  noticeMinutes: Schema.Number,
+  /** Lost tokens below this raise no notice. */
+  noticeMinTokens: Schema.Number,
+  noticeKinds: NoticeKinds,
+  /** Whether opening a notice removes it from every TUI or only from the one it was opened in. */
+  noticeDismiss: NoticeDismiss,
 }).annotate({ identifier: "Plus.Settings" })
 
 export interface PlusSettingsInput extends Schema.Schema.Type<typeof PlusSettingsInput> {}
 export const PlusSettingsInput = Schema.Struct({
   coldCompact: Schema.optionalKey(Schema.Boolean),
+  noticeMinutes: Schema.optionalKey(Schema.Number),
+  noticeMinTokens: Schema.optionalKey(Schema.Number),
+  noticeKinds: Schema.optionalKey(NoticeKinds),
+  noticeDismiss: Schema.optionalKey(NoticeDismiss),
 }).annotate({ identifier: "Plus.SettingsInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
@@ -1467,6 +1481,50 @@ export const MonitorStepResult = Schema.Union([
     droppedThinking: Schema.optionalKey(DroppedThinking),
   }),
 ]).annotate({ identifier: "Plus.MonitorStepResult" })
+
+// A cache miss or partial reuse on any session of this server, shown in every
+// open TUI until it is opened, dismissed or older than the notice lifetime.
+export interface MonitorNotice extends Schema.Schema.Type<typeof MonitorNotice> {}
+export const MonitorNotice = Schema.Struct({
+  requestID: Schema.String,
+  sessionID: Schema.String,
+  /** The top session of its tree: the chat a subagent works for. */
+  rootID: Schema.String,
+  title: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  verdict: Schema.Literals(["miss", "partial"]),
+  missTokens: Schema.Number,
+  causeText: Schema.String,
+  /** When the request ended; the notice expires a lifetime later. */
+  at: Schema.Number,
+}).annotate({ identifier: "Plus.MonitorNotice" })
+
+export interface MonitorNotices extends Schema.Schema.Type<typeof MonitorNotices> {}
+export const MonitorNotices = Schema.Struct({
+  notices: Schema.Array(MonitorNotice),
+}).annotate({ identifier: "Plus.MonitorNotices" })
+
+export interface MonitorDismissInput extends Schema.Schema.Type<typeof MonitorDismissInput> {}
+export const MonitorDismissInput = Schema.Struct({
+  requestID: Schema.String,
+}).annotate({ identifier: "Plus.MonitorDismissInput" })
+
+// The Sessions tab's checklist: every session as trees, the active ones by
+// default. Active means the monitor saw it since this server started and the
+// server still has its folder loaded.
+export interface MonitorSessionsInput extends Schema.Schema.Type<typeof MonitorSessionsInput> {}
+export const MonitorSessionsInput = Schema.Struct({
+  /** Inactive sessions as well. */
+  all: Schema.optionalKey(Schema.Boolean),
+  /** Trees whose descendants are listed under their root; any session of a tree names it. */
+  expanded: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** A session whose tree is listed first and always, active or not. */
+  first: Schema.optionalKey(Schema.String),
+  since: Schema.optionalKey(Schema.Number),
+  until: Schema.optionalKey(Schema.Number),
+  page: Schema.optionalKey(Schema.Struct({ limit: Schema.optionalKey(Schema.Number), offset: Schema.optionalKey(Schema.Number) })),
+}).annotate({ identifier: "Plus.MonitorSessionsInput" })
 
 export interface MonitorPricing extends Schema.Schema.Type<typeof MonitorPricing> {}
 export const MonitorPricing = Schema.Struct({
@@ -1768,7 +1826,22 @@ export const MonitorSessionRow = Schema.Struct({
   unknownRequests: Schema.optionalKey(Schema.Number),
   measuredInput: Schema.optionalKey(Schema.Number),
   misses: Schema.Number,
+  /** Seen since this server started, in a folder it still has loaded (Sessions checklist only). */
+  active: Schema.optionalKey(Schema.Boolean),
+  /** Sessions below this root, listed or not (Sessions checklist only). */
+  descendants: Schema.optionalKey(Schema.Number),
 }).annotate({ identifier: "Plus.MonitorSessionRow" })
+
+export interface MonitorSessionList extends Schema.Schema.Type<typeof MonitorSessionList> {}
+export const MonitorSessionList = Schema.Struct({
+  sessions: Schema.Array(MonitorSessionRow),
+  /** Roots in the list (one page of them is returned). */
+  roots: Schema.Number,
+  offset: Schema.Number,
+  limit: Schema.Number,
+  /** Sessions left out because they are inactive. */
+  inactive: Schema.Number,
+}).annotate({ identifier: "Plus.MonitorSessionList" })
 
 export interface MonitorPromptInput extends Schema.Schema.Type<typeof MonitorPromptInput> {}
 export const MonitorPromptInput = Schema.Struct({
@@ -2441,6 +2514,10 @@ const PortableMonitorMarkInput = Schema.toStandardSchemaV1(
   MonitorMarkInput.annotate({ identifier: "Plus.MonitorMarkInput" }),
 )
 const PortableMonitorMark = Schema.toStandardSchemaV1(MonitorMark.annotate({ identifier: "Plus.MonitorMark" }))
+const PortableMonitorNotices = Schema.toStandardSchemaV1(MonitorNotices)
+const PortableMonitorDismissInput = Schema.toStandardSchemaV1(MonitorDismissInput)
+const PortableMonitorSessionsInput = Schema.toStandardSchemaV1(MonitorSessionsInput)
+const PortableMonitorSessionList = Schema.toStandardSchemaV1(MonitorSessionList)
 const PortableLogInput = Schema.toStandardSchemaV1(LogInput.annotate({ identifier: "Plus.LogInput" }))
 const PortableLogOutput = Schema.toStandardSchemaV1(LogOutput.annotate({ identifier: "Plus.LogOutput" }))
 const PortableInstructionsOpsOutput = Schema.toStandardSchemaV1(
@@ -2917,6 +2994,21 @@ export const Definition = Rpc.define({
     "monitor.mark": {
       input: PortableMonitorMarkInput,
       output: PortableMonitorMark,
+      errors: {},
+    },
+    "monitor.notices": {
+      input: Empty,
+      output: PortableMonitorNotices,
+      errors: {},
+    },
+    "monitor.dismiss": {
+      input: PortableMonitorDismissInput,
+      output: Empty,
+      errors: {},
+    },
+    "monitor.sessions": {
+      input: PortableMonitorSessionsInput,
+      output: PortableMonitorSessionList,
       errors: {},
     },
     "rule.add": {

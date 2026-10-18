@@ -87,7 +87,7 @@ import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-b
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./warming.js"
-import { monitorCache, monitorFact, monitorMark, monitorPrompt, monitorQuery, monitorStep, watchMonitor } from "./monitor/plugin.js"
+import { monitorCache, monitorDismiss, monitorFact, monitorMark, monitorNotices, monitorPrompt, monitorQuery, monitorSessions, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { plusSettings } from "./plus-settings.js"
@@ -3878,6 +3878,9 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
     "monitor.prompt": (input) => Effect.sync(() => monitorPrompt(input)),
     "monitor.step": (input) => Effect.promise(() => monitorStep(ctx, input)),
     "monitor.mark": (input) => Effect.sync(() => monitorMark(input.label)),
+    "monitor.notices": () => Effect.promise(async () => monitorNotices(await plusSettings.read())),
+    "monitor.dismiss": (input) => Effect.sync(() => monitorDismiss(input.requestID)),
+    "monitor.sessions": (input) => Effect.promise(() => monitorSessions(ctx, input)),
     "checks.suggest": () =>
       Effect.promise(async () => {
         const root = await mainCheckout(ctx.location.directory)
@@ -3931,7 +3934,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "settings.get": () => Effect.promise(() => plusSettings.read()),
     "settings.set": (input) =>
-      Effect.promise(() => plusSettings.update(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact })),
+      Effect.promise(() =>
+        plusSettings.update(
+          Object.fromEntries(Object.entries(input).filter((entry) => entry[1] !== undefined)),
+        ),
+      ),
   }
 }
 

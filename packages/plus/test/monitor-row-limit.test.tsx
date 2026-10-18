@@ -80,7 +80,6 @@ function makeReport(input: Plus.MonitorQueryInput): Plus.MonitorReport {
     facets: { agents: ["build"], tools: [], models: ["claude-3-7-sonnet"] },
     marks: [],
     requests,
-    ...(input.view === "sessions" ? { sessions: Array.from({ length: COUNT }, (_, index) => session(index)) } : {}),
     ...(selected === undefined
       ? {}
       : {
@@ -99,10 +98,22 @@ function makeReport(input: Plus.MonitorQueryInput): Plus.MonitorReport {
   } as Plus.MonitorReport
 }
 
+/** The Sessions checklist: COUNT roots, rebuilt each poll as the RPC does. */
+function makeSessions(): Plus.MonitorSessionList {
+  return {
+    sessions: Array.from({ length: COUNT }, (_, index) => ({ ...session(index), active: true, descendants: 0 })),
+    roots: COUNT,
+    offset: 0,
+    limit: COUNT,
+    inactive: 0,
+  }
+}
+
 async function render(
   settings: MonitorSettings,
   options: {
     report?: (input: Plus.MonitorQueryInput) => Plus.MonitorReport
+    sessions?: () => Plus.MonitorSessionList
     width?: number
     height?: number
     prompts?: (string | undefined)[]
@@ -121,6 +132,7 @@ async function render(
         return (options.report ?? makeReport)(input)
       },
       "monitor.cache": async (input: Plus.MonitorQueryInput) => (options.report ?? makeReport)(input),
+      "monitor.sessions": async () => (options.sessions ?? makeSessions)(),
       "monitor.mark": async () => ({ id: 1, at: NOW, label: "m" }),
     },
     render: (context) => (
@@ -226,13 +238,13 @@ test("a same-id row updates its fields without being remounted", async () => {
   const settings: MonitorSettings = { ...defaultSettings, tab: "sessions", scope: "all" }
   let currentBaseline = true
   const { fixture } = await render(settings, {
-    report: (input) => {
-      const base = makeReport(input)
+    sessions: () => {
+      const base = makeSessions()
       if (currentBaseline) return base
       // Same ids, changed title/agent/tokens.
       return {
         ...base,
-        sessions: base.sessions!.map((row, index) =>
+        sessions: base.sessions.map((row, index) =>
           index === 0 ? { ...row, title: "Renamed chat", agent: "explore", input: 999_000 } : row,
         ),
       }
@@ -252,8 +264,10 @@ test("a same-id row updates its fields without being remounted", async () => {
     const frame = fixture.captureCharFrame()
     expect(frame).toContain("Renamed chat")
     expect(frame).toContain("explore")
-    const cells = (after as unknown as { getChildren: () => { plainText?: string }[] }).getChildren().map((c) => c.plainText)
-    expect(cells[0]).toBe("Renamed chat")
+    type Node = { plainText?: string; getChildren?: () => Node[] }
+    const texts = (node: Node): (string | undefined)[] => [node.plainText, ...(node.getChildren?.() ?? []).flatMap(texts)]
+    const cells = texts(after as unknown as Node)
+    expect(cells).toContain("  Renamed chat")
     expect(cells).toContain("999k")
   } finally {
     fixture.destroy()
@@ -380,7 +394,8 @@ test("the Cache and Sessions tabs window their rows the same way", async () => {
   for (const tab of ["cache", "sessions"] as const) {
     const { fixture } = await render({ ...defaultSettings, tab, scope: "all" })
     try {
-      await fixture.waitForFrame((text) => text.includes(`of ${COUNT}`))
+      // The open chat has no request in the fake list, so the checklist adds it on top.
+      await fixture.waitForFrame((text) => text.includes(`of ${tab === "cache" ? COUNT : COUNT + 1}`))
       const mounted = mountedRows(fixture)
       expect(mounted.length).toBeGreaterThan(0)
       expect(mounted.length).toBeLessThan(200)

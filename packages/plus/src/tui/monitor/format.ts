@@ -116,8 +116,8 @@ export function queryOf(
     ...(settings.window === "compaction" ? { sinceCompaction: true } : {}),
     ...(window.since === undefined ? {} : { since: window.since }),
     ...(window.until === undefined ? {} : { until: window.until }),
-    // The Prompt and Team tabs read their own RPCs; their header totals are the cache totals.
-    view: settings.tab === "prompt" || settings.tab === "team" ? "cache" : settings.tab,
+    // The Prompt, Sessions and Team tabs read their own RPCs; their header totals are the cache totals.
+    view: settings.tab === "prompt" || settings.tab === "sessions" || settings.tab === "team" ? "cache" : settings.tab,
     ...(context.id !== undefined ? { id: context.id } : {}),
     ...(settings.missesOnly ? { missesOnly: true } : {}),
     ...(settings.agent === undefined ? {} : { agents: [settings.agent] }),
@@ -191,6 +191,24 @@ export function sessionDrill(
   const ids = settings.scope === scope ? settings.sessionIDs ?? (sessionID === undefined ? [] : [sessionID]) : []
   if (ids.includes(id)) return undefined
   return { settings: { ...settings, scope, sessionIDs: [...ids, id] }, sessionID: id }
+}
+
+/**
+ * Where a cache notice opens: the Cache tab of only the session that missed,
+ * over all time, with no filter that could hide the request.
+ */
+export function noticeSettings(settings: MonitorSettings, sessionID: string): MonitorSettings {
+  return {
+    tab: "cache",
+    scope: "session",
+    sessionIDs: [sessionID],
+    window: "all",
+    group: settings.group,
+    sort: settings.sort,
+    errors: false,
+    missesOnly: false,
+    compare: "off",
+  }
 }
 
 /** True when the text filter is off or one of the values contains it. */

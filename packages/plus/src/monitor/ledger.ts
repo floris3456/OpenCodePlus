@@ -259,6 +259,13 @@ create table if not exists mark (
 );
 create index if not exists mark_at on mark(at);
 
+-- Cache notices opened or dismissed in any TUI: hidden from every TUI of this
+-- server. Rows outlive the longest notice lifetime briefly, then are pruned.
+create table if not exists notice_dismissed (
+  request_id text primary key,
+  at integer not null
+);
+
 create table if not exists meta (
   key text primary key,
   value text not null

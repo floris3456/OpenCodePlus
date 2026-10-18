@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { createSignal, Show } from "solid-js"
 import type { ActiveTeamInfo } from "../active-team.js"
-import { MonitorView } from "./view.js"
+import { MonitorView, type MonitorTarget } from "./view.js"
 
 // Sessions use the host's panel, including its in-place fullscreen toggle.
 // The route also makes Monitor available from Home, where panels cannot open.
@@ -11,6 +11,8 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
     ...context.ui.router.current(),
   })
   const [chat, setChat] = createSignal<string | undefined>()
+  // A cache notice waiting for the view that opens (or is open) to take it.
+  const [target, setTarget] = createSignal<MonitorTarget>()
 
   const open = (sessionID?: string) => {
     const current = context.ui.router.current()
@@ -26,6 +28,12 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
     context.ui.router.navigate({ type: "plugin", name: "monitor" })
   }
 
+  /** Opens the monitor on one request of one session: a cache notice's miss. */
+  const openAt = (next: MonitorTarget) => {
+    setTarget({ sessionID: next.sessionID, requestID: next.requestID })
+    open()
+  }
+
   const disposeRoute = context.ui.router.register({
     name: "monitor",
     render: (route) => (
@@ -38,6 +46,8 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
         }}
         full
         initialSession
+        target={target}
+        onTarget={() => setTarget(undefined)}
         onClose={() => context.ui.router.navigate(previous())}
         {...(options.team === undefined ? {} : { team: options.team })}
       />
@@ -56,6 +66,8 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
           initialSession
           width={panel.width}
           focus={panel.focus}
+          target={target}
+          onTarget={() => setTarget(undefined)}
           onClose={panel.close}
           onToggleFullscreen={panel.toggleFullscreen}
           {...(options.team === undefined ? {} : { team: options.team })}
@@ -66,6 +78,7 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
 
   return {
     open,
+    openAt,
     dispose: () => {
       disposePanel()
       disposeRoute()

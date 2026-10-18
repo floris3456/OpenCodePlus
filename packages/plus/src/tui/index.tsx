@@ -8,7 +8,8 @@ import { createWarming } from "./warming.js"
 import { createModelPick } from "./model-pick.js"
 import { createMonitor } from "./monitor/index.js"
 import { createChatRefresh } from "./refresh.js"
-import { createMissToast } from "./miss-toast.js"
+import { createCacheNotices } from "./cache-notices.js"
+import { createThinkingToast } from "./thinking-toast.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -24,15 +25,8 @@ export default Plugin.define({
     const activeTeam = createActiveTeam(context)
     const monitor = createMonitor(context, { team: activeTeam.activeTeam })
     const refresh = createChatRefresh(context)
-    const missToast = createMissToast(context)
-    context.ui.settings.register({
-      id: "plus.miss-notices",
-      title: "Cache-miss notices",
-      category: "OpenCodePlus",
-      keywords: ["cache miss", "notices", "shortfall toast"],
-      value: () => (missToast.enabled() ? "on" : "off"),
-      run: () => missToast.toggle(),
-    })
+    const thinkingToast = createThinkingToast(context)
+    const notices = createCacheNotices(context, { open: (notice) => monitor.openAt(notice) })
     // The server acts on this one: a message sent into a cold chat is first
     // summarized by the cold-cache models its model has in Instructions.
     const plus = context.client.rpc(Definition)
@@ -137,7 +131,8 @@ export default Plugin.define({
       modelPick.dispose()
       monitor.dispose()
       activeTeam.dispose()
-      missToast.dispose()
+      thinkingToast.dispose()
+      notices.dispose()
       snapshots.dispose()
     }
   },

@@ -22,7 +22,7 @@ export function MonitorHelp(props: HelpProps) {
         { key: "1 – 5", desc: "Switch tab (Cache, Prompt, Tools, Sessions; Team while a team is active)" },
         { key: "tab / shift+tab", desc: "Next / previous tab" },
         { key: "s", desc: "Choose scope: this chat, its subagents, the project, everything, or any session" },
-        { key: "S", desc: "Add another session to the combined report (selected sessions are omitted)" },
+        { key: "S", desc: "Sessions tab with inactive sessions too; on the Sessions tab, active only or all" },
         { key: "T", desc: "Pick team (scope to a chosen Plus team)" },
         { key: "t", desc: "Step window (All · Since last compaction · 15m · 1h · 24h · 7d · 30d)" },
         { key: "/", desc: "Filter rows by text" },
@@ -72,9 +72,13 @@ export function MonitorHelp(props: HelpProps) {
     {
       title: "Sessions Tab",
       entries: [
-        { key: "↑ / ↓ (j / k)", desc: "Select session in delegation tree" },
-        { key: "Enter", desc: "Add this session to the report (no duplicates; ⌫ undoes)" },
-        { key: "space", desc: "Add this session's tree to the report (no duplicates; ⌫ undoes)" },
+        { key: "↑ / ↓ (j / k)", desc: "Select session; this chat's tree is open and only this chat is checked at first" },
+        { key: "Enter", desc: "Check or uncheck this session: every other tab reports on the checked sessions" },
+        { key: "space", desc: "Check or uncheck this session's whole tree" },
+        { key: "→ / ←", desc: "Open or close the tree" },
+        { key: "S", desc: "Active sessions only (seen since the server started, folder still loaded) or all" },
+        { key: "[ / ] · l", desc: "Previous / next page of trees · first page" },
+        { key: "⌫", desc: "Back to the scope before checking" },
       ],
     },
     {
