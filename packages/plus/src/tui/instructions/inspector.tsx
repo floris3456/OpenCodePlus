@@ -3,6 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show } from "solid-js"
 import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { IMAGE_FIELD_NOTES, IMAGE_FIELDS } from "../../image-settings.js"
 import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LABELS, MODEL_SETTINGS_FIELDS, MODELS_GROUP_ID, parseModelFieldItemId, parseModelSettingItemId, type ModelSettingsField } from "../../instructions/model-settings.js"
 import { formatDuration } from "../../instructions/model.js"
 import { contextOfSnapshot, modelDefaultsViewOf, rowlinkOf } from "../../instructions/snapshot.js"
@@ -229,7 +230,15 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
 export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   const notes = controlDetail(node, snapshot, memo).filter((line) => !line.startsWith("Value: "))
   const detail = structureDetail(node)
-  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot)]
+  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot), ...modelImageNotes(node)]
+}
+
+// An Images field under an agent/member/preset model row (a Defaults row says it in modelDefaultsNotes).
+function modelImageNotes(node: TreeNode): string[] {
+  const field = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)?.field
+  const image = IMAGE_FIELDS.find((entry) => entry === field)
+  if (image === undefined) return []
+  return ["This row's chain wins, then Defaults › Models › this model, then Every model.", ...IMAGE_FIELD_NOTES[image], "Enter picks; Inherit or r restores inheritance."]
 }
 
 // One Defaults › Models row's resolution order, in words. The agent's row wins
@@ -239,6 +248,13 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
   const defaults = modelDefaultsView(node, snapshot)
   if (defaults === undefined) return []
   const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
+  const image = IMAGE_FIELDS.find((entry) => entry === setting?.field)
+  if (image !== undefined)
+    return [
+      "The agent's model row chain wins, then this model's Defaults, then Every model.",
+      ...IMAGE_FIELD_NOTES[image],
+      "Enter picks; Inherit or r restores inheritance.",
+    ]
   if (setting?.field === "compactionInput" || setting?.field === "compactionOutput")
     return [
       "The agent's model row chain wins, then this model's Defaults, then Every model. Unset means no extra early trigger.",

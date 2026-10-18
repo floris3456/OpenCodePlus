@@ -278,6 +278,37 @@ test("closes turn usage on the idle marker so steered steps share one footer", (
   ])
 })
 
+test("shows the error of a busy period that failed before any step said why, once", () => {
+  const imagesFull = { type: "images.full", message: "This chat's images fill what one request may carry" }
+  const failed = (id: string, created: number, error = imagesFull): SessionMessageInfo => ({
+    type: "idle",
+    id,
+    outcome: "failed",
+    error,
+    time: { created },
+  })
+  const prompt: SessionMessageInfo = { type: "user", id: "user-1", text: "Read it", time: { created: 0 } }
+  const step = { ...assistant("assistant-1", []), finish: "tool-calls" as const }
+  // The step that read the image ended normally; the next one stopped before it began.
+  expect(reduceSessionRows([prompt, step, failed("idle-1", 2)])).toEqual([
+    { type: "message", messageID: "user-1" },
+    { type: "message", messageID: "idle-1" },
+  ])
+  // A step that failed with this error already shows it.
+  const erred = { ...assistant("assistant-1", []), error: imagesFull } as SessionMessageInfo
+  expect(reduceSessionRows([prompt, erred, failed("idle-1", 2)]).map((row) => row.type === "message" && row.messageID)).not.toContain("idle-1")
+  // A different, later failure is not hidden by an earlier one.
+  const timeout = { type: "session.step.prepare-timeout", message: "Preparing the request timed out" }
+  expect(reduceSessionRows([prompt, erred, failed("idle-1", 2), { ...prompt, id: "user-2" }, failed("idle-2", 4, timeout)])).toContainEqual({
+    type: "message",
+    messageID: "idle-2",
+  })
+  // A busy period that ended normally shows nothing for its marker.
+  expect(reduceSessionRows([prompt, step, { type: "idle", id: "idle-1", outcome: "succeeded", time: { created: 2 } }])).toEqual([
+    { type: "message", messageID: "user-1" },
+  ])
+})
+
 test("measures a marker-era turn from its first prompt across steers", () => {
   const step = (id: string, created: number, streamed: number, completed: number, output: number) => ({
     ...assistant(id, []),

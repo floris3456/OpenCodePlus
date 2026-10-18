@@ -43,6 +43,7 @@ import { pickModelRow, switchModelActivation, type ModelPick } from "./instructi
 import {
   compactionFieldsOf,
   effectiveCompaction,
+  effectiveImages,
   everySettings,
   MODEL_SETTINGS_FIELDS,
   roundedWarmingFor,
@@ -95,7 +96,7 @@ import { chooseImage } from "./image-settings.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
-import type { SessionWarming } from "@opencode/plugin/effect/session"
+import type { SessionImage, SessionWarming } from "@opencode/plugin/effect/session"
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
 import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 import { chatModelForAgent, currentSessionAgent, currentSessionModel, toHostModelRef } from "./session-model.js"
@@ -319,10 +320,8 @@ export default Plugin.define({
         return Effect.void
       })
       yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
-      // Settings › Images: how an arriving image is stored.
-      yield* ctx.session.hook("image", (event) =>
-        Effect.promise(() => plusSettings.read()).pipe(Effect.map((settings) => chooseImage(event, settings))),
-      )
+      // Instructions › a model › Images: how an image that arrives in a chat on that model is stored.
+      yield* ctx.session.hook("image", (event) => chooseImageFor(ctx, state, event))
       // The monitor records every step and tool call this Location sees; a
       // ledger failure is logged and never takes the plugin down with it.
       yield* watchMonitor(ctx, () => configIdentity(state))
@@ -1800,6 +1799,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
         ...(input.compactionModel === undefined ? {} : { compactionModel: input.compactionModel }),
         ...(input.compactionInstructions === undefined ? {} : { compactionInstructions: input.compactionInstructions }),
+        ...(input.imageConvert === undefined ? {} : { imageConvert: input.imageConvert }),
+        ...(input.imageShrink === undefined ? {} : { imageShrink: input.imageShrink }),
+        ...(input.imagesFull === undefined ? {} : { imagesFull: input.imagesFull }),
         ...(input.compactionInput === undefined ? {} : { compactionInput: input.compactionInput }),
         ...(input.compactionOutput === undefined ? {} : { compactionOutput: input.compactionOutput }),
       })
@@ -4064,8 +4066,11 @@ export function decideCompactionFor(
 ): Effect.Effect<void> {
   return Effect.promise(async () => {
     const settings = await plusSettings.read()
-    // Settings › Images › When images fill a request.
-    if (settings.imagesFull === "leave-out") event.images = "leave-out"
+    const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
+    const everyRow = everySettings(state.cachedModelSettings)
+    // Instructions › this model › Images › When image context is full; built-in leaves core's own choice (compact).
+    const imagesFull = imagesOf(state, event.agent, event.model).imagesFull
+    if (imagesFull.from !== "built-in") event.images = imagesFull.value === "error" || imagesFull.value === "leave-out" ? imagesFull.value : "compact"
     // An armed list (a team compactWith, or `compaction.cold`) is the user's
     // explicit instruction: it wins, and nothing below needs reading.
     const armed = consumeColdCompaction(event.sessionID)
@@ -4080,8 +4085,6 @@ export function decideCompactionFor(
     const fresh = event.reason === "auto" && consumePromptAdmitted(event.sessionID)
     const cold = fresh && settings.coldCompact ? await coldFor(ctx, event, ledger) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
-    const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
-    const everyRow = everySettings(state.cachedModelSettings)
     decideCompaction(event, {
       rows: compactionRowsOf(state, event.agent, event.model),
       ...(modelRow === undefined ? {} : { model: modelRow }),
@@ -4090,6 +4093,32 @@ export function decideCompactionFor(
       ...(cold === undefined ? {} : { cold }),
     })
   })
+}
+
+/** The Images settings an agent on a model resolves: its model rows, then Defaults › Models › that model, then Every model. */
+function imagesOf(state: PlusState, agentID: string, model: { readonly providerID: string; readonly id: string; readonly variant?: string }) {
+  const modelRow = settingsFor(state.cachedModelSettings, { providerID: model.providerID, modelID: model.id })
+  const everyRow = everySettings(state.cachedModelSettings)
+  return effectiveImages({
+    row: compactionRowsOf(state, agentID, model),
+    ...(modelRow === undefined ? {} : { model: modelRow }),
+    ...(everyRow === undefined ? {} : { every: everyRow }),
+  })
+}
+
+/** Applies the chat's model's Images settings to an arriving image; a field no row sets leaves core as configured. */
+export function chooseImageFor(ctx: Context, state: PlusState, event: SessionImage): Effect.Effect<void> {
+  return ctx.session.get({ sessionID: event.sessionID }).pipe(
+    Effect.map((session) => {
+      if (session.agent === undefined || session.model === undefined) return
+      const images = imagesOf(state, session.agent, session.model)
+      chooseImage(event, {
+        ...(images.imageConvert.from === "built-in" ? {} : { imageConvert: images.imageConvert.value }),
+        ...(images.imageShrink.from === "built-in" ? {} : { imageShrink: images.imageShrink.value }),
+      })
+    }),
+    Effect.catchCause(() => Effect.void),
+  )
 }
 
 // The agent's old agent-wide compaction policy, as core has it applied.
@@ -5074,6 +5103,9 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
       ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
       ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+      ...(record.imageConvert === undefined ? {} : { imageConvert: record.imageConvert }),
+      ...(record.imageShrink === undefined ? {} : { imageShrink: record.imageShrink }),
+      ...(record.imagesFull === undefined ? {} : { imagesFull: record.imagesFull }),
       ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
       ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
       ...(record.removed === undefined ? {} : { removed: record.removed }),
@@ -7018,6 +7050,9 @@ function toSnapshot(
             ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
             ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
             ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+            ...(record.imageConvert === undefined ? {} : { imageConvert: record.imageConvert }),
+            ...(record.imageShrink === undefined ? {} : { imageShrink: record.imageShrink }),
+            ...(record.imagesFull === undefined ? {} : { imagesFull: record.imagesFull }),
             ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
             ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
             ...(record.removed === undefined ? {} : { removed: record.removed }),

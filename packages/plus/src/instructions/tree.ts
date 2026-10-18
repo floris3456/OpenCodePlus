@@ -47,6 +47,7 @@ import {
   coldModelItemId,
   COLD_COMPACT_LABEL,
   effectiveCompaction,
+  effectiveImages,
   hostModelOf,
   modelDefaultItemId,
   modelDefaultKeys,
@@ -82,6 +83,7 @@ import {
   type ModelSettingsKey,
   type ModelSettingsRecord,
 } from "./model-settings.js"
+import { IMAGE_FIELDS, imageWord, type ImageField } from "../image-settings.js"
 import { linkOf, presetOfAddress, type PresetEntry } from "./presets.js"
 import {
   buildMemo,
@@ -985,8 +987,29 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
           () => lazyModelDefaultField(ctx, memo, key, record, "compactionInstructions", 4),
         ],
       }),
+      modelGroup(memo, {
+        id: defaultGroupRowId(key, "images"),
+        label: "Images",
+        depth: 3,
+        summary: () => imagesSummary(defaultsImages(ctx, key, record)),
+        children: IMAGE_FIELDS.map((field) => () => lazyModelDefaultField(ctx, memo, key, record, field, 4)),
+      }),
     ],
   }
+}
+
+// The Defaults › Models image layers: the model's own row, then Every model, then built-in.
+function defaultsImages(ctx: BuildContext, key: ModelSettingsKey, record: ModelSettingsRecord | undefined) {
+  const every = everySettings(ctx.modelSettings)
+  return effectiveImages({
+    ...(record === undefined ? {} : { model: record }),
+    ...(every === undefined || isEvery(key) ? {} : { every }),
+  })
+}
+
+/** An Images group's summary: how new images are converted and how far they are shrunk. */
+function imagesSummary(images: ReturnType<typeof effectiveImages>): string {
+  return `${imageWord("imageConvert", images.imageConvert.value)} · ${imageWord("imageShrink", images.imageShrink.value)}`
 }
 
 // The Defaults › Models compaction layers: the model's own row, then Every
@@ -1024,6 +1047,11 @@ function lazyModelDefaultField(
   const own = record?.[field] !== undefined
   const switchField = isDefaultSwitchField(field)
   const value = (): string => {
+    if (field === "imageConvert" || field === "imageShrink" || field === "imagesFull") {
+      const image = defaultsImages(ctx, key, record)[field]
+      const text = imageWord(field, image.value)
+      return own ? text : `${text} · ${compactionSource(image.from)}`
+    }
     if (field === "compactionInput" || field === "compactionOutput") {
       const threshold = defaultsCompaction(ctx, key, record)[field]
       const text = threshold.value ? `${threshold.value} tokens` : "off"
@@ -2267,9 +2295,10 @@ function lazyModelItem(
       }
     },
     reviewCount: () => 0,
-    // The row opens into Model and Effort, then the Warming and Compaction
+    // The row opens into Model and Effort, then the Warming, Compaction and Images
     // group rows; Warming holds its fields, Compact before cold and the
-    // cold-cache list, Compaction its strategy, model and instructions.
+    // cold-cache list, Compaction its strategy, model and instructions, Images
+    // how new images are stored and what happens when they fill a request.
     children: () => modelRowChildren(memo, ctx, level, owner, candidate, id, depth + 1, teamRef, catalogue, ownerPath),
   }
 }
@@ -2324,6 +2353,13 @@ function modelRowChildren(
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactionModel", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactionInstructions", depth + 1, teamRef, catalogue, ownerPath),
       ],
+    }),
+    modelGroup(memo, {
+      id: modelGroupRowId(modelRowId, "images"),
+      label: "Images",
+      depth,
+      summary: () => imagesSummary(effectiveImagesFor(ctx, level, owner, candidate, teamRef, catalogue)),
+      children: IMAGE_FIELDS.map((field) => () => lazyModelField(memo, ctx, level, owner, candidate, field, depth + 1, teamRef, catalogue, ownerPath)),
     }),
   ]
 }
@@ -2430,6 +2466,25 @@ function defaultColdRowId(key: ModelSettingsKey, index: number): string {
 // The effective compaction for one agent model row: the row's own chain, then
 // the agent's old agent-wide rows, then Defaults › Models, Every model, the
 // shared Defaults rows and opencode.json (model-settings.ts).
+// The image settings this agent on this model resolves: its model rows, then Defaults › Models.
+function effectiveImagesFor(
+  ctx: BuildContext,
+  level: Level,
+  owner: string | null,
+  candidate: { providerID: string; modelID: string; variant?: string },
+  teamRef?: RowTeam,
+  catalogue?: Catalogue,
+) {
+  const target = targetOf(candidate)
+  const row = resolveModelCompactionFields(
+    { models: ctx.models, scopes: ctx.scopes, level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) },
+    target,
+  )
+  const model = settingsFor(ctx.modelSettings, target)
+  const every = everySettings(ctx.modelSettings)
+  return effectiveImages({ row, ...(model === undefined ? {} : { model }), ...(every === undefined ? {} : { every }) })
+}
+
 function effectiveCompactionFor(
   memo: Memo,
   ctx: BuildContext,
@@ -2660,6 +2715,12 @@ function lazyModelField(
       const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactWarm")
       return { value: own ? (compactWarm.value ? "on" : "off") : `${compactWarm.value ? "on" : "off"} · ${compactionSource(compactWarm.from)}`, own }
     }
+    if (field === "imageConvert" || field === "imageShrink" || field === "imagesFull") {
+      const image = effectiveImagesFor(ctx, level, owner, candidate, teamRef, catalogue)[field]
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, field)
+      const text = imageWord(field, image.value)
+      return { value: own ? text : `${text} · ${compactionSource(image.from)}`, own }
+    }
     if (field === "compactionInput" || field === "compactionOutput") {
       const threshold = effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue)[field]
       const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, field)
@@ -2724,7 +2785,7 @@ function ownCompactionField(
   candidate: { providerID: string; modelID: string; variant?: string },
   teamRef: RowTeam | undefined,
   catalogue: Catalogue | undefined,
-  field: "compactWarm" | "compactionStrategy" | "compactionModel" | "compactionInstructions" | "compactionInput" | "compactionOutput",
+  field: "compactWarm" | "compactionStrategy" | "compactionModel" | "compactionInstructions" | "compactionInput" | "compactionOutput" | ImageField,
 ): boolean {
   const target = targetOf(candidate)
   const scope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }

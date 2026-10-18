@@ -221,7 +221,7 @@ export interface SessionImage {
   maxHeight: number
   /** The most 28 x 28-pixel blocks (Claude's visual tokens) the image may cover. */
   maxVisualTokens: number
-  /** What a large PNG is stored as: WebP at `quality`, lossless WebP, or the PNG itself. JPEGs stay as they are. */
+  /** What a large image is stored as: WebP at `quality`, lossless WebP, or the image as it arrived. */
   format: "webp" | "webp-lossless" | "original"
   /** WebP quality, 1 to 100. */
   quality: number

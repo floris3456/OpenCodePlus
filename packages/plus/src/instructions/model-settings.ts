@@ -1,6 +1,7 @@
 import { ConfigWarming } from "@opencode/schema/config/warming"
 import { Duration, Option, Schema } from "effect"
 import { cacheLifetime } from "../monitor/cache.js"
+import { BUILT_IN_IMAGES, choicesOf, IMAGE_FIELD_LABELS, IMAGE_FIELDS, imageFieldOf, imageValueOf, type ImageField } from "../image-settings.js"
 import {
   formatDuration,
   formatWarming,
@@ -411,6 +412,12 @@ export interface ModelCompactionFields {
   readonly compactionModel?: string
   /** The summary request's instructions; "" is an empty prompt. */
   readonly compactionInstructions?: string
+  /** Images › Convert large image: "webp-90", "webp-75", "webp-lossless" or "original" (image-settings.ts). */
+  readonly imageConvert?: string
+  /** Images › Shrink large image: the longest edge in pixels. */
+  readonly imageShrink?: string
+  /** Images › When image context is full: "compact", "leave-out" or "error". */
+  readonly imagesFull?: string
 }
 
 // `ModelRecord` is declared in model.ts; its compaction fields are declared
@@ -429,6 +436,7 @@ export const MODEL_COMPACTION_FIELDS: readonly ModelCompactionField[] = [
   "compactionStrategy",
   "compactionModel",
   "compactionInstructions",
+  ...IMAGE_FIELDS,
 ]
 
 /** A Defaults › Models field row: the warming fields plus the compaction fields. */
@@ -465,6 +473,9 @@ export function compactionFieldsOf(input: {
   readonly compactionStrategy?: string | null
   readonly compactionModel?: string | null
   readonly compactionInstructions?: string | null
+  readonly imageConvert?: string | null
+  readonly imageShrink?: string | null
+  readonly imagesFull?: string | null
 }): { readonly fields: ModelCompactionFieldValues } | { readonly error: string } {
   const checked = {
     compactionInput: thresholdField(input.compactionInput),
@@ -475,6 +486,9 @@ export function compactionFieldsOf(input: {
     compactionStrategy: strategyField(input.compactionStrategy),
     compactionModel: modelRefField(input.compactionModel),
     compactionInstructions: input.compactionInstructions,
+    imageConvert: imageFieldOf("imageConvert", input.imageConvert),
+    imageShrink: imageFieldOf("imageShrink", input.imageShrink),
+    imagesFull: imageFieldOf("imagesFull", input.imagesFull),
   }
   const error = Object.values(checked).find((value): value is { readonly error: string } => typeof value === "object" && value !== null && "error" in value)
   if (error !== undefined) return error
@@ -687,6 +701,29 @@ export function effectiveCompaction(input: {
     model: firstSet<string | undefined>(shared("model", "compactionModel"), (value) => (typeof value === "string" && MODEL_REF.test(value) ? value : undefined), undefined),
     instructions: firstSet<string | undefined>(shared("instructions", "compactionInstructions"), (value) => (typeof value === "string" ? value : undefined), undefined),
   }
+}
+
+/**
+ * The image settings for one agent on one model, field by field: the agent's model row (down its chain) > Defaults ›
+ * Models › this model > Every model > built-in. A stored value that no longer parses sets nothing.
+ */
+export function effectiveImages(input: {
+  readonly row?: ResolvedCompactionFields
+  readonly model?: ModelSettingsRecord
+  readonly every?: ModelSettingsRecord
+}): Record<ImageField, CompactionEffective<string>> {
+  const row = input.row ?? {}
+  const of = (field: ImageField) =>
+    firstSet(
+      [
+        [row[field]?.level ?? "defaults", row[field]?.value],
+        ["model", input.model?.[field]],
+        ["every", input.every?.[field]],
+      ],
+      (value) => (typeof value === "string" ? imageValueOf(field, value) : undefined),
+      BUILT_IN_IMAGES[field],
+    )
+  return { imageConvert: of("imageConvert"), imageShrink: of("imageShrink"), imagesFull: of("imagesFull") }
 }
 
 // The first layer whose stored value parses, else the built-in value.
@@ -915,6 +952,7 @@ export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
   compactionStrategy: "Strategy",
   compactionModel: "Model",
   compactionInstructions: "Instructions",
+  ...IMAGE_FIELD_LABELS,
 }
 
 /** Whether a Defaults field row is a switch (Space) rather than a text/cycle row. */
@@ -925,7 +963,8 @@ export function isDefaultSwitchField(field: ModelDefaultField): field is "compac
 // An agent/member/preset model row opens into the same field rows as a
 // Defaults › Models row, grouped: Model, Effort under the row, the Warming
 // group (Warming, Ping every, Keep-alive prompt, Compact before cold and the
-// cold-cache list) and the Compaction group (Strategy, token thresholds, Model, Instructions).
+// cold-cache list), the Compaction group (Strategy, token thresholds, Model, Instructions) and the Images group
+// (Convert large image, Shrink large image, When image context is full).
 // The item id carries the field and the candidate, so
 // `item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`
 // never collides with a `model:` row or a Defaults `modelsetting:` row.
@@ -942,6 +981,7 @@ export type ModelFieldName =
   | "compactionStrategy"
   | "compactionModel"
   | "compactionInstructions"
+  | ImageField
 export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
   "compactionInput",
   "compactionOutput",
@@ -955,6 +995,7 @@ export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
   "compactionStrategy",
   "compactionModel",
   "compactionInstructions",
+  ...IMAGE_FIELDS,
 ]
 export const MODEL_FIELD_PREFIX = "modelfield:"
 
@@ -971,6 +1012,7 @@ export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
   compactionStrategy: "Strategy",
   compactionModel: "Model",
   compactionInstructions: "Instructions",
+  ...IMAGE_FIELD_LABELS,
 }
 
 export function modelFieldItemId(
@@ -1161,5 +1203,17 @@ export function modelFieldChoices(
     { title: "(inherit / none)", value: "", description: "No variant of its own" },
     ...(input.variants ?? []).toSorted().map((variant) => ({ title: variant, value: variant })),
     ...(input.everyModel ? [{ title: "Custom…", value: CUSTOM_CHOICE }] : []),
+  ]
+}
+
+/**
+ * The dropdown for an Images field on any model row: Inherit (clears; `now` is what it falls back to), the choices
+ * with what each does, and for the size Custom… to type one.
+ */
+export function imageFieldChoices(field: ImageField, now: string): ModelFieldChoice[] {
+  return [
+    { title: now.length === 0 ? "Inherit" : `Inherit (now ${now})`, value: "" },
+    ...choicesOf(field).map((choice) => ({ title: choice.title, value: choice.value, description: choice.description })),
+    ...(field === "imageShrink" ? [{ title: "Custom…", value: CUSTOM_CHOICE, description: "Your own size, e.g. for a self-hosted model." }] : []),
   ]
 }

@@ -1409,15 +1409,16 @@ test("Models group is the first tab of every agent, Settings the last, with togg
 })
 
 // plus-1.1.18 §2: an agent/member/preset model row opens into Model, Effort,
-// Warming ▸ and Compaction ▸; Warming holds its fields, Compact before cold and
-// the cold-cache list; Compaction its Strategy, Model and Instructions.
-test("a model row opens into Model, Effort, Warming and Compaction groups with the right grandchildren", () => {
+// Warming ▸, Compaction ▸ and Images ▸; Warming holds its fields, Compact before
+// cold and the cold-cache list; Compaction its Strategy, Model and Instructions;
+// Images how new images are stored and what happens when they fill a request.
+test("a model row opens into Model, Effort, Warming, Compaction and Images groups with the right grandchildren", () => {
   const records = [
-    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova", coldCompact: "on", coldModels: ["a/one", "b/two"], updated: UPDATED },
+    { type: "model" as const, level: "project" as const, agent: "alpha", providerID: "acme", modelID: "nova", coldCompact: "on", coldModels: ["a/one", "b/two"], imageShrink: "1000", updated: UPDATED },
   ]
   const nodes = expandAll({ items: [], records, agents: [{ id: "alpha", scope: "project" as const }] })
   const modelRow = "item:project:alpha:model:acme/nova"
-  expect(childrenOf(nodes, modelRow).map((node) => node.label)).toEqual(["Model", "Effort", "Warming", "Compaction"])
+  expect(childrenOf(nodes, modelRow).map((node) => node.label)).toEqual(["Model", "Effort", "Warming", "Compaction", "Images"])
   const warming = "group:project:alpha:modelgroup:acme/nova:warming"
   expect(nodes.find((node) => node.id === warming)?.badges.value).toBe("off")
   expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
@@ -1429,9 +1430,16 @@ test("a model row opens into Model, Effort, Warming and Compaction groups with t
   const compaction = "group:project:alpha:modelgroup:acme/nova:compaction"
   expect(nodes.find((node) => node.id === compaction)?.badges.value).toBe("Auto")
   expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions"])
+  const images = "group:project:alpha:modelgroup:acme/nova:images"
+  expect(nodes.find((node) => node.id === images)?.badges.value).toBe("WebP 90 · 1,000 px")
+  expect(childrenOf(nodes, images).map((node) => [node.label, node.badges.value])).toEqual([
+    ["Convert large image", "WebP 90 · built-in"],
+    ["Shrink large image", "1,000 px"],
+    ["When image context is full", "Compact the chat · built-in"],
+  ])
   // The group rows carry no toggle: Space on them does nothing. The cold-cache
   // group lost its switch to Settings › OpenCodePlus.
-  for (const id of [warming, compaction, cold]) expect(nodes.find((node) => node.id === id)?.actions?.toggle).toBe(false)
+  for (const id of [warming, compaction, cold, images]) expect(nodes.find((node) => node.id === id)?.actions?.toggle).toBe(false)
 })
 
 test("a Defaults › Models row has the same groups minus Model", () => {
@@ -1440,12 +1448,19 @@ test("a Defaults › Models row has the same groups minus Model", () => {
     records: [],
     agents: [{ id: "alpha", scope: "defaults" as const }],
     modelSettings: [
-      { type: "modelSettings" as const, level: "defaults" as const, providerID: "acme", modelID: "nova", warming: "30m", updated: UPDATED },
+      { type: "modelSettings" as const, level: "defaults" as const, providerID: "acme", modelID: "nova", warming: "30m", imagesFull: "error", updated: UPDATED },
+      { type: "modelSettings" as const, level: "defaults" as const, imageConvert: "webp-lossless", updated: UPDATED },
     ],
     hostModels: [{ providerID: "acme", modelID: "nova", variants: [] }],
   })
   const row = "item:defaults:/models:modeldefault:acme/nova"
-  expect(childrenOf(nodes, row).map((node) => node.label)).toEqual(["Effort", "Warming", "Compaction"])
+  expect(childrenOf(nodes, row).map((node) => node.label)).toEqual(["Effort", "Warming", "Compaction", "Images"])
+  // This model's own row sets one field; the conversion comes from Every model.
+  expect(childrenOf(nodes, "group:defaults:/models:modeldefault:acme/nova:images").map((node) => [node.label, node.badges.value])).toEqual([
+    ["Convert large image", "Lossless WebP · every model"],
+    ["Shrink large image", "Max: 2,000 px · built-in"],
+    ["When image context is full", "Stop with an error"],
+  ])
   const warming = "group:defaults:/models:modeldefault:acme/nova:warming"
   expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
     "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Cold-cache models",

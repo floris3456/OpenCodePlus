@@ -435,6 +435,10 @@ export function reduceSessionRows(
     if (message.type !== "assistant") {
       if (message.type === "idle") {
         flushTurn(rows)
+        // A busy period that failed before any step or compaction showed why (an image limit set to stop, a request
+        // that timed out in preparation) shows its error here; one that ended on such a failure already shows it.
+        if (message.outcome === "failed" && message.error && !shownBefore(messages, message))
+          rows.push({ entry: { type: "message", messageID: message.id }, path: [], closesPrevious: true })
         return rows
       }
       if (message.type === "synthetic" && !message.description?.trim()) return rows
@@ -630,4 +634,11 @@ export function resolvePart(message: SessionMessageAssistant, partID: string) {
   if (!match) return
   const ordinal = Number(match[2])
   return message.content.filter((part) => part.type === match[1])[ordinal]
+}
+
+/** Whether the step or compaction just before this failed idle marker already shows the same error. */
+function shownBefore(messages: readonly SessionMessageInfo[], idle: Extract<SessionMessageInfo, { type: "idle" }>) {
+  const before = messages.slice(0, messages.indexOf(idle)).findLast((message) => message.type === "assistant" || message.type === "compaction")
+  const error = before?.type === "assistant" || (before?.type === "compaction" && before.status === "failed") ? before.error : undefined
+  return error !== undefined && error.type === idle.error?.type && error.message === idle.error.message
 }

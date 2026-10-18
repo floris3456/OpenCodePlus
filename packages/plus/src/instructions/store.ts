@@ -213,6 +213,9 @@ const CompactionFields = {
   compactionStrategy: Schema.optional(Schema.String),
   compactionModel: Schema.optional(Schema.String),
   compactionInstructions: Schema.optional(Schema.String),
+  imageConvert: Schema.optional(Schema.String),
+  imageShrink: Schema.optional(Schema.String),
+  imagesFull: Schema.optional(Schema.String),
   compactionInput: Schema.optional(Schema.String),
   compactionOutput: Schema.optional(Schema.String),
 }
@@ -1383,6 +1386,9 @@ function storedCompaction(record: ModelCompactionFields): ModelCompactionFields 
     ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
     ...(record.compactionModel === undefined ? {} : { compactionModel: record.compactionModel }),
     ...(record.compactionInstructions === undefined ? {} : { compactionInstructions: record.compactionInstructions }),
+    ...(record.imageConvert === undefined ? {} : { imageConvert: record.imageConvert }),
+    ...(record.imageShrink === undefined ? {} : { imageShrink: record.imageShrink }),
+    ...(record.imagesFull === undefined ? {} : { imagesFull: record.imagesFull }),
     ...(record.compactionInput === undefined ? {} : { compactionInput: record.compactionInput }),
     ...(record.compactionOutput === undefined ? {} : { compactionOutput: record.compactionOutput }),
   }

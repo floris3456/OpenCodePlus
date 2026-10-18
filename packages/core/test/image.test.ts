@@ -77,7 +77,7 @@ describe("Image.normalize", () => {
     }),
   )
 
-  it.effect("leaves a small PNG and a JPEG as they are", () =>
+  it.effect("leaves a small image as it is, and converts a large one of any type when that saves a quarter", () =>
     Effect.gen(function* () {
       const image = yield* Image.Service
       const pixel = {
@@ -87,10 +87,21 @@ describe("Image.normalize", () => {
         mime: "image/png",
       }
       expect(yield* image.normalize("pixel.png", pixel)).toEqual(pixel)
-      // A JPEG is already lossy; a second lossy pass would only add artifacts.
       const jpeg = yield* rendering("jpeg")
       expect(jpeg.content.length).toBeGreaterThan(512 * 1024)
-      expect(yield* image.normalize("render.jpeg", jpeg)).toEqual(jpeg)
+      const stored = yield* image.normalize("render.jpeg", jpeg)
+      expect(stored.mime).toBe("image/webp")
+      expect(stored.content.length).toBeLessThanOrEqual(jpeg.content.length * 0.75)
+    }),
+  )
+
+  it.effect("keeps an image as it is when the WebP would not save a quarter: a JPEG as lossless WebP", () =>
+    Effect.gen(function* () {
+      const jpeg = yield* rendering("jpeg")
+      const lossless = yield* chosen((event) => {
+        event.format = "webp-lossless"
+      })
+      expect(yield* lossless.normalize(jpeg)).toEqual(jpeg)
     }),
   )
 

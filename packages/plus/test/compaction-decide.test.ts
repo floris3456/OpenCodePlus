@@ -382,19 +382,23 @@ async function withColdSwitch(run: () => Promise<void>) {
   }
 }
 
-test("Settings › Images › Leave new images out reaches core's decision; the default leaves it to core", async () => {
+test("Images › When image context is full reaches core's decision from the chat model's rows; unset leaves it to core", async () => {
   const event = () => decision({ sessionID: Session.ID.make("ses_images_full"), boundary: { fresh: false, portable: true } })
+  const ledger = fakeLedger(requestRow(Date.now()), oneHourFingerprint())
   const byDefault = event()
-  await Effect.runPromise(decideCompactionFor(wiringContext(), coldState([]), byDefault, fakeLedger(requestRow(Date.now()), oneHourFingerprint())))
+  await Effect.runPromise(decideCompactionFor(wiringContext(), coldState([]), byDefault, ledger))
   expect(byDefault.images).toBeUndefined()
-  await plusSettings.update({ imagesFull: "leave-out" })
-  try {
-    const leaving = event()
-    await Effect.runPromise(decideCompactionFor(wiringContext(), coldState([]), leaving, fakeLedger(requestRow(Date.now()), oneHourFingerprint())))
-    expect(leaving.images).toBe("leave-out")
-  } finally {
-    await plusSettings.update({ imagesFull: "compact" })
+  // Every model says stop; this chat's model says leave new images out, and its row wins.
+  const state = {
+    ...coldState([]),
+    cachedModelSettings: [settings({ imagesFull: "error" }), settings({ providerID: "proxy", modelID: "chat-model", imagesFull: "leave-out" })],
   }
+  const leaving = event()
+  await Effect.runPromise(decideCompactionFor(wiringContext(), state, leaving, ledger))
+  expect(leaving.images).toBe("leave-out")
+  const other = decision({ sessionID: Session.ID.make("ses_images_other"), model: Model.Ref.parse("proxy/other-model"), boundary: { fresh: false, portable: true } })
+  await Effect.runPromise(decideCompactionFor(wiringContext(), state, other, ledger))
+  expect(other.images).toBe("error")
 })
 
 test("with Compact cold chats first off, a cold fresh prompt does not arm, and the mark is still consumed", async () => {

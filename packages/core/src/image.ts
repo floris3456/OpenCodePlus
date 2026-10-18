@@ -41,7 +41,7 @@ export type Limits = {
   maxBase64Bytes: number
   /** Claude reads images in 28x28-pixel blocks and downsizes beyond this many (its high-resolution tier). */
   maxVisualTokens: number
-  /** What a large PNG is stored as: WebP at `quality`, lossless WebP, or the PNG itself. */
+  /** What a large image is stored as: WebP at `quality`, lossless WebP, or the image as it arrived. */
   format: Format
   /** WebP quality, 1 to 100. */
   quality: number
@@ -76,7 +76,7 @@ export const fitSize = (
   return sized(steps.find(fits) ?? steps.at(-1)!)
 }
 
-// A large PNG is stored as WebP when that saves at least a quarter. It happens once, when the image arrives, and
+// A large image is stored as WebP when that saves at least a quarter. It happens once, when the image arrives, and
 // the same bytes always give the same result, so a stored image never changes and the prompt cache holds.
 const COMPACT_FROM_BASE64_BYTES = 512 * 1024
 const COMPACT_KEEPS_AT_MOST = 0.75
@@ -157,7 +157,7 @@ const layer = Layer.effect(
     const normalize = Effect.fn("Image.normalize")(function* (resource: string, content: Content, sessionID?: Session.ID) {
       const adapter = yield* loadAdapter
       const limits = yield* limitsFor(resource, sessionID)
-      // A PNG that will be converted is fitted to the size limits only, then converted, and only then held to the
+      // An image that will be converted is fitted to the size limits only, then converted, and only then held to the
       // byte limit: a large screenshot becomes a full-size WebP instead of a smaller PNG or a JPEG.
       const converted = yield* convert(
         yield* adapter(resource, content, limits.format === "original" ? limits : { ...limits, maxBase64Bytes: Number.POSITIVE_INFINITY }),
@@ -170,10 +170,12 @@ const layer = Layer.effect(
   }),
 )
 
-/** Bun's encoder writes the WebP; elsewhere the image stays as the adapter left it. */
+/**
+ * Bun's encoder writes the WebP; elsewhere the image stays as the adapter left it. Any type Bun decodes is converted
+ * when that saves a quarter, a JPEG or a WebP too; a format it cannot decode stays as it is.
+ */
 const convert = (content: Content, limits: Pick<Limits, "format" | "quality">) => {
-  if (limits.format === "original" || content.mime !== "image/png" || content.content.length < COMPACT_FROM_BASE64_BYTES)
-    return Effect.succeed(content)
+  if (limits.format === "original" || content.content.length < COMPACT_FROM_BASE64_BYTES) return Effect.succeed(content)
   if (typeof Bun === "undefined" || typeof Bun.Image !== "function") return Effect.succeed(content)
   return Effect.tryPromise(() =>
     new Bun.Image(Buffer.from(content.content, "base64"))

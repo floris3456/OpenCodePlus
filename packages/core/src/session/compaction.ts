@@ -115,6 +115,11 @@ const PDF_TOKEN_ESTIMATE = 2_000
 /** Anthropic answered normally because the request sat below its compaction trigger. */
 const NATIVE_NOT_TRIGGERED = "compaction.not-triggered"
 const NATIVE_UNAVAILABLE = "compaction.native-unavailable"
+const IMAGES_FULL_ERROR: SessionError.Error = {
+  type: "images.full",
+  message:
+    "This chat's images fill what one request may carry, so the chat stopped instead of leaving new images out. Compact the chat (/compact) or start a new one; Instructions › the model › Images › When image context is full chooses what happens instead.",
+}
 const nonShrinkingError: SessionError.Error = {
   type: "compaction.failed",
   message: "Compaction did not reduce the next request below the context limit. The provider checkpoint or fixed instructions/tools remain too large; reduce that fixed context or select a compaction model/strategy that can compress it, then resume.",
@@ -285,12 +290,13 @@ export const layer = Layer.effect(
           metadata: { ...decision.metadata, "compaction.reused": true },
         })
       // Plugins may request earlier compaction, but cannot override this preference.
-      if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
-      // The next request would leave an image out, so compact first, unless a plugin chose to leave them out. Until
-      // agents can compact for themselves, this is what makes room; a failure only means the step goes out with the
-      // newest images left out.
+      // The next request would leave an image out. By default compact first; a plugin may instead leave the newest
+      // images out or stop. Until agents can compact for themselves, this is what makes room; a failed compaction only
+      // means the step goes out with the newest images left out.
       const images = trigger.reason === "auto" && decision.images !== "leave-out" && !decision.compact &&
         !due(context, ceiling) && imagesFull(context)
+      if (images && decision.images === "error") return { status: "failed", error: IMAGES_FULL_ERROR }
+      if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
       if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact && !images) return { status: "skipped" }
       // Opaque windows cannot be sized locally. The first primary request measures the rebuilt
       // checkpoint. If it was already full, do not keep recompressing it after every small tool call.

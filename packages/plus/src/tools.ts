@@ -142,7 +142,7 @@ const SetDescription =
   "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
   "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
   "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
-  "Model and Defaults › Models rows accept compactWarm (on|off), compactionStrategy (auto|local|remote), compactionModel (provider/model#variant), compactionInstructions, compactionInput/compactionOutput (positive whole token-count strings or off), and coldModels (ordered array or comma list). Null inherits; empty strings inherit except compactionInstructions, where empty is an explicit empty prompt. Threshold off suppresses an inherited early trigger; normal context safety still applies. coldModels:[] explicitly disables the list; whether cold chats compact at all is the person's global Settings switch, so coldCompact is refused. Emitted modelfield:/modelsetting: field rows take text and reset; the cold-cache models are a group, not a scalar field row, and no modelsetting:coldModels row is emitted. Use list's actual ids.\n" +
+  "Model and Defaults › Models rows accept compactWarm (on|off), compactionStrategy (auto|local|remote), compactionModel (provider/model#variant), compactionInstructions, compactionInput/compactionOutput (positive whole token-count strings or off), imageConvert (webp-90|webp-75|webp-lossless|original), imageShrink (longest edge in pixels, 256-65535), imagesFull (compact|leave-out|error), and coldModels (ordered array or comma list). Null inherits; empty strings inherit except compactionInstructions, where empty is an explicit empty prompt. Threshold off suppresses an inherited early trigger; normal context safety still applies. coldModels:[] explicitly disables the list; whether cold chats compact at all is the person's global Settings switch, so coldCompact is refused. Emitted modelfield:/modelsetting: field rows take text and reset; the cold-cache models are a group, not a scalar field row, and no modelsetting:coldModels row is emitted. Use list's actual ids.\n" +
   "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
   "On a model prompt row (item:…:system:model/<id>) models replaces the patterns of the models it is sent for (on its own, not with other fields).\n" +
   "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
@@ -287,6 +287,9 @@ const SetInput = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  imageConvert: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  imageShrink: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  imagesFull: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionInput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   rename: Schema.optionalKey(Schema.String).annotate({
@@ -572,7 +575,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
-          if (input.compactWarm !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined || input.compactionInput !== undefined || input.compactionOutput !== undefined)
+          if (input.compactWarm !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined || input.compactionInput !== undefined || input.compactionOutput !== undefined || input.imageConvert !== undefined || input.imageShrink !== undefined || input.imagesFull !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; compaction fields are set on model or Defaults › Models rows` }))
           if (input.warming !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
@@ -1339,6 +1342,9 @@ function setModel(
     compactionStrategy?: string | null
     compactionModel?: string | null
     compactionInstructions?: string | null
+    imageConvert?: string | null
+    imageShrink?: string | null
+    imagesFull?: string | null
     compactionInput?: string | null
     compactionOutput?: string | null
   },
@@ -1492,6 +1498,9 @@ function setModelDefaults(
     compactionStrategy?: string | null
     compactionModel?: string | null
     compactionInstructions?: string | null
+    imageConvert?: string | null
+    imageShrink?: string | null
+    imagesFull?: string | null
     compactionInput?: string | null
     compactionOutput?: string | null
     text?: string
@@ -1518,6 +1527,9 @@ function setModelDefaults(
       input.compactionStrategy === undefined &&
       input.compactionModel === undefined &&
       input.compactionInstructions === undefined &&
+      input.imageConvert === undefined &&
+      input.imageShrink === undefined &&
+      input.imagesFull === undefined &&
       input.compactionInput === undefined &&
       input.compactionOutput === undefined &&
       input.state === undefined

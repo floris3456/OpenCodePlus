@@ -15,9 +15,6 @@ const settings: PlusSettings = {
   noticeMinTokens: 0,
   noticeKinds: "misses-and-partials",
   noticeDismiss: "everywhere",
-  imageFormat: "webp",
-  imageSize: "full",
-  imagesFull: "compact",
 }
 
 /** One measured step that read `read` of 4,100 input tokens from the cache. */

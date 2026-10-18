@@ -692,6 +692,7 @@ test("an agent's model row opens into field rows and one field edits and resets 
   expect(fields.map((row) => row.label)).toEqual([
     "Model", "Effort", "Warming", "Ping every", "Keep-alive prompt",
     "Compact before cold", "Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions",
+    "Convert large image", "Shrink large image", "When image context is full",
   ])
   // The row is inherited (the agent's upstream model), so Model and Warming
   // name where they came from; none of the fields is local yet.
@@ -714,6 +715,17 @@ test("an agent's model row opens into field rows and one field edits and resets 
   await runOk(reset, { id: fieldRow("warming") })
   const after = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
   expect(after).not.toHaveProperty("warming")
+  // An Images field takes its value in a person's words, refuses one it cannot hold, and resets the same way.
+  await runOk(set, { id: fieldRow("imageShrink"), text: "2,576 px" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ imageShrink: "2576" })
+  expect((await runFail(set, { id: fieldRow("imagesFull"), text: "delete" })).message).toContain("When image context is full")
+  await runOk(set, { id: fieldRow("imagesFull"), text: "error" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ imagesFull: "error" })
+  await runOk(reset, { id: fieldRow("imageShrink") })
+  await runOk(reset, { id: fieldRow("imagesFull") })
+  const cleared = (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
+  expect(cleared).not.toHaveProperty("imageShrink")
+  expect(cleared).not.toHaveProperty("imagesFull")
   // The Model field resets the whole local candidate override: the inherited
   // candidate resumes and the unrelated keep-alive fields are preserved.
   // First plant a local candidate with warming, then reset its Model field.

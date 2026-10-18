@@ -7,6 +7,7 @@ import {
   COMPACTION_STRATEGIES,
   CUSTOM_CHOICE,
   fromWords,
+  imageFieldChoices,
   isDefaultSwitchField,
   isEvery,
   isModelSettingRowId,
@@ -31,6 +32,7 @@ import { sameEndpoint, type RowlinkEndpoint, type RowlinkType } from "../../inst
 import { parseModelPatterns } from "../../instructions/model-patterns.js"
 import { isModelPrompt } from "../../instructions/system-order.js"
 import { folderSlug } from "../../instructions/folders.js"
+import { CUSTOM_SHRINK_HELP, IMAGE_FIELDS, type ImageField } from "../../image-settings.js"
 
 const MODEL_PATTERN_HELP =
   "Separate patterns with commas. * or % stands for any text (*opus-5-5*, %qwen%). Each is checked against provider/model, the model id and its name, ignoring case."
@@ -173,6 +175,12 @@ export function createInstructionsDialogs(
       await state.editModelSettings(node, { compactionStrategy: next })
       return
     }
+    if (isImageField(field)) {
+      const picked = await pickImageField(field, `${MODEL_SETTING_LABELS[field]} · ${isEvery(parsed.key) ? "Every model" : `${parsed.key.providerID}/${parsed.key.modelID}`}`, node)
+      if (disposed || picked === undefined) return
+      await state.editModelSettings(node, { [field]: picked.length === 0 ? null : picked })
+      return
+    }
     if (field === "compactionInput" || field === "compactionOutput") {
       const raw = await context.ui.dialog.prompt({
         title: `${MODEL_SETTING_LABELS[field]} · ${isEvery(parsed.key) ? "Every model" : `${parsed.key.providerID}/${parsed.key.modelID}`}`,
@@ -250,6 +258,20 @@ export function createInstructionsDialogs(
     return text.trim()
   }
 
+  // An Images field opens one dropdown on every model row: Inherit (clears), the choices with what each does, and for
+  // the size Custom…, which asks for pixels. Resolves to the text to store ("" clears), or undefined on cancel.
+  async function pickImageField(field: ImageField, title: string, node: TreeNode): Promise<string | undefined> {
+    const now = node.badges.value ?? ""
+    const pending = context.ui.dialog.select<string>({ title, placeholder: now === "" ? "" : `Now: ${now}`, options: imageFieldChoices(field, now) })
+    // Wide enough for each choice's description on one line.
+    context.ui.dialog.set({ size: "large" })
+    const picked = await pending
+    if (disposed || picked === undefined) return undefined
+    if (picked !== CUSTOM_CHOICE) return picked
+    const raw = await context.ui.dialog.prompt({ title, description: CUSTOM_SHRINK_HELP, value: "", placeholder: "e.g. 2576" })
+    return disposed || raw === undefined ? undefined : raw.trim()
+  }
+
   // Enter on one field row under an agent/member/preset model row: edit that
   // one value. Model and Effort pick from the host catalogue (the field row's
   // variants); the warming fields prompt like a Defaults › Models field. Empty
@@ -266,6 +288,12 @@ export function createInstructionsDialogs(
     const field = parsed.field
     if (field === "compactWarm" || field === "coldCompact") {
       await state.toggleModelSwitch(node)
+      return
+    }
+    if (isImageField(field)) {
+      const picked = await pickImageField(field, `${MODEL_FIELD_LABELS[field]} · ${parsed.target.providerID}/${parsed.target.modelID}`, node)
+      if (disposed || picked === undefined) return
+      await state.setModelCompaction(node, { [field]: picked.length === 0 ? null : picked })
       return
     }
     if (field === "compactionStrategy") {
@@ -1669,4 +1697,8 @@ function fieldHelp(field: ModelDefaultField, variants: readonly string[]): strin
   if (field === "compactionOutput") return "Early compaction after this many assistant output + reasoning tokens since the last compaction. Positive whole number or off; off overrides inherited triggers."
   if (field === "compactionStrategy") return "auto follows the model's policy; local writes a text summary; remote uses the provider."
   return `The variant a model row without one runs with${variants.length === 0 ? "" : ` (${variants.join(", ")})`}.`
+}
+
+function isImageField(field: string): field is ImageField {
+  return IMAGE_FIELDS.some((entry) => entry === field)
 }

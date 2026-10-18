@@ -2987,7 +2987,7 @@ export function modelFieldEdit(
   if (field === "interval") return { fields: { ...base, interval: text } }
   if (field === "prompt") return { fields: { ...base, prompt: text } }
   const asTyped =
-    field === "compactionInput" || field === "compactionOutput" ? { [field]: text }
+    field === "compactionInput" || field === "compactionOutput" || field === "imageConvert" || field === "imageShrink" || field === "imagesFull" ? { [field]: text }
       : field === "compactionStrategy" ? { compactionStrategy: text }
       : field === "compactionModel" ? { compactionModel: text }
         : field === "compactionInstructions" ? { compactionInstructions: text }
@@ -3079,7 +3079,10 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
     parsed.field === "coldCompact" ||
     parsed.field === "compactionStrategy" ||
     parsed.field === "compactionModel" ||
-    parsed.field === "compactionInstructions"
+    parsed.field === "compactionInstructions" ||
+    parsed.field === "imageConvert" ||
+    parsed.field === "imageShrink" ||
+    parsed.field === "imagesFull"
   ) {
     if (local[parsed.field] === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
     const next = setModelCompaction(models, addr, parsed.target, { [parsed.field]: null } as ModelCompactionFieldValues, now())

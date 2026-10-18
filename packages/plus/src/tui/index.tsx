@@ -10,7 +10,6 @@ import { createMonitor } from "./monitor/index.js"
 import { createChatRefresh } from "./refresh.js"
 import { createCacheNotices } from "./cache-notices.js"
 import { createThinkingToast } from "./thinking-toast.js"
-import { createImageSettings } from "./image-settings.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -28,7 +27,6 @@ export default Plugin.define({
     const refresh = createChatRefresh(context)
     const thinkingToast = createThinkingToast(context)
     const notices = createCacheNotices(context, { open: (notice) => monitor.openAt(notice) })
-    const imageSettings = createImageSettings(context)
     // The server acts on this one: a message sent into a cold chat is first
     // summarized by the cold-cache models its model has in Instructions.
     const plus = context.client.rpc(Definition)
@@ -135,7 +133,6 @@ export default Plugin.define({
       activeTeam.dispose()
       thinkingToast.dispose()
       notices.dispose()
-      imageSettings.dispose()
       snapshots.dispose()
     }
   },

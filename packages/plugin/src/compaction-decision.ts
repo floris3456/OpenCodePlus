@@ -30,9 +30,10 @@ export interface SessionCompactionDecision {
   compact?: boolean
   /**
    * When the next request would leave an image out (its images exceed what one request may carry): `compact` the
-   * chat first (the default), or `leave-out`: send it as it is, with the newest images replaced by a note to the model.
+   * chat first (the default), `leave-out`: send it as it is, with the newest images replaced by a note to the model,
+   * or `error`: stop the step with an error until the chat is compacted.
    */
-  images?: "compact" | "leave-out"
+  images?: "compact" | "leave-out" | "error"
   /** Require a local text checkpoint without account-bound provider state. */
   portable?: boolean
   /**

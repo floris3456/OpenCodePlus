@@ -232,6 +232,9 @@ export const SnapshotModelRecord = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.String),
   compactionModel: Schema.optionalKey(Schema.String),
   compactionInstructions: Schema.optionalKey(Schema.String),
+  imageConvert: Schema.optionalKey(Schema.String),
+  imageShrink: Schema.optionalKey(Schema.String),
+  imagesFull: Schema.optionalKey(Schema.String),
   compactionInput: Schema.optionalKey(Schema.String),
   compactionOutput: Schema.optionalKey(Schema.String),
   removed: Schema.optionalKey(Schema.Literal(true)),
@@ -259,6 +262,9 @@ export const SnapshotModelSettingsRecord = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.String),
   compactionModel: Schema.optionalKey(Schema.String),
   compactionInstructions: Schema.optionalKey(Schema.String),
+  imageConvert: Schema.optionalKey(Schema.String),
+  imageShrink: Schema.optionalKey(Schema.String),
+  imagesFull: Schema.optionalKey(Schema.String),
   compactionInput: Schema.optionalKey(Schema.String),
   compactionOutput: Schema.optionalKey(Schema.String),
   updated: Schema.String,
@@ -926,6 +932,9 @@ export const SetModelSettingsInput = Schema.Struct({
   compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionModel: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionInstructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  imageConvert: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  imageShrink: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  imagesFull: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionInput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }).annotate({ identifier: "Plus.SetModelSettingsInput" })
@@ -1281,12 +1290,6 @@ export const WarmingCompactInput = Schema.Struct({
 // shape the cache notices every TUI of this server shows.
 export const NoticeKinds = Schema.Literals(["misses-and-partials", "misses"])
 export const NoticeDismiss = Schema.Literals(["everywhere", "this-tui"])
-/** What a large PNG that arrives is stored as (image-settings.ts). */
-export const ImageFormat = Schema.Literals(["webp", "webp-small", "webp-lossless", "original"])
-/** How far an arriving image is shrunk. */
-export const ImageSize = Schema.Literals(["full", "medium", "small"])
-/** What happens when a chat's images no longer fit one request. */
-export const ImagesFull = Schema.Literals(["compact", "leave-out"])
 export interface PlusSettings extends Schema.Schema.Type<typeof PlusSettings> {}
 export const PlusSettings = Schema.Struct({
   coldCompact: Schema.Boolean,
@@ -1297,9 +1300,6 @@ export const PlusSettings = Schema.Struct({
   noticeKinds: NoticeKinds,
   /** Whether opening a notice removes it from every TUI or only from the one it was opened in. */
   noticeDismiss: NoticeDismiss,
-  imageFormat: ImageFormat,
-  imageSize: ImageSize,
-  imagesFull: ImagesFull,
 }).annotate({ identifier: "Plus.Settings" })
 
 export interface PlusSettingsInput extends Schema.Schema.Type<typeof PlusSettingsInput> {}
@@ -1309,9 +1309,6 @@ export const PlusSettingsInput = Schema.Struct({
   noticeMinTokens: Schema.optionalKey(Schema.Number),
   noticeKinds: Schema.optionalKey(NoticeKinds),
   noticeDismiss: Schema.optionalKey(NoticeDismiss),
-  imageFormat: Schema.optionalKey(ImageFormat),
-  imageSize: Schema.optionalKey(ImageSize),
-  imagesFull: Schema.optionalKey(ImagesFull),
 }).annotate({ identifier: "Plus.SettingsInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
