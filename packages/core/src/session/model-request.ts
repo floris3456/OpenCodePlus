@@ -47,8 +47,8 @@ import type { SessionMessage } from "./message.js"
 
 // Inline images one request may carry: under Anthropic's 32 MB request limit, with room for the text.
 const IMAGE_BYTES_BUDGET = 25 * 1024 * 1024
-// From this share of the budget, every attached image tells the model how full the chat is.
-const IMAGE_WARNING_SHARE = 0.8
+// The attached image that brings the chat to this share of the limits tells the model, once, how full it is.
+const IMAGE_WARNING_SHARE = 0.9
 const GENERATION_KEYS = new Set(Object.keys(GenerationOptions.fields))
 // Used when the catalog has no output limit for the model.
 const OUTPUT_TOKEN_FALLBACK = 32_000
@@ -242,19 +242,21 @@ export const imageLimits = (model: Pick<SessionRunnerModel.Resolved, "model" | "
 /**
  * Never changes an image once it was sent, so the provider's prompt cache stays valid. Images are attached in the
  * order the history gained them while they fit the limits; the first one that would not fit, and every image after
- * it, is replaced where it arrives by a note telling the model so, until compaction starts a new history. From 80%
- * of the limits each attached image is followed by a note saying how full the chat is. Every decision depends only
- * on the images before it, so a request repeats the previous one's history exactly and only adds to it.
+ * it, is replaced where it arrives by a note telling the model so, until compaction starts a new history. The image
+ * that brings the chat to 90% of the limits is followed by one note saying how full it is. Every decision depends
+ * only on the images before it, so a request repeats the previous one's history exactly and only adds to it.
  */
 export const boundImages = (messages: LLMRequest["messages"], limits: ImageLimits = DEFAULT_IMAGE_LIMITS) => {
   const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
-  const state = { bytes: 0, count: 0, full: false }
+  const state = { bytes: 0, count: 0, warned: false, full: false }
   const place = (name: string | undefined, bytes: number): { keep: boolean; note?: string } => {
     if (!state.full && state.bytes + bytes <= limits.bytes && (limits.count === undefined || state.count < limits.count)) {
       state.bytes += bytes
       state.count += 1
       const share = Math.max(state.bytes / limits.bytes, limits.count === undefined ? 0 : state.count / limits.count)
-      return share < IMAGE_WARNING_SHARE ? { keep: true } : { keep: true, note: imagesFilling(state, limits, share) }
+      if (state.warned || share < IMAGE_WARNING_SHARE) return { keep: true }
+      state.warned = true
+      return { keep: true, note: imagesFilling(state, limits, share) }
     }
     state.full = true
     return { keep: false, note: imageWithheld(name, state, limits) }

@@ -228,11 +228,11 @@ describe("SessionModelRequest.boundImages", () => {
   })
 
   test("never changes an image already sent: each request repeats the previous one and only adds to it", () => {
-    // 4 MiB screenshots: five reach 80% of 25 MiB, six fit, the seventh does not.
+    // 4 MiB screenshots: the sixth brings 25 MiB to 96%, the seventh does not fit.
     const history = Array.from({ length: 9 }, (_, index) => read(index, 4))
     const sent = Array.from({ length: history.length }, (_, length) => boundImages(history.slice(0, length + 1)))
     sent.slice(1).forEach((request, index) => expect(request.slice(0, index + 1)).toEqual([...sent[index]!]))
-    expect(outcome(sent.at(-1)!)).toEqual(["image", "image", "image", "image", "warned", "warned", "withheld", "withheld", "withheld"])
+    expect(outcome(sent.at(-1)!)).toEqual(["image", "image", "image", "image", "image", "warned", "withheld", "withheld", "withheld"])
     // The earlier images are the very same messages, untouched.
     sent.at(-1)!.slice(0, 4).forEach((message, index) => expect(message).toBe(history[index]))
   })
@@ -247,9 +247,19 @@ describe("SessionModelRequest.boundImages", () => {
       ),
     )
     expect(notes).toEqual([
-      "[Images in this chat: 80% of what one request may carry (20.0 of 25.0 MB). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]",
       "[Images in this chat: 96% of what one request may carry (24.0 of 25.0 MB). At 100% new images are no longer attached; compacting the chat (/compact) makes room for more.]",
       "[Image not attached: 6.png. This chat already carries the most images one request may hold (6 images, 24.0 of 25.0 MB). The earlier images are still attached. New images stay unattached until the chat is compacted (/compact).]",
+    ])
+  })
+
+  test("says how full the chat is once, on the image that reaches 90%", () => {
+    // A budget of exactly twenty 1 MiB images: the eighteenth reaches 90%, the twenty-first does not fit.
+    const history = Array.from({ length: 21 }, (_, index) => read(index, 1))
+    const each = 1024 * 1024 + "data:image/png;base64,".length
+    const result = outcome(boundImages(history, { bytes: 20 * each }))
+    expect(result.map((value, index) => (value === "image" ? undefined : [index, value])).filter(Boolean)).toEqual([
+      [17, "warned"],
+      [20, "withheld"],
     ])
   })
 
