@@ -770,7 +770,7 @@ Round 4 does not delete anything from the previous generation:
      - `checks/`: Check execution receipts.
      - `config/`: Frozen configuration and environment.
      - `data/`: Complete interaction transcript.
-   - A release's main branch (`ocp-main`) advances only by `git merge --ff-only <branch>` inside the `ocp-main` worktree, run after the release checks pass.
+   - The main branch (`v2-plus-1`) advances only by `git merge --ff-only <branch>` inside the worktree that has it checked out, run after the release checks pass.
 
 4. **Historical v1 Storage**:
    - Historical v1 workspaces and previous-generation bundles are administration records, not product state. Their physical paths, retention and disposition live outside `repos/opencode`; an operator needing access or disposal must coordinate with the workspace administrator.
