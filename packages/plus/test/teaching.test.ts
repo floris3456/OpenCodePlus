@@ -76,6 +76,8 @@ test("the instruction content stays within its size budget", async () => {
     'show({id,view:"diff"})',
     'set({id,resolve:"keep"})',
     'list({where:"agent:X item:tool"})',
+    "edit({id,oldString,newString})",
+    "id | badges | from",
     "instructions-tools",
   ]) {
     expect(teachingContent).toContain(phrase)
@@ -84,8 +86,10 @@ test("the instruction content stays within its size budget", async () => {
 
 test("the skill content covers the tool surface", async () => {
   for (const phrase of [
-    "list({ where?, fields?, sort?, limit?, offset? })",
+    "list({ where?, fields?, sort?, limit?, offset?, format? })",
+    'format: "objects"',
     'show({ id, view? })',
+    "edit({ id, oldString, newString, replaceAll? })",
     "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, prompt?, effort? })",
     "reset({ id })",
     "split({ id, boundaries?, add? })",

@@ -125,31 +125,23 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
 
 const ListDescription =
-  "Filter instruction rows; `where` uses `key:value` terms (grammar in skill `instructions-tools`).\n" +
-  "Fields select the projection, sort orders rows, limit defaults to 40. Reads never refuse for protection."
+  "Find instruction rows: one \"id | badges | from\" line per row, filtered by key:value terms in where.\n" +
+  "Returns { total, columns, rows }. fields picks the columns after id (label, tokens, text, …); format objects returns one object per row. " +
+  "where example: \"agent:alpha item:tool state:off\" (grammar in skill instructions-tools). limit defaults to 40."
 
 const ShowDescription =
-  "Read one row: resolved text (default), diff, record, sections, an entity, or an agent's assembled view.\n" +
-  "Resolved rows expose stateFrom and textFrom owner identities separately; from remains the state-source label.\n" +
-  "Views: resolved (default), upstream, mine, diff, record, sections, assembled (agent rows only).\n" +
-  "Team and member rows carry no text: resolved returns the entity (level, team, enabled/members, or member registered), record nests it under record.\n" +
-  "Diff returns two unified diffs (original→mine, original→upstream), a one-line summary, and merge: the merge units (id, kind, yours, upstream, base, included) with the default merged text.\n" +
-  "A Defaults › Models row resolves to a summary with each effective keep-alive value and the layer it came from."
+  "Read one row: its text and where it comes from (view resolved, the default).\n" +
+  "On an agent, group or root, resolved lists the rows under it. assembled appears only when what reaches the model differs from text.\n" +
+  "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt).\n" +
+  "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source."
 
 const SetDescription =
-  "Save an override, toggle, pin, set when shown, activate a model, resolve review or relink (TUI Enter/Space/p/w/k/t/e/l).\n" +
-  "On a group row id, state on|off turns every row under it on or off in one write (a bare id toggles the group: all on means all off, otherwise all on); protected rows are skipped and named, team groups refuse.\n" +
-  "Enabling a team is exclusive across loaded project/global/defaults records; disabledTeams reports the other teams disabled by this save.\n" +
-  "With text save an override, with state on|off toggle explicitly, with pin true|false pin a Code Mode tool, with active true activate a model row, with resolve keep|take|edit resolve review, with resolve merge and include:[unit ids from show's merge.units] save that merge (no include = the defaults; a merge equal to upstream is a take).\n" +
-  "Agent/member rows accept state on|off and mode primary|subagent|all. setting:* and compaction:* rows use text (enabled/hidden use state); empty optional fields clear them. Compaction model is provider/model#variant; empty inherits the maintenance compaction model, otherwise the active session model.\n" +
-  "With preset on an agent, member, team, Defaults entry or user preset row, link it to that preset (null unlinks): \"<id>\" names an agent preset, \"<team>/<member>\" a member preset (team rows take a team preset id).\n" +
-  "On a perm row with label+patterns (keywords optional) update the rule; message sets the refusal text the model reads. Bare id toggles (model rows activate). Writes pass actor tool and retry once when stale.\n" +
-  "On a model row text replaces the candidate (provider/model or provider/model#variant; the TUI's enter edit) and warming sets cache warming for that agent on that model at that level: off, on, or a total time 1m-24h such as 45m, 2h, 1h30m; empty warming inherits.\n" +
-  "Model and Defaults › Models rows accept compactWarm (on|off), compactionStrategy (auto|local|remote), compactionModel (provider/model#variant), compactionInstructions, compactionInput/compactionOutput (positive whole token-count strings or off), imageConvert (webp-90|webp-75|webp-lossless|original), imageShrink (longest edge in pixels, 256-65535), imagesFull (compact|leave-out|error), and coldModels (ordered array or comma list). Null inherits; empty strings inherit except compactionInstructions, where empty is an explicit empty prompt. Threshold off suppresses an inherited early trigger; normal context safety still applies. coldModels:[] explicitly disables the list; whether cold chats compact at all is the person's global Settings switch, so coldCompact is refused. Emitted modelfield:/modelsetting: field rows take text and reset; the cold-cache models are a group, not a scalar field row, and no modelsetting:coldModels row is emitted. Use list's actual ids.\n" +
-  "On a Defaults › Models row (item:defaults:/models:modeldefault:* and …:<provider>/<model>) warming, interval (30s-24h such as 4m or 3m30s), prompt (the keep-alive text) and effort (the default variant) set that row's fields; an empty field clears it so the level below decides, and state on|off sets the warming switch.\n" +
-  "On a model prompt row (item:…:system:model/<id>) models replaces the patterns of the models it is sent for (on its own, not with other fields).\n" +
-  "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
-  "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
+  "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
+  "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
+  "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
+  "resolve keep|take|edit settles a review; resolve merge with include:[unit ids from show's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
+  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
+  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
 
 const EditDescription =
   "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
@@ -157,50 +149,38 @@ const EditDescription =
   "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }."
 
 const MoveDescription =
-  "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
-  "Rows and folders move only inside their own tab; a folder cannot move into itself or its own folders; built-in structure cannot move.\n" +
-  "A section moves before or after a sibling under the same parent inside its own item; the item's text is rewritten so the request order changes (a heading-derived move folds the consumed same-level child texts into the parent).\n" +
-  "A System list is the order the model receives the owner's system parts: moving a row there (before/after only; System has no folders) moves that part in the owner's requests. Role/persona and the Base group are one part and move together; a base prompt does not move alone; OpenCode's own parts (system:opencode/*) move but are not edited. An agent without its own System order uses the first one down its chain (preset, Defaults entries, Defaults for every agent).\n" +
-  "Category membership is saved for this owner and shared with the TUI. Ordinary category moves retain the row's execution settings."
+  "Move a row, folder or section before or after a sibling, or a row or folder into a folder or a tab's top level.\n" +
+  "Rows move only inside their own tab; folders are display only. A section moves within its item (the item's text is rewritten).\n" +
+  "In a System list, moving a row reorders that part of the owner's system prompt (before/after only; a base prompt moves with Role/persona; OpenCode's parts move but are not edited)."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
-  "Agent/member rows reset their settings and compaction controls at this level.\n" +
-  "Removes the stored text/state at the addressed row (model rows clear only that level's active flag; a Defaults › Models row clears its keep-alive fields and goes away). Writes pass actor tool and retry once when stale."
+  "Agent and member rows reset their settings and compaction controls; model rows clear only this level's active flag; a Defaults › Models row clears its values."
 
 const SplitDescription =
   "Set manual sections or append one (TUI `s` / `a` on an item).\n" +
   "Pass boundaries [{id,name,start}] to set manual sections, or add {name,text} to append one."
 
 const CreateDescription =
-  "Create an agent, team, member, Defaults entry, preset, file-backed row, model candidate or permission rule (TUI `a`).\n" +
-  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset). No preset leaves the agent unlinked: Defaults still apply, ordinary tools otherwise fall back to off, and controls retain configuration defaults. Kinds:\n" +
-  "agent (id, scope project|global default project, preset), team (team+level, preset = team preset id; created disabled),\n" +
-  "member (team+level+id, preset; level defaults creates a Teams member entry, team and id are patterns),\n" +
-  "entry (catalogue agents|teams + name, team pattern for teams, preset; names may hold * and %, matched case-insensitively),\n" +
-  "preset (id, from = base agent/member preset), teamPreset (id, from = team preset id whose members are copied, each linked to its source),\n" +
-  "presetMember (team = user team preset + id, from), skill (name+body), base (id+title+text), system (id+text, title optional: a new System row, switched and edited per agent and level like the built-in ones; with models it is a model prompt, id system:model/<id>, listed under System › Model prompts and sent right after the base prompt only to a request whose model a pattern names), mcp (name+config),\n" +
-  "model (providerID+modelID, variant/level/agent optional; team selects that team's member owner, including level:preset),\n" +
-  "folder (name, id = the tab row or folder row to create it in; a saved category belonging to this owner and tab),\n" +
-  "rule (tool+id+label+patterns, keywords/level/agent optional; patterns are core wildcards, not regex; message is the optional refusal text the model reads; a rule with no agent keeps its requested level and resolves through its shared Defaults row).\n" +
-  "Every kind returns {id, item}: id is the row id show/set/delete accept, item the created item's own id.\n" +
-  "catalogue agents|teams (default agents) picks which catalogue a shared Defaults model or rule lands in;\n" +
-  "base/system/mcp create one file both catalogues list, so catalogue does not change what is written."
+  "Create an agent, team, member, Defaults entry, preset, skill, base, system, MCP, model, rule or folder row (TUI `a`).\n" +
+  "Returns {id, item}: pass id to show, set, edit and delete. Kinds and their fields: agent (id, scope project|global, preset); team (team, level, preset = a team preset; created disabled); " +
+  "member (team, level, id, preset; at level defaults a Teams entry, team and id are patterns); entry (catalogue agents|teams, name with * or %, team pattern, preset); " +
+  "preset, teamPreset, presetMember (id, from; presetMember also team); skill (name, body, scope); base (id, title, text); system (id, text, title; models makes a model prompt); mcp (name, config); " +
+  "model (providerID, modelID, variant, level, agent; it becomes the active one there); rule (tool, id, label, patterns as core wildcards not regex, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
+  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); without one an agent is unlinked and Defaults still apply. catalogue agents|teams picks where a shared Defaults model or rule lands."
 
 const DeleteDescription =
-  "Delete a user-owned row (agent, team, member, file, Defaults entry, user preset); refuses without `confirm`.\n" +
-  "Pass confirm:true to delete. Resolves the row through the TUI removal plan. A model row deletes its local candidate or hides an inherited/upstream one at this level; the row that is the effective model refuses (activate another model first). A Defaults › Models row with values clears them (it disappears); one with none refuses. A preset any live row links to is refused (preset.inUse lists who); links whose owner is gone are removed with the preset. Links only other projects hold are overridden with force:true (they then show as a missing preset)."
+  "Delete a user-owned row: agent, team, member, file, Defaults entry, user preset, custom rule or folder.\n" +
+  "Needs confirm:true. A model row deletes its candidate at this level (the active model refuses: activate another first); a Defaults › Models row clears its values. A preset still linked is refused (preset.inUse names the rows); force:true overrides links only other projects hold."
 
 const LogDescription =
   "Change history (who/what/when).\n" +
   "Reads the change log newest-first with where/limit/offset filtering."
 
 const LinkDescription =
-  "Inspect or set a row link between two rows of one owner and level (B9–B12).\n" +
-  "Without target: report every effective outgoing and incoming link for id, each with direction, both endpoints, type, enabled, the level/owner it is stored at, and whether it is a shipped <!-- requires --> marker (shipped, from text).\n" +
-  "With target: upsert the link whose primary is id and whose connected row is target; type defaults either. Types: either (turning either on saves the other off), shownWhenOn / shownWhenOff (the target is sent only while id is on / off). A gate's primary must be a whole row, not a section.\n" +
-  "enabled:false stores a tombstone that masks the pair at this level, including an upstream link; enabled true or omitted stores a live link.\n" +
-  "Both ends must resolve in the same level and owner view; an unknown, protected or self link refuses without writing."
+  "Inspect or set a link between two rows of the same owner and level.\n" +
+  "Without target: list the row's links in and out. With target: store a link from id to target; type either (default: turning one on switches the other off), shownWhenOn or shownWhenOff (target is sent only while id is on / off; id must be a whole row).\n" +
+  "enabled:false masks the pair at this level, including an inherited link."
 
 const Field = Schema.Union([
   Schema.Literal("id"),
