@@ -2742,8 +2742,8 @@ test("instructions_set on a team-special row persists team-scoped record", async
 
 // ---------------------------------------------------------------------------
 // Round-3 evidence capture: labeled stdout of the values these flows really
-// return, for docs/round3-instructions-output.md. No assertion reads it and no
-// behavior depends on it. The only normalized text is the disposable mkdtemp
+// return (the round-3 capture doc is in Git history). No assertion reads it and
+// no behavior depends on it. The only normalized text is the disposable mkdtemp
 // prefix; long strings become a clearly labeled projection.
 
 const ROUND3_TEXT_LIMIT = 200
