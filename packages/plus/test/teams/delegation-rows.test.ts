@@ -196,13 +196,15 @@ test("a planner asks before each delegation, changes plan files only and does no
   expect(call("edit", { path: "/repo/repos/opencode/docs/plans/p.md" }).refuse).toBeUndefined()
   expect(call("write", { path: "docs/handoffs/h.md", content: "x" }).refuse).toBeUndefined()
   expect(call("edit", { path: "packages/plus/src/index.ts" }).refuse).toBe(
-    "Permission denied: this file is not one you may change here; only the allowed files (Files it may change) are",
+    "Permission denied: this file is not one you may change here (Files it may change); still allowed: Plan files (docs/plans/, docs/handoffs/)",
   )
   expect(call("patch", { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch" }).refuse).toContain("Files it may change")
   // An orchestrator's table refuses a source edit too and takes a handoff file; an implementer's refuses neither.
   const edit = (member: string, path: string) =>
     decide(table.toolRows(member, "edit"), { tool: "edit", input: { path }, sessionID: "s", directory: "/repo", teamMembers: table.teamMembers }).refuse
   expect(edit("orchestrator", "packages/plus/src/index.ts")).toContain("Files it may change")
+  // The orchestrator learns which files it may still change: plans and the tests it writes.
+  expect(edit("orchestrator", "packages/plus/src/index.ts")).toContain("still allowed: Plan files (docs/plans/, docs/handoffs/), Test files (*.test.*, test/)")
   expect(edit("orchestrator", "docs/handoffs/brief.md")).toBeUndefined()
   expect(edit("implementer", "packages/plus/src/index.ts")).toBeUndefined()
 })

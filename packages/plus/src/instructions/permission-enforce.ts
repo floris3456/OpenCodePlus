@@ -386,6 +386,8 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
     const fallback = group.find((row) => row.item.fallback === true)
     if (fallback === undefined || fallback.on) return undefined
     const paths = call.tool === "patch" ? patchPaths(stringsAt(call.input, "patchText")[0] ?? "") : stringsAt(call.input, "path")
+    // The refusal names the files this agent may still change, so its next call can be one of them.
+    const open = group.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
     for (const file of paths) {
       const relative = path.relative(call.directory, path.resolve(call.directory, expandHome(file)))
       const opened = group.some(
@@ -394,7 +396,7 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
           row.item.allow === true &&
           (row.item.patterns ?? []).some((pattern) => wildcardMatch(file, pattern) || wildcardMatch(relative, pattern)),
       )
-      if (!opened) return messageOf(fallback, "this file may not be changed here")
+      if (!opened) return denied(allowListMessage(fallback.item.message ?? "this file may not be changed here", open))
     }
     return undefined
   }

@@ -437,7 +437,7 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
         label: "Every other file",
         on: true,
         patterns: ["*"],
-        message: "this file is not one you may change here; only the allowed files (Files it may change) are",
+        message: "this file is not one you may change here (Files it may change)",
       },
       rows: [
         {
