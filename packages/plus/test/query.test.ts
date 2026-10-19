@@ -497,7 +497,7 @@ test("is names the rows holding an edit", () => {
   expect(ids("is:changed")).toContain(bash)
   expect(ids("is:changed")).toContain("item:project:Implementer:skill:native-one")
   expect(ids("is:changed")).not.toContain("item:project:CrewMate:tool:bash")
-  // hidden: an agent's own text or on/off a more specific level sets too; a
+  // overruled: an agent's own text or on/off a more specific level sets too; a
   // shared edit one agent overrides still applies to the others.
   const shadowedState = input({
     records: [
@@ -505,8 +505,9 @@ test("is names the rows holding an edit", () => {
       makeRecord({ level: "project", agent: "Helper", item: "tool:bash", state: "on" }),
     ],
   })
-  expect(query(shadowedState, { where: "is:hidden", withoutAliases: true }).rows.map((row) => row.id)).toEqual(["item:global:Helper:tool:bash"])
-  expect(ids("is:hidden")).not.toContain(sharedPlus)
+  expect(query(shadowedState, { where: "is:overruled", withoutAliases: true }).rows.map((row) => row.id)).toEqual(["item:global:Helper:tool:bash"])
+  expect(ids("is:overruled")).not.toContain(sharedPlus)
+  expect(() => ids("is:hidden")).toThrow("overruled")
   expect(ids("is:orphaned").sort()).toEqual(ids("orphan:true").sort())
 })
 
@@ -520,6 +521,9 @@ test("findCollapse turns off each part a question asks past", () => {
   expect(findCollapse('agent:"alpha"')).toEqual({ ...all, copies: false })
   expect(findCollapse("!agent:alpha")).toEqual(all)
   expect(findCollapse('is:"changed"')).toEqual({ ...all, presets: false, levels: false, copies: false })
+  // held-back asks what the agent gets: one row per thing, sections included.
+  expect(findCollapse('is:"held-back"')).toEqual({ ...all, sections: false })
+  expect(findCollapse("is:held-back,changed")).toEqual({ ...all, sections: false, presets: false, levels: false, copies: false })
   expect(findCollapse('in:"item:project:a:tool:x"')).toEqual({ ...all, sections: false, presets: false, levels: false, copies: false })
   expect(findCollapse("id:item:project:")).toEqual({ sections: false, descriptions: false, presets: false, levels: false, copies: false })
 })

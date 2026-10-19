@@ -54,6 +54,10 @@ export function badgeLabels(node: TreeNode): string[] {
   // synthetic address would corrupt the mutate path). Structural rows carry
   // no state and still render no badge.
   if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
+  if (node.badges.heldBack === true) {
+    const needs = (node.badges.requires ?? []).filter((requirement) => !requirement.met).map((requirement) => `${requirement.id} ${requirement.on ? "on" : "off"}`)
+    labels.push(`held back (needs ${needs.join(", ")})`)
+  }
   if (node.badges.modified === true) labels.push("modified")
   if (node.badges.active === true) labels.push(node.badges.activeFrom === undefined ? "active" : `active (${node.badges.activeFrom})`)
   if (node.badges.inactive === true) labels.push("inactive")

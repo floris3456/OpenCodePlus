@@ -89,6 +89,11 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
       op: "find",
       input: { agent: "alpha", type: "tool", is: "review", in: "item:project:alpha:tool:reader" },
     })
+    expect(await parse(["find", "--agent", "alpha", "--is", "held-back"])).toEqual({
+      kind: "run",
+      op: "find",
+      input: { agent: "alpha", is: "held-back" },
+    })
     expect(await parse(["move", "row", "--into", "folder", "--before", "first", "--after=last"])).toEqual({
       kind: "run",
       op: "move",

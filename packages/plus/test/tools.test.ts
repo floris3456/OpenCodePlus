@@ -3850,6 +3850,30 @@ test("show reports a section's requires line and a tool's Tools and rules sectio
   expect(shownTool.guidance).toEqual(["Questions"])
 })
 
+// find({ is: "held-back" }): sections that are on but whose "shown when" the
+// agent does not meet, each with what it needs.
+test("find is held-back lists what an agent's shown when keeps from it", async () => {
+  const { tools } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "question", description: "Ask the user", options: { codemode: false } },
+    ],
+  })
+  const find = need(tools, "instructions_find")
+  const heldBack = async () => ((await runOk(find, { agent: "alpha", is: "held-back", limit: 100 })) as { rows: string[] }).rows
+  // The Tools and rules row is off by default for alpha: nothing in it is held back.
+  expect(await heldBack()).toEqual([])
+  await runOk(need(tools, "instructions_set"), { id: "item:defaults:alpha:system:tools-and-rules", state: "on" })
+  const rows = await heldBack()
+  // No code search tool here: its section is held back, and says what it needs.
+  expect(rows.find((row) => row.includes(":tools-and-rules/code-search |"))).toContain("held back (needs tool:search_exa_code_search on)")
+  // Questions waits for the question tool; switching it on sends it.
+  expect(rows.find((row) => row.includes(":tools-and-rules/questions |"))).toContain("held back (needs tool:question on)")
+  await runOk(need(tools, "instructions_set"), { id: "item:defaults:alpha:tool:question", state: "on" })
+  expect((await heldBack()).some((row) => row.includes(":tools-and-rules/questions |"))).toBe(false)
+  expect((await runFail(find, { is: "hidden" })).message).toContain("overruled")
+})
+
 // "Shown when" through the tool: set takes requires (null drops it), show
 // reports the condition and where it comes from, and a typo is refused.
 test("set requires changes when a section is sent; show reports it and its source", async () => {

@@ -234,7 +234,8 @@ const FindInput = Schema.Struct({
   is: Schema.optionalKey(Schema.Literals(namedFinds)).annotate({
     description:
       "Rows holding an edit: review (what it was based on changed since), changed (any; reset drops it), " +
-      "hidden (a more specific level overrides it), orphaned (its row is gone).",
+      "overruled (a more specific level sets it too, so it never applies), orphaned (its row is gone). " +
+      "held-back: rows and sections that are on, but the agent does not get them because their \"shown when\" does not hold.",
   }),
   where: Schema.optionalKey(Schema.String).annotate({ description: "More key:value terms (skill instructions-tools)." }),
   fields: Schema.optionalKey(Schema.Array(Field)),

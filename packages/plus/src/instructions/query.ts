@@ -15,7 +15,7 @@ import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, ty
 import { lazyControl, materialize, skeletonOf, tabLayout, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
-import { groupScope, orderOf, tabOfItem, teamsOwnerSegment } from "./folders.js"
+import { tabOfItem, teamsOwnerSegment } from "./folders.js"
 import { badgeLabels } from "./from-label.js"
 
 export type Field =
@@ -100,10 +100,12 @@ export function findCollapse(where: string): Collapse {
   const asks = (keys: readonly string[], value?: string) =>
     terms.some((term) => keys.includes(term.key) && (value === undefined || term.value.includes(value)))
   const named = asks(["in", "id"])
-  const record = terms.some((term) => recordKeys.has(term.key)) || asks(["has"], "record")
+  // is:held-back asks what runs, not about an edit; most of its rows are sections.
+  const heldBack = (term: { key: string; value: string }) => term.key === "is" && term.value.replace(/["']/g, "").split(",").every((value) => value === "held-back")
+  const record = terms.some((term) => recordKeys.has(term.key) && !heldBack(term)) || asks(["has"], "record")
   return {
     // A section's name is its own, so a name asks for sections too.
-    sections: !named && !asks(["type", "kind"], "section") && !asks(["has"], "sections") && !asks(["name"]),
+    sections: !named && !asks(["type", "kind"], "section") && !asks(["has"], "sections") && !asks(["name"]) && !asks(["is"], "held-back"),
     descriptions: !asks(["id"]),
     presets: !named && !record && !asks(["level", "type", "kind"], "preset"),
     levels: !named && !record && !asks(["level"]),
@@ -135,7 +137,7 @@ export const rowTypes = [
 export type RowType = (typeof rowTypes)[number]
 
 /** find's named finds (`is:`). */
-export const namedFinds = ["review", "changed", "hidden", "orphaned"] as const
+export const namedFinds = ["review", "changed", "overruled", "orphaned", "held-back"] as const
 
 export interface QueryRow {
   readonly id: string
@@ -849,11 +851,13 @@ function ownerAgentOf(state: QueryState, candidate: Candidate): string | null {
 
 // Each named find answers for the row that holds the edit, not the rows that
 // inherit it or the groups that count it: review is the row's own review,
-// changed an edit stored on the row (what reset drops).
+// changed an edit stored on the row (what reset drops). held-back asks what
+// the agent gets instead: on, but its "shown when" does not hold.
 function isOf(state: QueryState, candidate: Candidate, what: string): boolean {
   if (what === "orphaned") return candidate.orphan
+  if (what === "held-back") return nodeOf(state, candidate)?.badges.heldBack === true
   // A shared edit one agent overrides still applies to the others.
-  if (what === "hidden") return candidate.address?.agent !== null && shadowedOf(state, candidate)
+  if (what === "overruled") return candidate.address?.agent !== null && shadowedOf(state, candidate)
   if (what === "review") return candidate.lazy?.selfReview() ?? nodeOf(state, candidate)?.badges.review === true
   return candidate.address !== undefined && (actionsOf(state, candidate).reset || nodeOf(state, candidate)?.badges.modified === true)
 }

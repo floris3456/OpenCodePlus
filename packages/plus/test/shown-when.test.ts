@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test"
 import { resolvedFor, roleUpdates, rowGate, type ApplyInput } from "../src/instructions/apply.js"
+import { badgeLabels } from "../src/instructions/from-label.js"
 import { guidanceContent } from "../src/instructions/guidance.js"
 import { fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
 import { setRequires } from "../src/instructions/ops.js"
 import { guidanceItemId } from "../src/instructions/paths.js"
 import { chainContext } from "../src/instructions/presets.js"
+import { findCollapse, query } from "../src/instructions/query.js"
 import { isReplacementBarrier, type RowlinkRecord } from "../src/instructions/rowlinks.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
 
@@ -142,4 +144,47 @@ test("a condition names rows that exist, in the row id shape, never both on and 
   expect(refusal(["tool:question", "!tool:question"])).toContain("cannot be required both on and off")
   const tool = setRequires(memo([]), "item:project:alpha:tool:question", ["tool:team_check"])
   expect("refusal" in tool && tool.refusal).toContain("cannot be sent conditionally")
+})
+
+// Held back: on, but its "shown when" does not hold for the agent, so the
+// agent does not get it. find({ is: "held-back" }) lists it, sections too,
+// and its badges name what it needs.
+test("a row or section its shown when keeps from the agent is held back, and find lists it", () => {
+  const find = (input: MemoInput, where: string) => query(input, { where, collapse: findCollapse(where) }).rows
+  const ids = (input: MemoInput, where: string) => find(input, where).map((row) => row.id)
+  const betaChecks = checks.replace(":alpha:", ":beta:")
+  const commands = (agent: string) => `section:project:${agent}:${guidanceItemId}:tools-and-rules/commands`
+
+  // alpha has team_check off: its Checks section is held back; beta's is sent.
+  const alphaOff = memo([off("alpha", "tool:team_check")])
+  const nodes = expandedTree(alphaOff)
+  const node = (id: string) => nodes.find((entry) => entry.id === id)
+  expect(node(checks)?.badges.heldBack).toBe(true)
+  expect(badgeLabels(node(checks)!)).toContain("held back (needs tool:team_check on)")
+  expect(node(betaChecks)?.badges.heldBack).toBeUndefined()
+  expect(ids(alphaOff, 'is:"held-back" agent:"alpha"')).toContain(checks)
+  expect(ids(alphaOff, 'is:"held-back" agent:"beta"')).not.toContain(betaChecks)
+  // A section whose condition holds (question is on) is not held back.
+  expect(ids(alphaOff, 'is:"held-back" agent:"alpha"')).not.toContain(questions)
+  expect(find(alphaOff, 'is:"held-back" agent:"alpha"').find((row) => row.id === checks)?.badges).toBe("on held back (needs tool:team_check on)")
+
+  // Neither agent has a shell tool: Commands is held back for both, and
+  // without agent it is one row that counts the other agent's copy.
+  const shared = find(alphaOff, 'is:"held-back"').filter((row) => row.id.endsWith(":tools-and-rules/commands"))
+  expect(shared).toHaveLength(1)
+  expect(shared[0]?.copies).toBe(1)
+
+  // A section of a row that is off is not held back: the row is off.
+  const rowOff = memo([off("alpha", guidanceItemId)])
+  expect(ids(rowOff, 'is:"held-back" agent:"alpha"')).not.toContain(commands("alpha"))
+  expect(ids(rowOff, 'is:"held-back" agent:"beta"')).toContain(commands("beta"))
+  // Nor is a section that is off itself.
+  const sectionOff = memo([{ ...off("alpha", guidanceItemId), section: "tools-and-rules/commands" }])
+  expect(ids(sectionOff, 'is:"held-back" agent:"alpha"')).not.toContain(commands("alpha"))
+
+  // A whole row is held back by its own condition.
+  const whole = `item:project:alpha:${guidanceItemId}`
+  const tied = result(setRequires(memo([]), whole, ["!tool:question"]))
+  expect(ids(memo(tied.records, tied.rowlinks), 'is:"held-back" agent:"alpha"')).toContain(whole)
+  expect(ids(memo(tied.records, tied.rowlinks), 'is:"held-back" agent:"beta"')).not.toContain(`item:project:beta:${guidanceItemId}`)
 })

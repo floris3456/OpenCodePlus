@@ -205,6 +205,8 @@ export interface TreeNodeBadges {
   readonly requiresFrom?: string
   /** This row's own level holds the condition (null on set drops it). */
   readonly requiresHere?: boolean
+  /** On, with its row and enclosing sections on, but this owner does not meet its condition: the agent does not get it. */
+  readonly heldBack?: boolean
   /** Section rows: tools or skills its text names that this owner has off, with no `requires` line covering them. */
   readonly mentions?: readonly { readonly word: string; readonly id: string }[]
   /** Tool, skill and rule rows: the Tools and rules sections that belong to this row. */
@@ -4032,10 +4034,12 @@ function itemBadges(
   const shadowedBuiltin = item.kind === "base" && item.userBase === true && builtinBaseIds().has(baseIdOf(item.id))
   const codemodeTool = item.kind === "tool" && item.codemode === true
   const guidance = item.kind === "tool" || item.kind === "skill" || item.kind === "mcp" ? guidanceFor(memo, level, owner, item.id, teamRef, catalogue) : []
-  const condition = item.kind === "system" && resolved.requires !== undefined ? conditionBadges(memo, level, owner, resolved.requires, teamRef, catalogue) : {}
+  const condition: Pick<TreeNodeBadges, "requires"> =
+    item.kind === "system" && resolved.requires !== undefined ? conditionBadges(memo, level, owner, resolved.requires, teamRef, catalogue) : {}
   return {
     ...(guidance.length === 0 ? {} : { guidance }),
     ...condition,
+    ...(resolved.enabled && unmet(condition.requires) ? { heldBack: true } : {}),
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
     source: resolved.source,
@@ -4192,7 +4196,15 @@ function sectionBadges(
   catalogue?: Catalogue,
 ): TreeNodeBadges {
   const resolved = sectionResolveOf(memo, level, owner, item, section.id, catalogue, teamRef)
-  const capability = item.kind === "system" ? capabilityBadges(memo, level, owner, item, section, resolved, teamRef, catalogue) : {}
+  const capability: Pick<TreeNodeBadges, "requires"> = item.kind === "system" ? capabilityBadges(memo, level, owner, item, section, resolved, teamRef, catalogue) : {}
+  // Held back only where it would be sent otherwise: its row and the
+  // sections around it (ids nest with "/") are on.
+  const parts = section.id.split("/")
+  const heldBack =
+    resolved.enabled &&
+    unmet(capability.requires) &&
+    wholeOf(memo, level, owner, item, catalogue, teamRef).enabled &&
+    parts.slice(0, -1).every((_, index) => sectionResolveOf(memo, level, owner, item, parts.slice(0, index + 1).join("/"), catalogue, teamRef).enabled)
   return {
     state: resolved.enabled ? "on" : "off",
     modified: resolved.modified,
@@ -4200,7 +4212,12 @@ function sectionBadges(
     source: resolved.source,
     ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
     ...capability,
+    ...(heldBack ? { heldBack: true } : {}),
   }
+}
+
+function unmet(requires: TreeNodeBadges["requires"]): boolean {
+  return requires?.some((requirement) => !requirement.met) === true
 }
 
 // Whether the owner has a row on, as apply decides it for that agent;
