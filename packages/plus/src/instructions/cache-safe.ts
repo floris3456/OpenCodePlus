@@ -553,7 +553,7 @@ export function computeChangeNote(
     const label = instructionLabel(filePath)
     if (pinPlan === undefined || !pinPlan.enabled) {
       if (curPlan.enabled) {
-        items.push(`Instruction "${label}" replaces the earlier text:\n${curPlan.text.trim()}`)
+        items.push(`Instruction "${label}" is added:\n${curPlan.text.trim()}`)
       }
       continue
     }

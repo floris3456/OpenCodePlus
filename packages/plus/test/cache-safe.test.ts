@@ -1078,6 +1078,26 @@ test("an edited instruction file is left to OpenCode's notice; a Plus change to 
   expect(computeChangeNote(restored!, guidePlans("Guide v2.", true), "alpha")).toBeUndefined()
 })
 
+test("an instruction that is new, or switched back on, is announced as added", () => {
+  const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+  const plans = (enabled: boolean | undefined) =>
+    createPlanSet({
+      roles: new Map(),
+      base: [],
+      native: [],
+      instructions: enabled === undefined ? [] : [{ agent: "alpha", path: GUIDE, text: "Be honest.", enabled }],
+      scrubByAgent: new Map(),
+      needsNarrowing: false,
+      permissions: answering("plans"),
+      customByAgent: new Set(),
+    })
+  const added = computeChangeNote(new SessionPinManager().pinSession("ses_new", model, plans(undefined)), plans(true), "alpha")
+  expect(added?.noteText).toContain(`Instruction "AGENTS.md" is added:\nBe honest.`)
+  expect(added?.noteText).not.toContain("replaces")
+  const back = computeChangeNote(new SessionPinManager().pinSession("ses_back", model, plans(false)), plans(true), "alpha")
+  expect(back?.noteText).toContain(`Instruction "AGENTS.md" is added:\nBe honest.`)
+})
+
 function answering(label: string): PermissionTable {
   return {
     rows: () => [],
