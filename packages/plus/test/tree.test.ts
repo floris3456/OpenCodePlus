@@ -849,10 +849,11 @@ test("a wrapper with no body shows no Introduction, and several top-level sectio
   const description = childrenOf(tool, "item:project:Implementer:tool:desc").find((node) => node.label === "Description")
   if (description === undefined) throw new Error("expected Description group")
   expect(childrenOf(tool, description.id).map((node) => node.label)).toEqual(["Introduction", "A"])
-  // A record on a body-less wrapper keeps its row reachable.
+  // A record on a body-less wrapper keeps its row reachable (on, unlike the
+  // off the row inherits: an equal value is no record).
   const saved = expandAll({
     items: [skillTool, makeItem({ id: "skill:quiet", kind: "skill", group: "project", title: "quiet", text: "# Title\n## A\na\n" })],
-    records: [{ ...makeRecord(), item: "skill:quiet", section: "title", state: "off" }],
+    records: [{ ...makeRecord(), item: "skill:quiet", section: "title", state: "on" }],
     agents: agents(),
   })
   expect(childrenOf(saved, "item:project:Implementer:skill:quiet").map((node) => node.label)).toEqual(["Introduction", "A"])

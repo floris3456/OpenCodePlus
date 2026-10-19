@@ -429,7 +429,8 @@ test("tree rows carry the from-label suffix only when inherited, and the review 
   const nodes = tree({ ...input, expanded: new Set(allIds(input)) })
   const bash = nodes.find((node) => node.id === "item:project:Implementer:tool:bash")!
   expect(provenanceSuffix(bash)).toBe("from preset Basic › orchestrator")
-  const own = record({ item: "tool:bash", state: "on" })
+  // Off, unlike the on the preset gives: an own value (an equal one would be no edit).
+  const own = record({ item: "tool:bash", state: "off" })
   const set = tree({ ...input, records: [own], expanded: new Set(allIds({ ...input, records: [own] })) })
   expect(provenanceSuffix(set.find((node) => node.id === "item:project:Implementer:tool:bash")!)).toBeUndefined()
   // Off here, recorded against "off" above; the preset now answers "on":

@@ -1,4 +1,5 @@
 import { catalogueOf, resolve, resolveEnabled, resolveSplit, scopedTo } from "./model.js"
+import { withoutInherited } from "./inherited.js"
 import { ruleItem } from "./rules.js"
 import type { HostModel, ModelSettingsRecord } from "./model-settings.js"
 import { chainContext, presetLabels, presetListing, withOwnerRoles, type PresetEntry, type PresetState } from "./presets.js"
@@ -72,24 +73,37 @@ export interface BuildContext {
 
 export function contextOf(input: MemoInput): BuildContext {
   const listing = presetListing(input.presets)
+  const items = withOwnerRoles(input.items, input)
+  const splits = input.records.filter((record): record is SplitRecord => record.type === "split")
+  const rules = input.records.filter((record): record is RuleRecord => record.type === "rule")
+  const scopes = chainContext({
+    agents: input.agents,
+    items: input.items,
+    ...(input.links === undefined ? {} : { links: input.links }),
+    ...(rowlinksOf(input).length === 0 ? {} : { rowlinks: rowlinksOf(input) }),
+    ...(input.entries === undefined ? {} : { entries: input.entries }),
+    ...(input.presets === undefined ? {} : { presets: input.presets }),
+    teams: input.teams ?? [],
+  })
   return {
-    items: withOwnerRoles(input.items, input),
+    items,
     listing,
     labels: presetLabels(listing),
     entries: input.entries ?? [],
-    customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
-    splits: input.records.filter((record): record is SplitRecord => record.type === "split"),
-    models: input.records.filter((record): record is ModelRecord => record.type === "model"),
-    rules: input.records.filter((record): record is RuleRecord => record.type === "rule"),
-    scopes: chainContext({
+    // Every reader of the tree sees an edit equal to what its row inherits as none (inherited.ts).
+    customizations: withoutInherited({
+      items,
+      rules,
+      customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
+      splits,
+      scopes,
       agents: input.agents,
-      items: input.items,
-      ...(input.links === undefined ? {} : { links: input.links }),
-      ...(rowlinksOf(input).length === 0 ? {} : { rowlinks: rowlinksOf(input) }),
-      ...(input.entries === undefined ? {} : { entries: input.entries }),
-      ...(input.presets === undefined ? {} : { presets: input.presets }),
       teams: input.teams ?? [],
     }),
+    splits,
+    models: input.records.filter((record): record is ModelRecord => record.type === "model"),
+    rules,
+    scopes,
     agents: input.agents,
     teams: input.teams ?? [],
     modelSettings: input.modelSettings ?? [],
@@ -98,6 +112,18 @@ export function contextOf(input: MemoInput): BuildContext {
     orders: input.orders ?? [],
   }
 }
+
+/**
+ * Records as they are stored: the customizations without what their rows
+ * already inherit (inherited.ts), the rest as they are. A write compares and
+ * sends these, so it stores no edit equal to its row's inherited value.
+ */
+export function storedRecords<R extends { readonly type: string }>(input: MemoInput, records: readonly R[]): (R | CustomizationRecord)[] {
+  const read = records.filter((record): record is R & MemoInput["records"][number] => memoTypes.has(record.type))
+  return [...records.filter((record) => record.type !== "customization"), ...contextOf({ ...input, records: read }).customizations]
+}
+
+const memoTypes = new Set(["customization", "split", "model", "rule", "rowlink"])
 
 export function rowlinksOf(input: MemoInput): readonly RowlinkRecord[] {
   return input.rowlinks ?? input.records.filter((record): record is RowlinkRecord => record.type === "rowlink")

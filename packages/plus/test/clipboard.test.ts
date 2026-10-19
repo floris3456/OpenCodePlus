@@ -179,15 +179,16 @@ test("pasting replaces destination-only switches before they can affect unrelate
   expect(rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, { level: "project", agent: "plan", item: tool.id, section: null }, { item: tool.id, section: null })).toEqual([expect.objectContaining({ enabled: false })])
 })
 
-test("copy freezes inherited heading text even when destination initially matches", () => {
+test("a copy equal to what the destination inherits stores nothing, so the destination keeps following upstream", () => {
   const read = { ...tool, text: "# First\nOriginal first\n\n# Second\nOriginal second\n" }
   const input = { ...source, items: [read, toolModeItem(read)] }
   const copy = captureRows(input, ["item:project:build:tool:read"], "copy")
   if ("refusal" in copy) throw new Error(copy.refusal)
   const pasted = pasteRows(input, copy, "group:project:plan:tools")
   if ("refusal" in pasted) throw new Error(pasted.refusal)
+  expect(pasted.memo.records.some((record) => record.type === "customization" && record.agent === "plan" && record.item === tool.id && record.text !== undefined)).toBe(false)
   const changed = { ...pasted.memo, items: pasted.memo.items.map((item) => item.id === tool.id ? { ...item, text: "# First\nChanged upstream\n\n# Second\nChanged second\n", fingerprint: fingerprint("changed") } : item) }
-  expect(query(changed, { where: "id:item:project:plan:tool:read", fields: ["text"] }).rows[0]?.text).toContain("Original first")
+  expect(query(changed, { where: "id:item:project:plan:tool:read", fields: ["text"] }).rows[0]?.text).toContain("Changed upstream")
   expect(query(changed, { where: "id:item:project:build:tool:read", fields: ["text"] }).rows[0]?.text).toContain("Changed upstream")
 })
 

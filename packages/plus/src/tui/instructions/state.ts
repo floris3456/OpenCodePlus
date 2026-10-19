@@ -80,6 +80,7 @@ import {
 } from "../../instructions/ops.js"
 import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
+import { storedRecords } from "../../instructions/resolve-memo.js"
 import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js"
 import { Definition, InstructionsBatchOutput, InstructionsClipboardOutput, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
@@ -757,7 +758,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       nextRules ?? converted.filter((record): record is RuleRecord => record.type === "rule")
 
     const links = nextRowlinks === undefined ? current.records.filter((record) => record.type === "rowlink") : nextRowlinks.map(snapshotRecordOf).filter((record): record is SnapshotRecord => record !== undefined)
-    const nextSnapshotRecords = [...toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules), ...links]
+    // Saved as the tree reads them: no edit equal to what its row inherits (inherited.ts).
+    const stored = storedRecords(memoInput(), [...nextCustomizations, ...nextSplits, ...preservedRules]).filter(
+      (record): record is CustomizationRecord => record.type === "customization",
+    )
+    const nextSnapshotRecords = [...toRpcRecords(stored, nextSplits, preserved, preservedRules), ...links]
     setSnapshot({ ...current, records: nextSnapshotRecords })
 
     lastOpStatus = successStatus

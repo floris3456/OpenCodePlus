@@ -414,16 +414,17 @@ test("fromLabel and reviewLabel wording", () => {
   expect(reviewLabel(["text", "pin"])).toBe("to review (text, pin)")
 })
 
-test("a state set against a value above that later changed reads to review (state) on the row", () => {
-  // bob's own `shell` on was set while Defaults for everyone had it off; now Defaults says on.
+test("a state set against a value above that later changed to the same value is no edit, not a review", () => {
+  // bob's own `shell` on was set while Defaults for everyone had it off; now
+  // Defaults says on too. On/off has two values, so the change above can only
+  // meet bob's own: his on is now what the row inherits, an edit no more.
   const own: CustomizationRecord = { ...record("project", "bob", "tool:shell", "on"), basedOnState: "off" }
   const nodes = expandedTree(input({ records: [own, record("defaults", null, "tool:shell", "on")] }))
   const shell = nodes.find((node) => node.id === "item:project:bob:tool:shell")
-  expect(shell?.badges.review).toBe(true)
-  expect(shell?.badges.reviewOf).toEqual(["state"])
-  expect(query(input({ records: [own, record("defaults", null, "tool:shell", "on")] }), { where: "id:item:project:bob:tool:shell", fields: ["id", "badges"] }).rows[0]?.badges).toBe(
-    "on to review (state)",
-  )
+  expect(shell?.badges.review).not.toBe(true)
+  expect(shell?.badges.state).toBe("on")
+  expect(shell?.badges.fromLabel).toBe("from Defaults (every agent)")
+  expect(shell?.actions?.reset).toBe(false)
 })
 
 test("query finds preset rows by level and keeps them out of other roots' walks", () => {

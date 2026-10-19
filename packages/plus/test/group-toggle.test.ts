@@ -341,16 +341,22 @@ test("instructions_set on a group id applies the explicit state", async () => {
   const set = tools.get("instructions_set")
   if (set === undefined) throw new Error("missing instructions_set")
   const groupId = "group:defaults:alpha:tools:native:codemode:browser"
-  const output = await runOk(set, { id: groupId, state: "off" })
-  expect(output.status).toBe('Disabled 3 rows in "Browser"')
+  // alpha inherits these rows off, so on is what the group write stores.
+  const output = await runOk(set, { id: groupId, state: "on" })
+  expect(output.status).toBe('Enabled 3 rows in "Browser"')
   const after = await api.snapshot()
   if (!after.ok) throw new Error("snapshot failed")
   const customs = after.value.records.filter((record) => record.type === "customization")
-  // The three tool rows went off; their permission rows are untouched.
-  expect(customs.filter((record) => record.state === "off").map((record) => record.item).sort()).toEqual(
+  // The three tool rows went on; their permission rows are untouched.
+  expect(customs.filter((record) => record.state === "on").map((record) => record.item).sort()).toEqual(
     ["tool:browser_cpu_cpu-prof", "tool:browser_navigate", "tool:browser_preview"].sort(),
   )
   expect(customs.some((record) => record.item.startsWith("perm:"))).toBe(false)
+  // Off again is what they inherit: nothing is left stored.
+  await runOk(set, { id: groupId, state: "off" })
+  const off = await api.snapshot()
+  if (!off.ok) throw new Error("snapshot failed")
+  expect(off.value.records.filter((record) => record.type === "customization")).toEqual([])
 })
 
 test("a category toggles whole rows only: Role/persona sections stay untouched", () => {

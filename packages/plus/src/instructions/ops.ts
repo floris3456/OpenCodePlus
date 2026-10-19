@@ -1,5 +1,6 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
+import { upstreamFor } from "./inherited.js"
 import {
   COLD_SWITCH_MOVED,
   coldModelItemId,
@@ -1059,14 +1060,6 @@ export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity |
     member: node.label,
     registered: memo.ctx.agents.some((agent) => agent.id === node.label),
   }
-}
-
-function upstreamFor(items: readonly Item[], address: Address): Item | undefined {
-  if (isControl(address.item)) return controlItemFor(items, address)
-  const matches = items.filter((entry) => entry.id === address.item)
-  const owner = address.agent
-  if (owner === null) return matches[0]
-  return matches.find((entry) => applies(entry, owner)) ?? matches[0]
 }
 
 function chainFor(

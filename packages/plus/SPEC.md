@@ -790,6 +790,19 @@ export interface Resolved {
   without raising it on sibling sections.
 - Roll-up: `countReview(entries, prefix)` counts reviewable descendants under
   an address prefix so ancestors can display "N to review".
+- A value equal to what the row inherits is no edit (`inherited.ts`
+  `withoutInherited`): the memo's customizations drop a text, state or pin
+  (whole rows only) when no row that reads it resolves differently without
+  it, and a record left with nothing goes. Readers are known only for an
+  existing agent's own records (its level and the more specific ones, alone,
+  as a team member and in the Teams catalogue) and a shared Defaults row's
+  text and pin; preset, team-scoped, pattern-entry and orphan records stay as
+  stored. What reaches the model is unchanged. Writes store records in that
+  form (`storedRecords`): the TUI's `persist` sends its whole set so, and a
+  tool write compares both sides so, which stores no equal value and leaves
+  other rows' stored copies alone (a tool may not touch a protected agent's
+  rows). On/off has two values, so a change above can only meet an override
+  that differed from it: new writes never leave a state or pin to review.
 
 ```ts
 export interface ThreeWay {

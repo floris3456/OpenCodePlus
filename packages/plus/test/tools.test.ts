@@ -519,6 +519,26 @@ test("edit text through set matches saveText", async () => {
   expect(after.records.some((record) => record.type === "customization" && record.text === "custom description")).toBe(true)
 })
 
+test("an edit back to the inherited text stores nothing; a stored copy goes with the row's next save", async () => {
+  const { api, tools, project } = await freshFixture()
+  const id = await readerRowId(api)
+  const reader = async () => (await load(project)).records.filter((record) => record.type === "customization" && record.item === "tool:reader")
+  await runOk(need(tools, "instructions_edit"), { id, oldString: "read things", newString: "scan things" })
+  expect(await reader()).toHaveLength(1)
+  await runOk(need(tools, "instructions_edit"), { id, oldString: "scan things", newString: "read things" })
+  expect(await reader()).toEqual([])
+  // A copy of the inherited text an earlier release stored is no edit…
+  const loaded = await load(project)
+  const copy = { type: "customization" as const, level: "defaults" as const, agent: "alpha", item: "tool:reader", section: null, text: "read things", basedOn: "x", updated: "2026-01-01T00:00:00.000Z" }
+  expect((await save(project, { expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision, records: [...loaded.records, copy] })).ok).toBe(true)
+  expect(id).toBe("item:defaults:alpha:tool:reader")
+  expect(rowIds((await runOk(need(tools, "instructions_find"), { is: "changed" })) as { rows: string[] })).toEqual([])
+  // …and goes when the row is saved next; what the save sets stays.
+  await runOk(need(tools, "instructions_set"), { id, state: "on" })
+  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", state: "on" })])
+  expect((await reader())[0]).not.toHaveProperty("text")
+})
+
 for (const baseline of ["", "Unheaded baseline", "# Previous\nPrevious body."]) {
   test(`whole-item set survives durable reload across heading transition: ${JSON.stringify(baseline)}`, async () => {
     const { api, tools, project, ctx } = await freshFixture({
@@ -2115,15 +2135,19 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(Array.isArray(shown.provenance)).toBe(true)
   // A shipped curated rule carries a short refusal message, and show reads it.
   expect(shown.message).toBe("pushing is not allowed here")
-  const toggled = (await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }
-  expect(toggled.status).toContain("Disabled")
-  const afterOff = await snapshotOf(api)
-  expect(afterOff.records.some((record) => record.type === "customization" && record.item === "perm:shell:git-push" && record.state === "off")).toBe(true)
+  // alpha inherits the rule off, so on is the edit that is stored…
+  const toggled = (await runOk(need(tools, "instructions_set"), { id: row.id, state: "on" })) as { status: string }
+  expect(toggled.status).toContain("Enabled")
+  const afterOn = await snapshotOf(api)
+  expect(afterOn.records.some((record) => record.type === "customization" && record.item === "perm:shell:git-push" && record.state === "on")).toBe(true)
   const curatedShownRecord = (await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as {
     record: { type?: string; state?: string } | null
   }
   expect(curatedShownRecord.record?.type).toBe("customization")
-  expect(curatedShownRecord.record?.state).toBe("off")
+  expect(curatedShownRecord.record?.state).toBe("on")
+  // …and off again is what it inherits: no record is left.
+  expect(((await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }).status).toContain("Disabled")
+  expect(((await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as { record: unknown }).record).toBeNull()
   const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
   expect(textError.message).toContain("cannot be edited")
   const created = (await runOk(need(tools, "instructions_create"), { kind: "rule", tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"], message: "force pushes are not allowed here" })) as { tool: string; id: string; item: string }
@@ -3951,6 +3975,12 @@ async function customizationState(project: string, item: string): Promise<"on" |
   return record?.state
 }
 
+// What a row resolves to after a fresh read: a switch equal to what the row
+// inherits stores no record, so the row, not the store, says whether it is on.
+async function rowState(api: PlusApi, id: string): Promise<"on" | "off" | undefined> {
+  return expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id === id)?.badges.state
+}
+
 test("model rowlinks either: activation and state:on persist physical records in one save", async () => {
     const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2"), modelInfo("acme", "nova-3")], classifications: { "nova-2": "general", "nova-3": "general" } })
     const set = need(tools, "instructions_set")
@@ -3971,7 +4001,7 @@ test("model rowlinks either: activation and state:on persist physical records in
     const activated = await load(project)
     expect(activated.projectRevision + activated.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
     expect(activated.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
-    expect(await customizationState(project, "tool:reader")).toBe("off")
+    expect(await rowState(api, reader)).toBe("off")
     expect((await runFail(set, { id: model, state: "off" })).message).toContain("cannot be toggled off by state")
     expect(await load(project)).toEqual(activated)
     // Explicitly turning the target back on disables the active model.
@@ -3992,7 +4022,7 @@ test("model rowlinks either: activation and state:on persist physical records in
       await runOk(set, { id: model, state: "on" })
       const after = await load(project)
       expect(after.projectRevision + after.globalRevision).toBe(prior.projectRevision + prior.globalRevision + 1)
-      expect(await customizationState(project, "tool:reader")).toBe("off")
+      expect(await rowState(api, reader)).toBe("off")
       expect(after.records.find((record) => record.type === "model" && record.modelID === "nova-2")).toMatchObject({ active: true })
 })
 
@@ -4021,16 +4051,16 @@ test("model rowlinks inherit, mask, stay one-hop and refuse protected writes ato
   await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
   await runOk(set, { id: extra, state: "on" })
   await runOk(set, { id: model, state: "on" })
-  expect(await customizationState(project, "tool:reader")).toBe("off")
-  expect(await customizationState(project, "tool:extra")).toBe("on")
+  expect(await rowState(api, reader)).toBe("off")
+  expect(await rowState(api, extra)).toBe("on")
   await runOk(set, { id: model, state: "on" })
-  expect(await customizationState(project, "tool:reader")).toBe("off")
+  expect(await rowState(api, reader)).toBe("off")
   // Tombstone only this level's relationship; the Global link survives.
   await runOk(link, { id: model, target: reader, type: "either", enabled: false })
   await runOk(set, { id: reader, state: "on" })
   await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
   await runOk(set, { id: model, state: "on" })
-  expect(await customizationState(project, "tool:reader")).toBe("on")
+  expect(await rowState(api, reader)).toBe("on")
   await runOk(link, { id: model, target: reader, type: "either" })
   await runOk(set, { id: "item:project:build:model:acme/base", state: "on" })
   const switchMemo = memoInputOf(await snapshotOf(api))
@@ -4108,19 +4138,16 @@ test("set state:on persists its either partner off in one save, and it stays off
   const before = await load(project)
   const on = (await runOk(set, { id: reader, text: "updated reader", state: "on" })) as { status: string }
   expect(on.status).toBe(`Enabled "reader"; disabled tool:question`)
-  const after = await snapshotOf(api)
-  expect(after.records.some((record) => record.type === "customization" && record.item === "tool:question" && record.state === "off")).toBe(
-    true,
-  )
-  // Durable: reload the store and the off row is still there.
-  expect(await customizationState(project, "tool:question")).toBe("off")
+  // Off is what question inherits here, so it reads off with no record of its own.
+  expect(await rowState(api, question)).toBe("off")
+  expect(await customizationState(project, "tool:question")).toBeUndefined()
   const saved = await load(project)
   expect(saved.projectRevision + saved.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
   expect(saved.records.filter((record) => record.type === "rowlink")).toEqual(before.records.filter((record) => record.type === "rowlink"))
   expect(saved.records.find((record) => record.type === "customization" && record.item === "tool:reader")).toMatchObject({ text: "updated reader", state: "on" })
   // Turning reader back off leaves question off (no cascade, no resurrect).
   await runOk(set, { id: reader, state: "off" })
-  expect(await customizationState(project, "tool:question")).toBe("off")
+  expect(await rowState(api, question)).toBe("off")
 })
 
 test("set state:on changes the partner only for either, not conditional links", async () => {
@@ -4145,7 +4172,7 @@ test("set state:on changes the partner only for either, not conditional links", 
   await runOk(link, { id: reader, target: question, type: "either" })
   await runOk(set, { id: question, state: "off" })
   await runOk(set, { id: question, state: "on" })
-  expect(await customizationState(project, "tool:reader")).toBe("off")
+  expect(await rowState(api, reader)).toBe("off")
 })
 
 test("a bare-id toggle writes the partner off in one hop and never cascades", async () => {
@@ -4169,7 +4196,7 @@ test("a bare-id toggle writes the partner off in one hop and never cascades", as
   await runOk(set, { id: question, state: "on" })
   await runOk(set, { id: reader, state: "off" })
   await runOk(set, { id: reader })
-  expect(await customizationState(project, "tool:question")).toBe("off")
+  expect(await rowState(api, question)).toBe("off")
   expect(await customizationState(project, "tool:extra")).toBeUndefined()
 })
 

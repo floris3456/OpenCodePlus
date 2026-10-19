@@ -31,9 +31,9 @@ for (const width of [80, 120]) {
     for (const [index, value] of ["subagent", "all", "primary"].entries()) {
       expect(dispatch(fixture, "return")).toBe(true)
       await fixture.waitForFrame((frame) => fixture.fake.mutateInputs.length === index + 1 && selected(frame).includes(value[0].toUpperCase() + value.slice(1)))
-      expect(fixture.fake.mutateInputs[index].records).toContainEqual(expect.objectContaining({
-        type: "customization", level: "project", agent: "build", item: "setting:mode", text: value,
-      }))
+      // Primary is what the row inherits: the write drops the record instead of storing a copy.
+      const mode = fixture.fake.mutateInputs[index].records.filter((record) => record.type === "customization" && record.item === "setting:mode")
+      expect(mode).toEqual(value === "primary" ? [] : [expect.objectContaining({ type: "customization", level: "project", agent: "build", text: value })])
       expect(selected(fixture.captureCharFrame())).toContain(value[0].toUpperCase() + value.slice(1))
       expect(fixture.renderer.currentFocusedEditor).toBeNull()
       expect(dispatch(fixture, "e")).toBe(false)
@@ -91,7 +91,8 @@ test("Space toggles an agent and its Enabled row; Hidden stays distinct; ctrl+sp
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("●"))
   fixture.emitAgents([build])
-  expect(fixture.fake.mutateInputs[1].records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "on" }))
+  // On is what the agent inherits: the write drops its off record rather than storing on.
+  expect(fixture.fake.mutateInputs[1].records).not.toContainEqual(expect.objectContaining({ item: "setting:enabled" }))
   await reach(fixture, hidden, "Hidden")
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("●"))

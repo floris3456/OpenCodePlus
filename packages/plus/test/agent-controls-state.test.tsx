@@ -13,8 +13,9 @@ test("TUI inspection includes shipped markers and reset persists rowlink removal
     snapshots: [controlSnapshot([], { items: [item], records: [{
       type: "rowlink", level: "project", agent: "build", item: "system:notes", section: null,
       target: "system:notes", targetSection: null, link: "shownAlways", updated: "2026-01-01T00:00:00.000Z",
+    // Off, unlike the on build inherits, so the row holds an edit to reset.
     }, { type: "customization", level: "project", agent: "build", item: "system:notes", section: null,
-      state: "on", basedOn: item.fingerprint, updated: "2026-01-01T00:00:00.000Z",
+      state: "off", basedOn: item.fingerprint, updated: "2026-01-01T00:00:00.000Z",
     }] }), controlSnapshot([], { items: [item], records: [] })],
     render: (context) => {
       state = createInstructionsState(context)

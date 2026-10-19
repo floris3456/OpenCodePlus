@@ -85,7 +85,7 @@ import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { isModelPrompt } from "./instructions/system-order.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
-import { rowlinksOf } from "./instructions/resolve-memo.js"
+import { rowlinksOf, storedRecords } from "./instructions/resolve-memo.js"
 import { markerIn } from "./instructions/requires.js"
 import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkRecord, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
@@ -1364,7 +1364,10 @@ function mutateDelta(
   status: string,
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   return Effect.gen(function* () {
-    const delta = deltaOf(before.records, next)
+    // Both sides as stored: an edit equal to what its row inherits is not
+    // written, and one already stored is not removed for a row this op did
+    // not touch (a tool may not change a protected agent's rows).
+    const delta = deltaOf(storedRecords(before, before.records), storedRecords(before, next))
     const upsert = delta.upsert.flatMap((record) => {
       const snapshot = snapshotRecordOf(record)
       return snapshot === undefined ? [] : [snapshot]

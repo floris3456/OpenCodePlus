@@ -91,7 +91,8 @@ for (const baseline of ["", "Plain role", "# Previous\nPrevious body."]) {
       item: item.id,
       section: "whole",
       text: "old child",
-      state: "on",
+      // Off, unlike what the row inherits: an equal on/off is no edit to keep.
+      state: "off",
       basedOn: fingerprint(baseline),
       updated: "2026-01-01T00:00:00Z",
     }
@@ -106,7 +107,7 @@ for (const baseline of ["", "Plain role", "# Previous\nPrevious body."]) {
     const saved = saveText(input, "item:global:orchestrator:system:role", text)
     if ("refusal" in saved) throw new Error(saved.refusal)
     expect(saved.records.find((record) => record.level === "global" && record.section === "whole")).toMatchObject({
-      state: "on",
+      state: "off",
     })
     expect(saved.records.find((record) => record.level === "global" && record.section === "whole")?.text).toBeUndefined()
     expect(saved.records.find((record) => record.level === "project")).toEqual(specific)
