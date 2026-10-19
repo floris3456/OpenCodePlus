@@ -394,8 +394,11 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
   for (const field of ["compactionInput", "compactionOutput"]) {
     const threshold = emitted.find((node) => node.address?.item === `modelsetting:${field}:${row.address!.item.slice("modeldefault:".length)}`)
     if (!threshold) throw new Error(`missing ${field}`)
-    await runOk(set, decoded(set, { id: threshold.id, text: "60000" }))
+    const saved = (await runOk(set, decoded(set, { id: threshold.id, text: "60000" }))) as { status: string }
     expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ [field]: "60000" })
+    // The status and read name the value the store now holds.
+    expect(saved.status).toContain(`${field} 60000`)
+    expect(((await runOk(need(tools, "instructions_read"), { id: threshold.id })) as { value: unknown }).value).toBe(60000)
     await runOk(need(tools, "instructions_reset"), { id: threshold.id })
     expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty(field)
   }

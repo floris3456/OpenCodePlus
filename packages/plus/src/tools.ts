@@ -91,8 +91,12 @@ import { markerIn } from "./instructions/requires.js"
 import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkRecord, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
 import type { StoredRecord } from "./instructions/store.js"
+import { IMAGE_FIELDS, type ImageField } from "./image-settings.js"
 import {
   everySettings,
+  effectiveCompaction,
+  effectiveImages,
+  MODEL_COMPACTION_FIELDS,
   compactionFieldsOf,
   setModelCompaction,
   hostModelOf,
@@ -1709,8 +1713,33 @@ function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord 
     ...(record.interval === undefined ? [] : [`every ${record.interval}`]),
     ...(record.prompt === undefined ? [] : ["a prompt"]),
     ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
+    ...MODEL_COMPACTION_FIELDS.flatMap((field) => {
+      const value = record[field]
+      if (value === undefined) return []
+      if (field === "compactionInstructions") return ["compaction instructions"]
+      return [`${field} ${Array.isArray(value) ? value.join(", ") || "none" : value}`]
+    }),
   ]
   return `Defaults › Models "${label}": ${set.join(", ")}`
+}
+
+// A Defaults › Models compaction or image field's effective value, as the tree resolves it: this
+// model's record, then Every model (`every`, absent on the Every model row itself), then built-in.
+function defaultFieldValue(field: string, record: Plus.SnapshotModelSettingsRecord | undefined, every: Plus.SnapshotModelSettingsRecord | undefined): unknown {
+  const sources = { ...(record === undefined ? {} : { model: record }), ...(every === undefined ? {} : { every }) }
+  if ((IMAGE_FIELDS as readonly string[]).includes(field)) return effectiveImages(sources)[field as ImageField].value
+  const compaction = effectiveCompaction(sources)
+  const value =
+    field === "compactionStrategy"
+      ? compaction.strategy.value
+      : field === "compactionModel"
+        ? compaction.model.value
+        : field === "compactionInstructions"
+          ? compaction.instructions.value
+          : field === "compactionInput" || field === "compactionOutput" || field === "compactWarm" || field === "coldModels"
+            ? compaction[field].value
+            : undefined
+  return value ?? null
 }
 
 function setPerm(
@@ -2022,7 +2051,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
                 field: setting.field,
                 value: (MODEL_SETTINGS_FIELDS as readonly string[]).includes(setting.field)
                   ? (modelSettingEffective(resolved, setting.field as ModelSettingsField) ?? null)
-                  : null,
+                  : defaultFieldValue(setting.field, record, key.providerID === undefined ? undefined : everySettings(memo.modelSettings ?? [])),
               }),
           summary: modelDefaultValue(resolved),
           warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
