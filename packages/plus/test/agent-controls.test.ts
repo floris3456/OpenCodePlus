@@ -352,6 +352,27 @@ test("execute.before checks implicit state and mode aliases against field and co
   expect(f.agents.state.has("plan")).toBe(false)
 })
 
+test("execute.before decides an edit with set's rows: Override text and Rows it may change", async () => {
+  const f = await fixture([agentInfo("build"), agentInfo("plan")])
+  await registerInstructionTools(f.ctx, f.api)
+  await f.call("set", { id: "item:project:plan:setting:description", text: "Plans the work." })
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.text", false))
+  const before = await f.snapshot()
+  await expect(f.call("edit", { id: "item:project:plan:setting:description", oldString: "Plans", newString: "Drafts" })).rejects.toThrow("text")
+  expect((await f.snapshot()).revision).toBe(before.revision)
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.text"))
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:targets.self", false))
+  await f.call("set", { id: "item:project:build:setting:description", text: "Builds the work." }, "plan")
+  await expect(f.call("edit", { id: "item:project:build:setting:description", oldString: "Builds", newString: "Ships" })).rejects.toThrow("its own rows")
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:targets.self"))
+  // A mode edit is a mode change, as set's text on the mode row is.
+  await f.edit(setEnabled(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.mode", false))
+  await expect(f.call("edit", { id: "item:project:plan:setting:mode", oldString: "primary", newString: "all" })).rejects.toThrow("mode")
+  await f.edit(reset(memoInputOf(await f.snapshot()), "item:project:build:perm:instructions_set:changes.mode"))
+  await f.call("edit", { id: "item:project:plan:setting:description", oldString: "Plans", newString: "Drafts" })
+  expect(f.agents.state.get("plan")?.description).toBe("Drafts the work.")
+})
+
 test("member controls inherit hidden host fields and an explicit hidden off publishes and resets correctly", async () => {
   const f = await fixture([{ ...agentInfo("build"), hidden: true, color: "#123456", steps: 7 as Agent.Info["steps"] }])
   const member = path.join(projectTeamsPath(f.directory), "crew", "build.md")

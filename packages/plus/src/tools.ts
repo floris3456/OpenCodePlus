@@ -19,6 +19,7 @@ import {
   createdTeamRow,
   editModelRow,
   editRefusalForLabel,
+  editableText,
   findRow,
   isModelRowId,
   isPermRowId,
@@ -57,6 +58,7 @@ import {
   type RemovalPlan,
 } from "./instructions/ops.js"
 import { query } from "./instructions/query.js"
+import { replaceText } from "./instructions/text-edit.js"
 import {
   applies,
   catalogueField,
@@ -147,6 +149,11 @@ const SetDescription =
   "On a model prompt row (item:…:system:model/<id>) models replaces the patterns of the models it is sent for (on its own, not with other fields).\n" +
   "On a folder row rename renames the folder; move places rows and folders (see move).\n" +
   "rename renames an agent, an on-disk team member or a Project/Global team: its file or team directory, every stored record (links, models, rules, splits, customizations, warming rows) and the tree selection follow in one revision; session history keeps the old name. Built-ins, shipped Defaults rows, ancestor-backed agents and Protected agents (tool actor) refuse."
+
+const EditDescription =
+  "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
+  "oldString must match the row's current text (show's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
+  "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }."
 
 const MoveDescription =
   "Move a row, folder or section (by row id) into a folder or a tab's top level, or before/after a sibling in its list.\n" +
@@ -300,6 +307,15 @@ const SetInput = Schema.Struct({
   }),
 })
 
+const EditInput = Schema.Struct({
+  id: Schema.String,
+  oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (show's text)" }),
+  newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
+  replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
+    description: "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
+  }),
+})
+
 const MoveInput = Schema.Struct({
   id: Schema.String,
   into: Schema.optionalKey(Schema.String),
@@ -444,7 +460,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       name: "batch",
       description: "Apply one row operation to the corresponding setting in every selected row.\nid is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
       input: Schema.Struct({
-        op: Schema.Literals(["set", "reset", "split", "create", "delete", "move", "link"]),
+        op: Schema.Literals(["set", "edit", "reset", "split", "create", "delete", "move", "link"]),
         id: Schema.String,
         selected: Schema.Array(Schema.String),
         input: Schema.Record(Schema.String, Schema.Unknown),
@@ -587,6 +603,34 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+        }),
+    })
+    editor.add({
+      name: "edit",
+      description: EditDescription,
+      input: EditInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: (input, context) =>
+        Effect.gen(function* () {
+          const snapshot = yield* snapshotOrFail(api)
+          const memo = memoFromSnapshot(snapshot)
+          const treeMemo = buildTreeMemo(memo)
+          const node = findRow(memo, input.id, treeMemo)
+          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+          const protectedAgent = protectedOf(snapshot, node)
+          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+          if (!holdsText(input.id, node))
+            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no text to edit: change it with set` }))
+          const current = editableText(memo, input.id, treeMemo)
+          if ("refusal" in current) return yield* Effect.fail(new Tool.Error({ message: current.refusal }))
+          const replaced = replaceText(current.text, input, current.label)
+          if ("refusal" in replaced) return yield* Effect.fail(new Tool.Error({ message: replaced.refusal }))
+          const op = computeSet(memo, { id: input.id, text: replaced.text }, treeMemo, (agent) => protectedForActor(snapshot, agent))
+          if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+          const applied = yield* mutateOp(api, memo, op, actorFrom(context))
+          return { output: { id: input.id, status: applied.status, replacements: replaced.replacements } }
         }),
     })
     editor.add({
@@ -753,6 +797,15 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         }),
     })
   })
+}
+
+// Rows whose text set saves as an override; models and their fields,
+// permission rules, teams, groups and folders change by field instead.
+function holdsText(id: string, node: TreeNode): boolean {
+  const item = node.address?.item
+  if (item === undefined || node.kind === "team" || node.kind === "group") return false
+  if (isModelRowId(id) || item.startsWith("model:") || isModelFieldRowId(id) || isModelSettingRowId(id) || isModelDefaultRowId(id)) return false
+  return !isPermRowId(id) && !item.startsWith("perm:")
 }
 
 function snapshotOrFail(api: PlusApi): Effect.Effect<Plus.Snapshot, Tool.Error> {

@@ -574,6 +574,7 @@ test("the instructions namespace still registers alongside team", async () => {
     "instructions_clipboard",
     "instructions_create",
     "instructions_delete",
+    "instructions_edit",
     "instructions_link",
     "instructions_list",
     "instructions_log",

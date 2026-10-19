@@ -1570,6 +1570,25 @@ export function setRequires(input: MemoInput, rowId: string, ids: readonly strin
   return { records: chain.customizations, splits: chain.splits, rowlinks, status, retryHint: `set when "${node.label}" is sent against a stale revision; retry to apply` }
 }
 
+// The text an edit starts from: what the TUI editor opens and `show` returns
+// as `text`, a whole row with its sections applied or one section's span.
+export function editableText(input: MemoInput, rowId: string, sharedMemo?: Memo): { text: string; label: string } | { refusal: string } {
+  const found = findNode(input, rowId, sharedMemo)
+  if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
+  const refusal = editRefusal(found.node)
+  if (refusal !== undefined) return { refusal }
+  const chain = chainFor(found.memo, found.node)
+  if (!chain) return { refusal: `Item not found for "${found.node.label}"` }
+  const resolved = resolve({
+    upstream: chain.upstream,
+    records: chain.customizations,
+    splits: chain.splits,
+    scopes: found.memo.ctx.scopes,
+    address: chain.address,
+  })
+  return { text: resolved.fullText ?? resolved.text, label: found.node.label }
+}
+
 export function saveText(input: MemoInput, rowId: string, text: string, sharedMemo?: Memo): OpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }

@@ -42,7 +42,7 @@ import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo,
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 const priorDataHome = process.env.XDG_DATA_HOME
-const instructionToolIds = ["batch", "clipboard", "create", "delete", "link", "list", "log", "move", "reset", "set", "show", "split"].map((name) => `instructions_${name}`)
+const instructionToolIds = ["batch", "clipboard", "create", "delete", "edit", "link", "list", "log", "move", "reset", "set", "show", "split"].map((name) => `instructions_${name}`)
 
 for (const combined of [true, false]) {
   test(`repeat whole-row headed set retains authored text (${combined ? "combined state:on" : "text-only control"})`, async () => {
@@ -1082,6 +1082,82 @@ test("protectedAgents refusal on a write", async () => {
   expect(after.records).toEqual([])
   expect(await load(project)).toEqual(before)
   expect((await runFail(need(tools, "instructions_set"), { id: "item:project:alpha:missing", text: "# Role\nInvalid." })).message).toContain("row.unknown")
+  expect(await load(project)).toEqual(before)
+})
+
+test("edit replaces exact text in a row and saves exactly what set saves", async () => {
+  const { api, tools, project } = await freshFixture()
+  const edit = need(tools, "instructions_edit")
+  const show = need(tools, "instructions_show")
+  await runOk(need(tools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
+  await linkToBuild(project, "project", ["editprobe"])
+  const id = "item:project:editprobe:tool:reader"
+  const saved = (await runOk(edit, { id, oldString: "read", newString: "scan" })) as { id: string; status: string; replacements: number }
+  expect(saved).toEqual({ id, status: 'Saved "reader"', replacements: 1 })
+  expect(((await runOk(show, { id })) as { text: string }).text).toBe("scan things")
+  const stored = (await load(project)).records.filter((record) => record.type === "customization" && record.item === "tool:reader")
+  expect(stored.map((record) => (record.type === "customization" ? record.text : undefined))).toEqual(["scan things"])
+
+  // The same text through set stores the same records.
+  const { api: setApi, tools: setTools, project: setProject } = await freshFixture()
+  await runOk(need(setTools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
+  await linkToBuild(setProject, "project", ["editprobe"])
+  await runOk(need(setTools, "instructions_set"), { id, text: "scan things" })
+  expect(withoutUpdated((await snapshotOf(setApi)).records)).toEqual(withoutUpdated((await snapshotOf(api)).records))
+})
+
+test("edit refuses a missing, repeated, identical or empty oldString without writing", async () => {
+  const { api, tools, project } = await freshFixture()
+  const edit = need(tools, "instructions_edit")
+  const show = need(tools, "instructions_show")
+  await runOk(need(tools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
+  await linkToBuild(project, "project", ["editprobe"])
+  const id = "item:project:editprobe:tool:reader"
+  await runOk(need(tools, "instructions_set"), { id, text: "Read a file. Read it twice.\n\nKeep ‘quotes’ here.  \nLast line." })
+  const before = await snapshotOf(api)
+  expect((await runFail(edit, { id, oldString: "absent", newString: "x" })).message).toContain('Could not find oldString in "reader"')
+  expect((await runFail(edit, { id, oldString: "Read", newString: "Scan" })).message).toContain("Found 2 matches")
+  expect((await runFail(edit, { id, oldString: "Read", newString: "Read" })).message).toContain("identical")
+  expect((await runFail(edit, { id, oldString: "", newString: "x" })).message).toContain("must not be empty")
+  expect((await runFail(edit, { id: "item:project:editprobe:tool:missing", oldString: "a", newString: "b" })).message).toContain("row.unknown")
+  expect((await snapshotOf(api)).revision).toBe(before.revision)
+
+  // replaceAll replaces every match; straight quotes match typographic ones;
+  // whole lines match without their trailing spaces.
+  expect(((await runOk(edit, { id, oldString: "Read", newString: "Scan", replaceAll: true })) as { replacements: number }).replacements).toBe(2)
+  await runOk(edit, { id, oldString: "Keep 'quotes' here.", newString: "Keep quotes here." })
+  await runOk(edit, { id, oldString: "Keep quotes here.\nLast line.", newString: "Keep quotes here.\nFinal line." })
+  expect(((await runOk(show, { id })) as { text: string }).text).toBe("Scan a file. Scan it twice.\n\nKeep quotes here.\nFinal line.")
+})
+
+test("edit changes one section of a headed row and refuses rows without text", async () => {
+  const { api, tools, project } = await freshFixture()
+  const edit = need(tools, "instructions_edit")
+  const show = need(tools, "instructions_show")
+  await runOk(need(tools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
+  await linkToBuild(project, "project", ["editprobe"])
+  const id = "item:project:editprobe:tool:reader"
+  await runOk(need(tools, "instructions_set"), { id, text: "Read a file.\n\n## Gate\nGATE_CANARY one.\n\n## Other\nOTHER_CANARY two.\n" })
+  await runOk(edit, { id: "section:project:editprobe:tool:reader:gate", oldString: "GATE_CANARY one.", newString: "GATE_CANARY edited." })
+  expect(((await runOk(show, { id })) as { text: string }).text.trimEnd()).toBe("Read a file.\n\n## Gate\nGATE_CANARY edited.\n\n## Other\nOTHER_CANARY two.")
+  await runOk(edit, { id, oldString: "OTHER_CANARY two.", newString: "OTHER_CANARY whole-row edit." })
+  expect(((await runOk(show, { id: "section:project:editprobe:tool:reader:other" })) as { text: string }).text).toContain("OTHER_CANARY whole-row edit.")
+
+  const before = await snapshotOf(api)
+  expect((await runFail(edit, { id: "agent:project:editprobe", oldString: "a", newString: "b" })).message).toBe('"editprobe" has no text to edit: change it with set')
+  expect((await snapshotOf(api)).revision).toBe(before.revision)
+})
+
+test("edit refuses a protected agent's row", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const id = await readerRowId(api)
+  const before = await load(project)
+  expect((await runFail(need(tools, "instructions_edit"), { id, oldString: "read", newString: "scan" })).message).toContain("agent.protected")
   expect(await load(project)).toEqual(before)
 })
 

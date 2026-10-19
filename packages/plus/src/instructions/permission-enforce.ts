@@ -273,6 +273,15 @@ export function decide(rows: readonly PermRow[], call: Call): Decision {
   }
 }
 
+// instructions_edit saves a row's text the way set({ id, text }) does, so set's
+// rows (rows it may change, Override text, approval) decide it: closing text
+// changes for set closes them for edit too. Edit has no rows of its own.
+export function governingCall(tool: string, input: unknown): { readonly tool: string; readonly input: unknown } {
+  if (tool !== "instructions_edit" || typeof input !== "object" || input === null) return { tool, input }
+  const fields = input as { readonly id?: unknown; readonly newString?: unknown }
+  return { tool: "instructions_set", input: { id: fields.id, text: fields.newString } }
+}
+
 function denied(message: string): string {
   return `Permission denied: ${message}`
 }
@@ -1033,13 +1042,14 @@ export async function installEnforcement(
         const key = callKey(sessionID, String(event.messageID), String(event.id))
         sweep(state)
         if (event.tool === "execute") state.calls.set(key, { count: 0, at: Date.now() })
-        const rows = table.toolRows(agent, event.tool)
+        const governing = governingCall(event.tool, event.input)
+        const rows = table.toolRows(agent, governing.tool)
         const executeLimit = event.tool === "execute" ? undefined : codeModeLimit(table, agent, state, key)
         if (executeLimit !== undefined) return yield* Effect.fail(new Tool.Error({ message: executeLimit }))
         if (rows.length === 0) return
         const decision = decide(rows, {
-          tool: event.tool,
-          input: event.input,
+          tool: governing.tool,
+          input: governing.input,
           sessionID,
           directory,
           teamMembers: table.teamMembers,
@@ -1048,11 +1058,11 @@ export async function installEnforcement(
           tabUrl: (tab) => state.tabs.get(tab),
         })
         if (decision.refuse !== undefined) return yield* Effect.fail(new Tool.Error({ message: decision.refuse }))
-        if (deps.instructions !== undefined && (event.tool === "instructions_set" || event.tool === "instructions_reset")) {
+        if (deps.instructions !== undefined && (governing.tool === "instructions_set" || governing.tool === "instructions_reset")) {
           const { instructionControlInputs } = yield* Effect.promise(() => import("./ops.js"))
           const inventory = yield* Effect.promise(deps.instructions)
-          for (const input of instructionControlInputs(inventory, event.tool, event.input)) {
-            const expanded = decide(rows, { tool: event.tool, input, sessionID, directory, agent, teamMembers: table.teamMembers })
+          for (const input of instructionControlInputs(inventory, governing.tool, governing.input)) {
+            const expanded = decide(rows, { tool: governing.tool, input, sessionID, directory, agent, teamMembers: table.teamMembers })
             if (expanded.refuse !== undefined) return yield* Effect.fail(new Tool.Error({ message: expanded.refuse }))
           }
         }
@@ -1081,7 +1091,7 @@ export async function installEnforcement(
           if (command !== undefined)
             state.shells.set(command, [...(state.shells.get(command) ?? []), { patterns: decision.stripEnv ?? [], at: Date.now() }])
         }
-        if (decision.input !== undefined) event.input = decision.input
+        if (decision.input !== undefined && governing.input === event.input) event.input = decision.input
       }),
     ),
   )

@@ -418,6 +418,7 @@ test("activation in a child worktree installs the parent project's agents and to
           "instructions_clipboard",
           "instructions_create",
           "instructions_delete",
+          "instructions_edit",
           "instructions_link",
           "instructions_list",
           "instructions_log",
