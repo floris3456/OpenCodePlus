@@ -13,6 +13,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Location } from "@opencode/schema/location"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
+import { Session } from "@opencode/schema/session"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
@@ -874,8 +875,15 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
     brief === null
       ? { paths: [...record.paths], forbidden: [] }
       : { paths: [...brief.scope.paths], forbidden: [...brief.scope.forbidden] }
-  const interfaces = brief === null ? [] : [...brief.context.interfaces]
-  const decisions = brief === null ? [] : [...brief.context.decisions]
+  // The Brief is the run's first message: it comes back here only once the
+  // model no longer sees it (a compaction summarised it away), as the text it
+  // read then. Its interfaces and decisions are in it.
+  const briefText =
+    brief === null || briefPath === null || (await briefVisible(ctx, record, brief))
+      ? undefined
+      : await Bun.file(briefPath)
+          .text()
+          .catch(() => undefined)
   // The live HEAD: it is what checkpoint and integrate compare against, and the
   // stored head lags behind a landing or a commit made outside team tools.
   const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]).catch(() => record.head)
@@ -887,14 +895,12 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
     branch: record.branch,
     base: record.base,
     head,
-    brief,
+    ...(briefText === undefined ? {} : { brief: briefText }),
     briefPath,
     scope,
     checks,
     // What a run may be given as checks in this project (a delegator's view).
     projectChecks: checksNote(await readProjectChecks(record.directory).catch(() => undefined)),
-    interfaces,
-    decisions,
     siblings,
     budget: {
       turns: record.budget.turns ?? null,
@@ -910,6 +916,19 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
     },
     inbox: pending.map((item) => ({ id: item.id, from: item.from, kind: item.kind, text: item.text })),
   })
+}
+
+// Whether the model still sees the run's Brief: its first message, which starts
+// with the rendered header. Unknown (no session, unreadable) counts as gone.
+async function briefVisible(ctx: Context, record: RunRecord, brief: Brief): Promise<boolean> {
+  const sessionID = record.sessionID
+  if (sessionID === null) return false
+  const messages = await Effect.runPromise(
+    Effect.suspend(() => ctx.session.context({ sessionID: Session.ID.make(sessionID) })),
+  ).catch(() => undefined)
+  // The header render() writes.
+  const header = `# Brief — ${brief.task ?? brief.requestID} — ${brief.role}`
+  return messages?.some((message) => message.type === "user" && message.text.startsWith(header)) === true
 }
 
 // Read-only `git diff` of a run the caller can see: its own worktree or one
