@@ -102,6 +102,8 @@ test("an MCP tool that registers after discovery gets the agent's off row once t
   scopes.push(scope)
   await Effect.runPromise(watchToolRegistry(f.ctx, f.state).pipe(Scope.provide(scope)))
   expect(await until(() => denies(f.agents.state.get("build"), "search_tavily_search"))).toBe(true)
+  // A publish applies the agents before it records its fingerprint: let that publish finish.
+  expect(await until(() => f.state.fingerprint?.includes('{"id":"tool:search_tavily_search"') === true)).toBe(true)
 
   // And it settles: its own registry reads list the same tools, so no further publish follows.
   const fingerprint = f.state.fingerprint
