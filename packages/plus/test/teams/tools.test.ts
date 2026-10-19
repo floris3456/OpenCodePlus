@@ -266,7 +266,7 @@ test("the team namespace advertises nothing it cannot do", async () => {
   )
 })
 
-test("get_context maps real tool surfaces and the caller's permitted custom roster", async () => {
+test("get_context lists the caller's permitted custom roster and leaves tool surfaces to descriptions", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const lead = linked("custom-lead", "orchestrator", "crew")
     const table = presetTable({
@@ -281,19 +281,17 @@ test("get_context maps real tool surfaces and the caller's permitted custom rost
       await saveRun(root, makeRun("w-1111111111111111", lead.id, "ses_custom_roster"))
       const output = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_custom_roster", lead.id)))
       // Its own row follows its orchestrator preset: another run of itself.
-      expect(output.output).toMatchObject({
-        delegationTargets: ["custom-lead", "custom-maker"],
-        toolSurfaces: {
-          direct: teamNames.filter((name) => codemodeFalse.has(name)).map((name) => `team_${name}`),
-          codeMode: expect.arrayContaining(teamNames.filter((name) => !codemodeFalse.has(name)).map((name) => `tools.team.${name}`)),
-        },
-      })
-      expect(need(created.tools, "team_get_context").description).toContain("Code Mode search does not list them")
+      expect(output.output).toMatchObject({ delegationTargets: ["custom-lead", "custom-maker"] })
+      expect(output.output).not.toHaveProperty("toolSurfaces")
+      expect(output.output).not.toHaveProperty("guidance")
+      const description = need(created.tools, "team_get_context").description
+      expect(description).toContain("Code Mode search does not list them")
+      for (const name of teamNames) expect(description).toContain(codemodeFalse.has(name) ? `team_${name}` : `tools.team.${name}`)
       // Direct tools are sent with every request: delegate does not repeat the guidance.
       expect(need(created.tools, "team_delegate").description).not.toContain("Code Mode search does not list them")
       await saveRun(root, makeRun("w-2222222222222222", "denied", "ses_empty_roster"))
       const empty = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_empty_roster", "denied")))
-      expect(empty.output).toMatchObject({ delegationTargets: [] })
+      expect(empty.output).not.toHaveProperty("delegationTargets")
     } finally {
       await Effect.runPromise(registration.dispose)
     }

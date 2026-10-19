@@ -885,7 +885,7 @@ test("[21] finish on the root run", async () => {
       )
       call("team_get_context", {}, rootContext)
       expect(rootContext.run).toBe(rootRun)
-      expect(rootContext.brief).toBeNull()
+      expect(rootContext).not.toHaveProperty("brief")
       expect(rootContext.briefPath).toBeNull()
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })

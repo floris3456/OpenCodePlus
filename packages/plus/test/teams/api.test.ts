@@ -1152,7 +1152,7 @@ test("finish blocked without needs fails E_NEEDS", async () => {
   })
 })
 
-test("get_context returns the stored brief, checks and scope", async () => {
+test("get_context returns the rendered brief once the session no longer holds it, with checks and scope", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -1165,6 +1165,8 @@ test("get_context returns the stored brief, checks and scope", async () => {
         sessionID: "ses_parent_006",
       })
       await saveRun(root, parent)
+      // The recording session has no context: as after a compaction, the
+      // Brief message is gone from what the model sees.
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const delegated = required(await api.delegate(delegateInput({ requestID: "ctx-1" }), callerFor(parent))) as {
         run: string
@@ -1174,16 +1176,20 @@ test("get_context returns the stored brief, checks and scope", async () => {
       if (child === undefined) throw new Error("missing child run")
       const value = required(await api.get_context({}, callerFor(child))) as {
         run: string
-        brief: { objective: string }
+        brief: string
+        briefPath: string
         scope: { paths: string[] }
         checks: Array<{ id: string }>
         inbox: unknown[]
       }
       expect(value.run).toBe(delegated.run)
-      expect(value.brief.objective).toContain("Fix the agent filter in the query module")
+      expect(value.brief).toBe(await Bun.file(value.briefPath).text())
+      expect(value.brief).toContain("Fix the agent filter in the query module")
       expect(value.scope.paths).toEqual(["packages/plus/src/*"])
       expect(value.checks.map((check) => check.id)).toEqual(["unit"])
       expect(value.inbox).toEqual([])
+      expect(value).not.toHaveProperty("interfaces")
+      expect(value).not.toHaveProperty("decisions")
       expect((value as Record<string, unknown>).conventions).toBeUndefined()
     } finally {
       await removeRepo(repo.dir)
@@ -1191,7 +1197,48 @@ test("get_context returns the stored brief, checks and scope", async () => {
   })
 }, 30000)
 
-test("get_context on a root run returns brief: null without conventions", async () => {
+test("get_context leaves the brief out while the session still holds the Brief message", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_006b",
+      })
+      await saveRun(root, parent)
+      const session = recordSession()
+      // The model's context is what the child was prompted with.
+      const domain = {
+        ...session.domain,
+        context: (input: { sessionID: unknown }) =>
+          Effect.succeed(
+            session.prompted
+              .filter((item) => item.sessionID === input.sessionID)
+              .map((item) => ({ type: "user", text: item.text })) as never,
+          ),
+      } as unknown as SessionDomain
+      const api = createTeamApi(context({ session: domain }), teamState())
+      const delegated = required(await api.delegate(delegateInput({ requestID: "ctx-1b" }), callerFor(parent))) as {
+        run: string
+      }
+      const child = await loadRun(root, delegated.run)
+      if (child === undefined) throw new Error("missing child run")
+      expect(session.prompted.some((item) => item.sessionID === child.sessionID)).toBe(true)
+      const value = required(await api.get_context({}, callerFor(child))) as Record<string, unknown>
+      expect(value).not.toHaveProperty("brief")
+      expect(value.briefPath).toBe(path.join(root, "runs", delegated.run, "brief.md"))
+      expect(value.scope).toEqual({ paths: ["packages/plus/src/*"], forbidden: [] })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("get_context on a root run has no brief and no conventions", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -1208,10 +1255,8 @@ test("get_context on a root run returns brief: null without conventions", async 
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.get_context({}, callerFor(parent))) as Record<string, unknown>
       expect(value.run).toBe("main-0123456789abcdef")
-      expect(value.brief).toBeNull()
+      expect(value).not.toHaveProperty("brief")
       expect(value.briefPath).toBeNull()
-      expect(value.interfaces).toEqual([])
-      expect(value.decisions).toEqual([])
       expect(value.scope).toEqual({ paths: [], forbidden: [] })
       expect(value.conventions).toBeUndefined()
     } finally {

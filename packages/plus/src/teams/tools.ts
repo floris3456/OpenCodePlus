@@ -11,7 +11,7 @@ import { append, type ToolCallOutcome } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { rowState, unattendedMessage, type PermissionTable } from "../instructions/permission-enforce.js"
-import { toolGuidance, toolSurfaces, type TeamTool } from "./policy.js"
+import { toolGuidance, type TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -489,15 +489,10 @@ export async function registerTeamTools(
         const result = await api.get_context(args, caller)
         if (!result.ok) return result
         const table = permissions()
-        return {
-          ok: true,
-          value: {
-            ...(result.value as object),
-            toolSurfaces,
-            guidance: toolGuidance,
-            delegationTargets: delegationTargets(table, caller.agent).filter((target) => table?.teamMembers.has(target)),
-          },
-        }
+        // Which team tools are direct and which Code Mode is in the
+        // namespace's and this tool's own description already.
+        const targets = delegationTargets(table, caller.agent).filter((target) => table?.teamMembers.has(target))
+        return { ok: true, value: { ...(result.value as object), ...(targets.length === 0 ? {} : { delegationTargets: targets }) } }
       }),
     })
     add({
