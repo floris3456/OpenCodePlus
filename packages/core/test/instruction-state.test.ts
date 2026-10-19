@@ -21,11 +21,8 @@ import {
 } from "@opencode/core/session/sql"
 import { testEffect } from "./lib/effect"
 
-// Compiled directly instead of through AppNodeBuilder: the builder imports the
-// plugin supervisor graph, which currently fails to load on the parallel
-// team's broken `@opencode/plus` export (`effective` is missing from
-// `plus/src/instructions/model.ts`). Database, projector, and persisted bus are
-// global nodes, so no Location provisioning is needed here.
+// Database, projector, and persisted bus are global nodes, so no Location
+// provisioning is needed here.
 const it = testEffect(
   LayerNode.compile(LayerNode.group([Database.node, Bus.node, SessionProjector.node]), {
     replacements: [Bus.node.replace(Bus.configured({ persist: true }))],
