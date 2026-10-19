@@ -1293,6 +1293,8 @@ export interface InstructionPlan {
   readonly enabled: boolean
   /** A model prompt: sent only to a request whose model one of these patterns names. */
   readonly models?: readonly string[]
+  /** The row is its source's own text: OpenCode sends that part itself and announces its changes. */
+  readonly asSource?: true
 }
 
 function basePlans(input: ApplyInput): BasePlan[] {
@@ -1440,7 +1442,14 @@ function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boo
 // Every path that installs instruction plans builds them here, so a model
 // prompt never loses the models it is for.
 function instructionPlanOf(c: InstructionCandidate): InstructionPlan {
-  return { agent: c.agent, path: c.path, text: c.text, enabled: c.enabled, ...(c.models === undefined ? {} : { models: c.models }) }
+  return {
+    agent: c.agent,
+    path: c.path,
+    text: c.text,
+    enabled: c.enabled,
+    ...(c.models === undefined ? {} : { models: c.models }),
+    ...(c.noop ? { asSource: true as const } : {}),
+  }
 }
 
 // The teaching row carries a stable id instead of a location-relative path,

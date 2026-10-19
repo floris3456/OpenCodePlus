@@ -9,6 +9,7 @@ import { applyPublishParts } from "../src/instructions/apply.js"
 import type { PublishPartsInput } from "../src/instructions/apply.js"
 import {
   checkAndEmitChangeNote,
+  computeChangeNote,
   createPlanSet,
   handlePromptBoundary,
   pinnedPermissions,
@@ -1028,7 +1029,8 @@ test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as 
   expect(after.system, "the system prompt is the one the chat was sent").toEqual(first.system)
   expect(after.tools, "the tools are the ones the chat was sent").toEqual(first.tools)
   expect(synthetics).toHaveLength(1)
-  expect(synthetics[0]?.text).toContain("Guide v2.")
+  // AGENTS.md is the file's own text: OpenCode announces that edit itself.
+  expect(synthetics[0]?.text).not.toContain("Guide v2.")
   expect(synthetics[0]?.text).toContain("Speak like a pirate")
   expect(synthetics[0]?.text).toContain('Tool "reader" description changed')
 
@@ -1044,6 +1046,36 @@ test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as 
   const unstored = restartRequest("Speak like a pirate.", "Guide v2.")
   await Effect.runPromise(contextCallbacks.at(-1)!(unstored))
   expect(unstored.system.map((part) => part.text)).toContain("Guide v2.")
+})
+
+function guidePlans(text: string, asSource: boolean): PlanSet {
+  return createPlanSet({
+    roles: new Map(),
+    base: [],
+    native: [],
+    instructions: [{ agent: "alpha", path: GUIDE, text, enabled: true, ...(asSource ? { asSource: true as const } : {}) }],
+    scrubByAgent: new Map(),
+    needsNarrowing: false,
+    permissions: answering("plans"),
+    customByAgent: new Set(),
+  })
+}
+
+test("an edited instruction file is left to OpenCode's notice; a Plus change to it is announced", async () => {
+  const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+  const pin = new SessionPinManager().pinSession("ses_guide", model, guidePlans("Guide v1.", true))
+  expect(computeChangeNote(pin, guidePlans("Guide v2.", true), "alpha"), "OpenCode announces its own file").toBeUndefined()
+  expect(computeChangeNote(pin, guidePlans("Plus text.", false), "alpha")?.noteText).toContain("Plus text.")
+  const overridden = new SessionPinManager().pinSession("ses_override", model, guidePlans("Plus text.", false))
+  expect(computeChangeNote(overridden, guidePlans("Guide v2.", true), "alpha")?.noteText).toContain("Guide v2.")
+
+  // The mark survives a restart with the stored pin.
+  const { storage } = memoryStorage()
+  const stored = new SessionPinManager(storage)
+  await Effect.runPromise(stored.save(stored.pinSession("ses_stored", model, guidePlans("Guide v1.", true)), "alpha"))
+  const restored = await Effect.runPromise(new SessionPinManager(storage).load("ses_stored", guidePlans("Guide v2.", true)))
+  expect(restored?.planSet.instructions[0]?.asSource).toBe(true)
+  expect(computeChangeNote(restored!, guidePlans("Guide v2.", true), "alpha")).toBeUndefined()
 })
 
 function answering(label: string): PermissionTable {

@@ -120,6 +120,7 @@ const StoredAgent = Schema.Struct({
       text: Schema.String,
       enabled: Schema.Boolean,
       models: Schema.optional(Schema.Array(Schema.String)),
+      asSource: Schema.optional(Schema.Literal(true)),
     }),
   ),
   scrub: Schema.Array(Schema.String),
@@ -546,6 +547,9 @@ export function computeChangeNote(
 
   for (const [filePath, curPlan] of curByPath) {
     const pinPlan = pinByPath.get(filePath)
+    // A file edited where Plus changes nothing reaches the chat as OpenCode's own instruction
+    // notice; a second note here would announce the same change twice.
+    if (pinPlan?.asSource === true && curPlan.asSource === true) continue
     const label = instructionLabel(filePath)
     if (pinPlan === undefined || !pinPlan.enabled) {
       if (curPlan.enabled) {
