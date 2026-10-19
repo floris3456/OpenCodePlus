@@ -128,7 +128,7 @@ test("help names the model edit on enter and no warming key", () => {
   const entries = HELP.flatMap((group) => group[1])
   // `w` is "shown when" now, never the retired warming key.
   expect(entries.filter(([key]) => key === "w").map(([, label]) => label)).toEqual([
-    "shown when: send a system row or section only while chosen rows are on",
+    "shown when: send a system row or section only while chosen rows are on · on a model prompt also its models",
   ])
   expect(entries.some(([, label]) => label.includes("cache warming"))).toBe(false)
   const enter = entries.find(([key]) => key === "enter")

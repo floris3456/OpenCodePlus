@@ -522,10 +522,10 @@ test("Models group is first and space activates the candidate", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
   try {
     await goto(fixture, "agent:project:Implementer", "Implementer")
-    // Models is the first category after the agent's own Settings: key 2.
+    // Models is the agent's first category: key 1.
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
-    expect(dispatch(fixture, "2")).toBe(true)
+    expect(dispatch(fixture, "1")).toBe(true)
     await fixture.waitForFrame((frame) => breadcrumb(frame).includes("Implementer › Models"))
     await moveTo(fixture, "acme/nova-2")
     expect(binds(fixture)).toContain("space")

@@ -168,10 +168,11 @@ test("Presets keeps OpenCode agent presets with stable ids and has no OpenCode t
   // Agent presets show their label; every preset row has the agent groups.
   expect(row(nodes, "agent:preset:build").label).toBe("Build")
   expect(childIds(nodes, "agent:preset:build")).toEqual([
-    "group:preset:build:settings",
     "group:preset:build:models",
     "group:preset:build:tools",
+    "group:preset:build:skills",
     "group:preset:build:system",
+    "group:preset:build:settings",
   ])
 })
 
@@ -180,10 +181,11 @@ test("the Basic team preset lists its member presets with the agent groups and t
   const basic = plusTeamPresets.find((team) => team.id === "basic")
   expect(childIds(nodes, "team:preset:basic")).toEqual((basic?.members ?? []).map((member) => `team:preset:basic:${member.id}`))
   expect(childIds(nodes, "team:preset:basic:planner")).toEqual([
-    "group:preset:basic/:planner:settings",
     "group:preset:basic/:planner:models",
     "group:preset:basic/:planner:tools",
+    "group:preset:basic/:planner:skills",
     "group:preset:basic/:planner:system",
+    "group:preset:basic/:planner:settings",
   ])
   const shell = row(nodes, "item:preset:basic/:planner:tool:shell")
   expect(shell.address).toEqual({
