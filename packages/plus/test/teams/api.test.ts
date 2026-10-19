@@ -1301,7 +1301,7 @@ test("get_context lists the parent's other open children as siblings, not other 
       await delegate(other, "sib-3")
       const child = await loadRun(root, first)
       if (child === undefined) throw new Error("missing child run")
-      const value = required(await api.get_context({}, callerFor(child))) as { siblings: Array<{ run: string; role: string; paths: string[] }> }
+      const value = required(await api.get_context({}, callerFor(child))) as { siblings: unknown[] }
       expect(value.siblings).toEqual([{ run: second, role: "implementer", paths: ["packages/plus/src/*"], state: expect.any(String) }])
     } finally {
       await removeRepo(repo.dir)
@@ -1444,6 +1444,33 @@ async function dirtyChild(root: string, repo: { dir: string; head: string }, id:
   await atomicJson(path.join(root, "runs", record.id, "checks.json"), [{ id: "t", argv: ["bun", "test", "t.test.ts"] }])
   return record
 }
+
+test("check runs a project check the run was not assigned, apart from its assigned ones", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      await fs.writeFile(path.join(repo.dir, "t.test.ts"), PASSING_TEST)
+      await fs.writeFile(path.join(repo.dir, "u.test.ts"), FAILING_TEST)
+      await git(repo.dir, ["add", "t.test.ts", "u.test.ts"])
+      await git(repo.dir, ["commit", "-m", "test: add tests"])
+      await writeProjectChecks(repo.dir, { version: 1, checks: { "test-file": { argv: ["bun", "test", "{path}"], description: "one test file" } } })
+      const child = { ...childInRepo("w-acacacacacacacac", repo), head: await git(repo.dir, ["rev-parse", "HEAD"]) }
+      await saveRun(root, child)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      // No checks assigned: a project check still runs, by its name and path.
+      expect(required(await api.check({ id: "test-file", path: "t.test.ts" }, callerFor(child)))).toMatchObject({ id: "test-file", passed: true })
+      const unknown = rejected(await api.check({ id: "lint" }, callerFor(child)))
+      expect(unknown.code).toBe("E_UNKNOWN_CHECK")
+      expect(unknown.message).toContain("Project checks: test-file (one test file) — needs path")
+      // Beside an assigned check of the same name, its receipts keep apart.
+      await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "test-file", argv: ["bun", "test", "t.test.ts"] }])
+      expect(required(await api.check({ id: "test-file", path: "u.test.ts" }, callerFor(child)))).toMatchObject({ id: "test-file-own", passed: false })
+      expect(required(await api.check({ id: "test-file" }, callerFor(child)))).toMatchObject({ id: "test-file", passed: true })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
 
 test("finish done with an unstaged modification names the full path in E_DIRTY", async () => {
   await withIsolatedTeamsRoot(async (root) => {

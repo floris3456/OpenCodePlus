@@ -917,7 +917,8 @@ export const GetContextInput = Schema.Struct({})
 export type GetContextInput = typeof GetContextInput.Type
 
 export const CheckInput = Schema.Struct({
-  id: Schema.String.check(Schema.isMinLength(1)).annotate({ description: "One of your assigned check ids." }),
+  id: Schema.String.check(Schema.isMinLength(1)).annotate({ description: "One of your assigned check ids, or a project check's." }),
+  path: Schema.optional(Schema.String).annotate({ description: "For a project check that needs one: the repository-relative file or directory." }),
 })
 export type CheckInput = typeof CheckInput.Type
 

@@ -53,7 +53,8 @@ const StatusDescription = "State, latest report, checks and HEAD of your run and
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
 const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again.\n" + toolGuidance
-const CheckDescription = "Run one of your assigned checks in your worktree."
+const CheckDescription =
+  "Run one of your assigned checks in your worktree, or any project check (get_context projectChecks; path when it needs one). Only assigned checks judge your finish."
 
 // One team tool call in flight, remembered at `tool.execute.before` so a refusal
 // seen on the event stream can be audited with the same actor, session and

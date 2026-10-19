@@ -1008,11 +1008,14 @@ async function checkHandler(args: CheckInput, caller: TeamCaller, table: Permiss
   const record = stored ?? caller.run
   await requireWorktree(record)
   const assigned = await readChecks(root, record.id)
+  // Beyond its assigned checks a run may run any project check: the project's
+  // people named those commands, so they run unattended. Its result informs
+  // the run; only assigned checks judge its finish.
+  const assignedCheck = assigned.find((entry) => entry.id === args.id && args.path === undefined) ?? (await projectCheck(record, args, assigned))
   // Checks it may run (Permissions of team_check): a test-file check or a
   // package-script check this member's rows turned off is refused before it
   // runs, with the report that says what to do instead.
-  const assignedCheck = assigned.find((entry) => entry.id === args.id)
-  const family = assignedCheck?.argv[1] === "test" ? "checks.tests" : assignedCheck?.argv[1] === "run" ? "checks.scripts" : undefined
+  const family = assignedCheck.argv[1] === "test" ? "checks.tests" : assignedCheck.argv[1] === "run" ? "checks.scripts" : undefined
   if (family !== undefined && !allows(table, record.role, "check", family))
     return fail(
       "E_PERMISSION",
@@ -1020,10 +1023,26 @@ async function checkHandler(args: CheckInput, caller: TeamCaller, table: Permiss
       { status: "blocked", needs: [{ kind: "check", detail: args.id }] },
     )
   try {
-    return succeeded(await run(root, record.id, args.id, assigned, record.directory))
+    return succeeded(await run(root, record.id, assignedCheck.id, [assignedCheck], record.directory))
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }
+}
+
+// A project check the run was not assigned, resolved as a delegator's would
+// be. An id that is neither throws E_UNKNOWN_CHECK naming both lists.
+async function projectCheck(record: RunRecord, args: CheckInput, assigned: readonly Check[]): Promise<Check> {
+  const project = await readProjectChecks(record.directory).catch(() => undefined)
+  if (project?.checks.some((check) => check.id === args.id) !== true)
+    throw toolError(
+      "E_UNKNOWN_CHECK",
+      `Check "${args.id}" is neither assigned nor a project check. Assigned: [${assigned.map((check) => check.id).join(", ")}]. ${checksNote(project)}`,
+      { id: assigned[0]?.id ?? project?.checks[0]?.id ?? "test" },
+    )
+  // Its receipts must not pass for an assigned check's of the same id (one
+  // named with another path).
+  const id = assigned.some((check) => check.id === args.id) ? `${args.id}-own` : args.id
+  return resolveChecks([{ id, use: args.id, ...(args.path === undefined ? {} : { path: args.path }) }], project)[0]!
 }
 
 async function depthOf(root: string, record: RunRecord): Promise<number> {

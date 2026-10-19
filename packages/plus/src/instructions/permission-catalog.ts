@@ -988,7 +988,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       id: "checks",
       label: "Checks it may run",
       kind: "team",
-      summary: "Kinds of assigned checks this member may run itself.",
+      summary: "Kinds of checks (assigned or project checks) this member may run itself.",
       rows: [
         { id: "tests", label: "Test files (bun test FILE)", on: true, patterns: ["bun test *"], message: "running test checks is not allowed here" },
         { id: "scripts", label: "Package scripts (bun run SCRIPT)", on: true, patterns: ["bun run *"], message: "running package-script checks is not allowed here" },
