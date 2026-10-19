@@ -12,7 +12,7 @@ fi
 tips=""
 while read -r _ local_sha _ _; do
   case "$local_sha" in
-    *[!0]*) tips="$tips $(git rev-parse "$local_sha^{commit}")" ;;
+    *[!0]*) tips="${tips:+$tips }$(git rev-parse "$local_sha^{commit}")" ;;
   esac
 done
 [ -n "$tips" ] || exit 0
@@ -26,8 +26,16 @@ fi
 
 root=$(git rev-parse --show-toplevel)
 echo "secret scan: $count new commit(s)"
-if ! gitleaks git "$root" --log-opts="$tips --not --remotes" --config "$root/.gitleaks.toml" \
-  --redact --no-banner --log-level warn --verbose; then
+# Gitleaks exits 0 when its own `git log` fails, so an error line also stops the push.
+status=0
+output=$(gitleaks git "$root" --log-opts="$tips --not --remotes" --config "$root/.gitleaks.toml" \
+  --redact --no-banner --no-color --verbose 2>&1) || status=$?
+printf '%s\n' "$output"
+if [ "$status" -ne 0 ]; then
   echo "secret scan: push stopped. Remove the secret from the commits, or mark a test value with a 'gitleaks:allow' comment." >&2
+  exit 1
+fi
+if printf '%s\n' "$output" | grep -q ' ERR '; then
+  echo "secret scan: gitleaks failed, push stopped." >&2
   exit 1
 fi
