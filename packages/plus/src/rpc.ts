@@ -1357,7 +1357,7 @@ export const WarmingStatus = Schema.Struct({
   coldModels: Schema.optionalKey(Schema.Array(Schema.String)),
   /** When it compacts this chat, while a compaction is scheduled. */
   compactAt: Schema.optionalKey(Schema.Number),
-  /** When the cache goes cold, while warming is switched off for a window not yet compacted. */
+  /** When the cache goes cold while warming is off (switched off mid-window, or never on), until compacted. */
   coldAt: Schema.optionalKey(Schema.Number),
   /** Latest compaction completed after the last real request; absent otherwise. */
   compacted: Schema.optionalKey(Schema.Boolean),

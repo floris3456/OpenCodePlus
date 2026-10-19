@@ -25,7 +25,9 @@ export function formatRemaining(ms: number): string {
  * The footer for a status at local time `now` (already corrected for server
  * clock skew); undefined shows nothing. Once a window has run out the footer
  * stays and warns that the cache is cold, until the next reply opens a new one.
- * Warming switched off mid-window counts down to the keep-alive where it stops.
+ * Warming switched off mid-window counts down to the keep-alive where it stops;
+ * a chat that never warmed counts down to one keep-alive interval after its last
+ * request, then shows nothing again.
  */
 export function warmingLabel(
   status: Plus.WarmingStatus | undefined,
@@ -60,6 +62,8 @@ export function warmingLabel(
       tone: "warning",
     }
   if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
+  if (status.coldAt !== undefined && status.coldAt > now)
+    return { text: `cache warming off · warm ${formatRemaining(status.coldAt - now)} left`, tone: "muted" }
   return undefined
 }
 

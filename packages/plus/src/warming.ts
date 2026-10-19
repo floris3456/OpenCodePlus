@@ -437,8 +437,16 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     const compactSource: CompactSource | undefined =
       override !== undefined ? "chat" : defaults?.compactWarmFrom === "model" ? "model" : undefined
     const compactAt = compact && !compacted ? scheduled.get(sessionID)?.at : undefined
-    const cold =
-      chat === "off" && window !== undefined && !compacted ? coldMoment(chat, window, lastReal.get(sessionID)) : undefined
+    // A chat without a window (warming never on, or switched off before its reply)
+    // goes cold one keep-alive interval after its last request, as decide() recorded.
+    const stored = coldAt.get(sessionID)
+    const cold = compacted
+      ? undefined
+      : window === undefined
+        ? stored !== undefined && stored > now ? stored : undefined
+        : chat === "off"
+          ? coldMoment(chat, window, lastReal.get(sessionID))
+          : undefined
     return {
       sessionID,
       chat: chat ?? "default",
@@ -497,6 +505,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       event.settings = decision.settings
       const before = tracked.get(event.sessionID)
       const beforeCompact = scheduled.get(event.sessionID)?.at
+      const beforeCold = coldAt.get(event.sessionID)
       const settings = decision.settings
       const window =
         settings === undefined
@@ -525,7 +534,10 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         coldAt.delete(event.sessionID)
         unschedule(event.sessionID)
       } else {
-        coldAt.set(event.sessionID, window?.expires ?? (activity ? event.now + coldInterval(decided, rows) : event.now))
+        coldAt.set(
+          event.sessionID,
+          window?.expires ?? (activity ? event.now + coldInterval(decided, rows, configured) : event.now),
+        )
         if (await effectiveCompact(event.sessionID)) schedule(event.sessionID, event.now)
         else unschedule(event.sessionID)
       }
@@ -535,7 +547,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         before?.window?.expires !== window?.expires ||
         before?.window?.interval !== window?.interval ||
         before?.source !== next.source ||
-        (before?.window === undefined) !== (window === undefined)
+        (before?.window === undefined) !== (window === undefined) ||
+        (window === undefined && beforeCold !== coldAt.get(event.sessionID))
       )
     },
     async status(sessionID, at = now()) {
@@ -654,12 +667,18 @@ function coldMoment(chat: ChatSwitch | undefined, window: WarmingWindow, lastReq
 
 // How long a cache stays warm after a request when no warming window says so:
 // the keep-alive interval, which is kept under the provider's cache lifetime.
-function coldInterval(decided: WarmingDecision, rows: WarmingRows): number {
+// The host configuration is the base under the rows, as in decideWarming.
+function coldInterval(
+  decided: WarmingDecision,
+  rows: WarmingRows,
+  configured: SessionWarmingSettings | undefined,
+): number {
   if (decided.settings !== undefined) return decided.settings.interval
   return effectiveWarming({
     ...(rows.row === undefined ? {} : { row: rows.row }),
     ...(rows.model === undefined ? {} : { model: rows.model }),
     ...(rows.every === undefined ? {} : { every: rows.every }),
+    ...(configured === undefined ? {} : { base: { on: true, ...configured, from: "config" } }),
   }).interval.value
 }
 

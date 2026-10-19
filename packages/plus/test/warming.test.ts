@@ -689,8 +689,16 @@ test("the footer counts down to the end of the window, then shows the cache cold
     text: "cache cold · warming starts after the next reply",
     tone: "warning",
   })
-  // Control: a chat that never had a window shows nothing, and off stays off.
+  // A chat that never had a window shows nothing, or counts down to its cold moment until it passes.
   expect(warmingLabel({ ...base, active: false }, 0)).toBeUndefined()
+  const never = { ...base, active: false, coldAt: 3 * MINUTE + 30_000 }
+  expect(warmingLabel(never, MINUTE)).toEqual({ text: "cache warming off · warm 2:30 left", tone: "muted" })
+  expect(warmingLabel(never, never.coldAt)).toBeUndefined()
+  expect(warmingLabel({ ...never, compact: true, compactAt: never.coldAt }, MINUTE)).toEqual({
+    text: "compact cache warm · 2:30 left",
+    tone: "muted",
+  })
+  // Off stays off.
   expect(warmingLabel({ ...base, chat: "off", active: false }, 0)).toEqual({ text: "cache warming off", tone: "muted" })
   expect(warmingLabel({ ...running, chat: "off", active: false }, 24 * MINUTE)).toEqual({
     text: "cache warming off",
@@ -908,10 +916,34 @@ test("with compact before cold off, a chat switched off mid-window reports when 
   store.invalidateCompaction("ses_compacted", clock.now + 1)
   expect((await store.status("ses_compacted", clock.now + 2)).coldAt).toBeUndefined()
 
-  // A chat that never warmed (switched off before its reply) reports none either.
+  // A chat switched off before its reply never warms: it goes cold one interval after that request.
   await store.setChat("ses_never", "off")
-  await store.decide(event({ sessionID: Session.ID.make("ses_never") }), {}, async () => {})
-  expect((await store.status("ses_never")).coldAt).toBeUndefined()
+  await store.decide(event({ sessionID: Session.ID.make("ses_never"), since: clock.now, now: clock.now }), {}, async () => {})
+  expect((await store.status("ses_never")).coldAt).toBe(clock.now + configured.interval)
+  store.dispose()
+})
+
+test("a chat without warming reports its cold moment one interval after each request, until it compacts", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  const off = (overrides: Partial<SessionWarming>) =>
+    store.decide(event({ sessionID: Session.ID.make("ses_never"), settings: undefined, ...overrides }), {}, async () => {})
+
+  // Warming off by configuration: no window, the default keep-alive interval stands in for the cache lifetime.
+  expect(await off({})).toBe(true)
+  expect(await store.status("ses_never")).toMatchObject({
+    chat: "default",
+    active: false,
+    coldAt: 1_000_000 + WARMING_DEFAULTS.interval,
+  })
+  expect((await store.status("ses_never")).expires).toBeUndefined()
+  // The next request moves the moment, and the footer hears about it.
+  clock.now = 1_000_000 + MINUTE
+  expect(await off({ since: clock.now, now: clock.now })).toBe(true)
+  expect((await store.status("ses_never")).coldAt).toBe(clock.now + WARMING_DEFAULTS.interval)
+  // A compaction ends the countdown.
+  store.invalidateCompaction("ses_never", clock.now + 1)
+  expect((await store.status("ses_never", clock.now + 2)).coldAt).toBeUndefined()
   store.dispose()
 })
 
