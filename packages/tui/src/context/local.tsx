@@ -47,7 +47,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       return !!models()?.some((item) => item.providerID === model.providerID && item.id === model.modelID)
     }
 
-    function getFirstValidModel(...modelFns: (() => ModelPreferenceModel | undefined)[]) {
+    function getFirstValidModel(...modelFns: (() => (ModelPreferenceModel & { variant?: string }) | undefined)[]) {
       for (const modelFn of modelFns) {
         const model = modelFn()
         if (model && isModelValid(model)) return model
@@ -220,7 +220,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         variant: {},
       })
       const [selectionState, setSelectionState] = createStore<{
-        newSessionModelByLocationAgent: Record<string, ModelPreferenceModel | undefined>
+        newSessionModelByLocationAgent: Record<string, ModelSelection | undefined>
         selectionBySessionAgent: Record<string, Record<string, ModelSelection | undefined> | undefined>
       }>({
         newSessionModelByLocationAgent: {},
@@ -309,15 +309,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return `${JSON.stringify([ref.directory, ref.workspaceID])}:${agentID}`
       }
 
-      function preferredSelection(model: ModelPreferenceModel): ModelSelection {
+      function preferredSelection(model: ModelSelection): ModelSelection {
         const configured = agent.current()?.model
         const fallback = configuredModel()
-        const preferred = preferences.variant[modelPreferenceKey(model)]
+        // A variant picked for this agent here wins. Otherwise the agent's own model brings its
+        // variant: the server starts the chat on it (Plus applies the agent's active model to every
+        // new chat), so taking the last variant used for that model anywhere would start the first
+        // step on one effort and switch to the other while it runs.
         const variant = normalizeModelVariant(
-          preferred ??
+          model.variant ??
             (configured?.providerID === model.providerID && configured.id === model.modelID
-              ? configured.variant
+              ? (configured.variant ?? "default")
               : undefined) ??
+            preferences.variant[modelPreferenceKey(model)] ??
             (fallback?.providerID === model.providerID && fallback.modelID === model.modelID
               ? fallback.variant
               : undefined),
@@ -436,7 +440,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         }
         const current = agent.current()
         if (!current) return false
-        setSelectionState("newSessionModelByLocationAgent", locationAgentKey(current.id), model)
+        // The store merges objects: name the variant so a variant picked for the previous model goes.
+        setSelectionState("newSessionModelByLocationAgent", locationAgentKey(current.id), {
+          providerID: model.providerID,
+          modelID: model.modelID,
+          variant: undefined,
+        })
         return true
       }
 
@@ -627,8 +636,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           set(value: string | undefined) {
             const m = currentSelection()
             if (!m) return
+            const current = agent.current()
             if (route.data.type === "session") {
               setSessionDraft(route.data.sessionID, { ...m, variant: normalizeModelVariant(value) })
+            } else if (current) {
+              setSelectionState("newSessionModelByLocationAgent", locationAgentKey(current.id), {
+                providerID: m.providerID,
+                modelID: m.modelID,
+                variant: value ?? "default",
+              })
             }
             setPreferences("variant", modelPreferenceKey(m), value ?? "default")
             void repository.saveVariant(m, value).catch(() => undefined)

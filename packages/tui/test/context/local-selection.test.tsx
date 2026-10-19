@@ -34,6 +34,21 @@ test("uses the last configured model and variant ahead of recents", async () => 
   expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "second", variant: "high" })
 })
 
+test("a new chat starts on the agent's variant, and a variant picked on the home screen shows at once", async () => {
+  await using setup = await renderLocal({
+    models: [model("first", ["high", "xhigh"]), model("second", ["low", "high"])],
+    agents: [agent("build", { providerID: "provider", id: "first", variant: "high" })],
+    // The last variant used for this model, set while another agent was active.
+    preferences: { variant: { "provider/first": "xhigh", "provider/second": "low" } },
+  })
+  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "first", variant: "high" })
+  setup.local.model.variant.set("xhigh")
+  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "first", variant: "xhigh" })
+  // A model the agent does not name keeps the last variant used for it.
+  setup.local.model.set({ providerID: "provider", modelID: "second" })
+  expect(setup.local.model.selection()).toEqual({ providerID: "provider", modelID: "second", variant: "low" })
+})
+
 test("switching agents restores their model and variant within the session", async () => {
   await using setup = await renderLocal({
     models: [model("first", ["low", "high"]), model("second", ["low", "high"]), model("third", ["low", "high"])],
