@@ -64,6 +64,27 @@ test("seeding never overwrites user-edited content", async () => {
   expect(await fs.readFile(teachingFilePath(), "utf8")).toBe("my own teaching\n")
 })
 
+// The text releases seeded from 5547160d98 on; installs seeded then still hold it.
+const shippedBefore =
+  "`tools.instructions.*` edits rows (tools/base/skills/system/MCP/models/teams/perms). " +
+  "Ids: `item:<level>:<agent|''>:<itemId>`, `section:…:<sectionId>`, `agent:<level>:<id>`, `team:<level>:<name>[:<member>]`. " +
+  "`create` returns `{id,item}`; `show`/`set`/`delete` take that `id`. " +
+  "`list({where:\"review:true\"})`→`show({id,view:\"diff\"})`→`set({id,resolve:\"keep\"})`. " +
+  "`list({where:\"agent:X item:tool\"})`→`set({id,text})`. " +
+  "Patterns are core wildcards, not regex; shell resource is the parsed command, so `git *` matches bare `git`. " +
+  "Skill `instructions-tools`: filters, views, create/delete, errors."
+
+test("seeding replaces a text an earlier release seeded, but not one the person changed", async () => {
+  await configDir()
+  await fs.mkdir(path.dirname(teachingFilePath()), { recursive: true })
+  await fs.writeFile(teachingFilePath(), shippedBefore)
+  expect((await seedSystemInstruction()).content).toBe(teachingContent)
+  expect(await fs.readFile(teachingFilePath(), "utf8")).toBe(teachingContent)
+  await fs.writeFile(teachingFilePath(), `${shippedBefore}\nMy own line.`)
+  expect((await seedSystemInstruction()).content).toBe(`${shippedBefore}\nMy own line.`)
+  expect(await fs.readFile(teachingFilePath(), "utf8")).toBe(`${shippedBefore}\nMy own line.`)
+})
+
 test("the instruction content stays within its size budget", async () => {
   expect(teachingContent.length).toBeLessThanOrEqual(600)
   for (const phrase of [

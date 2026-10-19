@@ -5,6 +5,7 @@ import { Skill } from "@opencode/schema/skill"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { runRegistration } from "./apply.js"
+import { fingerprint } from "./model.js"
 import { globalConfigDir, teachingFilePath, teachingSkillId } from "./paths.js"
 
 export const teachingTitle = "OpenCodePlus"
@@ -13,7 +14,8 @@ export const teachingTitle = "OpenCodePlus"
 // namespace, the row-id shapes, list's row lines, the two happy flows, that
 // create returns the row id its follow-ups take, the skill that carries the
 // rest, and the permission pattern grammar. teaching.test.ts pins the
-// character bound.
+// character bound. When this text changes, add the sha256 of the text it
+// replaces to shippedTeachings, so files still holding that text upgrade.
 export const teachingContent =
   "`tools.instructions.*` edits agents/tools/base/skills/system/MCP/models/teams/perms. " +
   "Ids: `item:<level>:<agent|''>:<itemId>`, `section:…:<sectionId>`, `agent:<level>:<id>`, `team:<level>:<name>[:<member>]`. " +
@@ -187,14 +189,28 @@ function teachingSkillLocation(): string {
   return path.join(globalConfigDir(), "opencodeplus", "skills", teachingSkillId, "SKILL.md")
 }
 
-// Writes the seeded file only when it is missing, so a user edit is never
-// overwritten. A concurrent seeder winning the race reads back their copy.
+// sha256 of every text an earlier release seeded. A file that still holds one
+// was never edited, so seeding replaces it with the current text.
+const shippedTeachings = new Set([
+  "1d77592a056350239f81bdaa26dff07c424ee1848079031ba3aa907f71cf38c7",
+  "cf8b591da8f65f450a16fe3a88a3fab4930da657026dfb3df5770cf3847ff759",
+  "bf1782c5fb87716b2b5c8deba7c42760ecf613c26eb074531e41d96c87ba6bac",
+  "9c401ae7e9375d0b8bef100809dfb93d88acdcdbbaa8837e6942643d29aa6150",
+  "73e3c7ec25cdb2989b528453df09b679010d3fb4c1a6bb83465f38a7f852211e",
+  "41b743f3c37a58fb1d77abc281a2c6198bf78718fd58879651005699c329d2fa",
+  "ca2b4a5a3ec9bae7ee351dbb2a07152d7d5aa664d52cc662c52354c687e07003",
+  "1cb80951995e864265e42549828092fd513b264814d5dbed58925bdeaf552255",
+])
+
+// Writes the seeded file when it is missing or still holds a text an earlier
+// release seeded, so a user edit is never overwritten. A concurrent seeder
+// winning the race reads back their copy.
 export async function seedSystemInstruction(): Promise<{ path: string; content: string }> {
   const file = teachingFilePath()
   const existing = await fs.readFile(file, "utf8").catch(() => undefined)
-  if (existing !== undefined) return { path: file, content: existing }
+  if (existing !== undefined && !shippedTeachings.has(fingerprint(existing))) return { path: file, content: existing }
   await fs.mkdir(path.dirname(file), { recursive: true })
-  await fs.writeFile(file, teachingContent, { flag: "wx" }).catch(() => undefined)
+  await fs.writeFile(file, teachingContent, existing === undefined ? { flag: "wx" } : {}).catch(() => undefined)
   const content = await fs.readFile(file, "utf8").catch(() => teachingContent)
   return { path: file, content }
 }
