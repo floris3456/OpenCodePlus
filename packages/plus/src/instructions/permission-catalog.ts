@@ -997,7 +997,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
   ],
 }
 
-const instructionReads = ["instructions_list", "instructions_show", "instructions_log"]
+const instructionReads = ["instructions_find", "instructions_read", "instructions_log"]
 
 function instructionTargets(): CategorySpec {
   return {

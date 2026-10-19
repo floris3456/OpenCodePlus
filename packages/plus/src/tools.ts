@@ -124,12 +124,12 @@ export const INSTRUCTION_DISABLED =
 const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
 
-const ListDescription =
+const FindDescription =
   "Find instruction rows: one \"id | badges | from\" line per row, filtered by key:value terms in where.\n" +
   "Returns { total, columns, rows }; fields picks the columns after id (label, tokens, text, …). " +
   "where example: \"agent:alpha item:tool state:off\" (grammar in skill instructions-tools). limit defaults to 40."
 
-const ShowDescription =
+const ReadDescription =
   "Read one row: its text and where it comes from (view resolved, the default).\n" +
   "On an agent, group or root, resolved lists the rows under it. assembled appears only when what reaches the model differs from text.\n" +
   "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt).\n" +
@@ -139,13 +139,13 @@ const SetDescription =
   "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
   "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
-  "resolve keep|take|edit settles a review; resolve merge with include:[unit ids from show's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
+  "resolve keep|take|edit settles a review; resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
   "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
   "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
 
 const EditDescription =
   "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
-  "oldString must match the row's current text (show's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
+  "oldString must match the row's current text (read's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
   "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }."
 
 const MoveDescription =
@@ -163,7 +163,7 @@ const SplitDescription =
 
 const CreateDescription =
   "Create an agent, team, member, Defaults entry, preset, skill, base, system, MCP, model, rule or folder row (TUI `a`).\n" +
-  "Returns {id, item}: pass id to show, set, edit and delete. Kinds and their fields: agent (id, scope project|global, preset); team (team, level, preset = a team preset; created disabled); " +
+  "Returns {id, item}: pass id to read, set, edit and delete. Kinds and their fields: agent (id, scope project|global, preset); team (team, level, preset = a team preset; created disabled); " +
   "member (team, level, id, preset; at level defaults a Teams entry, team and id are patterns); entry (catalogue agents|teams, name with * or %, team pattern, preset); " +
   "preset, teamPreset, presetMember (id, from; presetMember also team); skill (name, body, scope); base (id, title, text); system (id, text, title; models makes a model prompt); mcp (name, config); " +
   "model (providerID, modelID, variant, level, agent; it becomes the active one there); rule (tool, id, label, patterns as core wildcards not regex, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
@@ -214,7 +214,7 @@ const Sort = Schema.Union([
   Schema.Literal("-id"),
 ])
 
-const ListInput = Schema.Struct({
+const FindInput = Schema.Struct({
   where: Schema.optionalKey(Schema.String),
   fields: Schema.optionalKey(Schema.Array(Field)),
   sort: Schema.optionalKey(Sort),
@@ -222,7 +222,7 @@ const ListInput = Schema.Struct({
   offset: Schema.optionalKey(Schema.Number),
 })
 
-const ShowInput = Schema.Struct({
+const ReadInput = Schema.Struct({
   id: Schema.String,
   view: Schema.optionalKey(
     Schema.Union([
@@ -258,7 +258,7 @@ const SetInput = Schema.Struct({
     Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit"), Schema.Literal("merge")]),
   ),
   include: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "With resolve merge: the unit ids (show's merge.units) to include; omitted = the defaults.",
+    description: "With resolve merge: the unit ids (read's merge.units) to include; omitted = the defaults.",
   }),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -290,7 +290,7 @@ const SetInput = Schema.Struct({
 
 const EditInput = Schema.Struct({
   id: Schema.String,
-  oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (show's text)" }),
+  oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (read's text)" }),
   newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
   replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
     description: "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
@@ -495,9 +495,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       }),
     })
     editor.add({
-      name: "list",
-      description: ListDescription,
-      input: ListInput,
+      name: "find",
+      description: FindDescription,
+      input: FindInput,
       output: Schema.Unknown,
       options,
       origin,
@@ -528,9 +528,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         }),
     })
     editor.add({
-      name: "show",
-      description: ShowDescription,
-      input: ShowInput,
+      name: "read",
+      description: ReadDescription,
+      input: ReadInput,
       output: Schema.Unknown,
       options,
       origin,
@@ -2649,7 +2649,7 @@ function createdRowOrFail(
     }
     return yield* Effect.fail(
       new Tool.Error({
-        message: `create.failed: created ${label} but its row is missing from the instructions tree; re-read with instructions_list`,
+        message: `create.failed: created ${label} but its row is missing from the instructions tree; re-read with instructions_find`,
       }),
     )
   })

@@ -186,7 +186,7 @@ describe("tool state mutations preserve rule messages and catalogue identity", (
 
     // show: the edited rule still refuses with its own message, and the
     // unrelated rule keeps its message and stays in the Teams catalogue.
-    const shownA = (await runOk(need(tools, "instructions_show"), { id: ruleA.id })) as {
+    const shownA = (await runOk(need(tools, "instructions_read"), { id: ruleA.id })) as {
       rule?: string
       enabled?: boolean
       message?: string
@@ -195,17 +195,17 @@ describe("tool state mutations preserve rule messages and catalogue identity", (
     expect(shownA.enabled).toBe(false)
     expect(shownA.message).toBe("force pushes are not allowed here")
 
-    const shownB = (await runOk(need(tools, "instructions_show"), { id: ruleB.id })) as { message?: string }
+    const shownB = (await runOk(need(tools, "instructions_read"), { id: ruleB.id })) as { message?: string }
     expect(shownB.message).toBe("pulls are not allowed here")
 
-    const shownC = (await runOk(need(tools, "instructions_show"), { id: ruleC.id })) as {
+    const shownC = (await runOk(need(tools, "instructions_read"), { id: ruleC.id })) as {
       enabled?: boolean
       message?: string
     }
     expect(shownC.enabled).toBe(false)
     expect(shownC.message).toBe("pushing is not allowed in this team")
 
-    const recordC = (await runOk(need(tools, "instructions_show"), { id: ruleC.id, view: "record" })) as {
+    const recordC = (await runOk(need(tools, "instructions_read"), { id: ruleC.id, view: "record" })) as {
       record: { type?: string; catalogue?: string; message?: string } | null
     }
     expect(recordC.record?.type).toBe("rule")

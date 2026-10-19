@@ -124,7 +124,7 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
 // member, discovery reports it back as an ordinary unbacked defaults agent, and
 // a resolver fed that echo drops every member and produces nothing. The
 // snapshot is the first place that shows: it is what the Instructions tree, the
-// Policy group and instructions.list all read.
+// Policy group and instructions.find all read.
 // The shipped team is no Defaults team any more (DESIGN §2): it is the Plus
 // team preset `basic` a project team is created from.
 test("the live snapshot carries each member's Delegate to rows after the team is installed", async () => {

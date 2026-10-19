@@ -349,16 +349,16 @@ async function showPolicy(
   tools: Map<string, Tool.Info & { readonly id: string }>,
   id: string,
 ): Promise<{ readonly tool: string; readonly rule?: string; readonly patterns?: readonly string[]; readonly policy?: PolicyEffects }> {
-  const show = tools.get("instructions_show")
-  if (show === undefined) throw new Error("missing tool instructions_show")
+  const show = tools.get("instructions_read")
+  if (show === undefined) throw new Error("missing tool instructions_read")
   const output = await Effect.runPromise(show.execute({ id }, showContext).pipe(Effect.map((result) => result.output)))
   return output as { readonly tool: string; readonly rule?: string; readonly patterns?: readonly string[]; readonly policy?: PolicyEffects }
 }
 
-// The reader's end of that wire, through the registered tool: instructions_show
+// The reader's end of that wire, through the registered tool: instructions_read
 // on a perm row returns the row's policy, so a reader sees what the rule says
 // when it refuses and not merely that some rule exists.
-test("instructions_show on a run edit-scope row reports the rules and the message each refuses with", async () => {
+test("instructions_read on a run edit-scope row reports the rules and the message each refuses with", async () => {
   process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
   process.env.XDG_DATA_HOME = join(dir, "data")
   const project = join(dir, "project")
@@ -386,7 +386,7 @@ test("instructions_show on a run edit-scope row reports the rules and the messag
 
   // T5: a Global/Project team member never appears under Defaults, so the
   // run edit-scope row is addressed at the member's own `<team>/:<member>`
-  // path. instructions_show still reports the rule it carries: the run it
+  // path. instructions_read still reports the rule it carries: the run it
   // scopes and the patterns that are eligible.
   const scope = await showPolicy(registry.tools, `item:project:opencodeplus-team/:${member}:perm:edit:run:${run.id}`)
   expect(scope.tool).toBe("edit")

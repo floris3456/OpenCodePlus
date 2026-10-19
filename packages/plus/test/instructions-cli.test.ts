@@ -13,7 +13,7 @@ function registry(): { registry: InstructionCliRegistry; seen: Array<{ input: un
   return {
     seen,
     registry: {
-      show: {
+      read: {
         description: "Read one row",
         inputSchema: {
           type: "object",
@@ -25,7 +25,7 @@ function registry(): { registry: InstructionCliRegistry; seen: Array<{ input: un
           return { id: (input as { id: string }).id, text: "hello" }
         },
       },
-      list: {
+      find: {
         description: "Filter rows",
         inputSchema: { type: "object", properties: { limit: { type: "number" } } },
         run: async (input) => ({ rows: [], input }),
@@ -37,9 +37,9 @@ function registry(): { registry: InstructionCliRegistry; seen: Array<{ input: un
 describe("instructions-cli registry", () => {
   test("lists ops alphabetically with descriptions and input schemas", () => {
     const ops = listOps(registry().registry)
-    expect(ops.map((op) => op.op)).toEqual(["list", "show"])
+    expect(ops.map((op) => op.op)).toEqual(["find", "read"])
     expect(ops[1]).toEqual({
-      op: "show",
+      op: "read",
       description: "Read one row",
       input: {
         type: "object",
@@ -51,15 +51,15 @@ describe("instructions-cli registry", () => {
 
   test("runs an op and records the actor as cli", async () => {
     const fixture = registry()
-    const result = await runOp(fixture.registry, "show", { id: "abc" })
+    const result = await runOp(fixture.registry, "read", { id: "abc" })
     expect(result).toEqual({ id: "abc", text: "hello" })
     expect(fixture.seen).toEqual([{ input: { id: "abc" }, actor: { type: "cli" } }])
   })
 
   test("refuses an unknown op naming the known ones", async () => {
     const result = await runOp(registry().registry, "move", {})
-    expect(result).toEqual({ error: { message: 'op.unknown: unknown op "move" (known: list, show)' } })
-    expect(unknownOpMessage("move", registry().registry)).toContain("known: list, show")
+    expect(result).toEqual({ error: { message: 'op.unknown: unknown op "move" (known: find, read)' } })
+    expect(unknownOpMessage("move", registry().registry)).toContain("known: find, read")
   })
 
   test("turns a thrown op error into a refusal", async () => {

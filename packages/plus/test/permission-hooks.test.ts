@@ -41,7 +41,7 @@ const actions: Record<string, string> = {
   patch: "edit",
   instructions_set: "instructions",
   instructions_delete: "instructions",
-  instructions_list: "instructions",
+  instructions_find: "instructions",
   team_delegate: "team.delegate",
 }
 

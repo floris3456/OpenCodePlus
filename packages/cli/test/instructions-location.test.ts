@@ -48,7 +48,7 @@ function capture(runResult: (input: { op: string; input: Record<string, unknown>
         return Response.json({
           output: {
             ops: [
-              { op: "show", description: "Read one row.", input: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+              { op: "read", description: "Read one row.", input: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
             ],
           },
         })
@@ -123,8 +123,8 @@ describe("instructions CLI emits the caller location", () => {
       const first = await fs.mkdtemp(path.join(await tempRoot(), "one-"))
       const second = await fs.mkdtemp(path.join(await tempRoot(), "two-"))
 
-      const a = await cli(first, ["instructions", "--server", fixture.url, "show", "abc"])
-      const b = await cli(second, ["instructions", "--server", fixture.url, "show", "abc"])
+      const a = await cli(first, ["instructions", "--server", fixture.url, "read", "abc"])
+      const b = await cli(second, ["instructions", "--server", fixture.url, "read", "abc"])
 
       expect({ a: a.exitCode, b: b.exitCode }).toEqual({ a: 0, b: 0 })
       expect(JSON.parse(a.stdout)).toEqual({ ok: true })
@@ -154,7 +154,7 @@ describe("instructions CLI emits the caller location", () => {
         JSON.stringify({ version: OPENCODE_VERSION, url: fixture.url, pid: process.pid }),
       )
 
-      const result = await cli(caller, ["instructions", "list", "--server"], {
+      const result = await cli(caller, ["instructions", "find", "--server"], {
         XDG_STATE_HOME: path.join(home, "state"),
       })
 
@@ -174,9 +174,9 @@ describe("instructions CLI emits the caller location", () => {
     const usage = capture(() => ({ error: { message: "Invalid arguments for show", usage: true } }))
     try {
       const caller = await fs.mkdtemp(path.join(await tempRoot(), "caller-"))
-      const ok = await cli(caller, ["instructions", "--server", success.url, "show", "abc"])
-      const opRefusal = await cli(caller, ["instructions", "--server", refused.url, "show", "nope"])
-      const usageRefusal = await cli(caller, ["instructions", "--server", usage.url, "show", "abc"])
+      const ok = await cli(caller, ["instructions", "--server", success.url, "read", "abc"])
+      const opRefusal = await cli(caller, ["instructions", "--server", refused.url, "read", "nope"])
+      const usageRefusal = await cli(caller, ["instructions", "--server", usage.url, "read", "abc"])
       // A parser usage error never reaches the service.
       const parseError = await cli(caller, ["instructions", "--server", success.url, "bogus"])
 

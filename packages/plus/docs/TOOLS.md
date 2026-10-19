@@ -48,8 +48,8 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 
 | Tool | Inputs | Output |
 | --- | --- | --- |
-| `instructions_list` | `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | Query result (`packages/plus/src/tools.ts:133`, `packages/plus/src/tools.ts:248`) |
-| `instructions_show` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
+| `instructions_find` | `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | Query result (`packages/plus/src/tools.ts:133`, `packages/plus/src/tools.ts:248`) |
+| `instructions_read` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
 | `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming`, `interval`, `prompt`, `effort` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
@@ -573,7 +573,7 @@ core's `edit` action (`packages/plus/src/instructions/apply.ts:385`,
   (`packages/plus/src/instructions/tool-permissions.ts:611`). It round-trips
   through the rule store and the snapshot serializer
   (`packages/plus/src/tools.ts:516`).
-- `instructions_show` on a perm row returns the effective message: the user
+- `instructions_read` on a perm row returns the effective message: the user
   rule's own stored message wins, a curated row ships one, a mined row has none
   (`packages/plus/src/tools.ts:973`, `packages/plus/src/tools.ts:1035`).
 - The TUI rule dialog prompts `Message shown on refusal (optional)` and writes

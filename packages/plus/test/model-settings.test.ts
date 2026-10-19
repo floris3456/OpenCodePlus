@@ -506,7 +506,7 @@ test("instructions.set, reset, delete and show cover a Defaults › Models row",
   await registerInstructionTools(ctx, createPlusApi(ctx, createState()))
   const tools = await readTools(ctx)
   const set = need(tools, "instructions_set")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const reset = need(tools, "instructions_reset")
   const del = need(tools, "instructions_delete")
   await runOk(set, { id: "item:defaults:/models:modeldefault:*", warming: "on", interval: "5m", prompt: "keep this chat warm" })
@@ -655,7 +655,7 @@ test("instructions tools set, reset and show one Defaults › Models field", asy
   await registerInstructionTools(ctx, createPlusApi(ctx, createState()))
   const tools = await readTools(ctx)
   const set = need(tools, "instructions_set")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const reset = need(tools, "instructions_reset")
   const del = need(tools, "instructions_delete")
   await runOk(set, { id: "item:defaults:/models:modelsetting:interval:*", text: "4m" })
@@ -1332,7 +1332,7 @@ test("Effort reset of an inherited-original row removes its tombstone and leaves
   // Reset Effort on low: restores xhigh and must not leave the tombstone behind.
   await runOk(reset, { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "low" }) })
   expect(await projectRecords()).toHaveLength(0)
-  const shown = await runOk(need(tools, "instructions_show"), { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" }) }) as { value?: unknown }
+  const shown = await runOk(need(tools, "instructions_read"), { id: fieldRow("effort", { providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "xhigh" }) }) as { value?: unknown }
   expect(shown).toMatchObject({ value: "xhigh · defaults" })
 })
 

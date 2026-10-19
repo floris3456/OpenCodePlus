@@ -365,23 +365,23 @@ test("execute.after masks secret values in instructions results while Show secre
   const applied = await apply(
     host.ctx,
     input({
-      items: catalogItems([toolItem("instructions_show")], actionForToolId),
+      items: catalogItems([toolItem("instructions_read")], actionForToolId),
       agents: [
         { id: "alpha", level: "project" },
         { id: "beta", level: "project" },
       ],
-      records: [record("alpha", "perm:instructions_show:secrets.values", "off")],
+      records: [record("alpha", "perm:instructions_read:secrets.values", "off")],
     }),
   )
   const row = { id: "mcp:search", config: { url: "https://mcp.example.org", headers: { Authorization: "Bearer sk-live" } } }
   // An MCP row is config through and through: its URL (which can carry a
   // key) is masked with its headers; its id stays.
   const masked = { id: "mcp:search", config: { url: "[masked]", headers: { Authorization: "[masked]" } } }
-  expect(await refusalOf(host.tool, beforeEvent("alpha", "instructions_show", { id: "item:defaults::mcp:search" }))).toBeUndefined()
-  const shown = afterEvent("alpha", "instructions_show", { output: row, content: JSON.stringify(row) })
+  expect(await refusalOf(host.tool, beforeEvent("alpha", "instructions_read", { id: "item:defaults::mcp:search" }))).toBeUndefined()
+  const shown = afterEvent("alpha", "instructions_read", { output: row, content: JSON.stringify(row) })
   await complete(host.tool, shown)
   expect(shown.result).toEqual({ output: masked, content: [{ type: "text", text: JSON.stringify(masked, null, 2) }] })
-  const open = afterEvent("beta", "instructions_show", { output: row, content: JSON.stringify(row) })
+  const open = afterEvent("beta", "instructions_read", { output: row, content: JSON.stringify(row) })
   await complete(host.tool, open)
   expect(open.result).toEqual({ output: row, content: JSON.stringify(row) })
   await dispose(applied.registrations)

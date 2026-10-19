@@ -471,7 +471,7 @@ describe("rule message persistence across boundaries", () => {
     })
   })
 
-  describe("tool surface: instructions_create, instructions_show, instructions_set", () => {
+  describe("tool surface: instructions_create, instructions_read, instructions_set", () => {
     test("create kind: 'rule' with message, show display, and disk persistence", async () => {
       const { project } = await tempProject()
       const ctx = fullContext({
@@ -510,8 +510,8 @@ describe("rule message persistence across boundaries", () => {
       const customRow = rows.find((node) => node.id === created.id)
       if (customRow === undefined) throw new Error("missing custom perm row")
 
-      // instructions_show (default view) returns message
-      const shownDefault = (await runOk(need(tools, "instructions_show"), { id: customRow.id })) as {
+      // instructions_read (default view) returns message
+      const shownDefault = (await runOk(need(tools, "instructions_read"), { id: customRow.id })) as {
         tool: string
         rule: string
         message?: string
@@ -520,8 +520,8 @@ describe("rule message persistence across boundaries", () => {
       expect(shownDefault.rule).toBe("no-force-push")
       expect(shownDefault.message).toBe("force pushing destroys history")
 
-      // instructions_show view: "record" returns RuleRecord with message
-      const shownRecord = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
+      // instructions_read view: "record" returns RuleRecord with message
+      const shownRecord = (await runOk(need(tools, "instructions_read"), { id: customRow.id, view: "record" })) as {
         record: { type?: string; message?: string } | null
       }
       expect(shownRecord.record?.type).toBe("rule")
@@ -565,7 +565,7 @@ describe("rule message persistence across boundaries", () => {
       })) as { status: string }
       expect(updated.status).toContain("Updated")
 
-      const shownAfterUpdate = (await runOk(need(tools, "instructions_show"), { id: customRow.id })) as { message?: string }
+      const shownAfterUpdate = (await runOk(need(tools, "instructions_read"), { id: customRow.id })) as { message?: string }
       expect(shownAfterUpdate.message).toBe("updated refusal text")
 
       // 2. Update label only (omitted message) -> message preserved
@@ -573,7 +573,7 @@ describe("rule message persistence across boundaries", () => {
         id: customRow.id,
         label: "Updated Label",
       })
-      const shownAfterOmission = (await runOk(need(tools, "instructions_show"), { id: customRow.id })) as {
+      const shownAfterOmission = (await runOk(need(tools, "instructions_read"), { id: customRow.id })) as {
         label?: string
         message?: string
       }
@@ -590,10 +590,10 @@ describe("rule message persistence across boundaries", () => {
         id: customRow.id,
         message: "",
       })
-      const shownAfterClear = (await runOk(need(tools, "instructions_show"), { id: customRow.id })) as { message?: string }
+      const shownAfterClear = (await runOk(need(tools, "instructions_read"), { id: customRow.id })) as { message?: string }
       expect(shownAfterClear.message).toBeUndefined()
 
-      const shownRecordAfterClear = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
+      const shownRecordAfterClear = (await runOk(need(tools, "instructions_read"), { id: customRow.id, view: "record" })) as {
         record: { type?: string; message?: string } | null
       }
       expect(shownRecordAfterClear.record?.message).toBeUndefined()
@@ -619,7 +619,7 @@ describe("rule message persistence across boundaries", () => {
       if (curatedRow === undefined) throw new Error("missing curated perm row perm:shell:git-push")
 
       // Shipped message is displayed
-      const initialShown = (await runOk(need(tools, "instructions_show"), { id: curatedRow.id })) as { message?: string }
+      const initialShown = (await runOk(need(tools, "instructions_read"), { id: curatedRow.id })) as { message?: string }
       expect(initialShown.message).toBe("pushing is not allowed here")
 
       // Set custom message on the curated row (materializes a custom override)
@@ -629,7 +629,7 @@ describe("rule message persistence across boundaries", () => {
       })) as { status: string }
       expect(overrideResult.status).toContain("Updated")
 
-      const shownCustom = (await runOk(need(tools, "instructions_show"), { id: curatedRow.id })) as { message?: string }
+      const shownCustom = (await runOk(need(tools, "instructions_read"), { id: curatedRow.id })) as { message?: string }
       expect(shownCustom.message).toBe("company policy: never git push directly")
 
       // Blank message on the override clears the custom text (user rule with no message keeps generic refusal)
@@ -637,7 +637,7 @@ describe("rule message persistence across boundaries", () => {
         id: curatedRow.id,
         message: "",
       })
-      const shownCleared = (await runOk(need(tools, "instructions_show"), { id: curatedRow.id })) as { message?: string }
+      const shownCleared = (await runOk(need(tools, "instructions_read"), { id: curatedRow.id })) as { message?: string }
       expect(shownCleared.message).toBeUndefined()
 
       // Deleting the custom override restores the curated rule and its shipped message
@@ -645,7 +645,7 @@ describe("rule message persistence across boundaries", () => {
         id: curatedRow.id,
         confirm: true,
       })
-      const shownRestored = (await runOk(need(tools, "instructions_show"), { id: curatedRow.id })) as { message?: string }
+      const shownRestored = (await runOk(need(tools, "instructions_read"), { id: curatedRow.id })) as { message?: string }
       expect(shownRestored.message).toBe("pushing is not allowed here")
     })
   })

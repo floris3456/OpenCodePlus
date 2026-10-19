@@ -13,7 +13,7 @@ import {
 
 const ops: OpDescriptor[] = [
   {
-    op: "show",
+    op: "read",
     description: "Read one row.",
     input: {
       type: "object",
@@ -45,7 +45,7 @@ const ops: OpDescriptor[] = [
     },
   },
   {
-    op: "list",
+    op: "find",
     description: "Filter rows.",
     input: { type: "object", properties: { limit: { type: "number" } } },
   },
@@ -172,9 +172,9 @@ describe("instructions help and exit codes", () => {
       const deps = depsFor(server.url.toString())
       const listed = await runInstructionsCommand([], deps)
       expect(listed.exitCode).toBe(0)
-      expect(listed.stdout).toContain("show")
+      expect(listed.stdout).toContain("read")
       expect(listed.stdout).toContain("Read one row.")
-      const helped = await runInstructionsCommand(["show", "--help"], deps)
+      const helped = await runInstructionsCommand(["read", "--help"], deps)
       expect(helped.exitCode).toBe(0)
       expect(helped.stdout).toContain("--id string (required)")
       expect(helped.stdout).toContain("Row id")
@@ -189,10 +189,10 @@ describe("instructions help and exit codes", () => {
     const seen: StubSeen = { runs: [] }
     const server = opsStub(seen, (op, input) => ({ op, input }))
     try {
-      const result = await runInstructionsCommand(["show", "abc"], depsFor(server.url.toString()))
+      const result = await runInstructionsCommand(["read", "abc"], depsFor(server.url.toString()))
       expect(result.exitCode).toBe(0)
       expect(result.stderr).toBe("")
-      expect(JSON.parse(result.stdout)).toEqual({ op: "show", input: { id: "abc" } })
+      expect(JSON.parse(result.stdout)).toEqual({ op: "read", input: { id: "abc" } })
       expect(result.stdout).toContain("\n")
     } finally {
       server.stop(true)
@@ -203,7 +203,7 @@ describe("instructions help and exit codes", () => {
     const seen: StubSeen = { runs: [] }
     const server = opsStub(seen, () => ({ error: { message: "row.unknown: no such row" } }))
     try {
-      const result = await runInstructionsCommand(["show", "nope"], depsFor(server.url.toString()))
+      const result = await runInstructionsCommand(["read", "nope"], depsFor(server.url.toString()))
       expect(result.exitCode).toBe(1)
       expect(result.stdout).toBe("")
       expect(result.stderr).toBe("row.unknown: no such row\n")
@@ -216,7 +216,7 @@ describe("instructions help and exit codes", () => {
     const seen: StubSeen = { runs: [] }
     const server = opsStub(seen, () => ({ error: { message: "Invalid arguments for show", usage: true } }))
     try {
-      const result = await runInstructionsCommand(["show", "abc"], depsFor(server.url.toString()))
+      const result = await runInstructionsCommand(["read", "abc"], depsFor(server.url.toString()))
       expect(result.exitCode).toBe(2)
       expect(result.stdout).toBe("")
       expect(result.stderr).toBe("Invalid arguments for show\n")
@@ -226,15 +226,15 @@ describe("instructions help and exit codes", () => {
   })
 
   test("exit 2 on usage errors", async () => {
-    const parsed = await parseInstructionsArgs(["show"], ops, io)
+    const parsed = await parseInstructionsArgs(["read"], ops, io)
     expect(parsed.kind).toBe("usage-error")
     const cases: string[][] = [
-      ["show"],
-      ["show", "a", "b"],
+      ["read"],
+      ["read", "a", "b"],
       ["nope"],
-      ["show", "abc", "--bogus", "1"],
-      ["show", "abc", "--view"],
-      ["list", "abc"],
+      ["read", "abc", "--bogus", "1"],
+      ["read", "abc", "--view"],
+      ["find", "abc"],
       ["set", "abc", "--limit", "many"],
       ["set", "abc", "--active", "maybe"],
       ["set", "abc", "--json", "[1]"],
@@ -249,7 +249,7 @@ describe("instructions help and exit codes", () => {
     try {
       const result = await runInstructionsCommand(["nope"], depsFor(server.url.toString()))
       expect(result.exitCode).toBe(2)
-      expect(result.stderr).toContain('Unknown op "nope" (known: list, set, show)')
+      expect(result.stderr).toContain('Unknown op "nope" (known: find, read, set)')
       expect(seen.runs).toEqual([])
     } finally {
       server.stop(true)
@@ -266,7 +266,7 @@ describe("instructions help and exit codes", () => {
       return new Response(null, { status: 404 })
     })
     try {
-      const result = await runInstructionsCommand(["show", "abc"], depsFor(server.url.toString()))
+      const result = await runInstructionsCommand(["read", "abc"], depsFor(server.url.toString()))
       expect(result.exitCode).toBe(1)
       expect(result.stdout).toBe("")
       expect(result.stderr).toBe(
@@ -282,7 +282,7 @@ describe("instructions help and exit codes", () => {
     const server = opsStub(seen)
     try {
       const result = await runInstructionsCommand(
-        ["show", "abc"],
+        ["read", "abc"],
         depsFor(server.url.toString(), { productNamespace: "opencode", binaryName: "opencode2" }),
       )
       expect(result.exitCode).toBe(2)
@@ -307,28 +307,28 @@ describe("instructions help and exit codes", () => {
 
 describe("pre-Effect argv dispatch", () => {
   test("recognises an instructions invocation and keeps its op argv", () => {
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "list", "--where", "agent:alpha"])).toEqual({
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "find", "--where", "agent:alpha"])).toEqual({
       standalone: false,
-      args: ["list", "--where", "agent:alpha"],
+      args: ["find", "--where", "agent:alpha"],
     })
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "show", "abc", "--view", "resolved"])).toEqual({
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "read", "abc", "--view", "resolved"])).toEqual({
       standalone: false,
-      args: ["show", "abc", "--view", "resolved"],
+      args: ["read", "abc", "--view", "resolved"],
     })
   })
 
   test("extracts the subcommand's --server/--standalone and skips --print-logs", () => {
     expect(
-      instructionsInvocation(["bun", "plus.ts", "--print-logs", "instructions", "show", "abc", "--server", "http://x"]),
-    ).toEqual({ server: "http://x", standalone: false, args: ["show", "abc"] })
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--standalone", "list"])).toEqual({
+      instructionsInvocation(["bun", "plus.ts", "--print-logs", "instructions", "read", "abc", "--server", "http://x"]),
+    ).toEqual({ server: "http://x", standalone: false, args: ["read", "abc"] })
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--standalone", "find"])).toEqual({
       standalone: true,
-      args: ["list"],
+      args: ["find"],
     })
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--server=http://y", "list"])).toEqual({
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--server=http://y", "find"])).toEqual({
       server: "http://y",
       standalone: false,
-      args: ["list"],
+      args: ["find"],
     })
   })
 
@@ -341,17 +341,17 @@ describe("pre-Effect argv dispatch", () => {
   test("reports a missing --server value instead of swallowing it", () => {
     // A missing explicit endpoint must refuse as a usage error, never fall
     // through to managed-service discovery.
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "list", "--server"])).toEqual({
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "find", "--server"])).toEqual({
       error: "Option --server expects a value.",
       standalone: false,
-      args: ["list"],
+      args: ["find"],
     })
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--server=", "list"])).toEqual({
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "--server=", "find"])).toEqual({
       error: "Option --server expects a value.",
       standalone: false,
-      args: ["list"],
+      args: ["find"],
     })
-    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "show", "abc", "--server"])?.server).toBeUndefined()
+    expect(instructionsInvocation(["bun", "plus.ts", "instructions", "read", "abc", "--server"])?.server).toBeUndefined()
   })
 
   test("keeps a flag-looking payload for the value-taking op flags", async () => {

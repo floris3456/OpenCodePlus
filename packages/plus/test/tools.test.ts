@@ -42,13 +42,13 @@ import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo,
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 const priorDataHome = process.env.XDG_DATA_HOME
-const instructionToolIds = ["batch", "clipboard", "create", "delete", "edit", "link", "list", "log", "move", "reset", "set", "show", "split"].map((name) => `instructions_${name}`)
+const instructionToolIds = ["batch", "clipboard", "create", "delete", "edit", "find", "link", "log", "move", "read", "reset", "set", "split"].map((name) => `instructions_${name}`)
 
 for (const combined of [true, false]) {
   test(`repeat whole-row headed set retains authored text (${combined ? "combined state:on" : "text-only control"})`, async () => {
     const { api, tools, project } = await freshFixture()
     const set = need(tools, "instructions_set")
-    const show = need(tools, "instructions_show")
+    const show = need(tools, "instructions_read")
     await runOk(need(tools, "instructions_create"), { kind: "agent", id: "repeatprobe", scope: "project" })
     await linkToBuild(project, "project", ["repeatprobe"])
     const id = "item:project:repeatprobe:tool:reader"
@@ -432,7 +432,7 @@ test("C1 registered inherited model edits plant only local fields and reset reve
   const after = await load(project)
   expect(after.records.find((record) => record.type === "model" && record.level === "project")).not.toHaveProperty("compactionStrategy")
   expect(after.records.filter((record) => record.level === "global")).toEqual(before.records.filter((record) => record.level === "global"))
-  const shown = await runOk(need(tools, "instructions_show"), { id: row.id })
+  const shown = await runOk(need(tools, "instructions_read"), { id: row.id })
   expect(shown).toMatchObject({ field: "compactionStrategy", value: "Remote · global" })
 })
 
@@ -532,7 +532,7 @@ for (const baseline of ["", "Unheaded baseline", "# Previous\nPrevious body."]) 
     const reloaded = createPlusApi(ctx, createState())
     await registerInstructionTools(ctx, reloaded)
     const registered = await readTools(ctx)
-    const shown = await runOk(need(registered, "instructions_show"), { id, view: "resolved" })
+    const shown = await runOk(need(registered, "instructions_read"), { id, view: "resolved" })
     expect(shown).toMatchObject({ text })
     const snapshot = await snapshotOf(reloaded)
     const memo = memoFromSnapshot(snapshot)
@@ -549,7 +549,7 @@ for (const baseline of ["", "Unheaded baseline", "# Previous\nPrevious body."]) 
       }).assembled,
     ).toBe(text)
     await runOk(need(registered, "instructions_reset"), { id })
-    expect(await runOk(need(registered, "instructions_show"), { id, view: "resolved" })).toMatchObject({
+    expect(await runOk(need(registered, "instructions_read"), { id, view: "resolved" })).toMatchObject({
       text: baseline,
     })
     expect((await load(project)).records.some((record) => record.type === "customization" && record.text === text)).toBe(false)
@@ -1093,7 +1093,7 @@ test("protectedAgents refusal on a write", async () => {
 test("edit replaces exact text in a row and saves exactly what set saves", async () => {
   const { api, tools, project } = await freshFixture()
   const edit = need(tools, "instructions_edit")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   await runOk(need(tools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
   await linkToBuild(project, "project", ["editprobe"])
   const id = "item:project:editprobe:tool:reader"
@@ -1114,7 +1114,7 @@ test("edit replaces exact text in a row and saves exactly what set saves", async
 test("edit refuses a missing, repeated, identical or empty oldString without writing", async () => {
   const { api, tools, project } = await freshFixture()
   const edit = need(tools, "instructions_edit")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   await runOk(need(tools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
   await linkToBuild(project, "project", ["editprobe"])
   const id = "item:project:editprobe:tool:reader"
@@ -1138,7 +1138,7 @@ test("edit refuses a missing, repeated, identical or empty oldString without wri
 test("edit changes one section of a headed row and refuses rows without text", async () => {
   const { api, tools, project } = await freshFixture()
   const edit = need(tools, "instructions_edit")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   await runOk(need(tools, "instructions_create"), { kind: "agent", id: "editprobe", scope: "project" })
   await linkToBuild(project, "project", ["editprobe"])
   const id = "item:project:editprobe:tool:reader"
@@ -1155,7 +1155,7 @@ test("edit changes one section of a headed row and refuses rows without text", a
 
 test("show lists the rows under an agent and sends assembled only when it differs from text", async () => {
   const { tools, project } = await freshFixture()
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   await runOk(need(tools, "instructions_create"), { kind: "agent", id: "showprobe", scope: "project" })
   await linkToBuild(project, "project", ["showprobe"])
   const agent = (await runOk(show, { id: "agent:project:showprobe" })) as { kind: string; link?: string; columns: string; rows: string[] }
@@ -1431,7 +1431,7 @@ test("show with each view returns the right shape, diff returns two diffs plus s
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
   await runOk(need(tools, "instructions_set"), { id, text: "mine text\nline two\n" })
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const resolved = (await runOk(show, { id })) as { view?: string; text: string }
   expect(typeof resolved.text).toBe("string")
   const upstream = (await runOk(show, { id, view: "upstream" })) as { text: string }
@@ -1511,8 +1511,8 @@ test("take on a heading-derived item follows upstream for the whole row", async 
   const customAfter = after.records.filter(
     (record): record is Plus.SnapshotCustomizationRecord => record.type === "customization" && record.item === "tool:reader",
   )
-  const upstream = (await runOk(need(reader.tools, "instructions_show"), { id, view: "upstream" })) as { text: string }
-  const shown = (await runOk(need(reader.tools, "instructions_show"), { id })) as { text: string }
+  const upstream = (await runOk(need(reader.tools, "instructions_read"), { id, view: "upstream" })) as { text: string }
+  const shown = (await runOk(need(reader.tools, "instructions_read"), { id })) as { text: string }
   expect({ before: customBefore.length, textAfter: customAfter.filter((record) => record.text !== undefined).length }).toEqual({
     before: 1,
     textAfter: 0,
@@ -1523,7 +1523,7 @@ test("take on a heading-derived item follows upstream for the whole row", async 
 
 test("show diff proposes merge units with their kinds and defaults", async () => {
   const { tools, id } = await mergeFixture()
-  const diff = (await runOk(need(tools, "instructions_show"), { id, view: "diff" })) as {
+  const diff = (await runOk(need(tools, "instructions_read"), { id, view: "diff" })) as {
     merge: { units: { id: string; kind: string; included: boolean; yours: string; upstream: string; base: string }[]; text: string }
   }
   expect(diff.merge.units.map((unit) => [unit.id, unit.kind, unit.included])).toEqual([
@@ -1581,12 +1581,12 @@ test("registered list and log tools return persisted rows and history", async ()
   const id = await readerRowId(api)
   await runOk(need(tools, "instructions_set"), { id, text: "listed text" })
   // Lines by default: one "id | badges | from" string per row.
-  const list = (await runOk(need(tools, "instructions_list"), {})) as { rows: readonly string[]; total: number; columns: string }
+  const list = (await runOk(need(tools, "instructions_find"), {})) as { rows: readonly string[]; total: number; columns: string }
   expect(list.total).toBeGreaterThan(0)
   expect(list.columns).toBe("id | badges | from")
   expect(list.rows).toContain(`${id} | off modified | off by default`)
   expect(list.rows.every((row) => row.split(" | ").length === 3)).toBe(true)
-  const labelled = (await runOk(need(tools, "instructions_list"), { where: `id:${id}`, fields: ["label", "tokens"] })) as { rows: readonly string[]; columns: string }
+  const labelled = (await runOk(need(tools, "instructions_find"), { where: `id:${id}`, fields: ["label", "tokens"] })) as { rows: readonly string[]; columns: string }
   expect(labelled.columns).toBe("id | label | tokens")
   expect(labelled.rows[0]).toMatch(new RegExp(`^${id} \\| reader \\| \\d+$`))
   const logged = (await runOk(need(tools, "instructions_log"), {})) as {
@@ -1669,9 +1669,9 @@ test("a Code Mode text edit persists and show reports it", async () => {
   expect(output.status).toBe(expected.status)
   const after = await snapshotOf(api)
   expect(after.records.some((record) => record.type === "customization" && record.text === "custom coder text")).toBe(true)
-  const shown = (await runOk(need(tools, "instructions_show"), { id: node.id, view: "resolved" })) as { text: string }
+  const shown = (await runOk(need(tools, "instructions_read"), { id: node.id, view: "resolved" })) as { text: string }
   expect(shown.text).toBe("custom coder text")
-  const record = (await runOk(need(tools, "instructions_show"), { id: node.id, view: "record" })) as { record: { text?: string } | null }
+  const record = (await runOk(need(tools, "instructions_read"), { id: node.id, view: "record" })) as { record: { text?: string } | null }
   expect(record.record?.text).toBe("custom coder text")
 })
 
@@ -1838,14 +1838,14 @@ test("create model, activate through set, list with item:model and active, then 
   if (row === undefined) throw new Error("missing model row")
   const activated = (await runOk(need(tools, "instructions_set"), { id: row.id, active: true })) as { status: string }
   expect(activated.status).toBe(`Activated "acme/nova-2"`)
-  const recordView = (await runOk(need(tools, "instructions_show"), { id: row.id, view: "record" })) as {
+  const recordView = (await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as {
     id: string
     view: string
     record: { type?: string; active?: boolean } | null
   }
   expect(recordView.record?.type).toBe("model")
   expect(recordView.record?.active).toBe(true)
-  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true" })) as { rows: readonly string[] }
+  const listed = (await runOk(need(tools, "instructions_find"), { where: "item:model active:true" })) as { rows: readonly string[] }
   expect(rowIds(listed)).toContain(row.id)
   // The effective model refuses deletion: activate a replacement first. r
   // clears only this level's active flag, so the candidate then deletes.
@@ -1893,7 +1893,7 @@ test("set warming on a model row stores it through the real store; bad values an
   // The production snapshot reader carries it to the row (this file's memoFromSnapshot predates warming).
   const row = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id === created.id)
   expect(row?.badges.warming).toBe("1h30m")
-  expect(await runOk(need(tools, "instructions_show"), { id: created.id, view: "record" })).toMatchObject({ record: { warming: "1h30m" } })
+  expect(await runOk(need(tools, "instructions_read"), { id: created.id, view: "record" })).toMatchObject({ record: { warming: "1h30m" } })
   // Refusals leave the store unchanged.
   const before = await load(project)
   expect((await runFail(set, { id: created.id, warming: "forever" })).message).toContain("not a warming time")
@@ -1909,7 +1909,7 @@ test("set warming on a model row stores it through the real store; bad values an
 test("create model preserves the selected member owner and returns its addressable row", async () => {
   const { api, tools, project } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const set = need(tools, "instructions_set")
   await runOk(create, { kind: "preset", id: "reader", from: "basic/scout" })
   await runOk(create, { kind: "teamPreset", id: "crew" })
@@ -1948,7 +1948,7 @@ test("create model preserves the selected member owner and returns its addressab
 test("show view:record matches the full owner, not just level and agent", async () => {
   const { api, tools } = await freshFixture({ models: [modelInfo("acme", "nova-2")], classifications: { "nova-2": "general" } })
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const set = need(tools, "instructions_set")
   await runOk(create, { kind: "preset", id: "reader", from: "basic/scout" })
   await runOk(create, { kind: "teamPreset", id: "crew" })
@@ -1996,7 +1996,7 @@ test("create model refuses an owner-segment agent before writing and names agent
 test("show separates inherited state and text provenance across role override and reset", async () => {
   const { tools } = await freshFixture()
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const set = need(tools, "instructions_set")
   await runOk(create, { kind: "teamPreset", id: "crew" })
   await runOk(create, { kind: "presetMember", team: "crew", id: "reader", from: "basic/scout" })
@@ -2047,10 +2047,10 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const snapshot = await snapshotOf(api)
   const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "perm:shell:git-push")
   if (row === undefined) throw new Error("missing perm:shell:git-push row")
-  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell" })) as { rows: readonly string[]; total: number }
+  const listed = (await runOk(need(tools, "instructions_find"), { where: "item:perm tool:shell" })) as { rows: readonly string[]; total: number }
   expect(listed.total).toBeGreaterThan(0)
   expect(rowIds(listed)).toContain(row.id)
-  const shown = (await runOk(need(tools, "instructions_show"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
+  const shown = (await runOk(need(tools, "instructions_read"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
   expect(shown.patterns).toEqual(["git push *"])
   expect(shown.keywords).toContain("git push")
   expect(Array.isArray(shown.provenance)).toBe(true)
@@ -2060,7 +2060,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(toggled.status).toContain("Disabled")
   const afterOff = await snapshotOf(api)
   expect(afterOff.records.some((record) => record.type === "customization" && record.item === "perm:shell:git-push" && record.state === "off")).toBe(true)
-  const curatedShownRecord = (await runOk(need(tools, "instructions_show"), { id: row.id, view: "record" })) as {
+  const curatedShownRecord = (await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as {
     record: { type?: string; state?: string } | null
   }
   expect(curatedShownRecord.record?.type).toBe("customization")
@@ -2074,7 +2074,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const afterCreate = await snapshotOf(api)
   const customRow = expandedTree(memoFromSnapshot(afterCreate)).find((node) => node.id === created.id)
   if (customRow === undefined) throw new Error("missing custom perm row")
-  const customShownRecord = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
+  const customShownRecord = (await runOk(need(tools, "instructions_read"), { id: customRow.id, view: "record" })) as {
     id: string
     view: string
     record: { type?: string; patterns?: readonly string[] } | null
@@ -2085,7 +2085,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const messaged = (await runOk(need(tools, "instructions_set"), { id: customRow.id, message: "no force pushes here" })) as { status: string }
   expect(messaged.status).toContain("Updated")
   await runOk(need(tools, "instructions_set"), { id: customRow.id, state: "off" })
-  const customBoth = (await runOk(need(tools, "instructions_show"), { id: customRow.id, view: "record" })) as {
+  const customBoth = (await runOk(need(tools, "instructions_read"), { id: customRow.id, view: "record" })) as {
     record: { type?: string; patterns?: readonly string[] } | null
   }
   expect(customBoth.record?.type).toBe("rule")
@@ -2130,7 +2130,7 @@ test("a Teams-catalogue rule keeps its catalogue through a message set, and a cu
   const afterEdit = await snapshotOf(api)
   const storedEdit = afterEdit.records.find((record) => record.type === "rule" && record.id === "round3-team-edit")
   expect(storedEdit).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "Round3 team edit revised." })
-  const shownEdit = (await runOk(need(tools, "instructions_show"), { id: created.id })) as { message?: string }
+  const shownEdit = (await runOk(need(tools, "instructions_read"), { id: created.id })) as { message?: string }
   expect(shownEdit.message).toBe("Round3 team edit revised.")
 
   // The curated shell rule has no stored record here, so a message write from
@@ -2149,7 +2149,7 @@ test("a Teams-catalogue rule keeps its catalogue through a message set, and a cu
   const afterOverride = await snapshotOf(api)
   const storedOverride = afterOverride.records.find((record) => record.type === "rule" && record.id === "git-push")
   expect(storedOverride).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "no pushes in this team" })
-  const shownOverride = (await runOk(need(tools, "instructions_show"), { id: curatedRow.id })) as { message?: string }
+  const shownOverride = (await runOk(need(tools, "instructions_read"), { id: curatedRow.id })) as { message?: string }
   expect(shownOverride.message).toBe("no pushes in this team")
 
   // The override is on disk in the global store under the Teams catalogue.
@@ -2158,11 +2158,11 @@ test("a Teams-catalogue rule keeps its catalogue through a message set, and a cu
   expect(globalText).toContain('"catalogue":"teams"')
 })
 
-// instructions_list reads api.snapshot(), so a team member's policy rows reach
+// instructions_find reads api.snapshot(), so a team member's policy rows reach
 // the tool only through the boundary shape. The rows asserted here govern
 // permission actions with no tool row to hang under, so they exist nowhere
 // else in the tree.
-test("instructions_list returns a team member's own policy rows even for a tool with no tool row", async () => {
+test("instructions_find returns a team member's own policy rows even for a tool with no tool row", async () => {
   const { project } = await tempProject()
   process.env.XDG_DATA_HOME = path.join(path.dirname(project), "data")
   const member = "gemini-implementer"
@@ -2205,7 +2205,7 @@ test("instructions_list returns a team member's own policy rows even for a tool 
   if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
   // Every tool now lists its catalog rows too, so the member's rows span
   // more than the default page of 40.
-  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}`, limit: 1000 })) as {
+  const listed = (await runOk(need(tools, "instructions_find"), { where: `item:perm agent:${member}`, limit: 1000 })) as {
     rows: readonly string[]
     total: number
   }
@@ -2930,7 +2930,7 @@ test("every enabled create kind returns the row id show and delete accept, and d
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const del = need(tools, "instructions_delete")
 
   const known = async (id: string) =>
@@ -3093,7 +3093,7 @@ test("create returns the created level's model and rule row, not the identical D
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const del = need(tools, "instructions_delete")
 
   // Project and global rows need agents that live at those levels.
@@ -3209,7 +3209,7 @@ test("create kind member adds members at project level, refuses a Defaults team,
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const del = need(tools, "instructions_delete")
 
   // Colon team names and nested member ids both round-trip, and a padded team
@@ -3388,7 +3388,7 @@ test("create kind team passes the team preset to team.create and produces the pr
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
 
   const memberIds = ["build-seat", "implementer", "orchestrator", "planner", "reviewer", "scout"]
   const created = (await runOk(create, { kind: "team", team: "mine", level: "project", preset: "basic" })) as {
@@ -3481,7 +3481,7 @@ test("create kind instruction is refused with instruction.disabled and writes no
 test("instructions_create entry, preset, teamPreset and presetMember return their rows; agent takes a string preset", async () => {
   const { api, tools } = await freshFixture()
   const create = need(tools, "instructions_create")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
 
   const agent = (await runOk(create, { kind: "agent", id: "helper", preset: "basic/implementer" })) as { id: string; item: string }
   expect(agent).toMatchObject({ id: "agent:project:helper", item: "helper" })
@@ -3547,11 +3547,11 @@ test("instructions_set {preset} relinks and unlinks the row's owner; protected a
   })
   // The row now inherits from the preset. Its Description row repeats it, so
   // list leaves that out.
-  const rows = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
+  const rows = (await runOk(need(tools, "instructions_find"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
     rows: string[]
   }
   expect(rows.rows).toEqual(["item:project:helper:tool:reader | from preset Basic › orchestrator"])
-  const alias = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader:description", fields: ["from"] })) as { rows: string[] }
+  const alias = (await runOk(need(tools, "instructions_find"), { where: "id:item:project:helper:tool:reader:description", fields: ["from"] })) as { rows: string[] }
   expect(alias.rows).toEqual(["item:project:helper:tool:reader:description | from preset Basic › orchestrator"])
   await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "basic", id: "implementer" } })
   expect((await snapshotOf(api)).links).toEqual([
@@ -3737,10 +3737,10 @@ test("show reports a section's requires line and a tool's Tools and rules sectio
   )
   const tool = nodes.find((node) => node.kind === "item" && node.address?.item === "tool:question" && node.address.agent === "alpha")
   if (section === undefined || tool === undefined) throw new Error("missing rows")
-  const shownSection = (await runOk(need(tools, "instructions_show"), { id: section.id })) as { requires?: unknown }
+  const shownSection = (await runOk(need(tools, "instructions_read"), { id: section.id })) as { requires?: unknown }
   // met follows alpha's own state of the question tool.
   expect(shownSection.requires).toEqual([{ id: "tool:question", on: true, met: tool.badges.state === "on" }])
-  const shownTool = (await runOk(need(tools, "instructions_show"), { id: tool.id })) as { guidance?: unknown }
+  const shownTool = (await runOk(need(tools, "instructions_read"), { id: tool.id })) as { guidance?: unknown }
   expect(shownTool.guidance).toEqual(["Questions"])
 })
 
@@ -3757,7 +3757,7 @@ test("set requires changes when a section is sent; show reports it and its sourc
   // alpha's own row (alpha is a Defaults entry in this fixture).
   const section = nodes.find((node) => node.id.startsWith("section:defaults:alpha:system:tools-and-rules:") && node.label === "Questions")
   if (section === undefined) throw new Error(`missing Questions: ${nodes.filter((node) => node.label === "Questions").map((node) => node.id).join(", ")}`)
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const set = need(tools, "instructions_set")
   expect(((await runOk(show, { id: section.id })) as { requiresFrom?: string }).requiresFrom).toBe("its text")
   const saved = (await runOk(set, { id: section.id, requires: ["tool:reader"] })) as { status: string }
@@ -4219,7 +4219,7 @@ test("set requires stores rowlinks only, survives reload, and null inherits agai
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const set = need(tools, "instructions_set")
   const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
   const section = nodes.find((node) => node.id.startsWith("section:defaults:alpha:system:tools-and-rules:") && node.label === "Questions")
@@ -4333,7 +4333,7 @@ test("legacy requires durably replaces a same-scope switch pair without duplicat
   const stored = await linksOf(project)
   expect(stored.filter((record) => record.item === "tool:reader" && record.target === "system:tools-and-rules").map((record) => record.link)).toEqual(["shownWhenOn"])
   expect(stored.filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["either"])
-  const shown = await runOk(need(tools, "instructions_show"), { id: question }) as { requires?: { id: string }[] }
+  const shown = await runOk(need(tools, "instructions_read"), { id: question }) as { requires?: { id: string }[] }
   expect(shown.requires?.map((entry) => entry.id)).toEqual(["tool:reader"])
   await runOk(set, { id: question, requires: [] })
   expect((await linksOf(project)).filter((record) => record.item === "tool:extra").map((record) => record.link)).toEqual(["either"])

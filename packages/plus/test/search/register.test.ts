@@ -182,7 +182,7 @@ test("full activation leaves existing search MCP server when present", async () 
   expect(server).toEqual(existingConfig)
 })
 
-test("real-handler server filter: instructions.list where:\"server:search\" returns mcp:search row and tool rows", async () => {
+test("real-handler server filter: instructions.find where:\"server:search\" returns mcp:search row and tool rows", async () => {
   const project = await tempProject()
 
   const baseMcp = mcpHarness([])
@@ -225,7 +225,7 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
   await Effect.runPromise(activate(ctx, state))
 
   const tools = await readTools(ctx)
-  const listTool = tools.get("instructions_list")
+  const listTool = tools.get("instructions_find")
   expect(listTool).toBeDefined()
 
   const listOutput = await Effect.runPromise(

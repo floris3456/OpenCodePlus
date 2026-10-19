@@ -83,7 +83,7 @@ await tools.instructions.set({
 })
 ```
 
-Use `instructions.list` to obtain the exact row IDs for team members, presets,
+Use `instructions.find` to obtain the exact row IDs for team members, presets,
 and Defaults entries rather than constructing them. Existing protected-agent
 and project-mode write guards still apply.
 

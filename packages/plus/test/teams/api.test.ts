@@ -419,13 +419,13 @@ test("activation in a child worktree installs the parent project's agents and to
           "instructions_create",
           "instructions_delete",
           "instructions_edit",
+          "instructions_find",
           "instructions_link",
-          "instructions_list",
           "instructions_log",
           "instructions_move",
+          "instructions_read",
           "instructions_reset",
           "instructions_set",
-          "instructions_show",
           "instructions_split",
         ])
         const listed = await Effect.runPromise(ctx.agent.list())

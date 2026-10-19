@@ -172,7 +172,7 @@ async function storeState(api: PlusApi, project: string) {
 test("both flat model id forms for a member-only agent refuse and name the member row", async () => {
   const { api, tools, project } = await memberOnlyFixture()
   const set = need(tools, "instructions_set")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const reset = need(tools, "instructions_reset")
   const del = need(tools, "instructions_delete")
   const grammar = "item:global:Planner:model:acme/nova-2"
@@ -208,7 +208,7 @@ test("member row activates exclusively through set active:true and a bare set", 
   const { api, tools, project } = await memberOnlyFixture()
   const create = need(tools, "instructions_create")
   const set = need(tools, "instructions_set")
-  const show = need(tools, "instructions_show")
+  const show = need(tools, "instructions_read")
   const member = "item:global:Basic/:Planner:model:acme/nova-2"
   const sibling = "item:global:Basic/:Planner:model:acme/nova-3"
 

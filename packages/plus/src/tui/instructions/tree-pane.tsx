@@ -3,7 +3,7 @@ import { badgeLabels } from "../../instructions/from-label.js"
 import { controlKind, type TreeNode } from "../../instructions/tree.js"
 import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId } from "../../instructions/model-settings.js"
 
-// The badge words are shared with `instructions_list` (from-label.ts).
+// The badge words are shared with `instructions_find` (from-label.ts).
 export { badgeLabels }
 
 // Visible children come straight from the flat list: the next row is deeper.

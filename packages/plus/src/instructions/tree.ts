@@ -3740,7 +3740,7 @@ function permissionParameter(item: Item, tool: string, params: readonly Item[]):
     team_delegate: "role", team_followup: "run", team_integrate: "run", team_finish: "status",
     team_checkpoint: "files", team_set_checks: "checks", team_stop: "run", team_status: "run",
     team_diff: "run", team_list: "all", team_check: "id",
-    instructions_list: "where", instructions_show: "id", instructions_log: "where",
+    instructions_find: "where", instructions_read: "id", instructions_log: "where",
   }
   const name = item.ruleId === "limits.attachment" && tool === "team_delegate" ? "briefFile"
     : resource[tool]

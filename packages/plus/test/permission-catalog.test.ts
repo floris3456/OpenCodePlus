@@ -74,7 +74,7 @@ const browserTools = [
   "wait",
 ].map((name) => `browser_${name}`)
 
-const instructionTools = ["list", "show", "log", "set", "reset", "split", "create", "delete"].map((name) => `instructions_${name}`)
+const instructionTools = ["find", "read", "log", "set", "reset", "split", "create", "delete"].map((name) => `instructions_${name}`)
 
 const teamToolIds = [
   "delegate",

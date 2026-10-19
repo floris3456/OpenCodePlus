@@ -11,7 +11,7 @@
 // - Per-run edit scope: one row per live delegated run, carrying the run's own
 //   `scope.paths`.
 //
-// A row is listable (`instructions.list`), showable, logged, and overridable
+// A row is listable (`instructions.find`), showable, logged, and overridable
 // at project or global level like every other row.
 import { readdir } from "node:fs/promises"
 import path from "node:path"

@@ -275,8 +275,8 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       const ctx = toolContext("ses_walkthrough_20b", "orchestrator")
       const where = "agent:implementer item:perm"
       const fields = ["id", "label", "badges", "source"]
-      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500 }, ctx)
-      call("instructions_list", { where, fields, limit: 500 }, listed)
+      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_find"), { where, fields, limit: 500 }, ctx)
+      call("instructions_find", { where, fields, limit: 500 }, listed)
 
       expect(listed.columns).toBe("id | label | badges | source")
       const ids = listed.rows.map((row) => row.split(" | ")[0] ?? "")
@@ -295,8 +295,8 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       expect(ids.filter((id) => id.endsWith(":team-role") || id.endsWith(":role-ceiling"))).toEqual([])
 
       const cleanRow = ids.find((id) => id.endsWith("perm:team_finish:requirements.clean"))
-      const shown = await runOk<{ tool: string; enabled: boolean }>(need(fixture.tools, "instructions_show"), { id: cleanRow }, ctx)
-      call("instructions_show", { id: cleanRow }, shown)
+      const shown = await runOk<{ tool: string; enabled: boolean }>(need(fixture.tools, "instructions_read"), { id: cleanRow }, ctx)
+      call("instructions_read", { id: cleanRow }, shown)
       expect(shown.tool).toBe("team_finish")
       // On for implementer: its implementer preset sets it.
       expect(shown.enabled).toBe(true)
@@ -458,8 +458,8 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
 
       // text last, so a " | " inside it stays in its cell.
       const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "badges", "source", "text"] }
-      const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_list"), scopeQuery, parent)
-      call("instructions_list", scopeQuery, scopeRows)
+      const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_find"), scopeQuery, parent)
+      call("instructions_find", scopeQuery, scopeRows)
       const scopeCells = scopeRows.rows.map((row) => {
         const cells = row.split(" | ")
         return { id: cells[0] ?? "", text: cells.slice(4).join(" | ") }
@@ -478,11 +478,11 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       // `text` is the resolved row; `patterns` is only on the show surface, so
       // the walkthrough needs both calls to state the whole rule.
       const scopeShown = await runOk<{ tool: string; rule: string; patterns: string[]; enabled: boolean; source: string }>(
-        need(fixture.tools, "instructions_show"),
+        need(fixture.tools, "instructions_read"),
         { id: scopeRow?.id },
         parent,
       )
-      call("instructions_show", { id: scopeRow?.id }, scopeShown)
+      call("instructions_read", { id: scopeRow?.id }, scopeShown)
       expect(scopeShown.tool).toBe("edit")
       expect(scopeShown.rule).toBe(`run:${childRun}`)
       expect(scopeShown.patterns).toEqual(["docs/note.md"])

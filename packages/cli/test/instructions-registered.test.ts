@@ -79,9 +79,9 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
         compactionInstructions: "keep facts",
       },
     })
-    expect(await parse(["list", "--limit", "2.5", "--offset=1"])).toEqual({
+    expect(await parse(["find", "--limit", "2.5", "--offset=1"])).toEqual({
       kind: "run",
-      op: "list",
+      op: "find",
       input: { limit: 2.5, offset: 1 },
     })
     expect(await parse(["move", "row", "--into", "folder", "--before", "first", "--after=last"])).toEqual({
@@ -120,7 +120,7 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
     for (const args of [
       ["set", "row", "--bogus", "x"],
       ["set", "row", "--pin=maybe"],
-      ["list", "--limit=many"],
+      ["find", "--limit=many"],
     ]) {
       expect((await runInstructionsCommand(args, deps)).exitCode).toBe(2)
     }
@@ -128,8 +128,8 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
     // Enum validation belongs to the registered server schema.
     expect((await runInstructionsCommand(["link", "row", "--target", "other", "--type", "oneway"], deps)).exitCode).toBe(2)
     expect((await runInstructionsCommand(["set", "row", "--state=invalid"], deps)).exitCode).toBe(2)
-    expect((await runInstructionsCommand(["list", "--limit=5"], deps)).exitCode).toBe(0)
-    const listed = JSON.parse((await runInstructionsCommand(["list", "--limit=6082"], deps)).stdout) as {
+    expect((await runInstructionsCommand(["find", "--limit=5"], deps)).exitCode).toBe(0)
+    const listed = JSON.parse((await runInstructionsCommand(["find", "--limit=6082"], deps)).stdout) as {
       rows: string[]
     }
     const id = listed.rows.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
@@ -181,13 +181,13 @@ test("edit through the CLI changes part of a row's text and logs the cli actor",
     run: (op: string, input: Record<string, unknown>) => Effect.runPromise(handlers["instructions.run"]({ op, input }, rpcContext)),
   }
   try {
-    const listed = JSON.parse((await runInstructionsCommand(["list", "--where", "item:tool", "--limit=6082"], deps)).stdout) as { rows: string[] }
+    const listed = JSON.parse((await runInstructionsCommand(["find", "--where", "item:tool", "--limit=6082"], deps)).stdout) as { rows: string[] }
     const id = listed.rows.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.endsWith(":tool:reader"))
     if (id === undefined) throw new Error("fixture has no reader row")
     const edited = await runInstructionsCommand(["edit", id, "--oldString", "read", "--newString", "scan"], deps)
     expect(edited.exitCode).toBe(0)
     expect(JSON.parse(edited.stdout)).toMatchObject({ id, replacements: 1 })
-    expect(JSON.parse((await runInstructionsCommand(["show", id], deps)).stdout).text).toBe("scan things")
+    expect(JSON.parse((await runInstructionsCommand(["read", id], deps)).stdout).text).toBe("scan things")
     const missing = await runInstructionsCommand(["edit", id, "--oldString", "absent", "--newString", "x"], deps)
     expect(missing.exitCode).toBe(1)
     expect(missing.stderr).toContain("Could not find oldString")

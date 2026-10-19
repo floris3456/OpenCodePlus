@@ -119,10 +119,10 @@ test("ops are enumerated from the live instruction tools with their schemas", as
     }
     const names = output.ops.map((op) => op.op)
     expect(names).toEqual([...names].toSorted((a, b) => a.localeCompare(b)))
-    for (const expected of ["list", "show", "set", "move", "reset", "split", "create", "delete", "log"]) {
+    for (const expected of ["find", "read", "set", "move", "reset", "split", "create", "delete", "log"]) {
       expect(names).toContain(expected)
     }
-    const show = output.ops.find((op) => op.op === "show")!
+    const show = output.ops.find((op) => op.op === "read")!
     const properties = (show.input as { properties?: Record<string, unknown> }).properties
     expect(properties?.id).toBeDefined()
     expect(show.description.length).toBeGreaterThan(0)
@@ -135,8 +135,8 @@ test("run returns the same result as the tool implementation for a read op", asy
   const fixture = await activatedFixture()
   try {
     const input = { limit: 5 }
-    const direct = await directTool(fixture.ctx, "instructions_list", input)
-    const viaRpc = await invoke(fixture.handlers, "instructions.run", { op: "list", input })
+    const direct = await directTool(fixture.ctx, "instructions_find", input)
+    const viaRpc = await invoke(fixture.handlers, "instructions.run", { op: "find", input })
     expect(viaRpc).toEqual(direct)
   } finally {
     await Effect.runPromise(deactivate(fixture.state))
@@ -146,13 +146,13 @@ test("run returns the same result as the tool implementation for a read op", asy
 test("show by id matches the tool operation", async () => {
   const fixture = await activatedFixture()
   try {
-    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082 })) as {
+    const listed = (await directTool(fixture.ctx, "instructions_find", { limit: 6082 })) as {
       rows?: string[]
     }
     const id = listed.rows?.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
     if (id === undefined) throw new Error("fixture listed no rows")
-    const direct = await directTool(fixture.ctx, "instructions_show", { id, view: "resolved" })
-    const viaRpc = await invoke(fixture.handlers, "instructions.run", { op: "show", input: { id, view: "resolved" } })
+    const direct = await directTool(fixture.ctx, "instructions_read", { id, view: "resolved" })
+    const viaRpc = await invoke(fixture.handlers, "instructions.run", { op: "read", input: { id, view: "resolved" } })
     expect(viaRpc).toEqual(direct)
   } finally {
     await Effect.runPromise(deactivate(fixture.state))
@@ -162,7 +162,7 @@ test("show by id matches the tool operation", async () => {
 test("a write through the RPC records the actor as cli", async () => {
   const fixture = await activatedFixture()
   try {
-    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082 })) as {
+    const listed = (await directTool(fixture.ctx, "instructions_find", { limit: 6082 })) as {
       rows?: string[]
     }
     const id = listed.rows?.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
@@ -286,7 +286,7 @@ test("batch creation keeps the new resource id and rebases owner and tool fields
 test("a schema-invalid input is a usage refusal", async () => {
   const fixture = await activatedFixture()
   try {
-    const result = (await invoke(fixture.handlers, "instructions.run", { op: "show", input: {} })) as {
+    const result = (await invoke(fixture.handlers, "instructions.run", { op: "read", input: {} })) as {
       error: { message: string; usage?: boolean }
     }
     expect(result.error.usage).toBe(true)

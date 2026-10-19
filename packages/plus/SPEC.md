@@ -1917,7 +1917,7 @@ on `deny edit .git/**` and `deny edit .opencodeplus/**` (the `, even inside
 scope.paths […]` clause is dropped when the run declares no paths). The
 allows carry none. `Plus.PolicyRule` (`src/rpc.ts`) carries the field too, so
 a message survives the snapshot the TUI and the tools read:
-`instructions_show` on a `perm:` row returns the row's `policy` — the `on` and
+`instructions_read` on a `perm:` row returns the row's `policy` — the `on` and
 `off` rules it installs, each with its own message — beside the row's patterns
 and resolved state. Team rows the handlers read carry their refusal text as the
 row's `message` (the words after the member id in `E_ROLE`, `E_PATHS`,
@@ -1946,7 +1946,7 @@ Tool permission rules carry the same field:
   to the curated message, then the catalog row's own, for a shipped row
   (`curatedRuleMessage(tool, rule) ?? item.message`); a mined row has none and
   keeps the generic refusal.
-- `instructions_show` on a perm row returns `message` when the row has one
+- `instructions_read` on a perm row returns `message` when the row has one
   (the same fallback), and the TUI inspector prints it under `provenance`.
 - Two whole-set resubmissions carry the same optional fields. A state-only
   write — `set` with `state` alone — goes through `tools.ts`
@@ -2717,7 +2717,7 @@ the shipped limits):
 | `team_list` | Parameters (`all`) |
 | `team_get_context` | Contents (team: siblings) |
 | `team_check` | Checks it may run (team: test files, package scripts) |
-| `instructions_list`, `_show`, `_log` | Secrets in rows (input: Show secret values; off masks) · Approval |
+| `instructions_find`, `_read`, `_log` | Secrets in rows (input: Show secret values; off masks) · Approval |
 | `instructions_set` | Rows it may change (input `id`: its own rows, perm, model, team, Global and Defaults rows) · Changes (param: `text`, `state`, `pin`, `active`, `resolve`, `warming`, `patterns`) · Approval |
 | `instructions_reset`, `_split`, `_delete` | Rows it may change · Approval |
 | `instructions_create` | Kinds (value `kind`) · Levels (value `level`) · Approval |
@@ -3010,7 +3010,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 
 | error | meaning |
 | `row.unknown` | no row has that id; `list` again for the current id |
-| `create.failed` | the write landed but its row is not in the tree; re-read with `instructions_list` |
+| `create.failed` | the write landed but its row is not in the tree; re-read with `instructions_find` |
 | `agent.protected` | that agent is in `protectedAgents` and the write's actor is a tool; data is `{ agent, id?, reason }` |
 | `delete.unconfirmed` | retry with `confirm: true` |
 | `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; OpenCode applies AGENTS.md files |

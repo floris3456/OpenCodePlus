@@ -93,10 +93,10 @@ test("the instruction content stays within its size budget", async () => {
     "section:…:<sectionId>",
     "agent:<level>:<id>",
     "team:<level>:<name>",
-    'list({where:"review:true"})',
-    'show({id,view:"diff"})',
+    'find({where:"review:true"})',
+    'read({id,view:"diff"})',
     'set({id,resolve:"keep"})',
-    'list({where:"agent:X item:tool"})',
+    'find({where:"agent:X item:tool"})',
     "edit({id,oldString,newString})",
     "id | badges | from",
     "instructions-tools",
@@ -107,8 +107,8 @@ test("the instruction content stays within its size budget", async () => {
 
 test("the skill content covers the tool surface", async () => {
   for (const phrase of [
-    "list({ where?, fields?, sort?, limit?, offset? })",
-    'show({ id, view? })',
+    "find({ where?, fields?, sort?, limit?, offset? })",
+    'read({ id, view? })',
     "edit({ id, oldString, newString, replaceAll? })",
     "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, prompt?, effort? })",
     "reset({ id })",

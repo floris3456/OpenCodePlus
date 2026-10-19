@@ -45,7 +45,7 @@ export function reviewLabel(parts: readonly ReviewPart[]): string {
 
 /**
  * A row's badges in words, in display order: the tree pane renders them and
- * `instructions_list` joins them into its `badges` string.
+ * `instructions_find` joins them into its `badges` string.
  */
 export function badgeLabels(node: TreeNode): string[] {
   const labels: string[] = []
