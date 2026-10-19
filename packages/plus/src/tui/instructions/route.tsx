@@ -1292,8 +1292,12 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const row = currentRow()
     if (node === undefined) return
-    if (node.badges.reviewOf?.includes("layout") === true) {
-      void reviewLayout(node)
+    // A tab whose own layout is to review, from the tab or one of its folders.
+    const layoutRow = node.badges.reviewOf?.includes("layout") === true
+      ? node
+      : node.id.includes(":folder:") ? state.pathOf(node.id).find((entry) => entry.badges.reviewOf?.includes("layout") === true) : undefined
+    if (layoutRow !== undefined) {
+      void reviewLayout(layoutRow)
       return
     }
     if (focus() === "nav") {
@@ -1804,7 +1808,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       <For each={workspace().categories}>
         {(category, index) => {
           const selected = () => category.id === workspace().category?.id
-          const review = () => category.badges.reviewCount ?? 0
+          // The rows to review under it, and its own layout when that is to review.
+          const review = () => (category.badges.reviewCount ?? 0) + (category.badges.reviewOf?.includes("layout") === true ? 1 : 0)
           return (
             <text flexShrink={0} wrapMode="none" onMouseUp={() => switchCategory(index())}>
               <span style={{ fg: theme().text.muted }}>{digits() ? `${index() + 1} ` : ""}</span>
