@@ -77,6 +77,10 @@ export async function registerSearchMcp(
       new Mcp.LocalConfig({
         type: "local",
         command,
+        // Web and code search read no project file. Without a cwd it would run
+        // in every folder it serves and hold that folder (a team worktree
+        // could not be removed while it ran there).
+        cwd: path.dirname(process.execPath),
         environment: {
           BUN_BE_BUN: "0",
           OPENCODEPLUS_SEARCH_KEYS_DIR: searchKeysDir(),

@@ -12,6 +12,7 @@ import { IntegrateInput } from "./schema.js"
 import type { Check } from "./schema.js"
 import { readJson } from "./store.js"
 import { remove } from "./worktree.js"
+import { evictRunFolder } from "./lifecycle.js"
 import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
 import { wildcardMatch } from "../instructions/permission-catalog.js"
 import { allows } from "./reach.js"
@@ -149,7 +150,7 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
   const cleanup: Cleanup[] = []
   for (const item of drained.result.processed) {
     if (item.state !== "landed") continue
-    cleanup.push(await cleanupLanded(root, item.childRun, item.childHead, repoRoot, parent.repoKey))
+    cleanup.push(await cleanupLanded(ctx, root, item.childRun, item.childHead, repoRoot, parent.repoKey))
   }
   const ours = drained.result.processed.find((item) => item.id === entry.id)
   if (ours !== undefined && ours.state === "landed") return succeeded(landedValue(ours, cleanup))
@@ -226,14 +227,14 @@ async function retryCleanup(ctx: Context, root: string, parent: RunRecord, child
   return (async () => {
     const top = await gitRaw(parent.directory, ["rev-parse", "--show-toplevel"])
     if (top.code !== 0) throw new Error(top.err || top.out || `Cannot resolve repository from ${parent.directory}.`)
-    return cleanupLanded(root, child.id, entry.childHead, top.out, parent.repoKey)
+    return cleanupLanded(ctx, root, child.id, entry.childHead, top.out, parent.repoKey)
   })().catch((error: unknown): Cleanup => {
     const failure = thrownError(error)
     return { run: child.id, worktree: "retained", reason: failure.message, code: failure.code }
   })
 }
 
-async function cleanupLanded(root: string, run: string, head: string, repoRoot: string, repoKey: string): Promise<Cleanup> {
+async function cleanupLanded(ctx: Context, root: string, run: string, head: string, repoRoot: string, repoKey: string): Promise<Cleanup> {
   const removal = await (async () => {
     const current = await loadRun(root, run)
     if (current === undefined || !current.directory) throw new Error("Child record/directory unavailable; cleanup not attempted.")
@@ -244,7 +245,11 @@ async function cleanupLanded(root: string, run: string, head: string, repoRoot: 
     // before retiring the checkout needed for historical diff reads.
     const child = await updateRun(root, run, (fresh) => ({ ...fresh, head }))
     if (child === undefined || !child.directory) throw new Error("Child record/directory unavailable; cleanup not attempted.")
-    await remove(root, child.directory, { repoRoot, repoKey })
+    // The landed child's folder still has its services loaded (its MCP servers
+    // run there), which would keep the checkout in use for the 60-minute idle
+    // timeout: release them first.
+    await evictRunFolder(ctx, child)
+    await removeReleased(root, child.directory, { repoRoot, repoKey })
   })().then(() => undefined, thrownError)
   if (removal !== undefined) return { run, worktree: "retained", reason: removal.message, code: removal.code }
   // Only successful, verified removal owns this field. A cleanup/persistence
@@ -253,4 +258,14 @@ async function cleanupLanded(root: string, run: string, head: string, repoRoot: 
   return saved === undefined
     ? { run, worktree: "removed" }
     : { run, worktree: "removed", reason: `Directory removed, but run record update failed: ${saved.message}`, code: saved.code }
+}
+
+// An evicted folder's processes exit shortly after; until then they still
+// reference it, so a removal they block is retried for about a second and a half.
+async function removeReleased(root: string, dir: string, opts: { repoRoot: string; repoKey: string }, attempt = 0): Promise<void> {
+  const failure = await remove(root, dir, opts).then(() => undefined, (error: unknown) => error)
+  if (failure === undefined) return
+  if (attempt >= 5 || thrownError(failure).code !== "E_WT_IN_USE") throw failure
+  await Bun.sleep(250)
+  return removeReleased(root, dir, opts, attempt + 1)
 }

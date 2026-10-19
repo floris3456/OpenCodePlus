@@ -348,6 +348,27 @@ test("cleanup retry retains a post-landing child tip without overwriting history
   })
 })
 
+// A landed child's folder still runs what its location started (its MCP
+// servers): landing evicts the folder, they exit, and the worktree goes.
+test.skipIf(process.platform !== "linux")("landing evicts the child's folder, so what ran there lets the worktree go", async () => {
+  await withReadyChild(async ({ repo, parent, child, head }) => {
+    const server = Bun.spawn(["sleep", "60"], { cwd: child.directory })
+    const evicted: string[] = []
+    const locations = {
+      evict: (ref: { directory: string }) =>
+        Effect.sync(() => {
+          evicted.push(ref.directory)
+          server.kill()
+        }),
+      loaded: () => Effect.succeed(true),
+    }
+    const value = required(await integrateHandler(context({ session: recordSession().domain, locations }), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
+    expect(evicted).toEqual([child.directory])
+    expect(value).toMatchObject({ state: "landed", head, worktree: "removed" })
+    expect(await fs.stat(child.directory).then(() => true, () => false)).toBe(false)
+  })
+})
+
 test("successful cleanup records the actual original child head for history", async () => {
   await withReadyChild(async ({ root, repo, parent, child, head }) => {
     const value = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))

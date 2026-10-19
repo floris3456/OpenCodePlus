@@ -101,6 +101,8 @@ test("register-when-absent registers search MCP server with local command and re
   expect(after).toBeDefined()
   expect(after.type).toBe("local")
   expect(after.command).toEqual([process.execPath, binPath])
+  // It runs outside every project folder, so it never keeps one (a team worktree) in use.
+  expect(after.cwd).toBe(path.dirname(process.execPath))
   expect(after.environment).toBeDefined()
   expect(after.environment.BUN_BE_BUN).toBe("0")
   expect(after.environment.OPENCODEPLUS_SEARCH_KEYS_DIR).toBeDefined()
