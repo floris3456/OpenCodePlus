@@ -680,6 +680,9 @@ export const handlePromptBoundary = Effect.fnUntraced(function* (
   if (current === undefined) return
   const pin = yield* pinManager.load(sessionID, current)
   if (pin === undefined) return
+  // A chat marked for a rebuild (after a compaction, for one) gets the current text in its
+  // system prompt on its next request; a note now would announce the same change twice.
+  if (pin.rebuildNeeded === true) return
 
   const now = Date.now()
   const lifetime = cacheLifetime({ provider: pin.model.providerID, model: pin.model.id } as unknown as RequestRow)

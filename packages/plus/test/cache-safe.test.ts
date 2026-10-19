@@ -695,6 +695,25 @@ test("a prompt boundary announces only the session's own agent", async () => {
   expect(synthetics[0]?.text).not.toContain("Role A")
 })
 
+test("a prompt boundary after a compaction announces nothing: the next request carries the change", async () => {
+  sessionPins.clear()
+  const { ctx, contextCallbacks, synthetics } = createHarness(() => Effect.succeed({ agent: "B" }))
+  const state = { appliedParts: new Map(), currentPlanSet: undefined as PlanSet | undefined }
+
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v1.", "Role B v1."))
+  await Effect.runPromise(contextCallbacks.at(-1)!(sessionEvent("ses_compacted", "B", {}, [{ type: "text", text: "Role B v1." }])))
+
+  await applyPublishParts(ctx, state, twoAgentPlan("Role A v1.", "Role B v2."))
+  await Effect.runPromise(sessionPins.markRebuild("ses_compacted"))
+  await Effect.runPromise(handlePromptBoundary(ctx, state, "ses_compacted"))
+  expect(synthetics).toHaveLength(0)
+
+  const next = sessionEvent("ses_compacted", "B", {}, [{ type: "text", text: "Role B v2." }])
+  await Effect.runPromise(contextCallbacks.at(-1)!(next))
+  expect(next.system[0]?.text).toBe("Role B v2.")
+  expect(synthetics).toHaveLength(0)
+})
+
 test("a prompt boundary whose session read fails announces nothing and does not throw", async () => {
   sessionPins.clear()
   const { ctx, contextCallbacks, synthetics } = createHarness(() => Effect.fail("session unavailable"))
